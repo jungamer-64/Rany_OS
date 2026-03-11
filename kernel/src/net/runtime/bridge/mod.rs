@@ -209,9 +209,13 @@ pub fn register_stack_glue_interface(if_id: NetIfId, virtio_index: Option<u8>) {
 // Transmit Bridge
 // ============================================================================
 
-pub fn transmit_from_stack(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+pub fn transmit_from_stack(
+    if_id: Option<NetIfId>,
+    data: &[u8],
+    meta: kernel_api::service::netdev::NetTxMeta,
+) -> bool {
     let resolved_if = if_id.or_else(primary_stack_glue_if);
-    let sent = device::transmit(if_id, data);
+    let sent = device::transmit_with_meta(if_id, data, meta);
 
     if sent {
         if let Some(if_id) = resolved_if {

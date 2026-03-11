@@ -180,7 +180,7 @@ impl NetworkStack {
 
                     let total_len = EthernetHeader::SIZE + ip_packet.total_len();
                     if let Some(ref transmit) = self.transmit_fn {
-                        transmit(None, &buffer[..total_len]);
+                        transmit(None, &buffer[..total_len], Default::default());
                         self.stats.record_tx(total_len);
                     }
                 }
@@ -341,7 +341,7 @@ impl NetworkStack {
                     let total_len = EthernetHeader::SIZE + ip_packet.total_len();
 
                     if let Some(ref transmit) = self.transmit_fn {
-                        transmit(None, &buffer[..total_len]);
+                        transmit(None, &buffer[..total_len], Default::default());
                         self.stats.record_tx(total_len);
                     }
                 }

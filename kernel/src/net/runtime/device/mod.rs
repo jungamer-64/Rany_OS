@@ -17,17 +17,68 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use kernel_api::resource::net::PacketRef;
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
-    NetLogLevel, NetPortKind, NetPortRuntime, NetPortStats, NetRxMeta, NetTxMeta,
+    NetLogLevel, NetPortKind, NetPortRuntime, NetPortStats, NetRxMeta, NetTxCompletionPolicy,
+    NetTxMeta,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
 const NET_DEVICE_EVENT_QUEUE_CAPACITY: usize = 256;
+
+type TxCompletionResult = Result<(), &'static str>;
+
+struct TxCompletionState {
+    result: PoisonLock<Option<TxCompletionResult>>,
+    waker: AtomicWaker,
+}
+
+impl TxCompletionState {
+    fn new() -> Self {
+        Self {
+            result: PoisonLock::new(None),
+            waker: AtomicWaker::new(),
+        }
+    }
+
+    fn complete(&self, result: TxCompletionResult) {
+        if let Ok(mut slot) = self.result.lock() {
+            *slot = Some(result);
+        }
+        self.waker.wake();
+    }
+}
+
+pub struct TxCompletionFuture {
+    state: Arc<TxCompletionState>,
+}
+
+impl Future for TxCompletionFuture {
+    type Output = TxCompletionResult;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Ok(mut slot) = self.state.result.lock() {
+            if let Some(result) = slot.take() {
+                return Poll::Ready(result);
+            }
+        }
+        self.state.waker.register(cx.waker());
+        if let Ok(mut slot) = self.state.result.lock() {
+            if let Some(result) = slot.take() {
+                return Poll::Ready(result);
+            }
+        }
+        Poll::Pending
+    }
+}
+
+static NEXT_TX_COMPLETION_ID: AtomicU64 = AtomicU64::new(1);
+static TX_COMPLETIONS: PoisonRwLock<BTreeMap<u64, Arc<TxCompletionState>>> =
+    PoisonRwLock::new(BTreeMap::new());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NetDeviceKey {
@@ -192,6 +243,29 @@ impl Future for NetEventWaitFuture<'_> {
         } else {
             Poll::Pending
         }
+    }
+}
+
+pub fn register_tx_completion() -> (u64, TxCompletionFuture) {
+    let completion_id = NEXT_TX_COMPLETION_ID.fetch_add(1, Ordering::Relaxed);
+    let state = Arc::new(TxCompletionState::new());
+    TX_COMPLETIONS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(completion_id, state.clone());
+    (completion_id, TxCompletionFuture { state })
+}
+
+pub fn complete_tx_request(completion_id: u64, result: TxCompletionResult) -> bool {
+    let state = TX_COMPLETIONS
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&completion_id);
+    if let Some(state) = state {
+        state.complete(result);
+        true
+    } else {
+        false
     }
 }
 
@@ -427,13 +501,22 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
                 return;
             }
 
+            let completion_id = request.meta.completion_id;
+            let completion_policy = request.meta.completion_policy;
             if let Err(err) = handle.driver.submit_tx(request.packet, request.meta) {
+                if let Some(completion_id) = completion_id {
+                    let _ = complete_tx_request(completion_id, Err(err));
+                }
                 log::warn!(
                     target: "net::device",
                     "device {:?} TX submission failed: {}",
                     handle.binding().key,
                     err
                 );
+            } else if completion_policy == NetTxCompletionPolicy::QueueAcceptance {
+                if let Some(completion_id) = completion_id {
+                    let _ = complete_tx_request(completion_id, Ok(()));
+                }
             }
             pending = handle.tx_queue.pop();
         }
@@ -708,7 +791,10 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
                 STACK_INITIALIZED.store(false, Ordering::Release);
                 return Err("network stack unavailable");
             };
-            stack.set_transmit_fn(crate::net::runtime::bridge::transmit_from_stack);
+            stack.set_transmit_fn_with_completion(
+                crate::net::runtime::bridge::transmit_from_stack,
+                true,
+            );
         }
         Err(_) => {
             STACK_INITIALIZED.store(false, Ordering::Release);
@@ -1021,29 +1107,61 @@ pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
 pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMeta) -> bool {
     let resolved_if = if_id.or_else(primary_if);
     let Some(handle) = resolved_if.and_then(lookup_port) else {
+        if let Some(completion_id) = meta.completion_id {
+            let _ = complete_tx_request(completion_id, Err("network interface unavailable"));
+        }
         return false;
     };
-    handle.enqueue_tx(packet, meta)
+    if handle.enqueue_tx(packet, meta) {
+        true
+    } else {
+        if let Some(completion_id) = meta.completion_id {
+            let _ = complete_tx_request(completion_id, Err("device TX queue full"));
+        }
+        false
+    }
 }
 
 pub fn transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    transmit_with_meta(if_id, data, NetTxMeta::default())
+}
+
+pub fn transmit_with_meta(if_id: Option<NetIfId>, data: &[u8], meta: NetTxMeta) -> bool {
     let resolved_if = if_id.or_else(primary_if);
     let Some(handle) = resolved_if.and_then(lookup_port) else {
+        if let Some(completion_id) = meta.completion_id {
+            let _ = complete_tx_request(completion_id, Err("network interface unavailable"));
+        }
         return false;
     };
 
     let mut packet = match handle.runtime.alloc_packet() {
         Some(packet) => packet,
-        None => return false,
+        None => {
+            if let Some(completion_id) = meta.completion_id {
+                let _ = complete_tx_request(completion_id, Err("TX packet allocation failed"));
+            }
+            return false;
+        }
     };
 
     if data.len() > packet.capacity() {
+        if let Some(completion_id) = meta.completion_id {
+            let _ = complete_tx_request(completion_id, Err("packet exceeds TX capacity"));
+        }
         return false;
     }
 
     packet.set_len(data.len());
     packet.data_mut()[..data.len()].copy_from_slice(data);
-    handle.enqueue_tx(packet, NetTxMeta::default())
+    if handle.enqueue_tx(packet, meta) {
+        true
+    } else {
+        if let Some(completion_id) = meta.completion_id {
+            let _ = complete_tx_request(completion_id, Err("device TX queue full"));
+        }
+        false
+    }
 }
 
 pub fn enqueue_event(key: NetDeviceKey, event: NetDriverEvent) -> bool {
@@ -1394,5 +1512,19 @@ mod tests {
 
         assert!(unregister_port(if_b));
         assert!(unregister_port(if_a));
+    }
+
+    #[test_case]
+    fn tx_completion_future_resolves_success() {
+        let (completion_id, future) = register_tx_completion();
+        assert!(complete_tx_request(completion_id, Ok(())));
+        assert_eq!(crate::task::block_on(future), Ok(()));
+    }
+
+    #[test_case]
+    fn tx_completion_future_resolves_error() {
+        let (completion_id, future) = register_tx_completion();
+        assert!(complete_tx_request(completion_id, Err("submit failed")));
+        assert_eq!(crate::task::block_on(future), Err("submit failed"));
     }
 }

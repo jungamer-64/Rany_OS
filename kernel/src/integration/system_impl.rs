@@ -91,7 +91,7 @@ impl SystemIntegration {
         } else {
             self.log("  Net Config: none");
         }
-        let stats = crate::net::api::config::list_interface_stats();
+        let stats = crate::net::api::config::list_interface_stats_sync();
         if !stats.is_empty() {
             let rx_packets = stats.iter().map(|s| s.rx_packets).sum::<u64>();
             let tx_packets = stats.iter().map(|s| s.tx_packets).sum::<u64>();

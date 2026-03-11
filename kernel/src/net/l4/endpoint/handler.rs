@@ -18,6 +18,7 @@ use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::runtime::manager::NetIfId;
+use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
 
 /// イベント処理の結果
 #[derive(Debug)]
@@ -68,6 +69,19 @@ fn endpoint_error_from_network(error: crate::net::types::NetworkError) -> Endpoi
         crate::net::types::NetworkError::NetworkUnreachable => EndpointError::NetworkUnreachable,
         _ => EndpointError::Internal,
     }
+}
+
+#[inline]
+fn finish_command<T>(
+    result_slot: alloc::sync::Arc<crate::sync::PoisonLock<Option<T>>>,
+    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    value: T,
+) -> EventHandleResult {
+    if let Ok(mut slot) = result_slot.lock() {
+        *slot = Some(value);
+    }
+    waker.wake();
+    EventHandleResult::Success
 }
 
 fn apply_tcp_checksum_for_addrs(
@@ -337,26 +351,130 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::AsyncGetLinkLocal { result_slot, waker } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(None);
-                }
-                waker.wake();
-                EventHandleResult::Success
+                finish_command(result_slot, waker, None)
             }
-            NetworkEvent::AsyncGetConfig { result_slot, waker } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(None);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::AsyncGetStats { result_slot, waker } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(None);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
+            NetworkEvent::AsyncGetPrimaryInterfaceConfig { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::primary_interface_config_snapshot_sync(),
+            ),
+            NetworkEvent::AsyncGetAggregateNetworkStats { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::aggregate_network_stats_snapshot_sync(),
+            ),
+            NetworkEvent::AsyncGetInterfaceConfig {
+                if_id,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::get_interface_config_from_runtime(NetIfId(if_id)),
+            ),
+            NetworkEvent::AsyncListInterfaceConfigs { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::list_interface_configs_from_runtime(),
+            ),
+            NetworkEvent::AsyncGetInterfaceStats {
+                if_id,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::get_interface_stats_without_stack(NetIfId(if_id)),
+            ),
+            NetworkEvent::AsyncListInterfaceStats { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::list_interface_stats_with_stack(None),
+            ),
+            NetworkEvent::AsyncListInterfaces { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::list_interfaces_from_runtime(),
+            ),
+            NetworkEvent::AsyncGetNetworkSnapshot { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::obs::snapshot(),
+            ),
+            NetworkEvent::AsyncGetNetworkRecentEvents {
+                limit,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::obs::snapshot()
+                    .recent_events
+                    .into_iter()
+                    .take(limit)
+                    .collect(),
+            ),
+            NetworkEvent::AsyncFirewallEnable { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_enable_sync(),
+            ),
+            NetworkEvent::AsyncFirewallDisable { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_disable_sync(),
+            ),
+            NetworkEvent::AsyncFirewallStatus { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_status_sync(),
+            ),
+            NetworkEvent::AsyncFirewallListRules { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_list_rules_sync(),
+            ),
+            NetworkEvent::AsyncFirewallStats { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_stats_sync(),
+            ),
+            NetworkEvent::AsyncFirewallAddRule {
+                rule,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::security::firewall::add_rule(rule).map_err(alloc::string::String::from),
+            ),
+            NetworkEvent::AsyncFirewallRemoveRule {
+                id,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::security::firewall::remove_rule(id)
+                    .map_err(alloc::string::String::from),
+            ),
+            NetworkEvent::AsyncFirewallClearRules { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::security::firewall::clear_rules()
+                    .map_err(alloc::string::String::from),
+            ),
+            NetworkEvent::AsyncFirewallSetDefaultPolicy {
+                direction,
+                action,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::security::firewall::set_default_policy(direction, action)
+                    .map_err(alloc::string::String::from),
+            ),
             NetworkEvent::AsyncGetArpCache { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Vec::new());
@@ -384,23 +502,24 @@ impl NetworkEventHandler {
             // ============================================================
             // DHCP/TCP 非同期クエリ: スタック不可時はデフォルト値で完了
             // ============================================================
-            NetworkEvent::AsyncGetDhcpState { result_slot, waker } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(crate::net::api::dhcp::DhcpRuntimeState {
-                        v4_state: alloc::string::String::from("Unavailable"),
-                        v4_assigned_ip: None,
-                        v4_lease_remaining: None,
-                        v4_last_declined: None,
-                        v4_last_released: None,
-                        v6_state: alloc::string::String::from("Unavailable"),
-                        v6_assigned_ip: None,
-                        v6_preferred_remaining: None,
-                        v6_valid_remaining: None,
-                    });
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
+            NetworkEvent::AsyncGetDhcpState {
+                if_id,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                if let Some(if_id) = if_id {
+                    crate::net::api::dhcp::get_dhcp_state_sync(NetIfId(if_id))
+                } else {
+                    crate::net::api::dhcp::dhcp_state_sync()
+                },
+            ),
+            NetworkEvent::AsyncListDhcpStates { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::dhcp::list_dhcp_states_sync(),
+            ),
             NetworkEvent::AsyncDhcpRenew { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Err(alloc::string::String::from("Stack unavailable")));
@@ -439,6 +558,66 @@ impl NetworkEventHandler {
             NetworkEvent::AsyncGetTcpConnections { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Vec::new());
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
+            NetworkEvent::RawUdpSend {
+                completion_id,
+                result_slot,
+                waker,
+                ..
+            }
+            | NetworkEvent::RawTcpSend {
+                completion_id,
+                result_slot,
+                waker,
+                ..
+            }
+            | NetworkEvent::RawUdpV6Send {
+                completion_id,
+                result_slot,
+                waker,
+                ..
+            }
+            | NetworkEvent::RawTcpV6Send {
+                completion_id,
+                result_slot,
+                waker,
+                ..
+            }
+            | NetworkEvent::RawUdpSendOn {
+                completion_id,
+                result_slot,
+                waker,
+                ..
+            }
+            | NetworkEvent::RawTcpSendOn {
+                completion_id,
+                result_slot,
+                waker,
+                ..
+            }
+            | NetworkEvent::RawUdpV6SendOn {
+                completion_id,
+                result_slot,
+                waker,
+                ..
+            }
+            | NetworkEvent::RawTcpV6SendOn {
+                completion_id,
+                result_slot,
+                waker,
+                ..
+            } => {
+                if let Some(completion_id) = completion_id {
+                    let _ = crate::net::runtime::device::complete_tx_request(
+                        completion_id,
+                        Err("network stack unavailable"),
+                    );
+                }
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(EndpointError::ResourceExhausted));
                 }
                 waker.wake();
                 EventHandleResult::Success
@@ -760,36 +939,99 @@ impl NetworkEventHandler {
                 dst_port,
                 data,
                 ttl,
+                completion_id,
+                result_slot,
+                waker,
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let sent = match src_ip {
-                    Some(ip) => stack.send_udp_raw_with_src_ttl(
-                        crate::net::l3::ipv4::Ipv4Address::new(ip),
-                        src_port,
-                        dst,
-                        dst_port,
-                        &data,
-                        ttl,
-                    ),
-                    None => stack.send_udp_raw_auto_ttl(src_port, dst, dst_port, &data, ttl),
+                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
+                    completion_id: Some(completion_id),
+                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+                    ..NetTxMeta::default()
+                });
+                let sent = match tx_meta {
+                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
+                        Some(ip) => stack.send_udp_raw_with_src_ttl(
+                            crate::net::l3::ipv4::Ipv4Address::new(ip),
+                            src_port,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
+                        ),
+                        None => stack.send_udp_raw_auto_ttl(src_port, dst, dst_port, &data, ttl),
+                    }),
+                    None => match src_ip {
+                        Some(ip) => stack.send_udp_raw_with_src_ttl(
+                            crate::net::l3::ipv4::Ipv4Address::new(ip),
+                            src_port,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
+                        ),
+                        None => stack.send_udp_raw_auto_ttl(src_port, dst, dst_port, &data, ttl),
+                    },
                 };
-                if sent {
-                    EventHandleResult::Success
+                let result = if sent {
+                    Ok(())
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
+                    if let Some(completion_id) = completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Err("raw UDP send failed"),
+                        );
+                    }
+                    Err(EndpointError::NetworkUnreachable)
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                waker.wake();
+                match result {
+                    Ok(()) => EventHandleResult::Success,
+                    Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
             NetworkEvent::RawTcpSend {
                 src_ip,
                 dst_ip,
                 segment,
+                completion_id,
+                result_slot,
+                waker,
             } => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                if stack.send_tcp(src, dst, &segment) {
-                    EventHandleResult::Success
+                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
+                    completion_id: Some(completion_id),
+                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+                    ..NetTxMeta::default()
+                });
+                let sent = match tx_meta {
+                    Some(meta) => {
+                        stack.with_pending_tx_meta(meta, |stack| stack.send_tcp(src, dst, &segment))
+                    }
+                    None => stack.send_tcp(src, dst, &segment),
+                };
+                let result = if sent {
+                    Ok(())
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    if let Some(completion_id) = completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Err("raw TCP send failed"),
+                        );
+                    }
+                    Err(EndpointError::ResourceExhausted)
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                waker.wake();
+                match result {
+                    Ok(()) => EventHandleResult::Success,
+                    Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
             NetworkEvent::RawUdpV6Send {
@@ -799,26 +1041,82 @@ impl NetworkEventHandler {
                 dst_port,
                 data,
                 ttl,
+                completion_id,
+                result_slot,
+                waker,
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                if stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl) {
-                    EventHandleResult::Success
+                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
+                    completion_id: Some(completion_id),
+                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+                    ..NetTxMeta::default()
+                });
+                let sent = match tx_meta {
+                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
+                        stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl)
+                    }),
+                    None => stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl),
+                };
+                let result = if sent {
+                    Ok(())
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    if let Some(completion_id) = completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Err("raw UDPv6 send failed"),
+                        );
+                    }
+                    Err(EndpointError::ResourceExhausted)
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                waker.wake();
+                match result {
+                    Ok(()) => EventHandleResult::Success,
+                    Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
             NetworkEvent::RawTcpV6Send {
                 src_ip,
                 dst_ip,
                 segment,
+                completion_id,
+                result_slot,
+                waker,
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                if stack.send_tcp_v6_raw(src, dst, &segment) {
-                    EventHandleResult::Success
+                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
+                    completion_id: Some(completion_id),
+                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+                    ..NetTxMeta::default()
+                });
+                let sent = match tx_meta {
+                    Some(meta) => {
+                        stack.with_pending_tx_meta(meta, |stack| stack.send_tcp_v6_raw(src, dst, &segment))
+                    }
+                    None => stack.send_tcp_v6_raw(src, dst, &segment),
+                };
+                let result = if sent {
+                    Ok(())
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    if let Some(completion_id) = completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Err("raw TCPv6 send failed"),
+                        );
+                    }
+                    Err(EndpointError::ResourceExhausted)
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                waker.wake();
+                match result {
+                    Ok(()) => EventHandleResult::Success,
+                    Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
             NetworkEvent::IcmpEchoRequest { target, sequence } => {
@@ -1099,32 +1397,75 @@ impl NetworkEventHandler {
                 dst_port,
                 data,
                 ttl,
+                completion_id,
+                result_slot,
+                waker,
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let sent = match src_ip {
-                    Some(src_ip) => stack.send_udp_raw_on_with_src_ttl(
-                        net_if,
-                        crate::net::l3::ipv4::Ipv4Address::new(src_ip),
-                        src_port,
-                        dst,
-                        dst_port,
-                        &data,
-                        ttl,
-                    ),
-                    None => stack.send_udp_raw_on_auto_ttl(
-                        net_if,
-                        src_port,
-                        dst,
-                        dst_port,
-                        &data,
-                        ttl,
-                    ),
+                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
+                    completion_id: Some(completion_id),
+                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+                    ..NetTxMeta::default()
+                });
+                let sent = match tx_meta {
+                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
+                        Some(src_ip) => stack.send_udp_raw_on_with_src_ttl(
+                            net_if,
+                            crate::net::l3::ipv4::Ipv4Address::new(src_ip),
+                            src_port,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
+                        ),
+                        None => stack.send_udp_raw_on_auto_ttl(
+                            net_if,
+                            src_port,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
+                        ),
+                    }),
+                    None => match src_ip {
+                        Some(src_ip) => stack.send_udp_raw_on_with_src_ttl(
+                            net_if,
+                            crate::net::l3::ipv4::Ipv4Address::new(src_ip),
+                            src_port,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
+                        ),
+                        None => stack.send_udp_raw_on_auto_ttl(
+                            net_if,
+                            src_port,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
+                        ),
+                    },
                 };
-                if sent {
-                    EventHandleResult::Success
+                let result = if sent {
+                    Ok(())
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
+                    if let Some(completion_id) = completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Err("scoped raw UDP send failed"),
+                        );
+                    }
+                    Err(EndpointError::NetworkUnreachable)
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                waker.wake();
+                match result {
+                    Ok(()) => EventHandleResult::Success,
+                    Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
             NetworkEvent::RawTcpSendOn {
@@ -1132,14 +1473,42 @@ impl NetworkEventHandler {
                 src_ip,
                 dst_ip,
                 segment,
+                completion_id,
+                result_slot,
+                waker,
             } => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                if stack.send_tcp_on(net_if, src, dst, &segment) {
-                    EventHandleResult::Success
+                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
+                    completion_id: Some(completion_id),
+                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+                    ..NetTxMeta::default()
+                });
+                let sent = match tx_meta {
+                    Some(meta) => {
+                        stack.with_pending_tx_meta(meta, |stack| stack.send_tcp_on(net_if, src, dst, &segment))
+                    }
+                    None => stack.send_tcp_on(net_if, src, dst, &segment),
+                };
+                let result = if sent {
+                    Ok(())
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
+                    if let Some(completion_id) = completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Err("scoped raw TCP send failed"),
+                        );
+                    }
+                    Err(EndpointError::NetworkUnreachable)
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                waker.wake();
+                match result {
+                    Ok(()) => EventHandleResult::Success,
+                    Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
             NetworkEvent::RawUdpV6SendOn {
@@ -1150,16 +1519,42 @@ impl NetworkEventHandler {
                 dst_port,
                 data,
                 ttl,
+                completion_id,
+                result_slot,
+                waker,
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                if stack
-                    .send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl)
-                {
-                    EventHandleResult::Success
+                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
+                    completion_id: Some(completion_id),
+                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+                    ..NetTxMeta::default()
+                });
+                let sent = match tx_meta {
+                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
+                        stack.send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl)
+                    }),
+                    None => stack.send_udp_v6_raw_on_with_ttl(net_if, src_port, src, dst, dst_port, &data, ttl),
+                };
+                let result = if sent {
+                    Ok(())
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+                    if let Some(completion_id) = completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Err("scoped raw UDPv6 send failed"),
+                        );
+                    }
+                    Err(EndpointError::ResourceExhausted)
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                waker.wake();
+                match result {
+                    Ok(()) => EventHandleResult::Success,
+                    Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
             NetworkEvent::RawTcpV6SendOn {
@@ -1167,14 +1562,42 @@ impl NetworkEventHandler {
                 src_ip,
                 dst_ip,
                 segment,
+                completion_id,
+                result_slot,
+                waker,
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                if stack.send_tcp_v6_raw_on(net_if, src, dst, &segment) {
-                    EventHandleResult::Success
+                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
+                    completion_id: Some(completion_id),
+                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+                    ..NetTxMeta::default()
+                });
+                let sent = match tx_meta {
+                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
+                        stack.send_tcp_v6_raw_on(net_if, src, dst, &segment)
+                    }),
+                    None => stack.send_tcp_v6_raw_on(net_if, src, dst, &segment),
+                };
+                let result = if sent {
+                    Ok(())
                 } else {
-                    EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
+                    if let Some(completion_id) = completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Err("scoped raw TCPv6 send failed"),
+                        );
+                    }
+                    Err(EndpointError::NetworkUnreachable)
+                };
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result.clone());
+                }
+                waker.wake();
+                match result {
+                    Ok(()) => EventHandleResult::Success,
+                    Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
 
@@ -1328,42 +1751,142 @@ impl NetworkEventHandler {
             }
             NetworkEvent::AsyncGetLinkLocal { result_slot, waker } => {
                 let result = stack.config().ipv6.map(|c| c.link_local.octets());
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
+                finish_command(result_slot, waker, result)
             }
-            NetworkEvent::AsyncGetConfig { result_slot, waker } => {
-                let cfg = stack.config();
-                let result = Some(crate::net::api::config::NetworkConfigSnapshot {
-                    ip: *cfg.ipv4.address.as_bytes(),
-                    netmask: *cfg.ipv4.subnet_mask.as_bytes(),
-                    gateway: *cfg.ipv4.gateway.as_bytes(),
-                    mac: *cfg.mac.as_bytes(),
-                });
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            NetworkEvent::AsyncGetPrimaryInterfaceConfig { result_slot, waker } => {
+                let result = crate::net::api::config::primary_interface_id()
+                    .and_then(|if_id| crate::net::api::config::get_interface_config_from_runtime(if_id))
+                    .map(|cfg| crate::net::api::config::NetworkConfigSnapshot {
+                        ip: cfg.ip,
+                        netmask: cfg.netmask,
+                        gateway: cfg.gateway,
+                        mac: cfg.mac,
+                    });
+                finish_command(result_slot, waker, result)
             }
-            NetworkEvent::AsyncGetStats { result_slot, waker } => {
-                let stats = stack.stats();
-                let result = Some(crate::net::api::config::NetworkStatsSnapshot {
-                    rx_packets: stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed),
-                    tx_packets: stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed),
-                    rx_bytes: stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed),
-                    tx_bytes: stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed),
-                    rx_errors: stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed),
-                    rx_dropped: stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed),
-                });
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            NetworkEvent::AsyncGetAggregateNetworkStats { result_slot, waker } => {
+                let stats = crate::net::api::config::list_interface_stats_with_stack(Some(stack));
+                finish_command(
+                    result_slot,
+                    waker,
+                    crate::net::api::config::aggregate_network_stats_from_list(&stats),
+                )
             }
+            NetworkEvent::AsyncGetInterfaceConfig {
+                if_id,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::get_interface_config_from_runtime(NetIfId(if_id)),
+            ),
+            NetworkEvent::AsyncListInterfaceConfigs { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::list_interface_configs_from_runtime(),
+            ),
+            NetworkEvent::AsyncGetInterfaceStats {
+                if_id,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::interface_stats_snapshot_with_stack(
+                    NetIfId(if_id),
+                    Some(stack),
+                ),
+            ),
+            NetworkEvent::AsyncListInterfaceStats { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::list_interface_stats_with_stack(Some(stack)),
+            ),
+            NetworkEvent::AsyncListInterfaces { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::config::list_interfaces_from_runtime(),
+            ),
+            NetworkEvent::AsyncGetNetworkSnapshot { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::obs::snapshot(),
+            ),
+            NetworkEvent::AsyncGetNetworkRecentEvents {
+                limit,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::obs::snapshot()
+                    .recent_events
+                    .into_iter()
+                    .take(limit)
+                    .collect(),
+            ),
+            NetworkEvent::AsyncFirewallEnable { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_enable_sync(),
+            ),
+            NetworkEvent::AsyncFirewallDisable { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_disable_sync(),
+            ),
+            NetworkEvent::AsyncFirewallStatus { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_status_sync(),
+            ),
+            NetworkEvent::AsyncFirewallListRules { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_list_rules_sync(),
+            ),
+            NetworkEvent::AsyncFirewallStats { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::firewall::firewall_stats_sync(),
+            ),
+            NetworkEvent::AsyncFirewallAddRule {
+                rule,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::security::firewall::add_rule(rule).map_err(alloc::string::String::from),
+            ),
+            NetworkEvent::AsyncFirewallRemoveRule {
+                id,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::security::firewall::remove_rule(id)
+                    .map_err(alloc::string::String::from),
+            ),
+            NetworkEvent::AsyncFirewallClearRules { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::security::firewall::clear_rules()
+                    .map_err(alloc::string::String::from),
+            ),
+            NetworkEvent::AsyncFirewallSetDefaultPolicy {
+                direction,
+                action,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                crate::net::security::firewall::set_default_policy(direction, action)
+                    .map_err(alloc::string::String::from),
+            ),
             NetworkEvent::AsyncGetArpCache { result_slot, waker } => {
                 let entries: Vec<_> = stack
                     .arp_cache()
@@ -1374,11 +1897,7 @@ impl NetworkEventHandler {
                         complete: true,
                     })
                     .collect();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(entries);
-                }
-                waker.wake();
-                EventHandleResult::Success
+                finish_command(result_slot, waker, entries)
             }
             NetworkEvent::AsyncArpInsert { ip, mac } => {
                 let now = crate::time::get_uptime_ms();
@@ -1406,90 +1925,24 @@ impl NetworkEventHandler {
             // ============================================================
             // 非同期DHCP/TCP クエリ（スタックロック保持中に処理）
             // ============================================================
-            NetworkEvent::AsyncGetDhcpState { result_slot, waker } => {
-                use crate::net::services::dhcp;
-
-                let now = tcb_table().get_current_tick();
-                let tick_rate = 1000u64;
-
-                let mut out = crate::net::api::dhcp::DhcpRuntimeState {
-                    v4_state: alloc::string::String::from("Init"),
-                    v4_assigned_ip: None,
-                    v4_lease_remaining: None,
-                    v4_last_declined: None,
-                    v4_last_released: None,
-                    v6_state: alloc::string::String::from("Init"),
-                    v6_assigned_ip: None,
-                    v6_preferred_remaining: None,
-                    v6_valid_remaining: None,
-                };
-
-                if let Some(client) = dhcp::primary_v4_client() {
-                    out.v4_state = alloc::string::String::from(
-                        crate::net::api::dhcp::dhcp_v4_state_name(client.state()),
-                    );
-                    if let Some(lease) = client.lease() {
-                        out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
-                        out.v4_lease_remaining = Some(crate::net::api::dhcp::lease_remaining_secs(
-                            lease.lease_time,
-                            lease.obtained_at,
-                            now,
-                            tick_rate,
-                        ));
-                    }
-                    out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
-                    out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
-                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
-                    if let Some(ref client) = *guard {
-                        out.v4_state = alloc::string::String::from(
-                            crate::net::api::dhcp::dhcp_v4_state_name(client.state()),
-                        );
-                        if let Some(lease) = client.lease() {
-                            out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
-                            out.v4_lease_remaining =
-                                Some(crate::net::api::dhcp::lease_remaining_secs(
-                                    lease.lease_time,
-                                    lease.obtained_at,
-                                    now,
-                                    tick_rate,
-                                ));
-                        }
-                        out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
-                        out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
-                    }
-                }
-
-                if let Ok(guard6) = dhcp::DHCPV6_CLIENT.lock() {
-                    if let Some(ref client6) = *guard6 {
-                        out.v6_state = alloc::string::String::from(
-                            crate::net::api::dhcp::dhcp_v6_state_name(client6.state()),
-                        );
-                        if let Some(lease6) = client6.lease() {
-                            out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
-                            out.v6_preferred_remaining =
-                                Some(crate::net::api::dhcp::lease_remaining_secs(
-                                    lease6.preferred_lifetime,
-                                    lease6.obtained_at,
-                                    now,
-                                    tick_rate,
-                                ));
-                            out.v6_valid_remaining =
-                                Some(crate::net::api::dhcp::lease_remaining_secs(
-                                    lease6.valid_lifetime,
-                                    lease6.obtained_at,
-                                    now,
-                                    tick_rate,
-                                ));
-                        }
-                    }
-                }
-
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(out);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
+            NetworkEvent::AsyncGetDhcpState {
+                if_id,
+                result_slot,
+                waker,
+            } => finish_command(
+                result_slot,
+                waker,
+                if let Some(if_id) = if_id {
+                    crate::net::api::dhcp::get_dhcp_state_sync(NetIfId(if_id))
+                } else {
+                    crate::net::api::dhcp::dhcp_state_sync()
+                },
+            ),
+            NetworkEvent::AsyncListDhcpStates { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::api::dhcp::list_dhcp_states_sync(),
+            ),
             NetworkEvent::AsyncDhcpRenew { result_slot, waker } => {
                 use crate::net::services::dhcp;
 

@@ -48,6 +48,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use kernel_api::service::netdev::NetTxMeta;
 mod core_impl;
 pub use core_impl::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -171,7 +172,7 @@ impl NetworkStats {
 /// The callback should return `true` if the packet was successfully queued
 /// for transmission; `false` indicates failure and will usually result in the
 /// stack dropping the packet and recording an error statistic.
-pub type TransmitFn = fn(Option<NetIfId>, &[u8]) -> bool;
+pub type TransmitFn = fn(Option<NetIfId>, &[u8], NetTxMeta) -> bool;
 
 // ICMP Redirect Cache Entry (map-backed)
 //
@@ -283,6 +284,10 @@ pub struct NetworkStack {
     pub timeout_wheel: TimeoutWheel,
     /// Transmit callback
     pub transmit_fn: Option<TransmitFn>,
+    /// Whether the active transmit callback resolves raw-send completions on device TX completion.
+    pub transmit_awaits_device_completion: bool,
+    /// One-shot TX metadata applied to the next frame emitted by raw/global commands.
+    pub pending_tx_meta: Option<NetTxMeta>,
     /// Current timestamp (ticks)
     pub current_time: AtomicU64,
     /// ICMP Redirect cache

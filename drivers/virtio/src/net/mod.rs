@@ -28,6 +28,7 @@ pub struct TxInflight {
     pub bounce_buffer: Option<DmaSlice<CpuOwned>>,
     pub iommu_iova: Option<u64>,
     pub iommu_map_len: u64,
+    pub completion_id: Option<u64>,
 }
 
 /// Runtime DMA allocation purpose for virtio-net queue and bounce memory.

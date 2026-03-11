@@ -3,6 +3,67 @@ use super::*;
 /// Global network stack instance
 pub(crate) static NETWORK_STACK: PoisonLock<Option<NetworkStack>> = PoisonLock::new(None);
 
+pub(crate) struct CommandFuture<T> {
+    result_slot: alloc::sync::Arc<PoisonLock<Option<T>>>,
+    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+}
+
+impl<T> core::future::Future for CommandFuture<T> {
+    type Output = T;
+
+    fn poll(
+        self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        if let Ok(mut slot) = this.result_slot.lock() {
+            if let Some(result) = slot.take() {
+                return core::task::Poll::Ready(result);
+            }
+        }
+        this.waker.register(cx.waker());
+        if let Ok(mut slot) = this.result_slot.lock() {
+            if let Some(result) = slot.take() {
+                return core::task::Poll::Ready(result);
+            }
+        }
+        core::task::Poll::Pending
+    }
+}
+
+pub(crate) fn new_command_channel<T>() -> (
+    alloc::sync::Arc<PoisonLock<Option<T>>>,
+    alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    CommandFuture<T>,
+) {
+    let result_slot = alloc::sync::Arc::new(PoisonLock::new(None));
+    let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
+    let future = CommandFuture {
+        result_slot: result_slot.clone(),
+        waker: waker.clone(),
+    };
+    (result_slot, waker, future)
+}
+
+pub(crate) fn new_detached_command_channel<T>() -> (
+    alloc::sync::Arc<PoisonLock<Option<T>>>,
+    alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+) {
+    let (result_slot, waker, _future) = new_command_channel();
+    (result_slot, waker)
+}
+
+pub(crate) fn pump_network_events_if_needed() {
+    if crate::net::l4::endpoint::event::event_task_running() {
+        return;
+    }
+
+    let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
+    while let Some(event) = crate::net::l4::endpoint::event::event_queue().recv() {
+        let _ = handler.handle_event(event);
+    }
+}
+
 /// Initialize the global network stack
 pub fn init(config: NetworkConfig) {
     // Initialization-time best-effort recovery: use helper
@@ -74,8 +135,38 @@ pub fn receive_batch_on(if_id: Option<super::NetIfId>, batch: PacketBatch) {
 ///
 /// イベントキュー経由で非同期に送信する。NETWORK_STACKロックを取得しないため、
 /// あらゆるコンテキストから安全に呼び出せる。
-pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
-    send_udp_async(src_port, dst_ip, dst_port, data, 64)
+pub async fn send_udp(
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    data: &[u8],
+) -> Result<(), crate::net::l4::endpoint::types::EndpointError> {
+    let (completion_id, completion_future) = crate::net::runtime::device::register_tx_completion();
+    let (result_slot, waker, command_future) = new_command_channel();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
+        src_port,
+        src_ip: None,
+        dst_ip: *dst_ip.as_bytes(),
+        dst_port,
+        data: Vec::from(data),
+        ttl: 64,
+        completion_id: Some(completion_id),
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        let _ = crate::net::runtime::device::complete_tx_request(
+            completion_id,
+            Err("network event queue full"),
+        );
+        return Err(crate::net::l4::endpoint::types::EndpointError::ResourceExhausted);
+    }
+
+    pump_network_events_if_needed();
+    command_future.await?;
+    completion_future
+        .await
+        .map_err(|_| crate::net::l4::endpoint::types::EndpointError::ResourceExhausted)
 }
 
 /// Send a UDP datagram via the async event queue (non-blocking).
@@ -115,6 +206,7 @@ pub fn send_udp_scoped_async(
     if let Some(if_id) = scope.as_if_id() {
         return send_udp_on_async_with_ttl(if_id, src_port, dst_ip, dst_port, data, ttl);
     }
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
             src_port,
@@ -123,6 +215,9 @@ pub fn send_udp_scoped_async(
             dst_port,
             data: Vec::from(data),
             ttl,
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -164,6 +259,7 @@ pub fn send_udp_scoped_async_with_src(
     if let Some(if_id) = scope.as_if_id() {
         return send_udp_on_async_with_src(if_id, src_ip, src_port, dst_ip, dst_port, data, ttl);
     }
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
             src_port,
@@ -172,6 +268,9 @@ pub fn send_udp_scoped_async_with_src(
             dst_port,
             data: Vec::from(data),
             ttl,
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -210,6 +309,7 @@ pub fn send_udp_v6_scoped_async(
     if let Some(if_id) = scope.as_if_id() {
         return send_udp_v6_on_async(if_id, src_port, src_ip, dst_ip, dst_port, data, ttl);
     }
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpV6Send {
             src_port,
@@ -218,6 +318,9 @@ pub fn send_udp_v6_scoped_async(
             dst_port,
             data: Vec::from(data),
             ttl,
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -226,17 +329,47 @@ pub fn send_udp_v6_scoped_async(
 /// Send a TCP segment (IPv4, async, event-queue based)
 ///
 /// イベントキュー経由で非同期に送信する。NETWORK_STACKロックを取得しない。
-pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
-    send_tcp_async(src_ip, dst_ip, tcp_segment)
+pub async fn send_tcp(
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    tcp_segment: &[u8],
+) -> Result<(), crate::net::l4::endpoint::types::EndpointError> {
+    let (completion_id, completion_future) = crate::net::runtime::device::register_tx_completion();
+    let (result_slot, waker, command_future) = new_command_channel();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::RawTcpSend {
+        src_ip: *src_ip.as_bytes(),
+        dst_ip: *dst_ip.as_bytes(),
+        segment: Vec::from(tcp_segment),
+        completion_id: Some(completion_id),
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        let _ = crate::net::runtime::device::complete_tx_request(
+            completion_id,
+            Err("network event queue full"),
+        );
+        return Err(crate::net::l4::endpoint::types::EndpointError::ResourceExhausted);
+    }
+
+    pump_network_events_if_needed();
+    command_future.await?;
+    completion_future
+        .await
+        .map_err(|_| crate::net::l4::endpoint::types::EndpointError::ResourceExhausted)
 }
 
 /// Send a TCP segment (IPv4) via the async event queue (non-blocking).
 pub fn send_tcp_async(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawTcpSend {
             src_ip: *src_ip.as_bytes(),
             dst_ip: *dst_ip.as_bytes(),
             segment: Vec::from(tcp_segment),
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -248,11 +381,15 @@ pub fn send_tcp_v6_async(
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     tcp_segment: &[u8],
 ) -> bool {
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawTcpV6Send {
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
             segment: Vec::from(tcp_segment),
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -262,25 +399,16 @@ pub fn send_tcp_v6_async(
 ///
 /// イベントキュー経由でbindを実行する。NETWORK_STACKロックを取得しない。
 /// スタック初期化前は失敗を返す。
-pub fn bind_udp(port: u16) -> Option<UdpEndpoint> {
-    bind_udp_scoped(crate::net::types::InterfaceScope::Any, port)
+pub async fn bind_udp(port: u16) -> Option<UdpEndpoint> {
+    bind_udp_scoped(crate::net::types::InterfaceScope::Any, port).await
 }
 
 /// Bind a UDP socket to an explicit interface scope.
-pub fn bind_udp_scoped(scope: crate::net::types::InterfaceScope, port: u16) -> Option<UdpEndpoint> {
-    // イベントキュー経由の非同期bind
-    // 同期コンテキストからは直接Futureをawaitできないため、
-    // スタックが初期化済みならエンドポイントを作成してイベントキュー経由でbindする
-    let endpoint = UdpEndpoint::new_with_scope(port, scope);
-    crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
-            port,
-            scope,
-            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-    Some(endpoint)
+pub async fn bind_udp_scoped(
+    scope: crate::net::types::InterfaceScope,
+    port: u16,
+) -> Option<UdpEndpoint> {
+    bind_udp_endpoint_scoped_async(scope, port).await
 }
 
 /// Process retransmission timeouts (async, event-queue based)
@@ -318,26 +446,17 @@ pub async fn async_timeout_task() {
 }
 
 /// Bind a UDP socket with an optional capability token (async, event-queue based)
-pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
-    bind_udp_with_token_scoped(crate::net::types::InterfaceScope::Any, port, token)
+pub async fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
+    bind_udp_with_token_scoped(crate::net::types::InterfaceScope::Any, port, token).await
 }
 
 /// Bind a UDP socket with a token and explicit interface scope.
-pub fn bind_udp_with_token_scoped(
+pub async fn bind_udp_with_token_scoped(
     scope: crate::net::types::InterfaceScope,
     port: u16,
     token: Option<u64>,
 ) -> Option<UdpEndpoint> {
-    let endpoint = UdpEndpoint::new_with_token_and_scope(port, token, scope);
-    crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncUdpBind {
-            port,
-            scope,
-            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-    Some(endpoint)
+    bind_udp_endpoint_with_token_scoped_async(scope, port, token).await
 }
 
 /// Apply IPv6 global address obtained via DHCPv6 (async, event-queue based)
@@ -352,20 +471,13 @@ pub fn apply_ipv6_global_address(addr: crate::net::l3::ipv6::Ipv6Address) {
 }
 
 /// Unbind a UDP socket (async, event-queue based)
-pub fn unbind_udp(port: u16) {
-    unbind_udp_scoped(crate::net::types::InterfaceScope::Any, port);
+pub async fn unbind_udp(port: u16) -> bool {
+    unbind_udp_scoped(crate::net::types::InterfaceScope::Any, port).await
 }
 
 /// Unbind a UDP socket from an explicit interface scope.
-pub fn unbind_udp_scoped(scope: crate::net::types::InterfaceScope, port: u16) {
-    crate::net::l4::endpoint::event::send_event_ignore(
-        crate::net::l4::endpoint::event::NetworkEvent::AsyncUnbindUdp {
-            port,
-            scope,
-            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
+pub async fn unbind_udp_scoped(scope: crate::net::types::InterfaceScope, port: u16) -> bool {
+    unbind_udp_scoped_async(scope, port).await
 }
 
 /// Unbind a TCP connection (async, event-queue based)
@@ -537,6 +649,12 @@ impl core::future::Future for UdpBindFuture {
                 return core::task::Poll::Ready(false);
             }
             self.sent = true;
+            pump_network_events_if_needed();
+            if let Ok(slot) = self.result_slot.lock() {
+                if let Some(result) = *slot {
+                    return core::task::Poll::Ready(result);
+                }
+            }
             return core::task::Poll::Pending;
         }
 
@@ -845,6 +963,12 @@ impl core::future::Future for UdpBindEndpointFuture {
                 return core::task::Poll::Ready(None);
             }
             self.sent = true;
+            pump_network_events_if_needed();
+            if let Ok(mut slot) = self.result_slot.lock() {
+                if let Some(result) = slot.take() {
+                    return core::task::Poll::Ready(result);
+                }
+            }
             return core::task::Poll::Pending;
         }
 
@@ -911,6 +1035,12 @@ impl core::future::Future for UdpBindEndpointWithTokenFuture {
                 return core::task::Poll::Ready(None);
             }
             self.sent = true;
+            pump_network_events_if_needed();
+            if let Ok(mut slot) = self.result_slot.lock() {
+                if let Some(result) = slot.take() {
+                    return core::task::Poll::Ready(result);
+                }
+            }
             return core::task::Poll::Pending;
         }
 
@@ -982,6 +1112,12 @@ impl core::future::Future for MulticastJoinFuture {
                 return core::task::Poll::Ready(false);
             }
             self.sent = true;
+            pump_network_events_if_needed();
+            if let Ok(slot) = self.result_slot.lock() {
+                if let Some(result) = *slot {
+                    return core::task::Poll::Ready(result);
+                }
+            }
             return core::task::Poll::Pending;
         }
 
@@ -1474,6 +1610,7 @@ pub fn send_udp_on_async_with_ttl(
     data: &[u8],
     ttl: u8,
 ) -> bool {
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSendOn {
             if_id: if_id.0,
@@ -1483,6 +1620,9 @@ pub fn send_udp_on_async_with_ttl(
             dst_port,
             data: Vec::from(data),
             ttl,
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -1497,6 +1637,7 @@ pub fn send_udp_on_async_with_src(
     data: &[u8],
     ttl: u8,
 ) -> bool {
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpSendOn {
             if_id: if_id.0,
@@ -1506,6 +1647,9 @@ pub fn send_udp_on_async_with_src(
             dst_port,
             data: Vec::from(data),
             ttl,
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -1518,12 +1662,16 @@ pub fn send_tcp_on_async(
     dst_ip: Ipv4Address,
     tcp_segment: &[u8],
 ) -> bool {
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawTcpSendOn {
             if_id: _if_id.0,
             src_ip: *src_ip.as_bytes(),
             dst_ip: *dst_ip.as_bytes(),
             segment: Vec::from(tcp_segment),
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -1539,6 +1687,7 @@ pub fn send_udp_v6_on_async(
     data: &[u8],
     ttl: u8,
 ) -> bool {
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawUdpV6SendOn {
             if_id: if_id.0,
@@ -1548,6 +1697,9 @@ pub fn send_udp_v6_on_async(
             dst_port,
             data: Vec::from(data),
             ttl,
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true
@@ -1560,12 +1712,16 @@ pub fn send_tcp_v6_on_async(
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     tcp_segment: &[u8],
 ) -> bool {
+    let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::send_event_ignore(
         crate::net::l4::endpoint::event::NetworkEvent::RawTcpV6SendOn {
             if_id: if_id.0,
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
             segment: Vec::from(tcp_segment),
+            completion_id: None,
+            result_slot,
+            waker,
         },
     );
     true

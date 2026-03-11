@@ -202,6 +202,8 @@ impl NetworkStack {
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
             config,
             transmit_fn: None,
+            transmit_awaits_device_completion: false,
+            pending_tx_meta: None,
             current_time: AtomicU64::new(0),
             redirect_cache: RedirectCache::new(),
             ndp_pending_queue: NdpPendingQueue::new(),
@@ -226,7 +228,16 @@ impl NetworkStack {
 
     /// Set transmit callback
     pub fn set_transmit_fn(&mut self, f: TransmitFn) {
+        self.set_transmit_fn_with_completion(f, false);
+    }
+
+    pub fn set_transmit_fn_with_completion(
+        &mut self,
+        f: TransmitFn,
+        waits_for_device_completion: bool,
+    ) {
         self.transmit_fn = Some(f);
+        self.transmit_awaits_device_completion = waits_for_device_completion;
     }
 
     /// Register or refresh per-interface state.
@@ -270,9 +281,32 @@ impl NetworkStack {
         self.interfaces.get(&if_id).map(|state| &state.stats)
     }
 
+    pub fn with_pending_tx_meta<R>(
+        &mut self,
+        meta: kernel_api::service::netdev::NetTxMeta,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.pending_tx_meta.replace(meta);
+        let result = f(self);
+        self.pending_tx_meta = previous;
+        result
+    }
+
     pub fn transmit_on(&self, if_id: Option<NetIfId>, data: &[u8]) -> bool {
         if let Some(f) = self.transmit_fn {
-            if f(if_id, data) {
+            let meta = self.pending_tx_meta.unwrap_or_default();
+            if f(if_id, data, meta) {
+                if !self.transmit_awaits_device_completion
+                    && meta.completion_policy
+                        == kernel_api::service::netdev::NetTxCompletionPolicy::DeviceCompletion
+                {
+                    if let Some(completion_id) = meta.completion_id {
+                        let _ = crate::net::runtime::device::complete_tx_request(
+                            completion_id,
+                            Ok(()),
+                        );
+                    }
+                }
                 self.stats.record_tx(data.len());
                 if let Some(if_id) = if_id {
                     if let Some(stats) = self.interface_stats(if_id) {

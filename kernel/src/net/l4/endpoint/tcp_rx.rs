@@ -2191,6 +2191,7 @@ fn notify_socket_urgent(fd: EndpointFd) {
 /// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
 pub async fn network_event_task() {
     log::info!("[NET] network_event_task started (fully async)");
+    super::event::mark_event_task_running();
 
     /// 1回のバッチで処理するイベントの最大数
     /// ロック保持時間を制限し、他タスクのスターベーションを防止

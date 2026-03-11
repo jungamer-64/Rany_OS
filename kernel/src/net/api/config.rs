@@ -7,9 +7,6 @@ use crate::net::runtime::{
     manager::{self, NetIfId, NetworkInterfaceInfo},
     stack,
 };
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 
 /// Per-interface configuration snapshot for shell and bootstrap consumers.
 #[derive(Debug, Clone)]
@@ -68,7 +65,7 @@ pub struct InterfaceSnapshot {
     pub mac: Option<[u8; 6]>,
 }
 
-fn interface_config_snapshot(iface: NetworkInterfaceInfo) -> Option<InterfaceConfigSnapshot> {
+pub(crate) fn interface_config_snapshot(iface: NetworkInterfaceInfo) -> Option<InterfaceConfigSnapshot> {
     let config = iface.config?;
     Some(InterfaceConfigSnapshot {
         if_id: iface.if_id.0,
@@ -136,7 +133,60 @@ fn interface_stats_snapshot(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
     None
 }
 
-fn interface_summary_snapshot(iface: NetworkInterfaceInfo) -> InterfaceSnapshot {
+pub(crate) fn interface_stats_snapshot_with_stack(
+    if_id: NetIfId,
+    stack: Option<&stack::NetworkStack>,
+) -> Option<InterfaceStatsSnapshot> {
+    let mut stack_snapshot = InterfaceStatsSnapshot {
+        if_id: if_id.0,
+        rx_packets: 0,
+        tx_packets: 0,
+        rx_bytes: 0,
+        tx_bytes: 0,
+        rx_errors: 0,
+        tx_errors: 0,
+        rx_dropped: 0,
+    };
+
+    if let Some(stack) = stack {
+        if let Some(stats) = stack.interface_stats(if_id) {
+            stack_snapshot.rx_packets =
+                stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.tx_packets =
+                stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.rx_bytes = stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.tx_bytes = stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.rx_errors =
+                stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.rx_dropped =
+                stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    if let Some(port) = device::lookup_port(if_id) {
+        let driver_stats = port.driver().stats();
+        stack_snapshot.rx_packets = stack_snapshot.rx_packets.max(driver_stats.rx_packets);
+        stack_snapshot.tx_packets = stack_snapshot.tx_packets.max(driver_stats.tx_packets);
+        stack_snapshot.rx_errors = stack_snapshot.rx_errors.max(driver_stats.rx_errors);
+        stack_snapshot.tx_errors = stack_snapshot.tx_errors.max(driver_stats.tx_errors);
+        return Some(stack_snapshot);
+    }
+
+    if stack_snapshot.rx_packets != 0
+        || stack_snapshot.tx_packets != 0
+        || stack_snapshot.rx_bytes != 0
+        || stack_snapshot.tx_bytes != 0
+        || stack_snapshot.rx_errors != 0
+        || stack_snapshot.tx_errors != 0
+        || stack_snapshot.rx_dropped != 0
+    {
+        return Some(stack_snapshot);
+    }
+
+    None
+}
+
+pub(crate) fn interface_summary_snapshot(iface: NetworkInterfaceInfo) -> InterfaceSnapshot {
     let ip = iface.config.map(|config| *config.ipv4.address.as_bytes());
     let mac = iface.config.map(|config| *config.mac.as_bytes());
     InterfaceSnapshot {
@@ -149,25 +199,21 @@ fn interface_summary_snapshot(iface: NetworkInterfaceInfo) -> InterfaceSnapshot 
     }
 }
 
-pub fn primary_interface_config_snapshot() -> Option<NetworkConfigSnapshot> {
-    let preferred_if = device::primary_if().or_else(|| {
+pub(crate) fn primary_interface_id() -> Option<NetIfId> {
+    device::primary_if().or_else(|| {
         manager::list_interfaces()
             .ok()
             .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
-    })?;
-    get_interface_config(preferred_if).map(|cfg| NetworkConfigSnapshot {
-        ip: cfg.ip,
-        netmask: cfg.netmask,
-        gateway: cfg.gateway,
-        mac: cfg.mac,
     })
 }
 
-pub fn aggregate_network_stats_snapshot() -> Option<NetworkStatsSnapshot> {
-    let stats = list_interface_stats();
+pub(crate) fn aggregate_network_stats_from_list(
+    stats: &[InterfaceStatsSnapshot],
+) -> Option<NetworkStatsSnapshot> {
     if stats.is_empty() {
         return None;
     }
+
     Some(NetworkStatsSnapshot {
         rx_packets: stats.iter().map(|s| s.rx_packets).sum(),
         tx_packets: stats.iter().map(|s| s.tx_packets).sum(),
@@ -178,14 +224,14 @@ pub fn aggregate_network_stats_snapshot() -> Option<NetworkStatsSnapshot> {
     })
 }
 
-pub fn get_interface_config(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
+pub(crate) fn get_interface_config_from_runtime(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
     manager::get_interface(if_id)
         .ok()
         .flatten()
         .and_then(interface_config_snapshot)
 }
 
-pub fn list_interface_configs() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
+pub(crate) fn list_interface_configs_from_runtime() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
     manager::list_interfaces()
         .unwrap_or_default()
         .into_iter()
@@ -193,19 +239,21 @@ pub fn list_interface_configs() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
         .collect()
 }
 
-pub fn get_interface_stats(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
-    interface_stats_snapshot(if_id)
+pub(crate) fn get_interface_stats_without_stack(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
+    interface_stats_snapshot_with_stack(if_id, None)
 }
 
-pub fn list_interface_stats() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
+pub(crate) fn list_interface_stats_with_stack(
+    stack: Option<&stack::NetworkStack>,
+) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
     manager::list_interfaces()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|iface| interface_stats_snapshot(iface.if_id))
+        .filter_map(|iface| interface_stats_snapshot_with_stack(iface.if_id, stack))
         .collect()
 }
 
-pub fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
+pub(crate) fn list_interfaces_from_runtime() -> alloc::vec::Vec<InterfaceSnapshot> {
     manager::list_interfaces()
         .unwrap_or_default()
         .into_iter()
@@ -213,41 +261,141 @@ pub fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
         .collect()
 }
 
-pub struct ReadyFuture<T> {
-    value: Option<T>,
+pub(crate) fn primary_interface_config_snapshot_sync() -> Option<NetworkConfigSnapshot> {
+    let preferred_if = primary_interface_id()?;
+    get_interface_config_sync(preferred_if).map(|cfg| NetworkConfigSnapshot {
+        ip: cfg.ip,
+        netmask: cfg.netmask,
+        gateway: cfg.gateway,
+        mac: cfg.mac,
+    })
 }
 
-impl<T> ReadyFuture<T> {
-    fn new(value: T) -> Self {
-        Self { value: Some(value) }
+pub(crate) fn aggregate_network_stats_snapshot_sync() -> Option<NetworkStatsSnapshot> {
+    aggregate_network_stats_from_list(&list_interface_stats_sync())
+}
+
+fn get_interface_config_sync(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
+    get_interface_config_from_runtime(if_id)
+}
+
+fn list_interface_configs_sync() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
+    list_interface_configs_from_runtime()
+}
+
+fn get_interface_stats_sync(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
+    interface_stats_snapshot(if_id)
+}
+
+pub(crate) fn list_interface_stats_sync() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
+    if let Ok(guard) = stack::stack().lock() {
+        if let Some(stack) = guard.as_ref() {
+            return list_interface_stats_with_stack(Some(stack));
+        }
     }
+    list_interface_stats_with_stack(None)
 }
 
-impl<T: Unpin> Future for ReadyFuture<T> {
-    type Output = T;
+fn list_interfaces_sync() -> alloc::vec::Vec<InterfaceSnapshot> {
+    list_interfaces_from_runtime()
+}
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        Poll::Ready(this.value.take().expect("ready future polled after completion"))
+pub async fn primary_interface_config_snapshot() -> Option<NetworkConfigSnapshot> {
+    let (result_slot, waker, command_future) =
+        stack::new_command_channel::<Option<NetworkConfigSnapshot>>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetPrimaryInterfaceConfig {
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return primary_interface_config_snapshot_sync();
     }
+    stack::pump_network_events_if_needed();
+    command_future.await
 }
 
-pub fn get_interface_config_async(if_id: NetIfId) -> ReadyFuture<Option<InterfaceConfigSnapshot>> {
-    ReadyFuture::new(get_interface_config(if_id))
+pub async fn aggregate_network_stats_snapshot() -> Option<NetworkStatsSnapshot> {
+    let (result_slot, waker, command_future) =
+        stack::new_command_channel::<Option<NetworkStatsSnapshot>>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetAggregateNetworkStats {
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return aggregate_network_stats_snapshot_sync();
+    }
+    stack::pump_network_events_if_needed();
+    command_future.await
 }
 
-pub fn list_interface_configs_async() -> ReadyFuture<alloc::vec::Vec<InterfaceConfigSnapshot>> {
-    ReadyFuture::new(list_interface_configs())
+pub async fn get_interface_config(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
+    let (result_slot, waker, command_future) =
+        stack::new_command_channel::<Option<InterfaceConfigSnapshot>>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetInterfaceConfig {
+        if_id: if_id.0,
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return get_interface_config_sync(if_id);
+    }
+    stack::pump_network_events_if_needed();
+    command_future.await
 }
 
-pub fn get_interface_stats_async(if_id: NetIfId) -> ReadyFuture<Option<InterfaceStatsSnapshot>> {
-    ReadyFuture::new(get_interface_stats(if_id))
+pub async fn list_interface_configs() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
+    let (result_slot, waker, command_future) =
+        stack::new_command_channel::<alloc::vec::Vec<InterfaceConfigSnapshot>>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncListInterfaceConfigs {
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return list_interface_configs_sync();
+    }
+    stack::pump_network_events_if_needed();
+    command_future.await
 }
 
-pub fn list_interface_stats_async() -> ReadyFuture<alloc::vec::Vec<InterfaceStatsSnapshot>> {
-    ReadyFuture::new(list_interface_stats())
+pub async fn get_interface_stats(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
+    let (result_slot, waker, command_future) =
+        stack::new_command_channel::<Option<InterfaceStatsSnapshot>>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetInterfaceStats {
+        if_id: if_id.0,
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return get_interface_stats_sync(if_id);
+    }
+    stack::pump_network_events_if_needed();
+    command_future.await
 }
 
-pub fn list_interfaces_async() -> ReadyFuture<alloc::vec::Vec<InterfaceSnapshot>> {
-    ReadyFuture::new(list_interfaces())
+pub async fn list_interface_stats() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
+    let (result_slot, waker, command_future) =
+        stack::new_command_channel::<alloc::vec::Vec<InterfaceStatsSnapshot>>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncListInterfaceStats {
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return list_interface_stats_sync();
+    }
+    stack::pump_network_events_if_needed();
+    command_future.await
+}
+
+pub async fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
+    let (result_slot, waker, command_future) =
+        stack::new_command_channel::<alloc::vec::Vec<InterfaceSnapshot>>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncListInterfaces {
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return list_interfaces_sync();
+    }
+    stack::pump_network_events_if_needed();
+    command_future.await
 }

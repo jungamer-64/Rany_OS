@@ -58,7 +58,7 @@ struct Mlx5BridgeState {
     if_id: PoisonLock<Option<NetIfId>>,
     port_runtime: PoisonLock<Option<Arc<dyn NetPortRuntime>>>,
     rx_bufs: PoisonLock<Vec<Vec<Option<PacketRef>>>>,
-    tx_bufs: PoisonLock<Vec<Vec<Option<PacketRef>>>>,
+    tx_bufs: PoisonLock<Vec<Vec<Option<TrackedTxPacket>>>>,
     tx_packets: AtomicU64,
     rx_packets: AtomicU64,
     tx_errors: AtomicU64,
@@ -74,6 +74,12 @@ struct Mlx5BridgeState {
     startup_tx_diag_frame_budget: AtomicU64,
     rx_debug_snapshot_budget: AtomicU64,
     rx_frame_log_budget: AtomicU64,
+}
+
+#[derive(Debug)]
+struct TrackedTxPacket {
+    packet: PacketRef,
+    completion_id: Option<u64>,
 }
 
 impl Mlx5BridgeState {
@@ -432,7 +438,7 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
 
     fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str> {
         let state = mlx5_state(self.index);
-        if submit_mlx5_tx_packet(&state, packet, meta.vlan_tag) {
+        if submit_mlx5_tx_packet(&state, packet, meta.completion_id, meta.vlan_tag) {
             Ok(())
         } else {
             Err("mlx5 TX submission failed")
@@ -661,7 +667,7 @@ fn pad_mlx5_tx_packet_if_needed(state: &Mlx5BridgeState, mut pkt: PacketRef) -> 
 fn poll_mlx5_tx_cqs(
     state: &Mlx5BridgeState,
     device: &mut Mlx5Device,
-    tx_bufs_guard: &mut [Vec<Option<PacketRef>>],
+    tx_bufs_guard: &mut [Vec<Option<TrackedTxPacket>>],
 ) -> usize {
     let mut total_processed = 0usize;
 
@@ -725,7 +731,7 @@ fn poll_mlx5_tx_cqs(
                         .get(sq_index)
                         .and_then(|queue| queue.get(tracked_idx))
                         .and_then(|slot| slot.as_ref())
-                        .map(|pkt| format_head_bytes(pkt.data(), 48))
+                        .map(|tracked| format_head_bytes(tracked.packet.data(), 48))
                         .unwrap_or_else(|| String::from("--"));
                     log::warn!(
                         target: "mlx5::bridge",
@@ -757,7 +763,11 @@ fn poll_mlx5_tx_cqs(
                     for i in 0..4 {
                         let bb_idx = idx * 4 + i;
                         if bb_idx < queue_bufs.len() {
-                            let _ = queue_bufs[bb_idx].take();
+                            if let Some(tracked) = queue_bufs[bb_idx].take() {
+                                if let Some(completion_id) = tracked.completion_id {
+                                    let _ = device::complete_tx_request(completion_id, Ok(()));
+                                }
+                            }
                         }
                     }
                 }
@@ -843,6 +853,7 @@ fn submit_startup_mlx5_diag_frame(state: &Arc<Mlx5BridgeState>) {
                         tx_bufs_guard.as_mut_slice(),
                         diag_pkt,
                         None,
+                        None,
                         false,
                     );
                     submitted
@@ -909,8 +920,9 @@ fn submit_startup_mlx5_diag_frame(state: &Arc<Mlx5BridgeState>) {
 fn submit_mlx5_tx_packet_on_device(
     state: &Mlx5BridgeState,
     device: &mut Mlx5Device,
-    tx_bufs_guard: &mut [Vec<Option<PacketRef>>],
+    tx_bufs_guard: &mut [Vec<Option<TrackedTxPacket>>],
     pkt: PacketRef,
+    completion_id: Option<u64>,
     vlan_tag: Option<u16>,
     track_stats: bool,
 ) -> bool {
@@ -973,7 +985,10 @@ fn submit_mlx5_tx_packet_on_device(
         Ok(wqe_idx) => {
             let bb_idx = (wqe_idx as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize * 4;
             if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
-                queue_bufs[bb_idx] = Some(pkt);
+                queue_bufs[bb_idx] = Some(TrackedTxPacket {
+                    packet: pkt,
+                    completion_id,
+                });
             }
 
             if track_stats {
@@ -1010,6 +1025,7 @@ fn submit_mlx5_tx_packet_on_device(
 fn submit_mlx5_tx_packet(
     state: &Arc<Mlx5BridgeState>,
     pkt: PacketRef,
+    completion_id: Option<u64>,
     vlan_tag: Option<u16>,
 ) -> bool {
     let mut tx_bufs_guard = match state.tx_bufs.lock() {
@@ -1050,6 +1066,7 @@ fn submit_mlx5_tx_packet(
                         tx_bufs_guard.as_mut_slice(),
                         diag_pkt,
                         None,
+                        None,
                         false,
                     );
                 }
@@ -1068,6 +1085,7 @@ fn submit_mlx5_tx_packet(
             device,
             tx_bufs_guard.as_mut_slice(),
             pkt,
+            completion_id,
             vlan_tag,
             true,
         )
@@ -1077,8 +1095,12 @@ fn submit_mlx5_tx_packet(
 }
 
 /// mlx5 送信コールバック（互換ラッパ）
-pub fn mlx5_transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    device::transmit(if_id, data)
+pub fn mlx5_transmit(
+    if_id: Option<NetIfId>,
+    data: &[u8],
+    meta: kernel_api::service::netdev::NetTxMeta,
+) -> bool {
+    device::transmit_with_meta(if_id, data, meta)
 }
 
 // ============================================================================

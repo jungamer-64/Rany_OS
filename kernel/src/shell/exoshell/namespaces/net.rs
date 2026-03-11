@@ -31,7 +31,7 @@ impl NetNamespace {
             Ok(if_id) => if_id,
             Err(err) => return err,
         };
-        match crate::net::api::config::get_interface_config_async(if_id).await {
+        match crate::net::api::config::get_interface_config(if_id).await {
             Some(cfg) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("if_id"), ExoValue::Int(cfg.if_id as i64));
@@ -76,7 +76,7 @@ impl NetNamespace {
             Ok(if_id) => if_id,
             Err(err) => return err,
         };
-        match crate::net::api::config::get_interface_stats_async(if_id).await {
+        match crate::net::api::config::get_interface_stats(if_id).await {
             Some(stats) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("if_id"), ExoValue::Int(stats.if_id as i64));
@@ -201,7 +201,7 @@ impl NetNamespace {
             Ok(if_id) => if_id,
             Err(err) => return err,
         };
-        let state = crate::net::api::dhcp::get_dhcp_state_async(if_id).await;
+        let state = crate::net::api::dhcp::get_dhcp_state(if_id).await;
         Self::format_dhcp_state(state)
     }
 
@@ -488,7 +488,7 @@ impl NetNamespace {
 
     /// ネットワークインターフェース一覧
     pub async fn interfaces_async() -> ExoValue<'static> {
-        let values: Vec<ExoValue> = crate::net::api::config::list_interfaces_async()
+        let values: Vec<ExoValue> = crate::net::api::config::list_interfaces()
             .await
             .into_iter()
             .map(|iface| {
@@ -778,7 +778,7 @@ impl NetNamespace {
 
     /// ファイアウォール状態表示
     pub async fn firewall_status_async() -> ExoValue<'static> {
-        let status = crate::net::api::firewall::firewall_status();
+        let status = crate::net::api::firewall::firewall_status().await;
         ExoValue::String(Cow::Owned(status))
     }
 
@@ -791,7 +791,7 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        match crate::net::api::firewall::firewall_enable() {
+        match crate::net::api::firewall::firewall_enable().await {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(String::from(e)),
         }
@@ -806,7 +806,7 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        match crate::net::api::firewall::firewall_disable() {
+        match crate::net::api::firewall::firewall_disable().await {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(String::from(e)),
         }
@@ -814,13 +814,13 @@ impl NetNamespace {
 
     /// ファイアウォールルール一覧表示
     pub async fn firewall_rules_async() -> ExoValue<'static> {
-        let rules = crate::net::api::firewall::firewall_list_rules();
+        let rules = crate::net::api::firewall::firewall_list_rules().await;
         ExoValue::String(Cow::Owned(rules))
     }
 
     /// ファイアウォール統計情報
     pub async fn firewall_stats_async() -> ExoValue<'static> {
-        let stats = crate::net::api::firewall::firewall_stats();
+        let stats = crate::net::api::firewall::firewall_stats().await;
         ExoValue::String(Cow::Owned(stats))
     }
 
@@ -890,7 +890,9 @@ impl NetNamespace {
 
         match crate::net::api::firewall::firewall_add_rule(
             action, direction, src_ip, dst_ip, protocol, src_port, dst_port, priority, name,
-        ) {
+        )
+        .await
+        {
             Ok(id) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("rule_id"), ExoValue::Int(id as i64));
@@ -914,7 +916,7 @@ impl NetNamespace {
             Some(ExoValue::Int(n)) => *n as u64,
             _ => return ExoValue::Error(String::from("usage: net.firewall_remove(rule_id)")),
         };
-        match crate::net::api::firewall::firewall_remove_rule(rule_id) {
+        match crate::net::api::firewall::firewall_remove_rule(rule_id).await {
             Ok(deleted) => ExoValue::Bool(deleted),
             Err(e) => ExoValue::Error(e),
         }
@@ -929,7 +931,7 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        match crate::net::api::firewall::firewall_clear_rules() {
+        match crate::net::api::firewall::firewall_clear_rules().await {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
@@ -960,7 +962,7 @@ impl NetNamespace {
             ExoValue::String(s) => s.as_ref(),
             _ => return ExoValue::Error(String::from("action must be string")),
         };
-        match crate::net::api::firewall::firewall_set_default_policy(direction, action) {
+        match crate::net::api::firewall::firewall_set_default_policy(direction, action).await {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
@@ -994,7 +996,7 @@ impl NetNamespace {
 
     /// ネットワーク全体のスナップショット (カウンタ + インターフェース + イベント)
     pub async fn snapshot_async() -> ExoValue<'static> {
-        let snap = crate::net::api::diagnostics::network_snapshot();
+        let snap = crate::net::api::diagnostics::network_snapshot().await;
         let mut map = BTreeMap::new();
         map.insert(
             String::from("rx_packets"),
@@ -1055,7 +1057,7 @@ impl NetNamespace {
                 _ => None,
             })
             .unwrap_or(20);
-        let events = crate::net::api::diagnostics::network_recent_events(limit);
+        let events = crate::net::api::diagnostics::network_recent_events(limit).await;
         let values: Vec<ExoValue> = events
             .into_iter()
             .map(|e| {

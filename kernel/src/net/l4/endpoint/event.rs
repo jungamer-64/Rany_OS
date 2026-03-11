@@ -11,7 +11,7 @@ use core::cell::UnsafeCell;
 use core::future::Future;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 
 use super::types::{EndpointAddr, EndpointFd, EndpointType};
@@ -81,12 +81,22 @@ pub enum NetworkEvent {
         dst_port: u16,
         data: Vec<u8>,
         ttl: u8,
+        completion_id: Option<u64>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// Raw TCP送信（ソケット非経由・スタック直接）
     RawTcpSend {
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
         segment: Vec<u8>,
+        completion_id: Option<u64>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// Raw UDP IPv6送信
     RawUdpV6Send {
@@ -96,12 +106,22 @@ pub enum NetworkEvent {
         dst_port: u16,
         data: Vec<u8>,
         ttl: u8,
+        completion_id: Option<u64>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// Raw TCP IPv6送信
     RawTcpV6Send {
         src_ip: [u8; 16],
         dst_ip: [u8; 16],
         segment: Vec<u8>,
+        completion_id: Option<u64>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// ICMP Echo Request（非同期ping）
     IcmpEchoRequest { target: [u8; 4], sequence: u16 },
@@ -204,6 +224,11 @@ pub enum NetworkEvent {
         dst_port: u16,
         data: Vec<u8>,
         ttl: u8,
+        completion_id: Option<u64>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// インターフェース指定TCP送信（非同期版）
     RawTcpSendOn {
@@ -211,6 +236,11 @@ pub enum NetworkEvent {
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
         segment: Vec<u8>,
+        completion_id: Option<u64>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// インターフェース指定IPv6 UDP送信（非同期版）
     RawUdpV6SendOn {
@@ -221,6 +251,11 @@ pub enum NetworkEvent {
         dst_port: u16,
         data: Vec<u8>,
         ttl: u8,
+        completion_id: Option<u64>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// インターフェース指定IPv6 TCP送信（非同期版）
     RawTcpV6SendOn {
@@ -228,6 +263,11 @@ pub enum NetworkEvent {
         src_ip: [u8; 16],
         dst_ip: [u8; 16],
         segment: Vec<u8>,
+        completion_id: Option<u64>,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Result<(), super::types::EndpointError>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期TCP connect（TcpStreamを返す完全非同期版）
     AsyncTcpConnectStream {
@@ -345,20 +385,68 @@ pub enum NetworkEvent {
     },
 
     // ====================================================================
-    // Async config/stats query events (API layer → event queue → handler)
+    // Async config/diagnostics/firewall query events (API → event queue)
     // ====================================================================
-    /// 非同期ネットワーク設定取得
-    AsyncGetConfig {
+    /// 非同期プライマリインターフェース設定取得
+    AsyncGetPrimaryInterfaceConfig {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Option<crate::net::api::config::NetworkConfigSnapshot>>>,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
-    /// 非同期ネットワーク統計取得
-    AsyncGetStats {
+    /// 非同期集約ネットワーク統計取得
+    AsyncGetAggregateNetworkStats {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Option<crate::net::api::config::NetworkStatsSnapshot>>>,
         >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期インターフェース設定取得
+    AsyncGetInterfaceConfig {
+        if_id: u16,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Option<crate::net::api::config::InterfaceConfigSnapshot>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期インターフェース設定一覧取得
+    AsyncListInterfaceConfigs {
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Vec<crate::net::api::config::InterfaceConfigSnapshot>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期インターフェース統計取得
+    AsyncGetInterfaceStats {
+        if_id: u16,
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Option<crate::net::api::config::InterfaceStatsSnapshot>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期インターフェース統計一覧取得
+    AsyncListInterfaceStats {
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Vec<crate::net::api::config::InterfaceStatsSnapshot>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期インターフェース一覧取得
+    AsyncListInterfaces {
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Vec<crate::net::api::config::InterfaceSnapshot>>>,
+        >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ネットワーク診断スナップショット取得
+    AsyncGetNetworkSnapshot {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<crate::net::obs::NetSnapshot>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ネットワーク最新イベント取得
+    AsyncGetNetworkRecentEvents {
+        limit: usize,
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::obs::NetTraceEvent>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期ARPキャッシュ取得
@@ -382,7 +470,15 @@ pub enum NetworkEvent {
     // ====================================================================
     /// 非同期DHCP状態取得
     AsyncGetDhcpState {
+        if_id: Option<u16>,
         result_slot: alloc::sync::Arc<PoisonLock<Option<crate::net::api::dhcp::DhcpRuntimeState>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期DHCP状態一覧取得
+    AsyncListDhcpStates {
+        result_slot: alloc::sync::Arc<
+            PoisonLock<Option<Vec<crate::net::api::dhcp::InterfaceDhcpState>>>,
+        >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     /// 非同期DHCPリニュー
@@ -416,6 +512,59 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<
             PoisonLock<Option<Vec<crate::net::api::connections::TcpConnectionInfo>>>,
         >,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォール有効化
+    AsyncFirewallEnable {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), &'static str>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォール無効化
+    AsyncFirewallDisable {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), &'static str>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォール状態取得
+    AsyncFirewallStatus {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォールルール一覧取得
+    AsyncFirewallListRules {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォール統計取得
+    AsyncFirewallStats {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォールルール追加
+    AsyncFirewallAddRule {
+        rule: crate::net::security::firewall::FirewallRule,
+        result_slot:
+            alloc::sync::Arc<PoisonLock<Option<Result<u64, alloc::string::String>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォールルール削除
+    AsyncFirewallRemoveRule {
+        id: u64,
+        result_slot:
+            alloc::sync::Arc<PoisonLock<Option<Result<bool, alloc::string::String>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォールルール全削除
+    AsyncFirewallClearRules {
+        result_slot:
+            alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
+    /// 非同期ファイアウォールデフォルトポリシー設定
+    AsyncFirewallSetDefaultPolicy {
+        direction: crate::net::security::firewall::FirewallDirection,
+        action: crate::net::security::firewall::FirewallAction,
+        result_slot:
+            alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
 }
@@ -653,10 +802,19 @@ impl<'a> Future for EventWaitFuture<'a> {
 
 /// グローバルイベントキュー
 static NETWORK_EVENT_QUEUE: NetworkEventQueue = NetworkEventQueue::new();
+static NETWORK_EVENT_TASK_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// イベントキューへの参照取得
 pub fn event_queue() -> &'static NetworkEventQueue {
     &NETWORK_EVENT_QUEUE
+}
+
+pub fn mark_event_task_running() {
+    NETWORK_EVENT_TASK_RUNNING.store(true, Ordering::Release);
+}
+
+pub fn event_task_running() -> bool {
+    NETWORK_EVENT_TASK_RUNNING.load(Ordering::Acquire)
 }
 
 /// イベント送信ヘルパー（バックプレッシャー対応）

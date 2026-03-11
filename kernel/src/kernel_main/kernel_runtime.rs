@@ -194,7 +194,7 @@ async fn network_bootstrap_task() {
         // 100ms × 100 = 最大10秒
         task::sleep_ms(100).await;
 
-        let states = crate::net::api::dhcp::list_dhcp_states_async().await;
+        let states = crate::net::api::dhcp::list_dhcp_states().await;
         if states.iter().any(|state| state.state.v4_state == "Bound") {
             for state in states.into_iter().filter(|state| state.state.v4_state == "Bound") {
                 info!(
@@ -215,7 +215,7 @@ async fn network_bootstrap_task() {
 
     // 非同期ping: ゲートウェイへの接続性確認
     let ping_targets: alloc::vec::Vec<_> = if dhcp_bound {
-        crate::net::api::config::list_interface_configs_async()
+        crate::net::api::config::list_interface_configs()
             .await
             .into_iter()
             .filter_map(|cfg| {
@@ -468,6 +468,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
 
         // DHCP/スタックからゲートウェイを取得
         let gw_opt = crate::net::api::config::list_interface_configs()
+            .await
             .into_iter()
             .map(|cfg| cfg.gateway)
             .find(|gw| *gw != [0, 0, 0, 0]);

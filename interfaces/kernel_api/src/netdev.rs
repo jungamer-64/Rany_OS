@@ -64,10 +64,32 @@ pub struct NetRxMeta {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum NetTxCompletionPolicy {
+    #[default]
+    QueueAcceptance = 0,
+    DeviceCompletion = 1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetTxMeta {
     pub queue_index: Option<u16>,
     pub flags: u32,
     pub vlan_tag: Option<u16>,
+    pub completion_id: Option<u64>,
+    pub completion_policy: NetTxCompletionPolicy,
+}
+
+impl Default for NetTxMeta {
+    fn default() -> Self {
+        Self {
+            queue_index: None,
+            flags: 0,
+            vlan_tag: None,
+            completion_id: None,
+            completion_policy: NetTxCompletionPolicy::QueueAcceptance,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

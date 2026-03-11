@@ -70,10 +70,10 @@ impl VirtioNetDriverAdapter {
     }
 }
 
-fn submit_zero_copy_tx(index: u8, packet: PacketRef, _meta: NetTxMeta) -> Result<(), &'static str> {
+fn submit_zero_copy_tx(index: u8, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str> {
     with_virtio_net_device_at_index(index, |device| {
         device
-            .enqueue_send_zero_copy(packet)
+            .enqueue_send_zero_copy(packet, meta)
             .map_err(|err| match err {
                 crate::drivers::virtio::net::VirtioNetError::QueueFull => "TX queue full",
                 _ => "enqueue_send_zero_copy failed",
@@ -85,7 +85,7 @@ fn submit_zero_copy_tx(index: u8, packet: PacketRef, _meta: NetTxMeta) -> Result
 fn process_device_events(index: u8) -> Result<(), &'static str> {
     crate::net::runtime::bridge::enter_deferred_rx_mode();
     let result = with_virtio_net_device_at_index(index, |device| {
-        device.handle_interrupt();
+        device.process_interrupt_deferred();
         device.refill_rx_queues();
     });
     crate::net::runtime::bridge::drain_deferred_rx_packets();

@@ -109,6 +109,7 @@ impl VirtioNetDevice {
                             bounce_buffer: Some(bounce),
                             iommu_iova: iova,
                             iommu_map_len: iommu_len,
+                            completion_id: None,
                         },
                     );
 
@@ -181,7 +182,11 @@ impl VirtioNetDevice {
     }
 
     /// ゼロコピーパケット送信（同期キュー投入版）
-    pub fn enqueue_send_zero_copy(&self, packet: PacketRef) -> Result<(), VirtioNetError> {
+    pub fn enqueue_send_zero_copy(
+        &self,
+        packet: PacketRef,
+        meta: kernel_api::service::netdev::NetTxMeta,
+    ) -> Result<(), VirtioNetError> {
         if let Some(tx_queue) = self.tx_queues.first() {
             let q_idx = 0;
             let data_len = packet.len();
@@ -217,10 +222,10 @@ impl VirtioNetDevice {
                             bounce_buffer: None,
                             iommu_iova: iova,
                             iommu_map_len: cap,
+                            completion_id: meta.completion_id,
                         },
                     );
                     tx_queue.notify(self.transport.as_ref());
-                    self.process_tx_completions();
                     Ok(())
                 }
                 Err(e) => {
@@ -282,6 +287,10 @@ impl VirtioNetDevice {
                     }
 
                     // Standard path: Use NetRuntime callback (implemented in mod.rs)
+                    if let Some(completion_id) = inflight.completion_id {
+                        let _ =
+                            crate::net::runtime::device::complete_tx_request(completion_id, Ok(()));
+                    }
                     self.transmit_complete(q_idx, inflight.packet);
                 },
             );

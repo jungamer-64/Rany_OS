@@ -253,11 +253,11 @@ fn snapshot_for_interface(if_id: NetIfId) -> DhcpRuntimeState {
     out
 }
 
-pub fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
+pub(crate) fn get_dhcp_state_sync(if_id: NetIfId) -> DhcpRuntimeState {
     snapshot_for_interface(if_id)
 }
 
-pub fn list_dhcp_states() -> alloc::vec::Vec<InterfaceDhcpState> {
+pub(crate) fn list_dhcp_states_sync() -> alloc::vec::Vec<InterfaceDhcpState> {
     manager::list_interfaces()
         .unwrap_or_default()
         .into_iter()
@@ -272,7 +272,7 @@ pub fn list_dhcp_states() -> alloc::vec::Vec<InterfaceDhcpState> {
 ///
 /// DHCPv4/v6クライアントの現在の状態をスナップショットとして取得する。
 /// 読み取り専用のためロック保持時間は最小限。
-pub fn dhcp_state() -> DhcpRuntimeState {
+pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
     let now = tcb_table().get_current_tick();
     let tick_rate = 1000u64;
 
@@ -363,7 +363,7 @@ pub struct GetDhcpStateFuture {
 impl GetDhcpStateFuture {
     fn new(if_id: NetIfId) -> Self {
         Self {
-            ready: Some(get_dhcp_state(if_id)),
+            ready: Some(get_dhcp_state_sync(if_id)),
         }
     }
 }
@@ -381,10 +381,6 @@ impl Future for GetDhcpStateFuture {
     }
 }
 
-pub fn get_dhcp_state_async(if_id: NetIfId) -> GetDhcpStateFuture {
-    GetDhcpStateFuture::new(if_id)
-}
-
 pub struct ListDhcpStatesFuture {
     ready: Option<alloc::vec::Vec<InterfaceDhcpState>>,
 }
@@ -392,7 +388,7 @@ pub struct ListDhcpStatesFuture {
 impl ListDhcpStatesFuture {
     fn new() -> Self {
         Self {
-            ready: Some(list_dhcp_states()),
+            ready: Some(list_dhcp_states_sync()),
         }
     }
 }
@@ -410,10 +406,6 @@ impl Future for ListDhcpStatesFuture {
     }
 }
 
-pub fn list_dhcp_states_async() -> ListDhcpStatesFuture {
-    ListDhcpStatesFuture::new()
-}
-
 /// 非同期DHCP状態取得Future
 pub struct DhcpStateFuture {
     ready: Option<DhcpRuntimeState>,
@@ -422,7 +414,7 @@ pub struct DhcpStateFuture {
 impl DhcpStateFuture {
     fn new() -> Self {
         Self {
-            ready: Some(dhcp_state()),
+            ready: Some(dhcp_state_sync()),
         }
     }
 }
@@ -433,7 +425,7 @@ impl Future for DhcpStateFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let _ = cx;
         let this = self.get_mut();
-        let state = this.ready.take().unwrap_or_else(dhcp_state);
+        let state = this.ready.take().unwrap_or_else(dhcp_state_sync);
         Poll::Ready(state)
     }
 }
@@ -446,8 +438,48 @@ impl Future for DhcpStateFuture {
 /// ```ignore
 /// let state = dhcp_state_async().await;
 /// ```
-pub fn dhcp_state_async() -> DhcpStateFuture {
-    DhcpStateFuture::new()
+pub async fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
+    let (result_slot, waker, command_future) =
+        crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetDhcpState {
+        if_id: Some(if_id.0),
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return get_dhcp_state_sync(if_id);
+    }
+    crate::net::runtime::stack::pump_network_events_if_needed();
+    command_future.await
+}
+
+pub async fn list_dhcp_states() -> alloc::vec::Vec<InterfaceDhcpState> {
+    let (result_slot, waker, command_future) =
+        crate::net::runtime::stack::new_command_channel::<alloc::vec::Vec<InterfaceDhcpState>>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncListDhcpStates {
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return list_dhcp_states_sync();
+    }
+    crate::net::runtime::stack::pump_network_events_if_needed();
+    command_future.await
+}
+
+pub async fn dhcp_state() -> DhcpRuntimeState {
+    let (result_slot, waker, command_future) =
+        crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::AsyncGetDhcpState {
+        if_id: None,
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event(event).is_err() {
+        return dhcp_state_sync();
+    }
+    crate::net::runtime::stack::pump_network_events_if_needed();
+    command_future.await
 }
 
 /// 非同期DHCPリニューFuture
@@ -718,4 +750,13 @@ impl Future for DhcpLastReleasedFuture {
 /// 非同期DHCP最終解放IP取得（推奨API）
 pub fn dhcp_last_released_async() -> DhcpLastReleasedFuture {
     DhcpLastReleasedFuture::new()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn async_dhcp_state_completes_without_event_task() {
+        let state = crate::task::block_on(super::dhcp_state());
+        assert!(!state.v4_state.is_empty());
+    }
 }

@@ -931,7 +931,7 @@ impl NetworkStack {
 
                         let frame_len = 14 + total_len as usize;
                         if let Some(tx_fn) = self.transmit_fn {
-                            if tx_fn(None, &buffer[..frame_len]) {
+                            if tx_fn(None, &buffer[..frame_len], Default::default()) {
                                 self.stats.record_tx(frame_len);
                             }
                         }
