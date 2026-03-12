@@ -27,17 +27,20 @@ pub fn service() -> &'static dyn TimeService {
 
 #[inline]
 pub fn handle_timer_interrupt() {
-    service().on_timer_interrupt();
+    // ISR/hot paths must not consult the provider registry because that path
+    // is lock-based and can deadlock if an interrupt lands while the same CPU
+    // is already resolving the active provider.
+    concrete_service().on_timer_interrupt();
 }
 
 #[inline]
 pub fn process_pending_timer_wakers() {
-    service().process_pending_wakers();
+    concrete_service().process_pending_wakers();
 }
 
 #[inline]
 pub fn pending_timer_waker_count() -> usize {
-    service().stats().pending_wakers
+    concrete_service().stats().pending_wakers
 }
 
 #[inline]
@@ -47,22 +50,22 @@ pub fn pending_waker_stats() -> (usize, usize) {
 
 #[inline]
 pub fn current_tick() -> u64 {
-    service().current_tick_ms()
+    concrete_service().current_tick_ms()
 }
 
 #[inline]
 pub fn unix_timestamp() -> u64 {
-    service().unix_timestamp()
+    concrete_service().unix_timestamp()
 }
 
 #[inline]
 pub fn unix_timestamp_ms() -> u64 {
-    service().unix_timestamp_ms()
+    concrete_service().unix_timestamp_ms()
 }
 
 #[inline]
 pub fn adjust_wall_clock(delta_ns: i64) {
-    service().adjust_wall_clock(delta_ns);
+    concrete_service().adjust_wall_clock(delta_ns);
 }
 
 #[inline]
@@ -90,7 +93,7 @@ pub struct SleepFuture {
 impl SleepFuture {
     pub fn new(duration_ms: u64) -> Self {
         Self {
-            wake_tick: service().compute_wake_tick(duration_ms),
+            wake_tick: concrete_service().compute_wake_tick(duration_ms),
             registered: false,
         }
     }
@@ -100,7 +103,7 @@ impl Future for SleepFuture {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let time_service = service();
+        let time_service = concrete_service();
         if time_service.current_tick_ms() >= self.wake_tick {
             return Poll::Ready(());
         }
@@ -117,7 +120,7 @@ impl Future for SleepFuture {
 impl Drop for SleepFuture {
     fn drop(&mut self) {
         if self.registered {
-            service().unregister_sleep(self.wake_tick);
+            concrete_service().unregister_sleep(self.wake_tick);
         }
     }
 }
