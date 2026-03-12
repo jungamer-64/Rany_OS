@@ -10,19 +10,22 @@ SYM_PATTERN='"sys_(log|alloc|dealloc|sleep|panic)"'
 KAPI_PATTERN='__exorust_kernel_api_v3|KERNEL_API_SYMBOL'
 DMA_SEARCH_DIRS=(kernel interfaces drivers filesystems docs scripts)
 DMA_BANNED_PATTERN='map_for_dma\(|map_for_dma_with_perms|MappingKind::Global|get_global_map_count|allow_global_mappings|set_global_dma_mapping_allowed|is_global_dma_mapping_allowed|map_rref_for_domain|map_rref_slice_for_domain|GlobalDmaAllocator|global_dma_allocator\(|DeviceDmaContext::new\(|DmaHandle::map_rref\(|DmaHandle::map_rref_slice\(|\bunmap_dma\('
+REMOVED_IOMMU_KNOB_PATTERN='(^IOMMU[[:space:]]*\?=)|\bNoIommu\b|\bIOMMU=1\b'
 
 if command -v rg >/dev/null 2>&1; then
   fn_hits="$(rg -n -e "$FN_PATTERN" "${SEARCH_DIRS[@]}" || true)"
   sym_hits="$(rg -n -e "$SYM_PATTERN" "${SEARCH_DIRS[@]}" || true)"
   kapi_hits="$(rg -n -e "$KAPI_PATTERN" "${SEARCH_DIRS[@]}" || true)"
   dma_hits="$(rg -n -g '!docs/archive/**' -e "$DMA_BANNED_PATTERN" "${DMA_SEARCH_DIRS[@]}" | rg -v '^scripts/check-no-sys-symbol-boundary.sh:' || true)"
-  iommu_global_hits="$(rg -n -g '!docs/archive/**' -e 'iommu_global' "${DMA_SEARCH_DIRS[@]}" | rg -v '^kernel/src/kernel_content.rs:' | rg -v '^scripts/check-no-sys-symbol-boundary.sh:' || true)"
+  iommu_global_hits="$(rg -n -g '!docs/archive/**' -e 'iommu_global' Makefile README.md "${DMA_SEARCH_DIRS[@]}" | rg -v '^kernel/src/kernel_content.rs:' | rg -v '^scripts/check-no-sys-symbol-boundary.sh:' || true)"
+  removed_iommu_knob_hits="$(rg -n -g '!docs/archive/**' -e "$REMOVED_IOMMU_KNOB_PATTERN" Makefile README.md "${DMA_SEARCH_DIRS[@]}" | rg -v '^scripts/check-no-sys-symbol-boundary.sh:' || true)"
 else
   fn_hits="$(grep -RInE "$FN_PATTERN" "${SEARCH_DIRS[@]}" || true)"
   sym_hits="$(grep -RInE "$SYM_PATTERN" "${SEARCH_DIRS[@]}" || true)"
   kapi_hits="$(grep -RInE "$KAPI_PATTERN" "${SEARCH_DIRS[@]}" || true)"
   dma_hits="$(grep -RInE "$DMA_BANNED_PATTERN" "${DMA_SEARCH_DIRS[@]}" | grep -v '^docs/archive/' | grep -v '^scripts/check-no-sys-symbol-boundary.sh:' || true)"
-  iommu_global_hits="$(grep -RInE 'iommu_global' "${DMA_SEARCH_DIRS[@]}" | grep -v '^docs/archive/' | grep -v '^kernel/src/kernel_content.rs:' | grep -v '^scripts/check-no-sys-symbol-boundary.sh:' || true)"
+  iommu_global_hits="$({ grep -InE 'iommu_global' Makefile README.md 2>/dev/null; grep -RInE 'iommu_global' "${DMA_SEARCH_DIRS[@]}" 2>/dev/null; } | grep -v '^docs/archive/' | grep -v '^kernel/src/kernel_content.rs:' | grep -v '^scripts/check-no-sys-symbol-boundary.sh:' || true)"
+  removed_iommu_knob_hits="$({ grep -InE "$REMOVED_IOMMU_KNOB_PATTERN" Makefile README.md 2>/dev/null; grep -RInE "$REMOVED_IOMMU_KNOB_PATTERN" "${DMA_SEARCH_DIRS[@]}" 2>/dev/null; } | grep -v '^docs/archive/' | grep -v '^scripts/check-no-sys-symbol-boundary.sh:' || true)"
 fi
 
 failed=0
@@ -51,8 +54,14 @@ if [ -n "$dma_hits" ]; then
 fi
 
 if [ -n "$iommu_global_hits" ]; then
-  echo "ERROR: deprecated iommu_global references found outside kernel cmdline compatibility warning:"
+  echo "ERROR: deprecated iommu_global references found outside the mandatory cmdline parser:"
   echo "$iommu_global_hits"
+  failed=1
+fi
+
+if [ -n "$removed_iommu_knob_hits" ]; then
+  echo "ERROR: removed IOMMU compatibility knob surfaces reintroduced:"
+  echo "$removed_iommu_knob_hits"
   failed=1
 fi
 

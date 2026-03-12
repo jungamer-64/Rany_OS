@@ -22,7 +22,6 @@ PROFILE         ?= debug
 MEMORY          ?= 4096
 SMP             ?= 8
 SERIAL          ?= stdio
-IOMMU           ?= 1
 IOMMU_AW_BITS   ?= 39
 NUMA            ?= 1
 NETWORK         ?= bridge
@@ -52,6 +51,10 @@ QEMU_EXTRA      ?=
 CPU             ?=
 NVME            ?= 1G
 CMDLINE         ?=
+
+ifneq ($(origin IOMMU), undefined)
+  $(error IOMMU knob has been removed; translated DMA mode is always enabled. Remove IOMMU=$(IOMMU))
+endif
 
 # --- 派生パス ---
 ifeq ($(PROFILE),release)
@@ -280,14 +283,11 @@ define RUN_PREFLIGHT_COMMON
 		else \
 			pf_fail "OVMF vars missing: $(OVMF_VARS_ORIG)"; \
 		fi; \
-		if [ "$(IOMMU)" = "1" ]; then \
-			if printf '%s' "$(IOMMU_AW_BITS)" | grep -Eq '^[0-9]+$$'; then \
-				pf_pass "IOMMU_AW_BITS is numeric: $(IOMMU_AW_BITS)"; \
-			else \
-				pf_fail "IOMMU_AW_BITS must be numeric (current: $(IOMMU_AW_BITS))"; \
-			fi; \
+		pf_pass "mandatory translated DMA mode active"; \
+		if printf '%s' "$(IOMMU_AW_BITS)" | grep -Eq '^[0-9]+$$'; then \
+			pf_pass "IOMMU_AW_BITS is numeric: $(IOMMU_AW_BITS)"; \
 		else \
-			pf_warn "IOMMU disabled (IOMMU=0)"; \
+			pf_fail "IOMMU_AW_BITS must be numeric (current: $(IOMMU_AW_BITS))"; \
 		fi; \
 		if [ "$$_pf_fail" -ne 0 ]; then \
 			printf '   -> \033[31m[PREFLIGHT] %s failure(s). Aborting run.\033[0m\n' "$$_pf_fail"; \
@@ -325,11 +325,7 @@ define RUN_PREFLIGHT_VFIO_RUN
 			pf_fail() { printf '   -> \033[31mFAIL\033[0m [PREFLIGHT][VFIO] %s\n' "$$1"; _pf_fail=$$((_pf_fail + 1)); }; \
 			pf_pass() { printf '   -> \033[32mPASS\033[0m [PREFLIGHT][VFIO] %s\n' "$$1"; }; \
 			printf '\033[36m[PREFLIGHT] VFIO run checks...\033[0m\n'; \
-			if [ "$(IOMMU)" = "1" ]; then \
-				pf_pass "IOMMU enabled"; \
-			else \
-				pf_fail "IOMMU=1 is required for NETWORK=pcie|vfio"; \
-			fi; \
+			pf_pass "mandatory translated DMA mode active"; \
 			_vfio_bdfs="$(VFIO_NET_BDFS)"; \
 			if [ -z "$$_vfio_bdfs" ] && [ -n "$(VFIO_NET_BDF)" ]; then \
 				_vfio_bdfs="$(VFIO_NET_BDF)"; \
@@ -602,11 +598,7 @@ define LAUNCH_QEMU
 		serial_arg="null"; \
 	fi; \
 	\
-	if [ "$(IOMMU)" = "1" ]; then \
-		machine_spec="q35,kernel-irqchip=split"; \
-	else \
-		machine_spec="q35"; \
-	fi; \
+	machine_spec="q35,kernel-irqchip=split"; \
 	\
 	qemu_args=""; \
 	qemu_args="$$qemu_args -machine $$machine_spec"; \
@@ -620,14 +612,12 @@ define LAUNCH_QEMU
 	qemu_args="$$qemu_args -drive file=fat:rw:$(FAT_ROOT),format=raw,media=disk"; \
 	qemu_args="$$qemu_args -accel $$accel"; \
 	\
-	if [ "$(IOMMU)" = "1" ]; then \
-		if ! printf '%s' "$(IOMMU_AW_BITS)" | grep -Eq '^[0-9]+$$'; then \
-			printf '   -> \033[31m[ERROR] IOMMU_AW_BITS must be numeric (current: %s)\033[0m\n' "$(IOMMU_AW_BITS)"; \
-			exit 1; \
-		fi; \
-		qemu_args="$$qemu_args -device intel-iommu,intremap=on,caching-mode=on,aw-bits=$(IOMMU_AW_BITS)"; \
-		printf '   -> \033[32m[IOMMU] Intel VT-d enabled (intremap=on, aw-bits=%s)\033[0m\n' "$(IOMMU_AW_BITS)"; \
+	if ! printf '%s' "$(IOMMU_AW_BITS)" | grep -Eq '^[0-9]+$$'; then \
+		printf '   -> \033[31m[ERROR] IOMMU_AW_BITS must be numeric (current: %s)\033[0m\n' "$(IOMMU_AW_BITS)"; \
+		exit 1; \
 	fi; \
+	qemu_args="$$qemu_args -device intel-iommu,intremap=on,caching-mode=on,aw-bits=$(IOMMU_AW_BITS)"; \
+	printf '   -> \033[32m[IOMMU] Intel VT-d enabled (intremap=on, aw-bits=%s)\033[0m\n' "$(IOMMU_AW_BITS)"; \
 	\
 	if [ "$(NUMA)" = "1" ] && [ "$(SMP)" -ge 2 ]; then \
 		cores_node0=$$(( $(SMP) / 2 )); \
@@ -658,10 +648,7 @@ define LAUNCH_QEMU
 					if [ "$$_net_idx" = "0" ]; then \
 						_netdev_args="$$_netdev_args,hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"; \
 					fi; \
-					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10"; \
-					if [ "$(IOMMU)" = "1" ]; then \
-						_device_args="$$_device_args,iommu_platform=on,disable-legacy=on"; \
-					fi; \
+					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10,iommu_platform=on,disable-legacy=on"; \
 					qemu_args="$$qemu_args -netdev $$_netdev_args -device $$_device_args"; \
 					printf '   -> \033[32m[NET] VirtIO-net user/NAT descriptor %s (%s)\033[0m\n' "$$_net_id" "$$_net_desc"; \
 					;; \
@@ -698,10 +685,7 @@ define LAUNCH_QEMU
 							_netdev_args="tap,id=$$_net_id,ifname=$$_tap,script=no,downscript=no"; \
 						fi; \
 					fi; \
-					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10"; \
-					if [ "$(IOMMU)" = "1" ]; then \
-						_device_args="$$_device_args,iommu_platform=on,disable-legacy=on"; \
-					fi; \
+					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10,iommu_platform=on,disable-legacy=on"; \
 					qemu_args="$$qemu_args -netdev $$_netdev_args -device $$_device_args"; \
 					printf '   -> \033[32m[NET] VirtIO-net bridge descriptor %s (%s)\033[0m\n' "$$_net_id" "$$_net_desc"; \
 					;; \
@@ -710,10 +694,7 @@ define LAUNCH_QEMU
 					_macvtap_fd=$$((3 + _net_idx)); \
 					qemu_args="$$qemu_args $$_macvtap_fd<>/dev/tap$$(cat /sys/class/net/$$_macvtap_if/ifindex 2>/dev/null || echo 0)"; \
 					_netdev_args="tap,id=$$_net_id,fd=$$_macvtap_fd"; \
-					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10"; \
-					if [ "$(IOMMU)" = "1" ]; then \
-						_device_args="$$_device_args,iommu_platform=on,disable-legacy=on"; \
-					fi; \
+					_device_args="virtio-net-pci,netdev=$$_net_id,mq=on,vectors=10,iommu_platform=on,disable-legacy=on"; \
 					qemu_args="$$qemu_args -netdev $$_netdev_args -device $$_device_args"; \
 					printf '   -> \033[32m[NET] VirtIO-net macvtap descriptor %s (%s)\033[0m\n' "$$_net_id" "$$_net_desc"; \
 					;; \
@@ -864,7 +845,7 @@ case "$$_net_mode" in \
 					case "$$_vfio_no_mmap" in \
 						1) _vfio_enable_no_mmap=1 ;; \
 						auto) \
-							if [ "$(IOMMU)" = "1" ] && [ "$$_vfio_risky_aw" = "1" ]; then \
+							if [ "$$_vfio_risky_aw" = "1" ]; then \
 								_vfio_enable_no_mmap=1; \
 							fi ;; \
 						0) ;; \
@@ -872,7 +853,7 @@ case "$$_net_mode" in \
 					if [ "$$_vfio_enable_no_mmap" = "1" ]; then \
 						qemu_args="$$qemu_args -global vfio-pci.x-no-mmap=on"; \
 						printf '   -> \033[32m[NET][VFIO] Enabling safe mode: vfio-pci x-no-mmap=on (aw-bits=%s)\033[0m\n' "$$_vfio_aw_bits"; \
-					elif [ "$(IOMMU)" = "1" ] && [ "$$_vfio_risky_aw" = "1" ]; then \
+					elif [ "$$_vfio_risky_aw" = "1" ]; then \
 						printf '   -> \033[33m[WARN][NET][VFIO] x-no-mmap is disabled under aw-bits<=39; crash may reoccur\033[0m\n'; \
 					fi; \
 					;; \
@@ -882,10 +863,7 @@ case "$$_net_mode" in \
 					;; \
 		esac; \
 		if [ "$$_attach_virtio_net" = "1" ]; then \
-			device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10"; \
-			if [ "$(IOMMU)" = "1" ]; then \
-				device_args="$$device_args,iommu_platform=on,disable-legacy=on"; \
-			fi; \
+			device_args="virtio-net-pci,netdev=net0,mq=on,vectors=10,iommu_platform=on,disable-legacy=on"; \
 			qemu_args="$$qemu_args -netdev $$netdev_args -device $$device_args"; \
 		fi; \
 	fi; \
@@ -1542,7 +1520,6 @@ help:
 	@echo "  SMP=N                   CPU cores (default: 8)"
 	@echo "  SERIAL=stdio|file|null  Serial output (default: stdio)"
 	@echo "  CPU=MODEL               QEMU CPU model (default: auto)"
-	@echo "  IOMMU=0|1              Intel VT-d IOMMU (default: 1)"
 	@echo "  IOMMU_AW_BITS=N        intel-iommu aw-bits (default: 39)"
 	@echo "  NUMA=0|1               NUMA topology (default: 1)"
 	@echo "  NETWORK=bridge|user|macvtap|pcie|vfio|none  Network mode (default: bridge)"

@@ -351,16 +351,19 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     init_iommu_driver(&parser, &iommu_config);
     io::iommu::api::enforce_iommu_requirement();
 
-    if io::iommu::api::is_iommu_enabled() {
-        // Security: Protect BIOS/UEFI reserved regions from DMA.
-        // This is called after IOMMU security init in init_iommu_from_acpi.
-        io::iommu::runtime::security::protect_bios_reserved_regions(boot_info);
+    debug_assert!(
+        io::iommu::api::is_iommu_enabled(),
+        "translated IOMMU must remain enabled after enforcement"
+    );
 
-        if let Err(e) = io::iommu::runtime::panic::init_panic_dma_pool_default() {
-            warn!(target: "init", "IOMMU panic DMA pool init failed: {:?}", e);
-        } else {
-            info!(target: "init", "IOMMU panic DMA pool initialized");
-        }
+    // Security: Protect BIOS/UEFI reserved regions from DMA.
+    // This is called after IOMMU security init in init_iommu_from_acpi.
+    io::iommu::runtime::security::protect_bios_reserved_regions(boot_info);
+
+    if let Err(e) = io::iommu::runtime::panic::init_panic_dma_pool_default() {
+        warn!(target: "init", "IOMMU panic DMA pool init failed: {:?}", e);
+    } else {
+        info!(target: "init", "IOMMU panic DMA pool initialized");
     }
 
     match parser.find_table(b"MCFG") {
@@ -370,13 +373,11 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
 
     drivers::pci::init();
     info!(target: "init", "PCI driver initialized");
-    if io::iommu::api::is_iommu_enabled() {
-        let mut devices = drivers::pci::scan_all_devices();
-        if let Err(e) = io::iommu::runtime::pci::setup_iommu_for_all_pci_devices(&mut devices) {
-            warn!(target: "init", "PCI IOMMU setup failed for some devices: {:?}", e);
-        }
-        info!(target: "init", "Early IOMMU PCI domain assignment completed");
+    let mut devices = drivers::pci::scan_all_devices();
+    if let Err(e) = io::iommu::runtime::pci::setup_iommu_for_all_pci_devices(&mut devices) {
+        warn!(target: "init", "PCI IOMMU setup failed for some devices: {:?}", e);
     }
+    info!(target: "init", "Early IOMMU PCI domain assignment completed");
     #[cfg(feature = "qemu-test-export")]
     {
         // full-boot test profiles prioritize deterministic runtime execution.
@@ -389,14 +390,70 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IommuCmdlinePolicyError {
+    DisabledRequested,
+    PassthroughRequested,
+    DeprecatedGlobalRequested,
+}
+
+fn parse_iommu_cmdline_str(
+    cmdline: &str,
+) -> Result<io::iommu::runtime::config::IommuConfig, IommuCmdlinePolicyError> {
+    let mut config = io::iommu::runtime::config::IommuConfig::default();
+
+    if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
+        match val {
+            "off" => return Err(IommuCmdlinePolicyError::DisabledRequested),
+            "pt" | "passthrough" => return Err(IommuCmdlinePolicyError::PassthroughRequested),
+            "force" => config.force = true,
+            _ => {}
+        }
+    }
+
+    if util::get_cmdline_option(cmdline, "iommu_global").is_some() {
+        return Err(IommuCmdlinePolicyError::DeprecatedGlobalRequested);
+    }
+
+    if let Some(val) = util::get_cmdline_option(cmdline, "iommu_scalable") {
+        match val {
+            "on" | "1" | "true" => config.scalable_mode = true,
+            "off" | "0" | "false" => config.scalable_mode = false,
+            _ => {}
+        }
+    }
+
+    Ok(config)
+}
+
+fn panic_for_iommu_cmdline_policy(err: IommuCmdlinePolicyError) -> ! {
+    match err {
+        IommuCmdlinePolicyError::DisabledRequested => {
+            panic!("[SECURITY] Kernel cmdline requested 'iommu=off', but IOMMU is mandatory.");
+        }
+        IommuCmdlinePolicyError::PassthroughRequested => {
+            panic!(
+                "[SECURITY] Kernel cmdline requested IOMMU passthrough mode, \
+                 but translated IOMMU protection is mandatory."
+            );
+        }
+        IommuCmdlinePolicyError::DeprecatedGlobalRequested => {
+            panic!(
+                "[SECURITY] Kernel cmdline requested deprecated 'iommu_global', \
+                 but all global DMA compatibility paths were removed."
+            );
+        }
+    }
+}
+
 /// Parse IOMMU configuration from kernel command line.
 fn parse_iommu_cmdline(
     boot_info: &ExoBootInfo,
     phys_mem_offset: u64,
 ) -> io::iommu::runtime::config::IommuConfig {
-    let mut config = io::iommu::runtime::config::IommuConfig::default();
+    let default_config = io::iommu::runtime::config::IommuConfig::default();
     if boot_info.cmdline_len == 0 {
-        return config;
+        return default_config;
     }
 
     let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
@@ -406,7 +463,7 @@ fn parse_iommu_cmdline(
             Some(addr) => addr,
             None => {
                 warn!(target: "init", "Skipping IOMMU cmdline parse: address overflow");
-                return config;
+                return default_config;
             }
         }
     };
@@ -418,47 +475,73 @@ fn parse_iommu_cmdline(
                 "Skipping IOMMU cmdline parse: invalid length {}",
                 boot_info.cmdline_len
             );
-            return config;
+            return default_config;
         }
     };
     let ptr = cmdline_addr as *const u8;
     let slice = unsafe { core::slice::from_raw_parts(ptr, cmdline_len) };
     let cmdline = match core::str::from_utf8(slice) {
         Ok(s) => s,
-        Err(_) => return config,
+        Err(_) => return default_config,
     };
     info!(target: "init", "Kernel cmdline: {}", cmdline);
 
-    if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
-        match val {
-            "off" => {
-                panic!("[SECURITY] Kernel cmdline requested 'iommu=off', but IOMMU is mandatory.");
-            }
-            "pt" | "passthrough" => {
-                panic!(
-                    "[SECURITY] Kernel cmdline requested IOMMU passthrough mode, \
-                     but translated IOMMU protection is mandatory."
-                );
-            }
-            "force" => config.force = true,
-            _ => {}
-        }
+    match parse_iommu_cmdline_str(cmdline) {
+        Ok(config) => config,
+        Err(err) => panic_for_iommu_cmdline_policy(err),
     }
-    if util::get_cmdline_option(cmdline, "iommu_global").is_some() {
-        warn!(
-            target: "init",
-            "Ignoring deprecated kernel cmdline option 'iommu_global' on {}",
-            env!("CARGO_PKG_VERSION")
+}
+
+#[cfg(test)]
+mod iommu_cmdline_tests {
+    use super::*;
+
+    #[test_case]
+    fn iommu_cmdline_rejects_off() {
+        assert_eq!(
+            parse_iommu_cmdline_str("iommu=off"),
+            Err(IommuCmdlinePolicyError::DisabledRequested)
         );
     }
-    if let Some(val) = util::get_cmdline_option(cmdline, "iommu_scalable") {
-        match val {
-            "on" | "1" | "true" => config.scalable_mode = true,
-            "off" | "0" | "false" => config.scalable_mode = false,
-            _ => {}
-        }
+
+    #[test_case]
+    fn iommu_cmdline_rejects_pt() {
+        assert_eq!(
+            parse_iommu_cmdline_str("iommu=pt"),
+            Err(IommuCmdlinePolicyError::PassthroughRequested)
+        );
     }
-    config
+
+    #[test_case]
+    fn iommu_cmdline_rejects_passthrough() {
+        assert_eq!(
+            parse_iommu_cmdline_str("iommu=passthrough"),
+            Err(IommuCmdlinePolicyError::PassthroughRequested)
+        );
+    }
+
+    #[test_case]
+    fn iommu_cmdline_rejects_iommu_global() {
+        assert_eq!(
+            parse_iommu_cmdline_str("console=serial iommu_global=1"),
+            Err(IommuCmdlinePolicyError::DeprecatedGlobalRequested)
+        );
+    }
+
+    #[test_case]
+    fn iommu_cmdline_parses_scalable_on_and_force() {
+        let config =
+            parse_iommu_cmdline_str("iommu=force iommu_scalable=on").expect("cmdline should parse");
+        assert!(config.force);
+        assert!(config.scalable_mode);
+    }
+
+    #[test_case]
+    fn iommu_cmdline_parses_scalable_off() {
+        let config = parse_iommu_cmdline_str("iommu_scalable=off").expect("cmdline should parse");
+        assert!(!config.force);
+        assert!(!config.scalable_mode);
+    }
 }
 
 /// Try to register and start an IOMMU driver (Intel VT-d or AMD-Vi).

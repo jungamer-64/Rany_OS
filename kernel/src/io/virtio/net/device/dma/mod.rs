@@ -86,33 +86,33 @@ pub(crate) fn prepare_dma_mapping_tx(
         pool_bounce_buffer: None,
     };
 
-    if is_iommu_enabled() {
-        let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
-        // If the buffer is page-aligned and fits in a page, we can direct-map it
-        // instead of using a bounce buffer (zero-copy support).
-        if (phys_addr_val & page_mask) == 0 && total_len <= crate::mm::types::PAGE_SIZE_4K {
-            let dma_mapping = map_net_dma_for_range(
-                device.iommu_device_id(),
-                phys_addr_val,
-                crate::mm::types::PAGE_SIZE_4K,
-                NetDmaDirection::ToDevice,
-            )?;
-            result.dma_addr = dma_mapping.device_address();
-            result.dma_mapping = Some(dma_mapping);
-            return Ok(result);
-        }
-
-        prepare_iommu_bounce_tx(
-            device,
-            &mut result,
-            page_offset,
-            can_map_page,
-            data,
-            total_len,
+    debug_assert!(
+        is_iommu_enabled(),
+        "virtio-net TX DMA preparation expects translated IOMMU to remain active"
+    );
+    let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
+    // If the buffer is page-aligned and fits in a page, we can direct-map it
+    // instead of using a bounce buffer (zero-copy support).
+    if (phys_addr_val & page_mask) == 0 && total_len <= crate::mm::types::PAGE_SIZE_4K {
+        let dma_mapping = map_net_dma_for_range(
+            device.iommu_device_id(),
+            phys_addr_val,
+            crate::mm::types::PAGE_SIZE_4K,
+            NetDmaDirection::ToDevice,
         )?;
-    } else {
-        return Err(VirtioNetError::DeviceError);
+        result.dma_addr = dma_mapping.device_address();
+        result.dma_mapping = Some(dma_mapping);
+        return Ok(result);
     }
+
+    prepare_iommu_bounce_tx(
+        device,
+        &mut result,
+        page_offset,
+        can_map_page,
+        data,
+        total_len,
+    )?;
 
     Ok(result)
 }
@@ -154,25 +154,25 @@ pub(crate) fn prepare_dma_mapping_rx(
         pool_bounce_buffer: None,
     };
 
-    if is_iommu_enabled() {
-        let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
-        // RX Zero-copy support: direct map if page-aligned
-        if (phys_addr_val & page_mask) == 0 && data_len <= crate::mm::types::PAGE_SIZE_4K {
-            let dma_mapping = map_net_dma_for_range(
-                device.iommu_device_id(),
-                phys_addr_val,
-                crate::mm::types::PAGE_SIZE_4K,
-                NetDmaDirection::Bidirectional,
-            )?;
-            result.dma_addr = dma_mapping.device_address();
-            result.dma_mapping = Some(dma_mapping);
-            return Ok(result);
-        }
-
-        prepare_iommu_bounce_rx(device, &mut result, page_offset, can_map_page, data_len)?;
-    } else {
-        return Err(VirtioNetError::DeviceError);
+    debug_assert!(
+        is_iommu_enabled(),
+        "virtio-net RX DMA preparation expects translated IOMMU to remain active"
+    );
+    let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
+    // RX Zero-copy support: direct map if page-aligned
+    if (phys_addr_val & page_mask) == 0 && data_len <= crate::mm::types::PAGE_SIZE_4K {
+        let dma_mapping = map_net_dma_for_range(
+            device.iommu_device_id(),
+            phys_addr_val,
+            crate::mm::types::PAGE_SIZE_4K,
+            NetDmaDirection::Bidirectional,
+        )?;
+        result.dma_addr = dma_mapping.device_address();
+        result.dma_mapping = Some(dma_mapping);
+        return Ok(result);
     }
+
+    prepare_iommu_bounce_rx(device, &mut result, page_offset, can_map_page, data_len)?;
 
     Ok(result)
 }

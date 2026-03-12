@@ -177,9 +177,6 @@ impl VirtioNetDevice {
             let q_idx = 0;
             let data_len = packet.len();
             let cap = packet.capacity();
-            if !is_iommu_enabled() {
-                return Err(VirtioNetError::DeviceError);
-            }
             let dma_mapping = map_net_dma_for_range(
                 self.iommu_device_id,
                 packet.phys_addr().as_u64(),

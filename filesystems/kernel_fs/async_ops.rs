@@ -311,9 +311,7 @@ fn map_nvme_dma_error(err: NvmeDmaError) -> FsError {
     match err {
         NvmeDmaError::InvalidLen => FsError::InvalidArgument,
         NvmeDmaError::OutOfMemory => FsError::NoSpace,
-        NvmeDmaError::IommuDeviceMissing
-        | NvmeDmaError::IommuIdentityBlocked
-        | NvmeDmaError::IommuMappingFailed => FsError::IoError,
+        NvmeDmaError::IommuDeviceMissing | NvmeDmaError::IommuMappingFailed => FsError::IoError,
     }
 }
 

@@ -43,9 +43,7 @@ impl NvmeBlockIoAdapter {
             NvmeDmaError::InvalidLen => {
                 NsError::Internal(alloc::string::String::from("invalid DMA length"))
             }
-            NvmeDmaError::IommuDeviceMissing
-            | NvmeDmaError::IommuIdentityBlocked
-            | NvmeDmaError::IommuMappingFailed => NsError::IoError,
+            NvmeDmaError::IommuDeviceMissing | NvmeDmaError::IommuMappingFailed => NsError::IoError,
         }
     }
 

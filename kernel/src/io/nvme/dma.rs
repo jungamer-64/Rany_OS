@@ -12,7 +12,6 @@ pub(crate) enum NvmeDmaError {
     InvalidLen,
     OutOfMemory,
     IommuDeviceMissing,
-    IommuIdentityBlocked,
     IommuMappingFailed,
 }
 
@@ -64,10 +63,6 @@ fn map_for_iommu(
     phys_addr: PhysAddr,
     size: usize,
 ) -> Result<(u64, Option<DeviceDmaMapping>), NvmeDmaError> {
-    if !crate::io::iommu::api::is_iommu_enabled() {
-        return Err(NvmeDmaError::IommuIdentityBlocked);
-    }
-
     let ctx = DeviceDmaContext::for_attached_device(device);
     let mapping = ctx
         .map_physical_range(phys_addr, size, DmaDirection::Bidirectional)

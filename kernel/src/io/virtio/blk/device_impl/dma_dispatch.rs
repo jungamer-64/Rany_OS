@@ -12,9 +12,10 @@ impl VirtioBlkDevice {
         if dma.len != len {
             return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
         }
-        if !is_iommu_enabled() {
-            return Box::pin(async move { Err(VfsBlockError::IoError) });
-        }
+        debug_assert!(
+            is_iommu_enabled(),
+            "virtio-blk DMA dispatch expects translated IOMMU to remain active"
+        );
         if iommu_needs_bounce(dma.phys_addr, len) {
             return self.dma_read_bounce_async(sector, buf, len);
         }
@@ -95,9 +96,10 @@ impl VirtioBlkDevice {
         if dma.len != len {
             return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
         }
-        if !is_iommu_enabled() {
-            return Box::pin(async move { Err(VfsBlockError::IoError) });
-        }
+        debug_assert!(
+            is_iommu_enabled(),
+            "virtio-blk DMA dispatch expects translated IOMMU to remain active"
+        );
         if iommu_needs_bounce(dma.phys_addr, len) {
             return self.dma_write_bounce_async(sector, data, len);
         }

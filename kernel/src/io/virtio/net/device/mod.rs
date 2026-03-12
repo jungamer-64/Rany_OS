@@ -201,10 +201,6 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         packet: &PacketRef,
         direction: virtio_driver::net::NetDmaDirection,
     ) -> Result<virtio_driver::net::NetDmaMappingToken, VirtioNetError> {
-        if !is_iommu_enabled() {
-            return Err(VirtioNetError::DeviceError);
-        }
-
         map_net_dma_for_range(
             self.iommu_device_id,
             packet.phys_addr().as_u64(),
@@ -461,10 +457,6 @@ impl VirtioNetDevice {
         &self,
         total_size: usize,
     ) -> Result<(CoherentDmaBuffer, usize), VirtioNetError> {
-        if !is_iommu_enabled() {
-            return Err(VirtioNetError::DeviceError);
-        }
-
         let aligned_len = iommu_align_len(total_size).ok_or(VirtioNetError::DeviceError)?;
         let buffer = CoherentDmaBuffer::new_for_device(
             aligned_len,

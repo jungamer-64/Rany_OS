@@ -29,10 +29,6 @@
     Additional arguments to pass directly to QEMU.
 .PARAMETER Lint
     Run cargo fmt and clippy checks before building.
-.PARAMETER Iommu
-    Enable Intel VT-d IOMMU emulation (default: enabled for ExoRust DMA protection).
-.PARAMETER NoIommu
-    Disable IOMMU emulation (for compatibility testing without DMA protection).
 .PARAMETER Numa
     Enable NUMA topology simulation (default: enabled, 2 nodes).
 .PARAMETER NoNuma
@@ -66,9 +62,6 @@
     # GDB debugging: Freeze at startup, connect with gdb-multiarch
     .\run.ps1 -GdbDebug -Monitor
 .EXAMPLE
-    # WHPX compatibility: Disable IOMMU for Windows Hypervisor Platform
-    .\run.ps1 -NoIommu -Network
-.EXAMPLE
     # Reset UEFI state when boot fails mysteriously
     .\run.ps1 -ResetVars
 .EXAMPLE
@@ -84,8 +77,6 @@ param(
     [switch]$NoRun,
     [switch]$Test,
     [switch]$Lint,
-    [bool]$Iommu = $true,  # ExoRust: IOMMU enabled by default for DMA protection
-    [switch]$NoIommu,      # Explicitly disable IOMMU
     [bool]$Numa = $true,   # ExoRust: NUMA enabled by default (2 nodes)
     [switch]$NoNuma,       # Explicitly disable NUMA
     [switch]$Network,
@@ -539,6 +530,10 @@ function Start-Qemu {
     if (-not (Test-Path $ovmfVarsLocal)) { Copy-Item $ovmfVarsOrig $ovmfVarsLocal }
 
     $accel = Get-QemuAccelerator
+    if ($accel -eq "whpx") {
+        Write-Warn "[ACCEL] WHPX does not support mandatory intel-iommu; falling back to TCG."
+        $accel = "tcg"
+    }
 
     # CPU model selection: use explicit -Cpu if given, otherwise auto-select based on accel
     # - KVM/HVF: "host" for best performance (passthrough)
@@ -561,19 +556,7 @@ function Start-Qemu {
     }
 
     # Base Arguments
-    # [ExoRust] IOMMU: Separate "requested" vs "active" states
-    # - iommuRequested: User wants IOMMU (via -Iommu flag, not -NoIommu)
-    # - iommuActive: IOMMU is actually enabled (WHPX doesn't support it)
-    # This prevents VirtIO-net from using iommu_platform=on when IOMMU is not active
-    $iommuRequested = $Iommu -and (-not $NoIommu)
-    $iommuActive = $iommuRequested -and ($accel -ne "whpx")
-    
-    # NOTE: WHPX doesn't support kernel-irqchip=split, only use it when IOMMU is active
-    if ($iommuActive) {
-        $machineSpec = "q35,kernel-irqchip=split"
-    } else {
-        $machineSpec = "q35"
-    }
+    $machineSpec = "q35,kernel-irqchip=split"
     
     # Safe path handling for QEMU -drive arguments
     # QEMU parses these internally with comma as separator
@@ -596,15 +579,9 @@ function Start-Qemu {
         "-accel", $accel
     )
     
-    # [ExoRust] IOMMU (Intel VT-d) Support
-    # Required for DMA protection (Design Doc 5.4.1)
-    # Enabled by default for ExoRust; use -NoIommu to disable
-    if ($iommuRequested -and -not $iommuActive) {
-        Write-Warn "[IOMMU] Skipped (WHPX does not support intel-iommu device)"
-    } elseif ($iommuActive) {
-        $qemuArgs += @("-device", "intel-iommu,intremap=on,caching-mode=on")
-        Write-Done "[IOMMU] Intel VT-d enabled (intremap=on) [DEFAULT]"
-    }
+    # [ExoRust] translated IOMMU is mandatory for all DMA-capable boot paths.
+    $qemuArgs += @("-device", "intel-iommu,intremap=on,caching-mode=on")
+    Write-Done "[IOMMU] Intel VT-d enabled (intremap=on) [MANDATORY]"
     
     # [ExoRust] NUMA Topology Simulation
     # Required for Share-Nothing architecture testing (Design Doc 5.3)
@@ -623,9 +600,7 @@ function Start-Qemu {
         Write-Done "[NUMA] 2-node topology: node0 $coresNode0 cores ${memNode0}MB, node1 $($Smp - $coresNode0) cores ${memNode1}MB"
     }
     
-    # [ExoRust] VirtIO Network with IOMMU Support
-    # Required for zero-copy network testing (Design Doc 6.2)
-    # NOTE: iommu_platform only when IOMMU is *active* (not just requested)
+    # [ExoRust] VirtIO Network with mandatory translated IOMMU support
     if ($Networks.Count -gt 0) {
         for ($i = 0; $i -lt $Networks.Count; $i++) {
             $descriptor = $Networks[$i]
@@ -636,10 +611,7 @@ function Start-Qemu {
                 if ($i -eq 0) {
                     $netdevArgs += ",hostfwd=tcp::5555-:80,hostfwd=udp::5556-:80"
                 }
-                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10"
-                if ($iommuActive) {
-                    $deviceArgs += ",iommu_platform=on,disable-legacy=on"
-                }
+                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10,iommu_platform=on,disable-legacy=on"
                 $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)
                 Write-Done "[NET] Added descriptor $descriptor as $netId"
             }
@@ -648,10 +620,7 @@ function Start-Qemu {
                 $bridgeName = $bridgeSpec.Split(":", 2)[0]
                 $tapName = "tap$($PID)-$i"
                 $netdevArgs = "tap,id=$netId,ifname=$tapName,script=no,downscript=no"
-                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10"
-                if ($iommuActive) {
-                    $deviceArgs += ",iommu_platform=on,disable-legacy=on"
-                }
+                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10,iommu_platform=on,disable-legacy=on"
                 $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)
                 Write-Done "[NET] Added descriptor $descriptor as $netId (bridge=$bridgeName, host tap setup required)"
             }
@@ -662,10 +631,7 @@ function Start-Qemu {
                 $fd = 3 + $i
                 $qemuArgs += @("$fd<>/dev/tap$ifIndex")
                 $netdevArgs = "tap,id=$netId,fd=$fd"
-                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10"
-                if ($iommuActive) {
-                    $deviceArgs += ",iommu_platform=on,disable-legacy=on"
-                }
+                $deviceArgs = "virtio-net-pci,netdev=$netId,mq=on,vectors=10,iommu_platform=on,disable-legacy=on"
                 $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)
                 Write-Done "[NET] Added descriptor $descriptor as $netId"
             }
@@ -681,10 +647,7 @@ function Start-Qemu {
     }
     elseif ($Network) {
         $netdevArgs = "user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5555-:80"
-        $deviceArgs = "virtio-net-pci,netdev=net0,mq=on,vectors=10"
-        if ($iommuActive) {
-            $deviceArgs += ",iommu_platform=on,disable-legacy=on"
-        }
+        $deviceArgs = "virtio-net-pci,netdev=net0,mq=on,vectors=10,iommu_platform=on,disable-legacy=on"
         $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)
         Write-Done "[NET] VirtIO-net enabled (hostfwd: 5555->80)"
     }
