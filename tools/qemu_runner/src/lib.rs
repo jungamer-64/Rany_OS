@@ -294,20 +294,6 @@ fn profile_needs_driver_domain_cells(profile: &str) -> bool {
     )
 }
 
-fn profile_needs_iommu(profile: &str) -> bool {
-    matches!(
-        profile,
-        "boot-smoke"
-            | "storage"
-            | "driver_domain"
-            | "iommu"
-            | "network"
-            | "pr-required"
-            | "nightly-required"
-            | "step9-heavy"
-    )
-}
-
 fn copy_cells_dir(src_dir: &Path, dst_dir: &Path) -> Result<usize, BuildError> {
     if !src_dir.exists() {
         return Ok(0);
@@ -862,11 +848,9 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
             .arg("hda-duplex");
     }
 
-    if profile_needs_iommu(&config.profile) {
-        qemu_cmd
-            .arg("-device")
-            .arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
-    }
+    qemu_cmd
+        .arg("-device")
+        .arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
 
     for extra in &config.extra_args {
         qemu_cmd.arg(extra);

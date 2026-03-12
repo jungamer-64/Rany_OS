@@ -69,8 +69,8 @@ pub unsafe fn init_iommu_from_acpi(
     config: IommuConfig,
 ) -> Result<(), IommuError> {
     if !config.enabled {
-        log::info!("IOMMU disabled by kernel configuration");
-        return Err(IommuError::NotPresent);
+        log::error!("IOMMU disable request rejected: translated IOMMU protection is mandatory");
+        return Err(IommuError::NotSupported);
     }
 
     // Initialize security subsystem (protected regions like APIC)

@@ -456,7 +456,9 @@ pub fn test_iommu() -> IntegrationTestSuite {
     // Test IOMMU DMA mapping
     suite.add_result(run_test("iommu_dma_map_basic", || {
         if !crate::io::iommu::api::is_iommu_enabled() {
-            return Err(String::from("IOMMU not enabled, skipping DMA test"));
+            return Err(String::from(
+                "IOMMU is mandatory but was not enabled for the DMA mapping test",
+            ));
         }
 
         use crate::io::iommu::types::DeviceId;
@@ -572,7 +574,11 @@ pub fn test_iommu() -> IntegrationTestSuite {
             .read_block(0, &mut buf)
             .map_err(|e| alloc::format!("NvmeBlockIo read failed: {:?}", e))?;
 
-        if crate::io::iommu::api::is_iommu_enabled() {
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            Err(String::from(
+                "IOMMU is mandatory but NVMe BlockIo ran without IOMMU enabled",
+            ))
+        } else {
             let maps = crate::io::iommu::api::get_map_count();
             if maps == 0 {
                 Err(String::from(
@@ -586,8 +592,6 @@ pub fn test_iommu() -> IntegrationTestSuite {
                     maps
                 ))
             }
-        } else {
-            Ok(String::from("NVMe BlockIo read ok (IOMMU disabled)"))
         }
     }));
 

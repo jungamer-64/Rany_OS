@@ -30,11 +30,9 @@ pub fn is_iommu_required() -> bool {
 /// この関数はIOMMU初期化後に呼び出すべき
 pub fn enforce_iommu_requirement() {
     if is_iommu_required() && !is_iommu_enabled() {
-        // IOMMUが必須だが検出されなかった
         panic!(
             "[SECURITY] IOMMU is required but not detected. \
-             DMA attacks are possible without IOMMU protection. \
-             To boot without IOMMU, set IOMMU_REQUIRED=false."
+             DMA isolation cannot be enforced, so boot is aborted."
         );
     }
 }

@@ -7,7 +7,7 @@ extern crate alloc;
 // use core::panic::PanicInfo;
 use boot_proto::{EXO_BOOT_INFO_VERSION, ExoBootInfo};
 
-use log::{debug, error, info, warn};
+use log::{info, warn};
 
 mod crypto;
 mod debug;
@@ -328,23 +328,28 @@ fn init_avx() {
 
 /// ACPI and IOMMU initialization.
 fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
+    // Security baseline: IOMMU is mandatory for DMA isolation.
+    io::iommu::api::set_iommu_required(true);
+
     if boot_info.rsdp_addr == 0 {
-        warn!(target: "init", "No RSDP found provided by bootloader");
-        return;
+        panic!(
+            "[SECURITY] IOMMU is mandatory but the bootloader did not provide an RSDP. \
+             ACPI DMAR/IVRS discovery cannot continue."
+        );
     }
 
     let rsdp_addr = boot_info.rsdp_addr as usize;
     let parser = match unsafe { drivers::acpi::init(rsdp_addr as u64) } {
         Ok(p) => p,
         Err(e) => {
-            warn!(target: "init", "ACPI initialization failed: {:?}", e);
-            return;
+            panic!(
+                "[SECURITY] IOMMU is mandatory but ACPI initialization failed: {:?}",
+                e
+            );
         }
     };
     info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
 
-    // Security baseline: IOMMU is mandatory for DMA isolation.
-    io::iommu::api::set_iommu_required(true);
     let iommu_config = parse_iommu_cmdline(boot_info, phys_mem_offset);
     init_iommu_driver(&parser, &iommu_config);
     io::iommu::api::enforce_iommu_requirement();
@@ -429,8 +434,17 @@ fn parse_iommu_cmdline(
 
     if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
         match val {
-            "off" => config.enabled = false,
-            "pt" | "passthrough" => config.passthrough = true,
+            "off" => {
+                panic!(
+                    "[SECURITY] Kernel cmdline requested 'iommu=off', but IOMMU is mandatory."
+                );
+            }
+            "pt" | "passthrough" => {
+                panic!(
+                    "[SECURITY] Kernel cmdline requested IOMMU passthrough mode, \
+                     but translated IOMMU protection is mandatory."
+                );
+            }
             "force" => config.force = true,
             _ => {}
         }
@@ -466,17 +480,28 @@ fn init_iommu_driver(
                 Ok(handle) => {
                     info!(target: "init", "Registered Intel VT-d driver");
                     if let Err(e) = driver_registry().probe_and_start(handle) {
-                        warn!(target: "init", "Intel VT-d start failed: {:?}", e);
+                        panic!(
+                            "[SECURITY] Intel VT-d driver failed to start while IOMMU is mandatory: {:?}",
+                            e
+                        );
                     } else {
                         info!(target: "init", "Intel VT-d initialized via DriverRegistry");
                         if let Err(e) = io::iommu::api::enable_iommu() {
-                            error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                            panic!(
+                                "[SECURITY] Failed to enable Intel VT-d while IOMMU is mandatory: {:?}",
+                                e
+                            );
                         } else {
                             info!(target: "init", "IOMMU translation enabled");
                         }
                     }
                 }
-                Err(e) => warn!(target: "init", "Intel VT-d registration failed: {:?}", e),
+                Err(e) => {
+                    panic!(
+                        "[SECURITY] Intel VT-d driver registration failed while IOMMU is mandatory: {:?}",
+                        e
+                    );
+                }
             }
         }
         Err(_) => match parser.find_table(b"IVRS") {
@@ -486,20 +511,35 @@ fn init_iommu_driver(
                     Ok(handle) => {
                         info!(target: "init", "Registered AMD-Vi driver");
                         if let Err(e) = driver_registry().probe_and_start(handle) {
-                            warn!(target: "init", "AMD-Vi start failed: {:?}", e);
+                            panic!(
+                                "[SECURITY] AMD-Vi driver failed to start while IOMMU is mandatory: {:?}",
+                                e
+                            );
                         } else {
                             info!(target: "init", "AMD-Vi initialized via DriverRegistry");
                             if let Err(e) = io::iommu::api::enable_iommu() {
-                                error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                                panic!(
+                                    "[SECURITY] Failed to enable AMD-Vi while IOMMU is mandatory: {:?}",
+                                    e
+                                );
                             } else {
                                 info!(target: "init", "IOMMU translation enabled");
                             }
                         }
                     }
-                    Err(e) => warn!(target: "init", "AMD-Vi registration failed: {:?}", e),
+                    Err(e) => {
+                        panic!(
+                            "[SECURITY] AMD-Vi driver registration failed while IOMMU is mandatory: {:?}",
+                            e
+                        );
+                    }
                 }
             }
-            Err(_) => info!(target: "init", "IOMMU not initialized (No DMAR/IVRS table)"),
+            Err(_) => {
+                panic!(
+                    "[SECURITY] IOMMU is mandatory but no ACPI DMAR or IVRS table was found."
+                );
+            }
         },
     }
 }
