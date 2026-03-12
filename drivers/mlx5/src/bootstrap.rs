@@ -116,6 +116,7 @@ pub struct Mlx5AllocatedResources {
     pub rx_cqs: Vec<Mlx5QueueDmaRegion>,
     pub sqs: Vec<Mlx5QueueDmaRegion>,
     pub rqs: Vec<Mlx5QueueDmaRegion>,
+    pub rmps: Vec<Mlx5QueueDmaRegion>,
 }
 
 impl Mlx5AllocatedResources {
@@ -145,6 +146,10 @@ impl Mlx5AllocatedResources {
     pub fn rq_bufs(&self) -> Vec<(u64, u64, u64, u64)> {
         queue_db_pairs(&self.rqs)
     }
+
+    pub fn rmp_bufs(&self) -> Vec<(u64, u64, u64, u64)> {
+        queue_db_pairs(&self.rmps)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +161,7 @@ pub struct Mlx5BootstrapPlan {
     cq_size: usize,
     sq_size: usize,
     rq_size: usize,
+    rmp_size: usize,
     db_record_size: usize,
 }
 
@@ -168,6 +174,8 @@ impl Mlx5BootstrapPlan {
         let sq_size = (1usize << queue_profile.log_sq_size as usize) * 64;
         let rq_size =
             (1usize << queue_profile.log_rq_size as usize) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
+        let rmp_size =
+            (1usize << queue_profile.log_rq_size as usize) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
 
         Self {
             queue_profile,
@@ -177,6 +185,7 @@ impl Mlx5BootstrapPlan {
             cq_size,
             sq_size,
             rq_size,
+            rmp_size,
             db_record_size: MLX5_PAGE_SIZE,
         }
     }
@@ -215,6 +224,10 @@ impl Mlx5BootstrapPlan {
 
     pub const fn rq_size(&self) -> usize {
         self.rq_size
+    }
+
+    pub const fn rmp_size(&self) -> usize {
+        self.rmp_size
     }
 
     pub const fn db_record_size(&self) -> usize {
@@ -256,6 +269,12 @@ impl Mlx5BootstrapPlan {
             &resources.rqs,
             self.queue_profile.rx_queue_count,
             self.rq_size,
+            self.db_record_size,
+        )?;
+        validate_queue_list(
+            &resources.rmps,
+            self.queue_profile.rx_queue_count,
+            self.rmp_size,
             self.db_record_size,
         )?;
 
@@ -395,6 +414,15 @@ mod tests {
                     )
                 })
                 .collect(),
+            rmps: (0..profile.rx_queue_count)
+                .map(|i| {
+                    queue_region(
+                        0x140_000 + (i as u64 * 0x4000),
+                        plan.rmp_size(),
+                        plan.db_record_size(),
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -420,6 +448,10 @@ mod tests {
             plan.rq_size(),
             (1usize << 5) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE
         );
+        assert_eq!(
+            plan.rmp_size(),
+            (1usize << 5) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE
+        );
     }
 
     #[test]
@@ -435,7 +467,7 @@ mod tests {
         let config = Mlx5BootstrapConfig::default();
         let plan = Mlx5BootstrapPlan::new(&config);
         let mut resources = valid_resources(&plan);
-        let _ = resources.sqs.pop();
+        let _ = resources.rmps.pop();
 
         assert_eq!(
             plan.validate_resources(&resources),

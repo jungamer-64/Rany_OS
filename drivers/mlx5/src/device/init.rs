@@ -565,6 +565,7 @@ impl Mlx5Device {
         let rx_cq_bufs = resources.rx_cq_bufs();
         let sq_bufs = resources.sq_bufs();
         let rq_bufs = resources.rq_bufs();
+        let rmp_bufs = resources.rmp_bufs();
         let profile = plan.queue_profile();
 
         self.init_multi_queue(
@@ -581,6 +582,7 @@ impl Mlx5Device {
             &rx_cq_bufs,
             &sq_bufs,
             &rq_bufs,
+            &rmp_bufs,
             profile.log_eq_size,
             profile.log_cq_size,
             profile.log_sq_size,
@@ -605,6 +607,7 @@ impl Mlx5Device {
         rx_cq_buf: (u64, u64, u64, u64),
         sq_buf: (u64, u64, u64, u64),
         rq_buf: (u64, u64, u64, u64),
+        rmp_buf: (u64, u64, u64, u64),
         log_eq_size: u8,
         log_cq_size: u8,
         log_sq_size: u8,
@@ -624,6 +627,7 @@ impl Mlx5Device {
             &[rx_cq_buf],
             &[sq_buf],
             &[rq_buf],
+            &[rmp_buf],
             log_eq_size,
             log_cq_size,
             log_sq_size,
@@ -648,6 +652,7 @@ impl Mlx5Device {
         rx_cq_bufs: &[(u64, u64, u64, u64)],
         sq_bufs: &[(u64, u64, u64, u64)],
         rq_bufs: &[(u64, u64, u64, u64)],
+        rmp_bufs: &[(u64, u64, u64, u64)],
         log_eq_size: u8,
         log_cq_size: u8,
         log_sq_size: u8,
@@ -1375,6 +1380,14 @@ impl Mlx5Device {
             );
         }
 
+        if self.is_vf() && self.sqs.is_empty() {
+            log::error!(
+                target: "mlx5",
+                "VF bootstrap failed: no working SQ was created"
+            );
+            return Err(Mlx5Error::NotSupported);
+        }
+
         let scatter_fcs = self.hca_caps().map(|c| c.scatter_fcs).unwrap_or(false);
         let vlan_strip = self.hca_caps().map(|c| c.vlan_strip).unwrap_or(false);
         let max_hw_rq = self
@@ -1394,11 +1407,16 @@ impl Mlx5Device {
         let mut rqns = Vec::new();
         for (i, rq_buf) in rq_bufs.iter().take(rq_queue_count).enumerate() {
             let cqn = rx_cqns[i % rx_cqns.len()];
+            let rmp_buf = rmp_bufs[i % rmp_bufs.len()];
             let rqn = self.create_rq_hw(
                 rq_buf.0,
                 rq_buf.1,
                 rq_buf.2,
                 rq_buf.3,
+                rmp_buf.0,
+                rmp_buf.1,
+                rmp_buf.2,
+                rmp_buf.3,
                 log_rq_size,
                 cqn,
                 0, // Dummy TIRN for DirectRq (unused in create_rq_hw)
@@ -1408,6 +1426,14 @@ impl Mlx5Device {
             rqns.push(rqn);
         }
         crate::boot_trace("[MLX5_STAGE] rq_done\n");
+
+        if self.is_vf() && rqns.is_empty() {
+            log::error!(
+                target: "mlx5",
+                "VF bootstrap failed: no working RQ was created"
+            );
+            return Err(Mlx5Error::NotSupported);
+        }
 
         let tirn = if rqns.len() > 1 {
             crate::boot_trace("[MLX5_STAGE] create_rqt_enter\n");
@@ -1438,6 +1464,14 @@ impl Mlx5Device {
             })?
         };
         crate::boot_trace("[MLX5_STAGE] create_tir_done\n");
+
+        if self.is_vf() && self.tir_list.is_empty() {
+            log::error!(
+                target: "mlx5",
+                "VF bootstrap failed: no working TIR path was created"
+            );
+            return Err(Mlx5Error::NotSupported);
+        }
 
         // Finalize
         crate::boot_trace("[MLX5_STAGE] flow_table_enter\n");

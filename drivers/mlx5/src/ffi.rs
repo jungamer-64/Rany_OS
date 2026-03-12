@@ -260,6 +260,8 @@ struct Mlx5DmaResources {
     sq_dbs: Vec<DmaSlot>,
     rqs: Vec<DmaSlot>,
     rq_dbs: Vec<DmaSlot>,
+    rmps: Vec<DmaSlot>,
+    rmp_dbs: Vec<DmaSlot>,
 }
 
 impl Mlx5DmaResources {
@@ -288,6 +290,8 @@ impl Mlx5DmaResources {
         let mut sq_dbs = Vec::with_capacity(profile.tx_queue_count);
         let mut rqs = Vec::with_capacity(profile.rx_queue_count);
         let mut rq_dbs = Vec::with_capacity(profile.rx_queue_count);
+        let mut rmps = Vec::with_capacity(profile.rx_queue_count);
+        let mut rmp_dbs = Vec::with_capacity(profile.rx_queue_count);
 
         for _ in 0..profile.eq_count {
             eqs.push(DmaSlot::alloc(plan.eq_size(), pci_locator, "eq")?);
@@ -311,6 +315,8 @@ impl Mlx5DmaResources {
             )?);
             rqs.push(DmaSlot::alloc(plan.rq_size(), pci_locator, "rq")?);
             rq_dbs.push(DmaSlot::alloc(plan.db_record_size(), pci_locator, "rq_db")?);
+            rmps.push(DmaSlot::alloc(plan.rmp_size(), pci_locator, "rmp")?);
+            rmp_dbs.push(DmaSlot::alloc(plan.db_record_size(), pci_locator, "rmp_db")?);
         }
 
         Ok(Self {
@@ -327,6 +333,8 @@ impl Mlx5DmaResources {
             sq_dbs,
             rqs,
             rq_dbs,
+            rmps,
+            rmp_dbs,
         })
     }
 
@@ -377,6 +385,15 @@ impl Mlx5DmaResources {
                     doorbell: doorbell.as_region(),
                 })
                 .collect(),
+            rmps: self
+                .rmps
+                .iter()
+                .zip(self.rmp_dbs.iter())
+                .map(|(queue, doorbell)| Mlx5QueueDmaRegion {
+                    entries: queue.as_region(),
+                    doorbell: doorbell.as_region(),
+                })
+                .collect(),
         }
     }
 }
@@ -384,6 +401,8 @@ impl Mlx5DmaResources {
 impl Drop for Mlx5DmaResources {
     fn drop(&mut self) {
         self.fw_pages.clear();
+        self.rmp_dbs.clear();
+        self.rmps.clear();
         self.rq_dbs.clear();
         self.rqs.clear();
         self.sq_dbs.clear();
@@ -1069,6 +1088,8 @@ mod tests {
             sq_dbs: vec![slot(0x20_000, 0x21_000, 0x22_000, 0x1000)],
             rqs: vec![slot(0x23_000, 0x24_000, 0x25_000, 0x200)],
             rq_dbs: vec![slot(0x26_000, 0x27_000, 0x28_000, 0x1000)],
+            rmps: vec![slot(0x29_000, 0x2a_000, 0x2b_000, 0x200)],
+            rmp_dbs: vec![slot(0x2c_000, 0x2d_000, 0x2e_000, 0x1000)],
         };
 
         let allocated = dma.to_allocated_resources();
@@ -1078,6 +1099,13 @@ mod tests {
             Mlx5QueueDmaRegion {
                 entries: Mlx5DmaRegion::new(0x13_000, 0x12_000, 0x100),
                 doorbell: Mlx5DmaRegion::new(0x16_000, 0x15_000, 0x1000),
+            }
+        );
+        assert_eq!(
+            allocated.rmps[0],
+            Mlx5QueueDmaRegion {
+                entries: Mlx5DmaRegion::new(0x2b_000, 0x2a_000, 0x200),
+                doorbell: Mlx5DmaRegion::new(0x2e_000, 0x2d_000, 0x1000),
             }
         );
     }

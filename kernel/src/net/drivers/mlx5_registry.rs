@@ -397,6 +397,8 @@ struct Mlx5DmaResources {
     sq_dbs: Vec<DmaSlot>,
     rqs: Vec<DmaSlot>,
     rq_dbs: Vec<DmaSlot>,
+    rmps: Vec<DmaSlot>,
+    rmp_dbs: Vec<DmaSlot>,
 }
 
 impl Mlx5DmaResources {
@@ -443,6 +445,15 @@ impl Mlx5DmaResources {
                     doorbell: doorbell.as_region(),
                 })
                 .collect(),
+            rmps: self
+                .rmps
+                .iter()
+                .zip(self.rmp_dbs.iter())
+                .map(|(queue, doorbell)| Mlx5QueueDmaRegion {
+                    entries: queue.as_region(),
+                    doorbell: doorbell.as_region(),
+                })
+                .collect(),
         }
     }
 }
@@ -460,6 +471,12 @@ impl Drop for Mlx5DmaResources {
             release_dma_slot(q);
         }
         for q in self.rqs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.rmp_dbs.iter_mut() {
+            release_dma_slot(q);
+        }
+        for q in self.rmps.iter_mut() {
             release_dma_slot(q);
         }
         for q in self.sq_dbs.iter_mut() {
@@ -630,6 +647,8 @@ impl Mlx5AsyncDriver {
         let mut sq_dbs = Vec::with_capacity(profile.tx_queue_count);
         let mut rqs = Vec::with_capacity(profile.rx_queue_count);
         let mut rq_dbs = Vec::with_capacity(profile.rx_queue_count);
+        let mut rmps = Vec::with_capacity(profile.rx_queue_count);
+        let mut rmp_dbs = Vec::with_capacity(profile.rx_queue_count);
 
         for _ in 0..profile.eq_count {
             eqs.push(Self::alloc_dma_for_device(
@@ -683,6 +702,16 @@ impl Mlx5AsyncDriver {
                 packed_device_id,
                 "rq_db",
             )?);
+            rmps.push(Self::alloc_dma_for_device(
+                plan.rmp_size(),
+                packed_device_id,
+                "rmp",
+            )?);
+            rmp_dbs.push(Self::alloc_dma_for_device(
+                plan.db_record_size(),
+                packed_device_id,
+                "rmp_db",
+            )?);
         }
 
         Ok(Mlx5DmaResources {
@@ -708,6 +737,8 @@ impl Mlx5AsyncDriver {
             sq_dbs,
             rqs,
             rq_dbs,
+            rmps,
+            rmp_dbs,
         })
     }
 
@@ -1410,6 +1441,47 @@ mod tests {
                 .map(SriovOps::active_vf_count)
                 .unwrap_or_default(),
             0
+        );
+    }
+
+    #[test_case]
+    fn dma_resources_to_allocated_resources_preserve_rmp_regions() {
+        let dma_resources = Mlx5DmaResources {
+            cmdq: DmaSlot::from_dma_buffer(test_dma_buffer(0x100, 0x1000, 0x2000)),
+            cmd_in_mbox: DmaSlot::from_dma_buffer(test_dma_buffer(0x200, 0x3000, 0x4000)),
+            cmd_out_mbox: DmaSlot::from_dma_buffer(test_dma_buffer(0x200, 0x5000, 0x6000)),
+            fw_page_chunks: Vec::new(),
+            fw_pages: Vec::new(),
+            eqs: Vec::new(),
+            tx_cqs: Vec::new(),
+            tx_cq_dbs: Vec::new(),
+            rx_cqs: Vec::new(),
+            rx_cq_dbs: Vec::new(),
+            sqs: Vec::new(),
+            sq_dbs: Vec::new(),
+            rqs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(0x80, 0x7000, 0x8000))],
+            rq_dbs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(0x1000, 0x9000, 0xa000))],
+            rmps: vec![DmaSlot::from_dma_buffer(test_dma_buffer(0x80, 0xb000, 0xc000))],
+            rmp_dbs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(0x1000, 0xd000, 0xe000))],
+        };
+
+        let allocated = dma_resources.to_allocated_resources();
+        assert_eq!(allocated.rqs.len(), 1);
+        assert_eq!(allocated.rmps.len(), 1);
+        assert_eq!(
+            allocated.rmps[0],
+            Mlx5QueueDmaRegion {
+                entries: Mlx5DmaRegion::new(
+                    dma_resources.rmps[0].as_ptr_u64(),
+                    dma_resources.rmps[0].device_address(),
+                    0x80,
+                ),
+                doorbell: Mlx5DmaRegion::new(
+                    dma_resources.rmp_dbs[0].as_ptr_u64(),
+                    dma_resources.rmp_dbs[0].device_address(),
+                    0x1000,
+                ),
+            }
         );
     }
 

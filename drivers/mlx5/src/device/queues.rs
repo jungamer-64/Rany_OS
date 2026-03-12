@@ -24,11 +24,19 @@ struct RqProfileAttempt {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirectRqExpectations {
+struct RqExpectations {
     cqn: u32,
     log_rq_size: u8,
     pd: u32,
     dbr_addr: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QueueBacking {
+    buf_virt: u64,
+    buf_device: u64,
+    db_virt: u64,
+    db_device: u64,
 }
 
 const DIRECT_RQ_PROFILE_ATTEMPTS: [RqProfileAttempt; 3] = [
@@ -55,9 +63,33 @@ const DIRECT_RQ_PROFILE_ATTEMPTS: [RqProfileAttempt; 3] = [
     },
 ];
 
+const RMP_RQ_PROFILE_ATTEMPTS: [RqProfileAttempt; 3] = [
+    RqProfileAttempt {
+        name: "rmp/cyclic/16",
+        flush_in_error_en: true,
+        wq_type: 1,
+        end_padding_mode: 1,
+        log_wq_stride: 4,
+    },
+    RqProfileAttempt {
+        name: "rmp/cyclic/64",
+        flush_in_error_en: true,
+        wq_type: 1,
+        end_padding_mode: 1,
+        log_wq_stride: 6,
+    },
+    RqProfileAttempt {
+        name: "rmp/linked/64",
+        flush_in_error_en: true,
+        wq_type: 0,
+        end_padding_mode: 0,
+        log_wq_stride: 6,
+    },
+];
+
 fn resolve_direct_rq_layout(
     rqn: u32,
-    expected: DirectRqExpectations,
+    expected: RqExpectations,
     ctx: QueryRqInfo,
 ) -> Result<ResolvedRqLayout, &'static str> {
     let rmpn = (ctx.rmpn != 0).then_some(ctx.rmpn);
@@ -116,6 +148,63 @@ fn resolve_direct_rq_layout(
         )),
         (0, 4) => Err("linked RQ requires a 64B stride"),
         (0, _) | (1, _) => Err("unsupported RQ stride"),
+        _ => Err("unsupported wq_type"),
+    }
+}
+
+fn resolve_rmp_backed_rq_layout(
+    rqn: u32,
+    expected: RqExpectations,
+    expected_rmpn: u32,
+    ctx: QueryRqInfo,
+) -> Result<ResolvedRqLayout, &'static str> {
+    let rmpn = (ctx.rmpn != 0).then_some(ctx.rmpn);
+    if ctx.state != WqState::Ready as u8 {
+        return Err("QUERY_RQ returned an unexpected state");
+    }
+    if ctx.mem_rq_type != 1 {
+        return Err("QUERY_RQ did not switch to mem_rq_type=1");
+    }
+    if ctx.cqn != expected.cqn {
+        return Err("QUERY_RQ returned an unexpected CQN");
+    }
+    if ctx.log_wq_sz != expected.log_rq_size {
+        return Err("QUERY_RQ returned an unexpected queue depth");
+    }
+    if ctx.pd != expected.pd {
+        return Err("QUERY_RQ returned an unexpected PD");
+    }
+    if ctx.dbr_addr != expected.dbr_addr {
+        return Err("QUERY_RQ returned an unexpected doorbell address");
+    }
+    if ctx.rmpn != expected_rmpn {
+        return Err("QUERY_RQ returned an unexpected RMP number");
+    }
+
+    match (ctx.wq_type, ctx.log_wq_stride) {
+        (1, 4) | (1, 6) => Ok(ResolvedRqLayout::cyclic(
+            rqn,
+            expected.cqn,
+            MLX5_RX_WQE_MAX_SUPPORTED_SIZE,
+            ctx.mem_rq_type,
+            ctx.wq_type,
+            ctx.log_wq_stride,
+            ctx.end_padding_mode,
+            ctx.log_wq_sz,
+            rmpn,
+        )),
+        (0, 4) | (0, 6) => Ok(ResolvedRqLayout::linked(
+            rqn,
+            expected.cqn,
+            MLX5_RX_WQE_MAX_SUPPORTED_SIZE,
+            ctx.mem_rq_type,
+            ctx.wq_type,
+            ctx.log_wq_stride,
+            ctx.end_padding_mode,
+            ctx.log_wq_sz,
+            rmpn,
+        )),
+        (0, _) | (1, _) => Err("unsupported RMP-backed RQ stride"),
         _ => Err("unsupported wq_type"),
     }
 }
@@ -525,6 +614,10 @@ impl Mlx5Device {
         rq_buf_pa: u64,
         db_virt: u64,
         db_pa: u64,
+        rmp_buf_virt: u64,
+        rmp_buf_pa: u64,
+        rmp_db_virt: u64,
+        rmp_db_pa: u64,
         log_rq_size: u8,
         cqn: u32,
         _tirn: u32,
@@ -536,16 +629,35 @@ impl Mlx5Device {
         let rq_bytes = (1usize << (log_rq_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
         let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rq_in_len = (0x110 + rq_pages * 8) as u32;
-        let expected = DirectRqExpectations {
+        let expected = RqExpectations {
             cqn,
             log_rq_size,
             pd: self.pd,
             dbr_addr: db_pa,
         };
+        let rq_backing = QueueBacking {
+            buf_virt: rq_buf_virt,
+            buf_device: rq_buf_pa,
+            db_virt,
+            db_device: db_pa,
+        };
+        let rmp_backing = QueueBacking {
+            buf_virt: rmp_buf_virt,
+            buf_device: rmp_buf_pa,
+            db_virt: rmp_db_virt,
+            db_device: rmp_db_pa,
+        };
 
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
         let mut last_rejection_reason: Option<alloc::string::String> = None;
-        let mut selected: Option<(u32, ResolvedRqLayout, RqProfileAttempt)> = None;
+        let mut selected: Option<(
+            u32,
+            ResolvedRqLayout,
+            RqProfileAttempt,
+            QueueBacking,
+            Option<u32>,
+        )> = None;
+        let mut should_try_rmp_fallback = false;
 
         for attempt in DIRECT_RQ_PROFILE_ATTEMPTS {
             log::info!(
@@ -627,13 +739,13 @@ impl Mlx5Device {
 
                             if ctx.mem_rq_type != 0 {
                                 let reason = alloc::format!(
-                                    "firmware returned mem_rq_type={} rmpn={:#x}; RMP-backed RX is intentionally out of scope for this direct-RQ bring-up",
+                                    "firmware returned mem_rq_type={} rmpn={:#x}; switching to RMP-backed RX fallback",
                                     ctx.mem_rq_type,
                                     ctx.rmpn
                                 );
                                 log::warn!(
                                     target: "mlx5",
-                                    "CREATE_RQ rejected: profile={} rqn={:#x} reason={}",
+                                    "CREATE_RQ requires RMP fallback: profile={} rqn={:#x} reason={}",
                                     attempt.name,
                                     rqn,
                                     reason
@@ -641,7 +753,8 @@ impl Mlx5Device {
                                 let _ = self.destroy_rq_hw(rqn);
                                 last_rejection_reason = Some(reason);
                                 last_err = Err(Mlx5Error::NotSupported);
-                                continue;
+                                should_try_rmp_fallback = true;
+                                break;
                             }
 
                             if ctx.wq_type != attempt.wq_type
@@ -690,7 +803,7 @@ impl Mlx5Device {
                                             .map(|value| alloc::format!("{:#x}", value))
                                             .unwrap_or_else(|| "none".into())
                                     );
-                                    selected = Some((rqn, layout, attempt));
+                                    selected = Some((rqn, layout, attempt, rq_backing, None));
                                     last_err = Ok(());
                                     break;
                                 }
@@ -737,13 +850,186 @@ impl Mlx5Device {
             }
         }
 
-        let (rqn, layout, _attempt) = if let Some(selected) = selected {
+        if selected.is_none() && should_try_rmp_fallback {
+            match self.create_rmp_hw(rmp_buf_pa, rmp_db_pa, log_rq_size) {
+                Ok(rmpn) => {
+                    for attempt in RMP_RQ_PROFILE_ATTEMPTS {
+                        log::info!(
+                            target: "mlx5",
+                            "CREATE_RQ try: mem_rq_type=1 profile={} cqn={:#x} pd={} uar_page={} log_rq_size={} stride={} wq_type={} end_pad={} flush={} rmpn={:#x}",
+                            attempt.name,
+                            cqn,
+                            self.pd,
+                            self.uar_page,
+                            log_rq_size,
+                            attempt.log_wq_stride,
+                            attempt.wq_type,
+                            attempt.end_padding_mode,
+                            attempt.flush_in_error_en,
+                            rmpn
+                        );
+                        build_create_rq_input_with_options(
+                            in_mbox,
+                            log_rq_size,
+                            rq_buf_pa,
+                            db_pa,
+                            cqn,
+                            self.pd,
+                            self.uar_page,
+                            scatter_fcs,
+                            vlan_strip,
+                            1,
+                            Some(rmpn),
+                            attempt.flush_in_error_en,
+                            attempt.wq_type,
+                            attempt.end_padding_mode,
+                            attempt.log_wq_stride,
+                        );
+
+                        match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
+                            Ok(()) => {
+                                let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                                let rqn = parse_create_rq_output(out_mbox);
+                                if let Err(err) = self.transition_rq_to_ready(rqn) {
+                                    if self.is_vf() {
+                                        crate::boot_trace("[MLX5_RQ] modify_rq failed on VF; continue\n");
+                                    } else {
+                                        let reason =
+                                            alloc::format!("transition to ready failed: {:?}", err);
+                                        log::warn!(
+                                            target: "mlx5",
+                                            "CREATE_RQ rejected: profile={} rqn={:#x} reason={}",
+                                            attempt.name,
+                                            rqn,
+                                            reason
+                                        );
+                                        let _ = self.destroy_rq_hw(rqn);
+                                        last_rejection_reason = Some(reason);
+                                        last_err = Err(err);
+                                        continue;
+                                    }
+                                }
+
+                                match self.query_rq_hw(rqn) {
+                                    Ok(ctx) => {
+                                        log::info!(
+                                            target: "mlx5",
+                                            "QUERY_RQ: rqn={:#x} state={} mem_rq_type={} flush={} scatter_fcs={} vlan_strip={} cqn={:#x} rmpn={:#x} wq_type={} end_pad={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
+                                            rqn,
+                                            ctx.state,
+                                            ctx.mem_rq_type,
+                                            ctx.flush_in_error_en,
+                                            ctx.scatter_fcs,
+                                            ctx.vlan_strip,
+                                            ctx.cqn,
+                                            ctx.rmpn,
+                                            ctx.wq_type,
+                                            ctx.end_padding_mode,
+                                            ctx.pd,
+                                            ctx.uar_page,
+                                            ctx.dbr_addr,
+                                            ctx.log_wq_stride,
+                                            ctx.log_wq_pg_sz,
+                                            ctx.log_wq_sz
+                                        );
+
+                                        match resolve_rmp_backed_rq_layout(rqn, expected, rmpn, ctx)
+                                        {
+                                            Ok(layout) => {
+                                                log::info!(
+                                                    target: "mlx5",
+                                                    "CREATE_RQ accepted: profile={} rqn={:#x} cqn={:#x} pd={} uar_page={} dbr_addr={:#x} mode={} slot_size={} data_seg_offset={} next_seg={} raw_mem_rq_type={} raw_wq_type={} raw_stride={} rmpn={}",
+                                                    attempt.name,
+                                                    rqn,
+                                                    expected.cqn,
+                                                    expected.pd,
+                                                    ctx.uar_page,
+                                                    expected.dbr_addr,
+                                                    layout.wq_mode.label(),
+                                                    layout.slot_size_bytes,
+                                                    layout.data_seg_offset,
+                                                    layout.has_next_segment,
+                                                    layout.raw_mem_rq_type,
+                                                    layout.raw_wq_type,
+                                                    layout.raw_log_wq_stride,
+                                                    layout
+                                                        .rmpn
+                                                        .map(|value| alloc::format!("{:#x}", value))
+                                                        .unwrap_or_else(|| "none".into())
+                                                );
+                                                selected = Some((
+                                                    rqn,
+                                                    layout,
+                                                    attempt,
+                                                    rmp_backing,
+                                                    Some(rmpn),
+                                                ));
+                                                last_err = Ok(());
+                                                break;
+                                            }
+                                            Err(reason) => {
+                                                log::warn!(
+                                                    target: "mlx5",
+                                                    "CREATE_RQ dropped fallback: profile={} rqn={:#x} reason={}",
+                                                    attempt.name,
+                                                    rqn,
+                                                    reason
+                                                );
+                                                let _ = self.destroy_rq_hw(rqn);
+                                                last_rejection_reason = Some(reason.into());
+                                                last_err = Err(Mlx5Error::NotSupported);
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        let reason = alloc::format!("query failed: {:?}", err);
+                                        log::warn!(
+                                            target: "mlx5",
+                                            "CREATE_RQ rejected: profile={} rqn={:#x} reason={}",
+                                            attempt.name,
+                                            rqn,
+                                            reason
+                                        );
+                                        let _ = self.destroy_rq_hw(rqn);
+                                        last_rejection_reason = Some(reason);
+                                        last_err = Err(err);
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                let reason = alloc::format!("command failed: {:?}", err);
+                                log::warn!(
+                                    target: "mlx5",
+                                    "CREATE_RQ attempt failed: mem_rq_type=1 profile={} reason={}",
+                                    attempt.name,
+                                    reason
+                                );
+                                last_rejection_reason = Some(reason);
+                                last_err = Err(err);
+                            }
+                        }
+                    }
+
+                    if selected.is_none() {
+                        let _ = self.destroy_rmp_hw(rmpn);
+                    }
+                }
+                Err(err) => {
+                    let reason = alloc::format!("CREATE_RMP failed: {:?}", err);
+                    log::warn!(target: "mlx5", "{}", reason);
+                    last_rejection_reason = Some(reason);
+                    last_err = Err(err);
+                }
+            }
+        }
+
+        let (rqn, layout, _attempt, backing, created_rmpn) = if let Some(selected) = selected {
             selected
         } else {
             if let Some(reason) = last_rejection_reason.as_deref() {
                 log::error!(
                     target: "mlx5",
-                    "CREATE_RQ failed after probing all direct-RQ profiles: last_reason={}",
+                    "CREATE_RQ failed after probing all RX profiles: last_reason={}",
                     reason
                 );
             }
@@ -754,9 +1040,9 @@ impl Mlx5Device {
         crate::boot_trace("[MLX5_RQ] build rq object\n");
         let rq = ReceiveQueue::new(
             rqn,
-            rq_buf_virt,
-            rq_buf_pa,
-            db_virt,
+            backing.buf_virt,
+            backing.buf_device,
+            backing.db_virt,
             log_rq_size,
             cqn,
             layout,
@@ -767,6 +1053,9 @@ impl Mlx5Device {
         let cq_index = self
             .cq_index_by_cqn(cqn)
             .ok_or(Mlx5Error::InvalidResponse)?;
+        if let Some(rmpn) = created_rmpn {
+            self.rmp_list.push(rmpn);
+        }
         self.rqs.push(rq);
         self.rx_cq_by_rq.push(cq_index);
         crate::boot_trace("[MLX5_RQ] done\n");
@@ -987,8 +1276,8 @@ mod tests {
     use super::*;
     use crate::wq::RxWqMode;
 
-    fn expected_direct_rq() -> DirectRqExpectations {
-        DirectRqExpectations {
+    fn expected_rq() -> RqExpectations {
+        RqExpectations {
             cqn: 0x55,
             log_rq_size: 8,
             pd: 0x77,
@@ -1018,8 +1307,7 @@ mod tests {
 
     #[test]
     fn resolve_direct_rq_layout_accepts_linked_64b() {
-        let layout =
-            resolve_direct_rq_layout(0x44, expected_direct_rq(), query_rq_info(0, 0, 6)).unwrap();
+        let layout = resolve_direct_rq_layout(0x44, expected_rq(), query_rq_info(0, 0, 6)).unwrap();
         assert_eq!(layout.wq_mode, RxWqMode::LinkedList);
         assert_eq!(layout.slot_size_bytes, 64);
         assert_eq!(layout.data_seg_offset, 16);
@@ -1028,8 +1316,8 @@ mod tests {
 
     #[test]
     fn resolve_direct_rq_layout_rejects_mem_rq_type_one() {
-        let err = resolve_direct_rq_layout(0x44, expected_direct_rq(), query_rq_info(1, 1, 4))
-            .unwrap_err();
+        let err =
+            resolve_direct_rq_layout(0x44, expected_rq(), query_rq_info(1, 1, 4)).unwrap_err();
         assert_eq!(
             err,
             "mem_rq_type=1 requires RMP handling and is not supported"
@@ -1038,8 +1326,8 @@ mod tests {
 
     #[test]
     fn resolve_direct_rq_layout_rejects_linked_16b() {
-        let err = resolve_direct_rq_layout(0x44, expected_direct_rq(), query_rq_info(0, 0, 4))
-            .unwrap_err();
+        let err =
+            resolve_direct_rq_layout(0x44, expected_rq(), query_rq_info(0, 0, 4)).unwrap_err();
         assert_eq!(err, "linked RQ requires a 64B stride");
     }
 
@@ -1047,7 +1335,7 @@ mod tests {
     fn resolve_direct_rq_layout_rejects_pd_mismatch() {
         let mut ctx = query_rq_info(0, 1, 4);
         ctx.pd = 0x66;
-        let err = resolve_direct_rq_layout(0x44, expected_direct_rq(), ctx).unwrap_err();
+        let err = resolve_direct_rq_layout(0x44, expected_rq(), ctx).unwrap_err();
         assert_eq!(err, "QUERY_RQ returned an unexpected PD");
     }
 
@@ -1055,7 +1343,7 @@ mod tests {
     fn resolve_direct_rq_layout_ignores_uar_page_mismatch() {
         let mut ctx = query_rq_info(0, 1, 4);
         ctx.uar_page = 0x99;
-        let layout = resolve_direct_rq_layout(0x44, expected_direct_rq(), ctx).unwrap();
+        let layout = resolve_direct_rq_layout(0x44, expected_rq(), ctx).unwrap();
         assert_eq!(layout.wq_mode, RxWqMode::Cyclic);
         assert_eq!(layout.slot_size_bytes, crate::defs::WQEBB_SIZE);
     }
@@ -1064,7 +1352,25 @@ mod tests {
     fn resolve_direct_rq_layout_rejects_doorbell_mismatch() {
         let mut ctx = query_rq_info(0, 1, 4);
         ctx.dbr_addr = 0x2000;
-        let err = resolve_direct_rq_layout(0x44, expected_direct_rq(), ctx).unwrap_err();
+        let err = resolve_direct_rq_layout(0x44, expected_rq(), ctx).unwrap_err();
         assert_eq!(err, "QUERY_RQ returned an unexpected doorbell address");
+    }
+
+    #[test]
+    fn resolve_rmp_backed_rq_layout_accepts_cyclic_mem_rq_type_one() {
+        let mut ctx = query_rq_info(1, 1, 4);
+        ctx.rmpn = 0x88;
+        let layout = resolve_rmp_backed_rq_layout(0x44, expected_rq(), 0x88, ctx).unwrap();
+        assert_eq!(layout.wq_mode, RxWqMode::Cyclic);
+        assert_eq!(layout.slot_size_bytes, MLX5_RX_WQE_MAX_SUPPORTED_SIZE);
+        assert_eq!(layout.rmpn, Some(0x88));
+    }
+
+    #[test]
+    fn resolve_rmp_backed_rq_layout_rejects_unexpected_rmp_number() {
+        let mut ctx = query_rq_info(1, 1, 4);
+        ctx.rmpn = 0x99;
+        let err = resolve_rmp_backed_rq_layout(0x44, expected_rq(), 0x88, ctx).unwrap_err();
+        assert_eq!(err, "QUERY_RQ returned an unexpected RMP number");
     }
 }

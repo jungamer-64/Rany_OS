@@ -686,6 +686,54 @@ mod tests {
     }
 
     #[test]
+    fn create_rq_with_mem_type_one_sets_rmpn() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_create_rq_input_with_mem_type(
+            &mut in_mbox,
+            8,
+            0x3000,
+            0x4000,
+            0x123,
+            0x456,
+            0x789,
+            false,
+            false,
+            1,
+            Some(0x00ab_cdef),
+        );
+
+        let ctx = &in_mbox.data[0x20..];
+        assert_eq!(get_bits_u32(ctx, 4, 4), 1);
+        assert_eq!(get_bits_u32(ctx, 136, 24), 0x00ab_cdef & 0x00ff_ffff);
+    }
+
+    #[test]
+    fn create_rmp_input_sets_context_and_pas_fields() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_create_rmp_input_with_options(
+            &mut in_mbox,
+            8,
+            0x8000,
+            0x9000,
+            0x123,
+            0x456,
+            crate::defs::WqState::Reset as u8,
+            true,
+            0,
+            0,
+        );
+
+        let ctx = &in_mbox.data[0x20..];
+        assert_eq!(get_bits_u32(ctx, 8, 4), crate::defs::WqState::Reset as u32);
+        assert_eq!(get_bits_u32(ctx, 32, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 0, 4), 0);
+        assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 5, 2), 0);
+        assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 72, 24), 0x123);
+        assert_eq!(in_mbox.read_be64(0x60), 0x9000);
+        assert_eq!(in_mbox.read_be64(0x110), 0x8000);
+    }
+
+    #[test]
     fn modify_sq_uses_ifc_offsets() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_modify_sq_input(
