@@ -119,7 +119,10 @@ fn test_mapping_kind_encoding() {
 
     // Domain
     let encoded = encode_mapping_kind(&MappingKind::Domain);
-    assert!(matches!(decode_mapping_kind(encoded), Some(MappingKind::Domain)));
+    assert!(matches!(
+        decode_mapping_kind(encoded),
+        Some(MappingKind::Domain)
+    ));
 
     // Unknown/removed mapping kinds must be rejected.
     assert!(decode_mapping_kind(0).is_none());

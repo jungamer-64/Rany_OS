@@ -64,12 +64,9 @@ mod unit_tests {
             rref[i] = 0xABu8;
         }
 
-        let handle = crate::io::iommu::api::map_rref_slice_for_device(
-            rref,
-            &device,
-            DmaDirection::ToDevice,
-        )
-        .expect("map_rref_slice_for_device failed");
+        let handle =
+            crate::io::iommu::api::map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice)
+                .expect("map_rref_slice_for_device failed");
         let _iova = handle.iova();
         // Unmap and recover RRef
         let rref = handle.unmap().expect("unmap failed");

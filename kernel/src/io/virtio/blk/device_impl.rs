@@ -165,8 +165,9 @@ impl VirtioBlkDevice {
                 IommuBounceAllocError::InvalidLen => BlockError::InvalidParam,
                 IommuBounceAllocError::AllocFailed => BlockError::NotReady,
             })?;
-            let handle = map_rref_slice_for_device(rref, &self.iommu_device_id, DmaDirection::FromDevice)
-                .map_err(|_| BlockError::IoError)?;
+            let handle =
+                map_rref_slice_for_device(rref, &self.iommu_device_id, DmaDirection::FromDevice)
+                    .map_err(|_| BlockError::IoError)?;
             let dma_addr = handle.iova();
 
             let result = DmaReadFuture {
@@ -202,8 +203,9 @@ impl VirtioBlkDevice {
             rref[..len].copy_from_slice(buf);
             crate::io::dma::flush_cache_range(rref.as_ptr(), rref.len());
 
-            let handle = map_rref_slice_for_device(rref, &self.iommu_device_id, DmaDirection::ToDevice)
-                .map_err(|_| BlockError::IoError)?;
+            let handle =
+                map_rref_slice_for_device(rref, &self.iommu_device_id, DmaDirection::ToDevice)
+                    .map_err(|_| BlockError::IoError)?;
             let dma_addr = handle.iova();
 
             let result = DmaWriteFuture {
