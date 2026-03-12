@@ -86,10 +86,6 @@ fn test_mapping_kind_encoding() {
         MappingKind::Identity
     ));
 
-    // Global
-    let encoded = encode_mapping_kind(&MappingKind::Global);
-    assert!(matches!(decode_mapping_kind(encoded), MappingKind::Global));
-
     // Device (using BDF encoding: bus=0x12, device=0x06, function=0x04 = 0x1234)
     let device_id = DeviceId::from_bdf(0x1234);
     let encoded = encode_mapping_kind(&MappingKind::Device(device_id));

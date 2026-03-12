@@ -435,12 +435,12 @@ fn parse_iommu_cmdline(
             _ => {}
         }
     }
-    if let Some(val) = util::get_cmdline_option(cmdline, "iommu_global") {
-        match val {
-            "on" | "1" | "true" => config.allow_global_mappings = true,
-            "off" | "0" | "false" => config.allow_global_mappings = false,
-            _ => {}
-        }
+    if util::get_cmdline_option(cmdline, "iommu_global").is_some() {
+        warn!(
+            target: "init",
+            "Ignoring deprecated kernel cmdline option 'iommu_global' on {}",
+            env!("CARGO_PKG_VERSION")
+        );
     }
     if let Some(val) = util::get_cmdline_option(cmdline, "iommu_scalable") {
         match val {

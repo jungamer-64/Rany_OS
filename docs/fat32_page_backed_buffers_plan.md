@@ -66,7 +66,7 @@
 ## 進捗（現状） ✅
 
 - ✅ PR1: `IoBuffer`/`IoBufferMut` + `DmaInfo` を vfs に導入済み、borrowed API のデフォルト実装と `borrowed_io_tests` を追加済み
-- ✅ PR2: virtio-blk は borrowed API と `dma_info()` 経路を実装済み（IOMMU は `map_for_dma`/`unmap_dma` 経由）
+- ✅ PR2: virtio-blk は borrowed API と `dma_info()` 経路を実装済み（当時は raw IOMMU map/unmap 経路を使用）
 - ✅ PR3: `PageClusterBuffer` / `PageClusterBufferAllocator` を実装済み（`dma_info()` 連携含む）
 - ⏳ PR4: FAT 側の allocator 注入（`mount_with_allocator`）とホットパスの切り替えが未実施
 - ⏳ PR5: device-scoped IOMMU マッピング（`DmaHandle`/`DeviceDmaContext`）と 4K アライメント対応の整理が未実施
@@ -160,7 +160,7 @@ pub trait ClusterBufferAllocator: Send + Sync {
    - `ZcFuture` が `Send` を要求するため、`IoBuffer` も `Send` 制約を付ける。
    - `BlockError::InvalidBufferSize` は unit なので追加情報は載せない（API変更は避ける）。
 3. **IOMMU の 4K アライメント要件**  
-   - IOMMU 有効時の `map_for_dma` は **アドレス/サイズが 4K 境界**でないと失敗する。  
+   - IOMMU 有効時の raw map は **アドレス/サイズが 4K 境界**でないと失敗する。  
    - 対策: ページバックバッファを基本とし、任意長バッファは `RRefDmaBytes` 等でページパディングする。
 
 ---
@@ -199,7 +199,7 @@ pub trait ClusterBufferAllocator: Send + Sync {
 **現状**: ✅ 完了（borrowed API 経路 + `dma_info()` 経由 DMA あり。device-scoped IOMMU は未対応）
 
 1. virtio-blk の `ZeroCopyBlockDevice` 実装を追加（`dma_info()` があれば DMA、なければ slice 直結）
-2. IOMMU 有効時は `map_for_dma`/`unmap_dma` で IOVA マップ（デバイス別 `DmaHandle` は後半タスク）
+2. IOMMU 有効時は raw map/unmap で IOVA マップしていた（現在は device-scoped `DmaHandle` / `DeviceDmaContext` へ移行）
 
 ### フェーズ 3 — カーネル allocator の実装（PR3）
 
@@ -306,7 +306,7 @@ pub trait ClusterBufferAllocator: Send + Sync {
 - ✅ **RRef / IOMMU 経路がある**: `kernel/src/ipc/rref.rs`、`kernel/src/io/iommu/common/dma/handle.rs` と `kernel/src/io/iommu/common/domain/domain_impl.rs` により、RRef→IOVA マップや `DmaHandle` が利用可能で、ドメイン間のゼロコピーパスと IOMMU 統合が可能です。
 - ✅ **Exchange Heap と既存ゼロコピー（ネットワーク）の事例**: `kernel/src/mm/exchange_heap.rs` と `kernel/src/net/mempool.rs`（`PacketRef`）はゼロコピーの実装例で、`kernel/src/io/virtio/net.rs` にゼロコピー send/recv が実装されています（実装パターンの良い参照）。
 - ✅ **borrowed API / IoBuffer は導入済み**: vfs に `IoBuffer`/`IoBufferMut`/`DmaInfo` を導入し、borrowed API とテストを追加済み。
-- ✅ **virtio-blk の borrowed API + DMA 経路は実装済み**: `dma_info()` がある場合は `map_for_dma`/`unmap_dma` で IOVA マップ（device-scoped `DmaHandle` は後半対応）。
+- ✅ **virtio-blk の borrowed API + DMA 経路は実装済み**: `dma_info()` がある場合は当時の raw IOMMU map/unmap で IOVA マップしていた（現在は device-scoped `DmaHandle` に移行済み）。
 - ✅ **PageClusterBuffer/Allocator は実装済み**: `dma_info()` 連携を含むページバックバッファは利用可能。
 - ⚠️ **IOMMU 4K アライメント要件**: IOMMU 有効時の DMA マッピングは 4K アライン必須。任意長は `RRefDmaBytes` 等でページパディングする。
 - ⚠️ **Allocator 注入点が未整備**: `ClusterBufferPool::new` は `VecClusterBufferAllocator` 固定のため、`mount_with_allocator` で注入経路を追加する必要があります。

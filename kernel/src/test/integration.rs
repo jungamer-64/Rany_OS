@@ -395,10 +395,6 @@ pub fn test_storage() -> IntegrationTestSuite {
                         let maps = crate::io::iommu::api::get_map_count();
                         if maps == 0 {
                             Err(String::from("IOMMU enabled but no map calls recorded"))
-                        } else if crate::io::iommu::api::get_global_map_count() != 0 {
-                            Err(String::from(
-                                "storage path used global DMA mapping fallback",
-                            ))
                         } else if crate::io::iommu::api::get_identity_fallback_count() != 0 {
                             Err(String::from(
                                 "storage path used identity DMA fallback",
@@ -484,9 +480,6 @@ pub fn test_iommu() -> IntegrationTestSuite {
             } {
                 Ok(mapped_iova) => {
                     let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
-                    if crate::io::iommu::api::get_global_map_count() != 0 {
-                        return Err(String::from("device DMA map unexpectedly used global fallback"));
-                    }
                     if crate::io::iommu::api::get_identity_fallback_count() != 0 {
                         return Err(String::from(
                             "device DMA map unexpectedly used identity fallback",
@@ -522,9 +515,6 @@ pub fn test_iommu() -> IntegrationTestSuite {
             match unsafe { crate::io::iommu::api::map_for_device(&device_id, PhysAddr::new(phys_addr), size) } {
                 Ok(mapped_iova) => {
                     let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
-                    if crate::io::iommu::api::get_global_map_count() != 0 {
-                        return Err(String::from("device DMA map unexpectedly used global fallback"));
-                    }
                     if crate::io::iommu::api::get_identity_fallback_count() != 0 {
                         return Err(String::from(
                             "device DMA map unexpectedly used identity fallback",
@@ -587,10 +577,6 @@ pub fn test_iommu() -> IntegrationTestSuite {
             if maps == 0 {
                 Err(String::from(
                     "IOMMU enabled but NVMe BlockIo path recorded no map calls",
-                ))
-            } else if crate::io::iommu::api::get_global_map_count() != 0 {
-                Err(String::from(
-                    "NVMe BlockIo path used global DMA mapping fallback",
                 ))
             } else if crate::io::iommu::api::get_identity_fallback_count() != 0 {
                 Err(String::from("NVMe BlockIo path used identity DMA fallback"))

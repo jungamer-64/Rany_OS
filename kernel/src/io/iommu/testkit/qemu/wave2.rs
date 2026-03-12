@@ -316,10 +316,10 @@ pub fn wave2_iova_allocator_basic_smoke() -> bool {
     ctrl.allocate_iova(4096).is_ok()
 }
 
-pub fn wave2_map_for_dma_alloc_non_identity_smoke() -> bool {
+pub fn wave2_domain_iova_alloc_non_identity_smoke() -> bool {
     let ctrl = IommuController::new(0x0, 0);
     if ctrl.init_iova(0x8000_0000, 0x10000).is_err() {
-        crate::io::log::early_print("[qemu-suite] wave2_map_for_dma: init_iova failed\n");
+        crate::io::log::early_print("[qemu-suite] wave2_domain_iova: init_iova failed\n");
         return false;
     }
 
@@ -349,24 +349,24 @@ pub fn wave2_map_for_dma_alloc_non_identity_smoke() -> bool {
     let iova = match ctrl.allocate_iova(size) {
         Ok(iova) => iova,
         Err(_) => {
-            crate::io::log::early_print("[qemu-suite] wave2_map_for_dma: allocate_iova failed\n");
+            crate::io::log::early_print("[qemu-suite] wave2_domain_iova: allocate_iova failed\n");
             return false;
         }
     };
 
     let mapping_ok = if let Some(domain_arc) = ctrl.domain(0) {
         if domain_arc.map(iova, phys, size, true, true).is_err() {
-            crate::io::log::early_print("[qemu-suite] wave2_map_for_dma: map failed\n");
+            crate::io::log::early_print("[qemu-suite] wave2_domain_iova: map failed\n");
             false
         } else if domain_arc.mapping(iova).is_none() {
-            crate::io::log::early_print("[qemu-suite] wave2_map_for_dma: mapping missing\n");
+            crate::io::log::early_print("[qemu-suite] wave2_domain_iova: mapping missing\n");
             false
         } else {
             match domain_arc.unmap(iova) {
                 Ok(mapping) => {
                     if mapping.iova != iova || mapping.phys != phys {
                         crate::io::log::early_print(
-                            "[qemu-suite] wave2_map_for_dma: unmap payload mismatch\n",
+                            "[qemu-suite] wave2_domain_iova: unmap payload mismatch\n",
                         );
                         false
                     } else {
@@ -374,20 +374,20 @@ pub fn wave2_map_for_dma_alloc_non_identity_smoke() -> bool {
                     }
                 }
                 Err(_) => {
-                    crate::io::log::early_print("[qemu-suite] wave2_map_for_dma: unmap failed\n");
+                    crate::io::log::early_print("[qemu-suite] wave2_domain_iova: unmap failed\n");
                     false
                 }
             }
         }
     } else {
-        crate::io::log::early_print("[qemu-suite] wave2_map_for_dma: domain lookup failed\n");
+        crate::io::log::early_print("[qemu-suite] wave2_domain_iova: domain lookup failed\n");
         false
     };
 
     let free_ok = if ctrl.free_iova(iova, size).is_ok() {
         true
     } else {
-        crate::io::log::early_print("[qemu-suite] wave2_map_for_dma: free_iova failed\n");
+        crate::io::log::early_print("[qemu-suite] wave2_domain_iova: free_iova failed\n");
         false
     };
     mapping_ok && free_ok

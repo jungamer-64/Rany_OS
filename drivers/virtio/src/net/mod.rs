@@ -109,7 +109,7 @@ pub trait NetRuntime: Send + Sync {
     ) -> Result<NetDmaMappingToken, VirtioNetError>;
 
     /// Release a DMA mapping previously returned by `map_packet()`.
-    fn unmap_dma(&self, mapping: NetDmaMappingToken);
+    fn release_dma_mapping(&self, mapping: NetDmaMappingToken);
 
     /// Called when a packet has been received.
     fn receive_packet(

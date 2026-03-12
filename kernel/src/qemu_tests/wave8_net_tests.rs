@@ -543,8 +543,8 @@ pub fn iommu_wave2_iova_allocator_basic_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave2::wave2_iova_allocator_basic_smoke()
 }
 
-pub fn iommu_wave2_map_for_dma_alloc_non_identity_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_map_for_dma_alloc_non_identity_smoke()
+pub fn iommu_wave2_domain_iova_alloc_non_identity_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave2::wave2_domain_iova_alloc_non_identity_smoke()
 }
 
 pub fn iommu_wave2_unmap_reclaims_empty_tables_smoke() -> bool {

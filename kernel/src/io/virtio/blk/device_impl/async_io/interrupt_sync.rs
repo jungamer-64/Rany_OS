@@ -62,10 +62,8 @@ mod unit_tests {
             rref[i] = 0xABu8;
         }
 
-        // Map (domain 0 / identity mapping in test env)
-        let handle =
-            crate::io::iommu::api::DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice)
-                .expect("map_rref_slice failed");
+        let handle = crate::io::iommu::api::DmaHandle::map_simple(rref, 0, DmaDirection::ToDevice)
+            .expect("map_simple failed");
         let _iova = handle.iova();
         // Unmap and recover RRef
         let rref = handle.unmap().expect("unmap failed");

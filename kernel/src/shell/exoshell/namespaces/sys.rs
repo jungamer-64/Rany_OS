@@ -558,12 +558,11 @@ impl SysNamespace {
         ExoValue::Map(map)
     }
 
-    /// パニックDMA記録（IOMMUが有効な場合）
+    /// パニック記録
     pub fn panic_record() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         if let Some(info) = crate::io::iommu::api::last_panic_record() {
             map.insert(String::from("available"), ExoValue::Bool(true));
-            map.insert(String::from("iova"), ExoValue::Int(info.iova as i64));
             map.insert(
                 String::from("phys"),
                 ExoValue::Int(info.phys.as_u64() as i64),

@@ -1,15 +1,6 @@
 use super::*;
 
 impl DeviceDmaContext {
-    /// 新しいデバイスDMAコンテキストを作成
-    pub fn new() -> Self {
-        Self {
-            device_id: None,
-            domain_id: None,
-            allocator: Arc::new(GlobalDmaAllocator::new()),
-        }
-    }
-
     /// 既にIOMMUへ登録済みのデバイスIDから軽量コンテキストを作成する。
     ///
     /// 既存のドメイン割り当ては維持し、新たな attach は行わない。
@@ -17,7 +8,7 @@ impl DeviceDmaContext {
         Self {
             device_id: Some(device_id),
             domain_id: None,
-            allocator: Arc::new(GlobalDmaAllocator::with_device(device_id)),
+            allocator: Arc::new(DeviceDmaAllocator::with_device(device_id)),
         }
     }
 
@@ -48,7 +39,7 @@ impl DeviceDmaContext {
         Ok(Self {
             device_id: Some(device_id),
             domain_id,
-            allocator: Arc::new(GlobalDmaAllocator::with_device(device_id.clone())),
+            allocator: Arc::new(DeviceDmaAllocator::with_device(device_id.clone())),
         })
     }
 
@@ -369,12 +360,6 @@ impl DeviceDmaContext {
     /// 便利なメソッド: TypedDmaSliceを作成
     pub fn create_slice(&self, size: usize) -> Result<TypedDmaSlice<CpuOwned>, DmaError> {
         TypedDmaSlice::new(size).ok_or(DmaError::OutOfMemory)
-    }
-}
-
-impl Default for DeviceDmaContext {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

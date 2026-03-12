@@ -1,5 +1,4 @@
 use super::*;
-use crate::io::iommu::api::is_global_dma_mapping_allowed;
 use crate::io::iommu::types::DmaAddr;
 use crate::io::virtio::virtqueue::vring_flags;
 
@@ -294,12 +293,9 @@ impl VirtioBlkDevice {
             return Err(BlockError::InvalidParam);
         }
 
-        // SECURITY CHECK: If IOMMU is enabled and global mappings are disallowed,
-        // we cannot trust a raw `buf_addr` unless we know it's an IOVA.
-        if is_iommu_enabled() && self.iommu_device_id.is_some() && !is_global_dma_mapping_allowed()
-        {
+        if is_iommu_enabled() {
             log::error!(
-                "[VIRTIO-BLK][SECURITY] attempt to use raw DMA address {:#x} without global mapping allowed. Use IoBuffer/DmaInfo instead.",
+                "[VIRTIO-BLK][SECURITY] raw DMA address {:#x} rejected while IOMMU is enabled. Use a device-scoped DMA mapping.",
                 buf_addr
             );
             return Err(BlockError::Unsupported);
@@ -400,11 +396,9 @@ impl VirtioBlkDevice {
         len: u32,
         queue_idx: usize,
     ) -> Result<u16, BlockError> {
-        // SECURITY CHECK: Matches submit_read
-        if is_iommu_enabled() && self.iommu_device_id.is_some() && !is_global_dma_mapping_allowed()
-        {
+        if is_iommu_enabled() {
             log::error!(
-                "[VIRTIO-BLK][SECURITY] attempt to use raw DMA address {:#x} without global mapping allowed. Use IoBuffer/DmaInfo instead.",
+                "[VIRTIO-BLK][SECURITY] raw DMA address {:#x} rejected while IOMMU is enabled. Use a device-scoped DMA mapping.",
                 buf_addr
             );
             return Err(BlockError::Unsupported);
@@ -571,9 +565,7 @@ impl VirtioBlkDevice {
         rref: crate::ipc::RRef<[u8]>,
         direction: DmaDirection,
     ) -> VfsBlockResult<DmaHandle<[u8]>> {
-        let handle = if !is_iommu_enabled() {
-            DmaHandle::map_rref_slice(rref, 0, direction)
-        } else if let Some(device) = self.iommu_device_id {
+        let handle = if let Some(device) = self.iommu_device_id {
             map_rref_slice_for_device(rref, &device, direction)
         } else {
             return Err(VfsBlockError::IoError);

@@ -798,7 +798,7 @@ fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
 }
 
 #[test_case]
-fn test_map_for_dma_alloc_non_identity() {
+fn test_domain_iova_alloc_non_identity() {
     let ctrl = IommuController::new(0x0, 0);
     ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
 
@@ -832,7 +832,7 @@ fn test_map_for_dma_alloc_non_identity() {
         Err(crate::io::iommu::types::IommuError::OutOfMemory)
         | Err(crate::io::iommu::types::IommuError::OutOfIova) => {
             log::warn!(
-                "[IOMMU][TEST] test_map_for_dma_alloc_non_identity: skipped due allocator pressure"
+                "[IOMMU][TEST] test_domain_iova_alloc_non_identity: skipped due allocator pressure"
             );
             return;
         }

@@ -79,13 +79,6 @@ pub fn run_network_runtime_suite(case_filter: Option<&str>) -> NetworkRuntimeSui
         );
     }
 
-    if selected_any && crate::io::iommu::api::get_global_map_count() != 0 {
-        summary.failed += 1;
-        info!(
-            target: "init",
-            "[kernel-test][net] case net.no_global_dma_fallback fail"
-        );
-    }
     if selected_any && crate::io::iommu::api::get_identity_fallback_count() != 0 {
         summary.failed += 1;
         info!(

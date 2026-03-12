@@ -341,7 +341,6 @@ pub unsafe fn init_iommu_from_ivrs(
     AmdIommuDriver::register_driver(units, ivmd_ranges, cmd_states, event_logs, device_tables)?;
     #[cfg(not(test))]
     spawn_command_queue_worker();
-    crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
     log::info!(
         "AMD-Vi IVRS parsed ({} unit(s), {} IVMD range(s), {} cmd buffer(s) ready, {} event log(s) ready, {} device table(s))",
         unit_count,

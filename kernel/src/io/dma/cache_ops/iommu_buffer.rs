@@ -3,7 +3,7 @@ use super::*;
 mod device_context;
 pub use device_context::*;
 // ============================================================================
-// Global DMA Allocator Trait and Implementation
+// Device-bound DMA Allocator Trait and Implementation
 // ============================================================================
 
 use alloc::sync::Arc;
@@ -164,14 +164,14 @@ impl Drop for StreamingMapping {
     }
 }
 
-/// グローバルDMAアロケータ
-pub struct GlobalDmaAllocator {
+/// Device-bound DMA allocator implementation.
+pub struct DeviceDmaAllocator {
     /// デバイスID（IOMMU用）
     device_id: Option<crate::io::iommu::types::DeviceId>,
 }
 
-impl GlobalDmaAllocator {
-    /// 新しいグローバルDMAアロケータを作成
+impl DeviceDmaAllocator {
+    /// 新しいDMAアロケータを作成
     pub const fn new() -> Self {
         Self { device_id: None }
     }
@@ -251,7 +251,7 @@ impl GlobalDmaAllocator {
     }
 }
 
-impl DmaAllocator for GlobalDmaAllocator {
+impl DmaAllocator for DeviceDmaAllocator {
     fn allocate_coherent(
         &self,
         size: usize,
@@ -387,14 +387,6 @@ impl DmaAllocator for GlobalDmaAllocator {
     fn iommu_enabled(&self) -> bool {
         crate::io::iommu::api::is_iommu_enabled()
     }
-}
-
-/// グローバルDMAアロケータインスタンス
-pub(crate) static GLOBAL_DMA_ALLOCATOR: GlobalDmaAllocator = GlobalDmaAllocator::new();
-
-/// グローバルDMAアロケータを取得
-pub fn global_dma_allocator() -> &'static dyn DmaAllocator {
-    &GLOBAL_DMA_ALLOCATOR
 }
 
 /// Device-scoped IOMMU mapping returned by `DeviceDmaContext`.

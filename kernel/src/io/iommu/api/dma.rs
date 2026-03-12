@@ -10,10 +10,9 @@ use x86_64::PhysAddr;
 
 use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MapError};
 use crate::io::iommu::runtime::registry::{
-    get_iommu_driver, is_iommu_enabled, validate_dma_mask_pre_allocation,
+    get_iommu_driver, validate_dma_mask_pre_allocation,
 };
-use crate::io::iommu::runtime::security::is_global_dma_mapping_allowed;
-use crate::io::iommu::runtime::stats::{inc_global_map_count, inc_map_count, inc_unmap_count};
+use crate::io::iommu::runtime::stats::{inc_map_count, inc_unmap_count};
 use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
 
@@ -43,79 +42,6 @@ pub fn map_rref_slice_for_device<T>(
     DmaHandle::map_rref_slice_for_device(rref, device, direction)
 }
 
-/// Map an `RRef<T>` for DMA access scoped to a specific IOMMU domain.
-pub(crate) fn map_rref_for_domain<T>(
-    rref: RRef<T>,
-    domain_id: u16,
-    direction: DmaDirection,
-) -> Result<DmaHandle<T>, MapError<T>> {
-    DmaHandle::map_rref(rref, domain_id, direction)
-}
-
-/// Map an `RRef<[T]>` slice for DMA access scoped to a specific IOMMU domain.
-pub(crate) fn map_rref_slice_for_domain<T>(
-    rref: RRef<[T]>,
-    domain_id: u16,
-    direction: DmaDirection,
-) -> Result<DmaHandle<[T]>, MapError<[T]>> {
-    DmaHandle::map_rref_slice(rref, domain_id, direction)
-}
-
-/// Map a physical address range for DMA access
-///
-/// Returns the IOVA (I/O Virtual Address) that devices should use.
-///
-/// # Safety
-///
-/// The caller must guarantee:
-/// - `phys_addr` points to memory owned by the caller
-/// - The memory will remain valid for the duration of DMA operations
-/// - The memory is not part of kernel code, page tables, or other critical structures
-/// - Concurrent access by the device is safe (proper synchronization if needed)
-/// - `phys_addr` and `size` are 4K-aligned when IOMMU translation is enabled
-///
-/// **ExoRust Guideline**: Prefer safe wrappers like `map_rref()` over this raw API.
-pub(crate) unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
-    if is_iommu_enabled() && !is_global_dma_mapping_allowed() {
-        return Err(IommuError::NotSupported);
-    }
-    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    let res = unsafe { driver.map_for_dma(phys_addr, size) };
-    if res.is_ok() {
-        inc_map_count();
-        inc_global_map_count();
-    }
-    res
-}
-
-pub(crate) unsafe fn map_for_dma_with_perms(
-    phys_addr: PhysAddr,
-    size: u64,
-    read: bool,
-    write: bool,
-) -> Result<u64, IommuError> {
-    if is_iommu_enabled() && !is_global_dma_mapping_allowed() {
-        return Err(IommuError::NotSupported);
-    }
-    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    let res = unsafe { driver.map_for_dma_with_perms(phys_addr, size, read, write) };
-    if res.is_ok() {
-        inc_map_count();
-        inc_global_map_count();
-    }
-    res
-}
-
-/// Unmap a DMA address range
-pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
-    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    let res = driver.unmap_dma(iova, _size);
-    if res.is_ok() {
-        inc_unmap_count();
-    }
-    res
-}
-
 /// Map a physical address range for a specific device (Device-Aware)
 ///
 /// Uses the optimized `get_domain_for_device` path to map only in the
@@ -129,7 +55,7 @@ pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
 ///
 /// # Safety
 ///
-/// Same requirements as `map_for_dma`. The caller must guarantee the physical
+/// Same requirements as any raw DMA mapping helper. The caller must guarantee the physical
 /// address is owned, valid for DMA, and not a critical system structure.
 pub(crate) unsafe fn map_for_device(
     device: &DeviceId,
@@ -182,7 +108,7 @@ pub(crate) unsafe fn map_for_device_with_perms(
 ///
 /// # Safety
 ///
-/// Same requirements as `map_for_dma`. The caller must guarantee the physical
+/// Same requirements as any raw DMA mapping helper. The caller must guarantee the physical
 /// address is owned, valid for DMA, and not a critical system structure.
 pub(crate) async unsafe fn map_for_device_async(
     device: &DeviceId,

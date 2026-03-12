@@ -23,8 +23,6 @@ pub struct IommuConfig {
     pub passthrough: bool,
     /// Force enable even if ACPI says no (not used yet)
     pub force: bool,
-    /// Allow global (non device-scoped) DMA mappings
-    pub allow_global_mappings: bool,
     /// Enable scalable mode translation (Intel VT-d SMTS)
     pub scalable_mode: bool,
 }
@@ -36,7 +34,6 @@ impl IommuConfig {
             enabled: true,
             passthrough: false,
             force: false,
-            allow_global_mappings: cfg!(debug_assertions),
             scalable_mode: false,
         }
     }

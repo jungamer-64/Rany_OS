@@ -2,18 +2,17 @@
 // kernel/src/io/iommu/runtime/panic.rs
 // ============================================================================
 
-//! Panic-safe DMA pool for emergency mappings.
+//! Panic-safe record pool for emergency panic capture.
 //!
-//! The pool is initialized during boot, mapping a contiguous physical region
-//! into the global IOMMU domain. Allocations are lock-free and require no heap
-//! access, making them safe to use during panic handling.
+//! The pool is initialized during boot as a contiguous physical region.
+//! Allocations are lock-free and require no heap access, making them safe to
+//! use during panic handling without depending on the IOMMU.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use spin::Once;
 use x86_64::PhysAddr;
 
-use crate::io::iommu::api;
 use crate::io::iommu::types::IommuError;
 
 /// Default panic DMA pool size (bytes).
@@ -31,7 +30,6 @@ pub struct PanicDmaRecordHeader {
 
 #[derive(Debug, Clone, Copy)]
 pub struct PanicDmaRecordInfo {
-    pub iova: u64,
     pub phys: PhysAddr,
     pub len: usize,
     pub total: usize,
@@ -40,7 +38,6 @@ pub struct PanicDmaRecordInfo {
 
 struct PanicDmaPool {
     base_phys: u64,
-    base_iova: u64,
     size: u64,
     virt_base: usize,
     cursor: AtomicU64,
@@ -49,7 +46,6 @@ struct PanicDmaPool {
 /// An allocation carved from the panic DMA pool.
 #[derive(Debug, Clone, Copy)]
 pub struct PanicDmaRegion {
-    pub iova: u64,
     pub phys: PhysAddr,
     pub size: usize,
     pub virt: *mut u8,
@@ -63,7 +59,6 @@ unsafe impl Sync for PanicDmaRegion {}
 
 static PANIC_DMA_POOL: Once<PanicDmaPool> = Once::new();
 static LAST_PANIC_DMA_PHYS: AtomicU64 = AtomicU64::new(0);
-static LAST_PANIC_DMA_IOVA: AtomicU64 = AtomicU64::new(0);
 static LAST_PANIC_DMA_LEN: AtomicU64 = AtomicU64::new(0);
 static LAST_PANIC_DMA_SIZE: AtomicU64 = AtomicU64::new(0);
 static LAST_PANIC_DMA_VIRT: AtomicU64 = AtomicU64::new(0);
@@ -72,7 +67,7 @@ use crate::util::align_up_u64 as align_up;
 
 /// Initialize the panic DMA pool.
 ///
-/// Must be called after the IOMMU backend is initialized and enabled.
+/// Must be called during early boot before panic reporting is needed.
 pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
     use crate::io::log::{early_print, early_print_dec, early_print_hex};
     early_print("[PANIC_DMA] init_panic_dma_pool: bytes=");
@@ -101,23 +96,6 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
     early_print_hex(phys_addr.as_u64());
     early_print("\n");
 
-    early_print("[PANIC_DMA] map_for_dma size=");
-    early_print_hex(size);
-    early_print("\n");
-    let iova = match unsafe { api::map_for_dma(phys_addr, size) } {
-        Ok(iova) => {
-            early_print("[PANIC_DMA] map_for_dma OK iova=");
-            early_print_hex(iova);
-            early_print("\n");
-            iova
-        }
-        Err(err) => {
-            early_print("[PANIC_DMA] map_for_dma FAILED\n");
-            crate::mm::phys::frame_allocator::dealloc_contiguous_frames(phys, frames);
-            return Err(err);
-        }
-    };
-
     early_print("[PANIC_DMA] zeroing memory\n");
     let virt_base = crate::mm::virt::mapping::phys_to_virt(phys_addr).as_u64() as usize;
     unsafe {
@@ -126,7 +104,6 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
 
     let pool = PanicDmaPool {
         base_phys: phys_addr.as_u64(),
-        base_iova: iova,
         size,
         virt_base,
         cursor: AtomicU64::new(0),
@@ -200,11 +177,9 @@ pub fn panic_alloc_dma(bytes: usize) -> Option<PanicDmaRegion> {
     };
 
     let phys = pool.base_phys + offset;
-    let iova = pool.base_iova + offset;
     let virt = (pool.virt_base as u64 + offset) as *mut u8;
 
     Some(PanicDmaRegion {
-        iova,
         phys: PhysAddr::new(phys),
         size: size as usize,
         virt,
@@ -236,13 +211,11 @@ pub fn write_panic_record(message: &str) -> Option<PanicDmaRecordInfo> {
     }
 
     LAST_PANIC_DMA_PHYS.store(region.phys.as_u64(), Ordering::Release);
-    LAST_PANIC_DMA_IOVA.store(region.iova, Ordering::Release);
     LAST_PANIC_DMA_LEN.store(copy_len as u64, Ordering::Release);
     LAST_PANIC_DMA_SIZE.store(region.size as u64, Ordering::Release);
     LAST_PANIC_DMA_VIRT.store(region.virt as u64, Ordering::Release);
 
     Some(PanicDmaRecordInfo {
-        iova: region.iova,
         phys: region.phys,
         len: copy_len,
         total: region.size,
@@ -258,7 +231,6 @@ pub fn last_panic_record() -> Option<PanicDmaRecordInfo> {
     }
 
     Some(PanicDmaRecordInfo {
-        iova: LAST_PANIC_DMA_IOVA.load(Ordering::Acquire),
         phys: PhysAddr::new(phys),
         len: LAST_PANIC_DMA_LEN.load(Ordering::Acquire) as usize,
         total: LAST_PANIC_DMA_SIZE.load(Ordering::Acquire) as usize,

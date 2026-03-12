@@ -681,11 +681,6 @@ fn read_observed_context(
 
 #[cfg(feature = "qemu-test-export")]
 fn case_no_dma_fallbacks_recorded() -> Result<(), RuntimeCaseError> {
-    if crate::io::iommu::api::get_global_map_count() != 0 {
-        return Err(RuntimeCaseError::failed(
-            "driver_domain profile recorded global DMA mapping fallback usage",
-        ));
-    }
     if crate::io::iommu::api::get_identity_fallback_count() != 0 {
         return Err(RuntimeCaseError::failed(
             "driver_domain profile recorded identity DMA fallback usage",

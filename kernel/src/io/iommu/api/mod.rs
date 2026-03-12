@@ -34,8 +34,7 @@ pub use crate::io::iommu::runtime::registry::{
     register_device_dma_width,
 };
 pub use crate::io::iommu::runtime::stats::{
-    get_global_map_count, get_identity_fallback_count, get_map_count, get_unmap_count,
-    reset_map_unmap_counts,
+    get_identity_fallback_count, get_map_count, get_unmap_count, reset_map_unmap_counts,
 };
 
 /// Diagnostics
@@ -48,10 +47,6 @@ pub fn dump_iommu_diagnostics() {
     log::info!(
         "Global unmap count: {}",
         crate::io::iommu::runtime::stats::get_unmap_count()
-    );
-    log::info!(
-        "Global DMA map count: {}",
-        crate::io::iommu::runtime::stats::get_global_map_count()
     );
     log::info!(
         "Identity fallback count: {}",
@@ -70,7 +65,5 @@ pub fn dump_iommu_diagnostics() {
 // Internal Raw DMA Mapping Helpers (crate-local)
 // ========================================================================
 
-// Raw mapping helpers were deprecated and have been removed in favor of
-// the safer DmaHandle APIs (e.g., `DmaHandle::map_rref`, `DmaHandle::new`).
-// Keep the public `api` wrappers (`map_for_dma`, `map_for_device`, etc.) that
-// forward to the DMA backend; callers should migrate to the DmaHandle type.
+// Raw global DMA mapping helpers were removed in favor of device-scoped
+// `DmaHandle` / `DeviceDmaContext` APIs and explicit domain-managed mappings.

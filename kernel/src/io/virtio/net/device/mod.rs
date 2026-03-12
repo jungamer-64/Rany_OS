@@ -209,7 +209,7 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         map_net_dma_for_range(device_id, packet.phys_addr().as_u64(), packet.capacity(), direction)
     }
 
-    fn unmap_dma(&self, mapping: virtio_driver::net::NetDmaMappingToken) {
+    fn release_dma_mapping(&self, mapping: virtio_driver::net::NetDmaMappingToken) {
         release_net_dma_mapping(self.iommu_device_id, mapping);
     }
 

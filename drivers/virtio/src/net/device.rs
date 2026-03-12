@@ -148,7 +148,7 @@ impl VirtioNetDevice {
             processed += 1;
             if let Some(mut inflight) = tracker.take(desc_idx) {
                 if let Some(mapping) = inflight.dma_mapping.take() {
-                    runtime.unmap_dma(mapping);
+                    runtime.release_dma_mapping(mapping);
                 }
 
                 handler(desc_idx, inflight, len);
@@ -185,7 +185,7 @@ impl VirtioNetDevice {
             processed += 1;
             if let Some(mut inflight) = tracker.take(desc_idx) {
                 if let Some(mapping) = inflight.dma_mapping.take() {
-                    runtime.unmap_dma(mapping);
+                    runtime.release_dma_mapping(mapping);
                 }
 
                 handler(desc_idx, inflight, len);
@@ -255,7 +255,7 @@ impl VirtioNetDevice {
             }
             Err(e) => {
                 if dma_mapping.requires_unmap() {
-                    runtime.unmap_dma(dma_mapping);
+                    runtime.release_dma_mapping(dma_mapping);
                 }
                 Err(e)
             }

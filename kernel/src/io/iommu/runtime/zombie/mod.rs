@@ -293,7 +293,7 @@ pub struct ZombieData {
     pub domain_id: u16,
     /// Optional Device ID
     pub device_id: Option<crate::io::iommu::types::DeviceId>,
-    /// Encoded mapping kind (0=Identity, 1=Global, 2=Device, 3=Domain)
+    /// Encoded mapping kind (0=Identity, 2=Device, 3=Domain)
     pub mapping_kind: u32,
 }
 
@@ -626,7 +626,6 @@ pub fn encode_mapping_kind(kind: &crate::io::iommu::common::dma::handle::Mapping
     use crate::io::iommu::common::dma::handle::MappingKind;
     match kind {
         MappingKind::Identity => 0,
-        MappingKind::Global => 1,
         MappingKind::Device(device_id) => {
             // Store device BDF in upper 16 bits
             0x0002_0000 | (device_id.bdf() as u32)
@@ -643,7 +642,6 @@ pub fn decode_mapping_kind(encoded: u32) -> crate::io::iommu::common::dma::handl
     let kind = encoded & 0xFFFF;
     match kind {
         0 => MappingKind::Identity,
-        1 => MappingKind::Global,
         3 => MappingKind::Domain,
         _ if (encoded >> 16) == 2 => {
             let bdf = (encoded & 0xFFFF) as u16;
@@ -697,26 +695,28 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
                 ZOMBIE_QUEUE.inc_identity_leaked();
                 return false;
             }
-            MappingKind::Global => {
-                // Global DMA mapping
-                driver.unmap_dma(zombie.iova, zombie.size)
-            }
             MappingKind::Device(device_id) => {
                 // Device-specific mapping
                 driver.unmap_for_device(device_id, zombie.iova, zombie.size)
             }
             MappingKind::Domain => {
-                // Domain-managed - try to get domain and unmap
-                if let Ok(domain) = driver.get_domain(zombie.domain_id) {
-                    let _ = domain.unregister_dma_mapping(zombie.iova);
-                }
+                let domain = match driver.get_domain(zombie.domain_id) {
+                    Ok(domain) => domain,
+                    Err(err) => {
+                        log::error!(
+                            "[ZombieGC] Domain {} unavailable for zombie IOVA=0x{:x}: {:?}",
+                            zombie.domain_id,
+                            zombie.iova,
+                            err
+                        );
+                        ZOMBIE_QUEUE.inc_unmap_failed();
+                        return false;
+                    }
+                };
 
-                // If we have a device ID, we can do a proper IOMMU unmap
-                if let Some(device_id) = zombie.device_id {
-                    driver.unmap_for_device(&device_id, zombie.iova, zombie.size)
-                } else {
-                    // Fallback: Global unmap if no device ID (less precise but better than leak)
-                    driver.unmap_dma(zombie.iova, zombie.size)
+                match domain.unmap(zombie.iova) {
+                    Ok(mapping) => domain.free_iova(mapping.iova, mapping.size),
+                    Err(err) => Err(err),
                 }
             }
         };

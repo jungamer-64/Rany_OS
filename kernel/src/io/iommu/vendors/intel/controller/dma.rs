@@ -90,8 +90,8 @@ pub trait DomainManager {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError>;
-    fn unmap_dma(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError>;
-    fn unmap_dma_async(
+    fn release_dma_mapping(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError>;
+    fn release_dma_mapping_async(
         &self,
         device: &DeviceId,
         iova: u64,

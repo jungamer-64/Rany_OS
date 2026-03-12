@@ -243,7 +243,7 @@ impl DomainManager for IommuController {
         self.invalidate_iotlb(domain_id, false)
     }
 
-    fn unmap_dma(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError> {
+    fn release_dma_mapping(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError> {
         let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
         let pts_before = domain_arc
             .pending_pt_release
@@ -269,7 +269,7 @@ impl DomainManager for IommuController {
         Ok(mapping)
     }
 
-    async fn unmap_dma_async(
+    async fn release_dma_mapping_async(
         &self,
         device: &DeviceId,
         iova: u64,

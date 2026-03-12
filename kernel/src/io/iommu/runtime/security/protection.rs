@@ -174,9 +174,6 @@ fn linker_virt_to_phys(virt: u64) -> Option<u64> {
 #[cfg(debug_assertions)]
 static UNSAFE_ALLOW_IDENTITY_MAPPING: AtomicBool = AtomicBool::new(false);
 
-/// Global DMA mapping gate (device-scoped mappings remain allowed).
-static ALLOW_GLOBAL_MAPPINGS: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
-
 /// Enable/disable identity mapping fallback.
 #[cfg(debug_assertions)]
 pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
@@ -204,22 +201,4 @@ pub fn is_unsafe_identity_mapping_allowed() -> bool {
 #[inline(always)]
 pub fn is_unsafe_identity_mapping_allowed() -> bool {
     false
-}
-
-/// Enable/disable global DMA mappings (non device-scoped).
-pub fn set_global_dma_mapping_allowed(allowed: bool) {
-    if allowed {
-        log::warn!(
-            "[IOMMU][SECURITY] Global DMA mappings ENABLED. \
-             This relaxes device isolation and should not be used in production!"
-        );
-    } else {
-        log::info!("[IOMMU][SECURITY] Global DMA mappings DISABLED.");
-    }
-    ALLOW_GLOBAL_MAPPINGS.store(allowed, Ordering::Release);
-}
-
-/// Check whether global DMA mappings are allowed.
-pub fn is_global_dma_mapping_allowed() -> bool {
-    ALLOW_GLOBAL_MAPPINGS.load(Ordering::Acquire)
 }

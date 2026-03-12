@@ -318,9 +318,8 @@ fn reserve_rmrr_on_controller(
 
 /// Final setup: register driver, create default domain, initialize group manager.
 #[cfg(not(test))]
-fn finalize_iommu_setup(config: &IommuConfig) {
+fn finalize_iommu_setup(_config: &IommuConfig) {
     super::super::IntelIommuDriver::register_driver();
-    crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
 
     if let Some(driver) = crate::io::iommu::runtime::registry::get_iommu_driver() {
         match driver.create_domain(None, IommuDomainType::Translated) {
@@ -399,6 +398,5 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
 
     init_registry(registry);
     super::super::IntelIommuDriver::register_driver();
-    crate::io::iommu::api::set_global_dma_mapping_allowed(cfg!(debug_assertions));
     Ok(())
 }

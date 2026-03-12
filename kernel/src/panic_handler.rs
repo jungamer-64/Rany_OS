@@ -179,10 +179,8 @@ fn panic_output_location(info: &PanicInfo, message_slice: &[u8]) {
 fn panic_save_iommu_record(message_slice: &[u8]) {
     if let Ok(s) = core::str::from_utf8(message_slice) {
         if let Some(info) = crate::io::iommu::api::write_panic_record(s) {
-            crate::io::log::early_print("[PANIC] DMA record saved\n");
-            crate::io::log::early_print("DMA iova=0x");
-            crate::io::log::early_print_hex(info.iova);
-            crate::io::log::early_print(" phys=0x");
+            crate::io::log::early_print("[PANIC] record saved\n");
+            crate::io::log::early_print("record phys=0x");
             crate::io::log::early_print_hex(info.phys.as_u64());
             crate::io::log::early_print("\n");
         }
