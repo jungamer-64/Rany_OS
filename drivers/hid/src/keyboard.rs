@@ -234,6 +234,33 @@ impl ModifierState {
     }
 
     #[inline]
+    pub fn overwrite_from_snapshot(&self, modifiers: Modifiers) {
+        let mut bits = 0u32;
+        if modifiers.shift {
+            bits |= Self::LEFT_SHIFT;
+        }
+        if modifiers.ctrl {
+            bits |= Self::LEFT_CTRL;
+        }
+        if modifiers.alt {
+            bits |= Self::LEFT_ALT;
+        }
+        if modifiers.alt_gr {
+            bits |= Self::RIGHT_ALT;
+        }
+        if modifiers.caps_lock {
+            bits |= Self::CAPS_LOCK;
+        }
+        if modifiers.num_lock {
+            bits |= Self::NUM_LOCK;
+        }
+        if modifiers.scroll_lock {
+            bits |= Self::SCROLL_LOCK;
+        }
+        self.bits.store(bits, Ordering::Release);
+    }
+
+    #[inline]
     pub fn set_bit(&self, mask: u32) {
         self.bits.fetch_or(mask, Ordering::Release);
     }

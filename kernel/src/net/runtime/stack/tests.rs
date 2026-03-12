@@ -1,6 +1,7 @@
 use super::*;
 use crate::net::runtime::manager;
 use crate::sync::PoisonLock;
+use core::future::Future;
 
 static TEST_LAST_TX_IF: PoisonLock<Option<NetIfId>> = PoisonLock::new(None);
 
@@ -39,6 +40,42 @@ impl Drop for ManagerStateGuard {
     }
 }
 
+fn run_with_event_task<F>(future: F) -> F::Output
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    crate::net::l4::endpoint::event::reset_event_system_for_tests();
+
+    let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+    let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let mut executor = crate::task::Executor::new();
+
+    let result_slot_clone = result_slot.clone();
+    let completed_clone = completed.clone();
+    executor.spawn(crate::task::Task::new(async move {
+        let output = future.await;
+        let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = Some(output);
+        completed_clone.store(true, core::sync::atomic::Ordering::Release);
+    }));
+    executor.spawn(crate::task::Task::new(async {
+        crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+    }));
+
+    let mut output = None;
+    for _ in 0..100_000 {
+        executor.drive_once_for_test();
+        if completed.load(core::sync::atomic::Ordering::Acquire) {
+            output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            break;
+        }
+    }
+
+    crate::net::l4::endpoint::event::reset_event_system_for_tests();
+    output.expect("network stack test future timed out")
+}
+
 #[cfg_attr(test, test_case)]
 pub fn test_network_stack_creation() {
     let stack = NetworkStack::new_default();
@@ -66,37 +103,6 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
 
     // Runtime APIs should fail conservatively when the global lock is poisoned
     // NOTE: These intentionally test the deprecated sync APIs for graceful failure.
-    let run_with_event_task = |future| {
-        crate::net::l4::endpoint::event::reset_event_system_for_tests();
-
-        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
-        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut executor = crate::task::Executor::new();
-
-        let result_slot_clone = result_slot.clone();
-        let completed_clone = completed.clone();
-        executor.spawn(crate::task::Task::new(async move {
-            let output = future.await;
-            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
-            *slot = Some(output);
-            completed_clone.store(true, core::sync::atomic::Ordering::Release);
-        }));
-        executor.spawn(crate::task::Task::new(async {
-            crate::net::l4::endpoint::tcp_rx::network_event_task().await;
-        }));
-
-        let mut output = None;
-        for _ in 0..100_000 {
-            executor.drive_once_for_test();
-            if completed.load(core::sync::atomic::Ordering::Acquire) {
-                output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-                break;
-            }
-        }
-
-        crate::net::l4::endpoint::event::reset_event_system_for_tests();
-        output.expect("network stack test future timed out")
-    };
     assert!(run_with_event_task(send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0x1, 0x2],)).is_err());
     assert!(
         run_with_event_task(send_tcp(Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, &[],)).is_err()
@@ -453,6 +459,7 @@ pub fn test_send_udp_raw_uses_route_selected_interface() {
         stack.set_transmit_fn(record_test_tx_if);
         stack.register_interface_state(if0, cfg0);
         stack.register_interface_state(if1, cfg1);
+        let now = stack.current_time();
         stack
             .interfaces
             .get_mut(&if1)
@@ -462,7 +469,7 @@ pub fn test_send_udp_raw_uses_route_selected_interface() {
             .insert(
                 Ipv4Address::new([10, 0, 1, 55]),
                 MacAddress::from_octets(0x52, 0x54, 0, 0x12, 0x34, 0x56),
-                stack.current_time(),
+                now,
             );
         assert!(stack.send_udp_raw(1234, Ipv4Address::new([10, 0, 1, 55]), 8080, b"hi"));
     } else {

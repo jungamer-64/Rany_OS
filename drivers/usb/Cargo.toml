@@ -22,6 +22,7 @@ hal = { path = "../../hal" }
 spin = "0.10"
 log = "0.4"
 kernel_api = { path = "../../interfaces/kernel_api" }
+hid_driver = { path = "../hid" }
 vfs = { path = "../../filesystems/vfs", optional = true }
 
 [features]

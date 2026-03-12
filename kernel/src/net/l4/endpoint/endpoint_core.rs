@@ -153,7 +153,7 @@ impl Endpoint {
 
     /// リッスンモードを開始（同期TCP bind）
     ///
-    /// **ブートストラップ/テスト専用**: `bind_tcp()` 経由でNETWORK_STACKロックを取得するため、
+    /// **ブートストラップ/テスト専用**: `bind_tcp_sync()` 経由でNETWORK_STACKロックを取得するため、
     /// エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
     /// asyncコンテキストでは [`start_listening()`] を使用すること。
     #[cfg(any(test, feature = "qemu-test-export"))]
@@ -174,7 +174,7 @@ impl Endpoint {
 
             // 同期TCP bind（ブートストラップ/テスト用）
             let tcp_addr = local_addr;
-            let listener = crate::net::runtime::stack::bind_tcp(tcp_addr)
+            let listener = crate::net::runtime::stack::bind_tcp_sync(tcp_addr)
                 .map_err(|_| EndpointError::AddressInUse)?;
             inner.ensure_tcp().listener = Some(listener);
             inner.transition_to(EndpointState::Listening)?;

@@ -20,7 +20,8 @@
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use hid_driver::{KeyCode, KeyEvent, KeyState, Modifiers};
 use spin::Mutex;
 mod keycodes;
 
@@ -86,6 +87,25 @@ pub const HID_DESCRIPTOR_TYPE_HID: u8 = 0x21;
 pub const HID_DESCRIPTOR_TYPE_REPORT: u8 = 0x22;
 /// Physical ディスクリプタ
 pub const HID_DESCRIPTOR_TYPE_PHYSICAL: u8 = 0x23;
+
+const USB_RAW_SCANCODE_FLAG: u16 = 0x8000;
+
+static KEYBOARD_EVENT_SINK: AtomicUsize = AtomicUsize::new(0);
+
+pub fn set_keyboard_event_sink(sink: Option<fn(KeyEvent)>) {
+    let raw = sink.map(|f| f as usize).unwrap_or(0);
+    KEYBOARD_EVENT_SINK.store(raw, Ordering::Release);
+}
+
+fn emit_keyboard_event_sink(event: KeyEvent) {
+    let raw = KEYBOARD_EVENT_SINK.load(Ordering::Acquire);
+    if raw == 0 {
+        return;
+    }
+
+    let callback: fn(KeyEvent) = unsafe { core::mem::transmute(raw) };
+    callback(event);
+}
 
 // ============================================================================
 // HID Subclass / Protocol Enums
@@ -470,7 +490,7 @@ pub struct UsbKeyboard {
     /// LEDステータス
     led_status: AtomicU8,
     /// キー押下コールバック
-    key_callback: Mutex<Option<Box<dyn Fn(u8, bool) + Send + Sync>>>,
+    key_callback: Mutex<Option<Box<dyn Fn(KeyEvent) + Send + Sync>>>,
 }
 
 impl UsbKeyboard {
@@ -493,7 +513,7 @@ impl UsbKeyboard {
     /// キーイベントコールバックを設定
     pub fn set_key_callback<F>(&self, callback: F)
     where
-        F: Fn(u8, bool) + Send + Sync + 'static,
+        F: Fn(KeyEvent) + Send + Sync + 'static,
     {
         *self.key_callback.lock() = Some(Box::new(callback));
     }
@@ -516,18 +536,87 @@ impl UsbKeyboard {
         self.hid.set_report(&report)
     }
 
-    /// レポートを処理
-    /// Detect newly pressed and released keys between two reports and invoke callback.
-    fn detect_key_changes(old: &[u8; 6], new: &[u8; 6], callback: &dyn Fn(u8, bool)) {
-        for &key in new {
-            if key != 0 && !old.contains(&key) {
-                callback(key, true);
-            }
+    fn emit_event(
+        callback: Option<&dyn Fn(KeyEvent)>,
+        boot_keycode: u8,
+        state: KeyState,
+        modifiers: Modifiers,
+    ) {
+        let event = KeyEvent {
+            key: boot_keycode_to_key_code(boot_keycode),
+            state,
+            modifiers,
+            raw_scancode: USB_RAW_SCANCODE_FLAG | boot_keycode as u16,
+        };
+
+        if let Some(callback) = callback {
+            callback(event);
         }
-        for &key in old {
-            if key != 0 && !new.contains(&key) {
-                callback(key, false);
+        emit_keyboard_event_sink(event);
+    }
+
+    fn detect_modifier_changes(
+        old: u8,
+        new: u8,
+        lock_state: u8,
+        callback: Option<&dyn Fn(KeyEvent)>,
+    ) {
+        for (mask, keycode) in [
+            (KeyboardModifier::LeftCtrl as u8, keycodes::KEY_LEFT_CTRL),
+            (KeyboardModifier::LeftShift as u8, keycodes::KEY_LEFT_SHIFT),
+            (KeyboardModifier::LeftAlt as u8, keycodes::KEY_LEFT_ALT),
+            (KeyboardModifier::LeftGui as u8, keycodes::KEY_LEFT_GUI),
+            (KeyboardModifier::RightCtrl as u8, keycodes::KEY_RIGHT_CTRL),
+            (
+                KeyboardModifier::RightShift as u8,
+                keycodes::KEY_RIGHT_SHIFT,
+            ),
+            (KeyboardModifier::RightAlt as u8, keycodes::KEY_RIGHT_ALT),
+            (KeyboardModifier::RightGui as u8, keycodes::KEY_RIGHT_GUI),
+        ] {
+            let was_pressed = (old & mask) != 0;
+            let is_pressed = (new & mask) != 0;
+            if was_pressed == is_pressed {
+                continue;
             }
+
+            let state = if is_pressed {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            };
+            let modifiers = modifiers_from_boot_state(new, lock_state);
+            Self::emit_event(callback, keycode, state, modifiers);
+        }
+    }
+
+    fn detect_key_changes(
+        old: &[u8; 6],
+        new: &[u8; 6],
+        lock_state: &mut u8,
+        modifiers_byte: u8,
+        callback: Option<&dyn Fn(KeyEvent)>,
+    ) {
+        for &key in new {
+            if key == 0 || old.contains(&key) {
+                continue;
+            }
+
+            if let Some(bit) = lock_bit_for_boot_keycode(key) {
+                *lock_state ^= bit;
+            }
+
+            let modifiers = modifiers_from_boot_state(modifiers_byte, *lock_state);
+            Self::emit_event(callback, key, KeyState::Pressed, modifiers);
+        }
+
+        for &key in old {
+            if key == 0 || new.contains(&key) {
+                continue;
+            }
+
+            let modifiers = modifiers_from_boot_state(modifiers_byte, *lock_state);
+            Self::emit_event(callback, key, KeyState::Released, modifiers);
         }
     }
 
@@ -542,14 +631,143 @@ impl UsbKeyboard {
             keycodes: [data[2], data[3], data[4], data[5], data[6], data[7]],
         };
 
-        let prev = *self.prev_report.lock();
+        let prev = {
+            let guard = self.prev_report.lock();
+            *guard
+        };
+        let callback_guard = self.key_callback.lock();
+        let callback = callback_guard
+            .as_ref()
+            .map(|cb| cb.as_ref() as &dyn Fn(KeyEvent));
+        let mut lock_state = self.led_status.load(Ordering::Acquire);
 
-        // キー押下/解放を検出
-        if let Some(ref callback) = *self.key_callback.lock() {
-            Self::detect_key_changes(&prev.keycodes, &report.keycodes, callback);
-        }
+        Self::detect_modifier_changes(prev.modifiers, report.modifiers, lock_state, callback);
+        Self::detect_key_changes(
+            &prev.keycodes,
+            &report.keycodes,
+            &mut lock_state,
+            report.modifiers,
+            callback,
+        );
 
+        self.led_status.store(lock_state, Ordering::Release);
         *self.prev_report.lock() = report;
+    }
+}
+
+fn modifiers_from_boot_state(modifiers: u8, lock_state: u8) -> Modifiers {
+    Modifiers {
+        shift: (modifiers
+            & ((KeyboardModifier::LeftShift as u8) | (KeyboardModifier::RightShift as u8)))
+            != 0,
+        ctrl: (modifiers
+            & ((KeyboardModifier::LeftCtrl as u8) | (KeyboardModifier::RightCtrl as u8)))
+            != 0,
+        alt: (modifiers & (KeyboardModifier::LeftAlt as u8)) != 0,
+        alt_gr: (modifiers & (KeyboardModifier::RightAlt as u8)) != 0,
+        caps_lock: (lock_state & 0b010) != 0,
+        num_lock: (lock_state & 0b001) != 0,
+        scroll_lock: (lock_state & 0b100) != 0,
+    }
+}
+
+fn lock_bit_for_boot_keycode(keycode: u8) -> Option<u8> {
+    match keycode {
+        keycodes::KEY_CAPS_LOCK => Some(0b010),
+        keycodes::KEY_NUM_LOCK => Some(0b001),
+        keycodes::KEY_SCROLL_LOCK => Some(0b100),
+        _ => None,
+    }
+}
+
+fn boot_keycode_to_key_code(keycode: u8) -> KeyCode {
+    match keycode {
+        keycodes::KEY_A => KeyCode::A,
+        keycodes::KEY_B => KeyCode::B,
+        keycodes::KEY_C => KeyCode::C,
+        keycodes::KEY_D => KeyCode::D,
+        keycodes::KEY_E => KeyCode::E,
+        keycodes::KEY_F => KeyCode::F,
+        keycodes::KEY_G => KeyCode::G,
+        keycodes::KEY_H => KeyCode::H,
+        keycodes::KEY_I => KeyCode::I,
+        keycodes::KEY_J => KeyCode::J,
+        keycodes::KEY_K => KeyCode::K,
+        keycodes::KEY_L => KeyCode::L,
+        keycodes::KEY_M => KeyCode::M,
+        keycodes::KEY_N => KeyCode::N,
+        keycodes::KEY_O => KeyCode::O,
+        keycodes::KEY_P => KeyCode::P,
+        keycodes::KEY_Q => KeyCode::Q,
+        keycodes::KEY_R => KeyCode::R,
+        keycodes::KEY_S => KeyCode::S,
+        keycodes::KEY_T => KeyCode::T,
+        keycodes::KEY_U => KeyCode::U,
+        keycodes::KEY_V => KeyCode::V,
+        keycodes::KEY_W => KeyCode::W,
+        keycodes::KEY_X => KeyCode::X,
+        keycodes::KEY_Y => KeyCode::Y,
+        keycodes::KEY_Z => KeyCode::Z,
+        keycodes::KEY_1 => KeyCode::Key1,
+        keycodes::KEY_2 => KeyCode::Key2,
+        keycodes::KEY_3 => KeyCode::Key3,
+        keycodes::KEY_4 => KeyCode::Key4,
+        keycodes::KEY_5 => KeyCode::Key5,
+        keycodes::KEY_6 => KeyCode::Key6,
+        keycodes::KEY_7 => KeyCode::Key7,
+        keycodes::KEY_8 => KeyCode::Key8,
+        keycodes::KEY_9 => KeyCode::Key9,
+        keycodes::KEY_0 => KeyCode::Key0,
+        keycodes::KEY_ENTER => KeyCode::Enter,
+        keycodes::KEY_ESC => KeyCode::Escape,
+        keycodes::KEY_BACKSPACE => KeyCode::Backspace,
+        keycodes::KEY_TAB => KeyCode::Tab,
+        keycodes::KEY_SPACE => KeyCode::Space,
+        keycodes::KEY_MINUS => KeyCode::Minus,
+        keycodes::KEY_EQUAL => KeyCode::Equals,
+        keycodes::KEY_LEFT_BRACKET => KeyCode::LeftBracket,
+        keycodes::KEY_RIGHT_BRACKET => KeyCode::RightBracket,
+        keycodes::KEY_BACKSLASH => KeyCode::Backslash,
+        keycodes::KEY_SEMICOLON => KeyCode::Semicolon,
+        keycodes::KEY_APOSTROPHE => KeyCode::Quote,
+        keycodes::KEY_GRAVE => KeyCode::BackTick,
+        keycodes::KEY_COMMA => KeyCode::Comma,
+        keycodes::KEY_DOT => KeyCode::Period,
+        keycodes::KEY_SLASH => KeyCode::Slash,
+        keycodes::KEY_CAPS_LOCK => KeyCode::CapsLock,
+        keycodes::KEY_F1 => KeyCode::F1,
+        keycodes::KEY_F2 => KeyCode::F2,
+        keycodes::KEY_F3 => KeyCode::F3,
+        keycodes::KEY_F4 => KeyCode::F4,
+        keycodes::KEY_F5 => KeyCode::F5,
+        keycodes::KEY_F6 => KeyCode::F6,
+        keycodes::KEY_F7 => KeyCode::F7,
+        keycodes::KEY_F8 => KeyCode::F8,
+        keycodes::KEY_F9 => KeyCode::F9,
+        keycodes::KEY_F10 => KeyCode::F10,
+        keycodes::KEY_F11 => KeyCode::F11,
+        keycodes::KEY_F12 => KeyCode::F12,
+        keycodes::KEY_SCROLL_LOCK => KeyCode::ScrollLock,
+        keycodes::KEY_INSERT => KeyCode::Insert,
+        keycodes::KEY_HOME => KeyCode::Home,
+        keycodes::KEY_PAGE_UP => KeyCode::PageUp,
+        keycodes::KEY_DELETE => KeyCode::Delete,
+        keycodes::KEY_END => KeyCode::End,
+        keycodes::KEY_PAGE_DOWN => KeyCode::PageDown,
+        keycodes::KEY_RIGHT_ARROW => KeyCode::Right,
+        keycodes::KEY_LEFT_ARROW => KeyCode::Left,
+        keycodes::KEY_DOWN_ARROW => KeyCode::Down,
+        keycodes::KEY_UP_ARROW => KeyCode::Up,
+        keycodes::KEY_NUM_LOCK => KeyCode::NumLock,
+        keycodes::KEY_LEFT_CTRL => KeyCode::LeftCtrl,
+        keycodes::KEY_LEFT_SHIFT => KeyCode::LeftShift,
+        keycodes::KEY_LEFT_ALT => KeyCode::LeftAlt,
+        keycodes::KEY_LEFT_GUI => KeyCode::Unknown,
+        keycodes::KEY_RIGHT_CTRL => KeyCode::Unknown,
+        keycodes::KEY_RIGHT_SHIFT => KeyCode::RightShift,
+        keycodes::KEY_RIGHT_ALT => KeyCode::Unknown,
+        keycodes::KEY_RIGHT_GUI => KeyCode::Unknown,
+        _ => KeyCode::Unknown,
     }
 }
 
@@ -723,5 +941,57 @@ impl UsbMouse {
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use alloc::vec::Vec;
+    use spin::Mutex;
+
+    #[test]
+    fn usb_boot_keycode_translation_smoke() {
+        assert_eq!(boot_keycode_to_key_code(keycodes::KEY_A), KeyCode::A);
+        assert_eq!(
+            boot_keycode_to_key_code(keycodes::KEY_ENTER),
+            KeyCode::Enter
+        );
+        assert_eq!(
+            boot_keycode_to_key_code(keycodes::KEY_LEFT_ARROW),
+            KeyCode::Left
+        );
+    }
+
+    #[test]
+    fn usb_keyboard_process_report_emits_modifier_and_key_events() {
+        let keyboard = UsbKeyboard::new(0, 1, None);
+        let events = Arc::new(Mutex::new(Vec::<KeyEvent>::new()));
+        let sink = Arc::clone(&events);
+
+        keyboard.set_key_callback(move |event| {
+            sink.lock().push(event);
+        });
+
+        keyboard.process_report(&[
+            KeyboardModifier::LeftShift as u8,
+            0,
+            keycodes::KEY_A,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
+
+        let events = events.lock();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].key, KeyCode::LeftShift);
+        assert_eq!(events[0].state, KeyState::Pressed);
+        assert!(events[0].modifiers.shift);
+        assert_eq!(events[1].key, KeyCode::A);
+        assert_eq!(events[1].state, KeyState::Pressed);
+        assert!(events[1].modifiers.shift);
     }
 }

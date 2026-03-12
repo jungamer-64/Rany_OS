@@ -5,7 +5,7 @@
 //! Core keyboard driver implementation that is platform-independent.
 //!
 //! This module provides the `KeyboardDriver` struct which manages:
-//! - Scancode queue (lock-free SPSC)
+//! - Key-event queue (lock-free SPSC)
 //! - Modifier key state tracking
 //! - ISR-safe waker notification
 //! - Stream ownership enforcement
@@ -18,7 +18,7 @@ use core::task::Waker;
 
 use crate::keyboard::{IsrSafeWaker, KeyCodeExt, ModifierState};
 use crate::keymap::{DEFAULT_KEYMAP, Keymap};
-use crate::queue::ScancodeQueue;
+use crate::queue::KeyEventQueue;
 use crate::stream::{DriverOps, KeyboardStream, KeyboardStreamArc};
 use crate::{KeyCode, KeyEvent, KeyState, Modifiers, StreamAlreadyTaken};
 
@@ -37,6 +37,20 @@ const SCANCODE_RELEASE_BIT: u8 = 0x80;
 
 /// Scancode: Keycode mask (bit 0-6)
 const SCANCODE_KEYCODE_MASK: u8 = 0x7F;
+
+/// Packed event layout: key[7:0], pressed[8], modifiers[15:9], raw_scancode[31:16].
+const PACKED_KEY_MASK: u32 = 0x0000_00FF;
+const PACKED_STATE_MASK: u32 = 0x0000_0100;
+const PACKED_MODIFIERS_SHIFT: u32 = 9;
+const PACKED_RAW_SCANCODE_SHIFT: u32 = 16;
+
+const PACKED_MOD_SHIFT: u8 = 1 << 0;
+const PACKED_MOD_CTRL: u8 = 1 << 1;
+const PACKED_MOD_ALT: u8 = 1 << 2;
+const PACKED_MOD_ALT_GR: u8 = 1 << 3;
+const PACKED_MOD_CAPS_LOCK: u8 = 1 << 4;
+const PACKED_MOD_NUM_LOCK: u8 = 1 << 5;
+const PACKED_MOD_SCROLL_LOCK: u8 = 1 << 6;
 
 // ============================================================================
 // KeyboardDriver
@@ -57,8 +71,8 @@ const SCANCODE_KEYCODE_MASK: u8 = 0x7F;
 pub struct KeyboardDriver {
     /// Initialization flag
     initialized: AtomicBool,
-    /// Scancode queue
-    queue: ScancodeQueue,
+    /// Normalized key-event queue
+    queue: KeyEventQueue,
     /// Modifier key state
     modifiers: ModifierState,
     /// ISR extended scancode pending flag
@@ -78,7 +92,7 @@ impl KeyboardDriver {
     pub const fn new() -> Self {
         Self {
             initialized: AtomicBool::new(false),
-            queue: ScancodeQueue::new(),
+            queue: KeyEventQueue::new(),
             modifiers: ModifierState::new(),
             extended_pending: AtomicBool::new(false),
             waker: IsrSafeWaker::new(),
@@ -116,51 +130,57 @@ impl KeyboardDriver {
         let pressed = (scancode & SCANCODE_RELEASE_BIT) == 0;
         let code = scancode & SCANCODE_KEYCODE_MASK;
         self.update_modifiers_from_scancode(code, extended, pressed);
-        let data: u16 = (scancode as u16) | if extended { QUEUE_EXTENDED_FLAG } else { 0 };
-        self.emit_tap_event(data, code, extended, pressed);
+        let raw_scancode = (scancode as u16) | if extended { QUEUE_EXTENDED_FLAG } else { 0 };
+        let event = KeyEvent {
+            key: KeyCode::from_scancode(code, extended),
+            state: if pressed {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            },
+            modifiers: self.modifiers.snapshot(),
+            raw_scancode,
+        };
+        self.emit_tap_event(event);
+        self.enqueue_key_event(event);
+    }
 
-        if self.queue.push(data) {
-            // In ISR: only notify (set flag)
-            // Actual wake() is done in Consumer's poll()
-            self.waker.notify();
-        } else {
-            // Queue full: record dropped event
-            // In ISR: avoid logging, just increment counter
-            // Saturating add: clamp at u64::MAX on overflow
-            let _ = self
-                .dropped_events
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                    v.checked_add(1).or(Some(u64::MAX))
-                });
-            // Notify consumer even when queue is full
-            self.waker.notify();
-        }
+    /// Process a normalized key event from a non-PS/2 transport.
+    ///
+    /// This keeps the consumer path transport-neutral while preserving the
+    /// existing PS/2 producer interface.
+    pub fn handle_key_event(&self, event: KeyEvent) {
+        self.modifiers.overwrite_from_snapshot(event.modifiers);
+        self.emit_tap_event(event);
+        self.enqueue_key_event(event);
     }
 
     #[inline]
-    fn emit_tap_event(&self, raw_scancode: u16, code: u8, extended: bool, pressed: bool) {
+    fn emit_tap_event(&self, event: KeyEvent) {
         let tap = self.event_tap.load(Ordering::Acquire);
         if tap == 0 {
             return;
         }
 
-        let key = KeyCode::from_scancode(code, extended);
-        let state = if pressed {
-            KeyState::Pressed
-        } else {
-            KeyState::Released
-        };
-        let event = KeyEvent {
-            key,
-            state,
-            modifiers: self.modifiers.snapshot(),
-            raw_scancode,
-        };
-
         // Function pointers are installed by the kernel and read atomically here.
         // `0` means "no tap". This keeps the ISR path lock-free.
         let callback: fn(KeyEvent) = unsafe { core::mem::transmute(tap) };
         callback(event);
+    }
+
+    #[inline]
+    fn enqueue_key_event(&self, event: KeyEvent) {
+        if self.queue.push(pack_key_event(event)) {
+            self.waker.notify();
+            return;
+        }
+
+        let _ = self
+            .dropped_events
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                v.checked_add(1).or(Some(u64::MAX))
+            });
+        self.waker.notify();
     }
 
     /// Update modifier-state bits from a raw set-1 scancode.
@@ -214,29 +234,7 @@ impl KeyboardDriver {
 
     /// Get next key event (non-blocking, internal)
     fn poll_key_event_internal(&self) -> Option<KeyEvent> {
-        let data = self.queue.pop()?;
-
-        let extended = (data & QUEUE_EXTENDED_FLAG) != 0;
-        let scancode = (data & 0xFF) as u8;
-        let released = (scancode & SCANCODE_RELEASE_BIT) != 0;
-        let code = scancode & SCANCODE_KEYCODE_MASK;
-
-        let key = KeyCode::from_scancode(code, extended);
-        let state = if released {
-            KeyState::Released
-        } else {
-            KeyState::Pressed
-        };
-
-        // Store raw scancode for debugging
-        let raw_scancode = data;
-
-        Some(KeyEvent {
-            key,
-            state,
-            modifiers: self.modifiers.snapshot(),
-            raw_scancode,
-        })
+        self.queue.pop().map(unpack_key_event)
     }
 
     /// Take keyboard stream (ownership-based SPSC enforcement)
@@ -350,5 +348,77 @@ impl DriverOps for KeyboardDriver {
 
     fn return_stream(&self) {
         KeyboardDriver::return_stream(self)
+    }
+}
+
+#[inline]
+fn pack_modifiers(modifiers: Modifiers) -> u8 {
+    let mut packed = 0u8;
+    if modifiers.shift {
+        packed |= PACKED_MOD_SHIFT;
+    }
+    if modifiers.ctrl {
+        packed |= PACKED_MOD_CTRL;
+    }
+    if modifiers.alt {
+        packed |= PACKED_MOD_ALT;
+    }
+    if modifiers.alt_gr {
+        packed |= PACKED_MOD_ALT_GR;
+    }
+    if modifiers.caps_lock {
+        packed |= PACKED_MOD_CAPS_LOCK;
+    }
+    if modifiers.num_lock {
+        packed |= PACKED_MOD_NUM_LOCK;
+    }
+    if modifiers.scroll_lock {
+        packed |= PACKED_MOD_SCROLL_LOCK;
+    }
+    packed
+}
+
+#[inline]
+fn unpack_modifiers(packed: u8) -> Modifiers {
+    Modifiers {
+        shift: (packed & PACKED_MOD_SHIFT) != 0,
+        ctrl: (packed & PACKED_MOD_CTRL) != 0,
+        alt: (packed & PACKED_MOD_ALT) != 0,
+        alt_gr: (packed & PACKED_MOD_ALT_GR) != 0,
+        caps_lock: (packed & PACKED_MOD_CAPS_LOCK) != 0,
+        num_lock: (packed & PACKED_MOD_NUM_LOCK) != 0,
+        scroll_lock: (packed & PACKED_MOD_SCROLL_LOCK) != 0,
+    }
+}
+
+#[inline]
+fn pack_key_event(event: KeyEvent) -> u32 {
+    let key = event.key as u32;
+    let state = if matches!(event.state, KeyState::Pressed) {
+        PACKED_STATE_MASK
+    } else {
+        0
+    };
+    let modifiers = (pack_modifiers(event.modifiers) as u32) << PACKED_MODIFIERS_SHIFT;
+    let raw_scancode = (event.raw_scancode as u32) << PACKED_RAW_SCANCODE_SHIFT;
+    key | state | modifiers | raw_scancode
+}
+
+#[inline]
+fn unpack_key_event(packed: u32) -> KeyEvent {
+    let key_raw = (packed & PACKED_KEY_MASK) as u8;
+    let state = if (packed & PACKED_STATE_MASK) != 0 {
+        KeyState::Pressed
+    } else {
+        KeyState::Released
+    };
+    let modifiers = unpack_modifiers(((packed >> PACKED_MODIFIERS_SHIFT) & 0x7F) as u8);
+    let raw_scancode = (packed >> PACKED_RAW_SCANCODE_SHIFT) as u16;
+
+    KeyEvent {
+        key: unsafe { core::mem::transmute::<u8, KeyCode>(key_raw) },
+        state,
+        modifiers,
+        raw_scancode,
     }
 }

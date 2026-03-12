@@ -1,8 +1,8 @@
 // ============================================================================
-// drivers/hid/src/queue.rs - Lock-free SPSC Scancode Queue
+// drivers/hid/src/queue.rs - Lock-free SPSC Queues for Keyboard Input
 // ============================================================================
 //!
-//! Lock-free Single Producer Single Consumer (SPSC) queue for scancodes.
+//! Lock-free Single Producer Single Consumer (SPSC) queues for keyboard input.
 //!
 //! This queue is designed for keyboard interrupt handling where:
 //! - Producer: ISR (Interrupt Service Routine) - single thread only
@@ -29,7 +29,7 @@
 //! - **ARM64**: Theoretically safe, but real-device testing recommended
 //! - **RISC-V**: Compiler inserts fence instructions as needed
 
-use core::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
 /// Default queue size (must be power of 2)
 pub const DEFAULT_QUEUE_SIZE: usize = 128;
@@ -135,6 +135,67 @@ impl ScancodeQueue {
 }
 
 impl Default for ScancodeQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Lock-free SPSC queue for packed `KeyEvent` payloads.
+///
+/// Each entry is a compact `u32` payload produced by the ISR / input ingress
+/// side and consumed by `KeyboardStream`.
+pub struct KeyEventQueue {
+    buffer: [AtomicU32; DEFAULT_QUEUE_SIZE],
+    tail: AtomicUsize,
+    head: AtomicUsize,
+}
+
+impl KeyEventQueue {
+    pub const fn new() -> Self {
+        const ZERO: AtomicU32 = AtomicU32::new(0);
+        Self {
+            buffer: [ZERO; DEFAULT_QUEUE_SIZE],
+            tail: AtomicUsize::new(0),
+            head: AtomicUsize::new(0),
+        }
+    }
+
+    #[inline]
+    pub fn push(&self, data: u32) -> bool {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+
+        let next_tail = (tail + 1) & QUEUE_MASK;
+        if next_tail == head {
+            return false;
+        }
+
+        self.buffer[tail].store(data, Ordering::Release);
+        self.tail.store(next_tail, Ordering::Release);
+        true
+    }
+
+    #[inline]
+    pub fn pop(&self) -> Option<u32> {
+        let head = self.head.load(Ordering::Acquire);
+        let tail = self.tail.load(Ordering::Acquire);
+
+        if head == tail {
+            return None;
+        }
+
+        let data = self.buffer[head].load(Ordering::Acquire);
+        self.head.store((head + 1) & QUEUE_MASK, Ordering::Release);
+        Some(data)
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
+    }
+}
+
+impl Default for KeyEventQueue {
     fn default() -> Self {
         Self::new()
     }

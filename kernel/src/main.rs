@@ -7,6 +7,7 @@
     no_main
 )]
 #![feature(abi_x86_interrupt)]
+#![feature(custom_test_frameworks)]
 #![feature(thread_local)]
 #![feature(ptr_metadata)]
 #![feature(alloc_error_handler)]

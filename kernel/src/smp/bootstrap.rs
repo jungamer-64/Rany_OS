@@ -11,6 +11,7 @@ extern crate alloc;
 
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
+use boot_proto::ExoBootInfo;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 
 /// AP Bootstrap state
@@ -226,8 +227,6 @@ impl LocalApic {
     }
 }
 
-/// AP trampoline code location (must be in first 1MB, 4K aligned)
-const TRAMPOLINE_BASE: u64 = 0x8000;
 /// Size of trampoline code
 const TRAMPOLINE_SIZE: usize = 4096;
 
@@ -237,6 +236,8 @@ pub struct ApBootstrap {
     lapic: LocalApic,
     /// Boot info for each AP
     ap_info: Vec<ApBootInfo>,
+    /// Physical address of the low-memory trampoline area provided by the bootloader
+    trampoline_base: u64,
     /// Number of APs started
     aps_started: AtomicU32,
     /// Expected number of APs
@@ -245,15 +246,20 @@ pub struct ApBootstrap {
 
 impl ApBootstrap {
     /// Create new AP bootstrap manager
-    pub fn new(lapic_base: u64, num_aps: u32) -> Self {
+    pub fn new(lapic_base: u64, boot_info: &ExoBootInfo, num_aps: u32) -> Self {
         let mut ap_info = Vec::with_capacity(num_aps as usize);
-        for _ in 0..num_aps {
-            ap_info.push(ApBootInfo::new());
+        for ap_index in 0..num_aps as usize {
+            let mut info = ApBootInfo::new();
+            info.stack_ptr = ap_stack_top(&boot_info.ap_boot, ap_index);
+            info.page_table = boot_info.page_table_base;
+            info.entry_point = ap_entry as usize as u64;
+            ap_info.push(info);
         }
 
         ApBootstrap {
             lapic: LocalApic::new(lapic_base),
             ap_info,
+            trampoline_base: boot_info.ap_boot.trampoline_addr,
             aps_started: AtomicU32::new(0),
             expected_aps: num_aps,
         }
@@ -266,13 +272,21 @@ impl ApBootstrap {
 
     /// Setup trampoline code
     pub unsafe fn setup_trampoline(&self) -> Result<(), &'static str> {
+        if self.trampoline_base == 0 {
+            return Err("missing AP trampoline allocation");
+        }
+
         static TRAMPOLINE_CODE: [u8; 32] = [
             0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xF4, 0xEB, 0xFD, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00,
         ];
 
-        let trampoline_ptr = TRAMPOLINE_BASE as *mut u8;
+        let trampoline_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new(
+            self.trampoline_base,
+        ))
+        .as_u64();
+        let trampoline_ptr = trampoline_virt as *mut u8;
         core::ptr::copy_nonoverlapping(
             TRAMPOLINE_CODE.as_ptr(),
             trampoline_ptr,
@@ -293,7 +307,7 @@ impl ApBootstrap {
         self.delay_ms(10);
 
         info.set_state(ApState::SipiSent);
-        let vector = (TRAMPOLINE_BASE / 0x1000) as u8;
+        let vector = (self.trampoline_base / 0x1000) as u8;
         self.lapic.send_sipi(apic_id, vector);
         self.delay_us(200);
         self.lapic.send_sipi(apic_id, vector);
@@ -351,8 +365,12 @@ impl ApBootstrap {
 static AP_BOOTSTRAP: PoisonLock<Option<ApBootstrap>> = PoisonLock::new(None);
 
 /// Initialize SMP bootstrap
-pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> {
-    let bootstrap = ApBootstrap::new(lapic_base, num_aps);
+pub unsafe fn init(
+    lapic_base: u64,
+    boot_info: &ExoBootInfo,
+    num_aps: u32,
+) -> Result<(), &'static str> {
+    let bootstrap = ApBootstrap::new(lapic_base, boot_info, num_aps);
     bootstrap.setup_trampoline()?;
     *AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner()) = Some(bootstrap);
     Ok(())
@@ -376,6 +394,17 @@ pub fn online_aps() -> u32 {
         .as_ref()
         .map(|b| b.aps_online())
         .unwrap_or(0)
+}
+
+fn ap_stack_top(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
+    if ap_boot.stack_base == 0
+        || ap_boot.stack_size == 0
+        || ap_index >= ap_boot.stack_count as usize
+    {
+        return 0;
+    }
+
+    ap_boot.stack_base + ((ap_index + 1) * ap_boot.stack_size as usize) as u64
 }
 
 /// AP entry point (called from trampoline)

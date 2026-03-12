@@ -20,7 +20,9 @@ pub fn test_sendfuture_wakes_on_send() {
     if let Ok(mut guard) = stack::stack().lock() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
-                |_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
+                |_if: Option<crate::net::runtime::manager::NetIfId>,
+                 _data: &[u8],
+                 _meta: kernel_api::service::netdev::NetTxMeta| {
                     assert!(_if.is_none());
                     true
                 },
@@ -107,7 +109,9 @@ pub fn test_sendfuture_wakes_on_send_v6() {
     if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
-                |_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
+                |_if: Option<crate::net::runtime::manager::NetIfId>,
+                 _data: &[u8],
+                 _meta: kernel_api::service::netdev::NetTxMeta| {
                     assert!(_if.is_none());
                     true
                 },
@@ -602,7 +606,7 @@ pub fn test_udp_packet_stream_delivered() {
     let mut fut = stream.next_packet();
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
     match pinned.as_mut().poll(&mut cx2) {
-        Poll::Ready(Some((addr, _ttl, pkt))) => {
+        Poll::Ready(Some((_if_id, addr, _ttl, pkt))) => {
             assert_eq!(pkt.data(), b"hello");
             assert_eq!(addr.port(), 12345);
         }

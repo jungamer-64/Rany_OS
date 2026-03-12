@@ -282,6 +282,11 @@ pub fn active_cpu_count() -> usize {
     ACTIVE_CPU_COUNT.load(Ordering::Relaxed)
 }
 
+/// ブート時に既知のアクティブCPU数を反映する。
+pub fn set_active_cpu_count(count: usize) {
+    ACTIVE_CPU_COUNT.store(count.max(1).min(MAX_CPUS), Ordering::Release);
+}
+
 /// タスクをwake queueに追加（Wakerから呼ばれる）
 pub fn wake_task(task_id: TaskId) {
     WAKE_QUEUE.push(task_id);

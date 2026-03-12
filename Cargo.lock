@@ -1107,6 +1107,7 @@ name = "usb_driver"
 version = "0.1.0"
 dependencies = [
  "hal",
+ "hid_driver",
  "kernel_api",
  "log",
  "spin",

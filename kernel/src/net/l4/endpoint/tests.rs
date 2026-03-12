@@ -58,7 +58,7 @@ pub mod tests {
         }
 
         // 空のキューからnext_incomingするとTimeout
-        let result = endpoint.next_incoming();
+        let result = endpoint.next_incoming_sync();
         assert!(matches!(result, Err(EndpointError::Timeout)));
     }
 
@@ -308,7 +308,7 @@ pub mod tests {
         let local =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
         assert!(sock.set_local_addr(local).is_ok());
-        assert!(sock.start_listening(4).is_ok());
+        assert!(sock.start_listening_sync(4).is_ok());
 
         if let Some(s) = sock.endpoint() {
             let inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -382,7 +382,7 @@ pub mod tests {
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
-        let (accepted, _, if_id) = listen_endpoint.next_incoming().expect("accept");
+        let (accepted, _, if_id) = listen_endpoint.next_incoming_sync().expect("accept");
         assert_eq!(if_id, NetIfId(4));
         let inner = accepted.inner().lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(inner.scope, InterfaceScope::Pinned(NetIfId(4)));

@@ -3,6 +3,7 @@ use super::{
     buffer_pool_put_4k, release_frame_and_untrack, try_zswap_store_and_dealloc_any,
 };
 use crate::mm::types::FrameIndex;
+use core::sync::atomic::AtomicUsize;
 
 mod enqueue;
 pub use enqueue::*;

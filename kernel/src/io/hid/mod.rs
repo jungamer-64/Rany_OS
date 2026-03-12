@@ -49,6 +49,7 @@ pub use keyboard::{
     KeyboardStreamArc,
     Modifiers,
     StreamAlreadyTaken,
+    handle_key_event,
     has_event,
     // Functions (init removed - use Ps2KeyboardDriver via DriverRegistry)
     process_pending_wakes,

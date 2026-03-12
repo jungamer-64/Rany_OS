@@ -1,4 +1,5 @@
 use super::*;
+use core::sync::atomic::Ordering as AtomicOrdering;
 
 // 公開API: try_enqueue_swapout
 mod tests;

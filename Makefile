@@ -93,7 +93,7 @@ comma := ,
 # ==============================================================================
 
 .PHONY: all build build-kernel build-loader build-signer setup-keys \
-        sign image run run-release debug gdb test test-one \
+        sign image image-real run run-release debug gdb test test-one \
         clean lint check clippy fmt fmt-check doc doc-open \
         size deps stats ci check-driver-deps check-deps reset-vars help \
         net-setup net-teardown net-status \
@@ -241,6 +241,11 @@ image: build
 		fi; \
 	fi
 	@printf '   -> \033[32m%s\033[0m\n' "Boot image ready."
+
+image-real:
+	@printf '\033[36m%s\033[0m\n' "Preparing Real-Hardware ESP..."
+	@bash scripts/build_real_hw_esp.sh --profile $(PROFILE)
+	@printf '   -> \033[32m%s\033[0m\n' "Real-hardware ESP ready."
 
 # OVMF_VARS.fd をリセット
 reset-vars:

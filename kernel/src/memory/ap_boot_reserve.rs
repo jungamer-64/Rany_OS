@@ -179,8 +179,8 @@ pub(crate) fn init_pmm_from_srat(rsdp_addr: Option<u64>) -> bool {
     }
 }
 
-/// Exchange Heap, Per-CPU, Per-Core Slab Cache の初期化
-pub(crate) fn init_post_buddy() {
+/// Exchange Heap, BSP Per-CPU/TLS, Per-Core Slab Cache の初期化
+pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfo>) {
     unsafe {
         crate::mm::cache::exchange_heap::init_exchange_heap(
             exchange_heap_start() as usize,
@@ -190,10 +190,10 @@ pub(crate) fn init_post_buddy() {
     verify_buddy_integrity();
 
     unsafe {
-        crate::per_cpu::init_per_cpu(1);
+        crate::per_cpu::init_bsp_per_cpu(boot_info.map(|info| &info.tls_template));
     }
 
-    crate::mm::cache::slab_cache::init_per_core_caches(1);
+    crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(0);
 }
 
 /// メモリサブシステムの完全初期化
@@ -227,7 +227,7 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     init_numa_pmm(rsdp_addr, numa_info, &usable_regions);
 
     // 3-5. Exchange Heap, Per-CPU, Per-Core Slab Cache
-    init_post_buddy();
+    init_post_buddy(boot_info);
 
     // Early-boot helper vector is no longer needed.  Avoid allocator churn on
     // function epilogue in qemu-test-export/full-mm paths where allocator

@@ -97,6 +97,10 @@ pub(crate) fn init_hid_and_serial_drivers() {
     use alloc::boxed::Box;
     use driver_registry::register_driver;
 
+    crate::drivers::usb::class::hid::set_keyboard_event_sink(Some(
+        crate::io::hid::keyboard::handle_key_event,
+    ));
+
     // PS/2 Keyboard
     info!(target: "init", "Initializing HID drivers via DriverRegistry");
     {
@@ -593,6 +597,19 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
     // Configure ACPI driver with HHDM offset for physical-to-virtual translation
     io::acpi::set_hhdm_offset(context.phys_mem_offset);
     init_acpi_and_iommu(context.boot_info, context.phys_mem_offset);
+    match crate::smp::init_smp(context.boot_info) {
+        Ok(report) => {
+            info!(
+                target: "init",
+                "SMP bootstrap report: detected={} started={}",
+                report.detected,
+                report.started
+            );
+        }
+        Err(err) => {
+            warn!(target: "init", "SMP bootstrap failed: {}", err);
+        }
+    }
 
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
@@ -776,7 +793,7 @@ fn phase_core_services_and_drivers(context: &mut KernelBootContext) {
     loader::init_kernel_cell();
     register_kernel_symbols();
     loader::live_update::init();
-    loader::live_update::set_active_cores(1);
+    loader::live_update::set_active_cores(crate::per_cpu::active_cpu_count() as u64);
     crate::driver_domain::init();
     info!(target: "init", "Cell loader/live update/DriverDomain initialized");
 

@@ -458,6 +458,30 @@ mod tests {
         }
     }
 
+    pub fn driver_handle_key_event_smoke() -> bool {
+        use crate::stream::DriverOps;
+        let driver = crate::driver::KeyboardDriver::new();
+        driver.handle_key_event(crate::KeyEvent {
+            key: crate::KeyCode::A,
+            state: crate::KeyState::Pressed,
+            modifiers: crate::Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+            raw_scancode: 0x8004,
+        });
+
+        match driver.poll_key_event_internal() {
+            Some(event) => {
+                event.key == crate::KeyCode::A
+                    && event.state == crate::KeyState::Pressed
+                    && event.modifiers.shift
+                    && event.raw_scancode == 0x8004
+            }
+            None => false,
+        }
+    }
+
     // =========================================================================
     // keyboard.rs smoke tests
     // =========================================================================

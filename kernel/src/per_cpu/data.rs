@@ -1,9 +1,12 @@
 use super::*;
 use crate::sync::poison_lock::PoisonLock;
+use alloc::alloc::{Layout, alloc_zeroed};
 use alloc::vec::Vec;
+use boot_proto::TlsInfo;
 
 // Required for inline assembly macros and atomic ordering constants
 use core::arch::asm;
+use core::ptr;
 use core::sync::atomic::Ordering;
 
 #[inline]
@@ -44,6 +47,11 @@ pub(crate) static INITIALIZED: spin::Once<()> = spin::Once::new();
 pub(crate) static ACTIVE_CPUS: PoisonLock<usize> = PoisonLock::new(0);
 /// Online CPU bitmask (bit N set => CPU N online)
 pub(crate) static ONLINE_CPU_MASK: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TLS_TEMPLATE_INFO: PoisonLock<Option<TlsInfo>> = PoisonLock::new(None);
+pub(crate) static TLS_FS_BASES: [AtomicU64; MAX_CPUS] = {
+    const ZERO: AtomicU64 = AtomicU64::new(0);
+    [ZERO; MAX_CPUS]
+};
 
 /// Fastpath adoption flag: true = CPUID supports FSGSBASE and we adopt rdgsbase/wrgsbase
 /// Note: This is a global adoption decision. Each CPU must still enable CR4.FSGSBASE before use.
@@ -370,6 +378,95 @@ pub unsafe fn write_fs_base_msr(value: u64) {
     }
 }
 
+#[inline]
+unsafe fn write_fsbase_any(value: u64) {
+    if can_use_fsgsbase() && is_fsgsbase_enabled() {
+        unsafe {
+            write_fs_base(value);
+        }
+    } else {
+        unsafe {
+            write_fs_base_msr(value);
+        }
+    }
+}
+
+fn record_tls_template(tls_template: Option<&TlsInfo>) {
+    let mut guard = TLS_TEMPLATE_INFO.lock_for_init("[PCPU] record_tls_template");
+    *guard = tls_template
+        .copied()
+        .filter(|info| info.start_addr != 0 && info.mem_size != 0);
+}
+
+fn tls_template() -> Option<TlsInfo> {
+    *TLS_TEMPLATE_INFO.lock().expect("lock poisoned")
+}
+
+#[cfg(all(not(test), not(target_os = "windows")))]
+unsafe fn allocate_tls_for_cpu(cpu_id: usize) {
+    if cpu_id >= MAX_CPUS || TLS_FS_BASES[cpu_id].load(Ordering::Acquire) != 0 {
+        return;
+    }
+
+    let Some(tls) = tls_template() else {
+        return;
+    };
+
+    let mem_size = tls.mem_size as usize;
+    let file_size = core::cmp::min(tls.file_size as usize, mem_size);
+    if mem_size == 0 {
+        return;
+    }
+
+    let mut align = core::cmp::max(tls.align as usize, core::mem::align_of::<usize>());
+    if !align.is_power_of_two() {
+        align = align.next_power_of_two();
+    }
+
+    let alloc_size = match mem_size.checked_add(align) {
+        Some(size) => size,
+        None => return,
+    };
+    let layout = match Layout::from_size_align(alloc_size, align) {
+        Ok(layout) => layout,
+        Err(_) => return,
+    };
+    let raw = unsafe { alloc_zeroed(layout) };
+    if raw.is_null() {
+        return;
+    }
+
+    let aligned = (raw as usize + (align - 1)) & !(align - 1);
+    if file_size > 0 {
+        unsafe {
+            ptr::copy_nonoverlapping(tls.start_addr as *const u8, aligned as *mut u8, file_size);
+        }
+    }
+
+    let fs_base = aligned.saturating_add(mem_size) as u64;
+    TLS_FS_BASES[cpu_id].store(fs_base, Ordering::Release);
+}
+
+#[cfg(any(test, target_os = "windows"))]
+unsafe fn allocate_tls_for_cpu(_cpu_id: usize) {}
+
+unsafe fn install_tls_for_cpu(cpu_id: usize) {
+    if cpu_id >= MAX_CPUS {
+        return;
+    }
+
+    unsafe {
+        allocate_tls_for_cpu(cpu_id);
+    }
+
+    let fs_base = TLS_FS_BASES[cpu_id].load(Ordering::Acquire);
+    if fs_base != 0 {
+        unsafe {
+            write_fsbase_any(fs_base);
+        }
+    }
+}
+
 /// CR4.FSGSBASEを有効化
 ///
 /// # Safety
@@ -477,14 +574,9 @@ pub unsafe fn check_fsgsbase_support() -> bool {
 ///
 /// これにより、初期化中でも `current_cpu_id()` や `try_current_cpu_id()` を
 /// 安全に呼び出すことができる。
-pub unsafe fn init_per_cpu(num_cpus: usize) {
+pub unsafe fn init_bsp_per_cpu(tls_template: Option<&TlsInfo>) {
     INITIALIZED.call_once(|| {
-        let num_cpus = num_cpus.min(MAX_CPUS);
-
         // 1. FSGSBASEを有効化（サポートされている場合のみ）
-        // SAFETY: 初期化時に一度だけ呼ばれる
-
-        // CPUIDでFSGSBASEサポートを確認
         #[cfg(not(feature = "qemu-test-export"))]
         let fsgsbase_supported = unsafe { check_fsgsbase_support() };
         #[cfg(feature = "qemu-test-export")]
@@ -494,82 +586,62 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             unsafe {
                 enable_fsgsbase();
             }
-            // Set global adoption flag - each AP will still need to enable CR4 in setup_current_cpu
             GSBASE_FASTPATH.store(true, Ordering::Release);
         }
 
-        // 2. BSP（CPU 0）のデータを先に初期化してGsBaseを設定
-        // これにより、以降の初期化コード内でcurrent_cpu_id()が使えるようになる
         unsafe {
-            // Initialize Hot/Cold structures (Phase 3)
             PER_CPU_HOT[0] = PerCpuHot::new(0);
             PER_CPU_COLD[0] = PerCpuCold::new(0);
             PER_CPU_HOT[0].set_self_ptr();
             PER_CPU_HOT[0].set_cold(&mut PER_CPU_COLD[0] as *mut PerCpuCold);
 
-            // Legacy: Full initialization for backward compatibility
             PER_CPU_DATA[0] = PerCpuData::new(0);
             PER_CPU_DATA[0].set_self_ptr();
 
-            // BSPのGsBaseを設定 - PER_CPU_HOT を使用（Phase 3 Hot/Cold最適化）
             let bsp_ptr = &PER_CPU_HOT[0] as *const _ as u64;
-            // FSGSBASEが有効な場合は高速版、そうでなければMSR版を使用
             if fsgsbase_supported {
                 write_gs_base(bsp_ptr);
             } else {
                 write_gs_base_msr(bsp_ptr);
             }
 
-            // BSPのGSBaseが設定済みであることをマーク
             BSP_GSBASE_SET.store(true, Ordering::Release);
-
-            // 2.5. TLS (Thread Local Storage) の初期化
-
-            #[cfg(all(not(test), not(target_os = "windows")))]
-            {
-                unsafe extern "C" {
-                    static __tls_start: u8;
-                    static __tls_end: u8;
-                }
-
-                let _tls_start = &__tls_start as *const u8 as u64;
-                let tls_end = &__tls_end as *const u8 as u64;
-
-                let fs_base = tls_end;
-
-                if fsgsbase_supported {
-                    write_fs_base(fs_base);
-                } else {
-                    write_fs_base_msr(fs_base);
-                }
-            }
-            #[cfg(any(test, target_os = "windows"))]
-            {
-                // TLS skipped in test or Windows build
-            }
+            record_tls_template(tls_template);
+            install_tls_for_cpu(0);
         }
 
-        // 3. 残りのCPU（AP）のデータを初期化
-        let mut i = 1usize; // CPU 0は既に初期化済み
-        while i < num_cpus {
-            // SAFETY: 初期化中は他のCPUからアクセスされない
-            // Initialize Hot/Cold structures (Phase 3)
-            unsafe {
-                PER_CPU_HOT[i] = PerCpuHot::new(i);
-                PER_CPU_COLD[i] = PerCpuCold::new(i);
-                PER_CPU_HOT[i].set_self_ptr();
-                PER_CPU_HOT[i].set_cold(&mut PER_CPU_COLD[i] as *mut PerCpuCold);
-
-                // Legacy: Full init for backward compatibility
-                PER_CPU_DATA[i] = PerCpuData::new(i);
-                PER_CPU_DATA[i].set_self_ptr();
-            }
-            i += 1;
-        }
-
-        *ACTIVE_CPUS.lock().expect("lock poisoned") = num_cpus;
+        *ACTIVE_CPUS.lock().expect("lock poisoned") = 1;
         mark_cpu_online(0);
     });
+}
+
+pub fn finalize_cpu_topology(num_cpus: usize) {
+    let num_cpus = num_cpus.min(MAX_CPUS).max(1);
+    if INITIALIZED.get().is_none() {
+        return;
+    }
+
+    let mut i = 1usize;
+    while i < num_cpus {
+        unsafe {
+            PER_CPU_HOT[i] = PerCpuHot::new(i);
+            PER_CPU_COLD[i] = PerCpuCold::new(i);
+            PER_CPU_HOT[i].set_self_ptr();
+            PER_CPU_HOT[i].set_cold(&mut PER_CPU_COLD[i] as *mut PerCpuCold);
+
+            PER_CPU_DATA[i] = PerCpuData::new(i);
+            PER_CPU_DATA[i].set_self_ptr();
+            allocate_tls_for_cpu(i);
+        }
+        i += 1;
+    }
+}
+
+pub unsafe fn init_per_cpu(num_cpus: usize) {
+    unsafe {
+        init_bsp_per_cpu(None);
+    }
+    finalize_cpu_topology(num_cpus);
 }
 
 /// 現在のCPUのPer-CPUデータを設定（AP用）
@@ -616,6 +688,7 @@ pub unsafe fn setup_current_cpu(cpu_id: usize) {
     // Set GSBase to PER_CPU_HOT for this CPU (Phase 3 optimization)
     unsafe {
         write_gsbase_any(hot_slot_ptr as u64);
+        install_tls_for_cpu(cpu_id);
     }
 
     mark_cpu_online(cpu_id);

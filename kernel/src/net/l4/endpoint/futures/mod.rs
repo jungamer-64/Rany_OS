@@ -987,7 +987,9 @@ pub mod qemu_tests {
         if let Ok(mut guard) = stack::stack().lock() {
             if let Some(ref mut s) = *guard {
                 s.set_transmit_fn(
-                    |_if: Option<crate::net::runtime::manager::NetIfId>, _data: &[u8]| {
+                    |_if: Option<crate::net::runtime::manager::NetIfId>,
+                     _data: &[u8],
+                     _meta: kernel_api::service::netdev::NetTxMeta| {
                         assert!(_if.is_none());
                         true
                     },
@@ -1150,7 +1152,8 @@ pub mod qemu_tests {
 
         let processor = crate::net::l4::udp::UdpProcessor::new();
         let port = 40000u16;
-        let Ok(u) = processor.bind_with_token(port, None) else {
+        let Ok(u) = processor.bind_with_token(crate::net::types::InterfaceScope::Any, port, None)
+        else {
             return false;
         };
 

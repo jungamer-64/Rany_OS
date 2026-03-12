@@ -4,7 +4,7 @@
 //!
 //! # 非同期キーボードドライバ
 //!
-//! PS/2キーボードからの入力を非同期Futureとして提供。
+//! キーボード入力を非同期Futureとして提供。
 //! Interrupt-Wakerブリッジと連携して、割り込み駆動の入力処理を実現。
 //!
 //! ## アーキテクチャ
@@ -29,8 +29,8 @@
 //!
 //! コアロジックは `hid_driver` クレートに実装されています。
 //! このモジュールは以下のカーネル固有の機能を提供します:
-//! - グローバルPS/2キーボードインスタンス
-//! - 割り込みハンドラのエントリポイント
+//! - グローバルキーボードインスタンス
+//! - PS/2 IRQ と USB HID の共通入口
 //! - カーネルレベルのAPIラッパー
 
 #![allow(dead_code)]
@@ -67,10 +67,10 @@ pub use super::keymap::{DEFAULT_KEYMAP, DvorakKeymap, JisKeymap, Keymap, UsQwert
 // グローバルインスタンス（PS/2キーボード用）
 // ============================================================================
 
-/// グローバルPS/2キーボードドライバ
+/// グローバルキーボードドライバ
 ///
-/// 単一のPS/2キーボードをサポートする場合はこれを使用。
-/// 複数デバイスが必要な場合は、別のインスタンスを作成してください。
+/// PS/2 と USB HID keyboard の両方がこのインスタンスへ正規化済み
+/// `KeyEvent` を流し込み、ExoShell などの上位層は transport を意識しない。
 pub(crate) static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
 
 // ============================================================================
@@ -106,6 +106,11 @@ pub fn keyboard_interrupt_handler() {
     }
 
     PS2_KEYBOARD.handle_scancode(data);
+}
+
+/// Transport-neutral ingress for normalized keyboard events.
+pub fn handle_key_event(event: KeyEvent) {
+    PS2_KEYBOARD.handle_key_event(event);
 }
 
 /// 保留中のISR通知を処理（Executorから呼び出し）

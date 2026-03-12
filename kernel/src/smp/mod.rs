@@ -7,8 +7,16 @@
 
 #![allow(dead_code)]
 
+use boot_proto::ExoBootInfo;
+
 pub mod bootstrap;
 pub use bootstrap::{init, online_aps, start_aps};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SmpBootReport {
+    pub detected: u32,
+    pub started: u32,
+}
 
 /// Get total CPU count (BSP + APs)
 pub fn cpu_count() -> u32 {
@@ -38,8 +46,8 @@ pub fn cpu_index() -> usize {
     0
 }
 
-/// Initialize SMP for the system
-pub fn init_smp() -> Result<(), &'static str> {
+/// Initialize SMP for the system using bootloader-provided AP boot metadata.
+pub fn init_smp(boot_info: &ExoBootInfo) -> Result<SmpBootReport, &'static str> {
     // Get LAPIC address from ACPI
     let lapic_base = crate::io::acpi::local_apic_address().unwrap_or(0xFEE00000); // Default LAPIC address
 
@@ -54,29 +62,47 @@ pub fn init_smp() -> Result<(), &'static str> {
         .map(|a| a.apic_id as u32)
         .collect();
 
-    let num_aps = ap_apic_ids.len() as u32;
+    let detected = ap_apic_ids.len() as u32;
+    let requested = core::cmp::min(
+        detected,
+        core::cmp::min(
+            boot_info.ap_boot.ap_count as u32,
+            boot_info.ap_boot.stack_count as u32,
+        ),
+    );
 
-    if num_aps == 0 {
+    if requested == 0 {
         log::info!("[SMP] No APs detected, running uniprocessor\n");
-        return Ok(());
+        apply_online_cpu_count(1);
+        return Ok(SmpBootReport {
+            detected,
+            started: 0,
+        });
     }
 
-    log::info!("[SMP] Detected {} AP(s), starting bootstrap\n", num_aps);
+    log::info!("[SMP] Detected {} AP(s), preparing bootstrap metadata\n", detected);
+    crate::per_cpu::finalize_cpu_topology((requested + 1) as usize);
 
-    // Initialize bootstrap
     unsafe {
-        init(lapic_base, num_aps)?;
+        init(lapic_base, boot_info, requested)?;
     }
 
-    // Start all APs
-    let started = start_aps(&ap_apic_ids);
+    let started = start_aps(&ap_apic_ids[..requested as usize]);
 
-    log::info!("[SMP] Started {}/{} APs\n", started, num_aps);
+    log::info!("[SMP] Started {}/{} APs\n", started, detected);
+    apply_online_cpu_count((started + 1) as usize);
 
-    // Reconfigure PMM arenas for the CPUs that actually came online.
     unsafe {
         crate::mm::phys::frame_allocator::pmm_reconfigure_for_online_cpus();
     }
 
-    Ok(())
+    Ok(SmpBootReport { detected, started })
+}
+
+fn apply_online_cpu_count(count: usize) {
+    let count = count.max(1);
+    crate::mm::cache::slab_cache::init_per_core_caches(count);
+    crate::mm::sync::page_table_cache::set_active_cpu_count(count);
+    crate::loader::live_update::set_active_cores(count as u64);
+    crate::task::set_executor_active_cpu_count(count);
 }
