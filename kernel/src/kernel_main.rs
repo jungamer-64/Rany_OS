@@ -5,6 +5,7 @@
 // 責務: kmain_inner()、デバイス検出、ドライバ初期化、Executorループ
 // ============================================================================
 use super::*;
+use log::{debug, error};
 
 mod kernel_runtime;
 use self::kernel_runtime::*;
