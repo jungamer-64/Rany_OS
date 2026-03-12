@@ -1459,10 +1459,18 @@ mod tests {
             rx_cq_dbs: Vec::new(),
             sqs: Vec::new(),
             sq_dbs: Vec::new(),
-            rqs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(0x80, 0x7000, 0x8000))],
-            rq_dbs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(0x1000, 0x9000, 0xa000))],
-            rmps: vec![DmaSlot::from_dma_buffer(test_dma_buffer(0x80, 0xb000, 0xc000))],
-            rmp_dbs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(0x1000, 0xd000, 0xe000))],
+            rqs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(
+                0x80, 0x7000, 0x8000,
+            ))],
+            rq_dbs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(
+                0x1000, 0x9000, 0xa000,
+            ))],
+            rmps: vec![DmaSlot::from_dma_buffer(test_dma_buffer(
+                0x80, 0xb000, 0xc000,
+            ))],
+            rmp_dbs: vec![DmaSlot::from_dma_buffer(test_dma_buffer(
+                0x1000, 0xd000, 0xe000,
+            ))],
         };
 
         let allocated = dma_resources.to_allocated_resources();

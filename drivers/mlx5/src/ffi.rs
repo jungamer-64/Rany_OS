@@ -316,7 +316,11 @@ impl Mlx5DmaResources {
             rqs.push(DmaSlot::alloc(plan.rq_size(), pci_locator, "rq")?);
             rq_dbs.push(DmaSlot::alloc(plan.db_record_size(), pci_locator, "rq_db")?);
             rmps.push(DmaSlot::alloc(plan.rmp_size(), pci_locator, "rmp")?);
-            rmp_dbs.push(DmaSlot::alloc(plan.db_record_size(), pci_locator, "rmp_db")?);
+            rmp_dbs.push(DmaSlot::alloc(
+                plan.db_record_size(),
+                pci_locator,
+                "rmp_db",
+            )?);
         }
 
         Ok(Self {

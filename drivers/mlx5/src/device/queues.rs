@@ -892,7 +892,9 @@ impl Mlx5Device {
                                 let rqn = parse_create_rq_output(out_mbox);
                                 if let Err(err) = self.transition_rq_to_ready(rqn) {
                                     if self.is_vf() {
-                                        crate::boot_trace("[MLX5_RQ] modify_rq failed on VF; continue\n");
+                                        crate::boot_trace(
+                                            "[MLX5_RQ] modify_rq failed on VF; continue\n",
+                                        );
                                     } else {
                                         let reason =
                                             alloc::format!("transition to ready failed: {:?}", err);
