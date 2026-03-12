@@ -794,6 +794,21 @@ pub fn get_current_pte(virt: VirtAddr) -> Option<PageTableEntry> {
     }
 }
 
+#[inline]
+fn flush_range_tlb(virt: VirtAddr, size: u64) {
+    if size > 4096 * 8 {
+        crate::mm::sync::tlb_batch::flush_tlb_all();
+    } else {
+        let mut addr = virt.as_u64();
+        let end = addr + size;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
+        while addr < end {
+            invalidate_page(VirtAddr::new(addr));
+            addr += 4096;
+        }
+    }
+}
+
 /// グローバルページテーブルマネージャーで範囲をマップ
 pub unsafe fn global_map_range(
     virt: VirtAddr,
@@ -811,18 +826,7 @@ pub unsafe fn global_map_range(
 
     drop(guard);
     if res.is_ok() {
-        // 範囲全体のTLBを無効化（簡略化のため全フラッシュ、または個別にループ）
-        if size > 4096 * 8 {
-            crate::mm::sync::tlb_batch::flush_tlb_all();
-        } else {
-            let mut addr = virt.as_u64();
-            let end = addr + size;
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while addr < end {
-                invalidate_page(VirtAddr::new(addr));
-                addr += 4096;
-            }
-        }
+        flush_range_tlb(virt, size);
     }
     res
 }
@@ -839,17 +843,37 @@ pub unsafe fn global_unmap_range(virt: VirtAddr, size: u64) -> Result<(), MapErr
 
     drop(guard);
     if res.is_ok() {
-        if size > 4096 * 8 {
-            crate::mm::sync::tlb_batch::flush_tlb_all();
-        } else {
-            let mut addr = virt.as_u64();
-            let end = addr + size;
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while addr < end {
-                invalidate_page(VirtAddr::new(addr));
-                addr += 4096;
-            }
-        }
+        flush_range_tlb(virt, size);
+    }
+    res
+}
+
+/// 既存の範囲を置き換えて、最後に一度だけTLBを同期する。
+pub unsafe fn global_replace_range(
+    virt: VirtAddr,
+    phys: PhysAddr,
+    size: u64,
+    flags: PageFlags,
+) -> Result<(), MapError> {
+    let mut guard = PAGE_TABLE_MANAGER
+        .lock()
+        .map_err(|_| MapError::HardwareError)?;
+    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+
+    manager.set_pml4_phys(get_cr3());
+
+    match unsafe { manager.unmap_range(virt, size) } {
+        Ok(()) | Err(MapError::NotMapped) => {}
+        Err(e) => return Err(e),
+    }
+
+    let res = unsafe { manager.map_range(virt, phys, size, flags) };
+
+    drop(guard);
+    if res.is_ok() {
+        // 同一範囲の再マップでは中間状態を観測させる必要がないため、
+        // 全更新後に1回だけシュートダウンする。
+        flush_range_tlb(virt, size);
     }
     res
 }

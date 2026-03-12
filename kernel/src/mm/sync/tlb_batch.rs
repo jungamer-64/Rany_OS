@@ -531,6 +531,7 @@ static mut TLB_FLUSH_PAYLOAD: TlbFlushIpiPayload = TlbFlushIpiPayload {
 
 /// IPIが完了したCPUのカウント
 static TLB_FLUSH_DONE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static TLB_SEND_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 /// 全TLBフラッシュIPIを送信
 fn send_tlb_flush_ipi_all(cpu_mask: CpuMask) {
@@ -607,10 +608,26 @@ fn send_tlb_flush_ipi_internal(
         return;
     }
 
-    // アクティブなCPUにIPIを送信
+    let send_seq = TLB_SEND_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+
+    let mut can_use_broadcast = true;
     for cpu_id in 0..cpu_scan_limit {
-        if remote_mask.is_set(cpu_id) {
-            send_tlb_ipi_to_cpu(cpu_id);
+        let should_target = cpu_id != current_cpu && remote_mask.is_set(cpu_id);
+        if should_target != (cpu_id != current_cpu) {
+            can_use_broadcast = false;
+            break;
+        }
+    }
+
+    // All other active CPUs are targets, so APIC shorthand broadcast is the
+    // simplest and lowest-overhead path.
+    if can_use_broadcast {
+        broadcast_tlb_flush_ipi();
+    } else {
+        for cpu_id in 0..cpu_scan_limit {
+            if remote_mask.is_set(cpu_id) {
+                send_tlb_ipi_to_cpu(cpu_id);
+            }
         }
     }
 
@@ -626,7 +643,8 @@ fn send_tlb_flush_ipi_internal(
             // 重大なデッドロックが発生していることを示し、無視するとデータ破損や
             // Use-After-Free 脆弱性の原因となる。
             panic!(
-                "[TLB] Fatal: Flush IPI timeout (target={}, done={}). System state inconsistent.",
+                "[TLB] Fatal: Flush IPI timeout (seq={}, target={}, done={}). System state inconsistent.",
+                send_seq,
                 target_count,
                 TLB_FLUSH_DONE_COUNT.load(Ordering::Relaxed)
             );
@@ -660,7 +678,10 @@ pub unsafe fn tlb_flush_ipi_handler() {
             invpcid((*payload_ptr).asid as u64, 0, invpcid_type::SINGLE_CONTEXT);
         }
     }
+}
 
+#[inline]
+pub fn tlb_flush_ipi_ack() {
     TLB_FLUSH_DONE_COUNT.fetch_add(1, Ordering::Release);
 }
 

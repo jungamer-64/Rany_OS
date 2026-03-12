@@ -10,9 +10,33 @@
 extern crate alloc;
 
 use crate::sync::PoisonLock;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use boot_proto::ExoBootInfo;
+use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
+
+const TRAMPOLINE_MAILBOX_OFFSET: usize = 0x200;
+static AP_TRAMPOLINE_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ap_trampoline.bin"));
+static AP_BOOT_PROBE: u8 = 0x5A;
+
+fn log_ap_mapping_probe(label: &str, virt: u64) {
+    let mapper = crate::mm::virt::higher_half::PhysicalMemoryMapper::new(
+        crate::memory::physical_memory_offset(),
+    );
+    let walker =
+        unsafe { crate::mm::virt::higher_half::PageTableWalker::from_current_cr3(&mapper) };
+    let virt_addr = crate::mm::virt::higher_half::VirtAddr::new(virt);
+    match walker.translate(virt_addr) {
+        Some(phys) => log::info!(
+            "[SMP] Page-walk {}: virt {:#x} -> phys {:#x}\n",
+            label,
+            virt,
+            phys.as_u64()
+        ),
+        None => log::info!("[SMP] Page-walk {}: virt {:#x} -> unmapped\n", label, virt),
+    }
+}
 
 /// AP Bootstrap state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,12 +113,27 @@ impl ApBootInfo {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct TrampolineMailbox {
+    ap_slot: u32,
+    cpu_id: u32,
+    page_table: u64,
+    stack_ptr: u64,
+    entry_point: u64,
+    probe_addr: u64,
+}
+
 /// LAPIC registers (MMIO)
 pub struct LocalApic {
     base_address: u64,
 }
 
 impl LocalApic {
+    /// IA32_APIC_BASE MSR
+    const APIC_BASE_MSR: u32 = 0x1B;
+    /// IA32_APIC_BASE[11] = global enable
+    const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
     /// LAPIC ID register
     const ID: u32 = 0x20;
     /// LAPIC version
@@ -103,18 +142,35 @@ impl LocalApic {
     const EOI: u32 = 0xB0;
     /// Spurious Interrupt Vector
     const SPURIOUS: u32 = 0xF0;
+    /// Task Priority Register
+    const TPR: u32 = 0x80;
     /// Interrupt Command Register (low)
     const ICR_LOW: u32 = 0x300;
     /// Interrupt Command Register (high)
     const ICR_HIGH: u32 = 0x310;
     /// Timer register
     const TIMER_LVT: u32 = 0x320;
+    /// Thermal sensor LVT
+    const THERMAL_LVT: u32 = 0x330;
+    /// Performance monitoring counter LVT
+    const PMC_LVT: u32 = 0x340;
+    /// LINT0
+    const LINT0_LVT: u32 = 0x350;
+    /// LINT1
+    const LINT1_LVT: u32 = 0x360;
+    /// Error LVT
+    const ERROR_LVT: u32 = 0x370;
     /// Timer initial count
     const TIMER_INIT: u32 = 0x380;
     /// Timer current count
     const TIMER_CURRENT: u32 = 0x390;
     /// Timer divide config
     const TIMER_DIVIDE: u32 = 0x3E0;
+    /// Error status register
+    const ESR: u32 = 0x280;
+
+    /// Common LVT mask bit
+    const LVT_MASKED: u32 = 1 << 16;
 
     /// ICR delivery modes
     const DELIVERY_INIT: u32 = 5 << 8;
@@ -143,6 +199,33 @@ impl LocalApic {
         crate::io::mmio::mmio_write_u32(addr, value);
     }
 
+    #[inline]
+    unsafe fn read_msr(msr: u32) -> u64 {
+        let low: u32;
+        let high: u32;
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags)
+        );
+        ((high as u64) << 32) | low as u64
+    }
+
+    #[inline]
+    unsafe fn write_msr(msr: u32, value: u64) {
+        let low = value as u32;
+        let high = (value >> 32) as u32;
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") low,
+            in("edx") high,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+
     /// Get LAPIC ID
     pub fn id(&self) -> u32 {
         self.read(Self::ID) >> 24
@@ -157,6 +240,30 @@ impl LocalApic {
     pub fn enable(&self) {
         let spurious = self.read(Self::SPURIOUS);
         self.write(Self::SPURIOUS, spurious | 0x100);
+    }
+
+    /// Minimal per-CPU LAPIC initialization for AP bring-up.
+    pub fn init_current_cpu(&self) {
+        unsafe {
+            let apic_base = Self::read_msr(Self::APIC_BASE_MSR);
+            if (apic_base & Self::APIC_GLOBAL_ENABLE) == 0 {
+                Self::write_msr(Self::APIC_BASE_MSR, apic_base | Self::APIC_GLOBAL_ENABLE);
+            }
+        }
+
+        // Mirror BSP LAPIC safety defaults so APs do not inherit firmware or
+        // reset-time local interrupt delivery state on timer/LINT/error sources.
+        self.write(Self::SPURIOUS, 0xFF | 0x100);
+        self.write(Self::TPR, 0);
+        self.write(Self::TIMER_LVT, Self::LVT_MASKED);
+        self.write(Self::THERMAL_LVT, Self::LVT_MASKED);
+        self.write(Self::PMC_LVT, Self::LVT_MASKED);
+        self.write(Self::LINT0_LVT, Self::LVT_MASKED);
+        self.write(Self::LINT1_LVT, Self::LVT_MASKED);
+        self.write(Self::ERROR_LVT, Self::LVT_MASKED);
+        self.write(Self::ESR, 0);
+        self.write(Self::ESR, 0);
+        self.eoi();
     }
 
     /// Send INIT IPI to target AP
@@ -247,12 +354,24 @@ pub struct ApBootstrap {
 impl ApBootstrap {
     /// Create new AP bootstrap manager
     pub fn new(lapic_base: u64, boot_info: &ExoBootInfo, num_aps: u32) -> Self {
+        let current_page_table = crate::mm::virt::higher_half::get_cr3().as_u64();
+        if current_page_table != boot_info.page_table_base {
+            log::info!(
+                "[SMP] BSP CR3 updated after boot: using current {:#x} instead of boot info {:#x}\n",
+                current_page_table,
+                boot_info.page_table_base
+            );
+        }
+        log_ap_mapping_probe("ap_entry_stub", ap_entry_stub as *const () as usize as u64);
+        log_ap_mapping_probe("ap_boot_probe", core::ptr::addr_of!(AP_BOOT_PROBE) as u64);
+        log_ap_mapping_probe("ap_bootstrap", core::ptr::addr_of!(AP_BOOTSTRAP) as u64);
+
         let mut ap_info = Vec::with_capacity(num_aps as usize);
         for ap_index in 0..num_aps as usize {
             let mut info = ApBootInfo::new();
             info.stack_ptr = ap_stack_top(&boot_info.ap_boot, ap_index);
-            info.page_table = boot_info.page_table_base;
-            info.entry_point = ap_entry as usize as u64;
+            info.page_table = current_page_table;
+            info.entry_point = ap_entry_stub as *const () as usize as u64;
             ap_info.push(info);
         }
 
@@ -276,32 +395,65 @@ impl ApBootstrap {
             return Err("missing AP trampoline allocation");
         }
 
-        static TRAMPOLINE_CODE: [u8; 32] = [
-            0xFA, 0x31, 0xC0, 0x8E, 0xD8, 0x8E, 0xC0, 0x8E, 0xD0, 0xF4, 0xEB, 0xFD, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ];
+        if AP_TRAMPOLINE_BIN.len() > TRAMPOLINE_SIZE {
+            return Err("AP trampoline exceeds allocated low-memory page");
+        }
+        if TRAMPOLINE_MAILBOX_OFFSET + size_of::<TrampolineMailbox>() > TRAMPOLINE_SIZE {
+            return Err("AP trampoline mailbox does not fit in low-memory page");
+        }
 
-        let trampoline_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new(
-            self.trampoline_base,
-        ))
-        .as_u64();
+        let trampoline_virt =
+            crate::memory::phys_to_virt(x86_64::PhysAddr::new(self.trampoline_base)).as_u64();
         let trampoline_ptr = trampoline_virt as *mut u8;
+        core::ptr::write_bytes(trampoline_ptr, 0, TRAMPOLINE_SIZE);
         core::ptr::copy_nonoverlapping(
-            TRAMPOLINE_CODE.as_ptr(),
+            AP_TRAMPOLINE_BIN.as_ptr(),
             trampoline_ptr,
-            TRAMPOLINE_CODE.len(),
+            AP_TRAMPOLINE_BIN.len(),
         );
 
         Ok(())
     }
 
+    unsafe fn mailbox_ptr(&self) -> *mut TrampolineMailbox {
+        let trampoline_virt =
+            crate::memory::phys_to_virt(x86_64::PhysAddr::new(self.trampoline_base)).as_u64();
+        (trampoline_virt as *mut u8).add(TRAMPOLINE_MAILBOX_OFFSET) as *mut TrampolineMailbox
+    }
+
     /// Start a single AP
     pub fn start_ap(&self, ap_index: usize, apic_id: u32) -> Result<(), &'static str> {
         let info = self.ap_info.get(ap_index).ok_or("Invalid AP index")?;
+        let cpu_id = u32::try_from(ap_index)
+            .ok()
+            .and_then(|id| id.checked_add(1))
+            .ok_or("AP logical CPU ID overflow")?;
+
+        if info.stack_ptr == 0 {
+            return Err("missing AP stack allocation");
+        }
+        if info.page_table >> 32 != 0 {
+            return Err("AP bootstrap requires CR3 below 4GiB");
+        }
 
         log::info!("[SMP] Starting AP {} (APIC ID: {})\n", ap_index, apic_id);
 
+        unsafe {
+            core::ptr::write_volatile(
+                self.mailbox_ptr(),
+                TrampolineMailbox {
+                    ap_slot: ap_index as u32,
+                    cpu_id,
+                    page_table: info.page_table,
+                    stack_ptr: info.stack_ptr,
+                    entry_point: info.entry_point,
+                    probe_addr: core::ptr::addr_of!(AP_BOOT_PROBE) as u64,
+                },
+            );
+        }
+        fence(Ordering::SeqCst);
+
+        self.lapic.enable();
         info.set_state(ApState::InitSent);
         self.lapic.send_init(apic_id);
         self.delay_ms(10);
@@ -361,8 +513,16 @@ impl ApBootstrap {
     }
 }
 
-/// Global AP bootstrap instance
-static AP_BOOTSTRAP: PoisonLock<Option<ApBootstrap>> = PoisonLock::new(None);
+/// Global AP bootstrap instance.
+///
+/// The bootstrap manager is created once during early boot and intentionally
+/// leaked for the kernel lifetime so BSP/AP coordination never needs to hold
+/// the global lock across long-running startup paths.
+static AP_BOOTSTRAP: PoisonLock<Option<&'static ApBootstrap>> = PoisonLock::new(None);
+
+fn bootstrap_ref() -> Option<&'static ApBootstrap> {
+    *AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Initialize SMP bootstrap
 pub unsafe fn init(
@@ -370,7 +530,7 @@ pub unsafe fn init(
     boot_info: &ExoBootInfo,
     num_aps: u32,
 ) -> Result<(), &'static str> {
-    let bootstrap = ApBootstrap::new(lapic_base, boot_info, num_aps);
+    let bootstrap = Box::leak(Box::new(ApBootstrap::new(lapic_base, boot_info, num_aps)));
     bootstrap.setup_trampoline()?;
     *AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner()) = Some(bootstrap);
     Ok(())
@@ -378,21 +538,15 @@ pub unsafe fn init(
 
 /// Start all APs
 pub fn start_aps(apic_ids: &[u32]) -> u32 {
-    AP_BOOTSTRAP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .map(|b| b.start_all_aps(apic_ids))
+    bootstrap_ref()
+        .map(|bootstrap| bootstrap.start_all_aps(apic_ids))
         .unwrap_or(0)
 }
 
 /// Get number of online APs
 pub fn online_aps() -> u32 {
-    AP_BOOTSTRAP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .map(|b| b.aps_online())
+    bootstrap_ref()
+        .map(|bootstrap| bootstrap.aps_online())
         .unwrap_or(0)
 }
 
@@ -407,67 +561,110 @@ fn ap_stack_top(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
     ap_boot.stack_base + ((ap_index + 1) * ap_boot.stack_size as usize) as u64
 }
 
+#[inline]
+fn ap_serial_mark(marker: u8) {
+    let mut timeout = 100_000u32;
+    while (crate::io::inb(0x3F8 + 5) & 0x20) == 0 && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
+    crate::io::outb(0x3F8, marker);
+}
+
 /// AP entry point (called from trampoline)
 #[unsafe(no_mangle)]
-pub extern "C" fn ap_entry(ap_index: u32) {
-    log::info!("[SMP] AP {} entered kernel\n", ap_index);
+#[unsafe(naked)]
+pub unsafe extern "C" fn ap_entry_stub(_ap_slot: u32, _cpu_id: u32) -> ! {
+    core::arch::naked_asm!(
+        "mov dx, 0x3f8",
+        "mov al, 'A'",
+        "out dx, al",
+        "jmp {inner}",
+        inner = sym ap_entry_inner,
+    )
+}
+
+pub extern "C" fn ap_entry_inner(ap_slot: u32, cpu_id: u32) -> ! {
+    ap_serial_mark(b'B');
+
+    let ap_probe = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(AP_BOOT_PROBE)) };
+    if ap_probe == AP_BOOT_PROBE {
+        ap_serial_mark(b'P');
+    } else {
+        ap_serial_mark(b'p');
+    }
+
+    if crate::interrupts::load_for_cpu(cpu_id as usize).is_err() {
+        ap_serial_mark(b'X');
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    ap_serial_mark(b'I');
 
     unsafe {
-        crate::per_cpu::setup_current_cpu(ap_index as usize);
+        crate::per_cpu::setup_current_cpu(cpu_id as usize);
     }
-    crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(ap_index as usize);
+    ap_serial_mark(b'C');
 
-    let apic_id = crate::io::apic::local_apic().id() as u32;
-    crate::io::nvme::per_core::register_apic_mapping(apic_id, ap_index);
+    crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(cpu_id as usize);
+    ap_serial_mark(b'D');
 
-    if let Some(bootstrap) = AP_BOOTSTRAP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
-        if let Some(info) = bootstrap.get_ap_info(ap_index as usize) {
+    let local_apic = LocalApic::new(crate::io::acpi::local_apic_address().unwrap_or(0xFEE00000));
+    local_apic.init_current_cpu();
+    let apic_id = local_apic.id();
+    ap_serial_mark(b'E');
+    if apic_id < 10 {
+        ap_serial_mark(b'0' + apic_id as u8);
+    } else {
+        ap_serial_mark(b'?');
+    }
+    crate::io::nvme::per_core::register_apic_mapping(apic_id, cpu_id);
+
+    crate::interrupts::enable_interrupts();
+
+    // Idle APs are not executing kernel work yet, so remote TLB shootdowns can
+    // be deferred until they are brought into active scheduling/execution.
+    crate::mm::sync::tlb_batch::get_cpu_tlb_state(cpu_id as usize).enter_lazy();
+
+    if let Some(bootstrap) = bootstrap_ref() {
+        if let Some(info) = bootstrap.get_ap_info(ap_slot as usize) {
             info.started.store(true, Ordering::Release);
             info.set_state(ApState::Initializing);
         }
     }
+    ap_serial_mark(b'F');
 
     fence(Ordering::SeqCst);
 
-    if let Some(bootstrap) = AP_BOOTSTRAP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
-        if let Some(info) = bootstrap.get_ap_info(ap_index as usize) {
+    if let Some(bootstrap) = bootstrap_ref() {
+        if let Some(info) = bootstrap.get_ap_info(ap_slot as usize) {
             info.set_state(ApState::Online);
         }
     }
-
-    log::info!("[SMP] AP {} entering scheduler\n", ap_index);
+    ap_serial_mark(b'G');
 
     loop {
-        core::hint::spin_loop();
+        x86_64::instructions::hlt();
     }
 }
 
 /// Send IPI to specific CPU
 pub fn send_ipi(target_apic_id: u32, vector: u8) {
-    if let Some(bootstrap) = AP_BOOTSTRAP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
+    if let Some(bootstrap) = bootstrap_ref() {
         bootstrap.lapic.send_ipi(target_apic_id, vector);
     }
 }
 
 /// Broadcast IPI to all CPUs (excluding self)
 pub fn broadcast_ipi(vector: u8) {
-    if let Some(bootstrap) = AP_BOOTSTRAP
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-    {
+    if let Some(bootstrap) = bootstrap_ref() {
         bootstrap.lapic.broadcast_ipi(vector);
     }
+}
+
+/// Send EOI to the current CPU's LAPIC without taking the global APIC driver lock.
+pub fn send_eoi_current_cpu() {
+    let local_apic = LocalApic::new(crate::io::acpi::local_apic_address().unwrap_or(0xFEE00000));
+    local_apic.eoi();
 }

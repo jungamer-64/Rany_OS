@@ -664,15 +664,17 @@ pub fn configure_ioapic_interrupt(
 ) -> Result<(), InterruptError> {
     // IO-APICのリダイレクションテーブルに書き込み
     let entry = config.ioapic_entry();
-
-    // crate::io::apic モジュールの関数を呼び出す
-    #[cfg(feature = "apic")]
-    unsafe {
-        crate::io::apic::set_ioapic_entry(gsi, entry);
+    if let Some((ioapic_index, local_irq)) = crate::io::apic::map_gsi_to_ioapic(gsi) {
+        if ioapic_index == 0 {
+            crate::io::apic::io_apic().write_entry(
+                local_irq,
+                crate::io::apic::RedirectionEntry::from_raw(entry),
+            );
+            return Ok(());
+        }
     }
 
-    let _ = (gsi, entry); // 未使用警告を抑制
-    Ok(())
+    Err(InterruptError::InvalidGsi)
 }
 
 /// Local APICにEOIを送信
@@ -680,36 +682,20 @@ pub fn configure_ioapic_interrupt(
 /// 割り込みハンドラの最後で呼び出してください
 #[inline]
 pub fn send_eoi() {
-    #[cfg(feature = "apic")]
-    crate::io::apic::local_apic_eoi();
-
-    // apicが無効な場合は何もしない
+    crate::smp::bootstrap::send_eoi_current_cpu();
 }
 
 /// 特定のCPUにIPIを送信
 pub fn send_ipi(target_apic_id: u8, vector: u8) {
-    #[cfg(feature = "apic")]
-    crate::io::apic::send_ipi(target_apic_id, vector);
-
-    let _ = (target_apic_id, vector); // 未使用警告を抑制
+    crate::smp::bootstrap::send_ipi(target_apic_id as u32, vector);
 }
 
 /// 全CPUにブロードキャストIPIを送信
 pub fn broadcast_ipi(vector: u8) {
-    #[cfg(feature = "apic")]
-    crate::io::apic::broadcast_ipi(vector);
-
-    let _ = vector;
+    crate::smp::bootstrap::broadcast_ipi(vector);
 }
 
 /// 現在のCPUのAPIC IDを取得
 pub fn current_apic_id() -> u8 {
-    #[cfg(feature = "apic")]
-    {
-        crate::io::apic::local_apic_id()
-    }
-    #[cfg(not(feature = "apic"))]
-    {
-        0 // BSP
-    }
+    crate::io::apic::local_apic().id()
 }

@@ -170,9 +170,12 @@ pub unsafe extern "C" fn switch_context(_old: *mut CpuContext, _new: *const CpuC
 ///
 /// 【設計書 8.3】各タスクスタックの下端（低アドレス側）にガードページを配置し、
 /// スタックオーバーフローを検出可能にする。
+#[repr(C, align(4096))]
+struct PageAlignedKernelStack([u8; KernelStack::SIZE]);
+
 pub struct KernelStack {
     /// スタックメモリ（底から上に向かって成長）
-    memory: Box<[u8; Self::SIZE]>,
+    memory: Box<PageAlignedKernelStack>,
     /// ガードページが設定済みかどうか
     guard_page_set: bool,
 }
@@ -193,12 +196,11 @@ impl KernelStack {
     /// アクセスによりPage Fault (#PF) が発生し、検出可能になる。
     pub fn new() -> Option<Self> {
         // ゼロ初期化されたスタックメモリを確保
-        // Box::new_zeroed() は allocator_api feature が必要なので代替実装
-        let layout = core::alloc::Layout::new::<[u8; Self::SIZE]>();
+        let layout = core::alloc::Layout::new::<PageAlignedKernelStack>();
         let non_null = crate::util::allocate_zeroed(layout)?;
         let ptr = non_null.as_ptr();
-        // SAFETY: ptr は適切なサイズとアラインメントで割り当てられている
-        let memory = unsafe { raw::box_from_raw(ptr as *mut [u8; Self::SIZE]) };
+        // SAFETY: ptr は PageAlignedKernelStack と同じレイアウトで確保されている
+        let memory = unsafe { raw::box_from_raw(ptr as *mut PageAlignedKernelStack) };
 
         // Security: Register kernel stack as protected from DMA
         // We translate the virtual address to physical address for registration.
@@ -250,7 +252,7 @@ impl KernelStack {
     /// x86_64 ではスタックは下方向に成長するため、
     /// 最上位アドレスが初期スタックポインタとなる
     pub fn top(&self) -> VirtAddr {
-        let ptr = self.memory.as_ptr() as u64;
+        let ptr = self.memory.0.as_ptr() as u64;
         let top = ptr + Self::SIZE as u64;
 
         // 16バイトアラインメント（ABI要件）
@@ -259,13 +261,13 @@ impl KernelStack {
 
     /// スタックの底アドレスを取得
     pub fn bottom(&self) -> VirtAddr {
-        VirtAddr::new(self.memory.as_ptr() as u64)
+        VirtAddr::new(self.memory.0.as_ptr() as u64)
     }
 }
 
 impl Drop for KernelStack {
     fn drop(&mut self) {
-        let virt_start = self.memory.as_ptr() as u64;
+        let virt_start = self.memory.0.as_ptr() as u64;
         let size = Self::SIZE;
         if let Some(phys_start) = crate::mm::virt::higher_half::global_translate(
             crate::mm::virt::higher_half::VirtAddr::new(virt_start),

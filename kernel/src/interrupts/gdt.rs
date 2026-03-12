@@ -1,9 +1,8 @@
 // ============================================================================
-// src/interrupts/gdt.rs - Global Descriptor Table with TSS
-// Double Fault 用の専用スタック (IST) を設定
+// src/interrupts/gdt.rs - Per-CPU Global Descriptor Table with TSS
+// Double Fault / Page Fault 用の IST を各CPUごとに分離して設定
 // ============================================================================
 #![allow(dead_code)]
-#![allow(static_mut_refs)]
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -20,35 +19,118 @@ pub const PAGE_FAULT_IST_INDEX: u16 = 1;
 
 /// IST スタックサイズ（16KiB）
 const IST_STACK_SIZE: usize = 16 * 1024;
+const MAX_GDT_CPUS: usize = crate::per_cpu::MAX_CPUS;
 
-/// 静的に確保した Double Fault 用スタック
+/// 静的アラインメントを持つ IST スタック
 #[repr(C, align(16))]
 struct IstStack([u8; IST_STACK_SIZE]);
 
-/// スタックのラッパー（Sync実装のため）
-struct SyncStack(UnsafeCell<IstStack>);
-unsafe impl Sync for SyncStack {}
-
-static DOUBLE_FAULT_STACK: SyncStack = SyncStack(UnsafeCell::new(IstStack([0; IST_STACK_SIZE])));
-static PAGE_FAULT_STACK: SyncStack = SyncStack(UnsafeCell::new(IstStack([0; IST_STACK_SIZE])));
-
-/// GDT/TSS/Selectorsのコンテナ
-struct GdtContainer {
-    tss: UnsafeCell<MaybeUninit<TaskStateSegment>>,
-    gdt: UnsafeCell<MaybeUninit<GlobalDescriptorTable>>,
-    selectors: UnsafeCell<MaybeUninit<Selectors>>,
+/// CPUごとの GDT/TSS/IST 一式
+struct PerCpuGdtState {
+    double_fault_stack: IstStack,
+    page_fault_stack: IstStack,
+    tss: MaybeUninit<TaskStateSegment>,
+    gdt: MaybeUninit<GlobalDescriptorTable>,
+    selectors: MaybeUninit<Selectors>,
 }
 
-unsafe impl Sync for GdtContainer {}
+unsafe impl Sync for PerCpuGdtState {}
 
-static GDT_CONTAINER: GdtContainer = GdtContainer {
-    tss: UnsafeCell::new(MaybeUninit::uninit()),
-    gdt: UnsafeCell::new(MaybeUninit::uninit()),
-    selectors: UnsafeCell::new(MaybeUninit::uninit()),
+impl PerCpuGdtState {
+    const fn uninit() -> Self {
+        Self {
+            double_fault_stack: IstStack([0; IST_STACK_SIZE]),
+            page_fault_stack: IstStack([0; IST_STACK_SIZE]),
+            tss: MaybeUninit::uninit(),
+            gdt: MaybeUninit::uninit(),
+            selectors: MaybeUninit::uninit(),
+        }
+    }
+
+    unsafe fn initialize(&mut self) {
+        let mut tss = TaskStateSegment::new();
+        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
+            VirtAddr::new(self.double_fault_stack_end());
+        tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] =
+            VirtAddr::new(self.page_fault_stack_end());
+        self.tss.write(tss);
+
+        let mut gdt = GlobalDescriptorTable::new();
+        let tss_ref = &*self.tss.as_ptr();
+        let code_selector = gdt.append(Descriptor::kernel_code_segment());
+        let data_selector = gdt.append(Descriptor::kernel_data_segment());
+        let tss_selector = gdt.append(Descriptor::tss_segment(tss_ref));
+        self.gdt.write(gdt);
+        self.selectors.write(Selectors {
+            code_selector,
+            data_selector,
+            tss_selector,
+        });
+    }
+
+    #[inline]
+    fn double_fault_stack_end(&self) -> u64 {
+        &self.double_fault_stack as *const IstStack as u64 + IST_STACK_SIZE as u64
+    }
+
+    #[inline]
+    fn page_fault_stack_end(&self) -> u64 {
+        &self.page_fault_stack as *const IstStack as u64 + IST_STACK_SIZE as u64
+    }
+
+    #[inline]
+    fn gdt(&'static self) -> &'static GlobalDescriptorTable {
+        unsafe { &*self.gdt.as_ptr() }
+    }
+
+    #[inline]
+    fn selectors(&self) -> Selectors {
+        unsafe { *self.selectors.as_ptr() }
+    }
+}
+
+struct GdtStateSlot {
+    state: UnsafeCell<MaybeUninit<PerCpuGdtState>>,
+    initialized: AtomicBool,
+}
+
+unsafe impl Sync for GdtStateSlot {}
+
+impl GdtStateSlot {
+    const fn new() -> Self {
+        Self {
+            state: UnsafeCell::new(MaybeUninit::uninit()),
+            initialized: AtomicBool::new(false),
+        }
+    }
+
+    unsafe fn get_or_init(&self) -> &'static PerCpuGdtState {
+        if !self.initialized.load(Ordering::Acquire) {
+            let state_ptr = (*self.state.get()).as_mut_ptr();
+            state_ptr.write(PerCpuGdtState::uninit());
+            (*state_ptr).initialize();
+            self.initialized.store(true, Ordering::Release);
+        }
+
+        &*(*self.state.get()).as_ptr()
+    }
+}
+
+static GDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
+static PER_CPU_GDT_STATES: [GdtStateSlot; MAX_GDT_CPUS] = {
+    const UNINIT: GdtStateSlot = GdtStateSlot::new();
+    [UNINIT; MAX_GDT_CPUS]
 };
 
-/// 初期化完了フラグ
-static GDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
+#[inline]
+fn smp_gdt_mark(marker: u8) {
+    let mut timeout = 100_000u32;
+    while (crate::io::inb(0x3F8 + 5) & 0x20) == 0 && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
+    crate::io::outb(0x3F8, marker);
+}
 
 /// セグメントセレクタ
 #[derive(Debug, Clone, Copy)]
@@ -58,86 +140,72 @@ pub struct Selectors {
     pub tss_selector: SegmentSelector,
 }
 
-/// GDT と TSS を初期化・ロード
-pub fn init_gdt() {
-    use x86_64::instructions::segmentation::{CS, DS, SS, Segment};
-    use x86_64::instructions::tables::load_tss;
+fn ensure_cpu_state(cpu_id: usize) -> Result<&'static PerCpuGdtState, &'static str> {
+    if cpu_id >= MAX_GDT_CPUS {
+        return Err("CPU ID out of range for GDT/TSS");
+    }
 
-    // すでに初期化済みの場合はスキップ
+    unsafe { Ok(PER_CPU_GDT_STATES[cpu_id].get_or_init()) }
+}
+
+/// GDT/TSS を BSP に初期ロードする
+pub fn init_gdt() {
     if GDT_INITIALIZED.load(Ordering::SeqCst) {
         return;
     }
 
+    load_for_cpu(0).expect("failed to initialize BSP GDT/TSS");
+}
+
+unsafe fn load_current_gdt(gdt: &'static GlobalDescriptorTable, selectors: Selectors) {
+    use x86_64::instructions::segmentation::{CS, DS, SS, Segment};
+    use x86_64::instructions::tables::load_tss;
+
+    smp_gdt_mark(b'1');
+    gdt.load();
+    smp_gdt_mark(b'2');
     unsafe {
-        // TSSポインタを取得してゼロ初期化
-        let tss_ptr = (*GDT_CONTAINER.tss.get()).as_mut_ptr();
-
-        // TSSサイズは約104バイト
-        // バイト単位で明示的にゼロ初期化
-        let tss_bytes = tss_ptr as *mut u8;
-        let tss_size = core::mem::size_of::<TaskStateSegment>();
-        for i in 0..tss_size {
-            crate::io::mmio::volatile_write::<u8>(tss_bytes.add(i) as usize, 0);
-        }
-
-        // Double Fault 用の専用スタック
-        let df_stack_end = DOUBLE_FAULT_STACK.0.get() as u64 + IST_STACK_SIZE as u64;
-        (*tss_ptr).interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
-            VirtAddr::new(df_stack_end);
-
-        // Page Fault 用の専用スタック
-        let pf_stack_end = PAGE_FAULT_STACK.0.get() as u64 + IST_STACK_SIZE as u64;
-        (*tss_ptr).interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] =
-            VirtAddr::new(pf_stack_end);
-
-        // GDTを初期化
-        let gdt_ptr = (*GDT_CONTAINER.gdt.get()).as_mut_ptr();
-
-        // GDTメモリをゼロクリア
-        let gdt_bytes = gdt_ptr as *mut u8;
-        let gdt_size = core::mem::size_of::<GlobalDescriptorTable>();
-        for i in 0..gdt_size {
-            crate::io::mmio::volatile_write::<u8>(gdt_bytes.add(i) as usize, 0);
-        }
-
-        // 新しいGDTを作成
-        crate::util::write_to_addr(gdt_ptr as usize, GlobalDescriptorTable::new());
-
-        let code_selector = (*gdt_ptr).append(Descriptor::kernel_code_segment());
-        let data_selector = (*gdt_ptr).append(Descriptor::kernel_data_segment());
-        let tss_selector = (*gdt_ptr).append(Descriptor::tss_segment(&*tss_ptr));
-
-        // セレクタを保存
-        let selectors_ptr = (*GDT_CONTAINER.selectors.get()).as_mut_ptr();
-        crate::util::write_to_addr(
-            selectors_ptr as usize,
-            Selectors {
-                code_selector,
-                data_selector,
-                tss_selector,
-            },
-        );
-
-        // GDTをロード
-        (*gdt_ptr).load();
-
-        // セグメントレジスタを設定
-        CS::set_reg(code_selector);
-        DS::set_reg(data_selector);
-        SS::set_reg(data_selector);
-
-        // TSSをロード
-        load_tss(tss_selector);
-
-        // 初期化完了
-        GDT_INITIALIZED.store(true, Ordering::SeqCst);
+        CS::set_reg(selectors.code_selector);
+        smp_gdt_mark(b'3');
+        DS::set_reg(selectors.data_selector);
+        SS::set_reg(selectors.data_selector);
+        smp_gdt_mark(b'4');
+        load_tss(selectors.tss_selector);
+        smp_gdt_mark(b'5');
     }
 }
 
-/// TSS のセレクタを取得
+pub fn load_for_cpu(cpu_id: usize) -> Result<(), &'static str> {
+    smp_gdt_mark(b'a');
+    if cpu_id != 0 && !GDT_INITIALIZED.load(Ordering::SeqCst) {
+        return Err("GDT not initialized");
+    }
+    smp_gdt_mark(b'b');
+
+    let state = ensure_cpu_state(cpu_id)?;
+    smp_gdt_mark(b'c');
+    unsafe {
+        load_current_gdt(state.gdt(), state.selectors());
+    }
+    smp_gdt_mark(b'd');
+    GDT_INITIALIZED.store(true, Ordering::SeqCst);
+    smp_gdt_mark(b'e');
+
+    Ok(())
+}
+
+pub fn load_for_current_cpu() -> Result<(), &'static str> {
+    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    load_for_cpu(cpu_id)
+}
+
+/// 現在CPUの TSS セレクタを取得
 pub fn tss_selector() -> SegmentSelector {
     if !GDT_INITIALIZED.load(Ordering::SeqCst) {
         panic!("GDT not initialized");
     }
-    unsafe { (*(*GDT_CONTAINER.selectors.get()).as_ptr()).tss_selector }
+
+    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let state = ensure_cpu_state(cpu_id).expect("missing CPU-local GDT state");
+    state.selectors().tss_selector
 }

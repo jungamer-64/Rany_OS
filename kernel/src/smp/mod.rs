@@ -80,7 +80,10 @@ pub fn init_smp(boot_info: &ExoBootInfo) -> Result<SmpBootReport, &'static str> 
         });
     }
 
-    log::info!("[SMP] Detected {} AP(s), preparing bootstrap metadata\n", detected);
+    log::info!(
+        "[SMP] Detected {} AP(s), preparing bootstrap metadata\n",
+        detected
+    );
     crate::per_cpu::finalize_cpu_topology((requested + 1) as usize);
 
     unsafe {

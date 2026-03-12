@@ -49,6 +49,16 @@ unsafe impl Sync for IdtContainer {}
 
 static IDT_CONTAINER: IdtContainer = IdtContainer(UnsafeCell::new(MaybeUninit::uninit()));
 
+#[inline]
+fn smp_idt_mark(marker: u8) {
+    let mut timeout = 100_000u32;
+    while (crate::io::inb(0x3F8 + 5) & 0x20) == 0 && timeout > 0 {
+        core::hint::spin_loop();
+        timeout -= 1;
+    }
+    crate::io::outb(0x3F8, marker);
+}
+
 /// ハードウェア割り込みのベースオフセット
 pub const PIC1_OFFSET: u8 = 32;
 pub const PIC2_OFFSET: u8 = 40;
@@ -250,6 +260,30 @@ fn init_idt() {
     idt.load();
 }
 
+pub fn load_idt_for_current_cpu() -> Result<(), &'static str> {
+    smp_idt_mark(b'6');
+    let initialized = IDT_INITIALIZED.load(Ordering::Acquire);
+    smp_idt_mark(b'7');
+    if !initialized {
+        return Err("IDT not initialized");
+    }
+
+    unsafe {
+        let idt = &*(*IDT_CONTAINER.0.get()).as_ptr();
+        idt.load();
+    }
+    smp_idt_mark(b'8');
+
+    Ok(())
+}
+
+pub fn load_for_cpu(cpu_id: usize) -> Result<(), &'static str> {
+    smp_idt_mark(b'9');
+    gdt::load_for_cpu(cpu_id)?;
+    smp_idt_mark(b'A');
+    load_idt_for_current_cpu()
+}
+
 // ============================================================================
 // 割り込みシステムの初期化
 // ============================================================================
@@ -270,6 +304,11 @@ pub fn init() {
     // 3. IDT のロード
     init_idt();
     IDT_INITIALIZED.store(true, Ordering::SeqCst);
+}
+
+pub fn load_for_current_cpu() -> Result<(), &'static str> {
+    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    load_for_cpu(cpu_id)
 }
 
 /// 割り込みを有効化
@@ -711,6 +750,7 @@ define_interrupt!(
         // Local APICにEOIを送信
         // IPIはLocal APICから来るのでLocal APICにEOIを送る
         crate::io::interrupt_manager::send_eoi();
+        crate::mm::sync::tlb_batch::tlb_flush_ipi_ack();
     }
 );
 

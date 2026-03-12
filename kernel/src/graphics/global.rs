@@ -144,25 +144,22 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
         size
     );
 
-    crate::io::log::early_print("[GFX] About to call global_unmap_range and global_map_range\n");
+    crate::io::log::early_print("[GFX] About to replace framebuffer mapping with one TLB sync\n");
 
     unsafe {
-        let _ = crate::mm::virt::higher_half::global_unmap_range(virt_start, size);
-        crate::io::log::early_print("[GFX] Existing mapping cleared\n");
-
-        match crate::mm::virt::higher_half::global_map_range(
+        match crate::mm::virt::higher_half::global_replace_range(
             virt_start,
             phys_start,
             size,
             PageFlags::write_combining(),
         ) {
             Ok(_) => {
-                crate::io::log::early_print("[GFX] map_range OK\n");
+                crate::io::log::early_print("[GFX] replace_range OK\n");
                 log::info!("[GRAPHICS] Framebuffer mapped successfully with WC attributes\n");
                 virt_addr
             }
             Err(e) => {
-                crate::io::log::early_print("[GFX] map_range FAILED\n");
+                crate::io::log::early_print("[GFX] replace_range FAILED\n");
                 log::error!("[GRAPHICS] Failed to map framebuffer: {:?}\n", e);
                 0
             }
@@ -215,9 +212,7 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
     );
 
     unsafe {
-        let _ = crate::mm::virt::higher_half::global_unmap_range(virt_start, size);
-
-        match crate::mm::virt::higher_half::global_map_range(
+        match crate::mm::virt::higher_half::global_replace_range(
             virt_start,
             phys_start,
             size,
