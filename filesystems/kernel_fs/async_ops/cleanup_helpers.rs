@@ -48,7 +48,7 @@ pub(crate) fn build_sgl_list_buffer(
             return Err(FsError::InvalidArgument);
         }
     };
-    let mut list_buf = match TypedDmaSlice::<CpuOwned>::new(list_bytes) {
+    let mut list_buf = match DmaRegion::new(list_bytes, DmaMemoryAttributes::TO_DEVICE) {
         Some(v) => v,
         None => {
             cleanup_nvme_maps(&mut data_maps);
@@ -64,7 +64,7 @@ pub(crate) fn build_sgl_list_buffer(
     for (dst, (addr, size)) in list_slice.iter_mut().zip(mapped_entries.iter()) {
         *dst = LocalSglDescriptor::data_block(*addr, *size);
     }
-    let list_phys = list_buf.phys_addr().as_u64();
+    let list_phys = list_buf.host_addr();
     let (list_addr, list_map) = match map_nvme_iommu(list_phys, list_bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -72,15 +72,14 @@ pub(crate) fn build_sgl_list_buffer(
             return Err(e);
         }
     };
+    list_buf.prepare_for_device();
     let (data_list, data_guard) = list.start_dma();
-    let (list_dev, list_guard) = list_buf.start_dma();
     let sgl = NvmeSglDescriptor::last_segment(list_addr, list_len);
     let ctx = NvmeSglContext {
         data_list: Some(data_list),
         data_guard: Some(data_guard),
         data_maps,
-        list_dev: Some(list_dev),
-        list_guard: Some(list_guard),
+        list_region: Some(list_buf),
         list_map,
         completed: false,
         inflight: false,
@@ -103,8 +102,7 @@ pub(crate) fn prepare_nvme_sgl(
             data_list: Some(data_list),
             data_guard: Some(data_guard),
             data_maps,
-            list_dev: None,
-            list_guard: None,
+            list_region: None,
             list_map: None,
             completed: false,
             inflight: false,
@@ -541,7 +539,7 @@ pub struct AsyncReadFuture<'a> {
     io_future: Option<crate::io::io_scheduler::IoFuture>,
     dma_user_len: usize,
     cancel_guard: Option<NvmeCancelGuard>,
-    dma_result: Option<Arc<PoisonLock<Option<(TypedDmaSlice<CpuOwned>, usize)>>>>,
+    dma_result: Option<Arc<PoisonLock<Option<(DmaRegion, usize)>>>>,
     dma_offset_in_block: Option<usize>,
     dma_dma_len: Option<usize>,
 }

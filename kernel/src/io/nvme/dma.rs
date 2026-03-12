@@ -240,7 +240,7 @@ impl NvmeDmaRegion {
         Self::from_region(data, logical_len, device)
     }
 
-    fn from_region(
+    pub(crate) fn from_region(
         data: DmaRegion,
         logical_len: usize,
         device: Option<IommuDeviceId>,

@@ -152,7 +152,7 @@ impl DirectBlockHandle {
 
     /// Complete a DMA read by copying data from the slot to the user buffer
     pub(super) fn complete_dma_read(
-        slot: &Arc<PoisonLock<Option<(TypedDmaSlice<CpuOwned>, usize)>>>,
+        slot: &Arc<PoisonLock<Option<(DmaRegion, usize)>>>,
         dma_len: usize,
         buf: &mut [u8],
     ) -> FsResult<usize> {
@@ -163,7 +163,7 @@ impl DirectBlockHandle {
         if copy_len > 0 {
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    (data as TypedDmaSlice<CpuOwned>).as_slice().as_ptr(),
+                    data.as_slice().as_ptr(),
                     buf.as_mut_ptr(),
                     copy_len,
                 );
@@ -185,7 +185,7 @@ impl DirectBlockHandle {
         let lba = self.start_block + block_offset;
         let canceled = Arc::new(AtomicBool::new(false));
         let mut cancel_guard = NvmeCancelGuard::new(canceled.clone());
-        let slot = Arc::new(PoisonLock::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
+        let slot = Arc::new(PoisonLock::new(None::<(DmaRegion, usize)>));
         let slot_clone = slot.clone();
         let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
         let future = {
@@ -568,21 +568,19 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
-        let mut dsm = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(FsError::NoSpace)?;
+        let mut dsm = DmaRegion::new(NVME_PAGE_SIZE, DmaMemoryAttributes::TO_DEVICE)
+            .ok_or(FsError::NoSpace)?;
         let range = LocalDsmRange::new(self.start_block + block_offset, count as u32);
 
         // Use kernel_api abstractions - device param is now ignored
-        let (_prp1_unused, prp_map) = map_nvme_iommu(dsm.phys_addr().as_u64(), dsm.len())?;
+        let (prp1, prp_map) = map_nvme_iommu(dsm.host_addr(), dsm.size())?;
         // Initialize descriptor with ranges
-        let dsm_bytes = dsm.as_mut_slice();
         unsafe {
-            let ptr = dsm_bytes.as_mut_ptr() as *mut LocalDsmRange;
+            let ptr = dsm.as_mut_slice().as_mut_ptr() as *mut LocalDsmRange;
             ptr.write(range);
         }
-        let dsm_len = dsm.len();
-
-        let (dev, guard) = dsm.start_dma();
-        let prp1 = dev.phys_addr().as_u64();
+        let dsm_len = dsm.size();
+        dsm.prepare_for_device();
 
         // Submit IO request
         let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_command(
@@ -598,10 +596,8 @@ impl DirectBlockHandle {
         );
         let request_id = future.request_id();
         let hook: CompletionHook = Box::new(move |_result| {
-            let _ = (guard as SliceDmaGuard).complete(dev);
-            if let Some(map) = prp_map {
-                let _ = map.unmap();
-            }
+            drop(dsm);
+            drop(prp_map);
         });
         crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
 

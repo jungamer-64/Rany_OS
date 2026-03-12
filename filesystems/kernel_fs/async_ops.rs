@@ -37,13 +37,14 @@ use super::fs_abstraction::{
 
 // NVme per-core API
 use crate::io::dma::{
-    CpuOwned, DeviceDmaContext, DeviceDmaMapping, DeviceOwned, DmaDirection, SgDmaGuard,
-    SliceDmaGuard, TypedDmaSlice, TypedSgList,
+    CpuOwned, DeviceDmaContext, DeviceDmaMapping, DeviceOwned, DmaDirection,
+    DmaMemoryAttributes, DmaRegion, SgDmaGuard, TypedSgList,
 };
 use crate::io::io_scheduler::{
     CompletionHook, DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, IoResult,
     NvmeSglDescriptor,
 };
+use crate::io::nvme::dma::{NvmeDmaError, NvmeDmaRegion};
 mod cleanup_helpers;
 
 // re-export only the public types/functions kernel relies on instead of a wildcard
@@ -112,8 +113,7 @@ impl LocalSglDescriptor {
 pub(crate) type NvmeIommuMapping = DeviceDmaMapping;
 
 struct NvmePrpListPage {
-    dev: TypedDmaSlice<DeviceOwned>,
-    guard: SliceDmaGuard,
+    region: DmaRegion,
     map: Option<NvmeIommuMapping>,
     iova: u64,
 }
@@ -128,20 +128,12 @@ impl NvmePrpListChain {
     }
 
     fn complete(self) {
-        for page in self.pages {
-            let _ = page.guard.complete(page.dev);
-            if let Some(map) = page.map {
-                let _ = map.unmap();
-            }
-        }
+        drop(self);
     }
 }
 
 struct NvmeDmaContext {
-    data_dev: Option<TypedDmaSlice<DeviceOwned>>,
-    data_guard: Option<SliceDmaGuard>,
-    prp_list: Option<NvmePrpListChain>,
-    data_map: Option<NvmeIommuMapping>,
+    region: Option<NvmeDmaRegion>,
     completed: bool,
     inflight: bool,
 }
@@ -151,25 +143,13 @@ impl NvmeDmaContext {
         self.inflight = true;
     }
 
-    fn complete(mut self) -> TypedDmaSlice<CpuOwned> {
+    fn complete(mut self) -> DmaRegion {
         self.completed = true;
         self.inflight = false;
-        if let Some(prp) = self.prp_list.take() {
-            prp.complete();
-        }
-        let data_dev = self
-            .data_dev
+        self.region
             .take()
-            .expect("NvmeDmaContext missing data_dev");
-        let data_guard = self
-            .data_guard
-            .take()
-            .expect("NvmeDmaContext missing data_guard");
-        let data = data_guard.complete(data_dev);
-        if let Some(map) = self.data_map.take() {
-            let _ = map.unmap();
-        }
-        data
+            .expect("NvmeDmaContext missing region")
+            .complete()
     }
 }
 
@@ -201,8 +181,7 @@ pub(crate) struct NvmeSglContext {
     data_list: Option<TypedSgList<DeviceOwned>>,
     data_guard: Option<SgDmaGuard>,
     data_maps: Vec<NvmeIommuMapping>,
-    list_dev: Option<TypedDmaSlice<DeviceOwned>>,
-    list_guard: Option<SliceDmaGuard>,
+    list_region: Option<DmaRegion>,
     list_map: Option<NvmeIommuMapping>,
     completed: bool,
     inflight: bool,
@@ -224,9 +203,7 @@ impl NvmeSglContext {
             let _ = map.unmap();
         }
 
-        if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take()) {
-            let _ = list_guard.complete(list_dev);
-        }
+        let _ = self.list_region.take();
 
         let data_list = self
             .data_list
@@ -258,9 +235,7 @@ impl Drop for NvmeSglContext {
             let _ = map.unmap();
         }
 
-        if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take()) {
-            let _ = list_guard.complete(list_dev);
-        }
+        let _ = self.list_region.take();
 
         if let (Some(data_list), Some(data_guard)) = (self.data_list.take(), self.data_guard.take())
         {
@@ -278,14 +253,8 @@ impl Drop for NvmeDmaContext {
             log::warn!("[NVME] NvmeDmaContext dropped while in-flight; leaking DMA resources");
             return;
         }
-        if let Some(prp) = self.prp_list.take() {
-            prp.complete();
-        }
-        if let (Some(data_dev), Some(data_guard)) = (self.data_dev.take(), self.data_guard.take()) {
-            let _ = data_guard.complete(data_dev);
-        }
-        if let Some(map) = self.data_map.take() {
-            let _ = map.unmap();
+        if let Some(region) = self.region.take() {
+            drop(region.complete());
         }
     }
 }
@@ -338,6 +307,16 @@ fn align_up(value: usize, align: usize) -> usize {
     (value + align - 1) & !(align - 1)
 }
 
+fn map_nvme_dma_error(err: NvmeDmaError) -> FsError {
+    match err {
+        NvmeDmaError::InvalidLen => FsError::InvalidArgument,
+        NvmeDmaError::OutOfMemory => FsError::NoSpace,
+        NvmeDmaError::IommuDeviceMissing
+        | NvmeDmaError::IommuIdentityBlocked
+        | NvmeDmaError::IommuMappingFailed => FsError::IoError,
+    }
+}
+
 fn map_nvme_iommu(phys_addr: u64, size: usize) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
     let device_id = crate::io::nvme::iommu_device().ok_or(FsError::IoError)?;
     let ctx = DeviceDmaContext::for_attached_device(device_id);
@@ -349,12 +328,13 @@ fn map_nvme_iommu(phys_addr: u64, size: usize) -> FsResult<(u64, Option<NvmeIomm
 }
 
 /// PRPリストページのDMAバッファを割り当てる
-fn allocate_prp_list_pages(total_entries: usize) -> FsResult<Vec<TypedDmaSlice<CpuOwned>>> {
+fn allocate_prp_list_pages(total_entries: usize) -> FsResult<Vec<DmaRegion>> {
     let mut remaining = total_entries;
     let mut list_buffers = Vec::new();
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while remaining > 0 {
-        let list = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(FsError::NoSpace)?;
+        let list = DmaRegion::new(NVME_PAGE_SIZE, DmaMemoryAttributes::TO_DEVICE)
+            .ok_or(FsError::NoSpace)?;
         list_buffers.push(list);
         if remaining > 512 {
             remaining = remaining.saturating_sub(511);
@@ -367,13 +347,12 @@ fn allocate_prp_list_pages(total_entries: usize) -> FsResult<Vec<TypedDmaSlice<C
 
 /// PRPリストページをIOMMUにマッピングする
 fn map_prp_list_pages(
-    list_buffers: &[TypedDmaSlice<CpuOwned>],
+    list_buffers: &[DmaRegion],
 ) -> FsResult<(Vec<u64>, Vec<Option<NvmeIommuMapping>>)> {
     let mut list_iovas = Vec::with_capacity(list_buffers.len());
     let mut list_maps = Vec::with_capacity(list_buffers.len());
     for list in list_buffers {
-        let list_phys = list.phys_addr().as_u64();
-        let (list_addr, list_map) = map_nvme_iommu(list_phys, NVME_PAGE_SIZE)?;
+        let (list_addr, list_map) = map_nvme_iommu(list.host_addr(), NVME_PAGE_SIZE)?;
         list_iovas.push(list_addr);
         list_maps.push(list_map);
     }
@@ -382,7 +361,7 @@ fn map_prp_list_pages(
 
 /// PRPリストエントリにデータページのアドレスを書き込む
 fn fill_prp_list_entries(
-    list_buffers: &mut [TypedDmaSlice<CpuOwned>],
+    list_buffers: &mut [DmaRegion],
     list_iovas: &[u64],
     base_addr: u64,
     total_entries: usize,
@@ -434,10 +413,9 @@ fn build_prp_list(base_addr: u64, len: usize) -> FsResult<(u64, Option<NvmePrpLi
 
     let mut pages_vec = Vec::with_capacity(list_buffers.len());
     for ((list, map), iova) in list_buffers.into_iter().zip(list_maps).zip(list_iovas) {
-        let (dev, guard) = list.start_dma();
+        list.prepare_for_device();
         pages_vec.push(NvmePrpListPage {
-            dev,
-            guard,
+            region: list,
             map,
             iova,
         });
@@ -449,72 +427,50 @@ fn build_prp_list(base_addr: u64, len: usize) -> FsResult<(u64, Option<NvmePrpLi
 }
 
 fn prepare_dma_read(len: usize) -> FsResult<(NvmeDmaContext, u64, u64)> {
-    let alloc_len = align_up(len, NVME_PAGE_SIZE);
-    let data = TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(FsError::NoSpace)?;
-    let data_phys = data.phys_addr().as_u64();
-    // Use kernel_api abstractions - device param is now ignored
-    let (data_addr, data_map) = map_nvme_iommu(data_phys, alloc_len)?;
-    let (prp2, prp_list) = build_prp_list(data_addr, alloc_len)?;
-    let (data_dev, data_guard) = data.start_dma();
+    let region = NvmeDmaRegion::for_read(len, crate::io::nvme::iommu_device())
+        .map_err(map_nvme_dma_error)?;
+    let prp1 = region.prp1();
+    let prp2 = region.prp2();
     Ok((
         NvmeDmaContext {
-            data_dev: Some(data_dev),
-            data_guard: Some(data_guard),
-            prp_list,
-            data_map,
+            region: Some(region),
             completed: false,
             inflight: false,
         },
-        data_addr,
+        prp1,
         prp2,
     ))
 }
 
 fn prepare_dma_write(buf: &[u8], dma_len: usize) -> FsResult<(NvmeDmaContext, u64, u64)> {
-    let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
-    let mut data = TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(FsError::NoSpace)?;
-    data.as_mut_slice()[..buf.len()].copy_from_slice(buf);
-    if alloc_len > buf.len() {
-        data.as_mut_slice()[buf.len()..].fill(0);
-    }
-    let data_phys = data.phys_addr().as_u64();
-    // Use kernel_api abstractions - device param is now ignored
-    let (data_addr, data_map) = map_nvme_iommu(data_phys, alloc_len)?;
-    let (prp2, prp_list) = build_prp_list(data_addr, alloc_len)?;
-    let (data_dev, data_guard) = data.start_dma();
+    let region = NvmeDmaRegion::for_write(dma_len, buf, crate::io::nvme::iommu_device())
+        .map_err(map_nvme_dma_error)?;
+    let prp1 = region.prp1();
+    let prp2 = region.prp2();
     Ok((
         NvmeDmaContext {
-            data_dev: Some(data_dev),
-            data_guard: Some(data_guard),
-            prp_list,
-            data_map,
+            region: Some(region),
             completed: false,
             inflight: false,
         },
-        data_addr,
+        prp1,
         prp2,
     ))
 }
 
-fn prepare_dma_from_cpu_buffer(
-    data: TypedDmaSlice<CpuOwned>,
-) -> FsResult<(NvmeDmaContext, u64, u64)> {
-    let alloc_len = data.len();
-    let data_phys = data.phys_addr().as_u64();
-    // Use kernel_api abstractions - device param is now ignored
-    let (data_addr, data_map) = map_nvme_iommu(data_phys, alloc_len)?;
-    let (prp2, prp_list) = build_prp_list(data_addr, alloc_len)?;
-    let (data_dev, data_guard) = data.start_dma();
+fn prepare_dma_from_cpu_buffer(data: DmaRegion) -> FsResult<(NvmeDmaContext, u64, u64)> {
+    let logical_len = data.size();
+    let region = NvmeDmaRegion::from_region(data, logical_len, crate::io::nvme::iommu_device())
+        .map_err(map_nvme_dma_error)?;
+    let prp1 = region.prp1();
+    let prp2 = region.prp2();
     Ok((
         NvmeDmaContext {
-            data_dev: Some(data_dev),
-            data_guard: Some(data_guard),
-            prp_list,
-            data_map,
+            region: Some(region),
             completed: false,
             inflight: false,
         },
-        data_addr,
+        prp1,
         prp2,
     ))
 }

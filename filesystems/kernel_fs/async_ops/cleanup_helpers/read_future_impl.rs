@@ -43,7 +43,7 @@ impl<'a> AsyncReadFuture<'a> {
 
         let canceled = Arc::new(AtomicBool::new(false));
         self.cancel_guard = Some(NvmeCancelGuard::new(canceled.clone()));
-        let slot = Arc::new(PoisonLock::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
+        let slot = Arc::new(PoisonLock::new(None::<(DmaRegion, usize)>));
         let slot_clone = slot.clone();
         self.dma_result = Some(slot);
         self.dma_offset_in_block = Some(offset_in_block);
@@ -110,7 +110,7 @@ impl<'a> AsyncReadFuture<'a> {
         .ok_or(FsError::IoError)?;
         let dma_len = self.dma_dma_len.take().ok_or(FsError::IoError)?;
         let offset_in_block = self.dma_offset_in_block.take().ok_or(FsError::IoError)?;
-        let available = bytes_received.min(dma_len).min(data.len());
+        let available = bytes_received.min(dma_len).min(data.size());
         let start = offset_in_block.min(available);
         let remaining = available.saturating_sub(start);
         let copy_len = remaining.min(self.dma_user_len);
@@ -202,7 +202,7 @@ pub struct AsyncWriteFuture<'a> {
 }
 
 pub(crate) struct UnalignedReadSlot {
-    data: Mutex<Option<TypedDmaSlice<CpuOwned>>>,
+    data: Mutex<Option<DmaRegion>>,
 }
 
 impl UnalignedReadSlot {
@@ -463,12 +463,14 @@ impl<'a> AsyncWriteFuture<'a> {
                     None => return Poll::Ready(Err(FsError::IoError)),
                 };
                 let end = offset + len;
-                if end > data.len() {
+                if end > data.size() {
                     return Poll::Ready(Err(FsError::InvalidArgument));
                 }
-                data.as_mut_slice()[offset..end].copy_from_slice(self.buf);
+                unsafe {
+                    data.as_mut_slice()[offset..end].copy_from_slice(self.buf);
+                }
 
-                let dma_len = data.len();
+                let dma_len = data.size();
                 let (write_ctx, prp1, _prp2) = match prepare_dma_from_cpu_buffer(data) {
                     Ok(v) => v,
                     Err(e) => return Poll::Ready(Err(e)),
