@@ -64,7 +64,7 @@ fn insert_nat_entry(table: &mut NatTable, entry: NatEntry) {
 
 /// Get current system tick for GC
 fn get_current_tick() -> u64 {
-    crate::task::timer::current_tick()
+    crate::task::current_tick()
 }
 
 /// Generate a random port for NAT to prevent prediction attacks (RFC 6056)

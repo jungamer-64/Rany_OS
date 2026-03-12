@@ -788,7 +788,7 @@ impl IcmpEchoRegistry {
     /// 新しいping待ちを登録
     fn register(&mut self, target: [u8; 4], sequence: u16, timeout_us: u64) {
         let key = (u32::from_be_bytes(target), sequence);
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         self.waiters.insert(
             key,
             PingWaiter {
@@ -837,7 +837,7 @@ impl IcmpEchoRegistry {
                 return Poll::Ready(Ok(result));
             }
             // タイムアウトチェック
-            let now = crate::task::timer::current_tick();
+            let now = crate::task::current_tick();
             let elapsed = now.saturating_sub(entry.start_tick);
             if elapsed > entry.timeout_us {
                 self.waiters.remove(&key);
@@ -851,7 +851,7 @@ impl IcmpEchoRegistry {
 
     /// 期限切れエントリをクリーンアップ
     fn cleanup_expired(&mut self) {
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         self.waiters.retain(|_key, entry| {
             let elapsed = now.saturating_sub(entry.start_tick);
             elapsed <= entry.timeout_us

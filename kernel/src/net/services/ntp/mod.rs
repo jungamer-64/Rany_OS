@@ -6,7 +6,6 @@
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::EndpointError;
 use crate::net::l4::udp::UdpAddr;
-use crate::time;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -125,6 +124,12 @@ impl NtpClient {
         self.server = Some(addr);
     }
 
+    pub(crate) fn apply_synced_unix_time(&self, unix_time: u64) {
+        crate::drivers::time::set_unix_timestamp(unix_time);
+        self.last_sync_uptime
+            .store(crate::task::current_tick(), Ordering::Relaxed);
+    }
+
     /// Perform a single time synchronization query (Async)
     pub async fn sync_time(&self) -> Result<u64, EndpointError> {
         let server_ip = self.server.ok_or(EndpointError::InvalidArgument)?;
@@ -139,7 +144,7 @@ impl NtpClient {
 
         // RFC 4330 Section 5: Set a unique transmit timestamp in the request.
         // We use uptime nanoseconds as a nonce to prevent off-path spoofing.
-        let nonce = crate::task::timer::current_tick();
+        let nonce = crate::time::precise_time_nanos();
         let seconds = (nonce / 1_000_000_000) as u32;
         let fraction = (nonce % 1_000_000_000) as u32;
         req.transmit_timestamp.seconds = seconds.to_be_bytes();
@@ -179,15 +184,7 @@ impl NtpClient {
 
                 if unix_time > 0 {
                     log::info!("[NTP] Synced time: {} (UNIX)", unix_time);
-
-                    let current_uptime = time::get_uptime_ms() / 1000;
-                    let calculated_boot_time = unix_time.saturating_sub(current_uptime);
-
-                    // システム時計を更新
-                    time::system_clock().set_boot_time(calculated_boot_time);
-
-                    self.last_sync_uptime
-                        .store(time::get_uptime_ms(), Ordering::Relaxed);
+                    self.apply_synced_unix_time(unix_time);
                     return Ok(unix_time);
                 }
 

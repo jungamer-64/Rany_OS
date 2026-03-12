@@ -150,7 +150,7 @@ impl Domain {
             allocated_memory: 0,
             runtime_ticks: 0,
             context_switches: 0,
-            created_at: crate::task::timer::current_tick(),
+            created_at: crate::task::current_tick(),
             panic_message: None,
             last_error: None,
             numa_node: None,

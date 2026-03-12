@@ -1488,7 +1488,7 @@ pub async fn mlx5_poll_task(index: u8) {
         }
 
         pump_mlx5_events(&state);
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         let refresh_hw = last_link_refresh_tick == 0
             || now.saturating_sub(last_link_refresh_tick) >= MLX5_LINK_STATE_REFRESH_MS;
         if refresh_hw {

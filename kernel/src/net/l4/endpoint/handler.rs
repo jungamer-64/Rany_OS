@@ -1721,7 +1721,7 @@ impl NetworkEventHandler {
                         Some(hostname)
                     },
                     domain_name: None,
-                    obtained_at: crate::task::timer::current_tick(),
+                    obtained_at: crate::task::current_tick(),
                 };
                 let target_if = if_id.map(crate::net::runtime::manager::NetIfId);
                 let selected_primary = target_if

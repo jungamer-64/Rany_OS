@@ -222,7 +222,7 @@ impl PageReclaimController {
     /// 返り値: 回収したページ数
     pub fn background_reclaim(&self, target_pages: usize) -> usize {
         let mut total_reclaimed = 0;
-        let current_time = crate::task::timer::current_tick(); // actually ticks, but sufficient for aging
+        let current_time = crate::task::current_tick(); // actually ticks, but sufficient for aging
 
         // Check if we need to run aging cycle
         let run_aging = self.should_age_mglru(current_time);

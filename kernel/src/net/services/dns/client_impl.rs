@@ -22,9 +22,9 @@ impl DnsClient {
 
         loop {
             // 5秒ごとにキャッシュをクリーンアップ
-            crate::task::timer::sleep_ms(5000).await;
+            crate::task::sleep_ms(5000).await;
 
-            let now = crate::task::timer::current_tick();
+            let now = crate::task::current_tick();
             if let Ok(mut cache) = self.cache.lock() {
                 cache.cleanup(now);
             }
@@ -104,7 +104,7 @@ impl DnsClient {
 
     /// 非同期でIPアドレスを解決 (IPv4)
     pub async fn resolve_ipv4(&self, name: &str) -> Option<Ipv4Address> {
-        let tick = crate::task::timer::current_tick();
+        let tick = crate::task::current_tick();
 
         // 1. まずキャッシュをチェック
         if let Some(ip) = self.resolve_cached(name, tick) {
@@ -127,7 +127,7 @@ impl DnsClient {
 
     /// 非同期でIPアドレスを解決 (IPv6)
     pub async fn resolve_ipv6(&self, name: &str) -> Option<Ipv6Address> {
-        let tick = crate::task::timer::current_tick();
+        let tick = crate::task::current_tick();
 
         // 1. まずキャッシュをチェック
         match self.cache.lock() {
@@ -164,7 +164,7 @@ impl DnsClient {
         name: &str,
         qtype: DnsQueryType,
     ) -> Result<Vec<DnsRecord>, &'static str> {
-        let tick = crate::task::timer::current_tick();
+        let tick = crate::task::current_tick();
         let server = self
             .primary_ipv4_server()
             .ok_or("No DNS server configured")?;
@@ -281,7 +281,7 @@ impl DnsClient {
             return Err("TCP read incomplete message");
         }
 
-        let tick = crate::task::timer::current_tick();
+        let tick = crate::task::current_tick();
         self.parse_response(&msg_data, tick, name, qtype)
             .map_err(|_| "Parse error")
     }

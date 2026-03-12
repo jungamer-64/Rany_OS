@@ -177,7 +177,7 @@ impl MdnsService {
             log::info!("[NET] mDNS: deferring multicast join until IPv4 address is assigned");
         }
         while self.local_ip.is_any() {
-            crate::task::timer::sleep_ms(100).await;
+            crate::task::sleep_ms(100).await;
         }
 
         // Security (RFC 6762 Section 11): mDNS packets MUST have IP TTL 255.
@@ -195,7 +195,7 @@ impl MdnsService {
         loop {
             // パケット受信を待機
             if let Some((_if_id, src, ttl, packet)) = socket.recv().await {
-                let now = crate::task::timer::current_tick() / 1000;
+                let now = crate::task::current_tick() / 1000;
 
                 // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently
                 // discard any Multicast DNS queries that arrive with an IP TTL (or Hop Limit)
@@ -251,7 +251,7 @@ impl MdnsService {
             }
 
             // 定期的なキャッシュクリーンアップ
-            let now = crate::task::timer::current_tick() / 1000;
+            let now = crate::task::current_tick() / 1000;
             self.cleanup_expired(now);
         }
     }

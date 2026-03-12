@@ -250,7 +250,7 @@ pub fn check_domain_quota(elapsed_ns: u64) -> bool {
     }
 
     // 現在時刻をナノ秒で取得
-    let current_time_ns = crate::task::timer::current_tick() * 1_000_000; // tick → ns
+    let current_time_ns = crate::task::current_tick() * 1_000_000; // tick → ns
 
     // ドメインクォータマネージャにCPU時間を記録
     let exceeded = crate::domain::quota::quota_manager().consume_cpu_time(

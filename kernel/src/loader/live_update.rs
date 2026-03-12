@@ -511,7 +511,7 @@ impl LiveUpdateManager {
         wait_for_quiescent_state(old_epoch);
         log::info!("[LIVE_UPDATE] All cores reached quiescent state\n");
 
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         let grace = self.rollback_grace_period.load(Ordering::Acquire);
         let deadline = now.saturating_add(grace);
         {
@@ -594,7 +594,7 @@ impl LiveUpdateManager {
                 return;
             };
             (
-                crate::task::timer::current_tick() >= p.deadline_tick,
+                crate::task::current_tick() >= p.deadline_tick,
                 p.health_failed,
             )
         };
@@ -663,7 +663,7 @@ impl LiveUpdateManager {
         self.push_outcome(CompletedUpdateOutcome::Committed {
             old_cell_id: result.old_cell_id,
             new_cell_id: result.new_cell_id,
-            at_tick: crate::task::timer::current_tick(),
+            at_tick: crate::task::current_tick(),
         });
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Ready;
         self.rollback_epoch.store(0, Ordering::Release);
@@ -723,7 +723,7 @@ impl LiveUpdateManager {
         self.push_outcome(CompletedUpdateOutcome::RolledBack {
             old_cell_id: result.old_cell_id,
             new_cell_id: result.new_cell_id,
-            at_tick: crate::task::timer::current_tick(),
+            at_tick: crate::task::current_tick(),
             reason: ctx.health_failure_reason,
         });
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Ready;
@@ -939,7 +939,7 @@ impl ExportedState {
             metadata: ExportedStateMetadata {
                 version,
                 source_cell_id,
-                export_time: crate::task::timer::current_tick(),
+                export_time: crate::task::current_tick(),
                 data_size: data.len(),
                 checksum,
             },

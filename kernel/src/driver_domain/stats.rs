@@ -66,19 +66,19 @@ impl DriverDomainStats {
 
     /// ロード完了を記録
     pub fn record_load(&mut self) {
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         self.load_timestamp = now;
     }
 
     /// ロード時間を記録
     pub fn record_load_duration(&mut self, start_tick: u64) {
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         self.load_duration_ticks = now.saturating_sub(start_tick);
     }
 
     /// 開始を記録
     pub fn record_start(&mut self) {
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         self.last_start_timestamp = now;
         self.current_uptime_start = now;
         self.start_count += 1;
@@ -86,7 +86,7 @@ impl DriverDomainStats {
 
     /// 停止を記録
     pub fn record_stop(&mut self) {
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         self.last_stop_timestamp = now;
         self.stop_count += 1;
 
@@ -106,7 +106,7 @@ impl DriverDomainStats {
         self.fault_count += 1;
 
         // 稼働時間を更新
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         if self.current_uptime_start > 0 {
             let uptime = now.saturating_sub(self.current_uptime_start);
             self.total_uptime_ticks += uptime;
@@ -120,7 +120,7 @@ impl DriverDomainStats {
     /// 再起動を記録
     pub fn record_restart(&mut self) {
         self.restart_count += 1;
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         self.current_uptime_start = now;
         self.last_start_timestamp = now;
     }
@@ -133,7 +133,7 @@ impl DriverDomainStats {
     /// 現在の稼働時間を取得（TSCティック、0=停止中）
     pub fn current_uptime(&self) -> u64 {
         if self.current_uptime_start > 0 {
-            crate::task::timer::current_tick().saturating_sub(self.current_uptime_start)
+            crate::task::current_tick().saturating_sub(self.current_uptime_start)
         } else {
             0
         }
@@ -143,7 +143,7 @@ impl DriverDomainStats {
     ///
     /// 作成時刻からの経過時間に対する稼働時間の割合
     pub fn availability_percent(&self, created_at: u64) -> f64 {
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         let total_time = now.saturating_sub(created_at);
         if total_time == 0 {
             return 100.0;
@@ -170,7 +170,7 @@ impl DriverDomainStats {
         if self.fault_count == 0 {
             return None;
         }
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         let total_time = now.saturating_sub(created_at);
         let uptime = self.total_uptime_ticks + self.current_uptime();
         let downtime = total_time.saturating_sub(uptime);

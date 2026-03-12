@@ -24,8 +24,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use super::timer::current_tick;
-use super::{Executor, Task, TaskId};
+use super::{Executor, Task, TaskId, current_tick};
 
 // ============================================================================
 // Timeout Support (設計書 4.4)

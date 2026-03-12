@@ -13,13 +13,9 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
-use core::future::Future;
-use core::pin::Pin;
-use core::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use core::task::{Context, Poll, Waker};
+use core::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use core::task::Waker;
 use exorust_sync::PoisonLock;
 use kernel_api::service::time::{
     CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats,
@@ -31,194 +27,181 @@ use kernel_api::service::time::{
 
 const NANOS_PER_MILLI: u64 = 1_000_000;
 const NANOS_PER_SEC: u64 = 1_000_000_000;
-const SHARD_COUNT: usize = 16;
-const SHARD_MASK: usize = SHARD_COUNT - 1;
-const PENDING_QUEUE_SIZE: usize = 512;
-const PENDING_QUEUE_MASK: usize = PENDING_QUEUE_SIZE - 1;
 
 // ============================================================================
-// Sharded Sleep Registry
+// Ordered Sleep Registry
 // ============================================================================
 
-struct ShardedSleepRegistry {
-    shards: [PoisonLock<BTreeMap<u64, Vec<Waker>>>; SHARD_COUNT],
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SleepKey {
+    wake_tick: u64,
+    registration_id: u64,
 }
 
-impl ShardedSleepRegistry {
+struct OrderedSleepRegistry {
+    next_registration_id: AtomicU64,
+    entries: PoisonLock<BTreeMap<SleepKey, Waker>>,
+}
+
+impl OrderedSleepRegistry {
     const fn new() -> Self {
-        const EMPTY_SHARD: PoisonLock<BTreeMap<u64, Vec<Waker>>> = PoisonLock::new(BTreeMap::new());
         Self {
-            shards: [EMPTY_SHARD; SHARD_COUNT],
+            next_registration_id: AtomicU64::new(1),
+            entries: PoisonLock::new(BTreeMap::new()),
         }
     }
 
-    #[inline]
-    fn shard_index(tick: u64) -> usize {
-        (tick as usize) & SHARD_MASK
-    }
-
-    fn insert(&self, tick: u64, waker: Waker) {
-        let idx = Self::shard_index(tick);
-        self.shards[idx]
+    fn insert(&self, wake_tick: u64, waker: Waker) {
+        let registration_id = self.next_registration_id.fetch_add(1, Ordering::Relaxed);
+        self.entries
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .entry(tick)
-            .or_insert_with(Vec::new)
-            .push(waker);
+            .insert(
+                SleepKey {
+                    wake_tick,
+                    registration_id,
+                },
+                waker,
+            );
     }
 
-    fn remove(&self, tick: u64) -> Option<Waker> {
-        let idx = Self::shard_index(tick);
-        let mut guard = self.shards[idx].lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(wakers) = guard.get_mut(&tick) {
-            let w = wakers.pop();
-            if wakers.is_empty() {
-                guard.remove(&tick);
-            }
-            w
+    fn remove_one(&self, wake_tick: u64) -> bool {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let start = SleepKey {
+            wake_tick,
+            registration_id: 0,
+        };
+        let end = SleepKey {
+            wake_tick,
+            registration_id: u64::MAX,
+        };
+        let key = entries.range(start..=end).next().map(|(key, _)| *key);
+        if let Some(key) = key {
+            entries.remove(&key);
+            true
         } else {
-            None
+            false
         }
     }
 
-    fn drain_expired(&self, current_tick: u64, out: &mut Vec<Waker>) {
-        for shard in &self.shards {
-            if let Some(res) = shard.try_lock() {
-                let mut guard = res.unwrap_or_else(|e| e.into_inner());
-                let expired_keys: Vec<u64> =
-                    guard.range(..=current_tick).map(|(k, _)| *k).collect();
+    fn next_deadline(&self) -> Option<u64> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .first_key_value()
+            .map(|(key, _)| key.wake_tick)
+    }
 
-                for key in expired_keys {
-                    if let Some(wakers) = guard.remove(&key) {
-                        out.extend(wakers);
-                    }
-                }
-            }
-        }
+    fn pop_expired(&self, current_tick: u64) -> Option<Waker> {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let key = match entries.first_key_value() {
+            Some((key, _)) if key.wake_tick <= current_tick => *key,
+            _ => return None,
+        };
+        entries.remove(&key)
+    }
+
+    fn expired_len(&self, current_tick: u64) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .range(
+                ..=SleepKey {
+                    wake_tick: current_tick,
+                    registration_id: u64::MAX,
+                },
+            )
+            .count()
     }
 }
 
 // ============================================================================
-// Lock-Free Pending Wakers Queue
+// Timer Registry
 // ============================================================================
 
-#[repr(C, align(64))]
-struct LockFreePendingWakers {
-    head: AtomicUsize,
-    tail: AtomicUsize,
-    buffer: [AtomicUsize; PENDING_QUEUE_SIZE],
-    enqueued: AtomicUsize,
-    dropped: AtomicUsize,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct TimerKey {
+    fire_tick: u64,
+    handle_id: u64,
 }
-
-impl LockFreePendingWakers {
-    const fn new() -> Self {
-        const ZERO: AtomicUsize = AtomicUsize::new(0);
-        Self {
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-            buffer: [ZERO; PENDING_QUEUE_SIZE],
-            enqueued: AtomicUsize::new(0),
-            dropped: AtomicUsize::new(0),
-        }
-    }
-
-    fn enqueue(&self, waker: Waker) -> bool {
-        let boxed = Box::new(waker);
-        let ptr = Box::into_raw(boxed) as usize;
-
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            let head = self.head.load(Ordering::Acquire);
-            let tail = self.tail.load(Ordering::Acquire);
-
-            if head.wrapping_sub(tail) >= PENDING_QUEUE_SIZE {
-                unsafe {
-                    let _ = Box::from_raw(ptr as *mut Waker);
-                }
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-                return false;
-            }
-
-            let idx = head & PENDING_QUEUE_MASK;
-
-            match self.head.compare_exchange_weak(
-                head,
-                head.wrapping_add(1),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    self.buffer[idx].store(ptr, Ordering::Release);
-                    self.enqueued.fetch_add(1, Ordering::Relaxed);
-                    return true;
-                }
-                Err(_) => {
-                    core::hint::spin_loop();
-                }
-            }
-        }
-    }
-
-    fn drain(&self) -> Vec<Waker> {
-        let mut wakers = Vec::new();
-
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            let tail = self.tail.load(Ordering::Acquire);
-            let head = self.head.load(Ordering::Acquire);
-
-            if tail == head {
-                break;
-            }
-
-            let idx = tail & PENDING_QUEUE_MASK;
-
-            match self.tail.compare_exchange_weak(
-                tail,
-                tail.wrapping_add(1),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    let ptr = self.buffer[idx].swap(0, Ordering::Acquire);
-                    if ptr != 0 {
-                        let waker = unsafe { *Box::from_raw(ptr as *mut Waker) };
-                        wakers.push(waker);
-                    }
-                }
-                Err(_) => {
-                    core::hint::spin_loop();
-                }
-            }
-        }
-
-        wakers
-    }
-
-    fn stats(&self) -> (usize, usize) {
-        (
-            self.enqueued.load(Ordering::Relaxed),
-            self.dropped.load(Ordering::Relaxed),
-        )
-    }
-
-    fn len(&self) -> usize {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        head.wrapping_sub(tail)
-    }
-}
-
-// ============================================================================
-// Timer Entry
-// ============================================================================
 
 struct TimerEntry {
-    fire_tick: u64,
     interval_ms: u64,
     mode: TimerMode,
     waker: Waker,
+}
+
+struct TimerRegistry {
+    by_deadline: BTreeMap<TimerKey, TimerEntry>,
+    by_id: BTreeMap<u64, u64>,
+}
+
+impl TimerRegistry {
+    const fn new() -> Self {
+        Self {
+            by_deadline: BTreeMap::new(),
+            by_id: BTreeMap::new(),
+        }
+    }
+
+    fn insert(&mut self, handle_id: u64, fire_tick: u64, entry: TimerEntry) {
+        self.by_deadline.insert(
+            TimerKey {
+                fire_tick,
+                handle_id,
+            },
+            entry,
+        );
+        self.by_id.insert(handle_id, fire_tick);
+    }
+
+    fn cancel(&mut self, handle_id: u64) -> bool {
+        let Some(fire_tick) = self.by_id.remove(&handle_id) else {
+            return false;
+        };
+        self.by_deadline
+            .remove(&TimerKey {
+                fire_tick,
+                handle_id,
+            })
+            .is_some()
+    }
+
+    fn next_deadline(&self) -> Option<u64> {
+        self.by_deadline
+            .first_key_value()
+            .map(|(key, _)| key.fire_tick)
+    }
+
+    fn pop_expired(&mut self, current_tick: u64) -> Option<(TimerKey, TimerEntry)> {
+        let key = match self.by_deadline.first_key_value() {
+            Some((key, _)) if key.fire_tick <= current_tick => *key,
+            _ => return None,
+        };
+        let entry = self.by_deadline.remove(&key)?;
+        self.by_id.remove(&key.handle_id);
+        Some((key, entry))
+    }
+
+    fn reschedule(&mut self, handle_id: u64, current_tick: u64, entry: TimerEntry) {
+        let fire_tick = current_tick.saturating_add(entry.interval_ms);
+        self.insert(handle_id, fire_tick, entry);
+    }
+
+    fn active_len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    fn expired_len(&self, current_tick: u64) -> usize {
+        self.by_deadline
+            .range(
+                ..=TimerKey {
+                    fire_tick: current_tick,
+                    handle_id: u64::MAX,
+                },
+            )
+            .count()
+    }
 }
 
 // ============================================================================
@@ -269,10 +252,10 @@ impl TaskCpuTracker {
 
     fn get_stats(&self, task_id: u64) -> Option<CpuTimeStats> {
         let map = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        map.get(&task_id).map(|e| CpuTimeStats {
-            cpu_time_ns: e.cpu_time_ns,
-            last_scheduled_tick: e.last_scheduled_tick,
-            schedule_count: e.schedule_count,
+        map.get(&task_id).map(|entry| CpuTimeStats {
+            cpu_time_ns: entry.cpu_time_ns,
+            last_scheduled_tick: entry.last_scheduled_tick,
+            schedule_count: entry.schedule_count,
         })
     }
 }
@@ -281,15 +264,20 @@ impl TaskCpuTracker {
 // TimeManagement
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpiredKind {
+    Sleep,
+    Timer,
+}
+
 pub struct TimeManagement {
     ticks: AtomicU64,
-    boot_unix_timestamp_ms: AtomicU64,
-    wall_clock_adjustment_ns: AtomicI64,
-    sleep_registry: ShardedSleepRegistry,
-    pending_wakers: LockFreePendingWakers,
-    timers: PoisonLock<BTreeMap<u64, TimerEntry>>,
+    wall_clock_offset_ns: AtomicI64,
+    sleep_registry: OrderedSleepRegistry,
+    timers: PoisonLock<TimerRegistry>,
     next_timer_id: AtomicU64,
     total_fired: AtomicU64,
+    waker_dispatches: AtomicU64,
     cpu_tracker: TaskCpuTracker,
 }
 
@@ -300,101 +288,150 @@ impl TimeManagement {
     pub const fn new() -> Self {
         Self {
             ticks: AtomicU64::new(0),
-            boot_unix_timestamp_ms: AtomicU64::new(0),
-            wall_clock_adjustment_ns: AtomicI64::new(0),
-            sleep_registry: ShardedSleepRegistry::new(),
-            pending_wakers: LockFreePendingWakers::new(),
-            timers: PoisonLock::new(BTreeMap::new()),
+            wall_clock_offset_ns: AtomicI64::new(0),
+            sleep_registry: OrderedSleepRegistry::new(),
+            timers: PoisonLock::new(TimerRegistry::new()),
             next_timer_id: AtomicU64::new(1),
             total_fired: AtomicU64::new(0),
+            waker_dispatches: AtomicU64::new(0),
             cpu_tracker: TaskCpuTracker::new(),
         }
     }
 
-    pub fn set_boot_timestamp_ms(&self, timestamp_ms: u64) {
-        self.boot_unix_timestamp_ms
-            .store(timestamp_ms, Ordering::SeqCst);
-    }
-
     pub fn pending_waker_count(&self) -> usize {
-        self.pending_wakers.len()
+        let current_tick = self.current_tick_ms();
+        let pending_sleeps = self.sleep_registry.expired_len(current_tick);
+        let pending_timers = self
+            .timers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .expired_len(current_tick);
+        pending_sleeps + pending_timers
     }
 
     pub fn pending_waker_stats(&self) -> (usize, usize) {
-        self.pending_wakers.stats()
+        (self.pending_waker_count(), 0)
     }
 
-    fn process_expired_timers(&self, current_tick: u64) {
-        if let Some(res) = self.timers.try_lock() {
-            let mut timers = res.unwrap_or_else(|e| e.into_inner());
-            self.do_process_expired_timers(&mut timers, current_tick);
-        }
+    fn uptime_ns_from_ticks(&self) -> u64 {
+        self.current_tick_ms().saturating_mul(NANOS_PER_MILLI)
     }
 
-    fn do_process_expired_timers(&self, timers: &mut BTreeMap<u64, TimerEntry>, current_tick: u64) {
-        let mut to_fire: Vec<u64> = Vec::new();
-        let mut to_reschedule: Vec<(u64, TimerEntry)> = Vec::new();
+    fn wall_clock_ns(&self) -> u64 {
+        let uptime_ns = self.uptime_ns_from_ticks() as i128;
+        let offset_ns = self.wall_clock_offset_ns.load(Ordering::Relaxed) as i128;
+        clamp_i128_to_u64(uptime_ns + offset_ns)
+    }
 
-        for (&id, entry) in timers.iter() {
-            if entry.fire_tick <= current_tick {
-                to_fire.push(id);
-            }
-        }
+    fn next_expired_kind(&self, current_tick: u64) -> Option<ExpiredKind> {
+        let next_sleep = self
+            .sleep_registry
+            .next_deadline()
+            .filter(|tick| *tick <= current_tick);
+        let next_timer = self
+            .timers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .next_deadline()
+            .filter(|tick| *tick <= current_tick);
 
-        for id in &to_fire {
-            if let Some(entry) = timers.remove(id) {
-                let _ = self.pending_wakers.enqueue(entry.waker.clone());
-                self.total_fired.fetch_add(1, Ordering::Relaxed);
-
-                if entry.mode == TimerMode::Periodic {
-                    to_reschedule.push((
-                        *id,
-                        TimerEntry {
-                            fire_tick: current_tick + entry.interval_ms,
-                            interval_ms: entry.interval_ms,
-                            mode: entry.mode,
-                            waker: entry.waker,
-                        },
-                    ));
+        match (next_sleep, next_timer) {
+            (Some(sleep_tick), Some(timer_tick)) => {
+                if sleep_tick <= timer_tick {
+                    Some(ExpiredKind::Sleep)
+                } else {
+                    Some(ExpiredKind::Timer)
                 }
             }
+            (Some(_), None) => Some(ExpiredKind::Sleep),
+            (None, Some(_)) => Some(ExpiredKind::Timer),
+            (None, None) => None,
+        }
+    }
+
+    fn process_expired_sleep(&self, current_tick: u64) -> bool {
+        let Some(waker) = self.sleep_registry.pop_expired(current_tick) else {
+            return false;
+        };
+        self.waker_dispatches.fetch_add(1, Ordering::Relaxed);
+        waker.wake();
+        true
+    }
+
+    fn process_expired_timer(&self, current_tick: u64) -> bool {
+        let Some((key, entry)) = self
+            .timers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_expired(current_tick)
+        else {
+            return false;
+        };
+
+        let TimerEntry {
+            interval_ms,
+            mode,
+            waker,
+        } = entry;
+
+        if mode == TimerMode::Periodic {
+            self.timers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .reschedule(
+                    key.handle_id,
+                    current_tick,
+                    TimerEntry {
+                        interval_ms,
+                        mode,
+                        waker: waker.clone(),
+                    },
+                );
         }
 
-        for (id, entry) in to_reschedule {
-            timers.insert(id, entry);
-        }
+        self.total_fired.fetch_add(1, Ordering::Relaxed);
+        self.waker_dispatches.fetch_add(1, Ordering::Relaxed);
+        waker.wake();
+        true
     }
 }
 
 impl TimeService for TimeManagement {
     fn compute_wake_tick(&self, duration_ms: u64) -> u64 {
-        self.ticks.load(Ordering::SeqCst) + duration_ms
+        self.ticks
+            .load(Ordering::SeqCst)
+            .saturating_add(duration_ms)
     }
 
     fn register_timer(&self, interval_ms: u64, mode: TimerMode, waker: Waker) -> TimerHandle {
-        let id = self.next_timer_id.fetch_add(1, Ordering::Relaxed);
-        let current = self.ticks.load(Ordering::SeqCst);
-
-        let entry = TimerEntry {
-            fire_tick: current + interval_ms,
-            interval_ms,
-            mode,
-            waker,
+        let handle_id = self.next_timer_id.fetch_add(1, Ordering::Relaxed);
+        let current_tick = self.ticks.load(Ordering::SeqCst);
+        let normalized_interval = match mode {
+            TimerMode::OneShot => interval_ms,
+            TimerMode::Periodic => interval_ms.max(1),
         };
 
         self.timers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(id, entry);
-        TimerHandle(id)
+            .insert(
+                handle_id,
+                current_tick.saturating_add(normalized_interval),
+                TimerEntry {
+                    interval_ms: normalized_interval,
+                    mode,
+                    waker,
+                },
+            );
+
+        TimerHandle(handle_id)
     }
 
     fn cancel_timer(&self, handle: TimerHandle) -> bool {
         self.timers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&handle.0)
-            .is_some()
+            .cancel(handle.0)
     }
 
     fn current_tick_ms(&self) -> u64 {
@@ -402,39 +439,30 @@ impl TimeService for TimeManagement {
     }
 
     fn uptime_ns(&self) -> u64 {
-        self.ticks.load(Ordering::SeqCst) * NANOS_PER_MILLI
+        self.uptime_ns_from_ticks()
     }
 
     fn unix_timestamp(&self) -> u64 {
-        let boot_ms = self.boot_unix_timestamp_ms.load(Ordering::Relaxed);
-        let uptime_ms = self.ticks.load(Ordering::SeqCst);
-        let adj_ns = self.wall_clock_adjustment_ns.load(Ordering::Relaxed);
-        let total_ms = boot_ms + uptime_ms;
-        let adj_ms = adj_ns / (NANOS_PER_MILLI as i64);
-        (total_ms as i64 + adj_ms) as u64 / 1000
+        self.wall_clock_ns() / NANOS_PER_SEC
     }
 
     fn unix_timestamp_ms(&self) -> u64 {
-        let boot_ms = self.boot_unix_timestamp_ms.load(Ordering::Relaxed);
-        let uptime_ms = self.ticks.load(Ordering::SeqCst);
-        let adj_ns = self.wall_clock_adjustment_ns.load(Ordering::Relaxed);
-        let adj_ms = adj_ns / (NANOS_PER_MILLI as i64);
-        (boot_ms as i64 + uptime_ms as i64 + adj_ms) as u64
+        self.wall_clock_ns() / NANOS_PER_MILLI
     }
 
     fn stats(&self) -> TimerServiceStats {
-        let (enq, drop) = self.pending_wakers.stats();
-        let active = self
+        let active_timers = self
             .timers
-            .try_lock()
-            .map_or(0, |res| res.unwrap_or_else(|e| e.into_inner()).len());
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active_len();
 
         TimerServiceStats {
-            active_timers: active,
+            active_timers,
             total_fired: self.total_fired.load(Ordering::Relaxed),
-            waker_enqueued: enq,
-            waker_dropped: drop,
-            pending_wakers: self.pending_wakers.len(),
+            waker_enqueued: self.waker_dispatches.load(Ordering::Relaxed) as usize,
+            waker_dropped: 0,
+            pending_wakers: self.pending_waker_count(),
         }
     }
 
@@ -443,36 +471,44 @@ impl TimeService for TimeManagement {
     }
 
     fn record_task_start(&self, task_id: u64) {
-        let tick = self.ticks.load(Ordering::SeqCst);
-        self.cpu_tracker.record_start(task_id, tick);
+        self.cpu_tracker
+            .record_start(task_id, self.ticks.load(Ordering::SeqCst));
     }
 
     fn record_task_stop(&self, task_id: u64) {
-        let tick = self.ticks.load(Ordering::SeqCst);
-        self.cpu_tracker.record_stop(task_id, tick);
+        self.cpu_tracker
+            .record_stop(task_id, self.ticks.load(Ordering::SeqCst));
     }
 
     fn on_timer_interrupt(&self) {
-        let current_tick = self.ticks.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut expired = Vec::new();
-        self.sleep_registry
-            .drain_expired(current_tick, &mut expired);
-        for waker in expired {
-            let _ok = self.pending_wakers.enqueue(waker);
-        }
-        self.process_expired_timers(current_tick);
+        self.ticks.fetch_add(1, Ordering::SeqCst);
     }
 
     fn process_pending_wakers(&self) {
-        let wakers = self.pending_wakers.drain();
-        for waker in wakers {
-            waker.wake();
+        let current_tick = self.ticks.load(Ordering::SeqCst);
+        loop {
+            match self.next_expired_kind(current_tick) {
+                Some(ExpiredKind::Sleep) => {
+                    if !self.process_expired_sleep(current_tick) {
+                        break;
+                    }
+                }
+                Some(ExpiredKind::Timer) => {
+                    if !self.process_expired_timer(current_tick) {
+                        break;
+                    }
+                }
+                None => break,
+            }
         }
     }
 
     fn adjust_wall_clock(&self, delta_ns: i64) {
-        self.wall_clock_adjustment_ns
-            .fetch_add(delta_ns, Ordering::Relaxed);
+        let _ =
+            self.wall_clock_offset_ns
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    Some(current.saturating_add(delta_ns))
+                });
     }
 
     fn register_sleep(&self, wake_tick: u64, waker: Waker) {
@@ -480,7 +516,10 @@ impl TimeService for TimeManagement {
     }
 
     fn unregister_sleep(&self, wake_tick: u64) {
-        let _ = self.sleep_registry.remove(wake_tick);
+        if self.current_tick_ms() >= wake_tick {
+            return;
+        }
+        let _ = self.sleep_registry.remove_one(wake_tick);
     }
 }
 
@@ -510,52 +549,84 @@ pub fn current_tick() -> u64 {
     TIME_MANAGER.current_tick_ms()
 }
 
-pub async fn sleep_ms(duration_ms: u64) {
-    SleepFuture::new(duration_ms).await;
-}
-
-pub struct SleepFuture {
-    wake_tick: u64,
-    registered: bool,
-}
-
-impl SleepFuture {
-    pub fn new(duration_ms: u64) -> Self {
-        let wake_tick = TIME_MANAGER.compute_wake_tick(duration_ms);
-        Self {
-            wake_tick,
-            registered: false,
-        }
-    }
-}
-
-impl Future for SleepFuture {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let current = TIME_MANAGER.current_tick_ms();
-        if current >= self.wake_tick {
-            return Poll::Ready(());
-        }
-        if !self.registered {
-            TIME_MANAGER.register_sleep(self.wake_tick, cx.waker().clone());
-            self.registered = true;
-        }
-        Poll::Pending
-    }
-}
-
-impl Drop for SleepFuture {
-    fn drop(&mut self) {
-        if self.registered {
-            TIME_MANAGER.unregister_sleep(self.wake_tick);
-        }
+fn clamp_i128_to_u64(value: i128) -> u64 {
+    if value <= 0 {
+        0
+    } else if value >= u64::MAX as i128 {
+        u64::MAX
+    } else {
+        value as u64
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::sync::Arc;
+    use alloc::task::Wake;
+    use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use spin::Mutex;
+
+    struct CountingWaker {
+        count: AtomicUsize,
+    }
+
+    impl CountingWaker {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                count: AtomicUsize::new(0),
+            })
+        }
+
+        fn observed(&self) -> usize {
+            self.count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct OrderedWaker {
+        id: u64,
+        order: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl OrderedWaker {
+        fn new(id: u64, order: Arc<Mutex<Vec<u64>>>) -> Arc<Self> {
+            Arc::new(Self { id, order })
+        }
+    }
+
+    impl Wake for OrderedWaker {
+        fn wake(self: Arc<Self>) {
+            self.order.lock().push(self.id);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.order.lock().push(self.id);
+        }
+    }
+
+    fn set_wall_clock_ms(tm: &TimeManagement, target_ms: u64) {
+        let current_ms = tm.unix_timestamp_ms();
+        let delta_ms = target_ms as i128 - current_ms as i128;
+        let delta_ns = delta_ms.saturating_mul(NANOS_PER_MILLI as i128);
+        tm.adjust_wall_clock(delta_ns.clamp(i64::MIN as i128, i64::MAX as i128) as i64);
+    }
+
+    impl TimeManagement {
+        fn record_stop_for_test(&self, task_id: u64, current_tick: u64) {
+            self.cpu_tracker.record_stop(task_id, current_tick);
+        }
+    }
 
     #[test]
     fn tick_increment_smoke() {
@@ -568,12 +639,100 @@ mod tests {
     }
 
     #[test]
+    fn wall_clock_seed_uses_single_offset_model() {
+        let tm = TimeManagement::new();
+        set_wall_clock_ms(&tm, 1_000_000);
+        assert_eq!(tm.unix_timestamp_ms(), 1_000_000);
+        tm.on_timer_interrupt();
+        assert_eq!(tm.unix_timestamp_ms(), 1_000_001);
+    }
+
+    #[test]
+    fn wall_clock_reset_recomputes_offset() {
+        let tm = TimeManagement::new();
+        set_wall_clock_ms(&tm, 10_000);
+        tm.on_timer_interrupt();
+        tm.on_timer_interrupt();
+        tm.on_timer_interrupt();
+        assert_eq!(tm.unix_timestamp_ms(), 10_003);
+
+        set_wall_clock_ms(&tm, 42_000);
+        assert_eq!(tm.unix_timestamp_ms(), 42_000);
+    }
+
+    #[test]
     fn timer_registration_smoke() {
         let tm = TimeManagement::new();
-        let waker = core::task::Waker::noop();
-        let handle = tm.register_timer(100, TimerMode::OneShot, waker.clone());
+        let counter = CountingWaker::new();
+        let handle = tm.register_timer(100, TimerMode::OneShot, counter.clone().into());
         assert!(tm.cancel_timer(handle));
         assert!(!tm.cancel_timer(handle));
+        assert_eq!(counter.observed(), 0);
+    }
+
+    #[test]
+    fn one_shot_timer_fires_when_pending_wakers_are_processed() {
+        let tm = TimeManagement::new();
+        let counter = CountingWaker::new();
+        tm.register_timer(2, TimerMode::OneShot, counter.clone().into());
+
+        tm.on_timer_interrupt();
+        assert_eq!(counter.observed(), 0);
+        tm.process_pending_wakers();
+        assert_eq!(counter.observed(), 0);
+
+        tm.on_timer_interrupt();
+        assert_eq!(counter.observed(), 0);
+        tm.process_pending_wakers();
+        assert_eq!(counter.observed(), 1);
+    }
+
+    #[test]
+    fn periodic_timer_reschedules_until_cancelled() {
+        let tm = TimeManagement::new();
+        let counter = CountingWaker::new();
+        let handle = tm.register_timer(2, TimerMode::Periodic, counter.clone().into());
+
+        tm.on_timer_interrupt();
+        tm.on_timer_interrupt();
+        tm.process_pending_wakers();
+        assert_eq!(counter.observed(), 1);
+
+        tm.on_timer_interrupt();
+        tm.on_timer_interrupt();
+        tm.process_pending_wakers();
+        assert_eq!(counter.observed(), 2);
+
+        assert!(tm.cancel_timer(handle));
+        tm.on_timer_interrupt();
+        tm.on_timer_interrupt();
+        tm.process_pending_wakers();
+        assert_eq!(counter.observed(), 2);
+    }
+
+    #[test]
+    fn multiple_expired_entries_drain_in_deadline_order() {
+        let tm = TimeManagement::new();
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        tm.register_sleep(2, OrderedWaker::new(20, order.clone()).into());
+        tm.register_timer(
+            3,
+            TimerMode::OneShot,
+            OrderedWaker::new(30, order.clone()).into(),
+        );
+        tm.register_timer(
+            1,
+            TimerMode::OneShot,
+            OrderedWaker::new(10, order.clone()).into(),
+        );
+
+        tm.on_timer_interrupt();
+        tm.on_timer_interrupt();
+        tm.on_timer_interrupt();
+        tm.process_pending_wakers();
+
+        assert_eq!(*order.lock(), alloc::vec![10, 20, 30]);
     }
 
     #[test]
@@ -583,24 +742,10 @@ mod tests {
         tm.record_task_start(42);
         tm.on_timer_interrupt(); // tick=2
         tm.on_timer_interrupt(); // tick=3
-        tm.record_stop(42, 3);
+        tm.record_stop_for_test(42, 3);
         let stats = tm.task_cpu_stats(42).expect("task stats should exist");
         assert_eq!(stats.schedule_count, 1);
         assert!(stats.cpu_time_ns > 0);
-    }
-
-    impl TimeManagement {
-        fn record_stop(&self, task_id: u64, current_tick: u64) {
-            self.cpu_tracker.record_stop(task_id, current_tick);
-        }
-    }
-
-    #[test]
-    fn shard_index_smoke() {
-        assert_eq!(ShardedSleepRegistry::shard_index(0), 0);
-        assert_eq!(ShardedSleepRegistry::shard_index(16), 0);
-        assert_eq!(ShardedSleepRegistry::shard_index(1), 1);
-        assert_eq!(ShardedSleepRegistry::shard_index(15), 15);
     }
 
     #[test]
@@ -608,13 +753,5 @@ mod tests {
         let tm = TimeManagement::new();
         tm.on_timer_interrupt();
         assert_eq!(tm.uptime_ns(), NANOS_PER_MILLI);
-    }
-
-    #[test]
-    fn wall_clock_adjustment_smoke() {
-        let tm = TimeManagement::new();
-        tm.set_boot_timestamp_ms(1_000_000);
-        tm.adjust_wall_clock(500_000_000); // +500ms
-        assert_eq!(tm.unix_timestamp_ms(), 1_000_500);
     }
 }

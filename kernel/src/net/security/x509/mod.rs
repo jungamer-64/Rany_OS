@@ -847,7 +847,7 @@ pub fn validate_certificate_chain<'a>(
     parse_chain_to_array(chain, &mut certs)?;
 
     // Get current time for validity check
-    let now = crate::time::now();
+    let now = crate::drivers::time::unix_timestamp();
 
     // Verify all certificates in the chain are currently valid
     for i in 0..chain.len() {

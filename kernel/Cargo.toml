@@ -40,7 +40,6 @@ hid_driver = { path = "../drivers/hid" }
 gpu_driver = { path = "../drivers/gpu" }
 virtio_driver = { path = "../drivers/virtio" }
 acpi_driver = { path = "../drivers/acpi" }
-rtc_driver = { path = "../drivers/rtc" }
 ide_driver = { path = "../drivers/ide" }
 serial_driver = { path = "../drivers/serial" }
 apic_driver = { path = "../drivers/apic" }

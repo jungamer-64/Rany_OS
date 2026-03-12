@@ -1,4 +1,3 @@
-#![feature(custom_test_frameworks)]
 #![cfg_attr(
     all(not(any(test, feature = "std", feature = "bench")), target_os = "none"),
     no_std

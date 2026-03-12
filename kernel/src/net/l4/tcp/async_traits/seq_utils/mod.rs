@@ -42,7 +42,7 @@ pub(crate) fn generate_initial_seq(local: EndpointAddr, remote: Option<EndpointA
 
     // Timer-based component (M)
     // タイムスタンプベースの値（マイクロ秒精度）
-    let time_component = crate::task::timer::current_tick() as u32;
+    let time_component = crate::task::current_tick() as u32;
     // カウンターを追加して同一タイミングでも異なる値に
     let counter = SEQ_COUNTER.fetch_add(64000, Ordering::Relaxed);
 

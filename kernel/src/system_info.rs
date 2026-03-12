@@ -55,7 +55,7 @@ pub fn memory_free_kb() -> u64 {
 
 /// アップタイム (tick単位、1tick = 1ms)
 pub fn uptime_ticks() -> u64 {
-    crate::time::current_tick()
+    crate::task::current_tick()
 }
 
 /// CPU数
@@ -85,7 +85,7 @@ pub fn context_switch_count() -> u64 {
 
 /// ブート時刻 (秒)
 pub fn boot_time_secs() -> u64 {
-    crate::time::now().saturating_sub(crate::time::current_tick() / 1000)
+    crate::drivers::time::unix_timestamp().saturating_sub(crate::task::current_tick() / 1000)
 }
 
 /// ドメインスナップショット一覧

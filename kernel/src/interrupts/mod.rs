@@ -473,6 +473,7 @@ define_interrupt!(
         if tick_nanos != 0 {
             crate::time::tick(tick_nanos);
         }
+        crate::drivers::time::handle_timer_interrupt();
 
         // 2. 軽量なフラグ設定のみ（重い処理は遅延）
         // タイマーイベントペンディングフラグを設定
@@ -515,12 +516,11 @@ pub fn poll_timer_events() {
     if TIMER_EVENT_PENDING.swap(false, Ordering::Acquire) {
         let tick = TIMER_TICKS.load(Ordering::Relaxed);
 
-        // タイマーベースのスリープと timer-specific interrupt wakers are
-        // both bridged here so wakeups stay outside ISR context.
-        crate::task::timer::handle_timer_interrupt();
-
         // プリエンプションシステムにタイマーティックを通知
         crate::task::preemption::handle_timer_tick(tick);
+
+        // TimeService wake delivery remains outside ISR context.
+        crate::task::timer::process_pending_timer_wakers();
 
         // Interrupt-Wakerブリッジの処理
         crate::task::interrupt_waker::handle_timer_interrupt_waker();

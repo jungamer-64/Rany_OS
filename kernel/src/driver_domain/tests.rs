@@ -1138,14 +1138,14 @@ fn maybe_inject_test_tick(stagnant_loops: usize) {
 
 #[cfg(feature = "qemu-test-export")]
 fn wait_for_tick_progress(delta: u64, max_stagnant_loops: usize) -> bool {
-    let start = crate::task::timer::current_tick();
+    let start = crate::task::current_tick();
     let mut last_tick = start;
     let mut stagnant = 0usize;
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while crate::task::timer::current_tick().saturating_sub(start) < delta {
+    while crate::task::current_tick().saturating_sub(start) < delta {
         poll_runtime();
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         if now > last_tick {
             last_tick = now;
             stagnant = 0;
@@ -1165,13 +1165,13 @@ fn wait_for_tick_progress(delta: u64, max_stagnant_loops: usize) -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 fn wait_for_tick(target: u64, max_stagnant_loops: usize) -> bool {
-    let mut last_tick = crate::task::timer::current_tick();
+    let mut last_tick = crate::task::current_tick();
     let mut stagnant = 0usize;
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while crate::task::timer::current_tick() < target {
+    while crate::task::current_tick() < target {
         poll_runtime();
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         if now > last_tick {
             last_tick = now;
             stagnant = 0;

@@ -23,6 +23,11 @@ use super::fs_abstraction::{
     OpenFlags,
 };
 
+#[inline]
+fn wall_clock_now_ns() -> u64 {
+    crate::drivers::time::unix_timestamp_ms().saturating_mul(1_000_000)
+}
+
 // ============================================================================
 // MemoryFs Filesystem
 // ============================================================================
@@ -156,7 +161,7 @@ pub struct MemoryInode {
 impl MemoryInode {
     /// 新しいディレクトリを作成
     pub fn new_dir(ino: u64, name: &str, mode: FileMode) -> Self {
-        let now = crate::time::now() as u64 * 1_000_000_000; // nanoseconds
+        let now = wall_clock_now_ns(); // nanoseconds
         Self {
             ino,
             kind: RwLock::new(InodeKind::Directory(HashMap::new())),
@@ -173,7 +178,7 @@ impl MemoryInode {
 
     /// 新しいファイルを作成
     pub fn new_file(ino: u64, name: &str, mode: FileMode) -> Self {
-        let now = crate::time::now() as u64 * 1_000_000_000;
+        let now = wall_clock_now_ns();
         Self {
             ino,
             kind: RwLock::new(InodeKind::File(PagedContent::new())),
@@ -190,7 +195,7 @@ impl MemoryInode {
 
     /// 新しいシンボリックリンクを作成
     pub fn new_symlink(ino: u64, name: &str, target: &str) -> Self {
-        let now = crate::time::now() as u64 * 1_000_000_000;
+        let now = wall_clock_now_ns();
         Self {
             ino,
             kind: RwLock::new(InodeKind::Symlink(target.to_string())),
@@ -245,7 +250,7 @@ impl MemoryInode {
         if let InodeKind::File(content) = &mut *guard {
             *content = new_content;
             self.size.store(size, Ordering::Relaxed);
-            let now = crate::time::now() as u64 * 1_000_000_000;
+            let now = wall_clock_now_ns();
             self.mtime.store(now, Ordering::Relaxed);
             self.ctime.store(now, Ordering::Relaxed);
         }
@@ -284,8 +289,7 @@ impl Inode for MemoryInode {
         // タイムスタンプの更新
         self.atime.store(attr.atime, Ordering::Relaxed);
         self.mtime.store(attr.mtime, Ordering::Relaxed);
-        self.ctime
-            .store(crate::time::now() as u64 * 1_000_000_000, Ordering::Relaxed);
+        self.ctime.store(wall_clock_now_ns(), Ordering::Relaxed);
 
         // サイズ変更（truncate）
         let current_size = self.size.load(Ordering::Relaxed);
@@ -355,7 +359,7 @@ impl Inode for MemoryInode {
                 children.insert(name.to_string(), inode.clone());
 
                 // Update timestamps
-                let now = crate::time::now() as u64 * 1_000_000_000;
+                let now = wall_clock_now_ns();
                 self.mtime.store(now, Ordering::Relaxed);
                 self.ctime.store(now, Ordering::Relaxed);
 
@@ -380,7 +384,7 @@ impl Inode for MemoryInode {
                 self.nlink.fetch_add(1, Ordering::Relaxed);
 
                 // Update timestamps
-                let now = crate::time::now() as u64 * 1_000_000_000;
+                let now = wall_clock_now_ns();
                 self.mtime.store(now, Ordering::Relaxed);
                 self.ctime.store(now, Ordering::Relaxed);
 
@@ -411,7 +415,7 @@ impl Inode for MemoryInode {
                 }
 
                 // Update timestamps
-                let now = crate::time::now() as u64 * 1_000_000_000;
+                let now = wall_clock_now_ns();
                 self.mtime.store(now, Ordering::Relaxed);
                 self.ctime.store(now, Ordering::Relaxed);
 
@@ -450,7 +454,7 @@ impl Inode for MemoryInode {
                 self.nlink.fetch_sub(1, Ordering::Relaxed);
 
                 // Update timestamps
-                let now = crate::time::now() as u64 * 1_000_000_000;
+                let now = wall_clock_now_ns();
                 self.mtime.store(now, Ordering::Relaxed);
                 self.ctime.store(now, Ordering::Relaxed);
 
@@ -532,7 +536,7 @@ impl Inode for MemoryInode {
                 // 完全なハードリンクではなく、nlink追跡のみ
                 // 完全な実装にはArc<MemoryInode>の共有が必要
 
-                let now = crate::time::now() as u64 * 1_000_000_000;
+                let now = wall_clock_now_ns();
                 self.mtime.store(now, Ordering::Relaxed);
                 self.ctime.store(now, Ordering::Relaxed);
 
@@ -576,8 +580,7 @@ impl Inode for MemoryInode {
                 }
                 let available = (size - offset) as usize;
                 let to_read = buf.len().min(available);
-                self.atime
-                    .store(crate::time::now() as u64 * 1_000_000_000, Ordering::Relaxed);
+                self.atime.store(wall_clock_now_ns(), Ordering::Relaxed);
                 Ok(content.read(offset, &mut buf[..to_read]))
             }
             InodeKind::Directory(_) => Err(FsError::IsDirectory),
@@ -595,7 +598,7 @@ impl Inode for MemoryInode {
                 if new_size > current_size {
                     self.size.store(new_size, Ordering::Relaxed);
                 }
-                let now = crate::time::now() as u64 * 1_000_000_000;
+                let now = wall_clock_now_ns();
                 self.mtime.store(now, Ordering::Relaxed);
                 self.ctime.store(now, Ordering::Relaxed);
                 Ok(written)
@@ -611,7 +614,7 @@ impl Inode for MemoryInode {
             InodeKind::File(content) => {
                 content.truncate(size);
                 self.size.store(size, Ordering::Relaxed);
-                let now = crate::time::now() as u64 * 1_000_000_000;
+                let now = wall_clock_now_ns();
                 self.mtime.store(now, Ordering::Relaxed);
                 self.ctime.store(now, Ordering::Relaxed);
                 Ok(())

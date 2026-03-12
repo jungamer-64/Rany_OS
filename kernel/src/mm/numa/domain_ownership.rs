@@ -70,7 +70,7 @@ impl DomainAllocations {
         let info = AllocationInfo {
             address,
             size,
-            timestamp: crate::task::timer::current_tick(),
+            timestamp: crate::task::current_tick(),
         };
 
         self.allocations

@@ -114,7 +114,7 @@ pub fn hot_swap(
     new_elf_data: &[u8],
 ) -> Result<HotSwapResult, DriverDomainError> {
     let manager = driver_domain_manager();
-    let start_tick = crate::task::timer::current_tick();
+    let start_tick = crate::task::current_tick();
 
     // 状態チェック: Runningのみホットスワップ可能
     let old_cell_id = manager.with_cell(id, |cell| {
@@ -151,7 +151,7 @@ pub fn hot_swap(
     match live_update.perform_update(old_cell_id.as_u64(), new_elf_data) {
         Ok(new_cell_id_u64) => {
             let new_cell_id = CellId::from_u64(new_cell_id_u64);
-            let duration = crate::task::timer::current_tick().saturating_sub(start_tick);
+            let duration = crate::task::current_tick().saturating_sub(start_tick);
 
             // DriverCellのメタデータを更新
             manager.with_cell_mut(id, |cell| {
@@ -416,7 +416,7 @@ fn poll_one_validation(snap: &DriverDomainSnapshot) {
             })
             .ok();
 
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         if pending.health_failed {
             let _ = rollback(snap.id);
         } else if now >= pending.deadline_tick {

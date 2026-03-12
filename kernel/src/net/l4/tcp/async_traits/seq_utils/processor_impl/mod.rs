@@ -37,7 +37,7 @@ impl TcpProcessor {
         data[18..34].copy_from_slice(&remote_v6);
         data[34..36].copy_from_slice(&remote.port().to_be_bytes());
 
-        let timestamp = (crate::task::timer::current_tick() / 64000) as u32;
+        let timestamp = (crate::task::current_tick() / 64000) as u32;
         data[36..40].copy_from_slice(&timestamp.to_be_bytes());
 
         let hash = hmac_sha256(&self.syncookie_secret, &data);
@@ -69,7 +69,7 @@ impl TcpProcessor {
         let mss_idx = (cookie & 0x07) as u8;
         let time_bits_received = (cookie >> 3) & 0x1F;
 
-        let current_tick = crate::task::timer::current_tick();
+        let current_tick = crate::task::current_tick();
         let current_timestamp = (current_tick / 64000) as u32;
 
         for i in 0..2 {

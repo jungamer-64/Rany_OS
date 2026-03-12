@@ -160,7 +160,7 @@ pub(crate) fn restart_interface_runtime(if_id: NetIfId) -> Result<(), &'static s
 
     runtime
         .v4
-        .force_renew_or_restart(crate::task::timer::current_tick());
+        .force_renew_or_restart(crate::task::current_tick());
     Ok(())
 }
 
@@ -223,7 +223,7 @@ async fn dhcp_v4_drive_task(runtime: Arc<DhcpInterfaceRuntime>) {
             continue;
         }
 
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         if let Err(err) = runtime
             .v4
             .drive_on_interface(runtime.if_id, now, 1000)
@@ -256,7 +256,7 @@ async fn dhcp_v4_dispatcher_task() {
     loop {
         match socket.recv().await {
             Some((_if_id, _src, _ttl, packet)) => {
-                let now = crate::task::timer::current_tick();
+                let now = crate::task::current_tick();
                 let data = packet.data();
                 let Some(runtime) = find_runtime_for_v4_packet(data) else {
                     continue;

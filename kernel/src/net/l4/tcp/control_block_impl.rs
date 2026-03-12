@@ -4,7 +4,7 @@ use crate::net::l4::endpoint::types::{seq_after, seq_before, seq_geq, seq_leq};
 
 impl TcpControlBlock {
     pub fn new(local_addr: EndpointAddr) -> Self {
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
 
         // Generate a cryptographically secure random Initial Sequence Number (ISN).
         // Using ISN randomization (RFC 6528) is critical to prevent TCP spoofing and hijacking.
@@ -1520,7 +1520,7 @@ impl TcpControlBlock {
     #[inline]
     pub fn update_timestamps(&mut self, ts_val: u32) {
         self.options.ts_recent = ts_val;
-        self.options.ts_recent_age = crate::task::timer::current_tick();
+        self.options.ts_recent_age = crate::task::current_tick();
     }
 
     #[inline]

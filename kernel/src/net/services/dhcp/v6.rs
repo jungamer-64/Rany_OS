@@ -169,7 +169,7 @@ impl DhcpV6Client {
         log::info!("[NET] DHCPv6 client task started");
 
         loop {
-            let now = crate::task::timer::current_tick();
+            let now = crate::task::current_tick();
 
             // タイムアウトチェックと必要に応じた SOLICIT/REQUEST 送信
             self.check_timeout(now, 1000)?;

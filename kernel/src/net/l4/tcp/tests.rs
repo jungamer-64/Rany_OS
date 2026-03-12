@@ -1089,7 +1089,7 @@ pub fn test_connect_timeout_expires() {
     use core::task::Poll;
     use core::task::{Context, RawWaker, RawWakerVTable, Waker};
 
-    let now = crate::task::timer::current_tick();
+    let now = crate::task::current_tick();
     let local = EndpointAddr::new(Ipv4Addr::LOCALHOST.octets(), 4001);
     let mut tcb = TcpControlBlock::new(local);
     tcb.enter_syn_sent();

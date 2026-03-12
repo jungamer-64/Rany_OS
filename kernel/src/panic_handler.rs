@@ -142,7 +142,7 @@ fn panic_capture_record(info: &PanicInfo, domain_id: u64) -> &'static [u8] {
             }
 
             record_ref.domain_id = if domain_id > 0 { Some(domain_id) } else { None };
-            record_ref.tick = crate::task::timer::current_tick();
+            record_ref.tick = crate::task::current_tick();
 
             PANIC_RECORD_STATE.store(2, Ordering::Release);
         }

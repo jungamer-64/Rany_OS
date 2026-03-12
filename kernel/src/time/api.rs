@@ -80,11 +80,6 @@ pub fn system_clock() -> &'static SystemClock {
     &SYSTEM_CLOCK
 }
 
-/// RTCを取得
-pub fn rtc() -> &'static Rtc {
-    &RTC
-}
-
 /// PITを取得
 pub fn pit() -> &'static Pit {
     &PIT
@@ -105,7 +100,12 @@ pub fn init(tick_frequency: u64) {
     // RTCから現在時刻を読み取り
     let datetime = RTC.read_datetime();
     let boot_time = datetime.to_unix_timestamp_safe().unwrap_or(0);
-    SYSTEM_CLOCK.set_boot_time(boot_time);
+    let time_service = time_driver::time_service();
+    let current_ms = time_service.unix_timestamp_ms();
+    let target_ms = boot_time.saturating_mul(1000);
+    let delta_ms = target_ms as i128 - current_ms as i128;
+    let delta_ns = delta_ms.saturating_mul(NANOS_PER_MILLI as i128);
+    time_service.adjust_wall_clock(delta_ns.clamp(i64::MIN as i128, i64::MAX as i128) as i64);
 
     // TSCをキャリブレーション (Channel 2 使用 - Channel 0 に影響しない)
     if let Some(tsc_info) = calibrate_tsc() {
@@ -127,11 +127,6 @@ pub fn timer_tick_nanos() -> u64 {
 /// 現在の稼働時間を取得 (tick)
 pub fn current_tick() -> u64 {
     SYSTEM_CLOCK.uptime_millis()
-}
-
-/// 現在のUnixタイムスタンプを取得
-pub fn now() -> u64 {
-    SYSTEM_CLOCK.now()
 }
 
 /// 高精度な時刻を取得 (ナノ秒)

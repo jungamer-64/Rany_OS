@@ -103,7 +103,7 @@ impl TcpProcessor {
         // Standard TCP timeouts in milliseconds (matching current_tick())
         const TWO_MSL_MS: u64 = 240_000;
         const HANDSHAKE_TIMEOUT_MS: u64 = 20_000; // 20 seconds for handshake (DoS protection)
-        let current_time = crate::task::timer::current_tick();
+        let current_time = crate::task::current_tick();
         let mut semi_open_removed = 0;
 
         self.connections.retain(|_, tcb_lock| {

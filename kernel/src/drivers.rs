@@ -22,7 +22,6 @@ pub use crate::io::hid;
 pub use crate::io::ide;
 pub use crate::io::nvme;
 pub use crate::io::pci;
-pub use crate::io::rtc;
 pub use crate::io::serial;
 pub use crate::io::usb;
 pub use crate::io::virtio;

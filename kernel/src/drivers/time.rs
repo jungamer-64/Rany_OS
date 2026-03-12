@@ -1,3 +1,7 @@
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+
 use kernel_api::service::time::TimeService;
 
 /// The concrete time cell implementation linked into the kernel.
@@ -38,8 +42,7 @@ pub fn pending_timer_waker_count() -> usize {
 
 #[inline]
 pub fn pending_waker_stats() -> (usize, usize) {
-    let stats = service().stats();
-    (stats.waker_enqueued, stats.waker_dropped)
+    (service().stats().pending_wakers, 0)
 }
 
 #[inline]
@@ -48,11 +51,73 @@ pub fn current_tick() -> u64 {
 }
 
 #[inline]
-pub async fn sleep_ms(duration_ms: u64) {
-    if kernel_api::service::time::try_instance().is_some() {
-        kernel_api::service::time::sleep_ms(duration_ms).await;
-        return;
-    }
+pub fn unix_timestamp() -> u64 {
+    service().unix_timestamp()
+}
 
-    time_driver::sleep_ms(duration_ms).await;
+#[inline]
+pub fn unix_timestamp_ms() -> u64 {
+    service().unix_timestamp_ms()
+}
+
+#[inline]
+pub fn adjust_wall_clock(delta_ns: i64) {
+    service().adjust_wall_clock(delta_ns);
+}
+
+#[inline]
+pub fn set_unix_timestamp(unix_secs: u64) {
+    set_unix_timestamp_ms(unix_secs.saturating_mul(1000));
+}
+
+pub fn set_unix_timestamp_ms(target_ms: u64) {
+    let current_ms = unix_timestamp_ms();
+    let delta_ms = target_ms as i128 - current_ms as i128;
+    let delta_ns = delta_ms.saturating_mul(crate::time::NANOS_PER_MILLI as i128);
+    adjust_wall_clock(delta_ns.clamp(i64::MIN as i128, i64::MAX as i128) as i64);
+}
+
+#[inline]
+pub async fn sleep_ms(duration_ms: u64) {
+    SleepFuture::new(duration_ms).await;
+}
+
+pub struct SleepFuture {
+    wake_tick: u64,
+    registered: bool,
+}
+
+impl SleepFuture {
+    pub fn new(duration_ms: u64) -> Self {
+        Self {
+            wake_tick: service().compute_wake_tick(duration_ms),
+            registered: false,
+        }
+    }
+}
+
+impl Future for SleepFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let time_service = service();
+        if time_service.current_tick_ms() >= self.wake_tick {
+            return Poll::Ready(());
+        }
+
+        if !self.registered {
+            time_service.register_sleep(self.wake_tick, cx.waker().clone());
+            self.registered = true;
+        }
+
+        Poll::Pending
+    }
+}
+
+impl Drop for SleepFuture {
+    fn drop(&mut self) {
+        if self.registered {
+            service().unregister_sleep(self.wake_tick);
+        }
+    }
 }

@@ -1384,7 +1384,7 @@ pub mod task {
         }
     }
 
-    // Convenience shim for tests/benches removed — use `crate::task::timer::current_tick()` directly.
+    // Convenience shim for tests/benches removed — use `crate::task::current_tick()` directly.
 
     pub mod scheduler {
         /// Yield the current task (test stub - no-op)

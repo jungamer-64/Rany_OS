@@ -176,7 +176,7 @@ impl CapabilityManager {
 
             // Acquire 'now'
             #[cfg(not(test))]
-            let now = crate::task::timer::current_tick();
+            let now = crate::task::current_tick();
             #[cfg(test)]
             let now = 0u64;
 
@@ -246,7 +246,7 @@ impl CapabilityManager {
     /// Expire grants whose expiry <= current tick
     pub(super) fn expire_grants(&self) {
         #[cfg(not(test))]
-        let now = crate::task::timer::current_tick();
+        let now = crate::task::current_tick();
         #[cfg(test)]
         let now = 0u64;
 
@@ -457,7 +457,7 @@ impl CapabilityManager {
             if token.cap == required_cap && !token.revoked {
                 if let Some(exp) = token.expires {
                     #[cfg(not(test))]
-                    let now = crate::task::timer::current_tick();
+                    let now = crate::task::current_tick();
                     #[cfg(test)]
                     let now = 0;
                     if now >= exp {

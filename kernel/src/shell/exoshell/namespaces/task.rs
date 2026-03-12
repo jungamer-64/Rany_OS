@@ -38,7 +38,7 @@ impl TaskNamespace {
         let (timer_len, timer_cap) = crate::task::timer::pending_waker_stats();
         let fuel_remaining = crate::task::fuel::Fuel::remaining();
         let fuel_active = crate::task::fuel::Fuel::is_active();
-        let current_tick = crate::task::timer::current_tick();
+        let current_tick = crate::task::current_tick();
 
         let mut map = BTreeMap::new();
         map.insert(s("wake_queue_len"), ExoValue::Int(wake_len as i64));
@@ -84,7 +84,7 @@ impl TaskNamespace {
 
     /// 現在のティック値
     pub fn tick() -> ExoValue<'static> {
-        ExoValue::Int(crate::task::timer::current_tick() as i64)
+        ExoValue::Int(crate::task::current_tick() as i64)
     }
 
     /// 手動yield

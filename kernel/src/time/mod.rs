@@ -365,7 +365,6 @@ impl Rtc {
 
 /// システム時計
 pub struct SystemClock {
-    boot_time: AtomicU64,
     uptime_nanos: AtomicU64,
     timer_tick_nanos: AtomicU64,
     tsc_epoch_nanos: AtomicU64,
@@ -379,7 +378,6 @@ pub struct SystemClock {
 impl SystemClock {
     pub const fn new() -> Self {
         Self {
-            boot_time: AtomicU64::new(0),
             uptime_nanos: AtomicU64::new(0),
             timer_tick_nanos: AtomicU64::new(0),
             tsc_epoch_nanos: AtomicU64::new(0),
@@ -389,14 +387,6 @@ impl SystemClock {
             tsc_mult: AtomicU64::new(0),
             tsc_shift: AtomicU8::new(0),
         }
-    }
-
-    pub fn set_boot_time(&self, unix_timestamp: u64) {
-        self.boot_time.store(unix_timestamp, Ordering::Release);
-    }
-
-    pub fn boot_time(&self) -> u64 {
-        self.boot_time.load(Ordering::Acquire)
     }
 
     pub fn uptime_nanos(&self) -> u64 {
@@ -417,10 +407,6 @@ impl SystemClock {
 
     pub fn uptime_secs(&self) -> u64 {
         self.uptime_nanos() / NANOS_PER_SEC
-    }
-
-    pub fn now(&self) -> u64 {
-        self.boot_time() + (self.uptime_nanos() / NANOS_PER_SEC)
     }
 
     pub fn tick(&self, delta_nanos: u64) {

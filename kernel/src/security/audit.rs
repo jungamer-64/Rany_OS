@@ -142,7 +142,7 @@ impl AuditRecord {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
         #[cfg(any(not(test), not(feature = "std")))]
-        let timestamp = crate::task::timer::current_tick();
+        let timestamp = crate::task::current_tick();
         #[cfg(all(test, feature = "std"))]
         let timestamp = 0u64;
 

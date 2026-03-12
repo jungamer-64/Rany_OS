@@ -40,7 +40,7 @@ impl DhcpClient {
         log::info!("[NET] DHCPv4 client task started");
 
         loop {
-            let now = crate::task::timer::current_tick();
+            let now = crate::task::current_tick();
 
             // 状態機械を駆動（タイムアウトチェックと必要に応じたパケット送信）
             self.drive(now, 1000).await?;
@@ -48,7 +48,7 @@ impl DhcpClient {
             // パケット受信を待機。再送タイマーを考慮して1秒でタイムアウト。
             match task::with_timeout(socket.recv(), 1000).await {
                 TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
-                    let now = crate::task::timer::current_tick();
+                    let now = crate::task::current_tick();
                     // 応答パケットを処理
                     match self.process_response(packet.data(), now) {
                         Ok(DhcpResponseResult::Ack(lease)) => {

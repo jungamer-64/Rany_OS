@@ -8,6 +8,8 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(feature = "qemu-test-export")]
+use crate::fs::{FileMode, Inode, MemoryInode};
+#[cfg(feature = "qemu-test-export")]
 use crate::task::{self, InterruptSource, Task};
 
 #[cfg(feature = "qemu-test-export")]
@@ -66,6 +68,10 @@ static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
         case_keyboard_deferred_wake_path,
     ),
     ("serial_deferred_wake_path", case_serial_deferred_wake_path),
+    (
+        "time_service_wall_clock_consumers",
+        case_time_service_wall_clock_consumers,
+    ),
 ];
 
 #[cfg(feature = "qemu-test-export")]
@@ -186,7 +192,6 @@ fn case_uptime_ms_progresses() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_tick_progresses() -> Result<(), BootCaseError> {
-    let mut executor = task::Executor::new();
     let raw_before = crate::interrupts::get_timer_ticks();
     let tick_before = task::current_tick();
 
@@ -196,11 +201,9 @@ fn case_tick_progresses() -> Result<(), BootCaseError> {
         ));
     }
 
-    executor.drive_once_for_test();
-
     if task::current_tick() <= tick_before {
         return Err(BootCaseError::failed(
-            "task timer tick did not advance after executor poll",
+            "task timer tick did not advance on the ISR-driven time service path",
         ));
     }
 
@@ -264,9 +267,9 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
             "raw timer IRQ did not arrive for timer_waker_deferred_path",
         ));
     }
-    if task::current_tick() != delegated_tick_before {
+    if task::current_tick() <= delegated_tick_before {
         return Err(BootCaseError::failed(
-            "timer service tick advanced before executor-side poll",
+            "timer service tick did not advance on the raw IRQ path",
         ));
     }
     let stats_after_irq = task::interrupt_waker::interrupt_waker_registry().stats();
@@ -286,11 +289,6 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
     executor.drive_once_for_test();
 
     let stats_after_drain = task::interrupt_waker::interrupt_waker_registry().stats();
-    if task::current_tick() <= delegated_tick_before {
-        return Err(BootCaseError::failed(
-            "timer service did not advance on executor-side poll",
-        ));
-    }
     if stats_after_drain.interrupt_count <= stats_before.interrupt_count {
         return Err(BootCaseError::failed(
             "timer wake was not bridged into the interrupt waker registry",
@@ -315,6 +313,50 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
     }
 
     Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_time_service_wall_clock_consumers() -> Result<(), BootCaseError> {
+    let original_ms = crate::drivers::time::unix_timestamp_ms();
+    let run = || -> Result<(), BootCaseError> {
+        let target_secs = crate::drivers::time::unix_timestamp().saturating_add(120);
+        let ntp_client = crate::net::services::ntp::NtpClient::new();
+        ntp_client.apply_synced_unix_time(target_secs);
+
+        if crate::drivers::time::unix_timestamp() < target_secs {
+            return Err(BootCaseError::failed(
+                "time service readers did not observe the NTP wall-clock update",
+            ));
+        }
+
+        let expected_boot =
+            crate::drivers::time::unix_timestamp().saturating_sub(task::current_tick() / 1000);
+        if crate::system_info::boot_time_secs() != expected_boot {
+            return Err(BootCaseError::failed(
+                "system_info boot_time_secs no longer tracks the time service",
+            ));
+        }
+
+        let before_ms = crate::drivers::time::unix_timestamp_ms();
+        let inode = MemoryInode::new_file(1, "time-service-check", FileMode::DEFAULT_FILE);
+        let attrs = inode
+            .getattr()
+            .map_err(|_| BootCaseError::failed("memfs getattr failed after wall-clock update"))?;
+        let after_ms = crate::drivers::time::unix_timestamp_ms();
+        let ctime_ms = attrs.ctime / 1_000_000;
+        if ctime_ms < before_ms || ctime_ms > after_ms {
+            return Err(BootCaseError::failed(format!(
+                "memfs timestamp was not sourced from the time service: ctime_ms={} window=[{}, {}]",
+                ctime_ms, before_ms, after_ms
+            )));
+        }
+
+        Ok(())
+    };
+
+    let result = run();
+    crate::drivers::time::set_unix_timestamp_ms(original_ms);
+    result
 }
 
 #[cfg(feature = "qemu-test-export")]

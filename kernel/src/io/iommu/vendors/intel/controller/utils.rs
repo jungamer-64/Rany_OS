@@ -100,11 +100,11 @@ impl IommuUtils for IommuController {
             if let Some(_cpu_id) = crate::per_cpu::try_current_cpu_id() {
                 // Convert microseconds to milliseconds (ceiling)
                 let timeout_ms = (timeout_us + 999) / 1000;
-                let end_tick = crate::task::timer::current_tick().saturating_add(timeout_ms);
+                let end_tick = crate::task::current_tick().saturating_add(timeout_ms);
 
                 return wait_until(
                     &condition,
-                    || crate::task::timer::current_tick() < end_tick,
+                    || crate::task::current_tick() < end_tick,
                     || {
                         // Best-effort cooperative yield to avoid busy-looping
                         crate::task::preemption::voluntary_yield();

@@ -236,7 +236,7 @@ impl GuiServices for ExoKernel {
     }
 
     fn current_tick(&self) -> u64 {
-        crate::task::timer::current_tick()
+        crate::task::current_tick()
     }
 
     fn poll_input_event(&self) -> Option<kernel_api::service::gui::InputEvent> {
@@ -433,7 +433,7 @@ impl ShellServices for ExoKernel {
     }
 
     fn current_tick(&self) -> u64 {
-        crate::task::timer::current_tick()
+        crate::task::current_tick()
     }
 
     fn list_domains(&self) -> alloc::vec::Vec<DomainInfo> {
@@ -489,7 +489,7 @@ impl ShellServices for ExoKernel {
 
     fn system_info(&self) -> KapiSystemInfo {
         KapiSystemInfo {
-            uptime_ticks: crate::task::timer::current_tick(),
+            uptime_ticks: crate::task::current_tick(),
             cpu_temperature: crate::thermal::cpu_temperature().map(|t| t.celsius() as f32),
         }
     }

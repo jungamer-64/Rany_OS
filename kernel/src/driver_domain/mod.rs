@@ -303,7 +303,7 @@ impl DriverDomain {
             stats: DriverDomainStats::new(),
             numa_node: None,
             abi_driver_context: AbiDriverContext::new(),
-            created_at: crate::task::timer::current_tick(),
+            created_at: crate::task::current_tick(),
         }
     }
 

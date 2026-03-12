@@ -173,7 +173,7 @@ impl FaultRecord {
     /// 新しい障害レコードを作成
     pub fn new(kind: FaultKind, restart_attempt: u32) -> Self {
         Self {
-            timestamp: crate::task::timer::current_tick(),
+            timestamp: crate::task::current_tick(),
             kind,
             restart_attempt,
             restart_succeeded: false,
@@ -455,11 +455,11 @@ fn spin_wait_ticks(delay_ticks: u64) {
     if delay_ticks == 0 {
         return;
     }
-    let start = crate::task::timer::current_tick();
+    let start = crate::task::current_tick();
     let mut last_tick = start;
     let mut stagnant_loops = 0usize;
-    while crate::task::timer::current_tick().saturating_sub(start) < delay_ticks {
-        let now = crate::task::timer::current_tick();
+    while crate::task::current_tick().saturating_sub(start) < delay_ticks {
+        let now = crate::task::current_tick();
         if now > last_tick {
             last_tick = now;
             stagnant_loops = 0;
