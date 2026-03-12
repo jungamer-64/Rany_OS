@@ -1,6 +1,5 @@
 use crate::io::dma::{
-    CpuOwned, DeviceDmaContext, DeviceDmaMapping, DeviceOwned, DmaDirection, SliceDmaGuard,
-    TypedDmaSlice,
+    DeviceDmaContext, DeviceDmaMapping, DmaDirection, DmaMemoryAttributes, DmaRegion,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::vec::Vec;
@@ -38,17 +37,13 @@ fn direct_prp2(base_addr: u64, alloc_len: usize) -> Option<u64> {
 
 #[derive(Debug)]
 struct PrpListPage {
-    dev: Option<TypedDmaSlice<DeviceOwned>>,
-    guard: Option<SliceDmaGuard>,
     map: Option<DeviceDmaMapping>,
+    region: DmaRegion,
     iova: u64,
 }
 
 impl Drop for PrpListPage {
     fn drop(&mut self) {
-        if let (Some(guard), Some(dev)) = (self.guard.take(), self.dev.take()) {
-            let _ = guard.complete(dev);
-        }
         let _ = self.map.take();
     }
 }
@@ -99,7 +94,7 @@ fn allocate_prp_list_buffers(
     total_entries: usize,
 ) -> Result<
     (
-        Vec<TypedDmaSlice<CpuOwned>>,
+        Vec<DmaRegion>,
         Vec<u64>,
         Vec<Option<DeviceDmaMapping>>,
     ),
@@ -110,8 +105,8 @@ fn allocate_prp_list_buffers(
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while remaining > 0 {
-        let list =
-            TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(NvmeDmaError::OutOfMemory)?;
+        let list = DmaRegion::new(NVME_PAGE_SIZE, DmaMemoryAttributes::TO_DEVICE)
+            .ok_or(NvmeDmaError::OutOfMemory)?;
         list_buffers.push(list);
         remaining = if remaining > 512 { remaining - 511 } else { 0 };
     }
@@ -119,7 +114,8 @@ fn allocate_prp_list_buffers(
     let mut list_iovas = Vec::with_capacity(list_buffers.len());
     let mut list_maps = Vec::with_capacity(list_buffers.len());
     for list in &list_buffers {
-        let (list_addr, list_map) = map_for_iommu(device, list.phys_addr(), NVME_PAGE_SIZE)?;
+        let (list_addr, list_map) =
+            map_for_iommu(device, PhysAddr::new(list.host_addr()), NVME_PAGE_SIZE)?;
         list_iovas.push(list_addr);
         list_maps.push(list_map);
     }
@@ -128,7 +124,7 @@ fn allocate_prp_list_buffers(
 }
 
 fn fill_prp_entries(
-    list_buffers: &mut [TypedDmaSlice<CpuOwned>],
+    list_buffers: &mut [DmaRegion],
     list_iovas: &[u64],
     base_addr: u64,
     total_entries: usize,
@@ -185,11 +181,10 @@ fn build_prp_list(
 
     let mut prp_pages = Vec::with_capacity(list_buffers.len());
     for ((list, map), iova) in list_buffers.into_iter().zip(list_maps).zip(list_iovas) {
-        let (dev, guard) = list.start_dma();
+        list.prepare_for_device();
         prp_pages.push(PrpListPage {
-            dev: Some(dev),
-            guard: Some(guard),
             map,
+            region: list,
             iova,
         });
     }
@@ -201,9 +196,8 @@ fn build_prp_list(
 
 #[derive(Debug)]
 pub(crate) struct NvmeDmaRegion {
-    data_dev: Option<TypedDmaSlice<DeviceOwned>>,
-    data_guard: Option<SliceDmaGuard>,
     data_map: Option<DeviceDmaMapping>,
+    data_region: Option<DmaRegion>,
     prp_list: Option<PrpListChain>,
     prp1: u64,
     prp2: u64,
@@ -222,8 +216,9 @@ impl NvmeDmaRegion {
         }
 
         let alloc_len = align_up_page(logical_len);
-        let data = TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(NvmeDmaError::OutOfMemory)?;
-        Self::from_cpu_owned(data, logical_len, device)
+        let data = DmaRegion::new(alloc_len, DmaMemoryAttributes::FROM_DEVICE)
+            .ok_or(NvmeDmaError::OutOfMemory)?;
+        Self::from_region(data, logical_len, device)
     }
 
     pub(crate) fn for_write(
@@ -236,28 +231,29 @@ impl NvmeDmaRegion {
         }
 
         let alloc_len = align_up_page(logical_len);
-        let mut data =
-            TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(NvmeDmaError::OutOfMemory)?;
-        data.as_mut_slice()[..src.len()].copy_from_slice(src);
-        data.as_mut_slice()[src.len()..].fill(0);
-        Self::from_cpu_owned(data, logical_len, device)
+        let mut data = DmaRegion::new(alloc_len, DmaMemoryAttributes::TO_DEVICE)
+            .ok_or(NvmeDmaError::OutOfMemory)?;
+        unsafe {
+            data.as_mut_slice()[..src.len()].copy_from_slice(src);
+            data.as_mut_slice()[src.len()..].fill(0);
+        }
+        Self::from_region(data, logical_len, device)
     }
 
-    fn from_cpu_owned(
-        data: TypedDmaSlice<CpuOwned>,
+    fn from_region(
+        data: DmaRegion,
         logical_len: usize,
         device: Option<IommuDeviceId>,
     ) -> Result<Self, NvmeDmaError> {
-        let alloc_len = data.len();
-        let phys_addr = data.phys_addr();
+        let alloc_len = data.size();
+        let phys_addr = PhysAddr::new(data.host_addr());
         let (prp1, data_map) = map_for_iommu(device, phys_addr, alloc_len)?;
         let (prp2, prp_list) = build_prp_list(device, prp1, alloc_len)?;
-        let (data_dev, data_guard) = data.start_dma();
+        data.prepare_for_device();
 
         Ok(Self {
-            data_dev: Some(data_dev),
-            data_guard: Some(data_guard),
             data_map,
+            data_region: Some(data),
             prp_list,
             prp1,
             prp2,
@@ -290,30 +286,25 @@ impl NvmeDmaRegion {
     pub(crate) fn copy_into(self, dst: &mut [u8]) {
         let copy_len = core::cmp::min(dst.len(), self.logical_len);
         let data = self.complete();
-        dst[..copy_len].copy_from_slice(&data.as_slice()[..copy_len]);
+        dst[..copy_len].copy_from_slice(&unsafe { data.as_slice() }[..copy_len]);
     }
 
-    pub(crate) fn complete(mut self) -> TypedDmaSlice<CpuOwned> {
+    pub(crate) fn complete(mut self) -> DmaRegion {
         let _ = self.prp_list.take();
-        let data_dev = self
-            .data_dev
+        let data = self
+            .data_region
             .take()
-            .expect("missing NVMe DMA device buffer");
-        let data_guard = self
-            .data_guard
-            .take()
-            .expect("missing NVMe DMA completion guard");
+            .expect("missing NVMe DMA region");
         let _ = self.data_map.take();
-        data_guard.complete(data_dev)
+        data.finish_from_device();
+        data
     }
 }
 
 impl Drop for NvmeDmaRegion {
     fn drop(&mut self) {
         let _ = self.prp_list.take();
-        if let (Some(guard), Some(dev)) = (self.data_guard.take(), self.data_dev.take()) {
-            let _ = guard.complete(dev);
-        }
+        let _ = self.data_map.take();
     }
 }
 
@@ -383,8 +374,8 @@ mod tests {
         let dma = NvmeDmaRegion::for_write(5, &[1, 2, 3], None).expect("write region");
         let data = dma.complete();
 
-        assert_eq!(&data.as_slice()[..5], &[1, 2, 3, 0, 0]);
-        assert!(data.as_slice()[5..].iter().all(|byte| *byte == 0));
+        assert_eq!(&unsafe { data.as_slice() }[..5], &[1, 2, 3, 0, 0]);
+        assert!(unsafe { data.as_slice() }[5..].iter().all(|byte| *byte == 0));
 
         let dma = NvmeDmaRegion::for_write(5, &[9, 8, 7], None).expect("copy region");
         let mut out = [0xAAu8; 7];

@@ -379,6 +379,14 @@ impl DmaRegion {
         self.buffer.device_addr()
     }
 
+    pub fn prepare_for_device(&self) {
+        self.buffer.prepare_for_device();
+    }
+
+    pub fn finish_from_device(&self) {
+        self.buffer.finish_from_device();
+    }
+
     pub fn full_slot(&self) -> DmaSlot {
         DmaSlot {
             host_addr: self.host_addr(),
