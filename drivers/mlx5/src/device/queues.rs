@@ -28,7 +28,6 @@ struct DirectRqExpectations {
     cqn: u32,
     log_rq_size: u8,
     pd: u32,
-    uar_page: u32,
     dbr_addr: u64,
 }
 
@@ -76,9 +75,6 @@ fn resolve_direct_rq_layout(
     }
     if ctx.pd != expected.pd {
         return Err("QUERY_RQ returned an unexpected PD");
-    }
-    if ctx.uar_page != expected.uar_page {
-        return Err("QUERY_RQ returned an unexpected UAR page");
     }
     if ctx.dbr_addr != expected.dbr_addr {
         return Err("QUERY_RQ returned an unexpected doorbell address");
@@ -544,7 +540,6 @@ impl Mlx5Device {
             cqn,
             log_rq_size,
             pd: self.pd,
-            uar_page: self.uar_page,
             dbr_addr: db_pa,
         };
 
@@ -681,7 +676,7 @@ impl Mlx5Device {
                                         rqn,
                                         expected.cqn,
                                         expected.pd,
-                                        expected.uar_page,
+                                        ctx.uar_page,
                                         expected.dbr_addr,
                                         layout.wq_mode.label(),
                                         layout.slot_size_bytes,
@@ -997,7 +992,6 @@ mod tests {
             cqn: 0x55,
             log_rq_size: 8,
             pd: 0x77,
-            uar_page: 0x88,
             dbr_addr: 0x1000,
         }
     }
@@ -1058,11 +1052,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_direct_rq_layout_rejects_uar_page_mismatch() {
+    fn resolve_direct_rq_layout_ignores_uar_page_mismatch() {
         let mut ctx = query_rq_info(0, 1, 4);
         ctx.uar_page = 0x99;
-        let err = resolve_direct_rq_layout(0x44, expected_direct_rq(), ctx).unwrap_err();
-        assert_eq!(err, "QUERY_RQ returned an unexpected UAR page");
+        let layout = resolve_direct_rq_layout(0x44, expected_direct_rq(), ctx).unwrap();
+        assert_eq!(layout.wq_mode, RxWqMode::Cyclic);
+        assert_eq!(layout.slot_size_bytes, crate::defs::WQEBB_SIZE);
     }
 
     #[test]

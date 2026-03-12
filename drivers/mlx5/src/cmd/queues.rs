@@ -366,6 +366,8 @@ pub fn build_create_rq_input_with_options(
         wq.set_wq_type(wq_type & 0x0f);
         wq.set_end_padding_mode(end_padding_mode & 0x03);
         wq.set_pd(pd);
+        // Direct RQ bring-up relies on the doorbell record and observed
+        // hardware behavior keeps QUERY_RQ.wq.uar_page at 0 for this path.
         let _ = uar_page;
         wq.set_dbr_addr(db_pa);
         wq.set_log_wq_stride(log_wq_stride & 0x0f);
@@ -429,6 +431,7 @@ pub fn build_create_rmp_input_with_options(
         wq.set_wq_type(wq_type);
         wq.set_end_padding_mode(end_padding_mode & 0x3);
         wq.set_pd(pd);
+        // RMP-backed receive contexts also use the doorbell record directly.
         let _ = uar_page;
         wq.set_dbr_addr(db_pa);
         wq.set_log_wq_stride(4); // 16B data segment
