@@ -98,6 +98,12 @@ pub fn detach_device(device: DeviceId) -> Result<(), IommuError> {
     driver.detach_device(device)
 }
 
+/// Destroy a domain using the active IOMMU backend.
+pub fn destroy_domain(domain_id: u16) -> Result<(), IommuError> {
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.destroy_domain(domain_id)
+}
+
 /// Set NUMA hint for a domain (best-effort)
 /// Note: Since domains are per-controller, this finds the first controller with the domain.
 pub fn set_domain_numa(domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError> {

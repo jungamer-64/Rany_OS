@@ -17,29 +17,26 @@ impl DeviceDmaContext {
     /// DMAアドレス幅を制限する場合は `with_device_dma_mask` / `with_device_dma_width`
     /// を使用する。
     pub fn with_device(device_id: crate::io::iommu::types::DeviceId) -> Result<Self, DmaError> {
-        let domain_id = if crate::io::iommu::api::is_iommu_enabled() {
-            // IOMMUドメインを作成してデバイスをアタッチ
-            crate::io::iommu::api::with_iommu(|iommu| {
-                let numa_hint = Some(crate::mm::numa::topology::current_node());
-                let domain_id = iommu
-                    .create_domain(
-                        numa_hint,
-                        crate::io::iommu::types::IommuDomainType::Translated,
-                    )
-                    .ok()?;
-                iommu.attach_device(device_id.clone(), domain_id).ok()?;
-                Some(domain_id)
-            })
-            .ok()
-            .flatten()
-        } else {
-            None
-        };
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            return Err(DmaError::IommuRequired);
+        }
+
+        let numa_hint = Some(crate::mm::numa::topology::current_node());
+        let domain_id = crate::io::iommu::api::create_domain(
+            numa_hint,
+            crate::io::iommu::types::IommuDomainType::Translated,
+        )
+        .map_err(|_| DmaError::IommuMappingFailed)?;
+
+        if crate::io::iommu::api::attach_device(device_id, domain_id).is_err() {
+            let _ = crate::io::iommu::api::destroy_domain(domain_id);
+            return Err(DmaError::IommuMappingFailed);
+        }
 
         Ok(Self {
             device_id: Some(device_id),
-            domain_id,
-            allocator: Arc::new(DeviceDmaAllocator::with_device(device_id.clone())),
+            domain_id: Some(domain_id),
+            allocator: Arc::new(DeviceDmaAllocator::with_device(device_id)),
         })
     }
 
@@ -367,12 +364,10 @@ impl Drop for DeviceDmaContext {
     fn drop(&mut self) {
         // IOMMUドメインからデバイスをデタッチし、ドメインを破棄してメモリリークを防ぐ
         if let Some(domain_id) = self.domain_id {
-            let _ = crate::io::iommu::api::with_iommu(|iommu| {
-                if let Some(device_id) = self.device_id {
-                    let _ = iommu.detach_device(device_id);
-                }
-                let _ = iommu.destroy_domain(domain_id);
-            });
+            if let Some(device_id) = self.device_id {
+                let _ = crate::io::iommu::api::detach_device(device_id);
+            }
+            let _ = crate::io::iommu::api::destroy_domain(domain_id);
         }
     }
 }

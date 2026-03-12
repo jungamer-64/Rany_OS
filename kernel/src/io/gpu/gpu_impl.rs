@@ -551,14 +551,9 @@ impl VirtioGpu {
         let format = PixelFormat::B8G8R8A8Unorm;
         let resource_id = self.create_resource_2d(width, height, format)?;
 
-        let fb = Framebuffer::new_for_device(
-            resource_id,
-            width,
-            height,
-            format,
-            &self.iommu_device_id,
-        )
-        .ok_or(GpuError::OutOfMemory)?;
+        let fb =
+            Framebuffer::new_for_device(resource_id, width, height, format, &self.iommu_device_id)
+                .ok_or(GpuError::OutOfMemory)?;
 
         // Attach the DMA buffer as backing memory
         self.attach_backing(resource_id, fb.device_addr(), fb.size() as u32)?;

@@ -47,7 +47,11 @@ fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
     (addr as u128) <= (mask as u128) && (end as u128) <= limit
 }
 
-fn check_device_dma_mask(device: IommuDeviceId, addr: u64, size: usize) -> Result<(), VirtioNetError> {
+fn check_device_dma_mask(
+    device: IommuDeviceId,
+    addr: u64,
+    size: usize,
+) -> Result<(), VirtioNetError> {
     let Some(mask) = get_device_dma_mask(&device) else {
         return Ok(());
     };

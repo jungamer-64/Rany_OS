@@ -13,16 +13,6 @@ mod tests;
 
 const MAX_BLK_COMPLETIONS_PER_POLL: usize = 128;
 
-/// Future for async read operation
-pub struct ReadFuture<'a> {
-    pub(crate) device: &'a VirtioBlkDevice,
-    pub(crate) sector: u64,
-    pub(crate) buf: &'a mut [u8],
-    pub(crate) submitted: bool,
-    pub(crate) desc_id: Option<u16>,
-    pub(crate) queue_idx: usize,
-}
-
 /// デスクリプタ完了をポーリングする
 pub(crate) fn poll_for_completion(
     device: &VirtioBlkDevice,
@@ -45,90 +35,6 @@ pub(crate) fn poll_for_completion(
         }
     }
     target
-}
-
-impl<'a> Future for ReadFuture<'a> {
-    type Output = Result<usize, BlockError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if !self.submitted {
-            if self.buf.len() % 512 != 0 {
-                return Poll::Ready(Err(BlockError::InvalidParam));
-            }
-
-            // Submit request
-            let buf_addr = self.buf.as_ptr() as u64;
-            let len = self.buf.len() as u32;
-
-            match self
-                .device
-                .submit_read(self.sector, buf_addr, len, self.queue_idx)
-            {
-                Ok(desc_id) => {
-                    self.desc_id = Some(desc_id);
-                    self.submitted = true;
-                    register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
-                }
-                Err(e) => return Poll::Ready(Err(e)),
-            }
-        }
-
-        // Check for completion
-        if let Some(desc_id) = self.desc_id {
-            if poll_for_completion(self.device, self.queue_idx, desc_id).is_some() {
-                return Poll::Ready(Ok(self.buf.len()));
-            }
-            register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
-        }
-
-        Poll::Pending
-    }
-}
-
-/// Future for async write operation
-pub struct WriteFuture<'a> {
-    pub(crate) device: &'a VirtioBlkDevice,
-    pub(crate) sector: u64,
-    pub(crate) buf: &'a [u8],
-    pub(crate) submitted: bool,
-    pub(crate) desc_id: Option<u16>,
-    pub(crate) queue_idx: usize,
-}
-
-impl<'a> Future for WriteFuture<'a> {
-    type Output = Result<usize, BlockError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if !self.submitted {
-            if self.buf.len() % 512 != 0 {
-                return Poll::Ready(Err(BlockError::InvalidParam));
-            }
-
-            let buf_addr = self.buf.as_ptr() as u64;
-            let len = self.buf.len() as u32;
-
-            match self
-                .device
-                .submit_write(self.sector, buf_addr, len, self.queue_idx)
-            {
-                Ok(desc_id) => {
-                    self.desc_id = Some(desc_id);
-                    self.submitted = true;
-                    register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
-                }
-                Err(e) => return Poll::Ready(Err(e)),
-            }
-        }
-
-        if let Some(desc_id) = self.desc_id {
-            if poll_for_completion(self.device, self.queue_idx, desc_id).is_some() {
-                return Poll::Ready(Ok(self.buf.len()));
-            }
-            register_desc_waker(self.device, self.queue_idx, desc_id, cx.waker());
-        }
-
-        Poll::Pending
-    }
 }
 
 /// DMAバッファのサイズを検証してバイト数を返す
@@ -156,7 +62,7 @@ pub(crate) fn register_desc_waker(
     }
 }
 
-/// Future for async DMA read operation (uses physical address).
+/// Future for async DMA read operation (uses device-visible DMA address).
 pub struct DmaReadFuture<'a> {
     pub(crate) device: &'a VirtioBlkDevice,
     pub(crate) sector: u64,
@@ -201,7 +107,7 @@ impl<'a> Future for DmaReadFuture<'a> {
     }
 }
 
-/// Future for async DMA write operation (uses physical address).
+/// Future for async DMA write operation (uses device-visible DMA address).
 pub struct DmaWriteFuture<'a> {
     pub(crate) device: &'a VirtioBlkDevice,
     pub(crate) sector: u64,

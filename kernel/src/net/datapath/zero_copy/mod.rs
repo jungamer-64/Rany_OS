@@ -109,7 +109,7 @@ struct BufferSlot {
     _dma: CoherentDmaBuffer,
     /// CPU仮想アドレスのベース
     base_ptr: NonNull<u8>,
-    /// デバイスDMAアドレス (IOVA or physical)
+    /// デバイスDMAアドレス (translated hardware-visible DMA address)
     device_base_addr: u64,
     /// ペイロード容量（headroom/tailroom除く）
     payload_capacity: usize,
@@ -588,7 +588,7 @@ impl ZeroCopyBuffer {
 
     /// DMAアドレスを取得（ヘッドルームオフセット適用済み）
     ///
-    /// IOMMU が有効な場合は IOVA、それ以外は物理アドレスを返す。
+    /// translated DMA マッピング済みの device-visible address を返す。
     pub fn dma_addr(&self) -> u64 {
         self.slot().device_base_addr + self.data_offset() as u64
     }

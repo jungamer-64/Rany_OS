@@ -153,28 +153,74 @@ impl VirtioBlkDevice {
         self.queues.get(idx)
     }
 
-    /// Read sectors asynchronously
-    pub fn read_async<'a>(&'a self, sector: u64, buf: &'a mut [u8]) -> ReadFuture<'a> {
-        ReadFuture {
-            device: self,
-            sector,
-            buf,
-            submitted: false,
-            desc_id: None,
-            queue_idx: 0,
-        }
+    /// Read sectors asynchronously using translated device-scoped DMA.
+    pub fn read_async<'a>(
+        &'a self,
+        sector: u64,
+        buf: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, BlockError>> + Send + 'a>> {
+        Box::pin(async move {
+            let len = validate_dma_buf_size(buf.len())? as usize;
+            let rref = allocate_iommu_bounce_bytes(len).map_err(|err| match err {
+                IommuBounceAllocError::InvalidLen => BlockError::InvalidParam,
+                IommuBounceAllocError::AllocFailed => BlockError::NotReady,
+            })?;
+            let handle = map_rref_slice_for_device(rref, &self.iommu_device_id, DmaDirection::FromDevice)
+                .map_err(|_| BlockError::IoError)?;
+            let dma_addr = handle.iova();
+
+            let result = DmaReadFuture {
+                device: self,
+                sector,
+                dma_addr,
+                buf,
+                submitted: false,
+                desc_id: None,
+                queue_idx: 0,
+            }
+            .await;
+
+            let rref = handle.unmap().map_err(|_| BlockError::IoError)?;
+            result?;
+            buf.copy_from_slice(&rref[..len]);
+            Ok(len)
+        })
     }
 
-    /// Write sectors asynchronously
-    pub fn write_async<'a>(&'a self, sector: u64, buf: &'a [u8]) -> WriteFuture<'a> {
-        WriteFuture {
-            device: self,
-            sector,
-            buf,
-            submitted: false,
-            desc_id: None,
-            queue_idx: 0,
-        }
+    /// Write sectors asynchronously using translated device-scoped DMA.
+    pub fn write_async<'a>(
+        &'a self,
+        sector: u64,
+        buf: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, BlockError>> + Send + 'a>> {
+        Box::pin(async move {
+            let len = validate_dma_buf_size(buf.len())? as usize;
+            let mut rref = allocate_iommu_bounce_bytes(len).map_err(|err| match err {
+                IommuBounceAllocError::InvalidLen => BlockError::InvalidParam,
+                IommuBounceAllocError::AllocFailed => BlockError::NotReady,
+            })?;
+            rref[..len].copy_from_slice(buf);
+            crate::io::dma::flush_cache_range(rref.as_ptr(), rref.len());
+
+            let handle = map_rref_slice_for_device(rref, &self.iommu_device_id, DmaDirection::ToDevice)
+                .map_err(|_| BlockError::IoError)?;
+            let dma_addr = handle.iova();
+
+            let result = DmaWriteFuture {
+                device: self,
+                sector,
+                dma_addr,
+                buf,
+                submitted: false,
+                desc_id: None,
+                queue_idx: 0,
+            }
+            .await;
+
+            let _ = handle.unmap().map_err(|_| BlockError::IoError)?;
+            result?;
+            Ok(len)
+        })
     }
 
     /// Flush device cache
@@ -279,7 +325,7 @@ impl VirtioBlkDevice {
     pub(crate) fn submit_read(
         &self,
         sector: u64,
-        buf_addr: u64,
+        dma_addr: u64,
         len: u32,
         queue_idx: usize,
     ) -> Result<u16, BlockError> {
@@ -289,14 +335,6 @@ impl VirtioBlkDevice {
 
         if sector >= self.core.capacity {
             return Err(BlockError::InvalidParam);
-        }
-
-        if is_iommu_enabled() {
-            log::error!(
-                "[VIRTIO-BLK][SECURITY] raw DMA address {:#x} rejected while IOMMU is enabled. Use a device-scoped DMA mapping.",
-                buf_addr
-            );
-            return Err(BlockError::Unsupported);
         }
 
         let header = VirtioBlkReqHeader {
@@ -324,7 +362,7 @@ impl VirtioBlkDevice {
                     &*queue_guard.inner(),
                     VIRTIO_BLK_T_IN,
                     sector,
-                    buf_addr,
+                    dma_addr,
                     len,
                     req_dma.header_phys,
                     req_dma.status_phys,
@@ -338,7 +376,7 @@ impl VirtioBlkDevice {
                     &*queue_guard.inner(),
                     VIRTIO_BLK_T_IN,
                     sector,
-                    buf_addr,
+                    dma_addr,
                     len,
                     req_dma.header_phys,
                     req_dma.status_phys,
@@ -390,18 +428,10 @@ impl VirtioBlkDevice {
     pub(crate) fn submit_write(
         &self,
         sector: u64,
-        buf_addr: u64,
+        dma_addr: u64,
         len: u32,
         queue_idx: usize,
     ) -> Result<u16, BlockError> {
-        if is_iommu_enabled() {
-            log::error!(
-                "[VIRTIO-BLK][SECURITY] raw DMA address {:#x} rejected while IOMMU is enabled. Use a device-scoped DMA mapping.",
-                buf_addr
-            );
-            return Err(BlockError::Unsupported);
-        }
-
         let mut req_dma = self.prepare_write_request(sector)?;
         let use_indirect = (self.core.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
 
@@ -420,7 +450,7 @@ impl VirtioBlkDevice {
                     &*queue_guard.inner(),
                     VIRTIO_BLK_T_OUT,
                     sector,
-                    buf_addr,
+                    dma_addr,
                     len,
                     req_dma.header_phys,
                     req_dma.status_phys,
@@ -434,7 +464,7 @@ impl VirtioBlkDevice {
                     &*queue_guard.inner(),
                     VIRTIO_BLK_T_OUT,
                     sector,
-                    buf_addr,
+                    dma_addr,
                     len,
                     req_dma.header_phys,
                     req_dma.status_phys,

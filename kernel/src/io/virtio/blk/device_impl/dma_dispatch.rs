@@ -12,30 +12,13 @@ impl VirtioBlkDevice {
         if dma.len != len {
             return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
         }
-        if is_iommu_enabled() && iommu_needs_bounce(dma.phys_addr, len) {
-            return self.dma_read_bounce_async(sector, buf, len);
-        }
-        if is_iommu_enabled() {
-            return self.dma_read_bounce_eager(sector, buf, len);
-        }
-        if is_iommu_required() {
+        if !is_iommu_enabled() {
             return Box::pin(async move { Err(VfsBlockError::IoError) });
         }
-        let dma_addr = dma.phys_addr;
-        Box::pin(async move {
-            let result = DmaReadFuture {
-                device: self,
-                sector,
-                dma_addr,
-                buf,
-                submitted: false,
-                desc_id: None,
-                queue_idx: 0,
-            }
-            .await;
-            result.map_err(map_vfs_block_error)?;
-            Ok(())
-        })
+        if iommu_needs_bounce(dma.phys_addr, len) {
+            return self.dma_read_bounce_async(sector, buf, len);
+        }
+        self.dma_read_bounce_eager(sector, buf, len)
     }
 
     /// DMA write via fully-async IOMMU bounce path.
@@ -112,29 +95,12 @@ impl VirtioBlkDevice {
         if dma.len != len {
             return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
         }
-        if is_iommu_enabled() && iommu_needs_bounce(dma.phys_addr, len) {
-            return self.dma_write_bounce_async(sector, data, len);
-        }
-        if is_iommu_enabled() {
-            return self.dma_write_bounce_eager(sector, data, len);
-        }
-        if is_iommu_required() {
+        if !is_iommu_enabled() {
             return Box::pin(async move { Err(VfsBlockError::IoError) });
         }
-        let dma_addr = dma.phys_addr;
-        Box::pin(async move {
-            let result = DmaWriteFuture {
-                device: self,
-                sector,
-                dma_addr,
-                buf: data,
-                submitted: false,
-                desc_id: None,
-                queue_idx: 0,
-            }
-            .await;
-            result.map_err(map_vfs_block_error)?;
-            Ok(())
-        })
+        if iommu_needs_bounce(dma.phys_addr, len) {
+            return self.dma_write_bounce_async(sector, data, len);
+        }
+        self.dma_write_bounce_eager(sector, data, len)
     }
 }

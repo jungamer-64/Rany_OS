@@ -20,7 +20,7 @@ use crate::io::dma::{
     iommu_needs_bounce,
 };
 use crate::io::iommu::api::{
-    DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
+    DmaDirection, DmaHandle, is_iommu_enabled, map_rref_slice_for_device,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::transport::{VirtioMmioTransport, VirtioTransport};

@@ -1708,18 +1708,13 @@ fn test_isolation_decision_default() {
 // Identity Mapping Exclusion Tests
 // ============================================================================
 
-/// Test that identity mapping is disabled by default in release builds.
-/// This ensures that IOVAs are always different from physical addresses.
+/// Test that translated-only operation remains mandatory after bypass removal.
 #[test_case]
 fn test_identity_mapping_disabled_by_default() {
-    // In non-debug builds, identity mapping should be disabled
-    #[cfg(not(debug_assertions))]
-    {
-        assert!(
-            !crate::io::iommu::api::is_unsafe_identity_mapping_allowed(),
-            "Identity mapping should be disabled by default in release builds"
-        );
-    }
+    assert!(
+        crate::io::iommu::api::is_iommu_required(),
+        "IOMMU should remain mandatory after removing bypass APIs"
+    );
 }
 
 /// Test that IOVA allocation produces non-identity addresses.

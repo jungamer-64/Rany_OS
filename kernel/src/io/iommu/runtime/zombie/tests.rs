@@ -3,13 +3,21 @@
 // ============================================================================
 
 use super::*;
+use crate::io::iommu::common::dma::handle::MappingKind;
 
 #[test_case]
 fn test_zombie_queue_basic() {
     let queue = ZombieQueue::new();
 
     // Enqueue a zombie (domain_id is u16)
-    assert!(queue.try_enqueue(0x1000, 4096, 1u16, None, 0, None));
+    assert!(queue.try_enqueue(
+        0x1000,
+        4096,
+        1u16,
+        None,
+        encode_mapping_kind(&MappingKind::Domain),
+        None,
+    ));
 
     // Check stats
     let stats = queue.stats();
@@ -43,8 +51,22 @@ fn test_zombie_queue_failed_cleanup() {
     let queue = ZombieQueue::new();
 
     // Enqueue two zombies
-    assert!(queue.try_enqueue(0x1000, 4096, 1u16, None, 0, None));
-    assert!(queue.try_enqueue(0x2000, 4096, 2u16, None, 0, None));
+    assert!(queue.try_enqueue(
+        0x1000,
+        4096,
+        1u16,
+        None,
+        encode_mapping_kind(&MappingKind::Domain),
+        None,
+    ));
+    assert!(queue.try_enqueue(
+        0x2000,
+        4096,
+        2u16,
+        None,
+        encode_mapping_kind(&MappingKind::Domain),
+        None,
+    ));
 
     // Process with callback that returns false (cleanup failed)
     let count = queue.process_pending(10, |_| false);
@@ -64,7 +86,14 @@ fn test_zombie_queue_probe_limit() {
 
     // Fill up more than MAX_PROBE_COUNT entries
     for i in 0..(MAX_PROBE_COUNT + 10) {
-        let _ = queue.try_enqueue(i as u64 * 0x1000, 4096, 1u16, None, 0, None);
+        let _ = queue.try_enqueue(
+            i as u64 * 0x1000,
+            4096,
+            1u16,
+            None,
+            encode_mapping_kind(&MappingKind::Domain),
+            None,
+        );
     }
 
     // After MAX_PROBE_COUNT, enqueue should start failing
@@ -79,17 +108,10 @@ fn test_mapping_kind_encoding() {
     use crate::io::iommu::common::dma::handle::MappingKind;
     use crate::io::iommu::types::DeviceId;
 
-    // Identity
-    let encoded = encode_mapping_kind(&MappingKind::Identity);
-    assert!(matches!(
-        decode_mapping_kind(encoded),
-        MappingKind::Identity
-    ));
-
     // Device (using BDF encoding: bus=0x12, device=0x06, function=0x04 = 0x1234)
     let device_id = DeviceId::from_bdf(0x1234);
     let encoded = encode_mapping_kind(&MappingKind::Device(device_id));
-    if let MappingKind::Device(decoded_id) = decode_mapping_kind(encoded) {
+    if let Some(MappingKind::Device(decoded_id)) = decode_mapping_kind(encoded) {
         assert_eq!(decoded_id.bdf(), 0x1234);
     } else {
         panic!("Expected Device mapping kind");
@@ -97,7 +119,10 @@ fn test_mapping_kind_encoding() {
 
     // Domain
     let encoded = encode_mapping_kind(&MappingKind::Domain);
-    assert!(matches!(decode_mapping_kind(encoded), MappingKind::Domain));
+    assert!(matches!(decode_mapping_kind(encoded), Some(MappingKind::Domain)));
+
+    // Unknown/removed mapping kinds must be rejected.
+    assert!(decode_mapping_kind(0).is_none());
 }
 
 #[test_case]
@@ -121,7 +146,7 @@ fn test_state_transitions() {
         size: 4096,
         domain_id: 1,
         device_bdf: 0xFFFF,
-        mapping_kind: 0,
+        mapping_kind: encode_mapping_kind(&MappingKind::Domain),
         raw_ptr: 0,
         raw_owner: 0,
         raw_meta: 0,

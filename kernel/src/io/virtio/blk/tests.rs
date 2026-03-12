@@ -4,6 +4,9 @@ use core::sync::atomic::Ordering;
 
 use super::*;
 use crate::fs::page_cluster_buffer::PageClusterBuffer;
+use crate::io::dma::{DeviceDmaContext, DmaDirection as DeviceDmaDirection};
+use crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device;
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
 use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
 use crate::mm::types::PAGE_SIZE_4K;
@@ -97,6 +100,9 @@ impl VirtioTransport for NoopTransport {
 
 #[test_case]
 fn test_submit_read_uses_dma_addr() {
+    let iommu_device_id = IommuDeviceId::new(0, 0, 0x20, 0);
+    ensure_test_intel_iommu_device(iommu_device_id);
+
     // Setup small virtqueue memory regions
     let queue_size: u16 = 8;
     let mut descs = vec![VringDesc::default(); queue_size as usize];
@@ -112,15 +118,21 @@ fn test_submit_read_uses_dma_addr() {
 
     let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0) };
 
-    let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport));
-    dev.queues.push(Arc::new(crate::sync::PoisonLock::new(vq)));
+    let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport), iommu_device_id);
+    dev.queues
+        .push(Arc::new(crate::sync::IrqPoisonLock::new(vq)));
+    dev.pending_wakers.push(crate::sync::IrqPoisonLock::new({
+        let mut wakers = Vec::with_capacity(queue_size as usize);
+        wakers.resize_with(queue_size as usize, || None);
+        wakers
+    }));
+    dev.inflight_dma.push(crate::sync::IrqPoisonLock::new({
+        let mut dmas = Vec::with_capacity(queue_size as usize);
+        dmas.resize_with(queue_size as usize, || None);
+        dmas
+    }));
     dev.ready.store(true, Ordering::Release);
-    dev.config.capacity = 1024;
-
-    // Initialize wakers vector
-    let mut w = dev.pending_wakers.lock();
-    w.resize(VIRTQUEUE_MAX_SIZE as usize * dev.queues.len(), None);
-    drop(w);
+    dev.core.capacity = 1024;
 
     // Skip test if contiguous frames unavailable
     let frames_needed = 1usize;
@@ -129,9 +141,16 @@ fn test_submit_read_uses_dma_addr() {
         let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size)
             .expect("new_from_phys failed");
         let dma = buf.dma_info().expect("dma_info missing");
+        let mapping = DeviceDmaContext::for_attached_device(iommu_device_id)
+            .map_physical_range(
+                PhysAddr::new(dma.phys_addr),
+                real_size,
+                DeviceDmaDirection::Bidirectional,
+            )
+            .expect("map_physical_range failed");
 
         let head = dev
-            .submit_read(0, dma.phys_addr, 512u32, 0)
+            .submit_read(0, mapping.device_addr(), 512u32, 0)
             .expect("submit_read failed");
 
         // Inspect descriptor chain: header -> data -> status
@@ -139,10 +158,11 @@ fn test_submit_read_uses_dma_addr() {
         let data_idx = header_desc.next as usize;
         let data_desc = unsafe { *desc_ptr.add(data_idx) };
 
-        assert_eq!(data_desc.addr, dma.phys_addr);
+        assert_eq!(data_desc.addr, mapping.device_addr());
         assert_eq!(data_desc.len, 512u32);
         assert!((data_desc.flags & vring_flags::VRING_DESC_F_WRITE) != 0);
 
+        drop(mapping);
         // Clean up allocated frames
         dealloc_contiguous_frames(PhysAddr::new(start_phys.as_u64()), frames_needed);
     } else {
@@ -152,6 +172,9 @@ fn test_submit_read_uses_dma_addr() {
 
 #[test_case]
 fn test_submit_write_uses_dma_addr() {
+    let iommu_device_id = IommuDeviceId::new(0, 0, 0x21, 0);
+    ensure_test_intel_iommu_device(iommu_device_id);
+
     // Setup small virtqueue memory regions
     let queue_size: u16 = 8;
     let mut descs = vec![VringDesc::default(); queue_size as usize];
@@ -167,15 +190,21 @@ fn test_submit_write_uses_dma_addr() {
 
     let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, 0) };
 
-    let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport));
-    dev.queues.push(Arc::new(crate::sync::PoisonLock::new(vq)));
+    let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport), iommu_device_id);
+    dev.queues
+        .push(Arc::new(crate::sync::IrqPoisonLock::new(vq)));
+    dev.pending_wakers.push(crate::sync::IrqPoisonLock::new({
+        let mut wakers = Vec::with_capacity(queue_size as usize);
+        wakers.resize_with(queue_size as usize, || None);
+        wakers
+    }));
+    dev.inflight_dma.push(crate::sync::IrqPoisonLock::new({
+        let mut dmas = Vec::with_capacity(queue_size as usize);
+        dmas.resize_with(queue_size as usize, || None);
+        dmas
+    }));
     dev.ready.store(true, Ordering::Release);
-    dev.config.capacity = 1024;
-
-    // Initialize wakers vector
-    let mut w = dev.pending_wakers.lock();
-    w.resize(VIRTQUEUE_MAX_SIZE as usize * dev.queues.len(), None);
-    drop(w);
+    dev.core.capacity = 1024;
 
     // Skip test if contiguous frames unavailable
     let frames_needed = 1usize;
@@ -184,9 +213,16 @@ fn test_submit_write_uses_dma_addr() {
         let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size)
             .expect("new_from_phys failed");
         let dma = buf.dma_info().expect("dma_info missing");
+        let mapping = DeviceDmaContext::for_attached_device(iommu_device_id)
+            .map_physical_range(
+                PhysAddr::new(dma.phys_addr),
+                real_size,
+                DeviceDmaDirection::Bidirectional,
+            )
+            .expect("map_physical_range failed");
 
         let head = dev
-            .submit_write(0, dma.phys_addr, 512u32, 0)
+            .submit_write(0, mapping.device_addr(), 512u32, 0)
             .expect("submit_write failed");
 
         // Inspect descriptor chain: header -> data -> status
@@ -194,11 +230,12 @@ fn test_submit_write_uses_dma_addr() {
         let data_idx = header_desc.next as usize;
         let data_desc = unsafe { *desc_ptr.add(data_idx) };
 
-        assert_eq!(data_desc.addr, dma.phys_addr);
+        assert_eq!(data_desc.addr, mapping.device_addr());
         assert_eq!(data_desc.len, 512u32);
         // For write, device reads from buffer (no VRING_DESC_F_WRITE flag)
         assert_eq!(data_desc.flags & vring_flags::VRING_DESC_F_WRITE, 0);
 
+        drop(mapping);
         // Clean up allocated frames
         dealloc_contiguous_frames(PhysAddr::new(start_phys.as_u64()), frames_needed);
     } else {

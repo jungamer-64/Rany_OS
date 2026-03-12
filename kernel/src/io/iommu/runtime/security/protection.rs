@@ -167,37 +167,3 @@ fn linker_virt_to_phys(virt: u64) -> Option<u64> {
         None
     }
 }
-
-/// Identity mapping fallback gate (default: false).
-#[cfg(any(test, feature = "qemu-test-export"))]
-static UNSAFE_ALLOW_IDENTITY_MAPPING: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
-/// Enable/disable identity mapping fallback.
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
-    if allowed {
-        log::error!(
-            "[IOMMU][SECURITY][CRITICAL] Identity mapping ENABLED - \
-             system is VULNERABLE to DMA attacks! \
-             This should NEVER be enabled in production!"
-        );
-        log::error!("[IOMMU][SECURITY][TAINTED] TAINTED: IOMMU BYPASS ENABLED");
-    } else {
-        log::info!("[IOMMU][SECURITY] Identity mapping DISABLED - DMA protection restored");
-    }
-    UNSAFE_ALLOW_IDENTITY_MAPPING.store(allowed, core::sync::atomic::Ordering::Release);
-}
-
-/// Check whether identity mapping fallback is allowed.
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) fn is_unsafe_identity_mapping_allowed() -> bool {
-    UNSAFE_ALLOW_IDENTITY_MAPPING.load(core::sync::atomic::Ordering::Acquire)
-}
-
-/// Check whether identity mapping fallback is allowed.
-#[cfg(not(any(test, feature = "qemu-test-export")))]
-#[inline(always)]
-pub(crate) fn is_unsafe_identity_mapping_allowed() -> bool {
-    false
-}

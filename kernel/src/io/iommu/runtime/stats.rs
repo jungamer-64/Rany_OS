@@ -25,10 +25,6 @@ static UNMAP_COUNTS: [AtomicU64; MAX_CPUS] = {
     const INIT: AtomicU64 = AtomicU64::new(0);
     [INIT; MAX_CPUS]
 };
-static IDENTITY_FALLBACK_COUNTS: [AtomicU64; MAX_CPUS] = {
-    const INIT: AtomicU64 = AtomicU64::new(0);
-    [INIT; MAX_CPUS]
-};
 
 fn for_current_cpu(counters: &[AtomicU64; MAX_CPUS]) -> &AtomicU64 {
     let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
@@ -44,7 +40,6 @@ pub fn reset_map_unmap_counts() {
     for i in 0..MAX_CPUS {
         MAP_COUNTS[i].store(0, Ordering::Relaxed);
         UNMAP_COUNTS[i].store(0, Ordering::Relaxed);
-        IDENTITY_FALLBACK_COUNTS[i].store(0, Ordering::Relaxed);
     }
 }
 
@@ -66,22 +61,10 @@ pub fn get_unmap_count() -> u64 {
     total
 }
 
-pub fn get_identity_fallback_count() -> u64 {
-    let mut total = 0;
-    for i in 0..MAX_CPUS {
-        total += IDENTITY_FALLBACK_COUNTS[i].load(Ordering::Relaxed);
-    }
-    total
-}
-
 pub(crate) fn inc_map_count() {
     for_current_cpu(&MAP_COUNTS).fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn inc_unmap_count() {
     for_current_cpu(&UNMAP_COUNTS).fetch_add(1, Ordering::Relaxed);
-}
-
-pub(crate) fn inc_identity_fallback_count() {
-    for_current_cpu(&IDENTITY_FALLBACK_COUNTS).fetch_add(1, Ordering::Relaxed);
 }

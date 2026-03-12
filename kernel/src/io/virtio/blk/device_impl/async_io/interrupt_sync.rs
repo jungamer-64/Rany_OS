@@ -57,13 +57,19 @@ mod unit_tests {
     pub(super) fn test_bounce_map_unmap_via_dmahandle() {
         // Verify that bounce allocation + DmaHandle mapping/unmap works
         let len = 4096usize;
+        let device = crate::io::iommu::types::DeviceId::new(0, 0, 0x22, 0);
+        crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
         let mut rref = allocate_iommu_bounce_bytes(len).expect("alloc bounce bytes failed");
         for i in 0..len {
             rref[i] = 0xABu8;
         }
 
-        let handle = crate::io::iommu::api::DmaHandle::map_simple(rref, 0, DmaDirection::ToDevice)
-            .expect("map_simple failed");
+        let handle = crate::io::iommu::api::map_rref_slice_for_device(
+            rref,
+            &device,
+            DmaDirection::ToDevice,
+        )
+        .expect("map_rref_slice_for_device failed");
         let _iova = handle.iova();
         // Unmap and recover RRef
         let rref = handle.unmap().expect("unmap failed");

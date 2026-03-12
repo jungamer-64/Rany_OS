@@ -390,20 +390,17 @@ pub fn test_storage() -> IntegrationTestSuite {
                 ),
             ) {
                 Ok(_fs_arc) => {
-                    // If IOMMU is enabled, ensure we recorded mappings
-                    if crate::io::iommu::api::is_iommu_enabled() {
+                    if !crate::io::iommu::api::is_iommu_enabled() {
+                        Err(String::from(
+                            "IOMMU is mandatory but storage path ran without translated DMA",
+                        ))
+                    } else {
                         let maps = crate::io::iommu::api::get_map_count();
                         if maps == 0 {
                             Err(String::from("IOMMU enabled but no map calls recorded"))
-                        } else if crate::io::iommu::api::get_identity_fallback_count() != 0 {
-                            Err(String::from(
-                                "storage path used identity DMA fallback",
-                            ))
                         } else {
-                            Ok(String::from("mount OK (IOMMU mapped)"))
+                            Ok(String::from("mount OK (translated DMA)"))
                         }
-                    } else {
-                        Ok(String::from("mount OK (no IOMMU)"))
                     }
                 }
                 Err(e) => Err(alloc::format!("mount failed: {:?}", e)),
@@ -482,9 +479,9 @@ pub fn test_iommu() -> IntegrationTestSuite {
             } {
                 Ok(mapped_iova) => {
                     let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
-                    if crate::io::iommu::api::get_identity_fallback_count() != 0 {
+                    if mapped_iova == phys_addr {
                         return Err(String::from(
-                            "device DMA map unexpectedly used identity fallback",
+                            "device DMA map unexpectedly returned an identity-mapped address",
                         ));
                     }
                     Ok(alloc::format!(
@@ -517,9 +514,9 @@ pub fn test_iommu() -> IntegrationTestSuite {
             match unsafe { crate::io::iommu::api::map_for_device(&device_id, PhysAddr::new(phys_addr), size) } {
                 Ok(mapped_iova) => {
                     let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
-                    if crate::io::iommu::api::get_identity_fallback_count() != 0 {
+                    if mapped_iova == phys_addr {
                         return Err(String::from(
-                            "device DMA map unexpectedly used identity fallback",
+                            "device DMA map unexpectedly returned an identity-mapped address",
                         ));
                     }
                     return Ok(alloc::format!(
@@ -584,8 +581,6 @@ pub fn test_iommu() -> IntegrationTestSuite {
                 Err(String::from(
                     "IOMMU enabled but NVMe BlockIo path recorded no map calls",
                 ))
-            } else if crate::io::iommu::api::get_identity_fallback_count() != 0 {
-                Err(String::from("NVMe BlockIo path used identity DMA fallback"))
             } else {
                 Ok(alloc::format!(
                     "NVMe BlockIo read ok ({} IOMMU map calls)",

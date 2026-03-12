@@ -478,8 +478,8 @@ impl DmaSlot {
 
 /// キャッシュ一貫性を自動管理するDMAバッファ
 ///
-/// IOMMU有効時は `new_for_device()` で作成すると自動的にIOMMUマッピングが行われ、
-/// `device_addr()` でデバイスに渡すアドレス（IOVA）を取得できる。
+/// `new_for_device()` で作成すると自動的に translated IOMMU マッピングが行われ、
+/// `device_addr()` でデバイスに渡す hardware-visible DMA アドレスを取得できる。
 /// RAII handle for a physically contiguous, cache-coherent DMA buffer.
 /// Drop時にIOMMUマッピングは自動的に解除される。
 #[derive(Debug)]
@@ -489,7 +489,7 @@ pub struct CoherentDmaBuffer {
     layout: Layout,
     phys_addr: PhysAddr,
     attributes: DmaMemoryAttributes,
-    /// IOMMU有効時のIOVA（None = IOMMU未使用、物理アドレスを直接使用）
+    /// デバイスに渡す translated DMA address（未マップなら None）
     iova: Option<u64>,
     /// IOMMUマッピング先のデバイスID（unmap時に必要）
     iommu_device: Option<crate::io::iommu::types::DeviceId>,
@@ -500,16 +500,15 @@ impl CoherentDmaBuffer {
 
     /// IOMMUマッピングなしのDMAバッファを割り当てる。
     ///
-    /// IOMMU有効環境ではデバイスからアクセスできない可能性があるため、
-    /// デバイスDMAに使用する場合は `new_for_device()` を推奨。
+    /// デバイスDMAに使用する場合は translated mapping を伴う
+    /// `new_for_device()` を使用すること。
     pub fn new(size: usize, attributes: DmaMemoryAttributes) -> Option<Self> {
         Self::new_internal(size, attributes, None)
     }
 
-    /// 指定デバイスのIOMMUドメインにマッピングされたDMAバッファを割り当てる。
+    /// 指定デバイスの IOMMU ドメインに translated DMA バッファを割り当てる。
     ///
-    /// IOMMU有効時はIOVAが自動的に割り当てられ、`device_addr()` でデバイスに
-    /// 渡すアドレスを取得できる。IOMMU無効時は `new()` と同じ動作。
+    /// `device_addr()` は常にデバイスに渡す hardware-visible DMA アドレスを返す。
     /// Drop時にIOMMUマッピングは自動的に解除される。
     pub fn new_for_device(
         size: usize,
@@ -519,7 +518,7 @@ impl CoherentDmaBuffer {
         Self::new_internal(size, attributes, Some(device))
     }
 
-    /// 内部実装: DMAバッファの割り当てとオプショナルなIOMMUマッピング
+    /// 内部実装: DMAバッファの割り当てと translated IOMMU マッピング
     pub(super) fn new_internal(
         size: usize,
         attributes: DmaMemoryAttributes,
@@ -626,10 +625,9 @@ impl CoherentDmaBuffer {
         self.phys_addr
     }
 
-    /// デバイスに渡すアドレスを取得する。
+    /// デバイスに渡す translated DMA アドレスを取得する。
     ///
-    /// IOMMU有効時はIOVA（I/O仮想アドレス）を返し、
-    /// IOMMU無効時は物理アドレスを返す。
+    /// `new_for_device()` で確立された IOMMU マッピング先を返す。
     /// デバイスのDMAアドレスレジスタに設定する際はこのメソッドを使用すること。
     pub fn device_addr(&self) -> u64 {
         self.iova.unwrap_or(self.phys_addr.as_u64())

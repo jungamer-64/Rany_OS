@@ -265,8 +265,11 @@ pub fn init_virtio_net_at_index(index: u8, base_addr: usize) -> Result<(), Virti
     let transport =
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
-    let mut device =
-        VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), test_device_for_index(index));
+    let mut device = VirtioNetDevice::new_with_index_and_device(
+        index,
+        Box::new(transport),
+        test_device_for_index(index),
+    );
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())
@@ -287,8 +290,7 @@ pub fn init_virtio_net_for_device_at_index(
     let transport =
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
-    let mut device =
-        VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), device);
+    let mut device = VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), device);
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())

@@ -22,7 +22,6 @@ use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::{Once, RwLock};
 mod domain_impl;
-mod identity_mapping;
 mod map_ops;
 mod mapping;
 mod paging;

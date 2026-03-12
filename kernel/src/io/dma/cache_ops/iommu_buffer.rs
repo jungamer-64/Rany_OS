@@ -33,7 +33,7 @@ pub enum DmaError {
 /// DMAアロケータトレイト
 ///
 /// 全てのドライバはこのトレイトを通じてDMAメモリを割り当てる。
-/// IOMMU対応・非対応を透過的に扱う。
+/// デバイスDMAは translated IOMMU マッピング経由でのみ扱う。
 pub trait DmaAllocator: Send + Sync {
     /// コヒーレントDMAバッファを割り当て
     fn allocate_coherent(
@@ -51,12 +51,6 @@ pub trait DmaAllocator: Send + Sync {
 
     /// ストリーミングDMAマッピングを解除
     fn unmap_streaming(&self, mapping: StreamingMapping);
-
-    /// デバイスアドレスを取得（IOVAまたは物理アドレス）
-    fn device_address(&self, phys_addr: PhysAddr) -> u64;
-
-    /// IOMMUが有効かどうか
-    fn iommu_enabled(&self) -> bool;
 }
 
 /// DMA割り当て結果
@@ -65,7 +59,7 @@ pub struct DmaAllocation {
     pub ptr: NonNull<u8>,
     /// 物理アドレス
     pub phys_addr: PhysAddr,
-    /// デバイスに渡すアドレス（IOVAまたは物理アドレス）
+    /// デバイスに渡す translated DMA アドレス
     pub device_addr: u64,
     /// サイズ
     pub size: usize,
@@ -107,7 +101,7 @@ impl Drop for DmaAllocation {
 pub struct StreamingMapping {
     /// 元のバッファアドレス
     pub host_addr: *const u8,
-    /// デバイスアドレス
+    /// デバイス可視の translated DMA アドレス
     pub device_addr: u64,
     /// サイズ
     pub size: usize,
@@ -228,18 +222,18 @@ impl DeviceDmaAllocator {
         phys_addr: x86_64::PhysAddr,
         mapped_len: usize,
     ) -> Result<(u64, bool), DmaError> {
-        if crate::io::iommu::api::is_iommu_enabled() {
-            let Some(ref dev) = self.device_id else {
-                return Err(DmaError::DeviceNotFound);
-            };
-            let map_result =
-                unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, mapped_len as u64) };
-            match map_result {
-                Ok(iova) => Ok((iova, true)),
-                Err(_) => Err(DmaError::IommuMappingFailed),
-            }
-        } else {
-            Err(DmaError::IommuRequired)
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            return Err(DmaError::IommuRequired);
+        }
+
+        let Some(ref dev) = self.device_id else {
+            return Err(DmaError::DeviceNotFound);
+        };
+        let map_result =
+            unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, mapped_len as u64) };
+        match map_result {
+            Ok(iova) => Ok((iova, true)),
+            Err(_) => Err(DmaError::IommuMappingFailed),
         }
     }
 }
@@ -269,7 +263,7 @@ impl DmaAllocator for DeviceDmaAllocator {
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
-        // Resolve device address via IOMMU or identity mapping
+        // Resolve the hardware-visible translated DMA address via the IOMMU.
         let (device_addr, iova_mapped) = match self.resolve_iommu_device_addr(phys_addr, size) {
             Ok(result) => result,
             Err(e) => {
@@ -370,15 +364,6 @@ impl DmaAllocator for DeviceDmaAllocator {
             }
         }
         mapping.iova_mapped = false;
-    }
-
-    fn device_address(&self, phys_addr: PhysAddr) -> u64 {
-        // 既存のマッピングから検索するか、Identity mappingを返す
-        phys_addr.as_u64()
-    }
-
-    fn iommu_enabled(&self) -> bool {
-        crate::io::iommu::api::is_iommu_enabled()
     }
 }
 

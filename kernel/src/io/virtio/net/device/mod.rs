@@ -181,8 +181,12 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         size: usize,
         _purpose: virtio_driver::net::NetDmaPurpose,
     ) -> Result<DmaSlice<CpuOwned>, VirtioNetError> {
-        let buffer = CoherentDmaBuffer::new_for_device(size, DmaMemoryAttributes::MMIO, &self.iommu_device_id)
-            .ok_or(VirtioNetError::DeviceError)?;
+        let buffer = CoherentDmaBuffer::new_for_device(
+            size,
+            DmaMemoryAttributes::MMIO,
+            &self.iommu_device_id,
+        )
+        .ok_or(VirtioNetError::DeviceError)?;
 
         let (phys, iova, virt, len, releaser) = buffer.into_raw_parts();
         Ok(unsafe { DmaSlice::from_internal_parts(phys, iova, virt, len, releaser) })
@@ -293,13 +297,19 @@ impl VirtioNetDevice {
         let buffer_size = 4096;
 
         for _ in 0..pool_size {
-            let tx_buf =
-                CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &self.iommu_device_id)
+            let tx_buf = CoherentDmaBuffer::new_for_device(
+                buffer_size,
+                DmaMemoryAttributes::MMIO,
+                &self.iommu_device_id,
+            )
             .ok_or(VirtioNetError::DeviceError)?;
             let _ = self.tx_bounce_pool.push(tx_buf);
 
-            let rx_buf =
-                CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &self.iommu_device_id)
+            let rx_buf = CoherentDmaBuffer::new_for_device(
+                buffer_size,
+                DmaMemoryAttributes::MMIO,
+                &self.iommu_device_id,
+            )
             .ok_or(VirtioNetError::DeviceError)?;
             let _ = self.rx_bounce_pool.push(rx_buf);
         }
@@ -456,9 +466,12 @@ impl VirtioNetDevice {
         }
 
         let aligned_len = iommu_align_len(total_size).ok_or(VirtioNetError::DeviceError)?;
-        let buffer =
-            CoherentDmaBuffer::new_for_device(aligned_len, DmaMemoryAttributes::MMIO, &self.iommu_device_id)
-                .ok_or(VirtioNetError::DeviceError)?;
+        let buffer = CoherentDmaBuffer::new_for_device(
+            aligned_len,
+            DmaMemoryAttributes::MMIO,
+            &self.iommu_device_id,
+        )
+        .ok_or(VirtioNetError::DeviceError)?;
         Ok((buffer, aligned_len))
     }
 

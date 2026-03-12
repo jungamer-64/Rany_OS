@@ -79,11 +79,11 @@ pub fn run_network_runtime_suite(case_filter: Option<&str>) -> NetworkRuntimeSui
         );
     }
 
-    if selected_any && crate::io::iommu::api::get_identity_fallback_count() != 0 {
+    if selected_any && !crate::io::iommu::api::is_iommu_enabled() {
         summary.failed += 1;
         info!(
             target: "init",
-            "[kernel-test][net] case net.no_identity_dma_fallback fail"
+            "[kernel-test][net] case net.iommu_active fail"
         );
     }
 

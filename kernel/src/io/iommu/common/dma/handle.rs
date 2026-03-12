@@ -83,8 +83,6 @@ pub enum DmaDirection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MappingKind {
-    /// Identity mapping (IOMMU disabled at map time)
-    Identity,
     /// Device-specific DMA mapping
     Device(DeviceId),
     /// Domain-managed mapping (requires explicit domain context to unmap)
@@ -245,7 +243,7 @@ pub struct DmaHandle<T: ?Sized + 'static> {
     pub(crate) size: u64,
     /// Domain ID this handle belongs to
     pub(crate) domain_id: u16,
-    /// Mapping scope (global/device/domain/identity)
+    /// Mapping scope (device/domain)
     pub(crate) mapping: MappingKind,
     /// DMA direction
     pub(crate) direction: DmaDirection,
@@ -333,9 +331,6 @@ impl<T: ?Sized + 'static> DmaHandle<T> {
     /// Internal synchronous unmap implementation
     fn unmap_sync_internal(mut self) -> Result<RRef<T>, UnmapError<T>> {
         match self.mapping {
-            MappingKind::Identity => Ok(self
-                .take_rref()
-                .expect("DmaHandle must have rref for unmap")),
             MappingKind::Domain => Err(UnmapError::new(self, UnmapErrorKind::InvalidContext)),
             MappingKind::Device(device) => {
                 if let Err(e) =
@@ -450,25 +445,18 @@ impl<T> DmaHandle<[T]> {
 impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
     fn drop(&mut self) {
         if self.rref.is_some() {
-            // Identity mappings don't need cleanup - just drop the RRef
-            if matches!(self.mapping, MappingKind::Identity) {
-                drop(self.rref.take());
-                return;
-            }
-
-            let device_id = if let MappingKind::Device(dev) = self.mapping {
-                Some(dev)
-            } else {
-                None
-            };
-            let mapping_kind_encoded =
-                crate::io::iommu::runtime::zombie::encode_mapping_kind(&self.mapping);
-
             // Attempt to enqueue to zombie queue for async cleanup
             // We take the RRef only if enqueue succeeds
             let success = if let Some(rref) = self.rref.take() {
                 #[cfg(not(test))]
                 {
+                    let device_id = if let MappingKind::Device(dev) = self.mapping {
+                        Some(dev)
+                    } else {
+                        None
+                    };
+                    let mapping_kind_encoded =
+                        crate::io::iommu::runtime::zombie::encode_mapping_kind(&self.mapping);
                     let raw_parts = rref.into_raw_parts();
                     if crate::io::iommu::runtime::zombie::enqueue_zombie(
                         self.iova,
@@ -530,7 +518,6 @@ impl<T: ?Sized + 'static> DmaHandle<T> {
     /// Does not consume self.
     fn unmap_sync_internal_in_drop(&mut self) -> Result<(), IommuError> {
         let result = match self.mapping {
-            MappingKind::Identity => Ok(()),
             MappingKind::Domain => Err(IommuError::InvalidAddress),
             MappingKind::Device(device) => {
                 crate::io::iommu::api::unmap_for_device(&device, self.iova, self.size)
@@ -572,130 +559,7 @@ impl<T: ?Sized + 'static> DmaHandle<T> {
 // Map/Unmap Implementation (to be completed with IommuDomain integration)
 // ============================================================================
 
-impl<T> DmaHandle<T> {
-    /// Map an RRef for DMA access using identity mapping (IOVA = physical address).
-    ///
-    /// # Security Warning
-    ///
-    /// Identity mapping bypasses IOMMU protection completely. This helper is
-    /// only kept for test-only shims that still exercise the higher-level DMA
-    /// handle plumbing without a full device-scoped mapping path.
-    ///
-    /// For production use, prefer `map_rref_for_device()` which uses proper
-    /// IOVA allocation with IOMMU protection.
-    ///
-    /// # Arguments
-    /// * `rref` - The RRef to map (consumed)
-    /// * `domain_id` - The IOMMU domain ID
-    /// * `direction` - DMA transfer direction
-    ///
-    /// # Errors
-    /// Returns `MapError<T>` containing the original RRef on failure.
-    #[cfg(any(test, feature = "qemu-test-export"))]
-    pub(crate) fn map_simple(
-        rref: RRef<T>,
-        domain_id: u16,
-        direction: DmaDirection,
-    ) -> Result<Self, MapError<T>> {
-        if crate::io::iommu::api::is_iommu_required() && !crate::io::iommu::api::is_iommu_enabled()
-        {
-            return Err(MapError::new(
-                rref,
-                MapErrorKind::IommuError(IommuError::NotInitialized),
-            ));
-        }
-
-        log::warn!("[IOMMU][SECURITY] map_simple identity mapping - bypassing protection!");
-        crate::io::iommu::runtime::stats::inc_identity_fallback_count();
-
-        use x86_64::VirtAddr;
-
-        // Get physical address from RRef's virtual pointer
-        let virt_ptr = &*rref as *const T as u64;
-        let virt_addr = VirtAddr::new(virt_ptr);
-
-        // Use mapping::virt_to_phys which assumes linear mapping (always succeeds)
-        let phys_addr = crate::mm::virt::mapping::virt_to_phys(virt_addr);
-        let phys = phys_addr.as_u64();
-
-        let size = core::mem::size_of::<T>() as u64;
-        if size == 0 {
-            return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
-        }
-
-        // SECURITY: Even in identity/bypass mode, we MUST NOT allow DMA into protected regions.
-        if let Err(e) = crate::io::iommu::runtime::security::validate_dma_region(phys, size) {
-            log::error!(
-                "[IOMMU][SECURITY] Identity mapping rejected: overlaps protected region {:#x}-{:#x}",
-                phys,
-                phys + size
-            );
-            return Err(MapError::new(rref, MapErrorKind::IommuError(e)));
-        }
-
-        // For now, use physical address as IOVA (1:1 mapping)
-        let iova = phys;
-
-        Ok(Self::new(
-            rref,
-            iova,
-            phys,
-            size,
-            domain_id,
-            direction,
-            MappingKind::Identity,
-        ))
-    }
-
-    /// Identity mapping is DISABLED outside test-only builds.
-    #[cfg(not(any(test, feature = "qemu-test-export")))]
-    pub(crate) fn map_simple(
-        rref: RRef<T>,
-        _domain_id: u16,
-        _direction: DmaDirection,
-    ) -> Result<Self, MapError<T>> {
-        log::error!(
-            "[IOMMU][SECURITY] Identity mapping rejected - use map_rref_for_device() instead"
-        );
-        Err(MapError::new(
-            rref,
-            MapErrorKind::IommuError(IommuError::NotSupported),
-        ))
-    }
-}
-
 impl<T: ?Sized + 'static> DmaHandle<T> {
-    /// Unmap a DMA buffer (simplified - no IOTLB invalidation)
-    ///
-    /// This is a simplified unmap that just releases the RRef without
-    /// waiting for IOTLB invalidation. For full integration with IOMMU
-    /// domain and proper IOTLB sync, use `IommuDomain::unmap_buffer()`.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the device is no longer accessing this buffer
-    /// before calling this method. Without IOTLB invalidation, the device
-    /// may still have cached translations.
-    ///
-    /// # Returns
-    /// The original `RRef<T>` on success.
-    ///
-    /// # Errors
-    /// Returns `UnmapError<T>` containing the handle if unmap fails.
-    pub(crate) unsafe fn unmap_simple(mut self) -> Result<RRef<T>, UnmapError<T>> {
-        // Take the rref to mark this handle as unmapped
-        match self.take_rref() {
-            Some(rref) => {
-                // Handle is now "unmapped" - Drop won't panic
-                Ok(rref)
-            }
-            None => {
-                // Already unmapped - this shouldn't happen with proper usage
-                Err(UnmapError::new(self, UnmapErrorKind::InvalidIova))
-            }
-        }
-    }
-
     /// Unmap a DMA buffer using its owning mapping context.
     ///
     /// For domain-managed mappings, use the explicit domain context instead.
@@ -762,7 +626,6 @@ impl<T: ?Sized + 'static> DmaHandle<T> {
                     .expect("DmaHandle must have rref for unmap"))
             }
             MappingKind::Domain => Err(UnmapError::new(self, UnmapErrorKind::InvalidContext)),
-            _ => self.unmap(),
         }
     }
 

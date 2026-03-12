@@ -314,10 +314,6 @@ pub struct ZombieQueue {
     total_dropped: AtomicU64,
     /// Statistics: unmap failed (driver error)
     total_unmap_failed: AtomicU64,
-    /// Statistics: no IOMMU driver available
-    total_no_driver: AtomicU64,
-    /// Statistics: identity mappings leaked (intentional)
-    total_identity_leaked: AtomicU64,
 }
 
 impl ZombieQueue {
@@ -333,8 +329,6 @@ impl ZombieQueue {
             total_drained: AtomicU64::new(0),
             total_dropped: AtomicU64::new(0),
             total_unmap_failed: AtomicU64::new(0),
-            total_no_driver: AtomicU64::new(0),
-            total_identity_leaked: AtomicU64::new(0),
         }
     }
 
@@ -507,8 +501,6 @@ impl ZombieQueue {
             total_drained: self.total_drained.load(Ordering::Relaxed),
             total_dropped: self.total_dropped.load(Ordering::Relaxed),
             total_unmap_failed: self.total_unmap_failed.load(Ordering::Relaxed),
-            total_no_driver: self.total_no_driver.load(Ordering::Relaxed),
-            total_identity_leaked: self.total_identity_leaked.load(Ordering::Relaxed),
             capacity: ZOMBIE_QUEUE_CAPACITY,
         }
     }
@@ -516,16 +508,6 @@ impl ZombieQueue {
     /// Increment the unmap_failed counter.
     pub fn inc_unmap_failed(&self) {
         self.total_unmap_failed.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment the no_driver counter.
-    pub fn inc_no_driver(&self) {
-        self.total_no_driver.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Increment the identity_leaked counter.
-    pub fn inc_identity_leaked(&self) {
-        self.total_identity_leaked.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Estimate current pending count (accurate based on enqueued - drained).
@@ -549,10 +531,6 @@ pub struct ZombieQueueStats {
     pub total_dropped: u64,
     /// Total unmap failures (driver returned error)
     pub total_unmap_failed: u64,
-    /// Total entries leaked because no IOMMU driver was available
-    pub total_no_driver: u64,
-    /// Total identity mappings intentionally leaked
-    pub total_identity_leaked: u64,
     /// Queue capacity
     pub capacity: usize,
 }
@@ -625,7 +603,6 @@ pub fn has_pending_zombies() -> bool {
 pub fn encode_mapping_kind(kind: &crate::io::iommu::common::dma::handle::MappingKind) -> u32 {
     use crate::io::iommu::common::dma::handle::MappingKind;
     match kind {
-        MappingKind::Identity => 0,
         MappingKind::Device(device_id) => {
             // Store device BDF in upper 16 bits
             0x0002_0000 | (device_id.bdf() as u32)
@@ -635,19 +612,20 @@ pub fn encode_mapping_kind(kind: &crate::io::iommu::common::dma::handle::Mapping
 }
 
 /// Decode MappingKind from zombie queue storage.
-pub fn decode_mapping_kind(encoded: u32) -> crate::io::iommu::common::dma::handle::MappingKind {
+pub fn decode_mapping_kind(
+    encoded: u32,
+) -> Option<crate::io::iommu::common::dma::handle::MappingKind> {
     use crate::io::iommu::common::dma::handle::MappingKind;
     use crate::io::iommu::types::DeviceId;
 
     let kind = encoded & 0xFFFF;
     match kind {
-        0 => MappingKind::Identity,
-        3 => MappingKind::Domain,
+        3 => Some(MappingKind::Domain),
         _ if (encoded >> 16) == 2 => {
             let bdf = (encoded & 0xFFFF) as u16;
-            MappingKind::Device(DeviceId::from_bdf(bdf))
+            Some(MappingKind::Device(DeviceId::from_bdf(bdf)))
         }
-        _ => MappingKind::Identity, // Fallback
+        _ => None,
     }
 }
 
@@ -667,10 +645,18 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
     let driver = get_iommu_driver();
 
     process_zombies(max_count, |zombie| {
-        let kind = decode_mapping_kind(zombie.mapping_kind);
+        let Some(kind) = decode_mapping_kind(zombie.mapping_kind) else {
+            log::error!(
+                "[ZombieGC] Invalid mapping kind for zombie IOVA=0x{:x}: encoded=0x{:x}",
+                zombie.iova,
+                zombie.mapping_kind
+            );
+            ZOMBIE_QUEUE.inc_unmap_failed();
+            return false;
+        };
 
-        // If no IOMMU driver, we can't do any cleanup.
-        // Return false to leak the entry safely (IOVA stays mapped).
+        // Without an active IOMMU driver we cannot tear down translated mappings.
+        // Return false to leak the entry safely until the driver becomes available again.
         let Some(ref driver) = driver else {
             log::warn!(
                 "[ZombieGC] No IOMMU driver, leaking: IOVA=0x{:x}, size={}, kind={:?}",
@@ -678,23 +664,11 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
                 zombie.size,
                 kind
             );
-            ZOMBIE_QUEUE.inc_no_driver();
+            ZOMBIE_QUEUE.inc_unmap_failed();
             return false;
         };
 
         let result = match &kind {
-            MappingKind::Identity => {
-                // Identity mappings don't need IOMMU cleanup, but we still
-                // can't run the RRef drop without knowing if device DMA is complete.
-                // Leak to be safe.
-                log::warn!(
-                    "[ZombieGC] Identity mapping leaked: IOVA=0x{:x}, size={}",
-                    zombie.iova,
-                    zombie.size
-                );
-                ZOMBIE_QUEUE.inc_identity_leaked();
-                return false;
-            }
             MappingKind::Device(device_id) => {
                 // Device-specific mapping
                 driver.unmap_for_device(device_id, zombie.iova, zombie.size)

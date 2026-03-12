@@ -335,7 +335,7 @@ impl IommuDomain {
     /// 3. When a table has no more children to process, free it
     ///
     /// # Safety
-    /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
+    /// - The domain must not be in use by hardware and should already be detached
     pub(crate) unsafe fn deallocate_page_tables_iterative(&mut self) {
         unsafe {
             let layout = alloc::alloc::Layout::from_size_align(
