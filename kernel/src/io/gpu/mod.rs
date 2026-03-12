@@ -181,5 +181,5 @@ pub struct VirtioGpu {
     framebuffers: RwLock<Vec<Framebuffer>>,
     initialized: AtomicBool,
     has_3d: bool,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 }

@@ -15,6 +15,12 @@ fn align_up(value: usize, align: usize) -> usize {
 
 struct NoopTransport;
 
+fn test_device() -> crate::io::iommu::types::DeviceId {
+    let device = crate::io::iommu::types::DeviceId::new(0, 0, 0x10, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    device
+}
+
 impl VirtioTransport for NoopTransport {
     fn device_type(&self) -> VirtioDeviceType {
         VirtioDeviceType::Input
@@ -114,7 +120,7 @@ fn test_virtio_input_event_default() {
 
 #[test_case]
 fn test_virtio_input_device_new() {
-    let dev = VirtioInputDevice::new(Box::new(NoopTransport));
+    let dev = VirtioInputDevice::new(Box::new(NoopTransport), test_device());
     assert!(!dev.is_ready());
     assert!(dev.event_queue.is_none());
     assert!(dev.status_queue.is_none());
@@ -124,9 +130,10 @@ fn test_virtio_input_device_new() {
 fn test_virtio_input_device_new_with_device() {
     use crate::io::iommu::types::DeviceId;
     let device_id = DeviceId::new(0, 0, 0, 0);
-    let dev = VirtioInputDevice::new_with_device(Box::new(NoopTransport), Some(device_id));
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device_id);
+    let dev = VirtioInputDevice::new_with_device(Box::new(NoopTransport), device_id);
     assert!(!dev.is_ready());
-    assert!(dev.iommu_device_id.is_some());
+    assert_eq!(dev.iommu_device_id, device_id);
 }
 
 #[test_case]
@@ -174,7 +181,7 @@ fn test_config_select_constants() {
 
 #[test_case]
 fn test_query_config_returns_none_for_zero_size() {
-    let dev = VirtioInputDevice::new(Box::new(NoopTransport));
+    let dev = VirtioInputDevice::new(Box::new(NoopTransport), test_device());
     // NoopTransport returns 0 for all reads, so size=0 => None
     let result = dev.query_config(config_select::VIRTIO_INPUT_CFG_ID_NAME, 0);
     assert!(result.is_none());
@@ -182,13 +189,13 @@ fn test_query_config_returns_none_for_zero_size() {
 
 #[test_case]
 fn test_device_name_returns_none_for_noop() {
-    let dev = VirtioInputDevice::new(Box::new(NoopTransport));
+    let dev = VirtioInputDevice::new(Box::new(NoopTransport), test_device());
     assert!(dev.device_name().is_none());
 }
 
 #[test_case]
 fn test_set_event_handler() {
-    let dev = VirtioInputDevice::new(Box::new(NoopTransport));
+    let dev = VirtioInputDevice::new(Box::new(NoopTransport), test_device());
 
     fn my_handler(_event: VirtioInputEvent) {}
 

@@ -7,6 +7,12 @@ use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
 
 struct NoopTransport;
 
+fn test_device() -> crate::io::iommu::types::DeviceId {
+    let device = crate::io::iommu::types::DeviceId::new(0, 0, 0x20, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    device
+}
+
 impl VirtioTransport for NoopTransport {
     fn device_type(&self) -> VirtioDeviceType {
         VirtioDeviceType::Console
@@ -93,7 +99,7 @@ impl VirtioTransport for NoopTransport {
 
 #[test_case]
 fn test_console_device_creation() {
-    let dev = VirtioConsoleDevice::new(Box::new(NoopTransport));
+    let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
     assert!(!dev.is_ready());
     assert_eq!(dev.config().cols, 80);
     assert_eq!(dev.config().rows, 24);
@@ -101,7 +107,7 @@ fn test_console_device_creation() {
 
 #[test_case]
 fn test_console_write_not_ready() {
-    let dev = VirtioConsoleDevice::new(Box::new(NoopTransport));
+    let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
     let result = dev.write_bytes(b"hello");
     assert_eq!(result, Err(ConsoleError::NotReady));
 }
@@ -123,7 +129,7 @@ fn test_console_write_empty_data() {
 
     let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 1, 0) };
 
-    let mut dev = VirtioConsoleDevice::new(Box::new(NoopTransport));
+    let mut dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
     dev.tx_queue = Some(Arc::new(crate::sync::PoisonLock::new(vq)));
     dev.ready.store(true, Ordering::Release);
 
@@ -134,7 +140,7 @@ fn test_console_write_empty_data() {
 
 #[test_case]
 fn test_console_read_no_data() {
-    let dev = VirtioConsoleDevice::new(Box::new(NoopTransport));
+    let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
     // No RX queue set up, should return None
     assert!(dev.read_bytes().is_none());
 }

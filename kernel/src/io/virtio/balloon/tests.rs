@@ -19,6 +19,12 @@ struct NoopTransport {
     config: [u8; 16],
 }
 
+fn test_device() -> crate::io::iommu::types::DeviceId {
+    let device = crate::io::iommu::types::DeviceId::new(0, 0, 0x30, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    device
+}
+
 impl NoopTransport {
     fn new() -> Self {
         Self { config: [0u8; 16] }
@@ -204,7 +210,7 @@ fn make_test_device(transport: NoopTransport) -> (VirtioBalloonDevice, TestQueue
         )
     };
 
-    let mut dev = VirtioBalloonDevice::new(Box::new(transport));
+    let mut dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
     dev.inflate_queue = Some(Arc::new(crate::sync::PoisonLock::new(inflate_vq)));
     dev.deflate_queue = Some(Arc::new(crate::sync::PoisonLock::new(deflate_vq)));
     dev.ready.store(true, Ordering::Release);
@@ -239,7 +245,7 @@ struct TestQueues {
 #[test_case]
 fn test_balloon_device_creation() {
     let transport = NoopTransport::new();
-    let dev = VirtioBalloonDevice::new(Box::new(transport));
+    let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
     assert!(!dev.is_ready());
     assert_eq!(dev.features(), 0);
 }
@@ -247,14 +253,14 @@ fn test_balloon_device_creation() {
 #[test_case]
 fn test_balloon_read_target() {
     let transport = NoopTransport::with_target(1024);
-    let dev = VirtioBalloonDevice::new(Box::new(transport));
+    let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
     assert_eq!(dev.read_target(), 1024);
 }
 
 #[test_case]
 fn test_balloon_write_actual() {
     let transport = NoopTransport::new();
-    let dev = VirtioBalloonDevice::new(Box::new(transport));
+    let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
     dev.write_actual(512);
     // Read back from config space offset 4
     let actual = dev.transport.read_config_u32(config_offsets::ACTUAL);
@@ -264,7 +270,7 @@ fn test_balloon_write_actual() {
 #[test_case]
 fn test_balloon_inflate_not_ready() {
     let transport = NoopTransport::new();
-    let dev = VirtioBalloonDevice::new(Box::new(transport));
+    let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
     // Device is not ready, inflate should fail with NotReady
     let pfns = [0x1000u32, 0x2000, 0x3000];
     assert_eq!(dev.inflate_pages(&pfns), Err(BalloonError::NotReady));

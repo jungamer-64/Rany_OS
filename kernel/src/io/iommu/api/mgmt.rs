@@ -6,23 +6,13 @@
 //!
 //! Initialization, domain management, and global operations.
 
-use core::sync::atomic::Ordering;
-
-use crate::io::iommu::IOMMU_REQUIRED;
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, is_iommu_enabled};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 
-/// IOMMUを必須に設定する
-///
-/// 起動初期（IOMMU初期化前）に呼び出すこと
-pub fn set_iommu_required(required: bool) {
-    IOMMU_REQUIRED.store(required, Ordering::Release);
-}
-
 /// IOMMUが必須かどうかを確認
 pub fn is_iommu_required() -> bool {
-    IOMMU_REQUIRED.load(Ordering::Acquire)
+    true
 }
 
 /// IOMMU要件をチェックし、必要なら停止

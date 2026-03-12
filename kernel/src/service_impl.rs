@@ -293,29 +293,22 @@ impl IommuMappingRegistry {
 static IOMMU_MAPPING_REGISTRY: IommuMappingRegistry = IommuMappingRegistry::new();
 
 fn map_for_iommu(
-    device: Option<IommuDeviceId>,
+    device: IommuDeviceId,
     phys_addr: u64,
     size: usize,
 ) -> Result<(u64, Option<IommuMapping>), KapiError> {
     if !crate::io::iommu::api::is_iommu_enabled() {
-        if crate::io::iommu::api::is_iommu_required() {
-            return Err(KapiError::IoError);
-        }
-        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
-            return Err(KapiError::IoError);
-        }
-        return Ok((phys_addr, None));
+        return Err(KapiError::IoError);
     }
-    let dev = device.ok_or(KapiError::IoError)?;
     let map_len = crate::io::nvme::dma::align_up_page(size);
     let iova = unsafe {
-        crate::io::iommu::api::map_for_device(&dev, PhysAddr::new(phys_addr), map_len as u64)
+        crate::io::iommu::api::map_for_device(&device, PhysAddr::new(phys_addr), map_len as u64)
     }
     .map_err(|_| KapiError::IoError)?;
     Ok((
         iova,
         Some(IommuMapping {
-            device: dev,
+            device,
             iova,
             size: map_len as u64,
         }),

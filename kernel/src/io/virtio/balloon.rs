@@ -63,8 +63,8 @@ pub struct VirtioBalloonDevice {
     inflight_buffers: PoisonLock<BTreeMap<u16, CoherentDmaBuffer>>,
     /// Device ready flag
     ready: AtomicBool,
-    /// Optional IOMMU device identifier
-    iommu_device_id: Option<IommuDeviceId>,
+    /// IOMMU device identifier
+    iommu_device_id: IommuDeviceId,
     /// Shared core device logic
     core: CoreBalloonDevice,
     /// Guest page size in bytes
@@ -76,14 +76,14 @@ unsafe impl Sync for VirtioBalloonDevice {}
 
 impl VirtioBalloonDevice {
     /// Create a new VirtIO balloon device (uninitialized)
-    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
-        Self::new_with_device(transport, None)
+    pub fn new(transport: Box<dyn VirtioTransport>, iommu_device_id: IommuDeviceId) -> Self {
+        Self::new_with_device(transport, iommu_device_id)
     }
 
     /// Create a new VirtIO balloon device with an IOMMU device ID.
     pub fn new_with_device(
         transport: Box<dyn VirtioTransport>,
-        iommu_device_id: Option<IommuDeviceId>,
+        iommu_device_id: IommuDeviceId,
     ) -> Self {
         Self {
             transport,
@@ -135,7 +135,7 @@ impl VirtioBalloonDevice {
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             total_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
-            self.iommu_device_id.as_ref(),
+            &self.iommu_device_id,
         )
         .ok_or(BalloonError::NotReady)?;
 
@@ -200,7 +200,7 @@ impl VirtioBalloonDevice {
         let mut dma_buf = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             byte_len,
             DmaMemoryAttributes::MMIO,
-            self.iommu_device_id.as_ref(),
+            &self.iommu_device_id,
         )
         .ok_or(BalloonError::AllocFailed)?;
 
@@ -348,11 +348,19 @@ pub fn get_virtio_balloon_device_at_index(index: u8) -> Option<Arc<VirtioBalloon
     }
 }
 
+#[cfg(test)]
+fn test_device_for_index(index: u8) -> IommuDeviceId {
+    let device = IommuDeviceId::new(0, 0, index, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    device
+}
+
+#[cfg(test)]
 pub unsafe fn init_virtio_balloon_at_index(index: u8, mmio_base: u64) -> Result<(), BalloonError> {
     let transport = unsafe {
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BalloonError::NotReady)?
     };
-    let mut dev = VirtioBalloonDevice::new(Box::new(transport));
+    let mut dev = VirtioBalloonDevice::new(Box::new(transport), test_device_for_index(index));
     dev.init()?;
 
     let device_arc = Arc::new(dev);
@@ -367,6 +375,7 @@ pub unsafe fn init_virtio_balloon_at_index(index: u8, mmio_base: u64) -> Result<
     Ok(())
 }
 
+#[cfg(test)]
 pub unsafe fn init_virtio_balloon(mmio_base: u64) -> Result<(), BalloonError> {
     init_virtio_balloon_at_index(0, mmio_base)
 }
@@ -379,7 +388,7 @@ pub unsafe fn init_virtio_balloon_for_device_at_index(
     let transport = unsafe {
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BalloonError::NotReady)?
     };
-    let mut dev = VirtioBalloonDevice::new_with_device(Box::new(transport), Some(device));
+    let mut dev = VirtioBalloonDevice::new_with_device(Box::new(transport), device);
     dev.init()?;
 
     let device_arc = Arc::new(dev);
@@ -404,7 +413,7 @@ pub unsafe fn init_virtio_balloon_for_device(
 pub unsafe fn init_virtio_balloon_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 ) -> Result<(), BalloonError> {
     let mut dev = VirtioBalloonDevice::new_with_device(transport, iommu_device_id);
     dev.init()?;
@@ -423,7 +432,7 @@ pub unsafe fn init_virtio_balloon_with_transport_at_index(
 
 pub unsafe fn init_virtio_balloon_with_transport(
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 ) -> Result<(), BalloonError> {
     init_virtio_balloon_with_transport_at_index(0, transport, iommu_device_id)
 }

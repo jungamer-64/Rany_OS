@@ -14,17 +14,15 @@ pub mod config_offsets {
 }
 
 impl VirtioBlkDevice {
-    /// Create a new VirtIO block device (uninitialized)
-    ///
-    /// The transport must already be validated (magic/version checks).
-    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
-        Self::new_with_device(transport, None)
+    /// Create a new VirtIO block device with an IOMMU device ID.
+    pub fn new(transport: Box<dyn VirtioTransport>, iommu_device_id: IommuDeviceId) -> Self {
+        Self::new_with_device(transport, iommu_device_id)
     }
 
-    /// Create a new VirtIO block device with an IOMMU device ID.
+    /// Create a new VirtIO block device with an explicit device-scoped DMA identity.
     pub fn new_with_device(
         transport: Box<dyn VirtioTransport>,
-        iommu_device_id: Option<IommuDeviceId>,
+        iommu_device_id: IommuDeviceId,
     ) -> Self {
         Self {
             core: CoreBlkDevice::new(),
@@ -88,7 +86,7 @@ impl VirtioBlkDevice {
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             total_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
-            self.iommu_device_id.as_ref(),
+            &self.iommu_device_id,
         )
         .ok_or(BlockError::NotReady)?;
 
@@ -308,7 +306,7 @@ impl VirtioBlkDevice {
         };
         let use_indirect = (self.core.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
         let mut req_dma =
-            BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
+            BlkRequestDma::new_with_device(&header, &self.iommu_device_id, use_indirect)
                 .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
@@ -384,7 +382,7 @@ impl VirtioBlkDevice {
             sector,
         };
         let use_indirect = (self.core.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
-        BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
+        BlkRequestDma::new_with_device(&header, &self.iommu_device_id, use_indirect)
             .ok_or(BlockError::NotReady)
     }
 
@@ -477,7 +475,7 @@ impl VirtioBlkDevice {
         };
         let use_indirect = (self.core.features & crate::io::virtio::VIRTIO_F_INDIRECT_DESC) != 0;
         let mut req_dma =
-            BlkRequestDma::new_with_device(&header, self.iommu_device_id.as_ref(), use_indirect)
+            BlkRequestDma::new_with_device(&header, &self.iommu_device_id, use_indirect)
                 .ok_or(BlockError::NotReady)?;
 
         let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
@@ -565,12 +563,8 @@ impl VirtioBlkDevice {
         rref: crate::ipc::RRef<[u8]>,
         direction: DmaDirection,
     ) -> VfsBlockResult<DmaHandle<[u8]>> {
-        let handle = if let Some(device) = self.iommu_device_id {
-            map_rref_slice_for_device(rref, &device, direction)
-        } else {
-            return Err(VfsBlockError::IoError);
-        }
-        .map_err(|_| VfsBlockError::IoError)?;
+        let handle = map_rref_slice_for_device(rref, &self.iommu_device_id, direction)
+            .map_err(|_| VfsBlockError::IoError)?;
         Ok(handle)
     }
 

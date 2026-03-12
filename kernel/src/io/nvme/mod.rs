@@ -36,8 +36,9 @@ pub fn set_iommu_device(device: IommuDeviceId) {
 }
 
 /// Get NVMe device ID for IOMMU mapping
-pub fn iommu_device() -> Option<IommuDeviceId> {
-    *NVME_IOMMU_DEVICE.lock().unwrap_or_else(|e| e.into_inner())
+pub fn iommu_device() -> IommuDeviceId {
+    (*NVME_IOMMU_DEVICE.lock().unwrap_or_else(|e| e.into_inner()))
+        .expect("NVMe IOMMU device must be registered before DMA use")
 }
 
 // ============================================================================

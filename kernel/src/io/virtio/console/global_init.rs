@@ -27,6 +27,13 @@ fn install_virtio_console_device(index: u8, device_arc: Arc<VirtioConsoleDevice>
     }
 }
 
+#[cfg(test)]
+fn test_device_for_index(index: u8) -> IommuDeviceId {
+    let device = IommuDeviceId::new(0, 0, index, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    device
+}
+
 /// Get a shared reference to the VirtIO console device by index.
 pub fn get_virtio_console_device_at_index(index: u8) -> Option<Arc<VirtioConsoleDevice>> {
     if index == 0 {
@@ -43,12 +50,13 @@ pub fn get_virtio_console_device_at_index(index: u8) -> Option<Arc<VirtioConsole
     }
 }
 
+#[cfg(test)]
 /// Initialize the global VirtIO console device at a specific index.
 pub unsafe fn init_virtio_console_at_index(index: u8, mmio_base: u64) -> Result<(), ConsoleError> {
     let transport = unsafe {
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| ConsoleError::NotReady)?
     };
-    let mut dev = VirtioConsoleDevice::new(Box::new(transport));
+    let mut dev = VirtioConsoleDevice::new(Box::new(transport), test_device_for_index(index));
     dev.init()?;
 
     let device_arc = Arc::new(dev);
@@ -64,6 +72,7 @@ pub unsafe fn init_virtio_console_at_index(index: u8, mmio_base: u64) -> Result<
     Ok(())
 }
 
+#[cfg(test)]
 /// Initialize the global VirtIO console device (legacy `index=0`).
 pub unsafe fn init_virtio_console(mmio_base: u64) -> Result<(), ConsoleError> {
     init_virtio_console_at_index(0, mmio_base)
@@ -78,7 +87,7 @@ pub unsafe fn init_virtio_console_for_device_at_index(
     let transport = unsafe {
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| ConsoleError::NotReady)?
     };
-    let mut dev = VirtioConsoleDevice::new_with_device(Box::new(transport), Some(device));
+    let mut dev = VirtioConsoleDevice::new_with_device(Box::new(transport), device);
     dev.init()?;
 
     let device_arc = Arc::new(dev);
@@ -106,7 +115,7 @@ pub unsafe fn init_virtio_console_for_device(
 pub unsafe fn init_virtio_console_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 ) -> Result<(), ConsoleError> {
     let mut dev = VirtioConsoleDevice::new_with_device(transport, iommu_device_id);
     dev.init()?;
@@ -127,7 +136,7 @@ pub unsafe fn init_virtio_console_with_transport_at_index(
 /// Initialize the global VirtIO console device from an existing VirtioTransport (MMIO or PCI).
 pub unsafe fn init_virtio_console_with_transport(
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 ) -> Result<(), ConsoleError> {
     init_virtio_console_with_transport_at_index(0, transport, iommu_device_id)
 }

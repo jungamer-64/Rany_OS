@@ -68,11 +68,6 @@ pub unsafe fn init_iommu_from_acpi(
     dmar_addr: usize,
     config: IommuConfig,
 ) -> Result<(), IommuError> {
-    if !config.enabled {
-        log::error!("IOMMU disable request rejected: translated IOMMU protection is mandatory");
-        return Err(IommuError::NotSupported);
-    }
-
     // Initialize security subsystem (protected regions like APIC)
     crate::io::iommu::runtime::security::init();
 

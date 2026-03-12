@@ -238,15 +238,8 @@ impl DeviceDmaAllocator {
                 Ok(iova) => Ok((iova, true)),
                 Err(_) => Err(DmaError::IommuMappingFailed),
             }
-        } else if crate::io::iommu::api::is_iommu_required() {
-            Err(DmaError::IommuRequired)
         } else {
-            if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
-                return Err(DmaError::IommuRequired);
-            }
-            log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
-            crate::io::iommu::runtime::stats::inc_identity_fallback_count();
-            Ok((phys_addr.as_u64(), false))
+            Err(DmaError::IommuRequired)
         }
     }
 }

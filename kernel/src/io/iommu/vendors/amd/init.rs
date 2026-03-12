@@ -288,13 +288,8 @@ fn collect_ivmd_ranges(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIv
 
 pub unsafe fn init_iommu_from_ivrs(
     ivrs_addr: usize,
-    config: IommuConfig,
+    _config: IommuConfig,
 ) -> Result<(), IommuError> {
-    if !config.enabled {
-        log::error!("IOMMU disable request rejected: translated IOMMU protection is mandatory");
-        return Err(IommuError::NotSupported);
-    }
-
     // Initialize security subsystem (protected regions like APIC)
     crate::io::iommu::runtime::security::init();
 

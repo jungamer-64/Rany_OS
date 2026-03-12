@@ -396,7 +396,7 @@ impl SystemIntegration {
                 match unsafe {
                     crate::drivers::virtio::init_virtio_blk_with_transport(
                         alloc::boxed::Box::new(transport),
-                        Some(iommu_device),
+                        iommu_device,
                     )
                 } {
                     Ok(()) => {
@@ -500,7 +500,7 @@ impl SystemIntegration {
             crate::io::log::early_print("[VIRTIO-DBG] PCI transport created, init device...\n");
             match crate::drivers::virtio::init_virtio_net_with_transport(
                 alloc::boxed::Box::new(transport),
-                Some(iommu_device),
+                iommu_device,
             ) {
                 Ok(()) => {
                     crate::io::log::early_print("[VIRTIO-DBG] PCI transport init OK\n");
@@ -571,7 +571,7 @@ impl SystemIntegration {
                 match unsafe {
                     crate::drivers::virtio::init_virtio_console_with_transport(
                         alloc::boxed::Box::new(transport),
-                        Some(iommu_device),
+                        iommu_device,
                     )
                 } {
                     Ok(()) => {
@@ -645,7 +645,7 @@ impl SystemIntegration {
                 match unsafe {
                     crate::drivers::virtio::init_virtio_input_with_transport(
                         alloc::boxed::Box::new(transport),
-                        Some(iommu_device),
+                        iommu_device,
                     )
                 } {
                     Ok(()) => {
@@ -719,7 +719,7 @@ impl SystemIntegration {
                 match unsafe {
                     crate::drivers::virtio::init_virtio_balloon_with_transport(
                         alloc::boxed::Box::new(transport),
-                        Some(iommu_device),
+                        iommu_device,
                     )
                 } {
                     Ok(()) => {

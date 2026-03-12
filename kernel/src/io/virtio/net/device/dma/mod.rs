@@ -91,11 +91,8 @@ pub(crate) fn prepare_dma_mapping_tx(
         // If the buffer is page-aligned and fits in a page, we can direct-map it
         // instead of using a bounce buffer (zero-copy support).
         if (phys_addr_val & page_mask) == 0 && total_len <= crate::mm::types::PAGE_SIZE_4K {
-            let device_id = device
-                .iommu_device_id()
-                .ok_or(VirtioNetError::DeviceError)?;
             let dma_mapping = map_net_dma_for_range(
-                device_id,
+                device.iommu_device_id(),
                 phys_addr_val,
                 crate::mm::types::PAGE_SIZE_4K,
                 NetDmaDirection::ToDevice,
@@ -113,7 +110,7 @@ pub(crate) fn prepare_dma_mapping_tx(
             data,
             total_len,
         )?;
-    } else if is_iommu_required() {
+    } else {
         return Err(VirtioNetError::DeviceError);
     }
 
@@ -161,11 +158,8 @@ pub(crate) fn prepare_dma_mapping_rx(
         let page_mask = (crate::mm::types::PAGE_SIZE_4K as u64) - 1;
         // RX Zero-copy support: direct map if page-aligned
         if (phys_addr_val & page_mask) == 0 && data_len <= crate::mm::types::PAGE_SIZE_4K {
-            let device_id = device
-                .iommu_device_id()
-                .ok_or(VirtioNetError::DeviceError)?;
             let dma_mapping = map_net_dma_for_range(
-                device_id,
+                device.iommu_device_id(),
                 phys_addr_val,
                 crate::mm::types::PAGE_SIZE_4K,
                 NetDmaDirection::Bidirectional,
@@ -176,7 +170,7 @@ pub(crate) fn prepare_dma_mapping_rx(
         }
 
         prepare_iommu_bounce_rx(device, &mut result, page_offset, can_map_page, data_len)?;
-    } else if is_iommu_required() {
+    } else {
         return Err(VirtioNetError::DeviceError);
     }
 
@@ -352,12 +346,7 @@ impl<'a> RecvFuture<'a> {
             if let Err(err) =
                 check_device_dma_mask(self.device.iommu_device_id, prep.dma_addr, buffer_len)
             {
-                cleanup_dma_resources(
-                    self.device,
-                    None,
-                    prep.dma_mapping.take(),
-                    true,
-                );
+                cleanup_dma_resources(self.device, None, prep.dma_mapping.take(), true);
                 return Err(err);
             }
         }
@@ -372,12 +361,7 @@ impl<'a> RecvFuture<'a> {
                 Ok(())
             }
             Err(e) => {
-                cleanup_dma_resources(
-                    self.device,
-                    prep.pool_bounce_buffer,
-                    prep.dma_mapping,
-                    true,
-                );
+                cleanup_dma_resources(self.device, prep.pool_bounce_buffer, prep.dma_mapping, true);
                 Err(e)
             }
         }
@@ -607,12 +591,7 @@ impl<'a> ZeroCopyRecvFuture<'a> {
                 Poll::Pending
             }
             Err(e) => {
-                cleanup_dma_resources(
-                    self.device,
-                    prep.pool_bounce_buffer,
-                    prep.dma_mapping,
-                    true,
-                );
+                cleanup_dma_resources(self.device, prep.pool_bounce_buffer, prep.dma_mapping, true);
                 Poll::Ready(Err(e))
             }
         }

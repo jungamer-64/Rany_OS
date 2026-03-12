@@ -536,13 +536,12 @@ impl CoherentDmaBuffer {
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
-        // IOMMUマッピング（デバイスID指定時かつIOMMU有効時）
+        // Device-bound DMA buffers require translated IOMMU mappings.
         let (iova, iommu_device) = if let Some(dev) = device {
             if crate::io::iommu::api::is_iommu_enabled() {
                 // ページアライメントされたサイズでマッピング（4K境界）
                 let aligned_size = iommu_align_len(size).unwrap_or(size);
-                let ctx =
-                    crate::io::dma::DeviceDmaContext::for_attached_device(*dev);
+                let ctx = crate::io::dma::DeviceDmaContext::for_attached_device(*dev);
                 match ctx.map_physical_range(phys_addr, aligned_size, attributes.direction) {
                     Ok(mapping) => {
                         let (_device_id, iova, _mapped_len) = mapping.into_parts();
@@ -569,7 +568,14 @@ impl CoherentDmaBuffer {
                     }
                 }
             } else {
-                (None, None)
+                log::error!(
+                    "[DMA][SECURITY] CoherentDmaBuffer requires an active IOMMU mapping for device {:?}",
+                    dev
+                );
+                unsafe {
+                    dealloc(ptr, layout);
+                }
+                return None;
             }
         } else {
             (None, None)

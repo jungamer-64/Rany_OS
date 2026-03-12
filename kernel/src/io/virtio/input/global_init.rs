@@ -4,7 +4,7 @@ use super::*;
 pub unsafe fn init_virtio_input_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 ) -> Result<(), InputError> {
     let mut dev = VirtioInputDevice::new_with_device(transport, iommu_device_id);
     dev.init()?;
@@ -40,7 +40,7 @@ pub unsafe fn init_virtio_input_with_transport_at_index(
 /// Caller must ensure the transport is properly initialized and points to a valid device.
 pub unsafe fn init_virtio_input_with_transport(
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 ) -> Result<(), InputError> {
     init_virtio_input_with_transport_at_index(0, transport, iommu_device_id)
 }

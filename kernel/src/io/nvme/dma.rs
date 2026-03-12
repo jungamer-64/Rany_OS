@@ -60,27 +60,15 @@ impl PrpListChain {
 }
 
 fn map_for_iommu(
-    device: Option<IommuDeviceId>,
+    device: IommuDeviceId,
     phys_addr: PhysAddr,
     size: usize,
 ) -> Result<(u64, Option<DeviceDmaMapping>), NvmeDmaError> {
     if !crate::io::iommu::api::is_iommu_enabled() {
-        #[cfg(test)]
-        {
-            if !crate::io::iommu::api::is_iommu_required()
-                && crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
-            {
-                return Ok((phys_addr.as_u64(), None));
-            }
-        }
-        if crate::io::iommu::api::is_iommu_required() {
-            return Err(NvmeDmaError::IommuIdentityBlocked);
-        }
         return Err(NvmeDmaError::IommuIdentityBlocked);
     }
 
-    let dev = device.ok_or(NvmeDmaError::IommuDeviceMissing)?;
-    let ctx = DeviceDmaContext::for_attached_device(dev);
+    let ctx = DeviceDmaContext::for_attached_device(device);
     let mapping = ctx
         .map_physical_range(phys_addr, size, DmaDirection::Bidirectional)
         .map_err(|_| NvmeDmaError::IommuMappingFailed)?;
@@ -90,16 +78,9 @@ fn map_for_iommu(
 }
 
 fn allocate_prp_list_buffers(
-    device: Option<IommuDeviceId>,
+    device: IommuDeviceId,
     total_entries: usize,
-) -> Result<
-    (
-        Vec<DmaRegion>,
-        Vec<u64>,
-        Vec<Option<DeviceDmaMapping>>,
-    ),
-    NvmeDmaError,
-> {
+) -> Result<(Vec<DmaRegion>, Vec<u64>, Vec<Option<DeviceDmaMapping>>), NvmeDmaError> {
     let mut remaining = total_entries;
     let mut list_buffers = Vec::new();
 
@@ -159,7 +140,7 @@ fn fill_prp_entries(
 }
 
 fn build_prp_list(
-    device: Option<IommuDeviceId>,
+    device: IommuDeviceId,
     base_addr: u64,
     alloc_len: usize,
 ) -> Result<(u64, Option<PrpListChain>), NvmeDmaError> {
@@ -209,7 +190,7 @@ pub(crate) struct NvmeDmaRegion {
 impl NvmeDmaRegion {
     pub(crate) fn for_read(
         logical_len: usize,
-        device: Option<IommuDeviceId>,
+        device: IommuDeviceId,
     ) -> Result<Self, NvmeDmaError> {
         if logical_len == 0 {
             return Err(NvmeDmaError::InvalidLen);
@@ -224,7 +205,7 @@ impl NvmeDmaRegion {
     pub(crate) fn for_write(
         logical_len: usize,
         src: &[u8],
-        device: Option<IommuDeviceId>,
+        device: IommuDeviceId,
     ) -> Result<Self, NvmeDmaError> {
         if logical_len == 0 || src.len() > logical_len {
             return Err(NvmeDmaError::InvalidLen);
@@ -243,7 +224,7 @@ impl NvmeDmaRegion {
     pub(crate) fn from_region(
         data: DmaRegion,
         logical_len: usize,
-        device: Option<IommuDeviceId>,
+        device: IommuDeviceId,
     ) -> Result<Self, NvmeDmaError> {
         let alloc_len = data.size();
         let phys_addr = PhysAddr::new(data.host_addr());
@@ -291,10 +272,7 @@ impl NvmeDmaRegion {
 
     pub(crate) fn complete(mut self) -> DmaRegion {
         let _ = self.prp_list.take();
-        let data = self
-            .data_region
-            .take()
-            .expect("missing NVMe DMA region");
+        let data = self.data_region.take().expect("missing NVMe DMA region");
         let _ = self.data_map.take();
         data.finish_from_device();
         data
@@ -313,42 +291,10 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    struct IdentityFallbackGuard {
-        prev_required: bool,
-        #[cfg(debug_assertions)]
-        prev_identity: bool,
-    }
-
-    impl IdentityFallbackGuard {
-        fn new() -> Self {
-            let prev_required = crate::io::iommu::api::is_iommu_required();
-            crate::io::iommu::api::set_iommu_required(false);
-
-            #[cfg(debug_assertions)]
-            let prev_identity = crate::io::iommu::api::is_unsafe_identity_mapping_allowed();
-            #[cfg(debug_assertions)]
-            unsafe {
-                crate::io::iommu::runtime::security::set_unsafe_identity_mapping_allowed(true);
-            }
-
-            Self {
-                prev_required,
-                #[cfg(debug_assertions)]
-                prev_identity,
-            }
-        }
-    }
-
-    impl Drop for IdentityFallbackGuard {
-        fn drop(&mut self) {
-            #[cfg(debug_assertions)]
-            unsafe {
-                crate::io::iommu::runtime::security::set_unsafe_identity_mapping_allowed(
-                    self.prev_identity,
-                );
-            }
-            crate::io::iommu::api::set_iommu_required(self.prev_required);
-        }
+    fn test_device() -> IommuDeviceId {
+        let device = IommuDeviceId::new(0, 0, 0x1f, 0);
+        crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+        device
     }
 
     #[test_case]
@@ -360,8 +306,7 @@ mod tests {
 
     #[test_case]
     fn write_region_tracks_logical_and_alloc_len() {
-        let _guard = IdentityFallbackGuard::new();
-        let dma = NvmeDmaRegion::for_write(5, &[1, 2, 3], None).expect("write region");
+        let dma = NvmeDmaRegion::for_write(5, &[1, 2, 3], test_device()).expect("write region");
 
         assert_eq!(dma.logical_len(), 5);
         assert_eq!(dma.alloc_len(), NVME_PAGE_SIZE);
@@ -370,14 +315,17 @@ mod tests {
 
     #[test_case]
     fn write_region_zero_fills_tail_and_copy_respects_logical_len() {
-        let _guard = IdentityFallbackGuard::new();
-        let dma = NvmeDmaRegion::for_write(5, &[1, 2, 3], None).expect("write region");
+        let dma = NvmeDmaRegion::for_write(5, &[1, 2, 3], test_device()).expect("write region");
         let data = dma.complete();
 
         assert_eq!(&unsafe { data.as_slice() }[..5], &[1, 2, 3, 0, 0]);
-        assert!(unsafe { data.as_slice() }[5..].iter().all(|byte| *byte == 0));
+        assert!(
+            unsafe { data.as_slice() }[5..]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
 
-        let dma = NvmeDmaRegion::for_write(5, &[9, 8, 7], None).expect("copy region");
+        let dma = NvmeDmaRegion::for_write(5, &[9, 8, 7], test_device()).expect("copy region");
         let mut out = [0xAAu8; 7];
         dma.copy_into(&mut out);
         assert_eq!(&out[..5], &[9, 8, 7, 0, 0]);
@@ -386,8 +334,8 @@ mod tests {
 
     #[test_case]
     fn prp2_selection_handles_two_page_transfer() {
-        let _guard = IdentityFallbackGuard::new();
-        let dma = NvmeDmaRegion::for_write(NVME_PAGE_SIZE + 1, &[0x5A], None).expect("two pages");
+        let dma = NvmeDmaRegion::for_write(NVME_PAGE_SIZE + 1, &[0x5A], test_device())
+            .expect("two pages");
 
         assert_eq!(dma.alloc_len(), NVME_PAGE_SIZE * 2);
         assert_eq!(dma.prp2(), dma.prp1() + NVME_PAGE_SIZE as u64);
@@ -395,9 +343,9 @@ mod tests {
 
     #[test_case]
     fn prp2_selection_uses_prp_list_for_multi_page_transfer() {
-        let _guard = IdentityFallbackGuard::new();
-        let dma = NvmeDmaRegion::for_write((NVME_PAGE_SIZE * 2) + 1, &vec![0xCC; 32], None)
-            .expect("three pages");
+        let dma =
+            NvmeDmaRegion::for_write((NVME_PAGE_SIZE * 2) + 1, &vec![0xCC; 32], test_device())
+                .expect("three pages");
 
         assert_eq!(dma.alloc_len(), NVME_PAGE_SIZE * 3);
         assert_ne!(dma.prp2(), 0);

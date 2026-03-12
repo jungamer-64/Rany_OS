@@ -73,14 +73,9 @@ pub(crate) struct BlkRequestDma {
 
 impl BlkRequestDma {
     /// Allocate DMA memory and copy the header into it.
-    fn new(header: &VirtioBlkReqHeader) -> Option<Self> {
-        Self::new_with_device(header, None, false)
-    }
-
-    /// Allocate IOMMU-aware DMA memory and copy the header into it.
     pub(crate) fn new_with_device(
         header: &VirtioBlkReqHeader,
-        device_id: Option<&IommuDeviceId>,
+        device_id: &IommuDeviceId,
         use_indirect: bool,
     ) -> Option<Self> {
         let header_size = core::mem::size_of::<VirtioBlkReqHeader>();
@@ -97,12 +92,8 @@ impl BlkRequestDma {
         } else {
             status_offset + 1
         };
-        let mut buffer = match device_id {
-            Some(dev_id) => {
-                CoherentDmaBuffer::new_for_device(total, DmaMemoryAttributes::MMIO, dev_id)?
-            }
-            None => CoherentDmaBuffer::new(total, DmaMemoryAttributes::MMIO)?,
-        };
+        let mut buffer =
+            CoherentDmaBuffer::new_for_device(total, DmaMemoryAttributes::MMIO, device_id)?;
         let base_dev = buffer.device_addr();
 
         unsafe {
@@ -159,8 +150,8 @@ pub struct VirtioBlkDevice {
     pending_wakers: Vec<IrqPoisonLock<Vec<Option<Waker>>>>,
     /// Device ready flag
     ready: AtomicBool,
-    /// Optional IOMMU device identifier for device-scoped mappings
-    iommu_device_id: Option<IommuDeviceId>,
+    /// IOMMU device identifier for device-scoped mappings
+    iommu_device_id: IommuDeviceId,
     /// Transport
     transport: Box<dyn crate::io::virtio::transport::VirtioTransport>,
     /// DMA buffers for inflight requests (header + status), per queue, indexed by descriptor index

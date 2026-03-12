@@ -42,13 +42,13 @@ fn wait_for_queue_completion(
 }
 
 impl VirtioGpu {
-    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
-        Self::new_with_device(transport, None)
+    pub fn new(transport: Box<dyn VirtioTransport>, iommu_device_id: IommuDeviceId) -> Self {
+        Self::new_with_device(transport, iommu_device_id)
     }
 
     pub fn new_with_device(
         transport: Box<dyn VirtioTransport>,
-        iommu_device_id: Option<IommuDeviceId>,
+        iommu_device_id: IommuDeviceId,
     ) -> Self {
         Self {
             transport,
@@ -68,18 +68,13 @@ impl VirtioGpu {
 
     /// IOMMU対応のDMAバッファを割り当てるヘルパー。
     ///
-    /// `iommu_device_id` が設定されている場合は `CoherentDmaBuffer::new_for_device()` を
-    /// 使い、IOMMU マッピングを自動登録する。設定されていない場合は従来の `new()` に
-    /// フォールバックする。
+    /// `iommu_device_id` に紐づく翻訳済み DMA バッファを割り当てる。
     pub(super) fn alloc_coherent(
         &self,
         size: usize,
         attrs: DmaMemoryAttributes,
     ) -> Option<CoherentDmaBuffer> {
-        match &self.iommu_device_id {
-            Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
-            None => CoherentDmaBuffer::new(size, attrs),
-        }
+        CoherentDmaBuffer::new_for_device(size, attrs, &self.iommu_device_id)
     }
 
     /// Initialize the VirtIO GPU device following the standard init sequence.
@@ -556,10 +551,13 @@ impl VirtioGpu {
         let format = PixelFormat::B8G8R8A8Unorm;
         let resource_id = self.create_resource_2d(width, height, format)?;
 
-        let fb = match &self.iommu_device_id {
-            Some(dev_id) => Framebuffer::new_for_device(resource_id, width, height, format, dev_id),
-            None => Framebuffer::new(resource_id, width, height, format),
-        }
+        let fb = Framebuffer::new_for_device(
+            resource_id,
+            width,
+            height,
+            format,
+            &self.iommu_device_id,
+        )
         .ok_or(GpuError::OutOfMemory)?;
 
         // Attach the DMA buffer as backing memory

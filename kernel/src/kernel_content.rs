@@ -328,9 +328,6 @@ fn init_avx() {
 
 /// ACPI and IOMMU initialization.
 fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
-    // Security baseline: IOMMU is mandatory for DMA isolation.
-    io::iommu::api::set_iommu_required(true);
-
     if boot_info.rsdp_addr == 0 {
         panic!(
             "[SECURITY] IOMMU is mandatory but the bootloader did not provide an RSDP. \
@@ -435,9 +432,7 @@ fn parse_iommu_cmdline(
     if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
         match val {
             "off" => {
-                panic!(
-                    "[SECURITY] Kernel cmdline requested 'iommu=off', but IOMMU is mandatory."
-                );
+                panic!("[SECURITY] Kernel cmdline requested 'iommu=off', but IOMMU is mandatory.");
             }
             "pt" | "passthrough" => {
                 panic!(
@@ -536,9 +531,7 @@ fn init_iommu_driver(
                 }
             }
             Err(_) => {
-                panic!(
-                    "[SECURITY] IOMMU is mandatory but no ACPI DMAR or IVRS table was found."
-                );
+                panic!("[SECURITY] IOMMU is mandatory but no ACPI DMAR or IVRS table was found.");
             }
         },
     }

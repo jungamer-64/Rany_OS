@@ -59,6 +59,13 @@ fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
         .insert(index, transport);
 }
 
+#[cfg(test)]
+fn test_device_for_index(index: u8) -> crate::io::iommu::types::DeviceId {
+    let device = crate::io::iommu::types::DeviceId::new(0, 0, index, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    device
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct VirtioNetDriverAdapter {
     index: u8,
@@ -252,17 +259,20 @@ fn collect_registered_virtio_net_indices() -> Vec<usize> {
     indices
 }
 
+#[cfg(test)]
 /// VirtIO ネットワークデバイス（MMIO）を index 指定で初期化
 pub fn init_virtio_net_at_index(index: u8, base_addr: usize) -> Result<(), VirtioNetError> {
     let transport =
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
-    let mut device = VirtioNetDevice::new_at_index(index, Box::new(transport));
+    let mut device =
+        VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), test_device_for_index(index));
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())
 }
 
+#[cfg(test)]
 /// VirtIO ネットワークデバイス（MMIO）を初期化
 pub fn init_virtio_net(base_addr: usize) -> Result<(), VirtioNetError> {
     init_virtio_net_at_index(0, base_addr)
@@ -278,7 +288,7 @@ pub fn init_virtio_net_for_device_at_index(
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
     let mut device =
-        VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), Some(device));
+        VirtioNetDevice::new_with_index_and_device(index, Box::new(transport), device);
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())
@@ -296,7 +306,7 @@ pub fn init_virtio_net_for_device(
 pub fn init_virtio_net_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<crate::io::iommu::types::DeviceId>,
+    iommu_device_id: crate::io::iommu::types::DeviceId,
 ) -> Result<(), VirtioNetError> {
     let mut device = VirtioNetDevice::new_with_index_and_device(index, transport, iommu_device_id);
     device.init()?;
@@ -307,7 +317,7 @@ pub fn init_virtio_net_with_transport_at_index(
 /// Initialize VirtIO-Net from an existing VirtioTransport (MMIO or PCI).
 pub fn init_virtio_net_with_transport(
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<crate::io::iommu::types::DeviceId>,
+    iommu_device_id: crate::io::iommu::types::DeviceId,
 ) -> Result<(), VirtioNetError> {
     init_virtio_net_with_transport_at_index(0, transport, iommu_device_id)
 }

@@ -67,8 +67,8 @@ pub struct VirtioConsoleDevice {
     core: CoreConsoleDevice,
     /// Device ready flag
     ready: AtomicBool,
-    /// Optional IOMMU device identifier for device-scoped mappings
-    iommu_device_id: Option<IommuDeviceId>,
+    /// IOMMU device identifier for device-scoped mappings
+    iommu_device_id: IommuDeviceId,
 }
 
 unsafe impl Send for VirtioConsoleDevice {}
@@ -86,14 +86,14 @@ impl VirtioConsoleDevice {
     /// Create a new VirtIO console device (uninitialized)
     ///
     /// The transport must already be validated (magic/version checks).
-    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
-        Self::new_with_device(transport, None)
+    pub fn new(transport: Box<dyn VirtioTransport>, iommu_device_id: IommuDeviceId) -> Self {
+        Self::new_with_device(transport, iommu_device_id)
     }
 
     /// Create a new VirtIO console device with an IOMMU device ID.
     pub fn new_with_device(
         transport: Box<dyn VirtioTransport>,
-        iommu_device_id: Option<IommuDeviceId>,
+        iommu_device_id: IommuDeviceId,
     ) -> Self {
         Self {
             transport,
@@ -153,7 +153,7 @@ impl VirtioConsoleDevice {
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             total_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
-            self.iommu_device_id.as_ref(),
+            &self.iommu_device_id,
         )
         .ok_or(ConsoleError::NotReady)?;
 
@@ -209,7 +209,7 @@ impl VirtioConsoleDevice {
             let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
                 RX_BUFFER_SIZE,
                 DmaMemoryAttributes::MMIO,
-                self.iommu_device_id.as_ref(),
+                &self.iommu_device_id,
             )
             .ok_or(ConsoleError::NotReady)?;
             let phys_addr = buffer.device_addr();
@@ -264,7 +264,7 @@ impl VirtioConsoleDevice {
         let mut buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             data.len(),
             DmaMemoryAttributes::MMIO,
-            self.iommu_device_id.as_ref(),
+            &self.iommu_device_id,
         )
         .ok_or(ConsoleError::NotReady)?;
         let phys_addr = buffer.device_addr();
@@ -339,7 +339,7 @@ impl VirtioConsoleDevice {
         let new_buffer_opt = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             RX_BUFFER_SIZE,
             DmaMemoryAttributes::MMIO,
-            self.iommu_device_id.as_ref(),
+            &self.iommu_device_id,
         );
 
         if let Some(new_buffer) = new_buffer_opt {

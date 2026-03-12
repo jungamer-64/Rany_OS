@@ -37,8 +37,8 @@ use super::fs_abstraction::{
 
 // NVme per-core API
 use crate::io::dma::{
-    CpuOwned, DeviceDmaContext, DeviceDmaMapping, DeviceOwned, DmaDirection,
-    DmaMemoryAttributes, DmaRegion, SgDmaGuard, TypedSgList,
+    CpuOwned, DeviceDmaContext, DeviceDmaMapping, DeviceOwned, DmaDirection, DmaMemoryAttributes,
+    DmaRegion, SgDmaGuard, TypedSgList,
 };
 use crate::io::io_scheduler::{
     CompletionHook, DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, IoResult,
@@ -318,7 +318,7 @@ fn map_nvme_dma_error(err: NvmeDmaError) -> FsError {
 }
 
 fn map_nvme_iommu(phys_addr: u64, size: usize) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
-    let device_id = crate::io::nvme::iommu_device().ok_or(FsError::IoError)?;
+    let device_id = crate::io::nvme::iommu_device();
     let ctx = DeviceDmaContext::for_attached_device(device_id);
     let mapping = ctx
         .map_physical_range(PhysAddr::new(phys_addr), size, DmaDirection::Bidirectional)

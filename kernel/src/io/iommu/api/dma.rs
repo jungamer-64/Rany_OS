@@ -9,9 +9,7 @@
 use x86_64::PhysAddr;
 
 use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MapError};
-use crate::io::iommu::runtime::registry::{
-    get_iommu_driver, validate_dma_mask_pre_allocation,
-};
+use crate::io::iommu::runtime::registry::{get_iommu_driver, validate_dma_mask_pre_allocation};
 use crate::io::iommu::runtime::stats::{inc_map_count, inc_unmap_count};
 use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::ipc::RRef;

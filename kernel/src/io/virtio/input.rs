@@ -68,8 +68,8 @@ pub struct VirtioInputDevice {
     core: CoreInputDevice,
     /// Device ready flag
     ready: AtomicBool,
-    /// Optional IOMMU device identifier
-    iommu_device_id: Option<IommuDeviceId>,
+    /// IOMMU device identifier
+    iommu_device_id: IommuDeviceId,
     /// User-provided event handler callback
     event_handler: PoisonLock<Option<fn(VirtioInputEvent)>>,
     /// Number of events dropped due to buffer allocation failures
@@ -89,14 +89,14 @@ pub mod config_offsets {
 
 impl VirtioInputDevice {
     /// Create a new VirtIO input device (uninitialized).
-    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
-        Self::new_with_device(transport, None)
+    pub fn new(transport: Box<dyn VirtioTransport>, iommu_device_id: IommuDeviceId) -> Self {
+        Self::new_with_device(transport, iommu_device_id)
     }
 
     /// Create a new VirtIO input device with an IOMMU device ID.
     pub fn new_with_device(
         transport: Box<dyn VirtioTransport>,
-        iommu_device_id: Option<IommuDeviceId>,
+        iommu_device_id: IommuDeviceId,
     ) -> Self {
         Self {
             transport,
@@ -146,7 +146,7 @@ impl VirtioInputDevice {
         let buffer = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             total_size,
             DmaMemoryAttributes::MMIO,
-            self.iommu_device_id.as_ref(),
+            &self.iommu_device_id,
         )
         .ok_or(InputError::NotReady)?;
 
@@ -206,7 +206,7 @@ impl VirtioInputDevice {
             let dma_buf = crate::io::virtio::dma::alloc_virtio_dma_buffer(
                 event_size,
                 DmaMemoryAttributes::MMIO,
-                self.iommu_device_id.as_ref(),
+                &self.iommu_device_id,
             )
             .ok_or(InputError::IoError)?;
             let phys_addr = dma_buf.device_addr();
@@ -243,7 +243,7 @@ impl VirtioInputDevice {
         let dma_buf = crate::io::virtio::dma::alloc_virtio_dma_buffer(
             event_size,
             DmaMemoryAttributes::MMIO,
-            self.iommu_device_id.as_ref(),
+            &self.iommu_device_id,
         )
         .ok_or(InputError::IoError)?;
         let phys_addr = dma_buf.device_addr();
@@ -394,10 +394,13 @@ pub fn get_virtio_input_device_at_index(index: u8) -> Option<Arc<VirtioInputDevi
     }
 }
 
+#[cfg(test)]
 pub unsafe fn init_virtio_input_at_index(index: u8, mmio_base: u64) -> Result<(), InputError> {
     let transport =
         unsafe { VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)? };
-    let mut dev = VirtioInputDevice::new(Box::new(transport));
+    let device = IommuDeviceId::new(0, 0, index, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    let mut dev = VirtioInputDevice::new(Box::new(transport), device);
     dev.init()?;
 
     let name = dev.device_name();
@@ -425,6 +428,7 @@ pub unsafe fn init_virtio_input_at_index(index: u8, mmio_base: u64) -> Result<()
     Ok(())
 }
 
+#[cfg(test)]
 pub unsafe fn init_virtio_input(mmio_base: u64) -> Result<(), InputError> {
     init_virtio_input_at_index(0, mmio_base)
 }
@@ -436,7 +440,7 @@ pub unsafe fn init_virtio_input_for_device_at_index(
 ) -> Result<(), InputError> {
     let transport =
         unsafe { VirtioMmioTransport::new(mmio_base as usize).map_err(|_| InputError::NotReady)? };
-    let mut dev = VirtioInputDevice::new_with_device(Box::new(transport), Some(device));
+    let mut dev = VirtioInputDevice::new_with_device(Box::new(transport), device);
     dev.init()?;
 
     let name = dev.device_name();

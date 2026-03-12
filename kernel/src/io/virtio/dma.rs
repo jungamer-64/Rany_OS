@@ -5,10 +5,7 @@ use crate::io::iommu::types::DeviceId as IommuDeviceId;
 pub fn alloc_virtio_dma_buffer(
     size: usize,
     attrs: DmaMemoryAttributes,
-    iommu_device_id: Option<&IommuDeviceId>,
+    iommu_device_id: &IommuDeviceId,
 ) -> Option<CoherentDmaBuffer> {
-    match iommu_device_id {
-        Some(dev_id) => CoherentDmaBuffer::new_for_device(size, attrs, dev_id),
-        None => CoherentDmaBuffer::new(size, attrs),
-    }
+    CoherentDmaBuffer::new_for_device(size, attrs, iommu_device_id)
 }

@@ -20,8 +20,12 @@ impl GraphicsManager {
         }
     }
 
-    pub fn init(&self, transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
-        let mut gpu = VirtioGpu::new(transport);
+    pub fn init(
+        &self,
+        transport: Box<dyn VirtioTransport>,
+        iommu_device_id: IommuDeviceId,
+    ) -> GpuResult<()> {
+        let mut gpu = VirtioGpu::new(transport, iommu_device_id);
         unsafe { gpu.init()? };
 
         let display_info = gpu.get_display_info()?;
@@ -72,12 +76,20 @@ pub fn graphics_manager() -> &'static GraphicsManager {
 /// Global VirtIO GPU device instance
 pub(crate) static VIRTIO_GPU_DEVICE: Mutex<Option<Arc<VirtioGpu>>> = Mutex::new(None);
 
+#[cfg(test)]
+fn test_device() -> IommuDeviceId {
+    let device = IommuDeviceId::new(0, 0, 0x40, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    device
+}
+
+#[cfg(test)]
 /// Initialize the global VirtIO GPU device.
 ///
 /// # Safety
 /// Caller must ensure the transport's backing address is valid.
 pub unsafe fn init_virtio_gpu(transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
-    let mut gpu = VirtioGpu::new(transport);
+    let mut gpu = VirtioGpu::new(transport, test_device());
     unsafe { gpu.init()? };
     *VIRTIO_GPU_DEVICE.lock() = Some(Arc::new(gpu));
     Ok(())
@@ -91,7 +103,7 @@ pub unsafe fn init_virtio_gpu_for_device(
     transport: Box<dyn VirtioTransport>,
     iommu_device_id: IommuDeviceId,
 ) -> GpuResult<()> {
-    let mut gpu = VirtioGpu::new_with_device(transport, Some(iommu_device_id));
+    let mut gpu = VirtioGpu::new_with_device(transport, iommu_device_id);
     unsafe { gpu.init()? };
     *VIRTIO_GPU_DEVICE.lock() = Some(Arc::new(gpu));
     Ok(())
@@ -110,8 +122,8 @@ pub fn get_virtio_gpu_device() -> Option<Arc<VirtioGpu>> {
 }
 
 /// Initialize via GraphicsManager.
-pub fn init(transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
-    graphics_manager().init(transport)
+pub fn init(transport: Box<dyn VirtioTransport>, iommu_device_id: IommuDeviceId) -> GpuResult<()> {
+    graphics_manager().init(transport, iommu_device_id)
 }
 
 // =============================================================================

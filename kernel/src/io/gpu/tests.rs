@@ -3,6 +3,12 @@ use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
 
 struct NoopTransport;
 
+fn test_device() -> crate::io::iommu::types::DeviceId {
+    let device = crate::io::iommu::types::DeviceId::new(0, 0, 0x41, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    device
+}
+
 impl VirtioTransport for NoopTransport {
     fn device_type(&self) -> VirtioDeviceType {
         VirtioDeviceType::Gpu
@@ -64,14 +70,14 @@ impl VirtioTransport for NoopTransport {
 
 #[test_case]
 fn test_gpu_device_creation() {
-    let gpu = VirtioGpu::new(Box::new(NoopTransport));
+    let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
     assert!(!gpu.is_initialized());
     assert!(!gpu.has_3d_support());
 }
 
 #[test_case]
 fn test_gpu_alloc_resource_id() {
-    let gpu = VirtioGpu::new(Box::new(NoopTransport));
+    let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
     assert_eq!(gpu.alloc_resource_id(), 1);
     assert_eq!(gpu.alloc_resource_id(), 2);
     assert_eq!(gpu.alloc_resource_id(), 3);
@@ -79,7 +85,7 @@ fn test_gpu_alloc_resource_id() {
 
 #[test_case]
 fn test_gpu_alloc_fence_id() {
-    let gpu = VirtioGpu::new(Box::new(NoopTransport));
+    let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
     assert_eq!(gpu.alloc_fence_id(), 1);
     assert_eq!(gpu.alloc_fence_id(), 2);
 }

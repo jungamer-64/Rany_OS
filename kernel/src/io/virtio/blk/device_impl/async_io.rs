@@ -562,10 +562,13 @@ pub fn get_virtio_blk_device_at_index(index: u8) -> Option<Arc<VirtioBlkDevice>>
 }
 
 /// Initialize the global VirtIO block device at a specific index.
+#[cfg(test)]
 pub unsafe fn init_virtio_blk_at_index(index: u8, mmio_base: u64) -> Result<(), BlockError> {
     let transport =
         unsafe { VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)? };
-    let mut dev = VirtioBlkDevice::new(Box::new(transport));
+    let device = IommuDeviceId::new(0, 0, index, 0);
+    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
+    let mut dev = VirtioBlkDevice::new(Box::new(transport), device);
     dev.init()?;
 
     let device_arc = Arc::new(dev);
@@ -582,6 +585,7 @@ pub unsafe fn init_virtio_blk_at_index(index: u8, mmio_base: u64) -> Result<(), 
 }
 
 /// Initialize the global VirtIO block device (legacy `index=0`).
+#[cfg(test)]
 pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
     init_virtio_blk_at_index(0, mmio_base)
 }
@@ -594,7 +598,7 @@ pub unsafe fn init_virtio_blk_for_device_at_index(
 ) -> Result<(), BlockError> {
     let transport =
         unsafe { VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)? };
-    let mut dev = VirtioBlkDevice::new_with_device(Box::new(transport), Some(device));
+    let mut dev = VirtioBlkDevice::new_with_device(Box::new(transport), device);
     dev.init()?;
 
     let device_arc = Arc::new(dev);
@@ -622,7 +626,7 @@ pub unsafe fn init_virtio_blk_for_device(
 pub unsafe fn init_virtio_blk_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 ) -> Result<(), BlockError> {
     let mut dev = VirtioBlkDevice::new_with_device(transport, iommu_device_id);
     dev.init()?;
@@ -643,7 +647,7 @@ pub unsafe fn init_virtio_blk_with_transport_at_index(
 /// Initialize the global VirtIO block device from an existing VirtioTransport (MMIO or PCI).
 pub unsafe fn init_virtio_blk_with_transport(
     transport: Box<dyn VirtioTransport>,
-    iommu_device_id: Option<IommuDeviceId>,
+    iommu_device_id: IommuDeviceId,
 ) -> Result<(), BlockError> {
     init_virtio_blk_with_transport_at_index(0, transport, iommu_device_id)
 }

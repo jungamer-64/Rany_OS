@@ -2,8 +2,6 @@
 // kernel/src/io/iommu/runtime/security/protection.rs
 // ============================================================================
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 /// Register a physical memory region that should be protected from DMA access.
 ///
 /// This is used to protect MMIO regions like IOMMU registers, APIC, etc.
@@ -171,12 +169,13 @@ fn linker_virt_to_phys(virt: u64) -> Option<u64> {
 }
 
 /// Identity mapping fallback gate (default: false).
-#[cfg(debug_assertions)]
-static UNSAFE_ALLOW_IDENTITY_MAPPING: AtomicBool = AtomicBool::new(false);
+#[cfg(any(test, feature = "qemu-test-export"))]
+static UNSAFE_ALLOW_IDENTITY_MAPPING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// Enable/disable identity mapping fallback.
-#[cfg(debug_assertions)]
-pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
     if allowed {
         log::error!(
             "[IOMMU][SECURITY][CRITICAL] Identity mapping ENABLED - \
@@ -187,18 +186,18 @@ pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
     } else {
         log::info!("[IOMMU][SECURITY] Identity mapping DISABLED - DMA protection restored");
     }
-    UNSAFE_ALLOW_IDENTITY_MAPPING.store(allowed, Ordering::Release);
+    UNSAFE_ALLOW_IDENTITY_MAPPING.store(allowed, core::sync::atomic::Ordering::Release);
 }
 
 /// Check whether identity mapping fallback is allowed.
-#[cfg(debug_assertions)]
-pub fn is_unsafe_identity_mapping_allowed() -> bool {
-    UNSAFE_ALLOW_IDENTITY_MAPPING.load(Ordering::Acquire)
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) fn is_unsafe_identity_mapping_allowed() -> bool {
+    UNSAFE_ALLOW_IDENTITY_MAPPING.load(core::sync::atomic::Ordering::Acquire)
 }
 
 /// Check whether identity mapping fallback is allowed.
-#[cfg(not(debug_assertions))]
+#[cfg(not(any(test, feature = "qemu-test-export")))]
 #[inline(always)]
-pub fn is_unsafe_identity_mapping_allowed() -> bool {
+pub(crate) fn is_unsafe_identity_mapping_allowed() -> bool {
     false
 }

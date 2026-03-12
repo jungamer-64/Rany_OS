@@ -577,8 +577,9 @@ impl<T> DmaHandle<T> {
     ///
     /// # Security Warning
     ///
-    /// Identity mapping bypasses IOMMU protection completely. This function is
-    /// only available in debug builds.
+    /// Identity mapping bypasses IOMMU protection completely. This helper is
+    /// only kept for test-only shims that still exercise the higher-level DMA
+    /// handle plumbing without a full device-scoped mapping path.
     ///
     /// For production use, prefer `map_rref_for_device()` which uses proper
     /// IOVA allocation with IOMMU protection.
@@ -590,7 +591,7 @@ impl<T> DmaHandle<T> {
     ///
     /// # Errors
     /// Returns `MapError<T>` containing the original RRef on failure.
-    #[cfg(debug_assertions)]
+    #[cfg(any(test, feature = "qemu-test-export"))]
     pub(crate) fn map_simple(
         rref: RRef<T>,
         domain_id: u16,
@@ -598,12 +599,6 @@ impl<T> DmaHandle<T> {
     ) -> Result<Self, MapError<T>> {
         if crate::io::iommu::api::is_iommu_required() && !crate::io::iommu::api::is_iommu_enabled()
         {
-            return Err(MapError::new(
-                rref,
-                MapErrorKind::IommuError(IommuError::NotInitialized),
-            ));
-        }
-        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
             return Err(MapError::new(
                 rref,
                 MapErrorKind::IommuError(IommuError::NotInitialized),
@@ -652,8 +647,8 @@ impl<T> DmaHandle<T> {
         ))
     }
 
-    /// Identity mapping is DISABLED in production builds.
-    #[cfg(not(debug_assertions))]
+    /// Identity mapping is DISABLED outside test-only builds.
+    #[cfg(not(any(test, feature = "qemu-test-export")))]
     pub(crate) fn map_simple(
         rref: RRef<T>,
         _domain_id: u16,

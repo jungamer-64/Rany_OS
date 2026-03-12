@@ -47,14 +47,7 @@ fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
     (addr as u128) <= (mask as u128) && (end as u128) <= limit
 }
 
-fn check_device_dma_mask(
-    device: Option<IommuDeviceId>,
-    addr: u64,
-    size: usize,
-) -> Result<(), VirtioNetError> {
-    let Some(device) = device else {
-        return Ok(());
-    };
+fn check_device_dma_mask(device: IommuDeviceId, addr: u64, size: usize) -> Result<(), VirtioNetError> {
     let Some(mask) = get_device_dma_mask(&device) else {
         return Ok(());
     };
@@ -65,15 +58,7 @@ fn check_device_dma_mask(
     }
 }
 
-fn unmap_iommu_addr(device: Option<IommuDeviceId>, iova: u64, len: usize) {
-    let Some(device) = device else {
-        log::error!(
-            "[VIRTIO-NET] missing device id for DMA unmap (iova=0x{:x}, len={})",
-            iova,
-            len
-        );
-        return;
-    };
+fn unmap_iommu_addr(device: IommuDeviceId, iova: u64, len: usize) {
     if let Err(err) = unmap_for_device(&device, iova, len as u64) {
         log::warn!("[VIRTIO-NET] failed to unmap DMA buffer: {:?}", err);
     }
@@ -110,10 +95,7 @@ fn map_net_dma_for_range(
     ))
 }
 
-fn release_net_dma_mapping(
-    device: Option<IommuDeviceId>,
-    mapping: virtio_driver::net::NetDmaMappingToken,
-) {
+fn release_net_dma_mapping(device: IommuDeviceId, mapping: virtio_driver::net::NetDmaMappingToken) {
     if let Some(release_key) = mapping.release_key() {
         unmap_iommu_addr(device, release_key, mapping.mapped_len() as usize);
     }

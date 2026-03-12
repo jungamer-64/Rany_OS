@@ -1,6 +1,6 @@
 use super::*;
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes, iommu_align_len};
-use crate::io::iommu::api::{is_iommu_enabled, is_iommu_required};
+use crate::io::iommu::api::is_iommu_enabled;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::defs::{VirtioDeviceType, status};
 use crate::io::virtio::transport::{TransportType, VirtioTransport};
@@ -34,8 +34,8 @@ pub struct VirtioNetDevice {
     pub(crate) virtio_index: u8,
     /// Bound logical network interface id (assigned by NetworkManager)
     pub(crate) net_if_id: Option<crate::net::runtime::manager::NetIfId>,
-    /// Optional IOMMU device identifier for device-scoped mappings
-    iommu_device_id: Option<IommuDeviceId>,
+    /// IOMMU device identifier for device-scoped mappings
+    iommu_device_id: IommuDeviceId,
     /// 受信キューリスト (各ペアにつき1つ、インデックス0,2,...)
     rx_queues: Vec<NetVirtQueue>,
     /// 送信キューリスト (各ペアにつき1つ、インデックス1,3,...)
@@ -61,28 +61,31 @@ unsafe impl Sync for VirtioNetDevice {}
 
 impl VirtioNetDevice {
     /// 新しいデバイスを作成
-    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
-        Self::new_with_index_and_device(0, transport, None)
+    pub fn new(transport: Box<dyn VirtioTransport>, iommu_device_id: IommuDeviceId) -> Self {
+        Self::new_with_index_and_device(0, transport, iommu_device_id)
     }
 
     /// 新しいデバイスを作成（IOMMUデバイスIDを指定）
     pub fn new_with_device(
         transport: Box<dyn VirtioTransport>,
-        iommu_device_id: Option<IommuDeviceId>,
+        iommu_device_id: IommuDeviceId,
     ) -> Self {
         Self::new_with_index_and_device(0, transport, iommu_device_id)
     }
 
+    #[cfg(test)]
     /// 新しいデバイスを作成（デバイス index 指定）
     pub fn new_at_index(index: u8, transport: Box<dyn VirtioTransport>) -> Self {
-        Self::new_with_index_and_device(index, transport, None)
+        let iommu_device_id = IommuDeviceId::new(0, 0, index, 0);
+        crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(iommu_device_id);
+        Self::new_with_index_and_device(index, transport, iommu_device_id)
     }
 
     /// 新しいデバイスを作成（デバイス index + IOMMUデバイスID指定）
     pub fn new_with_index_and_device(
         index: u8,
         transport: Box<dyn VirtioTransport>,
-        iommu_device_id: Option<IommuDeviceId>,
+        iommu_device_id: IommuDeviceId,
     ) -> Self {
         Self {
             transport: alloc::sync::Arc::from(transport),
@@ -110,7 +113,7 @@ impl VirtioNetDevice {
         self.tx_queues.get(0)
     }
 
-    pub fn iommu_device_id(&self) -> Option<IommuDeviceId> {
+    pub fn iommu_device_id(&self) -> IommuDeviceId {
         self.iommu_device_id
     }
 
@@ -127,14 +130,9 @@ impl VirtioNetDevice {
             .expect("Transport must not be shared during init")
     }
 
-    fn validate_iommu_device_requirement(
-        iommu_enabled: bool,
-        iommu_device_id: Option<IommuDeviceId>,
-    ) -> Result<(), VirtioNetError> {
-        if iommu_enabled && iommu_device_id.is_none() {
-            log::error!(
-                "[VIRTIO-NET] strict IOMMU mode requires iommu_device_id when IOMMU is enabled"
-            );
+    fn validate_iommu_device_requirement(iommu_enabled: bool) -> Result<(), VirtioNetError> {
+        if !iommu_enabled {
+            log::error!("[VIRTIO-NET] IOMMU translation must be enabled before virtio-net init");
             return Err(VirtioNetError::DeviceError);
         }
         Ok(())
@@ -145,7 +143,7 @@ impl VirtioNetDevice {
             return Err(VirtioNetError::DeviceError);
         }
 
-        Self::validate_iommu_device_requirement(is_iommu_enabled(), self.iommu_device_id)?;
+        Self::validate_iommu_device_requirement(is_iommu_enabled())?;
 
         self.core
             .init(self.transport.as_ref())
@@ -183,7 +181,7 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         size: usize,
         _purpose: virtio_driver::net::NetDmaPurpose,
     ) -> Result<DmaSlice<CpuOwned>, VirtioNetError> {
-        let buffer = CoherentDmaBuffer::new(size, DmaMemoryAttributes::MMIO)
+        let buffer = CoherentDmaBuffer::new_for_device(size, DmaMemoryAttributes::MMIO, &self.iommu_device_id)
             .ok_or(VirtioNetError::DeviceError)?;
 
         let (phys, iova, virt, len, releaser) = buffer.into_raw_parts();
@@ -200,13 +198,15 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         direction: virtio_driver::net::NetDmaDirection,
     ) -> Result<virtio_driver::net::NetDmaMappingToken, VirtioNetError> {
         if !is_iommu_enabled() {
-            return Ok(virtio_driver::net::NetDmaMappingToken::direct(
-                packet.phys_addr().as_u64(),
-            ));
+            return Err(VirtioNetError::DeviceError);
         }
 
-        let device_id = self.iommu_device_id.ok_or(VirtioNetError::DeviceError)?;
-        map_net_dma_for_range(device_id, packet.phys_addr().as_u64(), packet.capacity(), direction)
+        map_net_dma_for_range(
+            self.iommu_device_id,
+            packet.phys_addr().as_u64(),
+            packet.capacity(),
+            direction,
+        )
     }
 
     fn release_dma_mapping(&self, mapping: virtio_driver::net::NetDmaMappingToken) {
@@ -293,21 +293,13 @@ impl VirtioNetDevice {
         let buffer_size = 4096;
 
         for _ in 0..pool_size {
-            let tx_buf = match self.iommu_device_id {
-                Some(dev) => {
-                    CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &dev)
-                }
-                None => CoherentDmaBuffer::new(buffer_size, DmaMemoryAttributes::MMIO),
-            }
+            let tx_buf =
+                CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &self.iommu_device_id)
             .ok_or(VirtioNetError::DeviceError)?;
             let _ = self.tx_bounce_pool.push(tx_buf);
 
-            let rx_buf = match self.iommu_device_id {
-                Some(dev) => {
-                    CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &dev)
-                }
-                None => CoherentDmaBuffer::new(buffer_size, DmaMemoryAttributes::MMIO),
-            }
+            let rx_buf =
+                CoherentDmaBuffer::new_for_device(buffer_size, DmaMemoryAttributes::MMIO, &self.iommu_device_id)
             .ok_or(VirtioNetError::DeviceError)?;
             let _ = self.rx_bounce_pool.push(rx_buf);
         }
@@ -325,17 +317,11 @@ impl VirtioNetDevice {
             let _ = self.tx_bounce_pool.push(buf);
         }
         let alloc_size = core::cmp::max(size, 4096);
-        match self.iommu_device_id {
-            Some(dev) => crate::io::dma::CoherentDmaBuffer::new_for_device(
-                alloc_size,
-                crate::io::dma::DmaMemoryAttributes::MMIO,
-                &dev,
-            ),
-            None => crate::io::dma::CoherentDmaBuffer::new(
-                alloc_size,
-                crate::io::dma::DmaMemoryAttributes::MMIO,
-            ),
-        }
+        crate::io::dma::CoherentDmaBuffer::new_for_device(
+            alloc_size,
+            crate::io::dma::DmaMemoryAttributes::MMIO,
+            &self.iommu_device_id,
+        )
         .ok_or(VirtioNetError::DeviceError)
     }
 
@@ -354,17 +340,11 @@ impl VirtioNetDevice {
             let _ = self.rx_bounce_pool.push(buf);
         }
         let alloc_size = core::cmp::max(size, 4096);
-        match self.iommu_device_id {
-            Some(dev) => crate::io::dma::CoherentDmaBuffer::new_for_device(
-                alloc_size,
-                crate::io::dma::DmaMemoryAttributes::MMIO,
-                &dev,
-            ),
-            None => crate::io::dma::CoherentDmaBuffer::new(
-                alloc_size,
-                crate::io::dma::DmaMemoryAttributes::MMIO,
-            ),
-        }
+        crate::io::dma::CoherentDmaBuffer::new_for_device(
+            alloc_size,
+            crate::io::dma::DmaMemoryAttributes::MMIO,
+            &self.iommu_device_id,
+        )
         .ok_or(VirtioNetError::DeviceError)
     }
 
@@ -471,27 +451,15 @@ impl VirtioNetDevice {
         &self,
         total_size: usize,
     ) -> Result<(CoherentDmaBuffer, usize), VirtioNetError> {
-        if is_iommu_required() && !is_iommu_enabled() {
+        if !is_iommu_enabled() {
             return Err(VirtioNetError::DeviceError);
         }
 
-        if is_iommu_enabled() {
-            let aligned_len = iommu_align_len(total_size).ok_or(VirtioNetError::DeviceError)?;
-            let device_id = self
-                .iommu_device_id
-                .ok_or_else(|| VirtioNetError::DeviceError)?;
-            let buffer = CoherentDmaBuffer::new_for_device(
-                aligned_len,
-                DmaMemoryAttributes::MMIO,
-                &device_id,
-            )
-            .ok_or(VirtioNetError::DeviceError)?;
-            Ok((buffer, aligned_len))
-        } else {
-            let buffer = CoherentDmaBuffer::new(total_size, DmaMemoryAttributes::MMIO)
+        let aligned_len = iommu_align_len(total_size).ok_or(VirtioNetError::DeviceError)?;
+        let buffer =
+            CoherentDmaBuffer::new_for_device(aligned_len, DmaMemoryAttributes::MMIO, &self.iommu_device_id)
                 .ok_or(VirtioNetError::DeviceError)?;
-            Ok((buffer, total_size))
-        }
+        Ok((buffer, aligned_len))
     }
 
     pub fn notify_queue(&mut self, queue_index: u16) {
@@ -533,20 +501,13 @@ mod tests {
 
     #[test_case]
     fn test_validate_iommu_device_requirement_rejects_missing_device_id_when_enabled() {
-        let result = VirtioNetDevice::validate_iommu_device_requirement(true, None);
+        let result = VirtioNetDevice::validate_iommu_device_requirement(false);
         assert_eq!(result, Err(VirtioNetError::DeviceError));
     }
 
     #[test_case]
     fn test_validate_iommu_device_requirement_accepts_device_id_when_enabled() {
-        let device = IommuDeviceId::new(0, 0, 1, 0);
-        let result = VirtioNetDevice::validate_iommu_device_requirement(true, Some(device));
-        assert_eq!(result, Ok(()));
-    }
-
-    #[test_case]
-    fn test_validate_iommu_device_requirement_accepts_missing_device_id_when_disabled() {
-        let result = VirtioNetDevice::validate_iommu_device_requirement(false, None);
+        let result = VirtioNetDevice::validate_iommu_device_requirement(true);
         assert_eq!(result, Ok(()));
     }
 }

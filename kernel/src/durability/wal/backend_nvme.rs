@@ -15,7 +15,7 @@ pub struct NvmeRawWalBackend {
 
 impl NvmeRawWalBackend {
     #[inline]
-    fn iommu_device(&self) -> Option<crate::io::iommu::types::DeviceId> {
+    fn iommu_device(&self) -> crate::io::iommu::types::DeviceId {
         nvme::iommu_device()
     }
 

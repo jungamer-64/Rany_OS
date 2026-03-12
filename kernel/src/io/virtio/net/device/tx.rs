@@ -31,17 +31,11 @@ impl VirtioNetDevice {
         } else {
             log::info!("[NET-TX] submit_tx len={}", data_len);
         }
-        let mut buffer = match self.iommu_device_id {
-            Some(device_id) => crate::io::dma::CoherentDmaBuffer::new_for_device(
-                data_len,
-                crate::io::dma::DmaMemoryAttributes::MMIO,
-                &device_id,
-            ),
-            None => crate::io::dma::CoherentDmaBuffer::new(
-                data_len,
-                crate::io::dma::DmaMemoryAttributes::MMIO,
-            ),
-        }
+        let mut buffer = crate::io::dma::CoherentDmaBuffer::new_for_device(
+            data_len,
+            crate::io::dma::DmaMemoryAttributes::MMIO,
+            &self.iommu_device_id,
+        )
         .ok_or_else(|| {
             counters::global().record_error();
             trace::push_event(
@@ -52,7 +46,7 @@ impl VirtioNetDevice {
             VirtioNetError::DeviceError
         })?;
 
-        if is_iommu_enabled() && self.iommu_device_id.is_some() && !buffer.is_iommu_mapped() {
+        if !buffer.is_iommu_mapped() {
             log::error!(
                 "[NET-TX] IOMMU enabled but TX buffer is not mapped for device DMA; refusing phys fallback"
             );
@@ -81,11 +75,7 @@ impl VirtioNetDevice {
         if let Some(tx_queue) = self.tx_queues.first() {
             let q_idx = 0; // First TX queue index in per-queue vectors
             let device_addr = buffer.device_addr();
-            let iova = if buffer.is_iommu_mapped() {
-                Some(device_addr)
-            } else {
-                None
-            };
+            let iova = device_addr;
             let iommu_len = buffer.size() as u64;
 
             match tx_queue.add_tx_buffer_zero_copy(device_addr, data_len) {
@@ -104,13 +94,9 @@ impl VirtioNetDevice {
                         virtio_driver::net::TxInflight {
                             packet,
                             bounce_buffer: Some(bounce),
-                            dma_mapping: iova.map(|mapped_addr| {
-                                virtio_driver::net::NetDmaMappingToken::mapped(
-                                    mapped_addr,
-                                    mapped_addr,
-                                    iommu_len,
-                                )
-                            }),
+                            dma_mapping: Some(virtio_driver::net::NetDmaMappingToken::mapped(
+                                iova, iova, iommu_len,
+                            )),
                             completion_id: None,
                         },
                     );
@@ -191,17 +177,15 @@ impl VirtioNetDevice {
             let q_idx = 0;
             let data_len = packet.len();
             let cap = packet.capacity();
-            let dma_mapping = if is_iommu_enabled() {
-                let device_id = self.iommu_device_id.ok_or(VirtioNetError::DeviceError)?;
-                map_net_dma_for_range(
-                    device_id,
-                    packet.phys_addr().as_u64(),
-                    cap,
-                    virtio_driver::net::NetDmaDirection::ToDevice,
-                )?
-            } else {
-                virtio_driver::net::NetDmaMappingToken::direct(packet.phys_addr().as_u64())
-            };
+            if !is_iommu_enabled() {
+                return Err(VirtioNetError::DeviceError);
+            }
+            let dma_mapping = map_net_dma_for_range(
+                self.iommu_device_id,
+                packet.phys_addr().as_u64(),
+                cap,
+                virtio_driver::net::NetDmaDirection::ToDevice,
+            )?;
             let device_addr = dma_mapping.device_address();
             let inflight_mapping = dma_mapping.requires_unmap().then_some(dma_mapping);
 

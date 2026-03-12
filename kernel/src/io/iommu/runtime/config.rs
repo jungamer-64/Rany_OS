@@ -17,10 +17,6 @@ use crate::io::iommu::types::DeviceId;
 /// IOMMU Configuration from Kernel Command Line
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IommuConfig {
-    /// Enable IOMMU
-    pub enabled: bool,
-    /// Passthrough mode (disable translation for most devices)
-    pub passthrough: bool,
     /// Force enable even if ACPI says no (not used yet)
     pub force: bool,
     /// Enable scalable mode translation (Intel VT-d SMTS)
@@ -31,8 +27,6 @@ impl IommuConfig {
     /// Create a new default configuration
     pub const fn new() -> Self {
         Self {
-            enabled: true,
-            passthrough: false,
             force: false,
             scalable_mode: false,
         }
