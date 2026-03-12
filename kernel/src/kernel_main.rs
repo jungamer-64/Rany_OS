@@ -111,7 +111,6 @@ pub(crate) fn init_hid_and_serial_drivers() {
         }
     }
     info!(target: "init", "HID drivers initialized");
-    info!(target: "boot", "BOOT COMPLETE!");
 
     // Serial port
     info!(target: "init", "Initializing serial port via DriverRegistry");
@@ -429,6 +428,21 @@ fn for_each_runtime_registration_step(mut visit: impl FnMut(RuntimeRegistrationS
     visit(RuntimeRegistrationStep::KernelServices);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeHandoffMilestone {
+    ResolveShellMode,
+    SpawnKernelTasks,
+    BootComplete,
+    StartExecutorRun,
+}
+
+fn for_each_runtime_handoff_milestone(mut visit: impl FnMut(RuntimeHandoffMilestone)) {
+    visit(RuntimeHandoffMilestone::ResolveShellMode);
+    visit(RuntimeHandoffMilestone::SpawnKernelTasks);
+    visit(RuntimeHandoffMilestone::BootComplete);
+    visit(RuntimeHandoffMilestone::StartExecutorRun);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,6 +464,28 @@ mod tests {
                 RuntimeRegistrationStep::PlatformProviders,
                 RuntimeRegistrationStep::TimeProvider,
                 RuntimeRegistrationStep::KernelServices,
+            ]
+        );
+    }
+
+    #[test_case]
+    fn runtime_handoff_milestone_order_places_boot_complete_before_executor_run() {
+        let mut seen = [RuntimeHandoffMilestone::ResolveShellMode; 4];
+        let mut idx = 0usize;
+
+        for_each_runtime_handoff_milestone(|step| {
+            seen[idx] = step;
+            idx += 1;
+        });
+
+        assert_eq!(idx, seen.len());
+        assert_eq!(
+            seen,
+            [
+                RuntimeHandoffMilestone::ResolveShellMode,
+                RuntimeHandoffMilestone::SpawnKernelTasks,
+                RuntimeHandoffMilestone::BootComplete,
+                RuntimeHandoffMilestone::StartExecutorRun,
             ]
         );
     }
@@ -918,12 +954,21 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     let mut executor = task::Executor::new();
     crate::io::log::early_print("[INITDBG] executor created\n");
 
-    resolve_shell_mode(context);
-
-    crate::io::log::early_print("[INITDBG] before spawn_kernel_tasks\n");
-    spawn_kernel_tasks(&mut executor, context);
-    crate::io::log::early_print("[INITDBG] after spawn_kernel_tasks\n");
-    info!(target: "init", "Kernel tasks spawned");
+    for_each_runtime_handoff_milestone(|step| match step {
+        RuntimeHandoffMilestone::ResolveShellMode => resolve_shell_mode(context),
+        RuntimeHandoffMilestone::SpawnKernelTasks => {
+            crate::io::log::early_print("[INITDBG] before spawn_kernel_tasks\n");
+            spawn_kernel_tasks(&mut executor, context);
+            crate::io::log::early_print("[INITDBG] after spawn_kernel_tasks\n");
+            info!(target: "init", "Kernel tasks spawned");
+        }
+        RuntimeHandoffMilestone::BootComplete => {
+            info!(target: "boot", "BOOT COMPLETE!");
+        }
+        RuntimeHandoffMilestone::StartExecutorRun => {
+            info!(target: "run", "Starting executor main loop");
+        }
+    });
 
     // =========================================================================
     // STACK OVERFLOW TEST (Double Fault Verification)
@@ -934,8 +979,6 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     // fn stack_overflow() { stack_overflow(); } // 無限再帰
     // stack_overflow();
     // =========================================================================
-
-    info!(target: "run", "Starting executor main loop");
 
     // メインループ開始（戻ってこない）
     crate::io::log::early_print("[INITDBG] entering executor.run\n");
