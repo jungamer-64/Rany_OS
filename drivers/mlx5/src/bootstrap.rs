@@ -166,8 +166,8 @@ impl Mlx5BootstrapPlan {
         let eq_size = (1usize << queue_profile.log_eq_size as usize) * eqe::EQE_SIZE;
         let cq_size = (1usize << queue_profile.log_cq_size as usize) * cqe::SIZE;
         let sq_size = (1usize << queue_profile.log_sq_size as usize) * 64;
-        let rq_size = (1usize << queue_profile.log_rq_size as usize)
-            * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
+        let rq_size =
+            (1usize << queue_profile.log_rq_size as usize) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
 
         Self {
             queue_profile,
@@ -416,7 +416,10 @@ mod tests {
         assert_eq!(plan.eq_size(), (1usize << 5) * eqe::EQE_SIZE);
         assert_eq!(plan.cq_size(), (1usize << 4) * cqe::SIZE);
         assert_eq!(plan.sq_size(), (1usize << 6) * 64);
-        assert_eq!(plan.rq_size(), (1usize << 5) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE);
+        assert_eq!(
+            plan.rq_size(),
+            (1usize << 5) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE
+        );
     }
 
     #[test]

@@ -524,12 +524,11 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
 
         let cqes = unsafe { state.device.poll_cq(rx_cq_index, MLX5_POLL_BATCH) };
         for cqe in cqes {
-            let Some(rx_info) = state.device.process_rx_completion(
-                rq_index,
-                cqe.wqe_counter,
-                cqe.l3_ok,
-                cqe.l4_ok,
-            ) else {
+            let Some(rx_info) =
+                state
+                    .device
+                    .process_rx_completion(rq_index, cqe.wqe_counter, cqe.l3_ok, cqe.l4_ok)
+            else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
                 continue;
             };

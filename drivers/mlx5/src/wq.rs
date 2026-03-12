@@ -14,9 +14,9 @@
 //! バッファの所有権をSW↔HW間で明示的に移動する。
 //! DMAバッファの物理アドレスをWQEに直接設定する。
 
-use alloc::collections::VecDeque;
 use crate::defs::{WQEBB_SIZE, WqeOpcode};
 use crate::regs::wqe;
+use alloc::collections::VecDeque;
 use core::sync::atomic::{Ordering, fence};
 
 const MLX5_WQE_CTRL_CQ_UPDATE: u8 = 2 << 2;
@@ -831,39 +831,12 @@ impl ReceiveQueue {
         l3_ok: bool,
         l4_ok: bool,
     ) -> Option<RxBufferInfo> {
-        let slot_index = self.inflight_slots.pop_front()?;
-        let idx = slot_index as usize;
-        if self.layout.wq_mode == RxWqMode::Cyclic {
-            let expected_slot = (wqe_counter as u32 % self.rq_depth) as u16;
-            if expected_slot != slot_index {
-                log::warn!(
-                    target: "mlx5",
-                    "RX completion slot mismatch: rqn={:#x} mode={} wqe_counter={} expected_slot={} actual_slot={}",
-                    self.rqn,
-                    self.layout.wq_mode.label(),
-                    wqe_counter,
-                    expected_slot,
-                    slot_index
-                );
-            }
-        }
-        if self.rx_buffers[idx].in_use {
-            let mut info = self.rx_buffers[idx];
-            info.l3_ok = l3_ok;
-            info.l4_ok = l4_ok;
-            self.rx_buffers[idx] = RxBufferInfo::default();
-            self.free_slots.push_back(slot_index);
-            Some(info)
-        } else {
-            log::warn!(
-                target: "mlx5",
-                "RX completion referenced empty slot: rqn={:#x} slot={} wqe_counter={}",
-                self.rqn,
-                slot_index,
-                wqe_counter
-            );
-            None
-        }
+        let slot_index = match self.layout.wq_mode {
+            RxWqMode::Cyclic => self.resolve_cyclic_completion_slot(wqe_counter)?,
+            RxWqMode::LinkedList => self.take_linked_completion_slot(wqe_counter)?,
+        };
+
+        self.complete_rx_slot(slot_index, wqe_counter, l3_ok, l4_ok)
     }
 
     /// RQの空きスロット数
@@ -896,6 +869,12 @@ impl ReceiveQueue {
             producer_counter: self.producer_counter,
             rq_depth: self.rq_depth,
             available_slots: self.available_slots(),
+            layout_mode: self.layout.wq_mode,
+            layout_slot_size_bytes: self.layout.slot_size_bytes,
+            layout_data_seg_offset: self.layout.data_seg_offset,
+            layout_raw_wq_type: self.layout.raw_wq_type,
+            layout_raw_log_wq_stride: self.layout.raw_log_wq_stride,
+            layout_rmpn: self.layout.rmpn,
             doorbell_be,
             doorbell_host,
             last_wqe_counter,
@@ -912,6 +891,108 @@ impl ReceiveQueue {
             (self.layout.slot_offset(next_slot) / ResolvedRqLayout::LINK_SEG_SIZE) as u16;
         write_be16_raw(slot_ptr, NEXT_SEG_NEXT_WQE_INDEX, next_stride_index);
     }
+
+    fn resolve_cyclic_completion_slot(&mut self, wqe_counter: u16) -> Option<u16> {
+        let expected_slot = (wqe_counter as u32 % self.rq_depth) as u16;
+        let front_slot = self.inflight_slots.front().copied()?;
+
+        if !self.rx_buffers[expected_slot as usize].in_use {
+            log::warn!(
+                target: "mlx5",
+                "RX completion referenced inactive cyclic slot: rqn={:#x} wqe_counter={} expected_slot={} front_slot={} inflight_len={}",
+                self.rqn,
+                wqe_counter,
+                expected_slot,
+                front_slot,
+                self.inflight_slots.len()
+            );
+            return None;
+        }
+
+        if front_slot == expected_slot {
+            let _ = self.inflight_slots.pop_front();
+            return Some(expected_slot);
+        }
+
+        if let Some(position) = self
+            .inflight_slots
+            .iter()
+            .position(|&slot| slot == expected_slot)
+        {
+            let removed = self
+                .inflight_slots
+                .remove(position)
+                .unwrap_or(expected_slot);
+            log::warn!(
+                target: "mlx5",
+                "RX completion slot mismatch recovered: rqn={:#x} mode={} wqe_counter={} expected_slot={} front_slot={} recovered_pos={}",
+                self.rqn,
+                self.layout.wq_mode.label(),
+                wqe_counter,
+                expected_slot,
+                front_slot,
+                position
+            );
+            return Some(removed);
+        }
+
+        log::warn!(
+            target: "mlx5",
+            "RX completion slot mismatch unrecoverable: rqn={:#x} mode={} wqe_counter={} expected_slot={} front_slot={} inflight_len={}",
+            self.rqn,
+            self.layout.wq_mode.label(),
+            wqe_counter,
+            expected_slot,
+            front_slot,
+            self.inflight_slots.len()
+        );
+        None
+    }
+
+    fn take_linked_completion_slot(&mut self, wqe_counter: u16) -> Option<u16> {
+        let slot_index = self.inflight_slots.front().copied()?;
+        if !self.rx_buffers[slot_index as usize].in_use {
+            log::warn!(
+                target: "mlx5",
+                "RX completion referenced inactive linked slot: rqn={:#x} wqe_counter={} slot={} inflight_len={}",
+                self.rqn,
+                wqe_counter,
+                slot_index,
+                self.inflight_slots.len()
+            );
+            return None;
+        }
+
+        let _ = self.inflight_slots.pop_front();
+        Some(slot_index)
+    }
+
+    fn complete_rx_slot(
+        &mut self,
+        slot_index: u16,
+        wqe_counter: u16,
+        l3_ok: bool,
+        l4_ok: bool,
+    ) -> Option<RxBufferInfo> {
+        let idx = slot_index as usize;
+        if self.rx_buffers[idx].in_use {
+            let mut info = self.rx_buffers[idx];
+            info.l3_ok = l3_ok;
+            info.l4_ok = l4_ok;
+            self.rx_buffers[idx] = RxBufferInfo::default();
+            self.free_slots.push_back(slot_index);
+            Some(info)
+        } else {
+            log::warn!(
+                target: "mlx5",
+                "RX completion referenced empty slot after selection: rqn={:#x} slot={} wqe_counter={}",
+                self.rqn,
+                slot_index,
+                wqe_counter
+            );
+            None
+        }
+    }
 }
 
 /// Receive Queue のデバッグスナップショット
@@ -921,6 +1002,12 @@ pub struct RxQueueDebugState {
     pub producer_counter: u16,
     pub rq_depth: u32,
     pub available_slots: u32,
+    pub layout_mode: RxWqMode,
+    pub layout_slot_size_bytes: usize,
+    pub layout_data_seg_offset: usize,
+    pub layout_raw_wq_type: u8,
+    pub layout_raw_log_wq_stride: u8,
+    pub layout_rmpn: Option<u32>,
     pub doorbell_be: u32,
     pub doorbell_host: u32,
     pub last_wqe_counter: u16,
@@ -1061,12 +1148,81 @@ mod tests {
 
         unsafe {
             assert_eq!(rq.post_recv(0x1400, 0x2400, 1600), Some(4));
-            let completed = rq.complete_rx(99, false, true).unwrap();
-            assert_eq!(completed.slot_index, 1);
-            assert_eq!(completed.device_addr, 0x1100);
+            let completed = rq.complete_rx(3, false, true).unwrap();
+            assert_eq!(completed.slot_index, 3);
+            assert_eq!(completed.device_addr, 0x1300);
             assert!(!completed.l3_ok);
             assert!(completed.l4_ok);
         }
+    }
+
+    #[test]
+    fn cyclic_completion_mismatch_recovers_expected_slot_without_corrupting_recycling() {
+        let mut rq_mem = [0u8; 64];
+        let mut db = [0u32; 1];
+        let mut rq = ReceiveQueue::new(
+            0x10,
+            rq_mem.as_mut_ptr() as u64,
+            0x2500,
+            db.as_mut_ptr() as u64,
+            2,
+            0x20,
+            cyclic_layout(16),
+            0xdead_beef,
+            false,
+        );
+
+        unsafe {
+            assert_eq!(rq.post_recv(0x1000, 0x2000, 1500), Some(0));
+            assert_eq!(rq.post_recv(0x1100, 0x2100, 1501), Some(1));
+            assert_eq!(rq.post_recv(0x1200, 0x2200, 1502), Some(2));
+            assert_eq!(rq.post_recv(0x1300, 0x2300, 1503), Some(3));
+        }
+
+        let completed = rq.complete_rx(2, true, true).unwrap();
+        assert_eq!(completed.slot_index, 2);
+        assert_eq!(completed.device_addr, 0x1200);
+        assert_eq!(rq.available_slots(), 1);
+
+        unsafe {
+            assert_eq!(rq.post_recv(0x1400, 0x2400, 2048), Some(4));
+        }
+        let completed = rq.complete_rx(0, false, false).unwrap();
+        assert_eq!(completed.slot_index, 0);
+        assert_eq!(rq.available_slots(), 1);
+    }
+
+    #[test]
+    fn cyclic_completion_missing_expected_slot_returns_none_without_mutating_state() {
+        let mut rq_mem = [0u8; 64];
+        let mut db = [0u32; 1];
+        let mut rq = ReceiveQueue::new(
+            0x10,
+            rq_mem.as_mut_ptr() as u64,
+            0x2600,
+            db.as_mut_ptr() as u64,
+            2,
+            0x20,
+            cyclic_layout(16),
+            0xdead_beef,
+            false,
+        );
+
+        unsafe {
+            assert_eq!(rq.post_recv(0x1000, 0x2000, 1500), Some(0));
+            assert_eq!(rq.post_recv(0x1100, 0x2100, 1501), Some(1));
+            assert_eq!(rq.post_recv(0x1200, 0x2200, 1502), Some(2));
+            assert_eq!(rq.post_recv(0x1300, 0x2300, 1503), Some(3));
+        }
+
+        rq.rx_buffers[2] = RxBufferInfo::default();
+        let inflight_before = rq.inflight_slots.clone();
+        let free_before = rq.free_slots.clone();
+
+        assert!(rq.complete_rx(2, false, false).is_none());
+        assert_eq!(rq.inflight_slots, inflight_before);
+        assert_eq!(rq.free_slots, free_before);
+        assert_eq!(rq.available_slots(), 0);
     }
 
     #[test]
@@ -1119,10 +1275,16 @@ mod tests {
             let second_slot = rq_mem.as_ptr().add(64);
 
             assert_eq!(read_be16_raw(first_slot, 0x02), 4);
-            assert_eq!(read_be32_raw(first_slot.add(16), wqe::data::BYTE_COUNT), 1024);
+            assert_eq!(
+                read_be32_raw(first_slot.add(16), wqe::data::BYTE_COUNT),
+                1024
+            );
             assert_eq!(read_be64_raw(first_slot.add(16), wqe::data::ADDR), 0x7000);
             assert_eq!(read_be16_raw(second_slot, 0x02), 0);
-            assert_eq!(read_be32_raw(second_slot.add(16), wqe::data::BYTE_COUNT), 2048);
+            assert_eq!(
+                read_be32_raw(second_slot.add(16), wqe::data::BYTE_COUNT),
+                2048
+            );
 
             let completed = rq.complete_rx(0x4444, false, false).unwrap();
             assert_eq!(completed.slot_index, 0);
@@ -1130,5 +1292,33 @@ mod tests {
             let completed = rq.complete_rx(0x5555, true, true).unwrap();
             assert_eq!(completed.slot_index, 1);
         }
+    }
+
+    #[test]
+    fn linked_completion_keeps_fifo_order_independent_of_wqe_counter() {
+        let mut rq_mem = [0u8; 128];
+        let mut db = [0u32; 1];
+        let mut rq = ReceiveQueue::new(
+            0x10,
+            rq_mem.as_mut_ptr() as u64,
+            0x6100,
+            db.as_mut_ptr() as u64,
+            1,
+            0x20,
+            linked_layout(),
+            0x1234_5678,
+            false,
+        );
+
+        unsafe {
+            assert_eq!(rq.post_recv(0x7000, 0x7100, 1024), Some(0));
+            assert_eq!(rq.post_recv(0x7200, 0x7300, 2048), Some(1));
+        }
+
+        let completed = rq.complete_rx(0x5555, false, false).unwrap();
+        assert_eq!(completed.slot_index, 0);
+        let completed = rq.complete_rx(0x0001, true, false).unwrap();
+        assert_eq!(completed.slot_index, 1);
+        assert_eq!(rq.available_slots(), 2);
     }
 }
