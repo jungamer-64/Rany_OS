@@ -147,19 +147,11 @@ pub(crate) fn init_network_infra() {
     let stack_initialized = crate::net::runtime::device::is_initialized();
     let port_runtime_initialized = !crate::net::runtime::device::list_port_keys(None).is_empty();
     let endpoint_manager_initialized = crate::net::l4::endpoint::is_endpoint_manager_initialized();
-    info!(
+    debug!(
         target: "init",
-        "Network port runtime active: {}",
-        port_runtime_initialized
-    );
-    info!(
-        target: "init",
-        "Network stack initialized: {}",
-        stack_initialized
-    );
-    info!(
-        target: "init",
-        "Socket manager initialized: {}",
+        "Network bootstrap precheck: port_runtime_active={} stack_initialized={} socket_manager_initialized={}",
+        port_runtime_initialized,
+        stack_initialized,
         endpoint_manager_initialized
     );
 
@@ -190,6 +182,18 @@ pub(crate) fn init_network_infra() {
             "Socket manager already initialized; skipping reinit"
         );
     }
+
+    let stack_initialized = crate::net::runtime::device::is_initialized();
+    let port_runtime_initialized = !crate::net::runtime::device::list_port_keys(None).is_empty();
+    let endpoint_manager_initialized = crate::net::l4::endpoint::is_endpoint_manager_initialized();
+    info!(
+        target: "init",
+        "Network core ready: stack_initialized={} socket_manager_initialized={} port_runtime_active={} async_port_bootstrap_pending={}",
+        stack_initialized,
+        endpoint_manager_initialized,
+        port_runtime_initialized,
+        !port_runtime_initialized
+    );
 
     // OOOキューとタイミングホイールを初期化
     crate::net::l4::endpoint::ooo_queue::init_ooo_queues();

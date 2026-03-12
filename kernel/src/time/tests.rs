@@ -110,3 +110,15 @@ fn test_tsc_to_nanos_precise_vs_optimized() {
         );
     }
 }
+
+#[test_case]
+fn test_system_clock_timer_tick_nanos_round_trip() {
+    let clock = SystemClock::new();
+    assert_eq!(clock.timer_tick_nanos(), 0);
+
+    clock.set_timer_tick_nanos(NANOS_PER_MILLI);
+    assert_eq!(clock.timer_tick_nanos(), NANOS_PER_MILLI);
+
+    clock.tick(clock.timer_tick_nanos());
+    assert_eq!(clock.uptime_millis(), 1);
+}

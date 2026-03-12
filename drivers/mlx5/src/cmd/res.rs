@@ -99,7 +99,7 @@ pub fn build_create_underlay_qp_input(
     }
     let qpc = &mut in_mbox.data[0x18..0x18 + 0xE8];
 
-    // Match Linux mlx5i_create_underlay_qp():
+    // Program the minimal underlay QP profile:
     // st=UD, pm_state=MIGRATED, enhanced stateless offload, primary path
     // bound to vhca_port=1 with GRH enabled.
     set_bits_u32(qpc, 8, 8, 0x2); // st = MLX5_QP_ST_UD
@@ -144,8 +144,8 @@ pub fn build_create_mkey_input_with_relaxed_ordering(
         let remote_write =
             (params.access_flags & crate::resources::MkeyAccessFlags::RemoteWrite as u8) != 0;
 
-        // Match the Linux netdev direct-memory-key path: PA access mode, local
-        // reads always enabled, QPN wildcarded, and length64 for full-space keys.
+        // Program the direct-memory-key path: PA access mode, local reads
+        // always enabled, QPN wildcarded, and length64 for full-space keys.
         layout.set_relaxed_ordering_write(relaxed_ordering_write);
         layout.set_lr(true);
         layout.set_lw(local_write);
@@ -156,7 +156,7 @@ pub fn build_create_mkey_input_with_relaxed_ordering(
         layout.set_pd(params.pd);
         layout.set_log_page_size(params.log_page_size as u32);
         layout.set_relaxed_ordering_read(relaxed_ordering_read);
-        // Linux mlx5e direct mkey path leaves mkey_7_0 at 0.
+        // Keep mkey_7_0 cleared for the direct mkey path.
         layout.set_mkey_7_0(0);
 
         if params.start_addr == 0 && params.length == u64::MAX {
@@ -227,7 +227,7 @@ pub fn build_create_tis_input_with_options(
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = TisContextLayout::new(&mut in_mbox.data[0x20..]);
 
-    // Match Linux mlx5e default TIS setup: transport_domain + underlay_qpn.
+    // Program the default TIS setup: transport_domain + underlay_qpn.
     // LAG affinity fields are only programmed in dedicated LAG affinity modes.
     layout.set_prio(params.prio);
     layout.set_transport_domain(params.td);
@@ -356,7 +356,7 @@ mod tests {
     use crate::structs::get_bits_u32;
 
     #[test]
-    fn parse_create_mkey_output_reads_index_from_linux_ifc_offset() {
+    fn parse_create_mkey_output_reads_index_from_ifc_offset() {
         let mut out_mbox = CmdMailbox::zeroed();
         out_mbox.data[0x09] = 0x34;
         out_mbox.data[0x0A] = 0x56;
@@ -365,7 +365,7 @@ mod tests {
     }
 
     #[test]
-    fn create_mkey_sets_linux_ifc_permission_bits() {
+    fn create_mkey_sets_ifc_permission_bits() {
         let mut in_mbox = CmdMailbox::zeroed();
         let params = MkeyParams {
             start_addr: 0,
@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn create_underlay_qp_sets_linux_ipoib_minimal_fields() {
+    fn create_underlay_qp_sets_minimal_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_create_underlay_qp_input(&mut in_mbox, 1, Some(0x12_34_56), 0x1);
 
@@ -420,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn create_qp_output_uses_linux_ifc_object_offset() {
+    fn create_qp_output_uses_ifc_object_offset() {
         let mut out_mbox = CmdMailbox::zeroed();
         out_mbox.data[0x09] = 0x12;
         out_mbox.data[0x0A] = 0x34;
@@ -429,14 +429,14 @@ mod tests {
     }
 
     #[test]
-    fn query_mkey_input_uses_linux_ifc_object_offset() {
+    fn query_mkey_input_uses_ifc_object_offset() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_query_mkey_input(&mut in_mbox, 0x234567);
         assert_eq!(in_mbox.read_be32(0x08), 0x0023_4567);
     }
 
     #[test]
-    fn create_tis_sets_linux_ifc_required_fields() {
+    fn create_tis_sets_ifc_required_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
         let params = TisParams {
             td: 0x123,
@@ -472,14 +472,14 @@ mod tests {
     }
 
     #[test]
-    fn query_tis_input_uses_linux_ifc_object_offset() {
+    fn query_tis_input_uses_ifc_object_offset() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_query_tis_input(&mut in_mbox, 0x345678, 0, false);
         assert_eq!(in_mbox.read_be32(0x08), 0x0034_5678);
     }
 
     #[test]
-    fn query_tis_output_uses_linux_ifc_context_offset() {
+    fn query_tis_output_uses_ifc_context_offset() {
         let mut out_mbox = CmdMailbox::zeroed();
         let ctx = &mut out_mbox.data[0x10..];
         crate::structs::set_bits_u32(ctx, 0, 1, 1);
@@ -501,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn create_tir_direct_rq_sets_linux_ifc_fields() {
+    fn create_tir_direct_rq_sets_ifc_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
         let params = TirParams {
             receive_type: TirReceiveType::DirectRq,

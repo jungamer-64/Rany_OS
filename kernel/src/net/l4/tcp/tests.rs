@@ -1,7 +1,52 @@
 use super::*;
+use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::tcb::tcp_flags;
+use crate::security::capability::{CAP_NET_BIND, CapabilitySet, manager};
+use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::{format, vec};
+
+fn idle_entry(_: u64) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+struct CurrentTaskGuard {
+    prev: Option<*mut TaskControlBlock>,
+    current: *mut TaskControlBlock,
+}
+
+impl Drop for CurrentTaskGuard {
+    fn drop(&mut self) {
+        let cpu_id = crate::smp::current_cpu() as usize;
+        let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
+        unsafe {
+            set_current_task(cpu_id, prev_ptr);
+            drop(Box::from_raw(self.current));
+        }
+    }
+}
+
+fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
+    let cpu_id = crate::smp::current_cpu() as usize;
+    let prev = get_current_task(cpu_id);
+    let mut tcb =
+        TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
+    let caps = manager().get_capabilities(domain_id.as_u64());
+    tcb.security = Arc::new(DomainSecurity {
+        credentials: DomainCredentials::ROOT,
+        caps,
+    });
+    let boxed = Box::new(tcb);
+    let current = Box::into_raw(boxed);
+    unsafe {
+        set_current_task(cpu_id, current);
+    }
+    CurrentTaskGuard { prev, current }
+}
 
 #[cfg_attr(test, test_case)]
 pub fn test_ipv4_addr() {
@@ -45,6 +90,33 @@ pub fn test_tcp_stats_rx_wire_and_app_delivery_are_separate() {
     assert_eq!(stats.bytes_received, 128);
     assert_eq!(stats.packets_received, 1);
     assert_eq!(stats.app_bytes_delivered, 128);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_privileged_bind_requires_cap_net_bind() {
+    let domain = DomainId::new(41);
+    manager().set_capabilities(domain.as_u64(), CapabilitySet::empty());
+    let _guard = set_current_subject(domain);
+
+    let mut processor = TcpProcessor::new();
+    let result = processor.bind(EndpointAddr::new([127, 0, 0, 1], 80), None);
+
+    assert!(matches!(result, Err(TcpError::PermissionDenied)));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_kernel_domain_can_bind_privileged_port_when_capability_initialized() {
+    manager().set_capabilities(0, CapabilitySet::full());
+    let _guard = set_current_subject(DomainId::KERNEL);
+
+    let mut processor = TcpProcessor::new();
+    let result = processor.bind(EndpointAddr::new([127, 0, 0, 1], 80), None);
+
+    assert!(
+        result.is_ok(),
+        "kernel domain should bind privileged port 80"
+    );
+    assert!(manager().has_capability(0, CAP_NET_BIND));
 }
 
 #[cfg_attr(test, test_case)]

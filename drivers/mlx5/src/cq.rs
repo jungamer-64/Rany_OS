@@ -99,12 +99,12 @@ impl Cqe {
 
     /// チェックサムステータス (L3 OK)
     pub fn l3_ok(&self) -> bool {
-        false
+        (self.data[cqe_regs::HDS_IP_EXT] & cqe_regs::CQE_L3_OK) != 0
     }
 
     /// チェックサムステータス (L4 OK)
     pub fn l4_ok(&self) -> bool {
-        false
+        (self.data[cqe_regs::HDS_IP_EXT] & cqe_regs::CQE_L4_OK) != 0
     }
 
     /// VLANタグが存在するか確認
@@ -151,6 +151,34 @@ impl Cqe {
     /// エラーCQEに含まれる source WQE opcode
     pub fn error_wqe_opcode(&self) -> Option<u8> {
         self.is_error().then_some(self.data[cqe_regs::QPN])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checksum_flags_default_to_false() {
+        let cqe = Cqe::zeroed();
+        assert!(!cqe.l3_ok());
+        assert!(!cqe.l4_ok());
+    }
+
+    #[test]
+    fn checksum_flags_decode_l3_only() {
+        let mut cqe = Cqe::zeroed();
+        cqe.data[cqe_regs::HDS_IP_EXT] = cqe_regs::CQE_L3_OK;
+        assert!(cqe.l3_ok());
+        assert!(!cqe.l4_ok());
+    }
+
+    #[test]
+    fn checksum_flags_decode_l3_and_l4() {
+        let mut cqe = Cqe::zeroed();
+        cqe.data[cqe_regs::HDS_IP_EXT] = cqe_regs::CQE_L3_OK | cqe_regs::CQE_L4_OK;
+        assert!(cqe.l3_ok());
+        assert!(cqe.l4_ok());
     }
 }
 
@@ -245,7 +273,7 @@ impl CompletionQueue {
     /// # Safety
     /// - uar_base が有効であること
     pub unsafe fn arm(&self) {
-        // Linux/PRM format:
+        // PRM format:
         // doorbell[0] = be32(sn << 28 | cmd | ci), doorbell[1] = be32(cqn)
         // written as a single raw 64-bit MMIO store to MLX5_CQ_DOORBELL.
         let sn = self.arm_sn.fetch_add(1, Ordering::Relaxed) & 0x3;

@@ -535,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn query_vnic_env_layout_matches_linux_offsets() {
+    fn query_vnic_env_layout_matches_ifc_offsets() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_query_vnic_env_input(&mut in_mbox, 9, true);
 
@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn modify_vport_state_admin_up_matches_linux_fields() {
+    fn modify_vport_state_admin_up_matches_ifc_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_modify_vport_state_input(
             &mut in_mbox,
@@ -576,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn query_vhca_state_builder_and_parser_match_linux_layout() {
+    fn query_vhca_state_builder_and_parser_match_ifc_layout() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_query_vhca_state_input(&mut in_mbox, 0x55aa, 7);
 
@@ -617,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn opcode_values_match_linux_ifc() {
+    fn opcode_values_match_ifc() {
         assert_eq!(CmdOpcode::ModifyVportState as u16, 0x0751);
         assert_eq!(CmdOpcode::QueryVnicEnv as u16, 0x076f);
         assert_eq!(CmdOpcode::QueryVhcaState as u16, 0x0b0d);
@@ -625,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn access_register_builder_matches_linux_ifc_offsets() {
+    fn access_register_builder_matches_ifc_offsets() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_access_register_input(
             &mut in_mbox,
@@ -642,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_vport_counter_output_matches_linux_field_order() {
+    fn parse_query_vport_counter_output_matches_ifc_field_order() {
         let mut out_mbox = CmdMailbox::zeroed();
 
         for index in 0..13usize {

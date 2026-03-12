@@ -119,13 +119,13 @@ impl Mlx5Device {
         }
         let cq_db_ptr = db_virt as *mut u32;
         core::ptr::write_volatile(cq_db_ptr, 0u32.to_be());
-        // Linux initializes arm_db with MLX5_CQ_INIT_CMD_SN = cpu_to_be32(2 << 28).
+        // Initialize arm_db with MLX5_CQ_INIT_CMD_SN = cpu_to_be32(2 << 28).
         core::ptr::write_volatile(cq_db_ptr.add(1), (2u32 << 28).to_be());
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         // Keep CQE compression disabled in the generic CREATE_CQ path.
-        // Linux enables it selectively for RX CQs after programming
-        // companion CQC fields (mini_cqe_res_format/layout).
+        // RX-specific flows can enable it after programming the companion
+        // CQC fields (mini_cqe_res_format/layout).
         let cqe_comp = false;
         build_create_cq_input(
             in_mbox,
@@ -249,7 +249,7 @@ impl Mlx5Device {
             .hca_caps()
             .map(|caps| caps.wqe_inline_mode == 1)
             .unwrap_or(false);
-        // Linux programs the SQ timestamp format from the SQ cap, preferring
+        // Program the SQ timestamp format from the SQ cap, preferring
         // real-time when supported and otherwise leaving free-running (0).
         let sq_ts_format = self
             .hca_caps()

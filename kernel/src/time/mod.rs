@@ -367,6 +367,7 @@ impl Rtc {
 pub struct SystemClock {
     boot_time: AtomicU64,
     uptime_nanos: AtomicU64,
+    timer_tick_nanos: AtomicU64,
     tsc_epoch_nanos: AtomicU64,
     tsc_epoch_tsc: AtomicU64,
     tsc_freq_hz: AtomicU64,
@@ -380,6 +381,7 @@ impl SystemClock {
         Self {
             boot_time: AtomicU64::new(0),
             uptime_nanos: AtomicU64::new(0),
+            timer_tick_nanos: AtomicU64::new(0),
             tsc_epoch_nanos: AtomicU64::new(0),
             tsc_epoch_tsc: AtomicU64::new(0),
             tsc_freq_hz: AtomicU64::new(0),
@@ -399,6 +401,14 @@ impl SystemClock {
 
     pub fn uptime_nanos(&self) -> u64 {
         self.uptime_nanos.load(Ordering::Relaxed)
+    }
+
+    pub fn set_timer_tick_nanos(&self, nanos: u64) {
+        self.timer_tick_nanos.store(nanos, Ordering::Release);
+    }
+
+    pub fn timer_tick_nanos(&self) -> u64 {
+        self.timer_tick_nanos.load(Ordering::Acquire)
     }
 
     pub fn uptime_millis(&self) -> u64 {

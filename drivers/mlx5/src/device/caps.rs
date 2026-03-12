@@ -204,6 +204,31 @@ impl Mlx5Device {
         caps.relaxed_ordering_read = cap_view.relaxed_ordering_read();
         caps.relaxed_ordering_read_pci_enabled = cap_view.relaxed_ordering_read_pci_enabled();
 
+        if !crate::defs::ConnectXVariant::is_vf_device_id(self.device_id)
+            && (caps.max_sq <= 1 || caps.max_rq <= 1)
+        {
+            log::warn!(
+                target: "mlx5",
+                "Suspicious PF queue capability decode: device_id={:#x} vhca_id={:#x} max_sq={} max_rq={} cur_log_max_sq={} max_log_max_sq={} cur_log_max_rq={} max_log_max_rq={} cur_log_max_qp_sz={} max_log_max_qp_sz={} cur_log_max_tis={} max_log_max_tis={} cur_log_max_tis_per_sq={} max_log_max_tis_per_sq={} cur_log_max_td={} max_log_max_td={}",
+                self.device_id,
+                cap_view.vhca_id(),
+                caps.max_sq,
+                caps.max_rq,
+                cap_view.log_max_sq(),
+                max_view.log_max_sq(),
+                cap_view.log_max_rq(),
+                max_view.log_max_rq(),
+                cap_view.log_max_qp_sz(),
+                max_view.log_max_qp_sz(),
+                cap_view.log_max_tis(),
+                max_view.log_max_tis(),
+                cap_view.log_max_tis_per_sq(),
+                max_view.log_max_tis_per_sq(),
+                cap_view.log_max_transport_domain(),
+                max_view.log_max_transport_domain()
+            );
+        }
+
         if caps.hca_cap_2 {
             match self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL_2, true) {
                 Ok(general_2_max) => {

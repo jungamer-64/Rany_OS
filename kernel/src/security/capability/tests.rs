@@ -196,6 +196,15 @@ fn test_spawn_reclamation_daemon_task_idempotent() {
 }
 
 #[test_case]
+fn test_capability_init_idempotent() {
+    init();
+    init();
+
+    assert!(manager().has_capability(0, CAP_NET_BIND));
+    assert!(manager().has_capability(0, CAP_SYS_ADMIN));
+}
+
+#[test_case]
 fn test_grant_with_permitted_manager() {
     let caller: u64 = 1001;
     let target: u64 = 2001;

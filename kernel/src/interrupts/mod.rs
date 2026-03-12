@@ -469,6 +469,10 @@ define_interrupt!(
 
         // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）
         let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        let tick_nanos = crate::time::timer_tick_nanos();
+        if tick_nanos != 0 {
+            crate::time::tick(tick_nanos);
+        }
 
         // 2. 軽量なフラグ設定のみ（重い処理は遅延）
         // タイマーイベントペンディングフラグを設定

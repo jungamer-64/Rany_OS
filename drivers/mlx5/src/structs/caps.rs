@@ -610,7 +610,7 @@ mod tests {
     use crate::structs::{get_bits_u32, set_bits_u32};
 
     #[test]
-    fn hca_cap_layout_reads_linux_ifc_offsets() {
+    fn hca_cap_layout_reads_ifc_offsets() {
         let mut data = [0u8; 256];
         set_bits_u32(&mut data, 32, 1, 1);
         set_bits_u32(&mut data, 48, 16, 0x1234);
@@ -683,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn hca_cap_layout_mut_writes_linux_ifc_offsets() {
+    fn hca_cap_layout_mut_writes_ifc_offsets() {
         let mut data = [0u8; 256];
         {
             let mut view = HcaCapLayoutMut::new(&mut data);
@@ -714,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn hca_cap2_layout_reads_and_writes_linux_ifc_offsets() {
+    fn hca_cap2_layout_reads_and_writes_ifc_offsets() {
         let mut data = [0u8; 256];
         set_bits_u32(&mut data, 545, 1, 1);
         set_bits_u32(&mut data, 546, 14, 0x2aaa);
@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn roce_cap_layout_reads_and_writes_linux_ifc_offsets() {
+    fn roce_cap_layout_reads_and_writes_ifc_offsets() {
         let mut data = [0u8; 256];
         set_bits_u32(&mut data, 4, 1, 1);
         set_bits_u32(&mut data, 8, 1, 1);
@@ -755,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn atomic_cap_layout_reads_and_writes_linux_ifc_offsets() {
+    fn atomic_cap_layout_reads_and_writes_ifc_offsets() {
         let mut data = [0u8; 256];
         set_bits_u32(&mut data, 64, 2, 0x1);
         set_bits_u32(&mut data, 70, 1, 1);
@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn eth_offloads_cap_layout_reads_linux_ifc_offsets() {
+    fn eth_offloads_cap_layout_reads_ifc_offsets() {
         let mut data = [0u8; 256];
         set_bits_u32(&mut data, 0, 1, 1);
         set_bits_u32(&mut data, 2, 1, 1);
@@ -791,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn odp_cap_layout_reads_and_writes_linux_ifc_offsets() {
+    fn odp_cap_layout_reads_and_writes_ifc_offsets() {
         let mut data = [0u8; 256];
         set_bits_u32(&mut data, 581, 1, 1);
         set_bits_u32(&mut data, 1536, 1, 1);
@@ -866,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn port_selection_cap_layout_reads_and_writes_linux_ifc_offsets() {
+    fn port_selection_cap_layout_reads_and_writes_ifc_offsets() {
         let mut data = [0u8; 256];
         set_bits_u32(&mut data, 18, 1, 1);
 

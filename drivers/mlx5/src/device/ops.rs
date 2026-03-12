@@ -85,7 +85,7 @@ impl Mlx5Device {
                 return Err(Mlx5Error::InvalidResponse);
             }
 
-            // Linux と同様に EnableHca を呼び出し、VF の HCA を有効化する
+            // VF の HCA を有効化する
             build_enable_hca_input(in_mbox, function_id);
             cmd.execute(
                 CmdOpcode::EnableHca,
@@ -138,7 +138,7 @@ impl Mlx5Device {
                 0x10,
             )?;
 
-            // Linux と同様に DisableHca を呼び出し、VF の HCA を無効化する
+            // VF の HCA を無効化する
             build_enable_hca_input(in_mbox, function_id);
             cmd.execute(CmdOpcode::DisableHca, in_mbox_phys, 0x10, 0, 0)?;
         }

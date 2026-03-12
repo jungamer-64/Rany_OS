@@ -401,7 +401,7 @@ impl SendQueue {
     /// # Safety
     /// - uar_base が有効であること
     unsafe fn ring_doorbell(&mut self, wqe_ptr: *const u8) {
-        // Match Linux mlx5e_notify_hw ordering:
+        // Maintain the standard mlx5 SQ doorbell ordering:
         //  1. make WQE visible
         //  2. publish producer counter in DB record
         //  3. issue a write barrier before the MMIO doorbell
@@ -416,9 +416,9 @@ impl SendQueue {
         fence(Ordering::SeqCst);
         hal::mmio::sfence();
 
-        // Linux rings the SQ via the selected BF register base without
-        // per-packet slot toggling. Use the first BF slot until bfreg
-        // allocation is modeled explicitly.
+        // Ring the SQ via the selected BF register base without per-packet
+        // slot toggling. Use the first BF slot until bfreg allocation is
+        // modeled explicitly.
         let bf_addr = self.uar_base as usize + crate::regs::uar::BLUEFLAME;
         let ctrl_qword = core::ptr::read_unaligned(wqe_ptr as *const u64);
         hal::mmio::mmio_write_u64(bf_addr, ctrl_qword);

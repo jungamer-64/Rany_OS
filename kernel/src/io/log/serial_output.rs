@@ -149,11 +149,8 @@ impl KernelLogger {
 
     pub(super) fn print_header<W: Write>(&self, w: &mut W, record: &Record) {
         // Timestamp and Core ID
-        // Use the RTC when available; for test/bench builds use the test shim in `crate::time`
-        #[cfg(any(test, feature = "bench"))]
+        // Always use the unified kernel timebase so log timestamps advance with PIT IRQs.
         let uptime_ms = crate::time::get_uptime_ms();
-        #[cfg(not(any(test, feature = "bench")))]
-        let uptime_ms = crate::io::rtc::get_uptime_ms();
 
         let core_id = {
             #[cfg(not(feature = "bench"))]

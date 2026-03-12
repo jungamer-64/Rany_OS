@@ -313,7 +313,7 @@ mod tests {
     use crate::structs::get_bits_u32;
 
     #[test]
-    fn create_flow_table_sets_linux_ifc_fields() {
+    fn create_flow_table_sets_ifc_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
         let cfg = FlowTableConfig {
             table_type: crate::flow::FlowTableType::NicRx,
@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn create_flow_group_sets_linux_ifc_fields() {
+    fn create_flow_group_sets_ifc_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
         let mut criteria = MatchCriteria::default();
         criteria.outer_l2 = true;

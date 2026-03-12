@@ -257,7 +257,7 @@ pub fn build_modify_sq_input(
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let sq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (sqn & 0x00FF_FFFF);
-    // For state transition, Linux leaves modify_bitmask cleared and uses
+    // For state transition, leave modify_bitmask cleared and use
     // sq_state + ctx.state only.
     in_mbox.write_be32(0x08, sq_state_and_num);
     let mut layout = SqContextLayout::new(&mut in_mbox.data[0x20..]);
@@ -517,7 +517,7 @@ pub fn build_modify_rq_input(
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let rq_state_and_num = (((current_state as u32) & 0x0F) << 28) | (rqn & 0x00FF_FFFF);
-    // For state transition, Linux leaves modify_bitmask cleared and uses
+    // For state transition, leave modify_bitmask cleared and use
     // rq_state + ctx.state only.
     in_mbox.write_be32(0x08, rq_state_and_num);
     let mut layout = RqContextLayout::new(&mut in_mbox.data[0x20..]);
@@ -531,7 +531,7 @@ mod tests {
     use crate::structs::get_bits_u32;
 
     #[test]
-    fn create_eq_sets_linux_ifc_required_fields() {
+    fn create_eq_sets_ifc_required_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_create_eq_input(&mut in_mbox, 8, 0x1000, 0x123, 0x4, eq_event_mask::STANDARD);
 
@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn create_cq_sets_linux_ifc_required_fields() {
+    fn create_cq_sets_ifc_required_fields() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_create_cq_input(&mut in_mbox, 6, 0x4000, 0x5000, 0x123, 0x456, false);
 
@@ -573,14 +573,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_create_eq_output_reads_eqn_from_linux_ifc_offset() {
+    fn parse_create_eq_output_reads_eqn_from_ifc_offset() {
         let mut out_mbox = CmdMailbox::zeroed();
         out_mbox.data[0x0B] = 0x7A;
         assert_eq!(parse_create_eq_output(&out_mbox), 0x7A);
     }
 
     #[test]
-    fn parse_create_cq_output_reads_cqn_from_linux_ifc_offset() {
+    fn parse_create_cq_output_reads_cqn_from_ifc_offset() {
         let mut out_mbox = CmdMailbox::zeroed();
         out_mbox.data[0x09] = 0xAB;
         out_mbox.data[0x0A] = 0xCD;
@@ -589,14 +589,14 @@ mod tests {
     }
 
     #[test]
-    fn query_sq_input_uses_linux_ifc_object_offset() {
+    fn query_sq_input_uses_ifc_object_offset() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_query_sq_input(&mut in_mbox, 0x123456);
         assert_eq!(in_mbox.read_be32(0x08), 0x0012_3456);
     }
 
     #[test]
-    fn query_rq_input_uses_linux_ifc_object_offset() {
+    fn query_rq_input_uses_ifc_object_offset() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_query_rq_input(&mut in_mbox, 0x234567);
         assert_eq!(in_mbox.read_be32(0x08), 0x0023_4567);
@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn modify_sq_uses_linux_ifc_offsets() {
+    fn modify_sq_uses_ifc_offsets() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_modify_sq_input(
             &mut in_mbox,
@@ -667,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn modify_rq_uses_linux_ifc_offsets() {
+    fn modify_rq_uses_ifc_offsets() {
         let mut in_mbox = CmdMailbox::zeroed();
         build_modify_rq_input(
             &mut in_mbox,

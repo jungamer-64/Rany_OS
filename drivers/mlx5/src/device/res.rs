@@ -404,7 +404,7 @@ impl Mlx5Device {
         Ok(parse_query_mkey_output(out_mbox))
     }
 
-    /// CREATE_QP で Linux IPoIB 相当の最小 underlay QP を作成
+    /// CREATE_QP で最小構成の underlay QP を作成
     pub unsafe fn create_underlay_qp(&mut self, vhca_port: u8) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
@@ -488,8 +488,8 @@ impl Mlx5Device {
 
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         // VF firmware behavior varies across revisions; keep a short, targeted
-        // retry set that mirrors Linux-like defaults first, then conservative
-        // compatibility variants.
+        // retry set that starts with the common default profile, then tries
+        // conservative compatibility variants.
         let attempts = [
             CreateTisAttempt {
                 name: "td-only",
@@ -1034,8 +1034,8 @@ impl Mlx5Device {
         }
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
 
-        // Linux format: "Linux,mlx5_core,<major>.<minor>.<patch>".
-        let version = b"Linux,mlx5_core,0.1.0";
+        // Driver-reported version string: "<os>,mlx5_core,<major>.<minor>.<patch>".
+        let version = b"RanyOS,mlx5_core,0.1.0";
         build_set_driver_version_input(in_mbox, version);
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::SetDriverVersion,

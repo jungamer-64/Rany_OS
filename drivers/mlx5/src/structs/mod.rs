@@ -30,7 +30,7 @@ pub fn get_bits_u32(data: &[u8], bit_off: usize, bit_len: usize) -> u32 {
 
     // Shift and mask
     // bit_in_dword = 0 means starting at MSB (bit 31)
-    // Mellanox/Linux MLX5_GET assumes bit 0 is MSB in diagrams but counts from 0.
+    // MLX5_GET-style bit numbering assumes bit 0 is the MSB in diagrams.
     // Let's verify with an example: reserved_at_0[0x8] is bits 0-7.
     // If bit_off=0, bit_len=8, it's the first byte.
     // val >> (32 - 8 - 0) => val >> 24. Correct.

@@ -802,7 +802,7 @@ impl Mlx5Device {
         }
 
         // SET_HCA_CAP を呼び出して、ドライバ固有の要件に合わせてデバイスを最適化
-        // INIT_HCA の前に実行する必要がある (Linux に倣う)
+        // INIT_HCA の前に実行する必要がある
         log::info!(target: "mlx5", "Configuring HCA capabilities...");
         if let Err(err) = self.set_hca_ctrl_pf() {
             log::warn!(
@@ -842,9 +842,9 @@ impl Mlx5Device {
             );
         }
 
-        // Linux issues QUERY_PAGES for init pages between SET_HCA_CAP and
-        // INIT_HCA, even when the result is zero. Some VF firmware paths appear
-        // to use this handshake as part of the startup state transition.
+        // Issue QUERY_PAGES for init pages between SET_HCA_CAP and INIT_HCA,
+        // even when the result is zero. Some VF firmware paths appear to use
+        // this handshake as part of the startup state transition.
         match self.query_required_pages(crate::cmd::hca::QUERY_PAGES_OP_MOD_INIT_PAGES) {
             Ok((func_id, requested_pages)) => {
                 if func_id != 0 {
@@ -1180,8 +1180,8 @@ impl Mlx5Device {
                 eq_buf.1,
                 log_eq_size,
                 0,
-                // Linux creates completion EQs with an empty event mask and
-                // treats command/async notifications via dedicated EQ types.
+                // Completion EQs use an empty event mask; command and async
+                // notifications are handled by dedicated EQ types.
                 0,
             )?;
             eqns.push(eqn);

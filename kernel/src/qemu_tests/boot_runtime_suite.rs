@@ -57,6 +57,7 @@ type BootCase = fn() -> Result<(), BootCaseError>;
 #[cfg(feature = "qemu-test-export")]
 static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
     ("interrupts_enabled", case_interrupts_enabled),
+    ("uptime_ms_progresses", case_uptime_ms_progresses),
     ("tick_progresses", case_tick_progresses),
     ("sleep_ms_resumes", case_sleep_ms_resumes),
     ("timer_waker_deferred_path", case_timer_waker_deferred_path),
@@ -150,6 +151,35 @@ fn case_interrupts_enabled() -> Result<(), BootCaseError> {
     } else {
         Err(BootCaseError::failed(
             "interrupts are disabled in boot-smoke runtime",
+        ))
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_uptime_ms_progresses() -> Result<(), BootCaseError> {
+    let raw_before = crate::interrupts::get_timer_ticks();
+    let uptime_before = crate::time::get_uptime_ms();
+    let deadline_ns = crate::time::precise_time_nanos().saturating_add(250 * 1_000_000);
+    let mut saw_raw_tick = false;
+
+    while crate::time::precise_time_nanos() < deadline_ns {
+        let uptime_after = crate::time::get_uptime_ms();
+        if uptime_after > uptime_before {
+            return Ok(());
+        }
+        saw_raw_tick |= crate::interrupts::get_timer_ticks() > raw_before;
+        core::hint::spin_loop();
+    }
+
+    if saw_raw_tick {
+        Err(BootCaseError::failed(format!(
+            "kernel uptime did not advance on raw timer IRQs: before={} after={}",
+            uptime_before,
+            crate::time::get_uptime_ms()
+        )))
+    } else {
+        Err(BootCaseError::blocked(
+            "raw timer ticks did not advance for uptime_ms_progresses",
         ))
     }
 }

@@ -19,6 +19,7 @@ pub fn resource_to_capability(resource: &str) -> Capability {
 
 /// Global capability manager
 pub(crate) static CAPABILITY_MANAGER: CapabilityManager = CapabilityManager::new();
+static CAPABILITY_DAEMONS_INIT: Once<()> = Once::new();
 
 /// Get the global capability manager
 pub fn manager() -> &'static CapabilityManager {
@@ -30,9 +31,11 @@ pub fn init() {
     // Kernel domain gets all capabilities
     CAPABILITY_MANAGER.set_capabilities(0, CapabilitySet::full());
 
-    // Start maintenance daemons
-    spawn_expiry_daemon_task();
-    spawn_reclamation_daemon_task();
+    // Keep init idempotent across repeated boot/test setup paths.
+    CAPABILITY_DAEMONS_INIT.call_once(|| {
+        spawn_expiry_daemon_task();
+        spawn_reclamation_daemon_task();
+    });
 }
 
 /// Expiry daemon (runs periodically to remove expired grants)

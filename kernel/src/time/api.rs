@@ -94,6 +94,13 @@ pub fn pit() -> &'static Pit {
 pub fn init(tick_frequency: u64) {
     // PITを初期化 (Channel 0 を周期 tick 用に設定)
     PIT.init(tick_frequency);
+    let actual_frequency = PIT.frequency();
+    let tick_nanos = if actual_frequency == 0 {
+        0
+    } else {
+        NANOS_PER_SEC / actual_frequency
+    };
+    SYSTEM_CLOCK.set_timer_tick_nanos(tick_nanos);
 
     // RTCから現在時刻を読み取り
     let datetime = RTC.read_datetime();
@@ -109,6 +116,12 @@ pub fn init(tick_frequency: u64) {
 /// タイマーティック (割り込みハンドラから呼ばれる)
 pub fn tick(delta_nanos: u64) {
     SYSTEM_CLOCK.tick(delta_nanos);
+}
+
+/// 現在設定されているタイマーティック間隔 (ナノ秒)
+#[inline]
+pub fn timer_tick_nanos() -> u64 {
+    SYSTEM_CLOCK.timer_tick_nanos()
 }
 
 /// 現在の稼働時間を取得 (tick)

@@ -215,10 +215,10 @@ pub const MLX5_CMD_INLINE_SIZE: usize = 16;
 /// chained mailbox block の payload サイズ
 pub const MLX5_CMD_DATA_BLOCK_SIZE: usize = 512;
 
-/// Linux `struct mlx5_cmd_prot_block` の実サイズ
+/// command protocol block の実サイズ
 pub const MLX5_CMD_PROT_BLOCK_SIZE: usize = 576;
 
-/// Linux dma_pool と同じ mailbox block のアラインメント
+/// mailbox block のアラインメント
 pub const MLX5_CMD_PROT_BLOCK_ALIGN: usize = 1024;
 
 pub const fn mlx5_cmd_chained_blocks(len: usize) -> usize {

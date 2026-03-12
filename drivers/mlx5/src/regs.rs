@@ -200,6 +200,15 @@ pub mod cqe {
 
     /// l4_l3_hdr_type byte
     pub const L4_L3_HDR_TYPE: usize = 0x1D;
+
+    /// CQE checksum status byte
+    pub const HDS_IP_EXT: usize = 0x1C;
+
+    /// L3 checksum verification OK flag
+    pub const CQE_L3_OK: u8 = 1 << 1;
+
+    /// L4 checksum verification OK flag
+    pub const CQE_L4_OK: u8 = 1 << 2;
 }
 
 /// Work Queue Entry (WQE) レイアウト
