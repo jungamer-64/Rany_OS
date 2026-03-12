@@ -533,23 +533,11 @@ impl CoherentDmaBuffer {
             if crate::io::iommu::api::is_iommu_enabled() {
                 // ページアライメントされたサイズでマッピング（4K境界）
                 let aligned_size = iommu_align_len(size).unwrap_or(size);
-                let (read, write) = match attributes.direction {
-                    DmaDirection::ToDevice => (true, false),
-                    DmaDirection::FromDevice => (false, true),
-                    DmaDirection::Bidirectional => (true, true),
-                };
-                // SAFETY: phys_addr は上記で割り当てた有効な物理メモリを指す。
-                // aligned_size は4Kアライメント済み。メモリはDrop時まで有効。
-                match unsafe {
-                    crate::io::iommu::api::map_for_device_with_perms(
-                        dev,
-                        phys_addr,
-                        aligned_size as u64,
-                        read,
-                        write,
-                    )
-                } {
-                    Ok(iova) => {
+                let ctx =
+                    crate::io::dma::DeviceDmaContext::for_attached_device(*dev);
+                match ctx.map_physical_range(phys_addr, aligned_size, attributes.direction) {
+                    Ok(mapping) => {
+                        let (_device_id, iova, _mapped_len) = mapping.into_parts();
                         log::debug!(
                             "[DMA] CoherentDmaBuffer IOMMU mapped: phys=0x{:x} -> iova=0x{:x} size={}",
                             phys_addr.as_u64(),

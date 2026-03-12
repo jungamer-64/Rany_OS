@@ -44,7 +44,7 @@ pub fn map_rref_slice_for_device<T>(
 }
 
 /// Map an `RRef<T>` for DMA access scoped to a specific IOMMU domain.
-pub fn map_rref_for_domain<T>(
+pub(crate) fn map_rref_for_domain<T>(
     rref: RRef<T>,
     domain_id: u16,
     direction: DmaDirection,
@@ -53,7 +53,7 @@ pub fn map_rref_for_domain<T>(
 }
 
 /// Map an `RRef<[T]>` slice for DMA access scoped to a specific IOMMU domain.
-pub fn map_rref_slice_for_domain<T>(
+pub(crate) fn map_rref_slice_for_domain<T>(
     rref: RRef<[T]>,
     domain_id: u16,
     direction: DmaDirection,

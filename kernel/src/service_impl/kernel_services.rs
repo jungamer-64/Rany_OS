@@ -108,17 +108,18 @@ impl KernelServices for ExoKernel {
 
         let caller = context::current_subject().domain.as_u64();
         let dev_id = unpack_device_id(device_id);
-        match dma::CoherentDmaBuffer::new_for_device(size, dma::DmaMemoryAttributes::MMIO, &dev_id)
-        {
-            Some(buffer) => {
-                let phys = buffer.phys_addr().as_u64();
-                let dev_addr = buffer.device_addr();
-                let virt_ptr = unsafe { buffer.as_slice().as_ptr() } as usize;
+        let ctx = dma::DeviceDmaContext::for_attached_device(dev_id);
+        match ctx.alloc_region(size, dma::DmaMemoryAttributes::MMIO) {
+            Ok(region) => {
+                let slot = region.full_slot();
+                let phys = slot.host_addr();
+                let dev_addr = slot.device_addr();
+                let virt_ptr = slot.as_ptr() as usize;
 
                 // SECURITY: Track physical address ownership
                 PHYS_OWNERSHIP_REGISTRY.register(phys, size, caller);
 
-                let boxed: Box<dyn core::any::Any + Send> = Box::new(buffer);
+                let boxed: Box<dyn core::any::Any + Send> = Box::new(region.into_inner());
                 let dma_handle_id = DMA_REGISTRY.register(boxed, phys, caller) as u64;
                 Ok(unsafe {
                     DmaBuffer::from_kernel_parts(
@@ -131,7 +132,7 @@ impl KernelServices for ExoKernel {
                     )
                 })
             }
-            None => Err(KapiError::OutOfMemory),
+            Err(_) => Err(KapiError::OutOfMemory),
         }
     }
 

@@ -80,6 +80,30 @@ impl DeviceDmaContext {
         self.allocator.allocate_coherent(size, direction)
     }
 
+    /// Allocate the canonical owned DMA region for this context.
+    pub fn alloc_region(
+        &self,
+        size: usize,
+        attributes: DmaMemoryAttributes,
+    ) -> Result<DmaRegion, DmaError> {
+        if let Some(device_id) = self.device_id {
+            DmaRegion::new_for_device(size, attributes, &device_id).ok_or(DmaError::OutOfMemory)
+        } else {
+            DmaRegion::new(size, attributes).ok_or(DmaError::OutOfMemory)
+        }
+    }
+
+    /// Allocate a full-region slot view for metadata-heavy drivers.
+    pub fn alloc_slot(
+        &self,
+        size: usize,
+        attributes: DmaMemoryAttributes,
+    ) -> Result<(DmaRegion, DmaSlot), DmaError> {
+        let region = self.alloc_region(size, attributes)?;
+        let slot = region.full_slot();
+        Ok((region, slot))
+    }
+
     /// Map a physical range for a specific device through the IOMMU.
     pub fn map_physical_range(
         &self,

@@ -471,7 +471,7 @@ impl<T> DmaHandle<[T]> {
     }
 
     /// Map an RRef slice for DMA access via IOMMU (safe API).
-    pub fn map_rref_slice(
+    pub(crate) fn map_rref_slice(
         rref: RRef<[T]>,
         domain_id: u16,
         direction: DmaDirection,
@@ -735,7 +735,7 @@ impl<T> DmaHandle<T> {
     /// # Errors
     /// Returns `MapError<T>` containing the original RRef on failure.
     #[cfg(debug_assertions)]
-    pub fn map_simple(
+    pub(crate) fn map_simple(
         rref: RRef<T>,
         domain_id: u16,
         direction: DmaDirection,
@@ -798,7 +798,7 @@ impl<T> DmaHandle<T> {
 
     /// Identity mapping is DISABLED in production builds.
     #[cfg(not(debug_assertions))]
-    pub fn map_simple(
+    pub(crate) fn map_simple(
         rref: RRef<T>,
         _domain_id: u16,
         _direction: DmaDirection,
@@ -831,7 +831,7 @@ impl<T: ?Sized + 'static> DmaHandle<T> {
     ///
     /// # Errors
     /// Returns `UnmapError<T>` containing the handle if unmap fails.
-    pub unsafe fn unmap_simple(mut self) -> Result<RRef<T>, UnmapError<T>> {
+    pub(crate) unsafe fn unmap_simple(mut self) -> Result<RRef<T>, UnmapError<T>> {
         // Take the rref to mark this handle as unmapped
         match self.take_rref() {
             Some(rref) => {
@@ -971,7 +971,7 @@ impl<T> DmaHandle<T> {
     /// // Use handle.iova() for device programming
     /// let returned_rref = handle.unmap()?;
     /// ```
-    pub fn map_rref(
+    pub(crate) fn map_rref(
         rref: RRef<T>,
         domain_id: u16,
         direction: DmaDirection,

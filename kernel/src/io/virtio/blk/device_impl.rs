@@ -571,10 +571,12 @@ impl VirtioBlkDevice {
         rref: crate::ipc::RRef<[u8]>,
         direction: DmaDirection,
     ) -> VfsBlockResult<DmaHandle<[u8]>> {
-        let handle = if let Some(device) = self.iommu_device_id {
+        let handle = if !is_iommu_enabled() {
+            DmaHandle::map_rref_slice(rref, 0, direction)
+        } else if let Some(device) = self.iommu_device_id {
             map_rref_slice_for_device(rref, &device, direction)
         } else {
-            DmaHandle::map_rref_slice(rref, 0, direction)
+            return Err(VfsBlockError::IoError);
         }
         .map_err(|_| VfsBlockError::IoError)?;
         Ok(handle)
