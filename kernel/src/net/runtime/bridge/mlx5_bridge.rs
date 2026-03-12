@@ -1335,7 +1335,6 @@ pub unsafe fn mlx5_poll_rx(state: &Arc<Mlx5BridgeState>) -> u32 {
             for cqe in &cqes {
                 let wqe_counter = cqe.wqe_counter;
                 let byte_count = cqe.byte_count as usize;
-                let idx = (wqe_counter as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize;
 
                 if matches!(
                     cqe.opcode,
@@ -1345,6 +1344,7 @@ pub unsafe fn mlx5_poll_rx(state: &Arc<Mlx5BridgeState>) -> u32 {
                     if let Some(rx_info) =
                         device.process_rx_completion(rq_index, wqe_counter, false, false)
                     {
+                        let idx = rx_info.slot_index as usize;
                         if let Some(pkt) = rx_bufs_guard[rq_index][idx].take() {
                             let buf_virt = pkt.as_ptr() as u64;
                             let buf_device = pkt.device_address();
@@ -1366,6 +1366,7 @@ pub unsafe fn mlx5_poll_rx(state: &Arc<Mlx5BridgeState>) -> u32 {
                 if let Some(rx_info) =
                     device.process_rx_completion(rq_index, wqe_counter, cqe.l3_ok, cqe.l4_ok)
                 {
+                    let idx = rx_info.slot_index as usize;
                     state.rx_packets.fetch_add(1, Ordering::Relaxed);
                     counters::global().record_rx(byte_count);
                     trace::push_event(NetLayer::Driver, NetEventKind::Rx, "mlx5 rx");

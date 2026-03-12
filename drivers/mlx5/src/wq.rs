@@ -14,6 +14,7 @@
 //! バッファの所有権をSW↔HW間で明示的に移動する。
 //! DMAバッファの物理アドレスをWQEに直接設定する。
 
+use alloc::collections::VecDeque;
 use crate::defs::{WQEBB_SIZE, WqeOpcode};
 use crate::regs::wqe;
 use core::sync::atomic::{Ordering, fence};
@@ -560,9 +561,111 @@ impl Default for TxWqeDebugInfo {
 // Receive Queue
 // ============================================================================
 
+/// RX Work Queue の実行モード
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RxWqMode {
+    Cyclic,
+    LinkedList,
+}
+
+impl RxWqMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cyclic => "cyclic",
+            Self::LinkedList => "linked",
+        }
+    }
+}
+
+/// QUERY_RQ で確定した RX WQ レイアウト
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResolvedRqLayout {
+    pub wq_mode: RxWqMode,
+    pub slot_size_bytes: usize,
+    pub data_seg_offset: usize,
+    pub has_next_segment: bool,
+    pub rq_num: u32,
+    pub cqn: u32,
+    pub raw_mem_rq_type: u8,
+    pub raw_wq_type: u8,
+    pub raw_log_wq_stride: u8,
+    pub raw_end_padding_mode: u8,
+    pub raw_log_wq_sz: u8,
+    pub rmpn: Option<u32>,
+}
+
+impl ResolvedRqLayout {
+    pub const LINK_SEG_SIZE: usize = WQEBB_SIZE;
+    pub const DATA_SEG_SIZE: usize = WQEBB_SIZE;
+
+    pub const fn cyclic(
+        rq_num: u32,
+        cqn: u32,
+        slot_size_bytes: usize,
+        raw_mem_rq_type: u8,
+        raw_wq_type: u8,
+        raw_log_wq_stride: u8,
+        raw_end_padding_mode: u8,
+        raw_log_wq_sz: u8,
+        rmpn: Option<u32>,
+    ) -> Self {
+        Self {
+            wq_mode: RxWqMode::Cyclic,
+            slot_size_bytes,
+            data_seg_offset: 0,
+            has_next_segment: false,
+            rq_num,
+            cqn,
+            raw_mem_rq_type,
+            raw_wq_type,
+            raw_log_wq_stride,
+            raw_end_padding_mode,
+            raw_log_wq_sz,
+            rmpn,
+        }
+    }
+
+    pub const fn linked(
+        rq_num: u32,
+        cqn: u32,
+        slot_size_bytes: usize,
+        raw_mem_rq_type: u8,
+        raw_wq_type: u8,
+        raw_log_wq_stride: u8,
+        raw_end_padding_mode: u8,
+        raw_log_wq_sz: u8,
+        rmpn: Option<u32>,
+    ) -> Self {
+        Self {
+            wq_mode: RxWqMode::LinkedList,
+            slot_size_bytes,
+            data_seg_offset: Self::LINK_SEG_SIZE,
+            has_next_segment: true,
+            rq_num,
+            cqn,
+            raw_mem_rq_type,
+            raw_wq_type,
+            raw_log_wq_stride,
+            raw_end_padding_mode,
+            raw_log_wq_sz,
+            rmpn,
+        }
+    }
+
+    pub const fn slot_offset(self, slot_index: u16) -> usize {
+        slot_index as usize * self.slot_size_bytes
+    }
+
+    pub const fn data_seg_offset(self) -> usize {
+        self.data_seg_offset
+    }
+}
+
 /// 受信バッファ情報（RQに投入されたDMAバッファのトラッキング）
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RxBufferInfo {
+    /// バッファが対応する RQ スロット番号
+    pub slot_index: u16,
     /// DMAバッファの仮想アドレス
     pub virt_addr: u64,
     /// DMAバッファのデバイスアドレス（IOMMU IOVA）
@@ -591,6 +694,8 @@ pub struct ReceiveQueue {
     log_rq_size: u8,
     /// RQエントリ数
     rq_depth: u32,
+    /// 実際に採用された RQ レイアウト
+    layout: ResolvedRqLayout,
     /// プロデューサインデックス
     producer_counter: u16,
     /// 紐づくCQ番号
@@ -599,6 +704,12 @@ pub struct ReceiveQueue {
     pub tirn: u32,
     /// 受信バッファトラッキング
     rx_buffers: alloc::vec::Vec<RxBufferInfo>,
+    /// HW に公開済みスロットの FIFO
+    inflight_slots: VecDeque<u16>,
+    /// 再利用可能なスロットの FIFO
+    free_slots: VecDeque<u16>,
+    /// 最後に投入したスロット
+    last_posted_slot: Option<u16>,
     /// Memory Key (L-Key)
     pub mkey: u32,
     /// チェックサムオフロード対応
@@ -614,12 +725,17 @@ impl ReceiveQueue {
         doorbell_virt: u64,
         log_rq_size: u8,
         cqn: u32,
+        layout: ResolvedRqLayout,
         mkey: u32,
         csum_offload: bool,
     ) -> Self {
         let depth = 1u32 << log_rq_size;
         let mut rx_buffers = alloc::vec::Vec::with_capacity(depth as usize);
         rx_buffers.resize(depth as usize, RxBufferInfo::default());
+        let mut free_slots = VecDeque::with_capacity(depth as usize);
+        for slot in 0..depth {
+            free_slots.push_back(slot as u16);
+        }
 
         Self {
             rqn,
@@ -628,10 +744,14 @@ impl ReceiveQueue {
             doorbell_virt,
             log_rq_size,
             rq_depth: depth,
+            layout,
             producer_counter: 0,
             cqn,
             tirn: 0,
             rx_buffers,
+            inflight_slots: VecDeque::with_capacity(depth as usize),
+            free_slots,
+            last_posted_slot: None,
             mkey,
             csum_offload,
         }
@@ -657,23 +777,31 @@ impl ReceiveQueue {
         buf_size: u32,
     ) -> Option<u16> {
         let wqe_idx = self.producer_counter;
-        let buf_idx = (wqe_idx as u32 % self.rq_depth) as usize;
+        let slot_index = self.free_slots.pop_front()?;
+        let buf_idx = slot_index as usize;
 
         if self.rx_buffers[buf_idx].in_use {
+            self.free_slots.push_front(slot_index);
             return None; // キューフル
         }
 
-        // RQ WQE: データセグメントのみ（16バイト）
-        let wqe_offset = buf_idx * WQEBB_SIZE;
+        let wqe_offset = self.layout.slot_offset(slot_index);
         let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
+        core::ptr::write_bytes(wqe_ptr, 0, self.layout.slot_size_bytes);
 
-        // Data Segment
-        write_be32_raw(wqe_ptr, wqe::data::BYTE_COUNT, buf_size);
-        write_be32_raw(wqe_ptr, wqe::data::LKEY, self.mkey);
-        write_be64_raw(wqe_ptr, wqe::data::ADDR, device_addr);
+        if self.layout.has_next_segment {
+            let next_slot = ((slot_index as u32 + 1) % self.rq_depth) as u16;
+            self.write_link_segment(wqe_ptr, next_slot);
+        }
+
+        let data_seg_ptr = wqe_ptr.add(self.layout.data_seg_offset());
+        write_be32_raw(data_seg_ptr, wqe::data::BYTE_COUNT, buf_size);
+        write_be32_raw(data_seg_ptr, wqe::data::LKEY, self.mkey);
+        write_be64_raw(data_seg_ptr, wqe::data::ADDR, device_addr);
 
         // バッファトラッキング
         self.rx_buffers[buf_idx] = RxBufferInfo {
+            slot_index,
             virt_addr: buf_virt,
             device_addr,
             size: buf_size,
@@ -684,6 +812,8 @@ impl ReceiveQueue {
 
         // プロデューサカウンタを進める
         self.producer_counter = self.producer_counter.wrapping_add(1);
+        self.inflight_slots.push_back(slot_index);
+        self.last_posted_slot = Some(slot_index);
 
         // ドアベル更新
         fence(Ordering::Release);
@@ -701,21 +831,44 @@ impl ReceiveQueue {
         l3_ok: bool,
         l4_ok: bool,
     ) -> Option<RxBufferInfo> {
-        let idx = (wqe_counter as u32 % self.rq_depth) as usize;
+        let slot_index = self.inflight_slots.pop_front()?;
+        let idx = slot_index as usize;
+        if self.layout.wq_mode == RxWqMode::Cyclic {
+            let expected_slot = (wqe_counter as u32 % self.rq_depth) as u16;
+            if expected_slot != slot_index {
+                log::warn!(
+                    target: "mlx5",
+                    "RX completion slot mismatch: rqn={:#x} mode={} wqe_counter={} expected_slot={} actual_slot={}",
+                    self.rqn,
+                    self.layout.wq_mode.label(),
+                    wqe_counter,
+                    expected_slot,
+                    slot_index
+                );
+            }
+        }
         if self.rx_buffers[idx].in_use {
             let mut info = self.rx_buffers[idx];
             info.l3_ok = l3_ok;
             info.l4_ok = l4_ok;
             self.rx_buffers[idx] = RxBufferInfo::default();
+            self.free_slots.push_back(slot_index);
             Some(info)
         } else {
+            log::warn!(
+                target: "mlx5",
+                "RX completion referenced empty slot: rqn={:#x} slot={} wqe_counter={}",
+                self.rqn,
+                slot_index,
+                wqe_counter
+            );
             None
         }
     }
 
     /// RQの空きスロット数
     pub fn available_slots(&self) -> u32 {
-        self.rx_buffers.iter().filter(|b| !b.in_use).count() as u32
+        self.free_slots.len() as u32
     }
 
     /// RQバッファのデバイスアドレス
@@ -729,8 +882,11 @@ impl ReceiveQueue {
     /// - RQ バッファと doorbell_virt が有効であること
     pub unsafe fn debug_state(&self) -> RxQueueDebugState {
         let last_wqe_counter = self.producer_counter.wrapping_sub(1);
-        let last_idx = (last_wqe_counter as u32 % self.rq_depth) as usize;
-        let last_wqe_ptr = (self.buf_virt as usize + last_idx * WQEBB_SIZE) as *const u8;
+        let last_wqe_ptr = self
+            .last_posted_slot
+            .map(|slot| (self.buf_virt as usize + self.layout.slot_offset(slot)) as *const u8)
+            .unwrap_or(self.buf_virt as *const u8);
+        let data_seg_ptr = last_wqe_ptr.add(self.layout.data_seg_offset());
 
         let doorbell_be = core::ptr::read_volatile(self.doorbell_virt as *const u32);
         let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
@@ -744,10 +900,17 @@ impl ReceiveQueue {
             doorbell_host,
             last_wqe_counter,
             last_wqe_addr: last_wqe_ptr as u64,
-            last_wqe_byte_count: read_be32_raw(last_wqe_ptr, wqe::data::BYTE_COUNT),
-            last_wqe_lkey: read_be32_raw(last_wqe_ptr, wqe::data::LKEY),
-            last_wqe_device_addr: read_be64_raw(last_wqe_ptr, wqe::data::ADDR),
+            last_wqe_byte_count: read_be32_raw(data_seg_ptr, wqe::data::BYTE_COUNT),
+            last_wqe_lkey: read_be32_raw(data_seg_ptr, wqe::data::LKEY),
+            last_wqe_device_addr: read_be64_raw(data_seg_ptr, wqe::data::ADDR),
         }
+    }
+
+    unsafe fn write_link_segment(&self, slot_ptr: *mut u8, next_slot: u16) {
+        const NEXT_SEG_NEXT_WQE_INDEX: usize = 0x02;
+        let next_stride_index =
+            (self.layout.slot_offset(next_slot) / ResolvedRqLayout::LINK_SEG_SIZE) as u16;
+        write_be16_raw(slot_ptr, NEXT_SEG_NEXT_WQE_INDEX, next_stride_index);
     }
 }
 
@@ -842,4 +1005,130 @@ unsafe fn read_be64_raw(base: *const u8, offset: usize) -> u64 {
 fn dma_store_barrier() {
     fence(Ordering::Release);
     hal::mmio::sfence();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cyclic_layout(slot_size_bytes: usize) -> ResolvedRqLayout {
+        ResolvedRqLayout::cyclic(
+            0x10,
+            0x20,
+            slot_size_bytes,
+            0,
+            1,
+            if slot_size_bytes == 64 { 6 } else { 4 },
+            1,
+            2,
+            None,
+        )
+    }
+
+    fn linked_layout() -> ResolvedRqLayout {
+        ResolvedRqLayout::linked(0x10, 0x20, 64, 0, 0, 6, 0, 2, None)
+    }
+
+    #[test]
+    fn cyclic_16b_post_complete_recycle_uses_fifo_slot_bookkeeping() {
+        let mut rq_mem = [0u8; 64];
+        let mut db = [0u32; 1];
+        let mut rq = ReceiveQueue::new(
+            0x10,
+            rq_mem.as_mut_ptr() as u64,
+            0x2000,
+            db.as_mut_ptr() as u64,
+            2,
+            0x20,
+            cyclic_layout(16),
+            0xdead_beef,
+            false,
+        );
+
+        unsafe {
+            assert_eq!(rq.post_recv(0x1000, 0x2000, 1500), Some(0));
+            assert_eq!(rq.post_recv(0x1100, 0x2100, 1501), Some(1));
+            assert_eq!(rq.post_recv(0x1200, 0x2200, 1502), Some(2));
+            assert_eq!(rq.post_recv(0x1300, 0x2300, 1503), Some(3));
+        }
+        assert_eq!(rq.available_slots(), 0);
+
+        let completed = rq.complete_rx(0, true, false).unwrap();
+        assert_eq!(completed.slot_index, 0);
+        assert_eq!(completed.device_addr, 0x1000);
+        assert!(completed.l3_ok);
+        assert!(!completed.l4_ok);
+
+        unsafe {
+            assert_eq!(rq.post_recv(0x1400, 0x2400, 1600), Some(4));
+            let completed = rq.complete_rx(99, false, true).unwrap();
+            assert_eq!(completed.slot_index, 1);
+            assert_eq!(completed.device_addr, 0x1100);
+            assert!(!completed.l3_ok);
+            assert!(completed.l4_ok);
+        }
+    }
+
+    #[test]
+    fn cyclic_64b_post_writes_data_segment_at_64b_stride() {
+        let mut rq_mem = [0u8; 128];
+        let mut db = [0u32; 1];
+        let mut rq = ReceiveQueue::new(
+            0x10,
+            rq_mem.as_mut_ptr() as u64,
+            0x3000,
+            db.as_mut_ptr() as u64,
+            1,
+            0x20,
+            cyclic_layout(64),
+            0xabcd_ef01,
+            false,
+        );
+
+        unsafe {
+            assert_eq!(rq.post_recv(0x4000, 0x5000, 2048), Some(0));
+            assert_eq!(rq.post_recv(0x4100, 0x5100, 4096), Some(1));
+            let second_slot = rq_mem.as_ptr().add(64);
+            assert_eq!(read_be32_raw(second_slot, wqe::data::BYTE_COUNT), 4096);
+            assert_eq!(read_be32_raw(second_slot, wqe::data::LKEY), 0xabcd_ef01);
+            assert_eq!(read_be64_raw(second_slot, wqe::data::ADDR), 0x4100);
+        }
+    }
+
+    #[test]
+    fn linked_64b_initializes_next_segment_and_recycles_slots() {
+        let mut rq_mem = [0u8; 128];
+        let mut db = [0u32; 1];
+        let mut rq = ReceiveQueue::new(
+            0x10,
+            rq_mem.as_mut_ptr() as u64,
+            0x6000,
+            db.as_mut_ptr() as u64,
+            1,
+            0x20,
+            linked_layout(),
+            0x1234_5678,
+            false,
+        );
+
+        unsafe {
+            assert_eq!(rq.post_recv(0x7000, 0x7100, 1024), Some(0));
+            assert_eq!(rq.post_recv(0x7200, 0x7300, 2048), Some(1));
+
+            let first_slot = rq_mem.as_ptr();
+            let second_slot = rq_mem.as_ptr().add(64);
+
+            assert_eq!(read_be16_raw(first_slot, 0x02), 4);
+            assert_eq!(read_be32_raw(first_slot.add(16), wqe::data::BYTE_COUNT), 1024);
+            assert_eq!(read_be64_raw(first_slot.add(16), wqe::data::ADDR), 0x7000);
+            assert_eq!(read_be16_raw(second_slot, 0x02), 0);
+            assert_eq!(read_be32_raw(second_slot.add(16), wqe::data::BYTE_COUNT), 2048);
+
+            let completed = rq.complete_rx(0x4444, false, false).unwrap();
+            assert_eq!(completed.slot_index, 0);
+            assert_eq!(rq.post_recv(0x7400, 0x7500, 3072), Some(2));
+            let completed = rq.complete_rx(0x5555, true, true).unwrap();
+            assert_eq!(completed.slot_index, 1);
+        }
+    }
 }

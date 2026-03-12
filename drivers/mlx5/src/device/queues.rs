@@ -7,12 +7,102 @@ extern crate alloc;
 use crate::cmd::CmdMailbox;
 use crate::cmd::queues::*; // bring in helper builders/parsers
 use crate::cq::CompletionQueue;
-use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE, WqState};
+use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE, MLX5_RX_WQE_MAX_SUPPORTED_SIZE, WqState};
 use crate::device::Mlx5Device;
 use crate::eq::EventQueue;
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::flow::RqTable;
-use crate::wq::{ReceiveQueue, SendQueue};
+use crate::wq::{ReceiveQueue, ResolvedRqLayout, SendQueue};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RqProfileAttempt {
+    name: &'static str,
+    flush_in_error_en: bool,
+    wq_type: u8,
+    end_padding_mode: u8,
+    log_wq_stride: u8,
+}
+
+const DIRECT_RQ_PROFILE_ATTEMPTS: [RqProfileAttempt; 3] = [
+    RqProfileAttempt {
+        name: "cyclic/64",
+        flush_in_error_en: true,
+        wq_type: 1,
+        end_padding_mode: 1,
+        log_wq_stride: 6,
+    },
+    RqProfileAttempt {
+        name: "cyclic/16",
+        flush_in_error_en: true,
+        wq_type: 1,
+        end_padding_mode: 1,
+        log_wq_stride: 4,
+    },
+    RqProfileAttempt {
+        name: "linked/64",
+        flush_in_error_en: true,
+        wq_type: 0,
+        end_padding_mode: 0,
+        log_wq_stride: 6,
+    },
+];
+
+fn resolve_direct_rq_layout(
+    rqn: u32,
+    cqn: u32,
+    log_rq_size: u8,
+    ctx: QueryRqInfo,
+) -> Result<ResolvedRqLayout, &'static str> {
+    let rmpn = (ctx.rmpn != 0).then_some(ctx.rmpn);
+    if ctx.mem_rq_type != 0 {
+        return Err("mem_rq_type=1 requires RMP handling and is not supported");
+    }
+    if ctx.cqn != cqn {
+        return Err("QUERY_RQ returned an unexpected CQN");
+    }
+    if ctx.log_wq_sz != log_rq_size {
+        return Err("QUERY_RQ returned an unexpected queue depth");
+    }
+
+    match (ctx.wq_type, ctx.log_wq_stride) {
+        (1, 4) => Ok(ResolvedRqLayout::cyclic(
+            rqn,
+            cqn,
+            crate::defs::WQEBB_SIZE,
+            ctx.mem_rq_type,
+            ctx.wq_type,
+            ctx.log_wq_stride,
+            ctx.end_padding_mode,
+            ctx.log_wq_sz,
+            rmpn,
+        )),
+        (1, 6) => Ok(ResolvedRqLayout::cyclic(
+            rqn,
+            cqn,
+            64,
+            ctx.mem_rq_type,
+            ctx.wq_type,
+            ctx.log_wq_stride,
+            ctx.end_padding_mode,
+            ctx.log_wq_sz,
+            rmpn,
+        )),
+        (0, 6) => Ok(ResolvedRqLayout::linked(
+            rqn,
+            cqn,
+            64,
+            ctx.mem_rq_type,
+            ctx.wq_type,
+            ctx.log_wq_stride,
+            ctx.end_padding_mode,
+            ctx.log_wq_sz,
+            rmpn,
+        )),
+        (0, 4) => Err("linked RQ requires a 64B stride"),
+        (0, _) | (1, _) => Err("unsupported RQ stride"),
+        _ => Err("unsupported wq_type"),
+    }
+}
 
 impl Mlx5Device {
     /// Event Queueを作成
@@ -265,7 +355,6 @@ impl Mlx5Device {
         } else {
             &[("normal", false)]
         };
-        let mut last_err = Err(Mlx5Error::NotSupported);
         for (idx, (mode, implicit_tis)) in attempts.iter().enumerate() {
             build_create_sq_input(
                 in_mbox,
@@ -334,9 +423,8 @@ impl Mlx5Device {
                             err
                         );
                     }
-                    last_err = Err(err);
                     if idx + 1 == attempts.len() {
-                        return last_err;
+                        return Err(err);
                     }
                 }
             }
@@ -429,178 +517,174 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
+        let rq_bytes = (1usize << (log_rq_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
         let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rq_in_len = (0x110 + rq_pages * 8) as u32;
 
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
-        let mut selected_mem_rq_type = 0u8;
-        let mut selected_rmpn: Option<u32> = None;
-        // Prefer inline RQ first because the current RX runtime is built
-        // around inline memory RQ WQEs. On PF we still widen the probe set
-        // when the strict default profile is rejected, because some FW
-        // variants accept only a narrower context tuple.
-        let mem_rq_type_attempts: &[u8] = &[0, 1];
-        let mut selected_profile = "default";
-        let mut inline_rq_rejected = false;
-        let inline_profiles: &[(&str, bool, u8, u8, u8)] = &[
-            ("cyclic+align+flush", true, 1, 1, 4),
-            ("cyclic+align+noflush", false, 1, 1, 4),
-            ("cyclic+nopad+flush", true, 1, 0, 4),
-            ("linked+nopad+flush", true, 0, 0, 4),
-            ("linked+nopad+noflush", false, 0, 0, 4),
-            ("cyclic+align+stride64", true, 1, 1, 6),
-        ];
-        'mem_type: for &mem_rq_type in mem_rq_type_attempts {
-            let mut rmpn_for_attempt = None;
-            if mem_rq_type == 1 {
-                match self.create_rmp_hw(rq_buf_pa, db_pa, log_rq_size) {
-                    Ok(rmpn) => {
-                        rmpn_for_attempt = Some(rmpn);
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            target: "mlx5",
-                            "CREATE_RMP failed for mem_rq_type=1 fallback ({:?}); retrying CREATE_RQ without explicit rmpn",
-                            err
-                        );
-                    }
-                }
-            }
+        let mut selected: Option<(u32, ResolvedRqLayout, RqProfileAttempt)> = None;
 
-            let profiles: &[(&str, bool, u8, u8, u8)] = if mem_rq_type == 0 {
-                inline_profiles
-            } else {
-                &[("rmp+cyclic+align+flush", true, 1, 1, 4)]
-            };
-
-            for &(profile_name, flush_in_error_en, wq_type, end_padding_mode, log_wq_stride) in
-                profiles
-            {
-                log::info!(
-                    target: "mlx5",
-                    "CREATE_RQ try: mem_rq_type={} profile={} cqn={:#x} pd={} uar_page={} log_rq_size={} stride={} wq_type={} end_pad={} flush={}",
-                    mem_rq_type,
-                    profile_name,
-                    cqn,
-                    self.pd,
-                    self.uar_page,
-                    log_rq_size,
-                    log_wq_stride,
-                    wq_type,
-                    end_padding_mode,
-                    flush_in_error_en
-                );
-                build_create_rq_input_with_options(
-                    in_mbox,
-                    log_rq_size,
-                    rq_buf_pa,
-                    db_pa,
-                    cqn,
-                    self.pd,
-                    self.uar_page,
-                    scatter_fcs,
-                    vlan_strip,
-                    mem_rq_type,
-                    rmpn_for_attempt,
-                    flush_in_error_en,
-                    wq_type,
-                    end_padding_mode,
-                    log_wq_stride,
-                );
-
-                match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
-                    Ok(()) => {
-                        selected_mem_rq_type = mem_rq_type;
-                        selected_rmpn = rmpn_for_attempt;
-                        selected_profile = profile_name;
-                        last_err = Ok(());
-                        break 'mem_type;
-                    }
-                    Err(err) => {
-                        if mem_rq_type == 0 {
-                            inline_rq_rejected = true;
-                        }
-                        log::warn!(
-                            target: "mlx5",
-                            "CREATE_RQ attempt failed: mem_rq_type={} profile={} rmpn={} err={:?}",
-                            mem_rq_type,
-                            profile_name,
-                            rmpn_for_attempt
-                                .map(|v| alloc::format!("{:#x}", v))
-                                .unwrap_or_else(|| "none".into()),
-                            err
-                        );
-                        last_err = Err(err);
-                    }
-                }
-            }
-
-            if let Some(rmpn) = rmpn_for_attempt {
-                let _ = self.destroy_rmp_hw(rmpn);
-            }
-        }
-        last_err?;
-
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let rqn = parse_create_rq_output(out_mbox);
-        if let Some(rmpn) = selected_rmpn {
-            self.rmp_list.push(rmpn);
-        }
-        if cfg!(feature = "debug_mlx5_cmd") {
+        for attempt in DIRECT_RQ_PROFILE_ATTEMPTS {
             log::info!(
                 target: "mlx5",
-                "CREATE_RQ accepted: mem_rq_type={} profile={} rmpn={}",
-                selected_mem_rq_type,
-                selected_profile,
-                selected_rmpn
-                    .map(|v| alloc::format!("{:#x}", v))
-                    .unwrap_or_else(|| "none".into())
+                "CREATE_RQ try: mem_rq_type=0 profile={} cqn={:#x} pd={} uar_page={} log_rq_size={} stride={} wq_type={} end_pad={} flush={}",
+                attempt.name,
+                cqn,
+                self.pd,
+                self.uar_page,
+                log_rq_size,
+                attempt.log_wq_stride,
+                attempt.wq_type,
+                attempt.end_padding_mode,
+                attempt.flush_in_error_en
             );
-        }
-        if selected_mem_rq_type != 0 {
-            log::warn!(
-                target: "mlx5",
-                "CREATE_RQ fell back to mem_rq_type={} (inline mode rejected={}): RX runtime may require RMP-specific handling",
-                selected_mem_rq_type,
-                inline_rq_rejected
+            build_create_rq_input_with_options(
+                in_mbox,
+                log_rq_size,
+                rq_buf_pa,
+                db_pa,
+                cqn,
+                self.pd,
+                self.uar_page,
+                scatter_fcs,
+                vlan_strip,
+                0,
+                None,
+                attempt.flush_in_error_en,
+                attempt.wq_type,
+                attempt.end_padding_mode,
+                attempt.log_wq_stride,
             );
-        }
-        if let Err(err) = self.transition_rq_to_ready(rqn) {
-            if self.is_vf() {
-                let _ = err;
-                crate::boot_trace("[MLX5_RQ] modify_rq failed on VF; continue\n");
-            } else {
-                return Err(err);
+
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
+                Ok(()) => {
+                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let rqn = parse_create_rq_output(out_mbox);
+                    if let Err(err) = self.transition_rq_to_ready(rqn) {
+                        if self.is_vf() {
+                            crate::boot_trace("[MLX5_RQ] modify_rq failed on VF; continue\n");
+                        } else {
+                            log::warn!(
+                                target: "mlx5",
+                                "CREATE_RQ rejected: profile={} rqn={:#x} reason=transition failed err={:?}",
+                                attempt.name,
+                                rqn,
+                                err
+                            );
+                            let _ = self.destroy_rq_hw(rqn);
+                            last_err = Err(err);
+                            continue;
+                        }
+                    }
+
+                    match self.query_rq_hw(rqn) {
+                        Ok(ctx) => {
+                            log::info!(
+                                target: "mlx5",
+                                "QUERY_RQ: rqn={:#x} state={} mem_rq_type={} flush={} scatter_fcs={} vlan_strip={} cqn={:#x} rmpn={:#x} wq_type={} end_pad={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
+                                rqn,
+                                ctx.state,
+                                ctx.mem_rq_type,
+                                ctx.flush_in_error_en,
+                                ctx.scatter_fcs,
+                                ctx.vlan_strip,
+                                ctx.cqn,
+                                ctx.rmpn,
+                                ctx.wq_type,
+                                ctx.end_padding_mode,
+                                ctx.pd,
+                                ctx.uar_page,
+                                ctx.dbr_addr,
+                                ctx.log_wq_stride,
+                                ctx.log_wq_pg_sz,
+                                ctx.log_wq_sz
+                            );
+
+                            if ctx.wq_type != attempt.wq_type
+                                || ctx.log_wq_stride != attempt.log_wq_stride
+                            {
+                                log::warn!(
+                                    target: "mlx5",
+                                    "CREATE_RQ dropped fallback: profile={} rqn={:#x} reason=query mismatch expected(wq_type={}, stride={}) got(wq_type={}, stride={})",
+                                    attempt.name,
+                                    rqn,
+                                    attempt.wq_type,
+                                    attempt.log_wq_stride,
+                                    ctx.wq_type,
+                                    ctx.log_wq_stride
+                                );
+                                let _ = self.destroy_rq_hw(rqn);
+                                last_err = Err(Mlx5Error::NotSupported);
+                                continue;
+                            }
+
+                            match resolve_direct_rq_layout(rqn, cqn, log_rq_size, ctx) {
+                                Ok(layout) => {
+                                    log::info!(
+                                        target: "mlx5",
+                                        "CREATE_RQ accepted: profile={} rqn={:#x} mode={} slot_size={} data_seg_offset={} next_seg={} raw_mem_rq_type={} raw_wq_type={} raw_stride={} rmpn={}",
+                                        attempt.name,
+                                        rqn,
+                                        layout.wq_mode.label(),
+                                        layout.slot_size_bytes,
+                                        layout.data_seg_offset,
+                                        layout.has_next_segment,
+                                        layout.raw_mem_rq_type,
+                                        layout.raw_wq_type,
+                                        layout.raw_log_wq_stride,
+                                        layout
+                                            .rmpn
+                                            .map(|value| alloc::format!("{:#x}", value))
+                                            .unwrap_or_else(|| "none".into())
+                                    );
+                                    selected = Some((rqn, layout, attempt));
+                                    last_err = Ok(());
+                                    break;
+                                }
+                                Err(reason) => {
+                                    log::warn!(
+                                        target: "mlx5",
+                                        "CREATE_RQ dropped fallback: profile={} rqn={:#x} reason={}",
+                                        attempt.name,
+                                        rqn,
+                                        reason
+                                    );
+                                    let _ = self.destroy_rq_hw(rqn);
+                                    last_err = Err(Mlx5Error::NotSupported);
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                target: "mlx5",
+                                "CREATE_RQ rejected: profile={} rqn={:#x} reason=query failed err={:?}",
+                                attempt.name,
+                                rqn,
+                                err
+                            );
+                            let _ = self.destroy_rq_hw(rqn);
+                            last_err = Err(err);
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "CREATE_RQ attempt failed: mem_rq_type=0 profile={} err={:?}",
+                        attempt.name,
+                        err
+                    );
+                    last_err = Err(err);
+                }
             }
         }
-        match self.query_rq_hw(rqn) {
-            Ok(ctx) => {
-                log::info!(
-                    target: "mlx5",
-                    "QUERY_RQ: rqn={:#x} state={} mem_rq_type={} flush={} scatter_fcs={} vlan_strip={} cqn={:#x} rmpn={:#x} wq_type={} end_pad={} pd={} uar_page={} dbr_addr={:#x} log_stride={} log_pg_sz={} log_sz={}",
-                    rqn,
-                    ctx.state,
-                    ctx.mem_rq_type,
-                    ctx.flush_in_error_en,
-                    ctx.scatter_fcs,
-                    ctx.vlan_strip,
-                    ctx.cqn,
-                    ctx.rmpn,
-                    ctx.wq_type,
-                    ctx.end_padding_mode,
-                    ctx.pd,
-                    ctx.uar_page,
-                    ctx.dbr_addr,
-                    ctx.log_wq_stride,
-                    ctx.log_wq_pg_sz,
-                    ctx.log_wq_sz
-                );
-            }
-            Err(err) => {
-                log::warn!(target: "mlx5", "QUERY_RQ failed for rqn={:#x}: {:?}", rqn, err);
-            }
-        }
+
+        let (rqn, layout, _attempt) = if let Some(selected) = selected {
+            selected
+        } else {
+            last_err?;
+            return Err(Mlx5Error::NotSupported);
+        };
         let csum_offload = self.hca_caps.as_ref().map(|c| c.csum_cap).unwrap_or(false);
         crate::boot_trace("[MLX5_RQ] build rq object\n");
         let rq = ReceiveQueue::new(
@@ -610,6 +694,7 @@ impl Mlx5Device {
             db_virt,
             log_rq_size,
             cqn,
+            layout,
             self.mkey,
             csum_offload,
         );
@@ -631,7 +716,7 @@ impl Mlx5Device {
     ) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        let rmp_bytes = (1usize << (log_rmp_size as usize)) * crate::defs::WQEBB_SIZE;
+        let rmp_bytes = (1usize << (log_rmp_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
         let rmp_pages = (rmp_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rmp_in_len = (0x110 + rmp_pages * 8) as u32;
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
@@ -829,5 +914,52 @@ impl Mlx5Device {
             }
         }
         last_err
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wq::RxWqMode;
+
+    fn query_rq_info(mem_rq_type: u8, wq_type: u8, log_wq_stride: u8) -> QueryRqInfo {
+        QueryRqInfo {
+            state: WqState::Ready as u8,
+            mem_rq_type,
+            flush_in_error_en: true,
+            scatter_fcs: false,
+            vlan_strip: false,
+            cqn: 0x55,
+            rmpn: 0,
+            wq_type,
+            end_padding_mode: 0,
+            pd: 0x77,
+            uar_page: 0x88,
+            dbr_addr: 0x1000,
+            log_wq_stride,
+            log_wq_pg_sz: 0,
+            log_wq_sz: 8,
+        }
+    }
+
+    #[test]
+    fn resolve_direct_rq_layout_accepts_linked_64b() {
+        let layout = resolve_direct_rq_layout(0x44, 0x55, 8, query_rq_info(0, 0, 6)).unwrap();
+        assert_eq!(layout.wq_mode, RxWqMode::LinkedList);
+        assert_eq!(layout.slot_size_bytes, 64);
+        assert_eq!(layout.data_seg_offset, 16);
+        assert!(layout.has_next_segment);
+    }
+
+    #[test]
+    fn resolve_direct_rq_layout_rejects_mem_rq_type_one() {
+        let err = resolve_direct_rq_layout(0x44, 0x55, 8, query_rq_info(1, 1, 4)).unwrap_err();
+        assert_eq!(err, "mem_rq_type=1 requires RMP handling and is not supported");
+    }
+
+    #[test]
+    fn resolve_direct_rq_layout_rejects_linked_16b() {
+        let err = resolve_direct_rq_layout(0x44, 0x55, 8, query_rq_info(0, 0, 4)).unwrap_err();
+        assert_eq!(err, "linked RQ requires a 64B stride");
     }
 }

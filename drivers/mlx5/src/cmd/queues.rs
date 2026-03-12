@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::cmd::CmdMailbox;
-use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE};
+use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE, MLX5_RX_WQE_MAX_SUPPORTED_SIZE};
 use crate::structs::queues::{
     CqContextLayout, EqContextLayout, RmpContextLayout, RqContextLayout, SqContextLayout,
 };
@@ -53,6 +53,11 @@ fn encode_eq_event_mask(event_mask: u64, field: &mut [u8]) {
     if field.len() >= 8 {
         field[..8].copy_from_slice(&event_mask.to_be_bytes());
     }
+}
+
+fn rq_slot_size_bytes(log_wq_stride: u8) -> usize {
+    let stride = 1usize << (log_wq_stride as usize);
+    stride.max(crate::defs::WQEBB_SIZE)
 }
 
 /// CREATE_EQ コマンド入力の構築
@@ -368,7 +373,7 @@ pub fn build_create_rq_input_with_options(
         wq.set_log_wq_sz(log_rq_size);
     }
 
-    let rq_bytes = (1usize << (log_rq_size as usize)) * crate::defs::WQEBB_SIZE;
+    let rq_bytes = (1usize << (log_rq_size as usize)) * rq_slot_size_bytes(log_wq_stride);
     let rq_pages = (rq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
     for i in 0..rq_pages {
         let off = 0x110 + i * 8;
@@ -431,7 +436,7 @@ pub fn build_create_rmp_input_with_options(
         wq.set_log_wq_sz(log_rmp_size);
     }
 
-    let rmp_bytes = (1usize << (log_rmp_size as usize)) * crate::defs::WQEBB_SIZE;
+    let rmp_bytes = (1usize << (log_rmp_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
     let rmp_pages = (rmp_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
     for i in 0..rmp_pages {
         let off = 0x110 + i * 8;
@@ -646,6 +651,35 @@ mod tests {
         assert_eq!(get_bits_u32(ctx, 72, 24), 0x123); // cqn
         assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 5, 2), 1); // end_padding_mode=ALIGN
         assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 268, 4), 4); // log_wq_stride
+    }
+
+    #[test]
+    fn create_rq_64b_stride_expands_pas_list() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_create_rq_input_with_options(
+            &mut in_mbox,
+            8,
+            0x8000,
+            0x9000,
+            0x123,
+            0x456,
+            0x789,
+            false,
+            false,
+            0,
+            None,
+            true,
+            1,
+            1,
+            6,
+        );
+
+        assert_eq!(get_bits_u32(&in_mbox.data[0x50..], 268, 4), 6);
+        assert_eq!(in_mbox.read_be64(0x110), 0x8000);
+        assert_eq!(in_mbox.read_be64(0x118), 0x9000);
+        assert_eq!(in_mbox.read_be64(0x120), 0xa000);
+        assert_eq!(in_mbox.read_be64(0x128), 0xb000);
+        assert_eq!(in_mbox.read_be64(0x130), 0);
     }
 
     #[test]

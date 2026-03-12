@@ -190,6 +190,9 @@ pub const MLX5_CQ_DEPTH: u32 = 64;
 /// SQ/RQエントリ数（2のべき乗）
 pub const MLX5_WQ_DEPTH: u32 = 256;
 
+/// 現在サポートする RX WQE スロットの最大サイズ
+pub const MLX5_RX_WQE_MAX_SUPPORTED_SIZE: usize = 64;
+
 /// 最大MTU
 pub const MLX5_MAX_MTU: u32 = 9216;
 

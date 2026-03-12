@@ -7,10 +7,11 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::defs::{
-    MLX5_CMD_MBOX_BACKING_SIZE, MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE, MLX5_WQ_DEPTH,
+    MLX5_CMD_MBOX_BACKING_SIZE, MLX5_CQ_DEPTH, MLX5_EQ_DEPTH, MLX5_PAGE_SIZE,
+    MLX5_RX_WQE_MAX_SUPPORTED_SIZE, MLX5_WQ_DEPTH,
 };
 use crate::error::{Mlx5Error, Mlx5Result};
-use crate::regs::{cmd_entry, cqe, eqe, wqe};
+use crate::regs::{cmd_entry, cqe, eqe};
 use crate::resources::MkeyParams;
 
 const CMD_LOG_SIZE: u8 = 2;
@@ -165,7 +166,8 @@ impl Mlx5BootstrapPlan {
         let eq_size = (1usize << queue_profile.log_eq_size as usize) * eqe::EQE_SIZE;
         let cq_size = (1usize << queue_profile.log_cq_size as usize) * cqe::SIZE;
         let sq_size = (1usize << queue_profile.log_sq_size as usize) * 64;
-        let rq_size = (1usize << queue_profile.log_rq_size as usize) * wqe::WQEBB_SIZE;
+        let rq_size = (1usize << queue_profile.log_rq_size as usize)
+            * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
 
         Self {
             queue_profile,
@@ -414,7 +416,7 @@ mod tests {
         assert_eq!(plan.eq_size(), (1usize << 5) * eqe::EQE_SIZE);
         assert_eq!(plan.cq_size(), (1usize << 4) * cqe::SIZE);
         assert_eq!(plan.sq_size(), (1usize << 6) * 64);
-        assert_eq!(plan.rq_size(), (1usize << 5) * wqe::WQEBB_SIZE);
+        assert_eq!(plan.rq_size(), (1usize << 5) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE);
     }
 
     #[test]

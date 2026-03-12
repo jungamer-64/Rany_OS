@@ -524,14 +524,27 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
 
         let cqes = unsafe { state.device.poll_cq(rx_cq_index, MLX5_POLL_BATCH) };
         for cqe in cqes {
-            let _ =
-                state
-                    .device
-                    .process_rx_completion(rq_index, cqe.wqe_counter, cqe.l3_ok, cqe.l4_ok);
-            let slot = (cqe.wqe_counter as usize) % (MLX5_WQ_DEPTH as usize);
+            let Some(rx_info) = state.device.process_rx_completion(
+                rq_index,
+                cqe.wqe_counter,
+                cqe.l3_ok,
+                cqe.l4_ok,
+            ) else {
+                state.rx_errors = state.rx_errors.saturating_add(1);
+                continue;
+            };
+            let slot = rx_info.slot_index as usize;
 
             let Some(buffer) = state.rx_slots[rq_index][slot].as_mut() else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
+                let _ = unsafe {
+                    state.device.post_receive(
+                        rq_index,
+                        rx_info.device_addr,
+                        rx_info.virt_addr,
+                        rx_info.size,
+                    )
+                };
                 continue;
             };
 
