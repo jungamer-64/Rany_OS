@@ -126,12 +126,15 @@ impl DeviceDmaContext {
         direction: DmaDirection,
     ) -> Result<crate::io::iommu::api::DmaHandle<T>, crate::io::iommu::api::MapError<T>> {
         let iommu_direction = direction.into();
-        if let Some(device) = self.device_id {
-            crate::io::iommu::api::map_rref_for_device(rref, &device, iommu_direction)
-        } else {
-            let domain_id = self.domain_id.unwrap_or(0);
-            crate::io::iommu::api::map_rref_for_domain(rref, domain_id, iommu_direction)
-        }
+        let Some(device) = self.device_id else {
+            return Err(crate::io::iommu::api::MapError::new(
+                rref,
+                crate::io::iommu::api::MapErrorKind::IommuError(
+                    crate::io::iommu::types::IommuError::NotSupported,
+                ),
+            ));
+        };
+        crate::io::iommu::api::map_rref_for_device(rref, &device, iommu_direction)
     }
 
     /// RRef-backed DMA slice mapping (safe IOMMU API)
@@ -143,12 +146,15 @@ impl DeviceDmaContext {
         direction: DmaDirection,
     ) -> Result<crate::io::iommu::api::DmaHandle<[T]>, crate::io::iommu::api::MapError<[T]>> {
         let iommu_direction = direction.into();
-        if let Some(device) = self.device_id {
-            crate::io::iommu::api::map_rref_slice_for_device(rref, &device, iommu_direction)
-        } else {
-            let domain_id = self.domain_id.unwrap_or(0);
-            crate::io::iommu::api::map_rref_slice_for_domain(rref, domain_id, iommu_direction)
-        }
+        let Some(device) = self.device_id else {
+            return Err(crate::io::iommu::api::MapError::new(
+                rref,
+                crate::io::iommu::api::MapErrorKind::IommuError(
+                    crate::io::iommu::types::IommuError::NotSupported,
+                ),
+            ));
+        };
+        crate::io::iommu::api::map_rref_slice_for_device(rref, &device, iommu_direction)
     }
 
     /// Map an `RRef<T>` into IOMMU space and return a DMA buffer handle.

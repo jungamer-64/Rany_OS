@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 SEARCH_DIRS=(kernel interfaces)
 FN_PATTERN='\bfn[[:space:]]+sys_(log|alloc|dealloc|sleep|panic)\b'
 SYM_PATTERN='"sys_(log|alloc|dealloc|sleep|panic)"'
-KAPI_PATTERN='__exorust_kernel_api_v2|KERNEL_API_SYMBOL'
+KAPI_PATTERN='__exorust_kernel_api_v3|KERNEL_API_SYMBOL'
 
 if command -v rg >/dev/null 2>&1; then
   fn_hits="$(rg -n -e "$FN_PATTERN" "${SEARCH_DIRS[@]}" || true)"
@@ -34,7 +34,7 @@ if [ -n "$sym_hits" ]; then
 fi
 
 if [ -z "$kapi_hits" ]; then
-  echo "ERROR: Kernel API symbol bridge missing (__exorust_kernel_api_v2|KERNEL_API_SYMBOL)"
+  echo "ERROR: Kernel API symbol bridge missing (__exorust_kernel_api_v3|KERNEL_API_SYMBOL)"
   failed=1
 fi
 
@@ -42,4 +42,4 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 
-echo "PASS: no legacy sys_* boundary and KernelApi v2 symbol bridge detected."
+echo "PASS: no legacy sys_* boundary and KernelApi v3 symbol bridge detected."

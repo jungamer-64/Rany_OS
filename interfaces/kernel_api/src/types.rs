@@ -864,7 +864,7 @@ mod packet_ref_tests {
         drop_storage: dma_drop,
     };
 
-    unsafe fn dma_releaser(ptr: *mut u8, size: usize, phys_addr: u64) {
+    fn dma_releaser(ptr: *mut u8, size: usize, phys_addr: u64) {
         assert_eq!(size, 64);
         assert_eq!(phys_addr, 0x3000);
         DMA_RELEASES.fetch_add(1, Ordering::SeqCst);

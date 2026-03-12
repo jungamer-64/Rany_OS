@@ -779,14 +779,3 @@ impl Drop for StreamingDmaMapping<'_> {
         self.sync_for_cpu();
     }
 }
-
-// ============================================================================
-// IOMMU-protected DMA Buffer
-// ============================================================================
-
-/// IOMMUを使用したDMAバッファ
-pub struct IommuDmaBuffer {
-    inner: CoherentDmaBuffer,
-    iova: Option<u64>,
-    device_id: Option<crate::io::iommu::types::DeviceId>,
-}

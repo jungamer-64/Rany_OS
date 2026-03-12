@@ -1,6 +1,6 @@
 use super::*;
 use crate::io::dma::{CoherentDmaBuffer, DmaMemoryAttributes, iommu_align_len};
-use crate::io::iommu::api::{is_iommu_enabled, is_iommu_required, unmap_dma, unmap_for_device};
+use crate::io::iommu::api::{is_iommu_enabled, is_iommu_required};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::defs::{VirtioDeviceType, status};
 use crate::io::virtio::transport::{TransportType, VirtioTransport};
@@ -10,8 +10,6 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use kernel_api::dma::{CpuOwned, DmaSlice};
-use x86_64::PhysAddr;
-
 mod dma;
 pub use dma::*;
 mod irq;
@@ -20,26 +18,6 @@ mod registry;
 mod rx;
 mod tx;
 pub use registry::*;
-
-impl Drop for NetVirtQueue {
-    fn drop(&mut self) {
-        if let Some(map) = self.iommu_map.take() {
-            if let Some(handle) = map.handle {
-                if let Err(err) = handle.unmap() {
-                    log::warn!("[VIRTIO-NET] failed to unmap DMA handle: {:?}", err);
-                }
-            } else {
-                let result = match map.device {
-                    Some(device) => unmap_for_device(&device, map.iova, map.len as u64),
-                    None => unmap_dma(map.iova, map.len as u64),
-                };
-                if let Err(err) = result {
-                    log::warn!("[VIRTIO-NET] failed to unmap queue DMA: {:?}", err);
-                }
-            }
-        }
-    }
-}
 
 // ============================================================================
 // VirtIO Net Device
@@ -220,32 +198,19 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         &self,
         packet: &PacketRef,
         direction: virtio_driver::net::NetDmaDirection,
-    ) -> Result<(u64, Option<u64>), VirtioNetError> {
+    ) -> Result<virtio_driver::net::NetDmaMappingToken, VirtioNetError> {
         if !is_iommu_enabled() {
-            return Ok((packet.phys_addr().as_u64(), None));
+            return Ok(virtio_driver::net::NetDmaMappingToken::direct(
+                packet.phys_addr().as_u64(),
+            ));
         }
 
         let device_id = self.iommu_device_id.ok_or(VirtioNetError::DeviceError)?;
-        let phys_addr = packet.phys_addr();
-        // convert to x86_64 PhysAddr for the IOMMU API
-        let phys = PhysAddr::new(phys_addr.as_u64());
-        let size = packet.capacity() as u64;
-
-        let read = direction != virtio_driver::net::NetDmaDirection::FromDevice;
-        let write = direction != virtio_driver::net::NetDmaDirection::ToDevice;
-
-        unsafe {
-            let iova = crate::io::iommu::api::map_for_device_with_perms(
-                &device_id, phys, size, read, write,
-            )
-            .map_err(|_| VirtioNetError::DeviceError)?;
-
-            Ok((iova, Some(iova)))
-        }
+        map_net_dma_for_range(device_id, packet.phys_addr().as_u64(), packet.capacity(), direction)
     }
 
-    fn unmap_dma(&self, iova: u64, len: u64) {
-        unmap_iommu_addr(self.iommu_device_id, iova, len as usize);
+    fn unmap_dma(&self, mapping: virtio_driver::net::NetDmaMappingToken) {
+        release_net_dma_mapping(self.iommu_device_id, mapping);
     }
 
     fn receive_packet(
@@ -433,7 +398,7 @@ impl VirtioNetDevice {
 
         let (buffer, _dma_len) = self.allocate_queue_dma(layout.total_size)?;
 
-        let phys_base = buffer.device_addr();
+        let dma_base = buffer.device_addr();
         let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
@@ -441,9 +406,6 @@ impl VirtioNetDevice {
         let used_ring = unsafe { ptr.add(layout.used_offset) as *mut VringUsed };
         let notify_addr = self.mut_transport().get_notify_addr(queue_index);
         let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
-
-        let (dma_base, iommu_map) =
-            self.setup_iommu_dma_mapping(&buffer, layout.total_size, phys_base)?;
 
         let (tx_headers, tx_header_dma_base) = if (queue_index % 2) == 1 {
             let header_ptr = unsafe { ptr.add(layout.header_offset) as *mut VirtioNetHeader };
@@ -488,7 +450,6 @@ impl VirtioNetDevice {
                 Some(buffer),
                 notify_addr,
                 notify_is_32bit,
-                iommu_map,
                 tx_headers,
                 tx_header_dma_base,
                 features,
@@ -531,18 +492,6 @@ impl VirtioNetDevice {
                 .ok_or(VirtioNetError::DeviceError)?;
             Ok((buffer, total_size))
         }
-    }
-
-    pub(super) fn setup_iommu_dma_mapping(
-        &self,
-        buffer: &CoherentDmaBuffer,
-        _dma_len: usize,
-        phys_base: u64,
-    ) -> Result<(u64, Option<IommuMapping>), VirtioNetError> {
-        if !is_iommu_enabled() {
-            return Ok((phys_base, None));
-        }
-        Ok((buffer.device_addr(), None))
     }
 
     pub fn notify_queue(&mut self, queue_index: u16) {

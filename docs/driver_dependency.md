@@ -35,7 +35,7 @@ Drivers are intended to be built separately from the kernel core and must not de
 ## CI enforcement
 
 - The repository provides `scripts/check-driver-deps.ps1` which scans driver Cargo.toml files and enforces the rule.
-- `scripts/check-kernel-api-surface.sh` also rejects legacy `alloc_dma(...)`, driver-side hardware programming via `physical_address()`, and ad-hoc PCI locator bit packing in `drivers/`.
+- `scripts/check-kernel-api-surface.sh` also rejects legacy `alloc_dma(...)`, driver-side hardware programming via legacy DMA address getters, and ad-hoc PCI locator bit packing in `drivers/`.
 - Include this check in CI pipelines to prevent regressions.
 
 ## Example

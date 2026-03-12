@@ -2,156 +2,6 @@ use super::*;
 
 mod device_context;
 pub use device_context::*;
-impl IommuDmaBuffer {
-    pub fn new(size: usize, attributes: DmaMemoryAttributes) -> Option<Self> {
-        let inner = CoherentDmaBuffer::new(size, attributes)?;
-        let iova = if crate::io::iommu::api::is_iommu_enabled() {
-            if size % DMA_ALIGNMENT != 0 {
-                log::error!(
-                    "[DMA] IOMMU mapping requires 4K-aligned size (got {} bytes)",
-                    size
-                );
-                return None;
-            }
-            // SAFETY: CoherentDmaBuffer owns this memory, safe for DMA
-            match unsafe { crate::io::iommu::api::map_for_dma(inner.phys_addr(), size as u64) } {
-                Ok(iova) => Some(iova),
-                Err(e) => {
-                    log::error!("[DMA] IOMMU map_for_dma failed: {:?}", e);
-                    return None;
-                }
-            }
-        } else {
-            if crate::io::iommu::api::is_iommu_required() {
-                log::error!(
-                    "[DMA] IOMMU required but not enabled: failing IOMMU DMA buffer allocation"
-                );
-                return None;
-            }
-            log::warn!("[DMA] IOMMU not enabled: IOMMU-based buffer not available");
-            None
-        };
-        Some(Self {
-            inner,
-            iova,
-            device_id: None,
-        })
-    }
-
-    /// 特定のデバイス向けにDMAバッファを作成（ドメイン分離対応）
-    pub fn new_for_device(
-        size: usize,
-        attributes: DmaMemoryAttributes,
-        device: crate::io::iommu::types::DeviceId,
-    ) -> Option<Self> {
-        let inner = CoherentDmaBuffer::new(size, attributes)?;
-        let iova = if crate::io::iommu::api::is_iommu_enabled() {
-            if size % DMA_ALIGNMENT != 0 {
-                log::error!(
-                    "[DMA] IOMMU mapping requires 4K-aligned size (got {} bytes)",
-                    size
-                );
-                return None;
-            }
-            // SAFETY: CoherentDmaBuffer owns this memory, safe for device DMA
-            match unsafe {
-                crate::io::iommu::api::map_for_device(&device, inner.phys_addr(), size as u64)
-            } {
-                Ok(iova) => Some(iova),
-                Err(e) => {
-                    log::error!("[DMA] IOMMU map_for_device failed: {:?}", e);
-                    None
-                }
-            }
-        } else {
-            if crate::io::iommu::api::is_iommu_required() {
-                log::error!(
-                    "[DMA] IOMMU required but not enabled: failing device IOMMU allocation"
-                );
-                return None;
-            }
-            log::warn!("[DMA] IOMMU not enabled: device IOMMU allocation unavailable");
-            None
-        };
-        Some(Self {
-            inner,
-            iova,
-            device_id: Some(device),
-        })
-    }
-
-    /// Async constructor that awaits mapping completion when a controller CommandQueue is present
-    pub async fn new_for_device_async(
-        size: usize,
-        attributes: DmaMemoryAttributes,
-        device: crate::io::iommu::types::DeviceId,
-    ) -> Option<Self> {
-        let inner = CoherentDmaBuffer::new(size, attributes)?;
-        let iova = if crate::io::iommu::api::is_iommu_enabled() {
-            if size % DMA_ALIGNMENT != 0 {
-                log::error!(
-                    "[DMA] IOMMU mapping requires 4K-aligned size (got {} bytes)",
-                    size
-                );
-                return None;
-            }
-            // SAFETY: CoherentDmaBuffer owns this memory, safe for async device DMA
-            match unsafe {
-                crate::io::iommu::api::map_for_device_async(&device, inner.phys_addr(), size as u64)
-                    .await
-            } {
-                Ok(iova) => Some(iova),
-                Err(e) => {
-                    log::error!("[DMA] IOMMU map_for_device_async failed: {:?}", e);
-                    None
-                }
-            }
-        } else {
-            if crate::io::iommu::api::is_iommu_required() {
-                log::error!(
-                    "[DMA] IOMMU required but not enabled: failing async device IOMMU allocation"
-                );
-                return None;
-            }
-            log::warn!("[DMA] IOMMU not enabled: async device IOMMU allocation unavailable");
-            None
-        };
-        Some(Self {
-            inner,
-            iova,
-            device_id: Some(device),
-        })
-    }
-
-    /// デバイスに渡すアドレス（IOMMUが有効ならIOVA）
-    pub fn device_addr(&self) -> u64 {
-        self.iova.unwrap_or(self.inner.phys_addr().as_u64())
-    }
-
-    pub fn prepare_for_device(&self) {
-        self.inner.prepare_for_device();
-    }
-    pub fn finish_from_device(&self) {
-        self.inner.finish_from_device();
-    }
-}
-
-impl Drop for IommuDmaBuffer {
-    fn drop(&mut self) {
-        if let Some(iova) = self.iova {
-            if let Some(device) = self.device_id {
-                let _ = crate::io::iommu::api::unmap_for_device(
-                    &device,
-                    iova,
-                    self.inner.size() as u64,
-                );
-            } else {
-                let _ = crate::io::iommu::api::unmap_dma(iova, self.inner.size() as u64);
-            }
-        }
-    }
-}
-
 // ============================================================================
 // Global DMA Allocator Trait and Implementation
 // ============================================================================
@@ -223,15 +73,29 @@ pub struct DmaAllocation {
     layout: Layout,
     /// IOVAが設定されているか
     pub iova_mapped: bool,
+    /// Device-scoped mapping owner when IOMMU translation is active
+    device_id: Option<crate::io::iommu::types::DeviceId>,
 }
 
 impl Drop for DmaAllocation {
     fn drop(&mut self) {
-        // IOMMUマッピングを解除
         if self.iova_mapped {
-            let _ = crate::io::iommu::api::unmap_dma(self.device_addr, self.size as u64);
+            match self.device_id {
+                Some(device) => {
+                    let _ = crate::io::iommu::api::unmap_for_device(
+                        &device,
+                        self.device_addr,
+                        self.size as u64,
+                    );
+                }
+                None => {
+                    log::error!(
+                        "[DMA] coherent allocation missing device-scoped owner for IOVA=0x{:x}",
+                        self.device_addr
+                    );
+                }
+            }
         }
-        // メモリを解放
         unsafe {
             dealloc(self.ptr.as_ptr(), self.layout);
         }
@@ -253,6 +117,8 @@ pub struct StreamingMapping {
     pub direction: DmaDirection,
     /// IOMMUでマッピングされているか
     pub iova_mapped: bool,
+    /// Device-scoped mapping owner when IOMMU translation is active
+    device_id: Option<crate::io::iommu::types::DeviceId>,
     /// IOMMUバウンス用バッファ（必要時のみ）
     bounce: Option<crate::ipc::RRef<[u8]>>,
 }
@@ -260,9 +126,18 @@ pub struct StreamingMapping {
 impl Drop for StreamingMapping {
     fn drop(&mut self) {
         if self.iova_mapped {
-            // Release: IOMMU unmap を試みる（デバイスを fault させる方が安全）
-            // DMA中かもしれないが、解放後アクセスよりデバイス fault の方がマシ
-            let _ = crate::io::iommu::api::unmap_dma(self.device_addr, self.mapped_len as u64);
+            if let Some(device) = self.device_id {
+                let _ = crate::io::iommu::api::unmap_for_device(
+                    &device,
+                    self.device_addr,
+                    self.mapped_len as u64,
+                );
+            } else {
+                log::error!(
+                    "[DMA] streaming mapping leaked without device owner: addr=0x{:x}",
+                    self.device_addr
+                );
+            }
 
             // bounce バッファは解放して回収
             if let Some(bounce) = self.bounce.take() {
@@ -354,11 +229,11 @@ impl GlobalDmaAllocator {
         mapped_len: usize,
     ) -> Result<(u64, bool), DmaError> {
         if crate::io::iommu::api::is_iommu_enabled() {
-            let map_result = if let Some(ref dev) = self.device_id {
-                unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, mapped_len as u64) }
-            } else {
-                unsafe { crate::io::iommu::api::map_for_dma(phys_addr, mapped_len as u64) }
+            let Some(ref dev) = self.device_id else {
+                return Err(DmaError::DeviceNotFound);
             };
+            let map_result =
+                unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, mapped_len as u64) };
             match map_result {
                 Ok(iova) => Ok((iova, true)),
                 Err(_) => Err(DmaError::IommuMappingFailed),
@@ -419,6 +294,7 @@ impl DmaAllocator for GlobalDmaAllocator {
             size,
             layout,
             iova_mapped,
+            device_id: if iova_mapped { self.device_id } else { None },
         })
     }
 
@@ -446,6 +322,7 @@ impl DmaAllocator for GlobalDmaAllocator {
             mapped_len,
             direction,
             iova_mapped,
+            device_id: if iova_mapped { self.device_id } else { None },
             bounce,
         })
     }
@@ -467,10 +344,13 @@ impl DmaAllocator for GlobalDmaAllocator {
             }
 
             if mapping.iova_mapped {
-                let _ = crate::io::iommu::api::unmap_dma(
-                    mapping.device_addr,
-                    mapping.mapped_len as u64,
-                );
+                if let Some(device) = mapping.device_id {
+                    let _ = crate::io::iommu::api::unmap_for_device(
+                        &device,
+                        mapping.device_addr,
+                        mapping.mapped_len as u64,
+                    );
+                }
             }
 
             mapping.iova_mapped = false;
@@ -488,8 +368,13 @@ impl DmaAllocator for GlobalDmaAllocator {
 
         // IOMMUマッピング解除
         if mapping.iova_mapped {
-            let _ =
-                crate::io::iommu::api::unmap_dma(mapping.device_addr, mapping.mapped_len as u64);
+            if let Some(device) = mapping.device_id {
+                let _ = crate::io::iommu::api::unmap_for_device(
+                    &device,
+                    mapping.device_addr,
+                    mapping.mapped_len as u64,
+                );
+            }
         }
         mapping.iova_mapped = false;
     }

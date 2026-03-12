@@ -16,8 +16,7 @@ pub use inflight::InflightTracker;
 #[derive(Debug)]
 pub struct RxInflight {
     pub packet: PacketRef,
-    pub iommu_iova: Option<u64>,
-    pub iommu_map_len: u64,
+    pub dma_mapping: Option<NetDmaMappingToken>,
 }
 
 /// In-flight TX packet state.
@@ -26,9 +25,53 @@ pub struct TxInflight {
     pub packet: PacketRef,
     /// Bounce buffer if used (owned via DmaSlice)
     pub bounce_buffer: Option<DmaSlice<CpuOwned>>,
-    pub iommu_iova: Option<u64>,
-    pub iommu_map_len: u64,
+    pub dma_mapping: Option<NetDmaMappingToken>,
     pub completion_id: Option<u64>,
+}
+
+/// Opaque DMA mapping token returned by the runtime.
+///
+/// The driver core only uses the hardware-visible device address and passes the
+/// token back to the runtime for teardown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetDmaMappingToken {
+    device_addr: u64,
+    release_key: Option<u64>,
+    mapped_len: u64,
+}
+
+impl NetDmaMappingToken {
+    pub fn direct(device_addr: u64) -> Self {
+        Self {
+            device_addr,
+            release_key: None,
+            mapped_len: 0,
+        }
+    }
+
+    pub fn mapped(device_addr: u64, release_key: u64, mapped_len: u64) -> Self {
+        Self {
+            device_addr,
+            release_key: Some(release_key),
+            mapped_len,
+        }
+    }
+
+    pub fn device_address(&self) -> u64 {
+        self.device_addr
+    }
+
+    pub fn release_key(&self) -> Option<u64> {
+        self.release_key
+    }
+
+    pub fn mapped_len(&self) -> u64 {
+        self.mapped_len
+    }
+
+    pub fn requires_unmap(&self) -> bool {
+        self.release_key.is_some()
+    }
 }
 
 /// Runtime DMA allocation purpose for virtio-net queue and bounce memory.
@@ -59,15 +102,14 @@ pub trait NetRuntime: Send + Sync {
     fn alloc_packet(&self) -> Option<PacketRef>;
 
     /// Map a packet for DMA access by the device (IOMMU support).
-    /// Returns (device_address, optional_iova).
     fn map_packet(
         &self,
         packet: &PacketRef,
         direction: NetDmaDirection,
-    ) -> Result<(u64, Option<u64>), VirtioNetError>;
+    ) -> Result<NetDmaMappingToken, VirtioNetError>;
 
-    /// Unmap a DMA region previously mapped for a device.
-    fn unmap_dma(&self, iova: u64, size: u64);
+    /// Release a DMA mapping previously returned by `map_packet()`.
+    fn unmap_dma(&self, mapping: NetDmaMappingToken);
 
     /// Called when a packet has been received.
     fn receive_packet(

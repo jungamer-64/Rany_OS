@@ -203,8 +203,8 @@ fn setup_dma(cap: &DmaCapability) -> DmaBuffer {
     // 物理連続メモリを割り当て
     let dma = DmaBuffer::new(cap, 4096)?;
     
-    // 物理アドレスをデバイスに渡す
-    device.set_descriptor(dma.physical_address());
+    // デバイス可視アドレスをデバイスに渡す
+    device.set_descriptor(dma.device_address());
     
     dma
 }

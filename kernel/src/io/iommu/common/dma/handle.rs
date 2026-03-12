@@ -263,7 +263,7 @@ unsafe impl<T: Send + ?Sized + 'static> Send for DmaHandle<T> {}
 // Multiple threads can read the IOVA/phys addresses
 unsafe impl<T: Sync + ?Sized + 'static> Sync for DmaHandle<T> {}
 
-impl<T> DmaHandle<T> {
+impl<T: ?Sized + 'static> DmaHandle<T> {
     /// Create a new DmaHandle (internal use only)
     ///
     /// Public construction should go through `DmaHandle::map_rref()` or API helpers.
@@ -375,6 +375,218 @@ impl<T> DmaHandle<T> {
         // (returning a QuarantineTicket) is implemented for all users.
         log::debug!("[DmaHandle] Lazy unmap requested, but falling back to sync for security");
         self.unmap_sync_internal()
+    }
+}
+
+impl<T> DmaHandle<[T]> {
+    /// Create a new DmaHandle for slices (internal use only)
+    pub(crate) fn new_slice(
+        rref: RRef<[T]>,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        domain_id: u16,
+        direction: DmaDirection,
+        mapping: MappingKind,
+    ) -> Self {
+        Self::new(rref, iova, phys, size, domain_id, direction, mapping)
+    }
+
+    /// Determine read/write permissions from DMA direction.
+    pub(super) fn dma_direction_to_perms(direction: DmaDirection) -> (bool, bool) {
+        match direction {
+            DmaDirection::ToDevice => (true, false),
+            DmaDirection::FromDevice => (false, true),
+            DmaDirection::Bidirectional => (true, true),
+        }
+    }
+
+    /// Identity-map an RRef slice when IOMMU is not enabled.
+    pub(super) fn map_rref_slice_no_iommu(
+        rref: RRef<[T]>,
+        size: u64,
+        domain_id: u16,
+        direction: DmaDirection,
+    ) -> Result<Self, MapError<[T]>> {
+        use x86_64::VirtAddr;
+
+        if crate::io::iommu::api::is_iommu_required()
+            || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
+        {
+            return Err(MapError::new(
+                rref,
+                MapErrorKind::IommuError(IommuError::NotInitialized),
+            ));
+        }
+
+        let virt_ptr = rref.as_ptr() as u64;
+        let virt_addr = VirtAddr::new(virt_ptr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
+        let phys = phys_addr_val.as_u64();
+
+        if let Err(e) = crate::io::iommu::runtime::security::validate_dma_region(phys, size) {
+            log::error!(
+                "[IOMMU][SECURITY] Identity slice mapping rejected: overlaps protected region {:#x}-{:#x}",
+                phys,
+                phys + size
+            );
+            return Err(MapError::new(rref, MapErrorKind::IommuError(e)));
+        }
+
+        Ok(Self::new_slice(
+            rref,
+            phys,
+            phys,
+            size,
+            domain_id,
+            direction,
+            MappingKind::Identity,
+        ))
+    }
+
+    pub(super) fn try_identity_map_rref_slice(
+        rref: &RRef<[T]>,
+        size: u64,
+        _direction: DmaDirection,
+    ) -> Option<(u64, u64, u64, MappingKind)> {
+        use x86_64::VirtAddr;
+
+        if crate::io::iommu::api::is_iommu_required()
+            || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
+        {
+            return None;
+        }
+
+        let virt_ptr = rref.as_ptr() as u64;
+        let virt_addr = VirtAddr::new(virt_ptr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
+        let phys = phys_addr_val.as_u64();
+
+        if crate::io::iommu::runtime::security::validate_dma_region(phys, size).is_err() {
+            return None;
+        }
+
+        crate::io::iommu::runtime::stats::inc_identity_fallback_count();
+        Some((phys, phys, size, MappingKind::Identity))
+    }
+
+    /// Map an RRef slice for DMA access via IOMMU (safe API).
+    pub fn map_rref_slice(
+        rref: RRef<[T]>,
+        domain_id: u16,
+        direction: DmaDirection,
+    ) -> Result<Self, MapError<[T]>> {
+        use x86_64::{PhysAddr, VirtAddr};
+
+        let elem_size = core::mem::size_of::<T>() as u64;
+        let size = match (rref.len() as u64).checked_mul(elem_size) {
+            Some(size) if size > 0 => size,
+            _ => return Err(MapError::new(rref, MapErrorKind::InvalidAlignment)),
+        };
+
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            return Self::map_rref_slice_no_iommu(rref, size, domain_id, direction);
+        }
+        if !crate::io::iommu::api::is_global_dma_mapping_allowed() {
+            return Err(MapError::new(
+                rref,
+                MapErrorKind::IommuError(IommuError::NotSupported),
+            ));
+        }
+
+        let virt_ptr = rref.as_ptr() as u64;
+        let virt_addr = VirtAddr::new(virt_ptr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
+
+        if phys_addr_val.as_u64() & 0xFFF != 0 || size & 0xFFF != 0 {
+            return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
+        }
+
+        let (read, write) = Self::dma_direction_to_perms(direction);
+        let iova = match unsafe {
+            crate::io::iommu::api::map_for_dma_with_perms(
+                PhysAddr::new(phys_addr_val.as_u64()),
+                size,
+                read,
+                write,
+            )
+        } {
+            Ok(iova) => iova,
+            Err(e) => return Err(MapError::new(rref, MapErrorKind::IommuError(e))),
+        };
+
+        Ok(Self::new_slice(
+            rref,
+            iova,
+            phys_addr_val.as_u64(),
+            size,
+            domain_id,
+            direction,
+            MappingKind::Global,
+        ))
+    }
+
+    /// Map an RRef slice for DMA access to a specific device.
+    pub fn map_rref_slice_for_device(
+        rref: RRef<[T]>,
+        device: &DeviceId,
+        direction: DmaDirection,
+    ) -> Result<Self, MapError<[T]>> {
+        use x86_64::{PhysAddr, VirtAddr};
+
+        let elem_size = core::mem::size_of::<T>() as u64;
+        let size = match (rref.len() as u64).checked_mul(elem_size) {
+            Some(size) if size > 0 => size,
+            _ => return Err(MapError::new(rref, MapErrorKind::InvalidAlignment)),
+        };
+
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            match Self::try_identity_map_rref_slice(&rref, size, direction) {
+                Some((iova, phys, sz, kind)) => {
+                    return Ok(Self::new_slice(rref, iova, phys, sz, 0, direction, kind));
+                }
+                None => {
+                    return Err(MapError::new(
+                        rref,
+                        MapErrorKind::IommuError(IommuError::NotInitialized),
+                    ));
+                }
+            }
+        }
+
+        let virt_ptr = rref.as_ptr() as u64;
+        let virt_addr = VirtAddr::new(virt_ptr);
+        let phys_addr_val = crate::mm::virt::mapping::virt_to_phys(virt_addr);
+
+        if phys_addr_val.as_u64() & 0xFFF != 0 || size & 0xFFF != 0 {
+            return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
+        }
+
+        let (read, write) = Self::dma_direction_to_perms(direction);
+        let iova = match unsafe {
+            crate::io::iommu::api::map_for_device_with_perms(
+                device,
+                PhysAddr::new(phys_addr_val.as_u64()),
+                size,
+                read,
+                write,
+            )
+        } {
+            Ok(iova) => iova,
+            Err(e) => return Err(MapError::new(rref, MapErrorKind::IommuError(e))),
+        };
+
+        let domain_id = crate::io::iommu::api::domain_id_for_device(device).unwrap_or(0);
+
+        Ok(Self::new_slice(
+            rref,
+            iova,
+            phys_addr_val.as_u64(),
+            size,
+            domain_id,
+            direction,
+            MappingKind::Device(*device),
+        ))
     }
 }
 
@@ -599,7 +811,9 @@ impl<T> DmaHandle<T> {
             MapErrorKind::IommuError(IommuError::NotSupported),
         ))
     }
+}
 
+impl<T: ?Sized + 'static> DmaHandle<T> {
     /// Unmap a DMA buffer (simplified - no IOTLB invalidation)
     ///
     /// This is a simplified unmap that just releases the RRef without
@@ -711,7 +925,9 @@ impl<T> DmaHandle<T> {
     pub unsafe fn into_rref_unchecked(mut self) -> Option<RRef<T>> {
         self.take_rref()
     }
+}
 
+impl<T> DmaHandle<T> {
     // =========================================================================
     // Safe IOMMU-Integrated Map Functions (ExoRust Recommended)
     // =========================================================================

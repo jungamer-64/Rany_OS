@@ -11,8 +11,7 @@ impl VirtioNetDevice {
             buffer,
             submitted: false,
             desc_idx: 0,
-            dma_len: 0,
-            dma_iova: None,
+            dma_mapping: None,
             pool_bounce_buffer: None,
         }
     }
@@ -31,8 +30,7 @@ impl VirtioNetDevice {
             packet: None,
             submitted: false,
             desc_idx: 0,
-            dma_len: 0,
-            dma_iova: None,
+            dma_mapping: None,
             pool_bounce_buffer: None,
         }
     }
@@ -50,18 +48,6 @@ impl VirtioNetDevice {
                     self.rx_packets.fetch_add(1, Ordering::Relaxed);
                     self.rx_bytes.fetch_add(len, Ordering::Relaxed);
                     trace::push_event(NetLayer::Driver, NetEventKind::Rx, "virtio rx completion");
-
-                    // Cleanup DMA for ALL paths if mapped
-                    if let (Some(iova), Some(device_id)) =
-                        (inflight.iommu_iova, &self.iommu_device_id)
-                    {
-                        let _ = crate::io::iommu::api::unmap_for_device(
-                            device_id,
-                            iova,
-                            inflight.iommu_map_len,
-                        );
-                        inflight.iommu_iova = None; // Avoid double unmap
-                    }
 
                     // IoScheduler path: completion belongs to a pending IoRequest.
                     if let Some(handler) = get_poll_handler(self.virtio_index) {

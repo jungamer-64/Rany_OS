@@ -146,10 +146,9 @@ impl VirtioNetDevice {
                 break;
             };
             processed += 1;
-            if let Some(inflight) = tracker.take(desc_idx) {
-                // If IOMMU was used, unmap it before returning the packet
-                if let Some(iova) = inflight.iommu_iova {
-                    runtime.unmap_dma(iova, inflight.iommu_map_len);
+            if let Some(mut inflight) = tracker.take(desc_idx) {
+                if let Some(mapping) = inflight.dma_mapping.take() {
+                    runtime.unmap_dma(mapping);
                 }
 
                 handler(desc_idx, inflight, len);
@@ -184,10 +183,9 @@ impl VirtioNetDevice {
                 break;
             };
             processed += 1;
-            if let Some(inflight) = tracker.take(desc_idx) {
-                // If IOMMU was used, unmap it
-                if let Some(iova) = inflight.iommu_iova {
-                    runtime.unmap_dma(iova, inflight.iommu_map_len);
+            if let Some(mut inflight) = tracker.take(desc_idx) {
+                if let Some(mapping) = inflight.dma_mapping.take() {
+                    runtime.unmap_dma(mapping);
                 }
 
                 handler(desc_idx, inflight, len);
@@ -240,7 +238,9 @@ impl VirtioNetDevice {
         };
 
         let len = packet.capacity();
-        let (device_addr, iova) = runtime.map_packet(&packet, NetDmaDirection::FromDevice)?;
+        let dma_mapping = runtime.map_packet(&packet, NetDmaDirection::FromDevice)?;
+        let device_addr = dma_mapping.device_address();
+        let inflight_mapping = dma_mapping.requires_unmap().then_some(dma_mapping);
 
         match unsafe { vq.add_rx_buffer(device_addr, len) } {
             Ok(desc_idx) => {
@@ -248,15 +248,14 @@ impl VirtioNetDevice {
                     desc_idx,
                     RxInflight {
                         packet,
-                        iommu_iova: iova,
-                        iommu_map_len: len as u64,
+                        dma_mapping: inflight_mapping,
                     },
                 );
                 Ok(true)
             }
             Err(e) => {
-                if let Some(iova) = iova {
-                    runtime.unmap_dma(iova, len as u64);
+                if dma_mapping.requires_unmap() {
+                    runtime.unmap_dma(dma_mapping);
                 }
                 Err(e)
             }

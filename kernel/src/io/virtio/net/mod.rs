@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use crate::io::dma::CoherentDmaBuffer;
-use crate::io::iommu::api::{unmap_dma, unmap_for_device};
+use crate::io::iommu::api::unmap_for_device;
 use crate::io::iommu::runtime::registry::get_device_dma_mask;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::virtio::transport::VirtioTransport;
@@ -66,12 +66,56 @@ fn check_device_dma_mask(
 }
 
 fn unmap_iommu_addr(device: Option<IommuDeviceId>, iova: u64, len: usize) {
-    let result = match device {
-        Some(device) => unmap_for_device(&device, iova, len as u64),
-        None => unmap_dma(iova, len as u64),
+    let Some(device) = device else {
+        log::error!(
+            "[VIRTIO-NET] missing device id for DMA unmap (iova=0x{:x}, len={})",
+            iova,
+            len
+        );
+        return;
     };
-    if let Err(err) = result {
+    if let Err(err) = unmap_for_device(&device, iova, len as u64) {
         log::warn!("[VIRTIO-NET] failed to unmap DMA buffer: {:?}", err);
+    }
+}
+
+fn dma_direction_for_net(direction: NetDmaDirection) -> crate::io::dma::DmaDirection {
+    match direction {
+        NetDmaDirection::ToDevice => crate::io::dma::DmaDirection::ToDevice,
+        NetDmaDirection::FromDevice => crate::io::dma::DmaDirection::FromDevice,
+        NetDmaDirection::Bidirectional => crate::io::dma::DmaDirection::Bidirectional,
+    }
+}
+
+fn map_net_dma_for_range(
+    device: IommuDeviceId,
+    phys_addr: u64,
+    size: usize,
+    direction: NetDmaDirection,
+) -> Result<virtio_driver::net::NetDmaMappingToken, VirtioNetError> {
+    let ctx = crate::io::dma::DeviceDmaContext::for_attached_device(device);
+    let mapping = ctx
+        .map_physical_range(
+            x86_64::PhysAddr::new(phys_addr),
+            size,
+            dma_direction_for_net(direction),
+        )
+        .map_err(|_| VirtioNetError::DeviceError)?;
+    let device_addr = mapping.device_addr();
+    let (_device_id, release_key, mapped_len) = mapping.into_parts();
+    Ok(virtio_driver::net::NetDmaMappingToken::mapped(
+        device_addr,
+        release_key,
+        mapped_len,
+    ))
+}
+
+fn release_net_dma_mapping(
+    device: Option<IommuDeviceId>,
+    mapping: virtio_driver::net::NetDmaMappingToken,
+) {
+    if let Some(release_key) = mapping.release_key() {
+        unmap_iommu_addr(device, release_key, mapping.mapped_len() as usize);
     }
 }
 
@@ -92,8 +136,6 @@ pub struct NetVirtQueue {
     pub last_used_idx: AtomicU16,
     /// 割り込み待機中のWaker
     pub pending_wakers: crate::sync::WakerQueue,
-    /// Optional IOMMU mapping for queue memory
-    pub iommu_map: Option<IommuMapping>,
     /// DMA Buffer to keep memory alive (Shared logic doesn't hold this)
     pub dma_buffer: Option<CoherentDmaBuffer>,
     /// Completed descriptors for async waiters
@@ -103,15 +145,6 @@ pub struct NetVirtQueue {
 // NetVirtQueueをSend/Syncにする
 unsafe impl Send for NetVirtQueue {}
 unsafe impl Sync for NetVirtQueue {}
-
-#[derive(Debug)]
-pub struct IommuMapping {
-    device: Option<IommuDeviceId>,
-    iova: u64,
-    len: usize,
-    /// Optional DmaHandle for bounce-based mappings
-    handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
-}
 
 impl NetVirtQueue {
     pub unsafe fn new(
@@ -123,7 +156,6 @@ impl NetVirtQueue {
         dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
         _notify_addr: Option<u64>,
         _notify_is_32bit: bool,
-        iommu_map: Option<IommuMapping>,
         tx_headers: Option<*mut VirtioNetHeader>,
         tx_header_dma_base: Option<u64>,
         features: u64,
@@ -145,7 +177,6 @@ impl NetVirtQueue {
             inner: IrqPoisonLock::new(net_vq_core),
             last_used_idx: AtomicU16::new(0),
             pending_wakers: crate::sync::WakerQueue::new(),
-            iommu_map,
             dma_buffer,
             completion_map: PoisonLock::new(BTreeMap::new()),
         }
