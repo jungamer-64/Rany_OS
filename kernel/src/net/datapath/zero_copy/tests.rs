@@ -235,6 +235,29 @@ pub fn test_per_cpu_cache_spill_and_refill() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_per_cpu_cache_preserves_full_capacity() {
+    let cache = PerCpuCache::new();
+
+    assert_eq!(cache.capacity(), LOCAL_FREE_CACHE_CAPACITY);
+    assert!(cache.is_empty());
+
+    for idx in 0..cache.capacity() {
+        assert!(cache.try_push(idx as u32).is_ok());
+    }
+
+    assert_eq!(cache.len(), cache.capacity());
+    assert!(!cache.is_empty());
+    assert!(cache.try_push(cache.capacity() as u32).is_err());
+
+    for _ in 0..cache.capacity() {
+        assert!(cache.try_pop().is_some());
+    }
+
+    assert!(cache.try_pop().is_none());
+    assert!(cache.is_empty());
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_zero_copy_try_as_mut_slice_unique_write() {
     let pool = MemoryPool::new(PoolId::new(103), 256, 1);
     let Some(mut buf) = pool.alloc() else {

@@ -112,7 +112,8 @@ pub use waker::{
 };
 #[allow(unused_imports)]
 pub use work_stealing::{
-    GlobalQueueStats, global_queue_len, global_queue_stats, inject_global, steal_from_global,
+    GlobalQueueStats, global_queue_capacity, global_queue_is_empty, global_queue_len,
+    global_queue_stats, inject_global, steal_from_global,
 };
 
 // Phase 4: Advanced Work-Stealing re-exports

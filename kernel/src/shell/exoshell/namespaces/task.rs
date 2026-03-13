@@ -35,6 +35,7 @@ impl TaskNamespace {
     /// タスクシステムの統計情報
     pub fn stats() -> ExoValue<'static> {
         let wake_stats = crate::task::wake_queue_stats();
+        let global_stats = crate::task::global_queue_stats();
         let timer_stats = crate::task::timer::pending_waker_stats();
         let fuel_remaining = crate::task::fuel::Fuel::remaining();
         let fuel_active = crate::task::fuel::Fuel::is_active();
@@ -53,6 +54,26 @@ impl TaskNamespace {
         map.insert(
             s("wake_queue_dropped"),
             ExoValue::Int(wake_stats.dropped as i64),
+        );
+        map.insert(
+            s("global_queue_len"),
+            ExoValue::Int(global_stats.len as i64),
+        );
+        map.insert(
+            s("global_queue_capacity"),
+            ExoValue::Int(global_stats.capacity as i64),
+        );
+        map.insert(
+            s("global_queue_enqueued"),
+            ExoValue::Int(global_stats.enqueued as i64),
+        );
+        map.insert(
+            s("global_queue_dequeued"),
+            ExoValue::Int(global_stats.dequeued as i64),
+        );
+        map.insert(
+            s("global_queue_dropped"),
+            ExoValue::Int(global_stats.dropped as i64),
         );
         map.insert(
             s("timer_pending"),

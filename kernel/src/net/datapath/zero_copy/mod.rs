@@ -193,9 +193,12 @@ impl PerCpuCache {
         self.ring.len()
     }
 
-    #[allow(dead_code)]
     fn capacity(&self) -> usize {
         Self::CAPACITY
+    }
+
+    fn is_empty(&self) -> bool {
+        self.ring.is_empty()
     }
 }
 

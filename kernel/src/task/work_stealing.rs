@@ -117,6 +117,10 @@ impl LockFreeGlobalInjector {
         self.queue.len()
     }
 
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
     fn capacity(&self) -> usize {
         Self::CAPACITY
     }
@@ -148,6 +152,16 @@ pub fn steal_from_global() -> Option<Task> {
 /// グローバルキューの長さを取得
 pub fn global_queue_len() -> usize {
     GLOBAL_INJECTOR.len()
+}
+
+/// グローバルキューの論理容量を取得
+pub fn global_queue_capacity() -> usize {
+    GLOBAL_INJECTOR.capacity()
+}
+
+/// グローバルキューが空かどうか
+pub fn global_queue_is_empty() -> bool {
+    GLOBAL_INJECTOR.is_empty()
 }
 
 /// グローバルキューの統計を取得
@@ -182,6 +196,10 @@ mod tests {
         assert_eq!(stats.enqueued, GLOBAL_QUEUE_CAPACITY);
         assert_eq!(stats.dequeued, 0);
         assert_eq!(stats.dropped, 1);
+        assert_eq!(global_queue_len(), GLOBAL_QUEUE_CAPACITY);
+        assert_eq!(global_queue_capacity(), GLOBAL_QUEUE_CAPACITY);
+        assert!(!GLOBAL_INJECTOR.is_empty());
+        assert!(!global_queue_is_empty());
 
         let mut drained = 0;
         while GLOBAL_INJECTOR.steal().is_some() {
@@ -195,6 +213,9 @@ mod tests {
         assert_eq!(stats.enqueued, GLOBAL_QUEUE_CAPACITY);
         assert_eq!(stats.dequeued, GLOBAL_QUEUE_CAPACITY);
         assert_eq!(stats.dropped, 1);
+        assert_eq!(global_queue_len(), 0);
+        assert!(GLOBAL_INJECTOR.is_empty());
+        assert!(global_queue_is_empty());
 
         reset_global_injector_for_tests();
     }

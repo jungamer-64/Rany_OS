@@ -180,6 +180,9 @@ mod tests {
         assert_eq!(stats.capacity, WAKE_QUEUE_CAPACITY);
         assert_eq!(stats.enqueued, 1);
         assert_eq!(stats.dropped, 0);
+        assert_eq!(wake_queue_len(), 0);
+        assert_eq!(wake_queue_capacity(), WAKE_QUEUE_CAPACITY);
+        assert!(wake_queue_is_empty());
 
         reset_wake_queue_for_tests();
     }
@@ -198,11 +201,15 @@ mod tests {
         assert_eq!(stats.capacity, WAKE_QUEUE_CAPACITY);
         assert_eq!(stats.enqueued, WAKE_QUEUE_CAPACITY);
         assert_eq!(stats.dropped, 1);
+        assert_eq!(wake_queue_len(), WAKE_QUEUE_CAPACITY);
+        assert_eq!(wake_queue_capacity(), WAKE_QUEUE_CAPACITY);
+        assert!(!wake_queue_is_empty());
 
         for _ in 0..WAKE_QUEUE_CAPACITY {
             assert!(pop_woken_task().is_some());
         }
         assert_eq!(pop_woken_task(), None);
+        assert!(wake_queue_is_empty());
 
         reset_wake_queue_for_tests();
     }

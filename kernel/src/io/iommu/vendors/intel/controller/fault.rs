@@ -285,6 +285,10 @@ impl DeferredFaultQueue {
         Self::CAPACITY
     }
 
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty() && self.critical_slot.state.load(Ordering::Acquire) != SLOT_READY
+    }
+
     /// Get and reset dropped count
     fn take_dropped(&self) -> usize {
         self.dropped.swap(0, Ordering::Relaxed)
@@ -340,11 +344,13 @@ mod tests {
         assert_eq!(queue.len(), DEFERRED_QUEUE_SIZE);
         assert_eq!(queue.capacity(), DEFERRED_QUEUE_SIZE);
         assert_eq!(queue.take_dropped(), 1);
+        assert!(!queue.is_empty());
 
         for _ in 0..DEFERRED_QUEUE_SIZE {
             assert!(queue.pop().is_some());
         }
         assert!(queue.pop().is_none());
+        assert!(queue.is_empty());
     }
 }
 

@@ -19,6 +19,47 @@ mod rx;
 mod tx;
 pub use registry::*;
 
+const BOUNCE_POOL_CAPACITY: usize = 256;
+const BOUNCE_POOL_PREFILL_COUNT: usize = 128;
+const BOUNCE_BUFFER_SIZE: usize = 4096;
+
+#[derive(Debug)]
+struct BounceBufferPool {
+    queue: MpmcRingBuffer<CoherentDmaBuffer, BOUNCE_POOL_CAPACITY>,
+}
+
+impl BounceBufferPool {
+    const CAPACITY: usize = BOUNCE_POOL_CAPACITY;
+
+    const fn new() -> Self {
+        Self {
+            queue: MpmcRingBuffer::new(),
+        }
+    }
+
+    fn push(&self, buffer: CoherentDmaBuffer) -> Result<(), CoherentDmaBuffer> {
+        self.queue.push(buffer)
+    }
+
+    fn pop(&self) -> Option<CoherentDmaBuffer> {
+        self.queue.pop()
+    }
+
+    #[allow(dead_code)]
+    fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    const fn capacity(&self) -> usize {
+        Self::CAPACITY
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
 // ============================================================================
 // VirtIO Net Device
 // ============================================================================
@@ -51,9 +92,9 @@ pub struct VirtioNetDevice {
     /// 統計: 送信バイト数
     pub(super) tx_bytes: AtomicU32,
     /// プール済み送信用バウンスバッファ
-    tx_bounce_pool: MpmcRingBuffer<CoherentDmaBuffer, 256>,
+    tx_bounce_pool: BounceBufferPool,
     /// プール済み受信用バウンスバッファ
-    rx_bounce_pool: MpmcRingBuffer<CoherentDmaBuffer, 256>,
+    rx_bounce_pool: BounceBufferPool,
 }
 
 unsafe impl Send for VirtioNetDevice {}
@@ -100,8 +141,8 @@ impl VirtioNetDevice {
             rx_bytes: AtomicU32::new(0),
             tx_packets: AtomicU32::new(0),
             tx_bytes: AtomicU32::new(0),
-            tx_bounce_pool: MpmcRingBuffer::new(),
-            rx_bounce_pool: MpmcRingBuffer::new(),
+            tx_bounce_pool: BounceBufferPool::new(),
+            rx_bounce_pool: BounceBufferPool::new(),
         }
     }
 
@@ -289,25 +330,29 @@ impl VirtioNetDevice {
     }
 
     fn init_bounce_pools(&self) -> Result<(), VirtioNetError> {
-        let pool_size = 128;
-        let buffer_size = 4096;
+        debug_assert!(BOUNCE_POOL_PREFILL_COUNT <= self.tx_bounce_pool.capacity());
+        debug_assert!(BOUNCE_POOL_PREFILL_COUNT <= self.rx_bounce_pool.capacity());
 
-        for _ in 0..pool_size {
+        for _ in 0..BOUNCE_POOL_PREFILL_COUNT {
             let tx_buf = CoherentDmaBuffer::new_for_device(
-                buffer_size,
+                BOUNCE_BUFFER_SIZE,
                 DmaMemoryAttributes::MMIO,
                 &self.iommu_device_id,
             )
             .ok_or(VirtioNetError::DeviceError)?;
-            let _ = self.tx_bounce_pool.push(tx_buf);
+            self.tx_bounce_pool
+                .push(tx_buf)
+                .map_err(|_| VirtioNetError::DeviceError)?;
 
             let rx_buf = CoherentDmaBuffer::new_for_device(
-                buffer_size,
+                BOUNCE_BUFFER_SIZE,
                 DmaMemoryAttributes::MMIO,
                 &self.iommu_device_id,
             )
             .ok_or(VirtioNetError::DeviceError)?;
-            let _ = self.rx_bounce_pool.push(rx_buf);
+            self.rx_bounce_pool
+                .push(rx_buf)
+                .map_err(|_| VirtioNetError::DeviceError)?;
         }
         Ok(())
     }
@@ -322,7 +367,7 @@ impl VirtioNetDevice {
             }
             let _ = self.tx_bounce_pool.push(buf);
         }
-        let alloc_size = core::cmp::max(size, 4096);
+        let alloc_size = core::cmp::max(size, BOUNCE_BUFFER_SIZE);
         crate::io::dma::CoherentDmaBuffer::new_for_device(
             alloc_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
@@ -345,7 +390,7 @@ impl VirtioNetDevice {
             }
             let _ = self.rx_bounce_pool.push(buf);
         }
-        let alloc_size = core::cmp::max(size, 4096);
+        let alloc_size = core::cmp::max(size, BOUNCE_BUFFER_SIZE);
         crate::io::dma::CoherentDmaBuffer::new_for_device(
             alloc_size,
             crate::io::dma::DmaMemoryAttributes::MMIO,
@@ -503,6 +548,93 @@ impl Drop for VirtioNetDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
+
+    struct NoopTransport;
+
+    impl VirtioTransport for NoopTransport {
+        fn device_type(&self) -> VirtioDeviceType {
+            VirtioDeviceType::Network
+        }
+
+        fn get_status(&self) -> u8 {
+            0
+        }
+
+        fn set_status(&mut self, _status: u8) {}
+
+        fn get_device_features_low(&self) -> u32 {
+            0
+        }
+
+        fn get_device_features_high(&self) -> u32 {
+            0
+        }
+
+        fn set_driver_features_low(&mut self, _features: u32) {}
+
+        fn set_driver_features_high(&mut self, _features: u32) {}
+
+        fn get_num_queues(&self) -> u16 {
+            2
+        }
+
+        fn select_queue(&mut self, _queue_index: u16) {}
+
+        fn get_queue_max_size(&self) -> u16 {
+            VIRTQUEUE_MAX_SIZE
+        }
+
+        fn set_queue_size(&mut self, _size: u16) {}
+
+        fn is_queue_ready(&self) -> bool {
+            false
+        }
+
+        fn enable_queue(&mut self) {}
+
+        fn disable_queue(&mut self) {}
+
+        fn set_queue_desc_addr(&mut self, _addr: u64) {}
+
+        fn set_queue_avail_addr(&mut self, _addr: u64) {}
+
+        fn set_queue_used_addr(&mut self, _addr: u64) {}
+
+        fn notify_queue(&mut self, _queue_index: u16) {}
+
+        fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
+            None
+        }
+
+        fn get_interrupt_status(&self) -> u32 {
+            0
+        }
+
+        fn ack_interrupt(&self, _status: u32) {}
+
+        fn read_config_u8(&self, _offset: usize) -> u8 {
+            0
+        }
+
+        fn read_config_u16(&self, _offset: usize) -> u16 {
+            0
+        }
+
+        fn read_config_u32(&self, _offset: usize) -> u32 {
+            0
+        }
+
+        fn write_config_u8(&mut self, _offset: usize, _value: u8) {}
+
+        fn write_config_u16(&mut self, _offset: usize, _value: u16) {}
+
+        fn write_config_u32(&mut self, _offset: usize, _value: u32) {}
+
+        fn transport_type(&self) -> TransportType {
+            TransportType::Mmio
+        }
+    }
 
     #[test_case]
     fn test_validate_iommu_device_requirement_rejects_missing_device_id_when_enabled() {
@@ -514,5 +646,47 @@ mod tests {
     fn test_validate_iommu_device_requirement_accepts_device_id_when_enabled() {
         let result = VirtioNetDevice::validate_iommu_device_requirement(true);
         assert_eq!(result, Ok(()));
+    }
+
+    #[test_case]
+    fn bounce_pool_init_prefills_both_queues() {
+        let device = VirtioNetDevice::new_at_index(0x30, Box::new(NoopTransport));
+        assert_eq!(device.tx_bounce_pool.capacity(), BOUNCE_POOL_CAPACITY);
+        assert_eq!(device.rx_bounce_pool.capacity(), BOUNCE_POOL_CAPACITY);
+        assert!(device.tx_bounce_pool.is_empty());
+        assert!(device.rx_bounce_pool.is_empty());
+
+        device.init_bounce_pools().expect("init bounce pools");
+
+        assert_eq!(device.tx_bounce_pool.len(), BOUNCE_POOL_PREFILL_COUNT);
+        assert_eq!(device.rx_bounce_pool.len(), BOUNCE_POOL_PREFILL_COUNT);
+    }
+
+    #[test_case]
+    fn bounce_pool_preserves_full_capacity() {
+        let device = VirtioNetDevice::new_at_index(0x31, Box::new(NoopTransport));
+
+        for _ in 0..device.tx_bounce_pool.capacity() {
+            let buffer = CoherentDmaBuffer::new_for_device(
+                BOUNCE_BUFFER_SIZE,
+                DmaMemoryAttributes::MMIO,
+                &device.iommu_device_id,
+            )
+            .expect("allocate bounce buffer");
+            assert!(device.tx_bounce_pool.push(buffer).is_ok());
+        }
+
+        assert_eq!(
+            device.tx_bounce_pool.len(),
+            device.tx_bounce_pool.capacity()
+        );
+
+        let overflow = CoherentDmaBuffer::new_for_device(
+            BOUNCE_BUFFER_SIZE,
+            DmaMemoryAttributes::MMIO,
+            &device.iommu_device_id,
+        )
+        .expect("allocate overflow bounce buffer");
+        assert!(device.tx_bounce_pool.push(overflow).is_err());
     }
 }

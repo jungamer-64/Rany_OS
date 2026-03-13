@@ -276,6 +276,11 @@ impl InterruptEventQueue {
     fn capacity(&self) -> usize {
         INTERRUPT_EVENT_QUEUE_SIZE
     }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
 }
 
 /// 割り込みWaker統計
@@ -439,6 +444,7 @@ mod tests {
     #[test_case]
     fn interrupt_event_queue_preserves_full_capacity() {
         let queue = InterruptEventQueue::new();
+        assert!(queue.is_empty());
 
         for i in 0..INTERRUPT_EVENT_QUEUE_SIZE {
             assert!(queue.push_once(i + 1), "failed at {}", i);
@@ -446,10 +452,12 @@ mod tests {
         assert!(!queue.push_once(usize::MAX));
         assert_eq!(queue.len(), INTERRUPT_EVENT_QUEUE_SIZE);
         assert_eq!(queue.capacity(), INTERRUPT_EVENT_QUEUE_SIZE);
+        assert!(!queue.is_empty());
 
         for i in 0..INTERRUPT_EVENT_QUEUE_SIZE {
             assert_eq!(queue.pop(), Some(i + 1));
         }
         assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
     }
 }
