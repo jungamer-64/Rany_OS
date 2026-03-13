@@ -86,6 +86,7 @@ impl InterruptSource {
 const MAX_INTERRUPT_INDICES: usize = 2048;
 const INTERRUPT_EVENT_QUEUE_SIZE: usize = 1024;
 const INTERRUPT_EVENT_QUEUE_BACKING_SIZE: usize = INTERRUPT_EVENT_QUEUE_SIZE + 1;
+const MAX_CPUS: usize = crate::per_cpu::MAX_CPUS;
 
 // ============================================================================
 // Atomic Waker - ISR-safe Waker storage
@@ -107,8 +108,8 @@ pub struct InterruptWakerRegistry {
     interrupt_count: AtomicU64,
     /// 統計: Wake回数
     wake_count: AtomicU64,
-    /// ISRから投入される遅延Wakeイベントキュー
-    event_queue: InterruptEventQueue,
+    /// ISRから投入される遅延Wakeイベントキュー（CPUローカル）
+    event_queues: [InterruptEventQueue; MAX_CPUS],
 }
 
 impl InterruptWakerRegistry {
@@ -118,8 +119,15 @@ impl InterruptWakerRegistry {
             wakers: spin::Once::new(),
             interrupt_count: AtomicU64::new(0),
             wake_count: AtomicU64::new(0),
-            event_queue: InterruptEventQueue::new(),
+            event_queues: [const { InterruptEventQueue::new() }; MAX_CPUS],
         }
+    }
+
+    #[inline]
+    fn current_cpu_index(&self) -> usize {
+        crate::per_cpu::try_current_cpu_id()
+            .unwrap_or_else(|| crate::smp::cpu_index())
+            .min(MAX_CPUS.saturating_sub(1))
     }
 
     /// Waker配列を取得（未初期化なら初期化）
@@ -158,7 +166,8 @@ impl InterruptWakerRegistry {
         // spin::Onceが初期化済みかチェック（初期化前はwake不可）
         if self.wakers.get().is_some() {
             // +1 して 0 を空スロットに使う
-            let _ = self.event_queue.push_once(idx + 1);
+            let cpu_idx = self.current_cpu_index();
+            let _ = self.event_queues[cpu_idx].push_once(idx + 1);
         }
     }
 
@@ -168,10 +177,11 @@ impl InterruptWakerRegistry {
             .fetch_add(sources.len() as u64, Ordering::Relaxed);
 
         if self.wakers.get().is_some() {
+            let cpu_idx = self.current_cpu_index();
             for source in sources {
                 let idx = source.to_index();
                 if idx < MAX_INTERRUPT_INDICES {
-                    let _ = self.event_queue.push_once(idx + 1);
+                    let _ = self.event_queues[cpu_idx].push_once(idx + 1);
                 }
             }
         }
@@ -182,8 +192,10 @@ impl InterruptWakerRegistry {
         let Some(wakers) = self.wakers.get() else {
             return;
         };
+        let cpu_idx = self.current_cpu_index();
+        let queue = &self.event_queues[cpu_idx];
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(encoded_idx) = self.event_queue.pop() {
+        while let Some(encoded_idx) = queue.pop() {
             if encoded_idx == 0 {
                 continue;
             }
@@ -198,7 +210,7 @@ impl InterruptWakerRegistry {
 
     /// 保留中のイベント数を取得
     pub fn pending_event_count(&self) -> usize {
-        self.event_queue.len()
+        self.event_queues.iter().map(InterruptEventQueue::len).sum()
     }
 
     /// 割り込みソースの登録を解除

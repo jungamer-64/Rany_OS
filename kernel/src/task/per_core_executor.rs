@@ -5,7 +5,6 @@
 #![allow(dead_code)]
 
 use crate::sync::PoisonLock;
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::task::Wake;
@@ -129,6 +128,22 @@ impl<T> WorkStealingQueue<T> {
         }
     }
 
+    pub fn steal_matching<F>(&self, mut predicate: F) -> Option<T>
+    where
+        F: FnMut(&T) -> bool,
+    {
+        match self.inner.lock() {
+            Ok(mut guard) => {
+                let idx = guard.iter().position(|item| predicate(item))?;
+                guard.remove(idx)
+            }
+            Err(_) => {
+                log::error!("[EXECUTOR] queue poisoned during steal_matching");
+                None
+            }
+        }
+    }
+
     pub fn len(&self) -> usize {
         match self.inner.lock() {
             Ok(guard) => guard.len(),
@@ -149,7 +164,9 @@ struct ScheduledTask {
     domain_id: crate::domain_system::DomainId,
     state: AtomicU8,
     queued: AtomicBool,
+    affinity_mask: AtomicU64,
     preferred_cpu: AtomicUsize,
+    preferred_numa_node: AtomicU8,
     suspended_until_ns: AtomicU64,
     last_run_at: AtomicU64,
     total_run_time: AtomicU64,
@@ -157,14 +174,26 @@ struct ScheduledTask {
 }
 
 impl ScheduledTask {
-    fn new(task: super::Task, priority: Priority, preferred_cpu: usize) -> Arc<Self> {
+    fn new(
+        task: super::Task,
+        priority: Priority,
+        affinity_mask: u64,
+        preferred_cpu: usize,
+        preferred_numa_node: Option<usize>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             domain_id: task.domain_id,
             task: PoisonLock::new(task),
             priority,
             state: AtomicU8::new(ScheduledTaskState::Ready as u8),
             queued: AtomicBool::new(false),
+            affinity_mask: AtomicU64::new(affinity_mask),
             preferred_cpu: AtomicUsize::new(preferred_cpu),
+            preferred_numa_node: AtomicU8::new(
+                preferred_numa_node
+                    .and_then(|node| u8::try_from(node).ok())
+                    .unwrap_or(u8::MAX),
+            ),
             suspended_until_ns: AtomicU64::new(0),
             last_run_at: AtomicU64::new(0),
             total_run_time: AtomicU64::new(0),
@@ -229,6 +258,26 @@ impl ScheduledTask {
 
     fn set_preferred_cpu(&self, cpu_id: usize) {
         self.preferred_cpu.store(cpu_id, Ordering::Release);
+    }
+
+    fn preferred_numa_node(&self) -> Option<usize> {
+        let raw = self.preferred_numa_node.load(Ordering::Acquire);
+        (raw != u8::MAX).then_some(raw as usize)
+    }
+
+    fn set_preferred_numa_node(&self, node: Option<usize>) {
+        self.preferred_numa_node.store(
+            node.and_then(|value| u8::try_from(value).ok())
+                .unwrap_or(u8::MAX),
+            Ordering::Release,
+        );
+    }
+
+    fn can_run_on(&self, cpu_id: usize) -> bool {
+        if cpu_id >= 64 {
+            return false;
+        }
+        (self.affinity_mask.load(Ordering::Acquire) & (1u64 << cpu_id)) != 0
     }
 
     fn poll(&self, context: &mut Context<'_>) -> Poll<()> {
@@ -385,21 +434,24 @@ impl PerCoreExecutor {
         self.core_id == 0
     }
 
+    fn run_local_runtime_maintenance(&self) {
+        crate::interrupts::poll_timer_events();
+        crate::io::hid::keyboard::process_pending_wakes();
+        crate::task::timer::process_pending_timer_wakers();
+        crate::task::interrupt_waker::process_interrupt_events();
+        crate::sync::process_deferred_wakes();
+        crate::sync::process_deferred_waker_queue_wakes();
+        crate::io::nvme::per_core::process_local_deferred_completions();
+        crate::io::io_scheduler::hybrid_coordinator().tick(|| {
+            crate::task::interrupt_waker::process_interrupt_events();
+        });
+    }
+
     fn run_global_runtime_maintenance(&self) {
         if !self.runs_global_runtime_maintenance() {
             return;
         }
 
-        crate::interrupts::poll_timer_events();
-        crate::io::hid::keyboard::process_pending_wakes();
-        crate::task::timer::process_pending_timer_wakers();
-        crate::task::interrupt_waker::process_interrupt_events();
-        crate::io::io_scheduler::process_deferred_completions();
-        crate::sync::process_deferred_wakes();
-        crate::sync::process_deferred_waker_queue_wakes();
-        crate::io::io_scheduler::hybrid_coordinator().tick(|| {
-            crate::task::interrupt_waker::process_interrupt_events();
-        });
         crate::io::iommu::api::process_pending_command_queues();
     }
 
@@ -517,6 +569,9 @@ impl PerCoreExecutor {
         self.running_count.fetch_add(1, Ordering::Relaxed);
         task.set_state(ScheduledTaskState::Running);
         task.set_preferred_cpu(self.core_id as usize);
+        task.set_preferred_numa_node(Some(
+            super::work_stealing_advanced::NumaTopology::get().get_numa_node(self.core_id),
+        ));
         task.schedule_count.fetch_add(1, Ordering::Relaxed);
 
         let start_cycles = read_tsc();
@@ -591,7 +646,14 @@ impl PerCoreExecutor {
     }
 
     fn steal_from(&self, victim: &PerCoreExecutor) -> bool {
-        if let Some(task) = victim.local_queue.steal() {
+        if let Some(task) = victim
+            .local_queue
+            .steal_matching(|task| task.can_run_on(self.core_id as usize))
+        {
+            task.set_preferred_cpu(self.core_id as usize);
+            task.set_preferred_numa_node(Some(
+                super::work_stealing_advanced::NumaTopology::get().get_numa_node(self.core_id),
+            ));
             self.local_queue.push(task);
             self.tasks_stolen.fetch_add(1, Ordering::Relaxed);
             victim.tasks_stolen_from.fetch_add(1, Ordering::Relaxed);
@@ -651,6 +713,7 @@ impl PerCoreExecutor {
 
     fn run_single_iteration(&self, allow_idle_wait: bool) {
         set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_LOOP);
+        self.run_local_runtime_maintenance();
         self.run_global_runtime_maintenance();
 
         set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_SUSPENDED);
@@ -689,6 +752,7 @@ impl PerCoreExecutor {
     }
 
     fn run_forever(&self) -> ! {
+        crate::interrupts::ensure_runtime_local_timer_started();
         if !crate::interrupts::are_interrupts_enabled() {
             crate::interrupts::enable_interrupts();
         }
@@ -771,8 +835,17 @@ impl ExecutorManager {
 
     pub fn spawn_task(&self, task: super::Task, priority: Priority) -> super::TaskId {
         let task_id = task.id;
-        let target_cpu = self.pick_target_cpu();
-        let scheduled = ScheduledTask::new(task, priority, target_cpu);
+        let preferred_cpu = current_core_id().min(self.active_cpu_count().saturating_sub(1));
+        let preferred_numa_node =
+            super::work_stealing_advanced::NumaTopology::get().get_numa_node(preferred_cpu as u32);
+        let scheduled = ScheduledTask::new(
+            task,
+            priority,
+            self.default_affinity_mask(),
+            preferred_cpu,
+            Some(preferred_numa_node),
+        );
+        let target_cpu = self.pick_target_cpu_for_task(&scheduled);
         self.global_enqueued.fetch_add(1, Ordering::Relaxed);
 
         if let Some(executor) = self.get_executor(target_cpu as u32) {
@@ -791,10 +864,15 @@ impl ExecutorManager {
         task_id
     }
 
-    pub fn queue_wake(&self, task: Arc<ScheduledTask>) {
-        let target_cpu = task
+    fn queue_wake(&self, task: Arc<ScheduledTask>) {
+        let preferred_cpu = task
             .preferred_cpu()
             .min(self.active_cpu_count().saturating_sub(1));
+        let target_cpu = if task.can_run_on(preferred_cpu) {
+            preferred_cpu
+        } else {
+            self.pick_target_cpu_for_task(&task)
+        };
 
         if let Some(executor) = self.get_executor(target_cpu as u32) {
             if executor.enqueue_woken_task(task) {
@@ -820,8 +898,11 @@ impl ExecutorManager {
         };
 
         while let Some(task) = pending.pop_front() {
-            let target_cpu = self.pick_target_cpu();
+            let target_cpu = self.pick_target_cpu_for_task(&task);
             task.set_preferred_cpu(target_cpu);
+            task.set_preferred_numa_node(Some(
+                super::work_stealing_advanced::NumaTopology::get().get_numa_node(target_cpu as u32),
+            ));
             if let Some(executor) = self.get_executor(target_cpu as u32) {
                 if executor.enqueue_spawned_task(task) {
                     self.global_dequeued.fetch_add(1, Ordering::Relaxed);
@@ -835,9 +916,9 @@ impl ExecutorManager {
     }
 
     fn drain_bootstrap_queue_to(&self, cpu_id: usize, budget: usize) {
-        let Some(executor) = self.get_executor(cpu_id as u32) else {
+        if self.get_executor(cpu_id as u32).is_none() {
             return;
-        };
+        }
 
         let mut drained = 0;
         while drained < budget {
@@ -850,9 +931,23 @@ impl ExecutorManager {
                 break;
             };
 
-            task.set_preferred_cpu(cpu_id);
-            if executor.enqueue_spawned_task(task) {
+            let target_cpu = if task.can_run_on(cpu_id) {
+                cpu_id
+            } else {
+                self.pick_target_cpu_for_task(&task)
+            };
+            task.set_preferred_cpu(target_cpu);
+            task.set_preferred_numa_node(Some(
+                super::work_stealing_advanced::NumaTopology::get().get_numa_node(target_cpu as u32),
+            ));
+            let Some(target_executor) = self.get_executor(target_cpu as u32) else {
+                self.global_dropped.fetch_add(1, Ordering::Relaxed);
+                drained += 1;
+                continue;
+            };
+            if target_executor.enqueue_spawned_task(task) {
                 self.global_dequeued.fetch_add(1, Ordering::Relaxed);
+                self.notify_remote_cpu(target_cpu);
             } else {
                 self.global_dropped.fetch_add(1, Ordering::Relaxed);
             }
@@ -860,17 +955,47 @@ impl ExecutorManager {
         }
     }
 
-    fn pick_target_cpu(&self) -> usize {
+    fn default_affinity_mask(&self) -> u64 {
+        let active = self.active_cpu_count().clamp(1, 64);
+        if active >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << active) - 1
+        }
+    }
+
+    fn pick_target_cpu_for_task(&self, task: &ScheduledTask) -> usize {
         let Ok(executors) = self.executors.lock() else {
             return 0;
         };
+        let topology = super::work_stealing_advanced::NumaTopology::get();
+        let preferred_cpu = task
+            .preferred_cpu()
+            .min(self.active_cpu_count().saturating_sub(1));
+        let preferred_node = task.preferred_numa_node();
 
         executors
             .iter()
             .take(self.active_cpu_count())
-            .min_by_key(|executor| executor.queue_length())
+            .filter(|executor| task.can_run_on(executor.core_id as usize))
+            .min_by_key(|executor| {
+                let cpu_id = executor.core_id as usize;
+                let node = topology.get_numa_node(cpu_id as u32);
+                let locality_rank = if cpu_id == preferred_cpu {
+                    0usize
+                } else if preferred_node == Some(node) {
+                    1usize
+                } else {
+                    2usize
+                };
+                (locality_rank, executor.queue_length(), cpu_id)
+            })
             .map(|executor| executor.core_id as usize)
-            .unwrap_or(0)
+            .unwrap_or_else(|| {
+                (0..self.active_cpu_count())
+                    .find(|&cpu_id| task.can_run_on(cpu_id))
+                    .unwrap_or(preferred_cpu)
+            })
     }
 
     fn notify_remote_cpu(&self, cpu_id: usize) {
@@ -1180,9 +1305,9 @@ impl TestExecutor {
         crate::io::hid::keyboard::process_pending_wakes();
         crate::task::timer::process_pending_timer_wakers();
         crate::task::interrupt_waker::process_interrupt_events();
-        crate::io::io_scheduler::process_deferred_completions();
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();
+        crate::io::nvme::per_core::process_local_deferred_completions();
         crate::io::io_scheduler::hybrid_coordinator().tick(|| {
             crate::task::interrupt_waker::process_interrupt_events();
         });

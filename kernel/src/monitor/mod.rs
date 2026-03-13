@@ -159,7 +159,7 @@ pub fn snapshot() -> SystemSnapshot {
 
     let domain_stats = crate::domain_system::get_domain_stats();
 
-    let preempt_stats = crate::task::preemption_controller().stats();
+    let preempt_stats = crate::task::aggregate_preemption_stats();
 
     SystemSnapshot {
         timestamp: crate::interrupts::get_timer_ticks(),

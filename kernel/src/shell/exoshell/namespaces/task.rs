@@ -102,7 +102,7 @@ impl TaskNamespace {
 
     /// プリエンプション統計
     pub fn preemption() -> ExoValue<'static> {
-        let stats = crate::task::preemption::preemption_controller().stats();
+        let stats = crate::task::aggregate_preemption_stats();
         let mut map = BTreeMap::new();
         map.insert(
             s("forced_preemptions"),

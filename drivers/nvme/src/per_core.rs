@@ -61,6 +61,58 @@ static QUEUES: [AtomicPtr<PerCoreNvmeQueue>; MAX_CORES] =
 static APIC_TO_CORE: [AtomicU32; MAX_CORES] =
     [const { AtomicU32::new(INVALID_CORE_ID) }; MAX_CORES];
 const MAX_ISR_COMPLETIONS_PER_PASS: usize = 64;
+const DEFERRED_COMPLETION_QUEUE_SIZE: usize = 256;
+
+#[derive(Clone, Copy)]
+struct DeferredCompletion {
+    cid: u16,
+    cqe: NvmeCompletion,
+}
+
+struct DeferredCompletionQueue {
+    entries: [Option<DeferredCompletion>; DEFERRED_COMPLETION_QUEUE_SIZE],
+    head: usize,
+    tail: usize,
+    len: usize,
+}
+
+impl DeferredCompletionQueue {
+    const fn new() -> Self {
+        const NONE: Option<DeferredCompletion> = None;
+        Self {
+            entries: [NONE; DEFERRED_COMPLETION_QUEUE_SIZE],
+            head: 0,
+            tail: 0,
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, entry: DeferredCompletion) -> bool {
+        if self.len >= DEFERRED_COMPLETION_QUEUE_SIZE {
+            return false;
+        }
+
+        self.entries[self.tail] = Some(entry);
+        self.tail = (self.tail + 1) % DEFERRED_COMPLETION_QUEUE_SIZE;
+        self.len += 1;
+        true
+    }
+
+    fn pop(&mut self) -> Option<DeferredCompletion> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let entry = self.entries[self.head].take();
+        self.head = (self.head + 1) % DEFERRED_COMPLETION_QUEUE_SIZE;
+        self.len -= 1;
+        entry
+    }
+
+    fn is_full(&self) -> bool {
+        self.len >= DEFERRED_COMPLETION_QUEUE_SIZE
+    }
+}
 
 /// ISR用にキューを登録
 pub fn register_queue(core_id: u32, queue: &PerCoreNvmeQueue) {
@@ -133,6 +185,8 @@ pub struct PerCoreNvmeQueue {
     stats: NvmeQueueStats,
     /// Pending Requests for Async I/O (ISR-safe)
     pending_requests: Arc<IrqMutex<PendingRequests>>,
+    /// IRQで拾った完了を通常文脈へ渡す固定長キュー
+    deferred_completions: IrqMutex<DeferredCompletionQueue>,
 }
 
 // Safety: PerCoreNvmeQueueは各コア固有のキューとして使用され、
@@ -161,6 +215,7 @@ impl PerCoreNvmeQueue {
                 _padding: [],
             },
             pending_requests: Arc::new(IrqMutex::new(PendingRequests::new())),
+            deferred_completions: IrqMutex::new(DeferredCompletionQueue::new()),
         }
     }
 
@@ -614,8 +669,9 @@ impl PerCoreNvmeQueue {
         let mut count = 0;
 
         if let Some(qp) = qp_opt {
+            let mut deferred = self.deferred_completions.lock();
             // LOOP_PROOF: mode=condition; reason=ISR completion loop is capped per pass and exits on empty CQ or MAX_ISR_COMPLETIONS_PER_PASS.;
-            while count < MAX_ISR_COMPLETIONS_PER_PASS {
+            while count < MAX_ISR_COMPLETIONS_PER_PASS && !deferred.is_full() {
                 let Some(cqe) = qp.poll_completion() else {
                     break;
                 };
@@ -626,14 +682,35 @@ impl PerCoreNvmeQueue {
                     self.stats.errors.fetch_add(1, Ordering::Relaxed);
                 }
 
-                // Wakerを起こす
                 let cid = cqe.command_id();
-                let mut pending = self.pending_requests.lock();
-                pending.complete(cid, cqe);
+                if !deferred.push(DeferredCompletion { cid, cqe }) {
+                    break;
+                }
 
                 count += 1;
             }
         }
+        count
+    }
+
+    pub fn process_deferred_completions(&self) -> usize {
+        let mut count = 0usize;
+
+        loop {
+            let completion = {
+                let mut deferred = self.deferred_completions.lock();
+                deferred.pop()
+            };
+
+            let Some(DeferredCompletion { cid, cqe }) = completion else {
+                break;
+            };
+
+            let mut pending = self.pending_requests.lock();
+            let _ = pending.complete(cid, cqe);
+            count += 1;
+        }
+
         count
     }
 }
@@ -646,6 +723,12 @@ pub fn irq_handler() {
             queue.process_completions();
         }
     }
+}
+
+pub fn process_local_deferred_completions() -> usize {
+    get_local_queue()
+        .map(|queue| queue.process_deferred_completions())
+        .unwrap_or(0)
 }
 
 /// Get current APIC ID (Local CPU ID)

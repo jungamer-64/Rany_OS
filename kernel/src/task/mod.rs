@@ -45,7 +45,7 @@ pub mod timer;
 mod waker;
 
 // NUMA-aware work-stealing helpers and topology primitives.
-pub mod work_stealing_advanced;
+pub(crate) mod work_stealing_advanced;
 
 #[allow(unused_imports)]
 pub use context::{
@@ -78,6 +78,7 @@ pub use preemption::{
     PreemptionController,
     PreemptionStats,
     YieldNow,
+    aggregate_preemption_stats,
     check_and_clear_yield_request,
     handle_timer_tick,
     notify_task_started,
@@ -90,14 +91,6 @@ pub use preemption::{
     yield_point,
 };
 pub use timer::{current_tick, sleep_ms};
-
-// Phase 4: Advanced Work-Stealing re-exports
-#[allow(unused_imports)]
-pub use work_stealing_advanced::{
-    CoreAffinity, GlobalScheduler, PerCoreWorker, Priority as WsPriority, SchedulerStats,
-    StealableTask, TaskId as WsTaskId, TaskState as WsTaskState, WorkStealingDeque, WorkerStats,
-    init as init_work_stealing, schedule as ws_schedule, spawn as ws_spawn,
-};
 
 // Timeout/block_on utilities re-exported from timeout.rs
 #[allow(unused_imports)]

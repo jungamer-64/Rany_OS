@@ -169,9 +169,9 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
 macro_rules! println {
     () => (print!("\n"));
     ($($arg:tt)*) => ({
-        if cfg!(any(feature = "std", target_os = "linux")) {
+        if cfg!(feature = "std") {
             // In std-based tests, use std::println
-            #[cfg(any(feature = "std", target_os = "linux"))]
+            #[cfg(feature = "std")]
             std::println!($($arg)*);
         } else {
              // In no_std, use kernel logger
@@ -184,9 +184,9 @@ macro_rules! println {
 macro_rules! eprintln {
     () => (eprint!("\n"));
     ($($arg:tt)*) => ({
-        if cfg!(any(feature = "std", target_os = "linux")) {
+        if cfg!(feature = "std") {
             // In std-based tests, use std::eprintln
-            #[cfg(any(feature = "std", target_os = "linux"))]
+            #[cfg(feature = "std")]
             std::eprintln!($($arg)*);
         } else {
              // In no_std, use kernel logger w/ error level or just print
@@ -1648,6 +1648,10 @@ pub mod task {
             &CTRL
         }
 
+        pub fn aggregate_preemption_stats() -> PreemptionStats {
+            preemption_controller().stats()
+        }
+
         /// No-op stubs used by code paths that call into preemption during tests.
         pub fn voluntary_yield() {}
         pub fn yield_point() {}
@@ -1672,6 +1676,9 @@ pub mod task {
         }
         pub fn cpu_count() -> usize {
             1
+        }
+        pub fn cpu_index() -> usize {
+            0
         }
         pub fn try_current_cpu_id() -> Option<u32> {
             Some(0)
@@ -1733,6 +1740,16 @@ pub mod task {
     pub mod interrupts {
         pub fn get_timer_ticks() -> u64 {
             0
+        }
+
+        pub fn runtime_local_timers_enabled() -> bool {
+            false
+        }
+
+        pub fn ensure_runtime_local_timer_started() {}
+
+        pub fn transition_to_runtime_local_timers() -> bool {
+            false
         }
     }
 

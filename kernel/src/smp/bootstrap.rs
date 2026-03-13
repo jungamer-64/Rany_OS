@@ -829,6 +829,8 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
     );
     ap_serial_mark(b'H');
 
+    crate::task::work_stealing_advanced::configure_current_cpu_locality();
+
     ap_enter_executor(cpu_id as usize);
 }
 

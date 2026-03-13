@@ -375,7 +375,7 @@ pub(crate) fn spawn_demo_runtime_tasks() {
             debug!(target: "task3", "Iteration {}", i);
             task::sleep_ms(200).await;
 
-            let stats = task::preemption_controller().stats();
+            let stats = task::aggregate_preemption_stats();
             debug!(target: "task3", "Preemption Stats - Forced: {}, Voluntary: {}",
                 stats.forced_preemptions,
                 stats.voluntary_yields

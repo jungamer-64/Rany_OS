@@ -17,15 +17,15 @@ const MIN_TIME_SLICE: u64 = 1;
 /// 最大タイムスライス
 const MAX_TIME_SLICE: u64 = 100;
 
-/// グローバルプリエンプションペンディングフラグ（ISRから軽量にアクセス）
-/// 設計書 4.2: ISR内では重い処理を行わない
-static PREEMPTION_PENDING: AtomicBool = AtomicBool::new(false);
+const MAX_CPUS: usize = crate::per_cpu::MAX_CPUS;
 
 /// プリエンプションコントローラ
 /// 協調的マルチタスクとプリエンプティブの「ハイブリッド」アプローチを実装
 pub struct PreemptionController {
     /// 現在のタイムスライス設定
     time_slice: AtomicU64,
+    /// このCPUのローカルタイマーティック
+    local_tick: AtomicU64,
     /// 現在のタスクが開始したティック
     task_start_tick: AtomicU64,
     /// プリエンプションが必要かどうか
@@ -42,6 +42,7 @@ impl PreemptionController {
     pub const fn new() -> Self {
         Self {
             time_slice: AtomicU64::new(DEFAULT_TIME_SLICE),
+            local_tick: AtomicU64::new(0),
             task_start_tick: AtomicU64::new(0),
             preemption_pending: AtomicBool::new(false),
             enabled: AtomicBool::new(true),
@@ -59,6 +60,21 @@ impl PreemptionController {
     /// プリエンプションを有効/無効化
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
+    }
+
+    /// ローカルタイマーティックを進め、タイムスライスを評価する
+    pub fn note_timer_interrupt(&self) -> u64 {
+        let current_tick = self
+            .local_tick
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        self.check_time_slice(current_tick);
+        current_tick
+    }
+
+    /// 現在のローカルティック値を取得
+    pub fn local_tick(&self) -> u64 {
+        self.local_tick.load(Ordering::Acquire)
     }
 
     /// タスク実行開始を記録
@@ -123,21 +139,79 @@ pub struct PreemptionStats {
     pub enabled: bool,
 }
 
-/// グローバルプリエンプションコントローラ
-static PREEMPTION_CONTROLLER: PreemptionController = PreemptionController::new();
+static PREEMPTION_CONTROLLERS: [PreemptionController; MAX_CPUS] =
+    [const { PreemptionController::new() }; MAX_CPUS];
+static PREEMPTION_PENDING: [AtomicBool; MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_CPUS]
+};
+static YIELD_REQUESTED: [AtomicBool; MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_CPUS]
+};
+static DOMAIN_QUOTA_EXCEEDED: [AtomicBool; MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; MAX_CPUS]
+};
+static CURRENT_TASK_DOMAIN: [AtomicU64; MAX_CPUS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; MAX_CPUS]
+};
 
-/// プリエンプション要求フラグ（割り込みハンドラ外で処理するため）
-static YIELD_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[inline]
+fn cpu_slot() -> usize {
+    crate::per_cpu::try_current_cpu_id()
+        .unwrap_or_else(|| crate::smp::cpu_index())
+        .min(MAX_CPUS.saturating_sub(1))
+}
+
+#[inline]
+fn controller_for_cpu(cpu_id: usize) -> &'static PreemptionController {
+    &PREEMPTION_CONTROLLERS[cpu_id.min(MAX_CPUS.saturating_sub(1))]
+}
+
+#[inline]
+fn current_controller() -> &'static PreemptionController {
+    controller_for_cpu(cpu_slot())
+}
 
 /// プリエンプションコントローラを取得
 pub fn preemption_controller() -> &'static PreemptionController {
-    &PREEMPTION_CONTROLLER
+    current_controller()
+}
+
+pub fn aggregate_preemption_stats() -> PreemptionStats {
+    let cpu_count = (crate::smp::cpu_count() as usize).clamp(1, MAX_CPUS);
+    let mut forced_preemptions = 0u64;
+    let mut voluntary_yields = 0u64;
+    let mut current_time_slice = DEFAULT_TIME_SLICE;
+    let mut enabled = true;
+
+    for cpu_id in 0..cpu_count {
+        let stats = controller_for_cpu(cpu_id).stats();
+        forced_preemptions = forced_preemptions.saturating_add(stats.forced_preemptions);
+        voluntary_yields = voluntary_yields.saturating_add(stats.voluntary_yields);
+        current_time_slice = stats.current_time_slice;
+        enabled &= stats.enabled;
+    }
+
+    PreemptionStats {
+        forced_preemptions,
+        voluntary_yields,
+        current_time_slice,
+        enabled,
+    }
 }
 
 /// タイマー割り込みハンドラから呼ばれる
 /// タスクの時間スライスをチェックし、必要に応じてプリエンプションをスケジュール
 pub fn handle_timer_tick(current_tick: u64) {
-    PREEMPTION_CONTROLLER.check_time_slice(current_tick);
+    let controller = current_controller();
+    if current_tick == 0 {
+        controller.note_timer_interrupt();
+    } else {
+        controller.check_time_slice(current_tick);
+    }
 }
 
 /// プリエンプションが必要かどうか（割り込みハンドラから呼ばれる）
@@ -148,60 +222,56 @@ pub fn should_preempt() -> bool {
             return false;
         }
     }
-    PREEMPTION_CONTROLLER.should_preempt()
+    current_controller().should_preempt()
 }
 
 /// Yield要求をセット（割り込みハンドラから呼ばれる）
 /// 割り込みハンドラ内では実際のyieldを行わず、フラグを立てるだけ
 pub fn request_yield() {
-    YIELD_REQUESTED.store(true, Ordering::Release);
+    YIELD_REQUESTED[cpu_slot()].store(true, Ordering::Release);
 }
 
 /// 時間スライスを減少（ISRから軽量に呼び出し可能）
 /// 設計書 4.2: ISR内では重い処理を行わない
 pub fn decrement_time_slice() {
-    // アトミックに時間スライスを減少
-    let slice = PREEMPTION_CONTROLLER.time_slice.load(Ordering::Relaxed);
-    if slice > 0 {
-        PREEMPTION_CONTROLLER
-            .time_slice
-            .fetch_sub(1, Ordering::Relaxed);
-    }
+    // Legacy no-op: タイムスライスは設定値ではなくCPUローカルtickで評価する。
 }
 
 /// プリエンプションペンディングフラグを設定（ISRから）
 /// 設計書 4.2: ISRはフラグを設定するのみ
 pub fn set_preemption_pending() {
-    PREEMPTION_PENDING.store(true, Ordering::Release);
+    PREEMPTION_PENDING[cpu_slot()].store(true, Ordering::Release);
 }
 
 /// プリエンプションペンディングかチェック
 pub fn is_preemption_pending() -> bool {
-    PREEMPTION_PENDING.load(Ordering::Acquire)
+    PREEMPTION_PENDING[cpu_slot()].load(Ordering::Acquire)
 }
 
 /// プリエンプションペンディングをクリア
 pub fn clear_preemption_pending() {
-    PREEMPTION_PENDING.store(false, Ordering::Release);
+    PREEMPTION_PENDING[cpu_slot()].store(false, Ordering::Release);
 }
 
 /// Yield要求をチェックしてクリア
 /// ExecutorのメインループやYieldポイントで呼ばれる
 pub fn check_and_clear_yield_request() -> bool {
-    YIELD_REQUESTED.swap(false, Ordering::AcqRel)
+    YIELD_REQUESTED[cpu_slot()].swap(false, Ordering::AcqRel)
 }
 
 /// タスク開始を通知（Executorから呼ばれる）
-pub fn notify_task_started(current_tick: u64) {
-    PREEMPTION_CONTROLLER.task_started(current_tick);
+pub fn notify_task_started(_current_tick: u64) {
+    let controller = current_controller();
+    controller.task_started(controller.local_tick());
 }
 
 /// Yieldポイント
 /// 設計書 4.4: ループのバックエッジや長い関数呼び出しの合間に自動的に挿入
 #[inline]
 pub fn yield_point() {
-    if PREEMPTION_CONTROLLER.should_preempt() {
-        PREEMPTION_CONTROLLER.clear_preemption();
+    let controller = current_controller();
+    if controller.should_preempt() {
+        controller.clear_preemption();
         // Executorに制御を返す
         // 実際にはWakerを通じてスケジュールし直す
         core::hint::spin_loop();
@@ -210,7 +280,7 @@ pub fn yield_point() {
 
 /// 自発的にyield
 pub fn voluntary_yield() {
-    PREEMPTION_CONTROLLER.record_voluntary_yield();
+    current_controller().record_voluntary_yield();
     // Poll::Pendingを返すことでExecutorに制御を返す
 }
 
@@ -218,20 +288,14 @@ pub fn voluntary_yield() {
 // Domain CPU Quota Enforcement - 設計書セキュリティ: ドメインごとのCPU制限
 // ============================================================================
 
-/// ドメインCPUクォータ超過フラグ
-static DOMAIN_QUOTA_EXCEEDED: AtomicBool = AtomicBool::new(false);
-
-/// 現在実行中のドメインID（Thread Local相当）
-static CURRENT_TASK_DOMAIN: AtomicU64 = AtomicU64::new(0);
-
 /// 現在のタスクドメインを設定
 pub fn set_current_task_domain(domain_id: u64) {
-    CURRENT_TASK_DOMAIN.store(domain_id, Ordering::Release);
+    CURRENT_TASK_DOMAIN[cpu_slot()].store(domain_id, Ordering::Release);
 }
 
 /// 現在のタスクドメインを取得
 pub fn get_current_task_domain() -> u64 {
-    CURRENT_TASK_DOMAIN.load(Ordering::Acquire)
+    CURRENT_TASK_DOMAIN[cpu_slot()].load(Ordering::Acquire)
 }
 
 /// タスク実行時間をドメインクォータに記録し、超過をチェック
@@ -243,7 +307,8 @@ pub fn get_current_task_domain() -> u64 {
 /// # Returns
 /// クォータ超過の場合 `true`（タスクをサスペンドすべき）
 pub fn check_domain_quota(elapsed_ns: u64) -> bool {
-    let domain_id = CURRENT_TASK_DOMAIN.load(Ordering::Acquire);
+    let cpu_id = cpu_slot();
+    let domain_id = CURRENT_TASK_DOMAIN[cpu_id].load(Ordering::Acquire);
     if domain_id == 0 {
         // カーネルドメインは無制限
         return false;
@@ -260,7 +325,7 @@ pub fn check_domain_quota(elapsed_ns: u64) -> bool {
     );
 
     if exceeded {
-        DOMAIN_QUOTA_EXCEEDED.store(true, Ordering::Release);
+        DOMAIN_QUOTA_EXCEEDED[cpu_id].store(true, Ordering::Release);
         log::info!(
             "[PREEMPT] Domain {} exceeded CPU quota, suspending\n",
             domain_id
@@ -272,20 +337,21 @@ pub fn check_domain_quota(elapsed_ns: u64) -> bool {
 
 /// ドメインクォータ超過フラグをチェック
 pub fn is_domain_quota_exceeded() -> bool {
-    DOMAIN_QUOTA_EXCEEDED.load(Ordering::Acquire)
+    DOMAIN_QUOTA_EXCEEDED[cpu_slot()].load(Ordering::Acquire)
 }
 
 /// ドメインクォータ超過フラグをクリア
 pub fn clear_domain_quota_exceeded() {
-    DOMAIN_QUOTA_EXCEEDED.store(false, Ordering::Release);
+    DOMAIN_QUOTA_EXCEEDED[cpu_slot()].store(false, Ordering::Release);
 }
 
 /// クォータ強制付きのYieldポイント
 /// タイムスライス超過またはドメインクォータ超過をチェック
 #[inline]
 pub fn yield_point_with_quota_check() {
-    if PREEMPTION_CONTROLLER.should_preempt() || is_domain_quota_exceeded() {
-        PREEMPTION_CONTROLLER.clear_preemption();
+    let controller = current_controller();
+    if controller.should_preempt() || is_domain_quota_exceeded() {
+        controller.clear_preemption();
         clear_domain_quota_exceeded();
         core::hint::spin_loop();
     }
@@ -324,7 +390,7 @@ impl Future for YieldNow {
             Poll::Ready(())
         } else {
             self.yielded = true;
-            PREEMPTION_CONTROLLER.record_voluntary_yield();
+            current_controller().record_voluntary_yield();
             cx.waker().wake_by_ref();
             Poll::Pending
         }

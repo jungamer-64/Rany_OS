@@ -18,9 +18,11 @@
 #![allow(dead_code)]
 
 use crate::interrupts;
+use crate::mm::types::NumaNodeId;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use boot_proto::NumaInfo;
 use core::cell::UnsafeCell;
 use core::ptr;
 use core::sync::atomic::{
@@ -34,7 +36,6 @@ use spin::{Mutex, Once};
 
 /// 最大コア数
 mod scheduler_impl;
-pub use scheduler_impl::*;
 const MAX_CORES: usize = 64;
 
 /// 最大NUMAノード数
@@ -77,44 +78,87 @@ pub struct NumaTopology {
 }
 
 impl NumaTopology {
+    fn topology_once() -> &'static spin::Once<NumaTopology> {
+        static TOPOLOGY: spin::Once<NumaTopology> = spin::Once::new();
+        &TOPOLOGY
+    }
+
     /// グローバルトポロジ情報を取得
     pub fn get() -> &'static NumaTopology {
-        static TOPOLOGY: spin::Once<NumaTopology> = spin::Once::new();
-        TOPOLOGY.call_once(|| NumaTopology::detect())
+        Self::topology_once().call_once(NumaTopology::detect)
     }
 
     /// トポロジを検出（ACPI SRATなどから）
     fn detect() -> Self {
-        // Note: 実際のACPI SRATパースは crate::io::acpi モジュールで実装
-        // 現在はシングルNUMAノードを想定したデフォルト値
-
-        // [Vec<u32>; 64] は Default を実装していないので手動で初期化
-        const EMPTY_VEC: Vec<u32> = Vec::new();
-
-        let mut topology = Self {
-            core_to_node: [0; MAX_CORES],
-            node_cores: [EMPTY_VEC; MAX_NUMA_NODES],
-            llc_siblings: [EMPTY_VEC; MAX_CORES],
-            num_nodes: 1,
-            num_cores: 1,
-        };
-
-        // CPUコア数を検出（仮実装）
+        let mut topology = Self::default();
         let core_count = core::cmp::min(crate::smp::cpu_count() as usize, MAX_CORES);
         topology.num_cores = core_count;
+        topology.num_nodes = 1;
 
-        // シングルNUMAノードとしてすべてのコアを登録
         for i in 0..core_count {
             topology.core_to_node[i] = 0;
             topology.node_cores[0].push(i as u32);
-
-            // HyperThreadingペアを推測（偶数/奇数ペア）
-            // 実際にはCPUID命令で検出すべき
-            let sibling = if i % 2 == 0 { i + 1 } else { i - 1 };
-            if sibling < core_count {
-                topology.llc_siblings[i].push(sibling as u32);
-            }
             topology.llc_siblings[i].push(i as u32);
+        }
+
+        topology
+    }
+
+    fn from_boot_info(numa_info: &NumaInfo) -> Self {
+        let node_count = (numa_info.node_count as usize).min(MAX_NUMA_NODES);
+        if node_count == 0 {
+            return Self::detect();
+        }
+
+        let core_count = core::cmp::min(crate::smp::cpu_count() as usize, MAX_CORES);
+        let mut topology = Self::default();
+        let mut assigned = [false; MAX_CORES];
+        topology.num_nodes = node_count.max(1);
+        topology.num_cores = core_count.max(1);
+
+        for node_idx in 0..node_count {
+            let node = &numa_info.nodes[node_idx];
+
+            for apic_id in 0..128u32 {
+                let present = if apic_id < 64 {
+                    (node.cpu_apic_mask_low & (1u64 << apic_id)) != 0
+                } else {
+                    (node.cpu_apic_mask_high & (1u64 << (apic_id - 64))) != 0
+                };
+                if !present {
+                    continue;
+                }
+
+                let Some(cpu_id) = crate::smp::cpu_for_apic_id(apic_id) else {
+                    continue;
+                };
+                if cpu_id >= core_count || cpu_id >= MAX_CORES || assigned[cpu_id] {
+                    continue;
+                }
+
+                topology.core_to_node[cpu_id] = node_idx as u8;
+                topology.node_cores[node_idx].push(cpu_id as u32);
+                topology.llc_siblings[cpu_id].push(cpu_id as u32);
+                assigned[cpu_id] = true;
+            }
+        }
+
+        if topology
+            .node_cores
+            .iter()
+            .take(node_count)
+            .all(|cores| cores.is_empty())
+        {
+            return Self::detect();
+        }
+
+        for cpu_id in 0..core_count {
+            if assigned[cpu_id] {
+                continue;
+            }
+            topology.core_to_node[cpu_id] = 0;
+            topology.node_cores[0].push(cpu_id as u32);
+            topology.llc_siblings[cpu_id].push(cpu_id as u32);
         }
 
         topology
@@ -165,6 +209,59 @@ impl NumaTopology {
     pub fn num_cores(&self) -> usize {
         self.num_cores
     }
+}
+
+pub fn configure_from_boot_info(numa_info: &NumaInfo) {
+    let topology =
+        NumaTopology::topology_once().call_once(|| NumaTopology::from_boot_info(numa_info));
+    crate::mm::numa::topology::update_numa_node_count(topology.num_nodes());
+    for cpu_id in 0..topology.num_cores().min(crate::per_cpu::MAX_CPUS) {
+        crate::mm::numa::topology::set_cpu_to_node(
+            cpu_id,
+            topology.get_numa_node(cpu_id as u32) as u8,
+        );
+    }
+}
+
+pub fn configure_current_cpu_locality() {
+    let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() else {
+        return;
+    };
+
+    let topology = NumaTopology::get();
+    let local_node = NumaNodeId::new(topology.get_numa_node(cpu_id as u32) as u8);
+    let mut sorted_nodes = [NumaNodeId::new(0); crate::mm::numa::topology::MAX_NUMA_NODES];
+    let mut count = 0usize;
+
+    sorted_nodes[count] = local_node;
+    count += 1;
+
+    for node_idx in 0..topology.num_nodes() {
+        let node = NumaNodeId::new(node_idx as u8);
+        if node == local_node {
+            continue;
+        }
+        if count >= sorted_nodes.len() {
+            break;
+        }
+        sorted_nodes[count] = node;
+        count += 1;
+    }
+
+    unsafe {
+        if let Some(hot) = crate::per_cpu::current_per_cpu_hot_mut() {
+            let cold = hot.cold_mut();
+            cold.setup_numa_zonelist(local_node, &sorted_nodes, count);
+            cold.pt_magazine.set_preferred_node(local_node.as_u8());
+        }
+
+        if let Some(legacy) = crate::per_cpu::current_per_cpu_mut() {
+            legacy.setup_numa_zonelist(local_node, &sorted_nodes, count);
+            legacy.pt_magazine.set_preferred_node(local_node.as_u8());
+        }
+    }
+
+    crate::mm::numa::topology::set_cpu_to_node(cpu_id, local_node.as_u8());
 }
 
 // node_coresのDefault実装が必要

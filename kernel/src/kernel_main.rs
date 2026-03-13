@@ -604,6 +604,9 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
         }
     }
 
+    crate::task::work_stealing_advanced::configure_from_boot_info(&context.boot_info.numa_info);
+    crate::task::work_stealing_advanced::configure_current_cpu_locality();
+
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
 
@@ -976,11 +979,15 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
             info!(target: "boot", "BOOT COMPLETE!");
         }
         RuntimeHandoffMilestone::StartExecutorRun => {
+            let apic_timer_runtime = crate::interrupts::transition_to_runtime_local_timers();
             crate::smp::release_runtime_workers();
             if crate::smp::cpu_count() > 1 {
                 crate::io::interrupt_manager::broadcast_ipi(
                     crate::interrupts::EXECUTOR_WAKE_VECTOR,
                 );
+            }
+            if apic_timer_runtime {
+                info!(target: "run", "Runtime handoff switched to per-core APIC timers");
             }
             info!(target: "run", "Starting per-core executor main loop");
         }

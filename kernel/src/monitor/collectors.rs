@@ -26,8 +26,7 @@ impl CpuCollector {
         // In a real implementation, this would read from performance counters
         // For now, estimate based on preemption activity
         let switches = {
-            let preempt = crate::task::preemption_controller();
-            let p = preempt.stats();
+            let p = crate::task::aggregate_preemption_stats();
             p.forced_preemptions + p.voluntary_yields
         };
 
@@ -163,14 +162,8 @@ impl TaskCollector {
 
     /// Collect task statistics
     pub fn collect(&self) -> super::TaskStats {
-        let context_switches = {
-            let preempt = crate::task::preemption_controller();
-            let p = preempt.stats();
-            p.forced_preemptions + p.voluntary_yields
-        };
-
-        let preempt = crate::task::preemption_controller();
-        let preempt_stats = preempt.stats();
+        let preempt_stats = crate::task::aggregate_preemption_stats();
+        let context_switches = preempt_stats.forced_preemptions + preempt_stats.voluntary_yields;
 
         super::TaskStats {
             total_created: 0,
@@ -183,8 +176,7 @@ impl TaskCollector {
 
     /// Calculate context switches per second
     pub fn switches_per_sec(&self, interval_ms: u64) -> u64 {
-        let preempt = crate::task::preemption_controller();
-        let p = preempt.stats();
+        let p = crate::task::aggregate_preemption_stats();
         let current = p.forced_preemptions + p.voluntary_yields;
         let last = self.last_switches.swap(current, Ordering::Relaxed);
 

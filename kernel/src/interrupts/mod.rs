@@ -564,6 +564,56 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 /// タイマー割り込みカウンタ
 pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
+static TIMER_EVENT_PENDING: [AtomicBool; crate::per_cpu::MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; crate::per_cpu::MAX_CPUS]
+};
+static RUNTIME_LOCAL_TIMERS_ENABLED: AtomicBool = AtomicBool::new(false);
+static LOCAL_RUNTIME_TIMER_ARMED: [AtomicBool; crate::per_cpu::MAX_CPUS] = {
+    const INIT: AtomicBool = AtomicBool::new(false);
+    [INIT; crate::per_cpu::MAX_CPUS]
+};
+
+#[inline]
+fn timer_cpu_index() -> usize {
+    crate::per_cpu::try_current_cpu_id()
+        .unwrap_or_else(|| crate::smp::cpu_index())
+        .min(crate::per_cpu::MAX_CPUS.saturating_sub(1))
+}
+
+#[inline]
+fn is_global_timekeeping_cpu(cpu_id: usize) -> bool {
+    cpu_id == 0
+}
+
+pub fn runtime_local_timers_enabled() -> bool {
+    RUNTIME_LOCAL_TIMERS_ENABLED.load(Ordering::Acquire)
+}
+
+pub fn ensure_runtime_local_timer_started() {
+    if !runtime_local_timers_enabled() || !crate::io::apic::is_apic_enabled() {
+        return;
+    }
+
+    let cpu_id = timer_cpu_index();
+    if LOCAL_RUNTIME_TIMER_ARMED[cpu_id]
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        crate::io::apic::start_apic_timer(1);
+    }
+}
+
+pub fn transition_to_runtime_local_timers() -> bool {
+    if !crate::io::apic::is_apic_enabled() {
+        return false;
+    }
+
+    RUNTIME_LOCAL_TIMERS_ENABLED.store(true, Ordering::Release);
+    ensure_runtime_local_timer_started();
+    mask_irq(0);
+    true
+}
 
 /// - Wakerを起床させるだけ
 // タイマー割り込みハンドラ
@@ -584,29 +634,42 @@ define_interrupt!(
             crate::io::log::early_print("[INT] timer interrupt handler entered\n");
         }
 
-        // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）
-        let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-        let tick_nanos = crate::time::timer_tick_nanos();
-        if tick_nanos != 0 {
-            crate::time::tick(tick_nanos);
-        }
-        crate::drivers::time::handle_timer_interrupt();
+        let cpu_id = timer_cpu_index();
+        let is_global_tick_cpu = is_global_timekeeping_cpu(cpu_id);
 
-        // 2. 軽量なフラグ設定のみ（重い処理は遅延）
+        // 1. 各CPUのローカルtimesliceだけを更新する。
+        crate::task::preemption::handle_timer_tick(0);
+
+        // 2. グローバル時間管理はBSPのみが進める。
+        let global_tick = if is_global_tick_cpu {
+            let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            let tick_nanos = crate::time::timer_tick_nanos();
+            if tick_nanos != 0 {
+                crate::time::tick(tick_nanos);
+            }
+            crate::drivers::time::handle_timer_interrupt();
+            tick
+        } else {
+            TIMER_TICKS.load(Ordering::Relaxed)
+        };
+
+        // 3. 軽量なフラグ設定のみ（重い処理は遅延）
         // タイマーイベントペンディングフラグを設定
-        TIMER_EVENT_PENDING.store(true, Ordering::Release);
-
-        // 3. プリエンプションカウンタを更新（軽量な操作のみ）
-        crate::task::preemption::decrement_time_slice();
+        TIMER_EVENT_PENDING[cpu_id].store(true, Ordering::Release);
 
         // 4. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
         // Timer-related async wakeups are bridged only from poll_timer_events()
         // so the ISR path remains limited to deferred event publication.
-        crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
+        if is_global_tick_cpu {
+            crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
+        }
 
         // IRQが届かない環境向けのcompletionフォールバック:
         // ISR内では重い処理を行わず、4tickごとに pending フラグのみ立てる。
-        if (tick & 0x3) == 0 && VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire) {
+        if is_global_tick_cpu
+            && (global_tick & 0x3) == 0
+            && VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
+        {
             VIRTIO_NET_IRQ_FALLBACK_PENDING.store(true, Ordering::Release);
         }
 
@@ -622,22 +685,17 @@ define_interrupt!(
     }
 );
 
-/// タイマーイベントペンディングフラグ
-static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-
 /// タイマーイベントをポーリング（非ISRコンテキストから呼び出し）
 ///
 /// 設計書 4.2: 重い処理は非ISRコンテキストで実行
 pub fn poll_timer_events() {
-    if TIMER_EVENT_PENDING.swap(false, Ordering::Acquire) {
+    let cpu_id = timer_cpu_index();
+    if !TIMER_EVENT_PENDING[cpu_id].swap(false, Ordering::Acquire) {
+        return;
+    }
+
+    if is_global_timekeeping_cpu(cpu_id) {
         let tick = TIMER_TICKS.load(Ordering::Relaxed);
-
-        // プリエンプションシステムにタイマーティックを通知
-        crate::task::preemption::handle_timer_tick(tick);
-
-        // TimeService wake delivery remains outside ISR context.
-        crate::task::timer::process_pending_timer_wakers();
 
         // Interrupt-Wakerブリッジの処理
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
@@ -669,11 +727,11 @@ pub fn poll_timer_events() {
             .unwrap_or(2000);
         let current_tsc = unsafe { core::arch::x86_64::_rdtsc() };
         crate::net::runtime::bridge::check_batch_timeout(current_tsc, tsc_freq_mhz);
+    }
 
-        // ペンディングのプリエンプションを処理
-        if crate::task::preemption::is_preemption_pending() {
-            crate::task::preemption::request_yield();
-        }
+    // ペンディングのプリエンプションを処理
+    if crate::task::preemption::is_preemption_pending() {
+        crate::task::preemption::request_yield();
     }
 }
 
