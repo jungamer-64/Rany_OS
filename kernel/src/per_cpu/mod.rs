@@ -454,7 +454,7 @@ pub struct PerCpuHot {
     /// Current task pointer (frequently accessed by scheduler)
     pub current_task_ptr: AtomicU64,
     /// Current task ID
-    pub current_task_id: u64,
+    pub current_task_id: AtomicU64,
     /// Link to cold data (never null after initialization)
     cold: Option<NonNull<PerCpuCold>>,
 }
@@ -475,7 +475,7 @@ impl PerCpuHot {
             preempt_disable_count: core::sync::atomic::AtomicU32::new(0),
             in_page_fault: core::sync::atomic::AtomicBool::new(false),
             current_task_ptr: AtomicU64::new(0),
-            current_task_id: 0,
+            current_task_id: AtomicU64::new(0),
             cold: None,
         }
     }
@@ -521,6 +521,43 @@ impl PerCpuHot {
     #[inline]
     pub fn cold_opt(&self) -> Option<&PerCpuCold> {
         self.cold.map(|ptr| unsafe { ptr.as_ref() })
+    }
+
+    #[inline]
+    pub fn current_task_ptr(&self) -> u64 {
+        self.current_task_ptr
+            .load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn current_task_id(&self) -> u64 {
+        self.current_task_id
+            .load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    #[inline]
+    pub fn set_current_task(&self, task_ptr: u64, task_id: u64) {
+        self.current_task_ptr
+            .store(task_ptr, core::sync::atomic::Ordering::Release);
+        self.current_task_id
+            .store(task_id, core::sync::atomic::Ordering::Release);
+    }
+
+    #[inline]
+    pub fn clear_current_task(&self) {
+        self.set_current_task(0, 0);
+    }
+
+    #[inline]
+    pub fn enter_page_fault(&self) -> bool {
+        self.in_page_fault
+            .swap(true, core::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[inline]
+    pub fn exit_page_fault(&self) {
+        self.in_page_fault
+            .store(false, core::sync::atomic::Ordering::SeqCst);
     }
 
     /// Check if in interrupt context
@@ -653,166 +690,6 @@ impl PerCpuCold {
         } else {
             None
         }
-    }
-}
-
-// ============================================================================
-// Legacy PerCpuData (kept for backward compatibility during migration)
-// ============================================================================
-
-/// Per-CPUデータ構造
-/// GsBaseからのオフセットでアクセス
-#[repr(C, align(64))]
-pub struct PerCpuData {
-    /// 自己参照ポインタ（検証用）
-    pub self_ptr: usize,
-    /// CPU ID
-    pub cpu_id: usize,
-    /// 現在実行中のタスクID
-    pub current_task_id: u64,
-    /// 現在実行中のタスクポインタ (Raw Pointer)
-    pub current_task_ptr: AtomicU64,
-    /// Per-CPUヒープ統計
-    pub alloc_count: u64,
-    pub dealloc_count: u64,
-    /// IOMMU Domain Cache (True Per-CPU)
-    pub iommu_domain_cache: PerCpuDomainCache,
-    /// IOMMU IOVA Magazines (per-controller cache)
-    pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
-    /// IOMMU Page Table Magazine (per-CPU cache for PageTablePool)
-    pub pt_magazine: PtMagazine,
-    /// Interrupt nesting depth (incremented on ISR entry, decremented on exit)
-    /// Used to detect if code is running in interrupt context.
-    pub interrupt_depth: core::sync::atomic::AtomicU32,
-    /// NUMA Zonelist: pre-sorted list of NUMA nodes by distance from local node
-    /// Cached at CPU initialization to avoid repeated distance lookups during allocation.
-    /// zonelist[0] is always the local node (closest), subsequent entries are sorted
-    /// by increasing distance. This enables O(1) fallback node selection.
-    pub numa_zonelist: [NumaNodeId; MAX_NUMA_NODES],
-    /// Number of valid entries in numa_zonelist
-    pub numa_zonelist_len: u8,
-    /// Local NUMA node ID for this CPU (same as zonelist[0] when initialized)
-    pub local_numa_node: NumaNodeId,
-    /// Remote Free Batch Buffer: batches cross-CPU free requests to reduce contention
-    pub remote_free_batch: RemoteFreeBatchBuffer,
-    /// Per-CPU RCU State (Phase 9)
-    pub rcu_state: crate::mm::sync::rcu::PerCpuRcuState,
-    /// Per-CPU Frame Cache (Lock-Free Memory Allocator Phase 1)
-    pub frame_cache: IrqPoisonLock<PerCpuFrameCache>,
-}
-
-impl PerCpuData {
-    /// 新しいPer-CPUデータを作成
-    pub const fn new(cpu_id: usize) -> Self {
-        Self {
-            self_ptr: 0,
-            cpu_id,
-            current_task_id: 0,
-            current_task_ptr: AtomicU64::new(0),
-            alloc_count: 0,
-            dealloc_count: 0,
-            iommu_domain_cache: PerCpuDomainCache::new(),
-            // const fn内で配列初期化: const { expr }パターンを使用
-            iova_magazines: [const { IovaMagazine::new() }; MAX_IOMMU_CONTROLLERS],
-            pt_magazine: PtMagazine::new(),
-            interrupt_depth: core::sync::atomic::AtomicU32::new(0),
-            // NUMA zonelist: initialized with default (node 0) until setup_numa_zonelist is called
-            numa_zonelist: [const { NumaNodeId::new(0) }; MAX_NUMA_NODES],
-            numa_zonelist_len: 1, // At least one node (node 0)
-            local_numa_node: NumaNodeId::new(0),
-            // Remote free batch buffer for cross-CPU memory reclamation
-            remote_free_batch: RemoteFreeBatchBuffer::new(),
-            rcu_state: crate::mm::sync::rcu::PerCpuRcuState::new(),
-            frame_cache: IrqPoisonLock::new(PerCpuFrameCache::new(cpu_id)),
-        }
-    }
-
-    /// 自己参照ポインタを設定
-    pub fn set_self_ptr(&mut self) {
-        self.self_ptr = self as *const _ as usize;
-    }
-
-    /// Initialize the NUMA zonelist for this CPU based on its local NUMA node.
-    ///
-    /// This should be called once during CPU initialization after NUMA topology
-    /// is known. The zonelist is sorted by distance from the local node,
-    /// enabling fast fallback allocation without runtime distance lookups.
-    ///
-    /// # Arguments
-    /// * `local_node` - The NUMA node ID where this CPU resides
-    /// * `sorted_nodes` - Pre-sorted array of NUMA nodes by distance from local_node
-    /// * `node_count` - Number of valid nodes in the sorted_nodes array
-    pub fn setup_numa_zonelist(
-        &mut self,
-        local_node: NumaNodeId,
-        sorted_nodes: &[NumaNodeId; MAX_NUMA_NODES],
-        node_count: usize,
-    ) {
-        self.local_numa_node = local_node;
-        self.numa_zonelist_len = (node_count as u8).min(MAX_NUMA_NODES as u8);
-
-        // Copy the pre-sorted zonelist
-        for i in 0..self.numa_zonelist_len as usize {
-            self.numa_zonelist[i] = sorted_nodes[i];
-        }
-    }
-
-    /// Get the local NUMA node for this CPU.
-    #[inline]
-    pub fn get_local_numa_node(&self) -> NumaNodeId {
-        self.local_numa_node
-    }
-
-    /// Get the NUMA zonelist iterator for fallback allocation.
-    ///
-    /// Returns an iterator over NUMA nodes sorted by distance from the local node.
-    /// This enables efficient fallback allocation without runtime distance lookups.
-    #[inline]
-    pub fn zonelist_iter(&self) -> impl Iterator<Item = NumaNodeId> + '_ {
-        self.numa_zonelist[..self.numa_zonelist_len as usize]
-            .iter()
-            .copied()
-    }
-
-    /// Get the nth preferred NUMA node from the zonelist.
-    ///
-    /// Returns `None` if index is out of bounds.
-    #[inline]
-    pub fn get_zonelist_node(&self, index: usize) -> Option<NumaNodeId> {
-        if index < self.numa_zonelist_len as usize {
-            Some(self.numa_zonelist[index])
-        } else {
-            None
-        }
-    }
-
-    /// Check if currently executing in interrupt context.
-    ///
-    /// Returns `true` if the current code is running inside an interrupt
-    /// handler (ISR), `false` otherwise.
-    #[inline]
-    pub fn in_interrupt(&self) -> bool {
-        self.interrupt_depth
-            .load(core::sync::atomic::Ordering::Relaxed)
-            > 0
-    }
-
-    /// Increment interrupt nesting depth.
-    ///
-    /// Must be called at the beginning of every interrupt handler.
-    #[inline]
-    pub fn enter_interrupt(&self) {
-        self.interrupt_depth
-            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Decrement interrupt nesting depth.
-    ///
-    /// Must be called at the end of every interrupt handler.
-    #[inline]
-    pub fn exit_interrupt(&self) {
-        self.interrupt_depth
-            .fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 

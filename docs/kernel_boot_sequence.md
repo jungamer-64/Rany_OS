@@ -58,7 +58,7 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 ## Phase 6: Runtime Handoff
 
 - 実装関数: `phase_runtime_handoff()`
-- per-core executor manager、I/O scheduler、symbol table、test framework、late integration retry、interrupt enable、runtime integration dispatch、stats 出力、executor 作成、runtime task spawn、`executor.run()` を行う。
+- `smp` runtime handoff、per-core executor manager、I/O scheduler、symbol table、test framework、late integration retry、interrupt enable、runtime integration dispatch、stats 出力、runtime worker release、runtime task spawn、`task::run_forever(cpu_id)` を行う。
 - `shell_mode` はこの時点で `graphics_console_ready` と cmdline から確定する。
 - 割り込み有効化後も、ネットワークの本格 bring-up は `network_bootstrap_task()` による非同期処理に委譲される。
 - 依存:

@@ -569,9 +569,9 @@ impl PerCoreExecutor {
         self.running_count.fetch_add(1, Ordering::Relaxed);
         task.set_state(ScheduledTaskState::Running);
         task.set_preferred_cpu(self.core_id as usize);
-        task.set_preferred_numa_node(Some(
-            super::work_stealing_advanced::NumaTopology::get().get_numa_node(self.core_id),
-        ));
+        task.set_preferred_numa_node(Some(crate::mm::numa::topology::node_for_cpu(
+            self.core_id as usize,
+        )));
         task.schedule_count.fetch_add(1, Ordering::Relaxed);
 
         let start_cycles = read_tsc();
@@ -651,9 +651,9 @@ impl PerCoreExecutor {
             .steal_matching(|task| task.can_run_on(self.core_id as usize))
         {
             task.set_preferred_cpu(self.core_id as usize);
-            task.set_preferred_numa_node(Some(
-                super::work_stealing_advanced::NumaTopology::get().get_numa_node(self.core_id),
-            ));
+            task.set_preferred_numa_node(Some(crate::mm::numa::topology::node_for_cpu(
+                self.core_id as usize,
+            )));
             self.local_queue.push(task);
             self.tasks_stolen.fetch_add(1, Ordering::Relaxed);
             victim.tasks_stolen_from.fetch_add(1, Ordering::Relaxed);
@@ -668,9 +668,9 @@ impl PerCoreExecutor {
             return false;
         }
 
-        let topology = super::work_stealing_advanced::NumaTopology::get();
-        for candidate in topology.steal_candidates_for(self.core_id) {
-            if self.try_steal_from_cpu(candidate as usize) {
+        for candidate in crate::mm::numa::topology::steal_candidates_for_cpu(self.core_id as usize)
+        {
+            if self.try_steal_from_cpu(candidate) {
                 return true;
             }
         }
@@ -812,8 +812,7 @@ impl ExecutorManager {
 
     pub fn spawn_task(&self, task: super::Task, priority: Priority) -> super::TaskId {
         let preferred_cpu = current_core_id().min(self.active_cpu_count().saturating_sub(1));
-        let preferred_numa_node =
-            super::work_stealing_advanced::NumaTopology::get().get_numa_node(preferred_cpu as u32);
+        let preferred_numa_node = crate::mm::numa::topology::node_for_cpu(preferred_cpu);
         self.spawn_task_with_policy(
             task,
             priority,
@@ -894,9 +893,7 @@ impl ExecutorManager {
         while let Some(task) = pending.pop_front() {
             let target_cpu = self.pick_target_cpu_for_task(&task);
             task.set_preferred_cpu(target_cpu);
-            task.set_preferred_numa_node(Some(
-                super::work_stealing_advanced::NumaTopology::get().get_numa_node(target_cpu as u32),
-            ));
+            task.set_preferred_numa_node(Some(crate::mm::numa::topology::node_for_cpu(target_cpu)));
             if let Some(executor) = self.get_executor(target_cpu as u32) {
                 if executor.enqueue_spawned_task(task) {
                     self.global_dequeued.fetch_add(1, Ordering::Relaxed);
@@ -931,9 +928,7 @@ impl ExecutorManager {
                 self.pick_target_cpu_for_task(&task)
             };
             task.set_preferred_cpu(target_cpu);
-            task.set_preferred_numa_node(Some(
-                super::work_stealing_advanced::NumaTopology::get().get_numa_node(target_cpu as u32),
-            ));
+            task.set_preferred_numa_node(Some(crate::mm::numa::topology::node_for_cpu(target_cpu)));
             let Some(target_executor) = self.get_executor(target_cpu as u32) else {
                 self.global_dropped.fetch_add(1, Ordering::Relaxed);
                 drained += 1;
@@ -962,7 +957,6 @@ impl ExecutorManager {
         let Ok(executors) = self.executors.lock() else {
             return 0;
         };
-        let topology = super::work_stealing_advanced::NumaTopology::get();
         let preferred_cpu = task
             .preferred_cpu()
             .min(self.active_cpu_count().saturating_sub(1));
@@ -974,7 +968,7 @@ impl ExecutorManager {
             .filter(|executor| task.can_run_on(executor.core_id as usize))
             .min_by_key(|executor| {
                 let cpu_id = executor.core_id as usize;
-                let node = topology.get_numa_node(cpu_id as u32);
+                let node = crate::mm::numa::topology::node_for_cpu(cpu_id);
                 let locality_rank = if cpu_id == preferred_cpu {
                     0usize
                 } else if preferred_node == Some(node) {
@@ -1162,8 +1156,7 @@ where
     } else {
         u64::MAX
     };
-    let preferred_numa_node =
-        super::work_stealing_advanced::NumaTopology::get().get_numa_node(target_cpu as u32);
+    let preferred_numa_node = crate::mm::numa::topology::node_for_cpu(target_cpu);
 
     EXECUTOR_MANAGER.spawn_task_with_policy(
         task,

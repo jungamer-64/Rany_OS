@@ -36,6 +36,7 @@ use crate::mm::phys::frame_allocator::alloc_frame;
 use crate::mm::reclaim::page_reclaim::{PageType as LruPageType, lru_add_page};
 use crate::mm::sync::rcu::rcu_read_lock;
 use crate::mm::types::FrameIndex;
+use crate::per_cpu::PerCpuHot;
 
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 mod integration;
@@ -317,13 +318,7 @@ pub fn handle_page_fault(error_code: u64, current_rsp: VirtAddr) -> FaultResult 
     let error = PageFaultErrorCode::from_bits(error_code);
 
     // 再帰フォルト検出（Per-CPU）
-    let recursive = unsafe {
-        if let Some(hot) = crate::per_cpu::current_per_cpu_hot_mut() {
-            hot.in_page_fault.swap(true, Ordering::SeqCst)
-        } else {
-            false
-        }
-    };
+    let recursive = crate::per_cpu::with_current_hot(PerCpuHot::enter_page_fault).unwrap_or(false);
 
     if recursive {
         // 再帰フォルト - 致命的エラー
@@ -333,11 +328,7 @@ pub fn handle_page_fault(error_code: u64, current_rsp: VirtAddr) -> FaultResult 
 
     let result = handle_fault_inner(fault_addr, error, current_rsp);
 
-    unsafe {
-        if let Some(hot) = crate::per_cpu::current_per_cpu_hot_mut() {
-            hot.in_page_fault.store(false, Ordering::SeqCst);
-        }
-    }
+    let _ = crate::per_cpu::with_current_hot(PerCpuHot::exit_page_fault);
 
     result
 }
@@ -507,11 +498,9 @@ fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
             // 現在のCPUのNUMAノードを取得
             if let Some(_cpu_id) = crate::per_cpu::try_current_cpu_id() {
                 // NUMAノードIDを取得 (Per-CPUデータから)
-                let node_id = if let Some(pc) = unsafe { crate::per_cpu::current_per_cpu() } {
-                    pc.get_local_numa_node().as_u8()
-                } else {
-                    0 // Per-CPU未初期化時はノード0と仮定
-                };
+                let node_id =
+                    crate::per_cpu::with_current_cold(|cold| cold.get_local_numa_node().as_u8())
+                        .unwrap_or(0);
 
                 let action = handle_numa_fault(&stats, node_id, crate::time::current_time_ns());
 

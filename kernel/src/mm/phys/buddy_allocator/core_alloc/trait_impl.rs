@@ -209,12 +209,13 @@ pub struct PerCpuFrameCacheStats {
 ///
 /// NOTE: Lock-Free Allocator Phase 1
 /// グローバルな `BUDDY_FRONT_LAYER` ロックを廃止し、
-/// `PerCpuData` 内の `frame_cache` (`IrqPoisonLock` protected) を使用する。
+/// `PerCpuCold` 内の `frame_cache` (`IrqPoisonLock` protected) を使用する。
 /// これにより、他のCPUとの競合を回避し、キャッシュヒット時のレイテンシを大幅に削減する。
 pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
     // 1. Per-CPUキャッシュからの割り当てを試行
-    // Note: get_per_cpu_data は &PerCpuData を返す
-    let per_cpu = unsafe { crate::per_cpu::get_per_cpu_data(cpu_id) };
+    let Some(per_cpu) = crate::per_cpu::cold_for_cpu(cpu_id) else {
+        return None;
+    };
 
     // Call scope to drop cache lock before potentially locking buddy
     {
@@ -256,14 +257,18 @@ pub fn buddy_alloc_frame_fast(cpu_id: usize) -> Option<PhysFrame<Size4KiB>> {
 }
 
 /// フロントレイヤーを初期化（CPU起動時）
-/// Note: PerCpuDataで初期化されるため、ここでは何もしないが互換性のため残す
+/// Note: PerCpuCold で初期化されるため、ここでは何もしないが互換性のため残す
 pub fn init_buddy_front_layer_for_cpu(_cpu_id: usize) {
     // No-op
 }
 
 /// フロントレイヤー経由で4KiBフレームを解放
 pub fn buddy_dealloc_frame_fast(cpu_id: usize, frame: PhysFrame<Size4KiB>) {
-    let per_cpu = unsafe { crate::per_cpu::get_per_cpu_data(cpu_id) };
+    let Some(per_cpu) = crate::per_cpu::cold_for_cpu(cpu_id) else {
+        let mut buddy = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
+        buddy.deallocate_4k_frame(frame);
+        return;
+    };
     let mut cache = per_cpu
         .frame_cache
         .lock()
@@ -297,12 +302,13 @@ pub fn buddy_front_layer_stats() -> BuddyFrontLayerStats {
 
     for i in 0..crate::per_cpu::MAX_CPUS {
         if crate::per_cpu::is_cpu_online(i) {
-            let per_cpu = unsafe { crate::per_cpu::get_per_cpu_data(i) };
-            let cache = per_cpu.frame_cache.lock().expect("lock poisoned");
-            // ヒット数等を合算
-            total_hits += cache.cache_hits as usize;
-            total_misses += cache.cache_misses as usize;
-            initialized_cpus += 1;
+            if let Some(per_cpu) = crate::per_cpu::cold_for_cpu(i) {
+                let cache = per_cpu.frame_cache.lock().expect("lock poisoned");
+                // ヒット数等を合算
+                total_hits += cache.cache_hits as usize;
+                total_misses += cache.cache_misses as usize;
+                initialized_cpus += 1;
+            }
         }
     }
 

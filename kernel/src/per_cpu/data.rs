@@ -33,13 +33,6 @@ fn is_valid_hot_gs_base(gs_base: u64) -> bool {
     true
 }
 
-/// 静的に確保されたPer-CPUデータ配列 (Legacy - for backward compatibility)
-/// 各CPUに対応するデータが格納される
-pub(crate) static mut PER_CPU_DATA: [PerCpuData; MAX_CPUS] = {
-    const INIT: PerCpuData = PerCpuData::new(0);
-    [INIT; MAX_CPUS]
-};
-
 /// Per-CPUデータが初期化済みかどうか
 pub(crate) static INITIALIZED: spin::Once<()> = spin::Once::new();
 
@@ -73,9 +66,6 @@ fn ensure_host_test_bootstrap() {
         PER_CPU_COLD[0] = PerCpuCold::new(0);
         PER_CPU_HOT[0].set_self_ptr();
         PER_CPU_HOT[0].set_cold(core::ptr::addr_of_mut!(PER_CPU_COLD[0]));
-
-        PER_CPU_DATA[0] = PerCpuData::new(0);
-        PER_CPU_DATA[0].set_self_ptr();
 
         GSBASE_FASTPATH.store(false, Ordering::Release);
         BSP_GSBASE_SET.store(true, Ordering::Release);
@@ -154,26 +144,86 @@ pub unsafe fn write_gsbase_any(value: u64) {
     }
 }
 
-/// Get reference to Per-CPU data for a specific CPU ID
-///
-/// # Safety
-/// Caller must ensure cpu_id is valid (< MAX_CPUS)
-pub unsafe fn get_per_cpu_data(cpu_id: usize) -> &'static PerCpuData {
-    &PER_CPU_DATA[cpu_id]
-}
-
-/// Get mutable reference to Per-CPU data for a specific CPU ID
-///
-/// # Safety
-/// - Caller must ensure cpu_id is valid (< MAX_CPUS)
-/// - Caller must ensure exclusive access (no concurrent mutable access)
-pub unsafe fn get_per_cpu_data_mut(cpu_id: usize) -> &'static mut PerCpuData {
-    &mut PER_CPU_DATA[cpu_id]
-}
-
 // ============================================================================
 // Hot/Cold Per-CPU Accessors
 // ============================================================================
+
+#[inline]
+fn active_cpu_limit() -> usize {
+    *ACTIVE_CPUS.lock().expect("lock poisoned")
+}
+
+#[inline]
+fn validate_hot_ref(cpu_id: usize) -> Option<&'static PerCpuHot> {
+    if cpu_id >= MAX_CPUS || cpu_id >= active_cpu_limit() {
+        return None;
+    }
+
+    let ptr = unsafe { core::ptr::addr_of!(PER_CPU_HOT[cpu_id]) };
+    let hot = unsafe { &*ptr };
+    (hot.self_ptr == ptr as usize).then_some(hot)
+}
+
+#[inline]
+fn validate_hot_mut(cpu_id: usize) -> Option<&'static mut PerCpuHot> {
+    if cpu_id >= MAX_CPUS || cpu_id >= active_cpu_limit() {
+        return None;
+    }
+
+    let ptr = unsafe { core::ptr::addr_of_mut!(PER_CPU_HOT[cpu_id]) };
+    let hot = unsafe { &mut *ptr };
+    (hot.self_ptr == ptr as usize).then_some(hot)
+}
+
+#[inline]
+fn validate_cold_ref(cpu_id: usize) -> Option<&'static PerCpuCold> {
+    validate_hot_ref(cpu_id).and_then(PerCpuHot::cold_opt)
+}
+
+#[inline]
+fn validate_cold_mut(cpu_id: usize) -> Option<&'static mut PerCpuCold> {
+    let hot = validate_hot_mut(cpu_id)?;
+    unsafe { Some(hot.cold_mut()) }
+}
+
+#[inline]
+pub fn hot_for_cpu(cpu_id: usize) -> Option<&'static PerCpuHot> {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
+    validate_hot_ref(cpu_id)
+}
+
+#[inline]
+pub fn cold_for_cpu(cpu_id: usize) -> Option<&'static PerCpuCold> {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
+    validate_cold_ref(cpu_id)
+}
+
+#[inline]
+pub fn with_cpu_hot<R>(cpu_id: usize, f: impl FnOnce(&PerCpuHot) -> R) -> Option<R> {
+    hot_for_cpu(cpu_id).map(f)
+}
+
+#[inline]
+pub fn with_cpu_cold<R>(cpu_id: usize, f: impl FnOnce(&PerCpuCold) -> R) -> Option<R> {
+    cold_for_cpu(cpu_id).map(f)
+}
+
+#[inline]
+pub(crate) fn with_cpu_hot_mut<R>(cpu_id: usize, f: impl FnOnce(&mut PerCpuHot) -> R) -> Option<R> {
+    validate_hot_mut(cpu_id).map(f)
+}
+
+#[inline]
+pub(crate) fn with_cpu_cold_mut<R>(
+    cpu_id: usize,
+    f: impl FnOnce(&mut PerCpuCold) -> R,
+) -> Option<R> {
+    validate_cold_mut(cpu_id).map(f)
+}
 
 /// Get reference to hot per-CPU data for a specific CPU ID
 ///
@@ -230,22 +280,45 @@ pub unsafe fn current_per_cpu_hot() -> Option<&'static PerCpuHot> {
     Some(hot)
 }
 
-/// Get the current CPU's hot data (mutable) via GSBase
-///
-/// # Safety
-/// Caller must ensure exclusive access
 #[inline]
-pub unsafe fn current_per_cpu_hot_mut() -> Option<&'static mut PerCpuHot> {
-    let gs_base = read_gsbase_any();
-    if !is_valid_hot_gs_base(gs_base) {
-        return None;
-    }
-    let hot = &mut *(gs_base as *mut PerCpuHot);
-    // Validate self_ptr to ensure GSBase points to valid PerCpuHot
-    if hot.self_ptr != gs_base as usize {
-        return None;
-    }
-    Some(hot)
+pub fn current_hot() -> Option<&'static PerCpuHot> {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
+    unsafe { current_per_cpu_hot() }
+}
+
+#[inline]
+pub fn current_cold() -> Option<&'static PerCpuCold> {
+    current_hot().and_then(PerCpuHot::cold_opt)
+}
+
+#[inline]
+pub fn with_current_hot<R>(f: impl FnOnce(&PerCpuHot) -> R) -> Option<R> {
+    current_hot().map(f)
+}
+
+#[inline]
+pub fn with_current_cold<R>(f: impl FnOnce(&PerCpuCold) -> R) -> Option<R> {
+    current_cold().map(f)
+}
+
+#[inline]
+pub fn with_current_hot_mut<R>(f: impl FnOnce(&mut PerCpuHot) -> R) -> Option<R> {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
+    let cpu_id = try_current_cpu_id()?;
+    with_cpu_hot_mut(cpu_id, f)
+}
+
+#[inline]
+pub fn with_current_cold_mut<R>(f: impl FnOnce(&mut PerCpuCold) -> R) -> Option<R> {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
+    let cpu_id = try_current_cpu_id()?;
+    with_cpu_cold_mut(cpu_id, f)
 }
 
 /// Check if a CPU is online
@@ -645,9 +718,6 @@ pub unsafe fn init_bsp_per_cpu(tls_template: Option<&TlsInfo>) {
             PER_CPU_HOT[0].set_self_ptr();
             PER_CPU_HOT[0].set_cold(&mut PER_CPU_COLD[0] as *mut PerCpuCold);
 
-            PER_CPU_DATA[0] = PerCpuData::new(0);
-            PER_CPU_DATA[0].set_self_ptr();
-
             let bsp_ptr = &PER_CPU_HOT[0] as *const _ as u64;
             if fsgsbase_supported {
                 write_gs_base(bsp_ptr);
@@ -678,9 +748,6 @@ pub fn finalize_cpu_topology(num_cpus: usize) {
             PER_CPU_COLD[i] = PerCpuCold::new(i);
             PER_CPU_HOT[i].set_self_ptr();
             PER_CPU_HOT[i].set_cold(&mut PER_CPU_COLD[i] as *mut PerCpuCold);
-
-            PER_CPU_DATA[i] = PerCpuData::new(i);
-            PER_CPU_DATA[i].set_self_ptr();
             allocate_tls_for_cpu(i);
         }
         i += 1;
@@ -728,10 +795,6 @@ pub unsafe fn setup_current_cpu(cpu_id: usize) {
             PER_CPU_COLD[cpu_id] = PerCpuCold::new(cpu_id);
             PER_CPU_HOT[cpu_id].set_self_ptr();
             PER_CPU_HOT[cpu_id].set_cold(&mut PER_CPU_COLD[cpu_id] as *mut PerCpuCold);
-
-            // Legacy: also init PerCpuData for backward compatibility
-            PER_CPU_DATA[cpu_id] = PerCpuData::new(cpu_id);
-            PER_CPU_DATA[cpu_id].set_self_ptr();
         }
     }
 
@@ -834,82 +897,6 @@ pub fn try_current_cpu_id() -> Option<usize> {
     Some(hot.cpu_id)
 }
 
-/// 現在のCPUの Legacy Per-CPUデータへの参照を取得
-///
-/// GSBase は PerCpuHot を指すため、cpu_id 経由で PER_CPU_DATA を引く
-///
-/// # Safety
-/// init_per_cpu() が呼ばれている必要がある
-#[inline]
-pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
-    // Get cpu_id from Hot (GSBase -> PerCpuHot)
-    let hot = current_per_cpu_hot()?;
-    let cpu = hot.cpu_id;
-    if cpu >= MAX_CPUS {
-        return None;
-    }
-
-    // Access legacy PER_CPU_DATA via cpu_id
-    let ptr = core::ptr::addr_of!(PER_CPU_DATA[cpu]);
-    let pc = &*ptr;
-
-    // Validate legacy self_ptr as well
-    if pc.self_ptr != ptr as usize {
-        return None;
-    }
-
-    Some(pc)
-}
-
-/// 現在のCPUの Legacy Per-CPUデータへの可変参照を取得
-///
-/// GSBase は PerCpuHot を指すため、cpu_id 経由で PER_CPU_DATA を引く
-///
-/// # Safety
-/// - init_per_cpu() が呼ばれている必要がある
-/// - 同時に複数の可変参照を取得してはならない
-#[inline]
-pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
-    // Get cpu_id from Hot (GSBase -> PerCpuHot)
-    let hot = current_per_cpu_hot()?;
-    let cpu = hot.cpu_id;
-    if cpu >= MAX_CPUS {
-        return None;
-    }
-
-    // Access legacy PER_CPU_DATA via cpu_id
-    let ptr = core::ptr::addr_of_mut!(PER_CPU_DATA[cpu]);
-    let pc = &mut *ptr;
-
-    // Validate legacy self_ptr as well
-    if pc.self_ptr != ptr as usize {
-        return None;
-    }
-
-    Some(pc)
-}
-
-/// 特定のCPUのPer-CPUデータへの参照を取得
-///
-/// # Safety
-/// cpu_idは有効な範囲内である必要がある
-pub unsafe fn get_per_cpu(cpu_id: usize) -> Option<&'static PerCpuData> {
-    #[cfg(all(test, target_os = "linux"))]
-    ensure_host_test_bootstrap();
-
-    if cpu_id >= MAX_CPUS {
-        return None;
-    }
-
-    let active = *ACTIVE_CPUS.lock().expect("lock poisoned");
-    if cpu_id >= active {
-        return None;
-    }
-
-    // SAFETY: cpu_idは有効範囲内
-    unsafe { Some(&PER_CPU_DATA[cpu_id]) }
-}
-
 /// アクティブなCPU数を取得
 pub fn active_cpu_count() -> usize {
     #[cfg(all(test, target_os = "linux"))]
@@ -931,12 +918,7 @@ pub fn active_cpu_count() -> usize {
 /// - `false` if running in normal context or Per-CPU is not initialized
 #[inline]
 pub fn in_interrupt_context() -> bool {
-    // Use PerCpuHot directly (Hot/Cold optimization)
-    unsafe {
-        current_per_cpu_hot()
-            .map(|hot| hot.in_interrupt())
-            .unwrap_or(false)
-    }
+    current_hot().map(PerCpuHot::in_interrupt).unwrap_or(false)
 }
 
 /// Enter interrupt context (call at the start of every ISR).
@@ -947,12 +929,7 @@ pub fn in_interrupt_context() -> bool {
 /// Must only be called from actual interrupt handler entry points.
 #[inline]
 pub fn enter_interrupt() {
-    // Use PerCpuHot directly (Hot/Cold optimization)
-    unsafe {
-        if let Some(hot) = current_per_cpu_hot() {
-            hot.enter_interrupt();
-        }
-    }
+    let _ = with_current_hot(|hot| hot.enter_interrupt());
 }
 
 /// Exit interrupt context (call at the end of every ISR).
@@ -963,12 +940,7 @@ pub fn enter_interrupt() {
 /// Must only be called from actual interrupt handler exit points.
 #[inline]
 pub fn exit_interrupt() {
-    // Use PerCpuHot directly (Hot/Cold optimization)
-    unsafe {
-        if let Some(hot) = current_per_cpu_hot() {
-            hot.exit_interrupt();
-        }
-    }
+    let _ = with_current_hot(|hot| hot.exit_interrupt());
 }
 
 #[cfg(test)]

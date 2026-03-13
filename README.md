@@ -192,7 +192,7 @@ src/
 │   ├── exchange_heap.rs # ドメイン間共有ヒープ (Exchange Heap)
 │   └── numa.rs        # NUMAトポロジ検出と最適化
 ├── net/               # smoltcp統合ネットワークスタック
-├── scheduler/         # Fuel-based Executor, ワークスティーリング
+├── task/              # Canonical per-core executor と task runtime
 ├── security/          # MPKドメイン遷移, Spectre緩和策, 署名検証
 └── main.rs            # カーネルエントリポイント
 

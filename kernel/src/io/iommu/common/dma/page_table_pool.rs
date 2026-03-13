@@ -73,7 +73,7 @@
 //!    ```rust
 //!    pub fn acquire_fast(&self, cpu_id: usize) -> Option<PooledPt> {
 //!        // No lock needed - per-CPU data accessed only by owning CPU
-//!        let magazine = &mut current_per_cpu().pt_magazine;
+//!        let magazine = crate::per_cpu::with_current_cold_mut(|cold| &mut cold.pt_magazine)?;
 //!        if magazine.count > 0 {
 //!            magazine.count -= 1;
 //!            return magazine.slots[magazine.count].take();
@@ -98,7 +98,7 @@
 //! 4. **Phase 4: Magazine Drain on Overflow**
 //!    ```rust
 //!    pub fn release_fast(&self, pt: PooledPt) -> bool {
-//!        let magazine = &mut current_per_cpu().pt_magazine;
+//!        let magazine = crate::per_cpu::with_current_cold_mut(|cold| &mut cold.pt_magazine)?;
 //!        if magazine.count < magazine.slots.len() {
 //!            magazine.slots[magazine.count] = Some(pt);
 //!            magazine.count += 1;
@@ -544,9 +544,8 @@ impl PageTablePool {
     /// Try to acquire from per-CPU magazine (lock-free)
     #[inline]
     fn try_acquire_from_magazine(&self) -> Option<PooledPt> {
-        // SAFETY: Per-CPU data is accessed only by the owning CPU
-        let pc = unsafe { crate::per_cpu::current_per_cpu_mut() }?;
-        let entry = pc.pt_magazine.pop()?;
+        let entry =
+            crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.pop()).flatten()?;
 
         if !entry.is_valid() {
             return None;
@@ -569,34 +568,31 @@ impl PageTablePool {
     /// Try to release to per-CPU magazine (lock-free)
     #[inline]
     fn try_release_to_magazine(&self, pt: &PooledPt) -> bool {
-        // SAFETY: Per-CPU data is accessed only by the owning CPU
-        let Some(pc) = (unsafe { crate::per_cpu::current_per_cpu_mut() }) else {
-            return false;
-        };
-
         let entry = crate::per_cpu::PtMagEntry {
             phys: pt.phys,
             virt: pt.ptr.as_ptr() as usize,
             node: pt.node as u8,
         };
 
-        pc.pt_magazine.push(entry)
+        crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.push(entry)).unwrap_or(false)
     }
 
     /// Refill per-CPU magazine from depot (locked)
     ///
     /// Transfers up to half capacity from depot to magazine.
     fn refill_magazine_from_depot(&self, node_hint: Option<usize>) {
-        let Some(pc) = (unsafe { crate::per_cpu::current_per_cpu_mut() }) else {
+        let Some((node, available)) = crate::per_cpu::with_current_cold_mut(|cold| {
+            (
+                node_hint.unwrap_or(cold.pt_magazine.preferred_node() as usize),
+                cold.pt_magazine.available(),
+            )
+        }) else {
             return;
         };
 
-        let node = node_hint
-            .unwrap_or(pc.pt_magazine.preferred_node() as usize)
-            .min(self.pools.len().saturating_sub(1));
+        let node = node.min(self.pools.len().saturating_sub(1));
 
         let mut pool = self.pools[node].lock();
-        let available = pc.pt_magazine.available();
         let transfer_count = available
             .min(pool.len())
             .min(crate::per_cpu::PT_MAG_CAPACITY / 2);
@@ -608,7 +604,9 @@ impl PageTablePool {
                     virt: pt.ptr.as_ptr() as usize,
                     node: pt.node as u8,
                 };
-                if !pc.pt_magazine.push(entry) {
+                if !crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.push(entry))
+                    .unwrap_or(false)
+                {
                     // Magazine unexpectedly full - put it back
                     pool.push(pt);
                     break;
@@ -625,11 +623,11 @@ impl PageTablePool {
     ///
     /// Transfers half of magazine entries to depot.
     fn drain_magazine_to_depot(&self, preferred_node: usize) {
-        let Some(pc) = (unsafe { crate::per_cpu::current_per_cpu_mut() }) else {
+        let Some(drain_count) =
+            crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.len() / 2)
+        else {
             return;
         };
-
-        let drain_count = pc.pt_magazine.len() / 2;
         if drain_count == 0 {
             return;
         }
@@ -638,7 +636,12 @@ impl PageTablePool {
         let mut pool = self.pools[node].lock();
 
         for _ in 0..drain_count {
-            if let Some(entry) = pc.pt_magazine.pop() {
+            let Some(entry) =
+                crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.pop()).flatten()
+            else {
+                continue;
+            };
+            {
                 if entry.is_valid() && pool.len() < self.max_per_node {
                     // Reconstruct PooledPt
                     let ptr = unsafe { NonNull::new_unchecked(entry.virt as *mut SlPte) };

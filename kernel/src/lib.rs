@@ -971,6 +971,8 @@ pub mod mm {
 #[cfg(not(feature = "qemu-test-export"))]
 pub mod per_cpu {
     use core::array;
+    use core::ptr::NonNull;
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
     #[derive(Clone, Copy, Default)]
     pub struct DomainCacheEntry {
@@ -1098,24 +1100,144 @@ pub mod per_cpu {
             self.len
         }
 
+        pub fn set_preferred_node(&mut self, node: u8) {
+            self.preferred_node = node;
+        }
+
         pub fn preferred_node(&self) -> u8 {
             self.preferred_node
         }
     }
 
-    pub struct PerCpuData {
+    #[repr(C, align(64))]
+    pub struct PerCpuHot {
+        pub self_ptr: usize,
+        pub cpu_id: usize,
+        pub interrupt_depth: AtomicU32,
+        pub preempt_disable_count: AtomicU32,
+        pub in_page_fault: AtomicBool,
+        pub current_task_ptr: AtomicU64,
+        pub current_task_id: AtomicU64,
+        cold: Option<NonNull<PerCpuCold>>,
+    }
+
+    impl PerCpuHot {
+        pub fn new(cpu_id: usize) -> Self {
+            Self {
+                self_ptr: 0,
+                cpu_id,
+                interrupt_depth: AtomicU32::new(0),
+                preempt_disable_count: AtomicU32::new(0),
+                in_page_fault: AtomicBool::new(false),
+                current_task_ptr: AtomicU64::new(0),
+                current_task_id: AtomicU64::new(0),
+                cold: None,
+            }
+        }
+
+        pub fn set_cold(&mut self, cold_ptr: *mut PerCpuCold) {
+            self.cold = NonNull::new(cold_ptr);
+        }
+
+        pub fn cold(&self) -> &PerCpuCold {
+            self.cold_opt().expect("PerCpuHot.cold not initialized")
+        }
+
+        pub fn cold_opt(&self) -> Option<&PerCpuCold> {
+            self.cold.map(|ptr| unsafe { ptr.as_ref() })
+        }
+
+        pub fn current_task_ptr(&self) -> u64 {
+            self.current_task_ptr.load(Ordering::Acquire)
+        }
+
+        pub fn current_task_id(&self) -> u64 {
+            self.current_task_id.load(Ordering::Acquire)
+        }
+
+        pub fn set_current_task(&self, task_ptr: u64, task_id: u64) {
+            self.current_task_ptr.store(task_ptr, Ordering::Release);
+            self.current_task_id.store(task_id, Ordering::Release);
+        }
+
+        pub fn clear_current_task(&self) {
+            self.set_current_task(0, 0);
+        }
+
+        pub fn enter_page_fault(&self) -> bool {
+            self.in_page_fault.swap(true, Ordering::SeqCst)
+        }
+
+        pub fn exit_page_fault(&self) {
+            self.in_page_fault.store(false, Ordering::SeqCst);
+        }
+
+        pub fn in_interrupt(&self) -> bool {
+            self.interrupt_depth.load(Ordering::Relaxed) > 0
+        }
+
+        pub fn preempt_disable(&self) {
+            self.preempt_disable_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        pub fn preempt_enable(&self) {
+            let _ = self.preempt_disable_count.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    pub struct PerCpuRcuState {
+        pub read_depth: AtomicU32,
+    }
+
+    impl PerCpuRcuState {
+        pub const fn new() -> Self {
+            Self {
+                read_depth: AtomicU32::new(0),
+            }
+        }
+    }
+
+    pub struct PerCpuCold {
         pub iommu_domain_cache: PerCpuDomainCache,
         pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
         pub pt_magazine: PtMagazine,
+        pub numa_zonelist:
+            [crate::mm::types::NumaNodeId; crate::mm::numa::topology::MAX_NUMA_NODES],
+        pub numa_zonelist_len: u8,
+        pub local_numa_node: crate::mm::types::NumaNodeId,
+        pub rcu_state: PerCpuRcuState,
     }
 
-    impl PerCpuData {
+    impl PerCpuCold {
         pub fn new() -> Self {
             Self {
                 iommu_domain_cache: PerCpuDomainCache::new(),
                 iova_magazines: array::from_fn(|_| IovaMagazine::new()),
                 pt_magazine: PtMagazine::new(),
+                numa_zonelist: [crate::mm::types::NumaNodeId::new(0);
+                    crate::mm::numa::topology::MAX_NUMA_NODES],
+                numa_zonelist_len: 1,
+                local_numa_node: crate::mm::types::NumaNodeId::new(0),
+                rcu_state: PerCpuRcuState::new(),
             }
+        }
+
+        pub fn setup_numa_zonelist(
+            &mut self,
+            local_node: crate::mm::types::NumaNodeId,
+            sorted_nodes: &[crate::mm::types::NumaNodeId; crate::mm::numa::topology::MAX_NUMA_NODES],
+            node_count: usize,
+        ) {
+            self.local_numa_node = local_node;
+            self.numa_zonelist_len = (node_count as u8)
+                .min(crate::mm::numa::topology::MAX_NUMA_NODES as u8);
+            for i in 0..self.numa_zonelist_len as usize {
+                self.numa_zonelist[i] = sorted_nodes[i];
+            }
+        }
+
+        pub fn get_local_numa_node(&self) -> crate::mm::types::NumaNodeId {
+            self.local_numa_node
         }
     }
 
@@ -1130,33 +1252,74 @@ pub mod per_cpu {
     pub const MAX_CPUS: usize = 8;
 
     use alloc::boxed::Box;
-    use core::sync::atomic::{AtomicBool, Ordering};
 
     static PER_CPU_INIT: AtomicBool = AtomicBool::new(false);
-    static mut PER_CPU_PTR: *mut PerCpuData = core::ptr::null_mut();
+    static mut PER_CPU_HOT_PTR: *mut PerCpuHot = core::ptr::null_mut();
+    static mut PER_CPU_COLD_PTR: *mut PerCpuCold = core::ptr::null_mut();
 
-    pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
+    fn ensure_test_per_cpu() {
         unsafe {
             if !PER_CPU_INIT.load(Ordering::SeqCst) {
-                let boxed = Box::new(PerCpuData::new());
-                let ptr = Box::into_raw(boxed);
-                PER_CPU_PTR = ptr;
+                let mut hot = Box::new(PerCpuHot::new(0));
+                let cold = Box::new(PerCpuCold::new());
+                let cold_ptr = Box::into_raw(cold);
+                hot.set_cold(cold_ptr);
+                hot.self_ptr = hot.as_ref() as *const _ as usize;
+                PER_CPU_HOT_PTR = Box::into_raw(hot);
+                PER_CPU_COLD_PTR = cold_ptr;
                 PER_CPU_INIT.store(true, Ordering::SeqCst);
             }
-            (PER_CPU_PTR as *mut PerCpuData).as_mut()
         }
     }
 
-    pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
-        unsafe {
-            if !PER_CPU_INIT.load(Ordering::SeqCst) {
-                let boxed = Box::new(PerCpuData::new());
-                let ptr = Box::into_raw(boxed);
-                PER_CPU_PTR = ptr;
-                PER_CPU_INIT.store(true, Ordering::SeqCst);
-            }
-            (PER_CPU_PTR as *mut PerCpuData).as_ref()
+    pub fn hot_for_cpu(cpu_id: usize) -> Option<&'static PerCpuHot> {
+        if cpu_id >= MAX_CPUS {
+            return None;
         }
+        ensure_test_per_cpu();
+        unsafe { PER_CPU_HOT_PTR.as_ref() }
+    }
+
+    pub fn cold_for_cpu(cpu_id: usize) -> Option<&'static PerCpuCold> {
+        if cpu_id >= MAX_CPUS {
+            return None;
+        }
+        ensure_test_per_cpu();
+        unsafe { PER_CPU_COLD_PTR.as_ref() }
+    }
+
+    pub fn with_cpu_hot<R>(cpu_id: usize, f: impl FnOnce(&PerCpuHot) -> R) -> Option<R> {
+        hot_for_cpu(cpu_id).map(f)
+    }
+
+    pub fn with_cpu_cold<R>(cpu_id: usize, f: impl FnOnce(&PerCpuCold) -> R) -> Option<R> {
+        cold_for_cpu(cpu_id).map(f)
+    }
+
+    pub fn current_hot() -> Option<&'static PerCpuHot> {
+        hot_for_cpu(0)
+    }
+
+    pub fn current_cold() -> Option<&'static PerCpuCold> {
+        cold_for_cpu(0)
+    }
+
+    pub fn with_current_hot<R>(f: impl FnOnce(&PerCpuHot) -> R) -> Option<R> {
+        with_cpu_hot(0, f)
+    }
+
+    pub fn with_current_cold<R>(f: impl FnOnce(&PerCpuCold) -> R) -> Option<R> {
+        with_cpu_cold(0, f)
+    }
+
+    pub fn with_current_hot_mut<R>(f: impl FnOnce(&mut PerCpuHot) -> R) -> Option<R> {
+        ensure_test_per_cpu();
+        unsafe { PER_CPU_HOT_PTR.as_mut().map(f) }
+    }
+
+    pub fn with_current_cold_mut<R>(f: impl FnOnce(&mut PerCpuCold) -> R) -> Option<R> {
+        ensure_test_per_cpu();
+        unsafe { PER_CPU_COLD_PTR.as_mut().map(f) }
     }
 }
 
@@ -1392,11 +1555,6 @@ pub mod task {
     }
 
     // Convenience shim for tests/benches removed — use `crate::task::current_tick()` directly.
-
-    pub mod scheduler {
-        /// Yield the current task (test stub - no-op)
-        pub fn yield_current(_cpu_id: usize) {}
-    }
 
     pub mod per_core_executor {
         pub fn spawn<F>(_future: F)
@@ -1697,30 +1855,6 @@ pub mod task {
         pub fn register_cpu_apic_mapping(_cpu_id: usize, _apic_id: u32) {}
         pub fn reset_cpu_routing_for_tests() {}
         pub fn reset_runtime_workers_for_tests() {}
-    }
-
-    // Minimal work_stealing_advanced shim used by NUMA helpers in tests
-    pub mod work_stealing_advanced {
-        pub struct NumaTopology;
-        impl NumaTopology {
-            pub fn get() -> &'static Self {
-                static T: NumaTopology = NumaTopology;
-                &T
-            }
-
-            pub fn num_nodes(&self) -> usize {
-                1
-            }
-
-            pub fn get_cores_in_node(&self, _node: usize) -> &'static [u32] {
-                static CORES: [u32; 1] = [0];
-                &CORES
-            }
-
-            pub fn get_numa_node(&self, _cpu: u32) -> usize {
-                0
-            }
-        }
     }
 
     // Minimal memory helpers for tests

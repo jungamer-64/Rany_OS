@@ -113,6 +113,173 @@ impl LvtFlags {
     }
 }
 
+pub struct LocklessLocalApic {
+    base_address: u64,
+}
+
+impl LocklessLocalApic {
+    const APIC_BASE_MSR: u32 = 0x1B;
+    const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
+    const ICR_LEVEL_ASSERT: u32 = 1 << 14;
+    const ICR_TRIGGER_LEVEL: u32 = 1 << 15;
+    const ICR_DEST_ALL_EXCLUDING_SELF: u32 = 0b11 << 18;
+    const DELIVERY_STARTUP: u32 = 0b110 << 8;
+
+    pub const fn new(base_address: u64) -> Self {
+        Self { base_address }
+    }
+
+    #[inline]
+    fn reg(&self, reg: LapicRegister) -> hal::MmioReg<u32> {
+        hal::MmioReg::new(self.base_address as usize, reg as usize)
+    }
+
+    #[inline]
+    pub fn read_reg(&self, reg: LapicRegister) -> u32 {
+        self.reg(reg).read()
+    }
+
+    #[inline]
+    pub fn write_reg(&self, reg: LapicRegister, value: u32) {
+        self.reg(reg).write(value);
+    }
+
+    #[inline]
+    unsafe fn read_msr(msr: u32) -> u64 {
+        let low: u32;
+        let high: u32;
+        unsafe {
+            core::arch::asm!(
+                "rdmsr",
+                in("ecx") msr,
+                out("eax") low,
+                out("edx") high,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+        ((high as u64) << 32) | low as u64
+    }
+
+    #[inline]
+    unsafe fn write_msr(msr: u32, value: u64) {
+        let low = value as u32;
+        let high = (value >> 32) as u32;
+        unsafe {
+            core::arch::asm!(
+                "wrmsr",
+                in("ecx") msr,
+                in("eax") low,
+                in("edx") high,
+                options(nomem, nostack, preserves_flags)
+            );
+        }
+    }
+
+    fn wait_for_delivery(&self, target_apic_id: u32, label: &str) -> bool {
+        if !spin_until(
+            || (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) == 0,
+            APIC_IPI_DELIVERY_WAIT_SPINS,
+        ) {
+            log::warn!(
+                "[APIC] {} delivery timed out for target {} after {} spins",
+                label,
+                target_apic_id,
+                APIC_IPI_DELIVERY_WAIT_SPINS
+            );
+            return false;
+        }
+        true
+    }
+
+    pub fn id(&self) -> u32 {
+        (self.read_reg(LapicRegister::Id) >> 24) & 0xFF
+    }
+
+    #[inline]
+    pub fn send_eoi(&self) {
+        self.write_reg(LapicRegister::Eoi, 0);
+    }
+
+    #[inline]
+    pub fn set_task_priority(&self, priority: u8) {
+        self.write_reg(LapicRegister::Tpr, priority as u32);
+    }
+
+    pub fn enable(&self) {
+        let spurious = self.read_reg(LapicRegister::Sivr);
+        self.write_reg(LapicRegister::Sivr, spurious | 0x100);
+    }
+
+    pub fn init_current_cpu(&self) {
+        unsafe {
+            let apic_base = Self::read_msr(Self::APIC_BASE_MSR);
+            if (apic_base & Self::APIC_GLOBAL_ENABLE) == 0 {
+                Self::write_msr(Self::APIC_BASE_MSR, apic_base | Self::APIC_GLOBAL_ENABLE);
+            }
+        }
+
+        self.write_reg(LapicRegister::Sivr, 0xFF | 0x100);
+        self.write_reg(LapicRegister::Tpr, 0);
+        self.write_reg(LapicRegister::LvtTimer, LvtFlags::MASKED.bits());
+        self.write_reg(LapicRegister::LvtThermal, LvtFlags::MASKED.bits());
+        self.write_reg(LapicRegister::LvtPmc, LvtFlags::MASKED.bits());
+        self.write_reg(LapicRegister::LvtLint0, LvtFlags::MASKED.bits());
+        self.write_reg(LapicRegister::LvtLint1, LvtFlags::MASKED.bits());
+        self.write_reg(LapicRegister::LvtError, LvtFlags::MASKED.bits());
+        self.write_reg(LapicRegister::Esr, 0);
+        self.write_reg(LapicRegister::Esr, 0);
+        self.send_eoi();
+    }
+
+    pub fn send_init(&self, target_apic_id: u32) {
+        self.write_reg(LapicRegister::IcrHigh, target_apic_id << 24);
+        self.write_reg(
+            LapicRegister::IcrLow,
+            LvtFlags::DELIVERY_INIT.bits()
+                | Self::ICR_LEVEL_ASSERT
+                | Self::ICR_TRIGGER_LEVEL,
+        );
+        if !self.wait_for_delivery(target_apic_id, "init-assert") {
+            return;
+        }
+
+        self.write_reg(
+            LapicRegister::IcrLow,
+            LvtFlags::DELIVERY_INIT.bits() | Self::ICR_TRIGGER_LEVEL,
+        );
+        let _ = self.wait_for_delivery(target_apic_id, "init-deassert");
+    }
+
+    pub fn send_sipi(&self, target_apic_id: u32, vector: u8) {
+        self.write_reg(LapicRegister::IcrHigh, target_apic_id << 24);
+        self.write_reg(
+            LapicRegister::IcrLow,
+            Self::DELIVERY_STARTUP | (vector as u32),
+        );
+        let _ = self.wait_for_delivery(target_apic_id, "sipi");
+    }
+
+    pub fn send_ipi(&self, target_apic_id: u32, vector: u8) {
+        self.write_reg(LapicRegister::IcrHigh, target_apic_id << 24);
+        self.write_reg(
+            LapicRegister::IcrLow,
+            LvtFlags::DELIVERY_FIXED.with_vector(vector),
+        );
+        let _ = self.wait_for_delivery(target_apic_id, "ipi");
+    }
+
+    pub fn broadcast_ipi_excluding_self(&self, vector: u8) {
+        self.write_reg(LapicRegister::IcrHigh, 0);
+        self.write_reg(
+            LapicRegister::IcrLow,
+            (vector as u32)
+                | Self::ICR_DEST_ALL_EXCLUDING_SELF
+                | LvtFlags::DELIVERY_FIXED.bits(),
+        );
+        let _ = self.wait_for_delivery(u32::MAX, "broadcast");
+    }
+}
+
 // ============================================================================
 // Interrupt Trigger and Polarity
 // ============================================================================

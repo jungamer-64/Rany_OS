@@ -365,34 +365,18 @@ impl TaskControlBlock {
 /// # Safety
 /// tcb は有効な TaskControlBlock へのポインタである必要がある
 pub unsafe fn set_current_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
-    if cpu_id < crate::per_cpu::MAX_CPUS {
-        let per_cpu = crate::per_cpu::get_per_cpu_data_mut(cpu_id);
-        per_cpu
-            .current_task_ptr
-            .store(tcb as u64, Ordering::Release);
-
-        // Legacy support: update ID if needed
-        if !tcb.is_null() {
-            per_cpu.current_task_id = (*tcb).id.0;
-        } else {
-            per_cpu.current_task_id = 0;
-        }
-    }
+    let task_id = if tcb.is_null() {
+        0
+    } else {
+        unsafe { (*tcb).id.0 }
+    };
+    let _ = crate::per_cpu::with_cpu_hot(cpu_id, |hot| hot.set_current_task(tcb as u64, task_id));
 }
 
 /// 現在のCPUで実行中のタスクを取得
 pub fn get_current_task(cpu_id: usize) -> Option<*mut TaskControlBlock> {
-    if cpu_id < crate::per_cpu::MAX_CPUS {
-        let per_cpu = unsafe { crate::per_cpu::get_per_cpu_data(cpu_id) };
-        let ptr = per_cpu.current_task_ptr.load(Ordering::Acquire);
-        if ptr == 0 {
-            None
-        } else {
-            Some(ptr as *mut TaskControlBlock)
-        }
-    } else {
-        None
-    }
+    crate::per_cpu::with_cpu_hot(cpu_id, |hot| hot.current_task_ptr())
+        .and_then(|ptr| (ptr != 0).then_some(ptr as *mut TaskControlBlock))
 }
 
 /// コンテキストスイッチ統計

@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use ap_trampoline::{
     ApBootFlags, ApTrampolineMailbox, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE,
 };
+use apic_driver::LocklessLocalApic;
 use boot_proto::ExoBootInfo;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 
@@ -124,251 +125,10 @@ impl ApBootInfo {
     }
 }
 
-/// LAPIC registers (MMIO)
-pub struct LocalApic {
-    base_address: u64,
-}
-
-impl LocalApic {
-    /// IA32_APIC_BASE MSR
-    const APIC_BASE_MSR: u32 = 0x1B;
-    /// IA32_APIC_BASE[11] = global enable
-    const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
-    /// LAPIC ID register
-    const ID: u32 = 0x20;
-    /// LAPIC version
-    const VERSION: u32 = 0x30;
-    /// End of Interrupt
-    const EOI: u32 = 0xB0;
-    /// Spurious Interrupt Vector
-    const SPURIOUS: u32 = 0xF0;
-    /// Task Priority Register
-    const TPR: u32 = 0x80;
-    /// Interrupt Command Register (low)
-    const ICR_LOW: u32 = 0x300;
-    /// Interrupt Command Register (high)
-    const ICR_HIGH: u32 = 0x310;
-    /// Timer register
-    const TIMER_LVT: u32 = 0x320;
-    /// Thermal sensor LVT
-    const THERMAL_LVT: u32 = 0x330;
-    /// Performance monitoring counter LVT
-    const PMC_LVT: u32 = 0x340;
-    /// LINT0
-    const LINT0_LVT: u32 = 0x350;
-    /// LINT1
-    const LINT1_LVT: u32 = 0x360;
-    /// Error LVT
-    const ERROR_LVT: u32 = 0x370;
-    /// Timer initial count
-    const TIMER_INIT: u32 = 0x380;
-    /// Timer current count
-    const TIMER_CURRENT: u32 = 0x390;
-    /// Timer divide config
-    const TIMER_DIVIDE: u32 = 0x3E0;
-    /// Error status register
-    const ESR: u32 = 0x280;
-
-    /// Common LVT mask bit
-    const LVT_MASKED: u32 = 1 << 16;
-
-    /// ICR delivery modes
-    const DELIVERY_INIT: u32 = 5 << 8;
-    const DELIVERY_STARTUP: u32 = 6 << 8;
-    const LEVEL_ASSERT: u32 = 1 << 14;
-    const LEVEL_DEASSERT: u32 = 0;
-    const TRIGGER_EDGE: u32 = 0;
-    const TRIGGER_LEVEL: u32 = 1 << 15;
-
-    /// Create new LAPIC instance
-    pub fn new(base_address: u64) -> Self {
-        LocalApic { base_address }
-    }
-
-    /// Read LAPIC register
-    #[inline]
-    pub fn read(&self, reg: u32) -> u32 {
-        let addr = (self.base_address + reg as u64) as usize;
-        crate::io::mmio::mmio_read_u32(addr)
-    }
-
-    /// Write LAPIC register
-    #[inline]
-    pub fn write(&self, reg: u32, value: u32) {
-        let addr = (self.base_address + reg as u64) as usize;
-        crate::io::mmio::mmio_write_u32(addr, value);
-    }
-
-    #[inline]
-    unsafe fn read_msr(msr: u32) -> u64 {
-        let low: u32;
-        let high: u32;
-        core::arch::asm!(
-            "rdmsr",
-            in("ecx") msr,
-            out("eax") low,
-            out("edx") high,
-            options(nomem, nostack, preserves_flags)
-        );
-        ((high as u64) << 32) | low as u64
-    }
-
-    #[inline]
-    unsafe fn write_msr(msr: u32, value: u64) {
-        let low = value as u32;
-        let high = (value >> 32) as u32;
-        core::arch::asm!(
-            "wrmsr",
-            in("ecx") msr,
-            in("eax") low,
-            in("edx") high,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-
-    /// Get LAPIC ID
-    pub fn id(&self) -> u32 {
-        self.read(Self::ID) >> 24
-    }
-
-    /// Send End of Interrupt
-    pub fn eoi(&self) {
-        self.write(Self::EOI, 0);
-    }
-
-    #[inline]
-    pub fn set_task_priority(&self, priority: u8) {
-        self.write(Self::TPR, priority as u32);
-    }
-
-    /// Enable LAPIC
-    pub fn enable(&self) {
-        let spurious = self.read(Self::SPURIOUS);
-        self.write(Self::SPURIOUS, spurious | 0x100);
-    }
-
-    /// Minimal per-CPU LAPIC initialization for AP bring-up.
-    pub fn init_current_cpu(&self) {
-        unsafe {
-            let apic_base = Self::read_msr(Self::APIC_BASE_MSR);
-            if (apic_base & Self::APIC_GLOBAL_ENABLE) == 0 {
-                Self::write_msr(Self::APIC_BASE_MSR, apic_base | Self::APIC_GLOBAL_ENABLE);
-            }
-        }
-
-        // Mirror BSP LAPIC safety defaults so APs do not inherit firmware or
-        // reset-time local interrupt delivery state on timer/LINT/error sources.
-        self.write(Self::SPURIOUS, 0xFF | 0x100);
-        self.write(Self::TPR, 0);
-        self.write(Self::TIMER_LVT, Self::LVT_MASKED);
-        self.write(Self::THERMAL_LVT, Self::LVT_MASKED);
-        self.write(Self::PMC_LVT, Self::LVT_MASKED);
-        self.write(Self::LINT0_LVT, Self::LVT_MASKED);
-        self.write(Self::LINT1_LVT, Self::LVT_MASKED);
-        self.write(Self::ERROR_LVT, Self::LVT_MASKED);
-        self.write(Self::ESR, 0);
-        self.write(Self::ESR, 0);
-        self.eoi();
-    }
-
-    /// Send INIT IPI to target AP
-    pub fn send_init(&self, target_apic_id: u32) {
-        crate::io::log::early_print("[SMP] send_init: target=");
-        crate::io::log::early_print_dec(target_apic_id as u64);
-        crate::io::log::early_print("\n");
-
-        // Set destination
-        self.write(Self::ICR_HIGH, target_apic_id << 24);
-
-        // Send INIT assert
-        self.write(
-            Self::ICR_LOW,
-            Self::DELIVERY_INIT | Self::LEVEL_ASSERT | Self::TRIGGER_LEVEL,
-        );
-
-        // Wait for delivery
-        unsafe {
-            if !self.wait_for_delivery("init-assert", target_apic_id) {
-                return;
-            }
-        }
-
-        // Send INIT deassert
-        self.write(
-            Self::ICR_LOW,
-            Self::DELIVERY_INIT | Self::LEVEL_DEASSERT | Self::TRIGGER_LEVEL,
-        );
-
-        unsafe {
-            let _ = self.wait_for_delivery("init-deassert", target_apic_id);
-        }
-    }
-
-    /// Send SIPI (Startup IPI) to target AP
-    pub fn send_sipi(&self, target_apic_id: u32, vector: u8) {
-        crate::io::log::early_print("[SMP] send_sipi: target=");
-        crate::io::log::early_print_dec(target_apic_id as u64);
-        crate::io::log::early_print(" vector=");
-        crate::io::log::early_print_hex(vector as u64);
-        crate::io::log::early_print("\n");
-
-        // Set destination
-        self.write(Self::ICR_HIGH, target_apic_id << 24);
-
-        // Send SIPI with vector (address = vector * 0x1000)
-        self.write(Self::ICR_LOW, Self::DELIVERY_STARTUP | (vector as u32));
-
-        unsafe {
-            let _ = self.wait_for_delivery("sipi", target_apic_id);
-        }
-    }
-
-    /// Wait for IPI delivery
-    unsafe fn wait_for_delivery(&self, phase: &str, target_apic_id: u32) -> bool {
-        const MAX_SPINS: usize = 1_000_000;
-        // Bit 12 = Delivery Status (0 = idle, 1 = pending)
-        // LOOP_PROOF: mode=condition; reason=Delivery wait loop exits as soon as LAPIC delivery-status pending bit clears or the bounded diagnostic spin limit is reached.;
-        let mut spins = 0usize;
-        while (self.read(Self::ICR_LOW) & (1 << 12)) != 0 {
-            if spins >= MAX_SPINS {
-                crate::io::log::early_print("[SMP] APIC delivery timeout phase=");
-                crate::io::log::early_print(phase);
-                crate::io::log::early_print(" target=");
-                crate::io::log::early_print_dec(target_apic_id as u64);
-                crate::io::log::early_print(" icr_low=");
-                crate::io::log::early_print_hex(self.read(Self::ICR_LOW) as u64);
-                crate::io::log::early_print("\n");
-                return false;
-            }
-            core::hint::spin_loop();
-            spins += 1;
-        }
-        true
-    }
-
-    /// Send IPI to specific CPU
-    pub fn send_ipi(&self, target_apic_id: u32, vector: u8) {
-        self.write(Self::ICR_HIGH, target_apic_id << 24);
-        self.write(Self::ICR_LOW, vector as u32);
-        unsafe {
-            let _ = self.wait_for_delivery("ipi", target_apic_id);
-        }
-    }
-
-    /// Broadcast IPI (excluding self)
-    pub fn broadcast_ipi(&self, vector: u8) {
-        // All excluding self
-        self.write(Self::ICR_LOW, (vector as u32) | (3 << 18));
-        unsafe {
-            let _ = self.wait_for_delivery("broadcast", u32::MAX);
-        }
-    }
-}
-
 /// AP Bootstrap manager
 pub struct ApBootstrap {
     /// LAPIC instance
-    lapic: LocalApic,
+    lapic: LocklessLocalApic,
     /// Boot info for each AP
     ap_info: Vec<ApBootInfo>,
     /// Long-lived runtime stacks for AP workers after bootstrap handoff
@@ -415,7 +175,7 @@ impl ApBootstrap {
         }
 
         Ok(ApBootstrap {
-            lapic: LocalApic::new(lapic_base),
+            lapic: LocklessLocalApic::new(lapic_base),
             ap_info,
             runtime_stacks,
             trampoline_base: boot_info.ap_boot.trampoline_addr,
@@ -756,7 +516,7 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
     ap_serial_mark(b'D');
 
     let local_apic =
-        LocalApic::new(crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000));
+        LocklessLocalApic::new(crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000));
     local_apic.init_current_cpu();
     let apic_id = local_apic.id();
     ap_serial_mark(b'E');
@@ -829,7 +589,7 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
     );
     ap_serial_mark(b'H');
 
-    crate::task::work_stealing_advanced::configure_current_cpu_locality();
+    crate::mm::numa::topology::apply_current_cpu_locality();
 
     ap_enter_executor(cpu_id as usize);
 }
@@ -844,15 +604,15 @@ pub fn send_ipi(target_apic_id: u32, vector: u8) {
 /// Broadcast IPI to all CPUs (excluding self)
 pub fn broadcast_ipi(vector: u8) {
     if let Some(bootstrap) = bootstrap_ref() {
-        bootstrap.lapic.broadcast_ipi(vector);
+        bootstrap.lapic.broadcast_ipi_excluding_self(vector);
     }
 }
 
 /// Send EOI to the current CPU's LAPIC without taking the global APIC driver lock.
 pub fn send_eoi_current_cpu() {
     let local_apic =
-        LocalApic::new(crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000));
-    local_apic.eoi();
+        LocklessLocalApic::new(crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000));
+    local_apic.send_eoi();
 }
 
 fn validate_trampoline_handoff(ap_boot: &boot_proto::ApBootInfo) -> Result<(), &'static str> {

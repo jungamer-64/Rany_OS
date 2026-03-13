@@ -22,10 +22,6 @@
 //! タスク本体は canonical な `Task` / `TaskId` を共有し、
 //! per-core 側では内部 wrapper で優先度や統計を管理する。
 //!
-//! ## `work_stealing_advanced` (NUMA対応高性能スケジューラ)
-//! NUMA対応の3段階スティーリング、`WorkStealingDeque`、`PerCoreWorker`、
-//! `GlobalScheduler` を提供する Phase 4 の高度なスケジューラ実装。
-//!
 #![allow(dead_code)]
 use alloc::boxed::Box;
 use core::future::Future;
@@ -43,9 +39,6 @@ pub mod preemption;
 pub mod timeout;
 pub mod timer;
 mod waker;
-
-// NUMA-aware work-stealing helpers and topology primitives.
-pub(crate) mod work_stealing_advanced;
 
 #[allow(unused_imports)]
 pub use context::{

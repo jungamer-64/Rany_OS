@@ -65,18 +65,10 @@ pub fn rcu_read_lock() -> RcuReadGuard {
     core::sync::atomic::compiler_fence(Ordering::Acquire);
 
     // Increment local read depth and disable preemption
-    unsafe {
-        let gs_base = per_cpu::read_gsbase_any();
-        if gs_base != 0 {
-            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-            pcp.rcu_state.read_depth.fetch_add(1, Ordering::Relaxed);
-
-            // 脆弱性修正: プリエンプションを禁止
-            if let Some(hot) = per_cpu::current_per_cpu_hot() {
-                hot.preempt_disable();
-            }
-        }
-    }
+    let _ = per_cpu::with_current_cold(|cold| {
+        cold.rcu_state.read_depth.fetch_add(1, Ordering::Relaxed);
+    });
+    let _ = per_cpu::with_current_hot(|hot| hot.preempt_disable());
 
     RcuReadGuard::new()
 }
@@ -84,33 +76,18 @@ pub fn rcu_read_lock() -> RcuReadGuard {
 /// RCU読み取りセクションを終了（内部用）
 #[inline]
 fn rcu_read_unlock_internal() {
-    unsafe {
-        let gs_base = per_cpu::read_gsbase_any();
-        if gs_base != 0 {
-            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-            pcp.rcu_state.read_depth.fetch_sub(1, Ordering::Relaxed);
-
-            // 脆弱性修正: プリエンプションを再有効化
-            if let Some(hot) = per_cpu::current_per_cpu_hot() {
-                hot.preempt_enable();
-            }
-        }
-    }
+    let _ = per_cpu::with_current_cold(|cold| {
+        cold.rcu_state.read_depth.fetch_sub(1, Ordering::Relaxed);
+    });
+    let _ = per_cpu::with_current_hot(|hot| hot.preempt_enable());
     core::sync::atomic::compiler_fence(Ordering::Release);
 }
 
 /// 現在RCU読み取りセクション内かどうか
 #[inline]
 pub fn rcu_read_active() -> bool {
-    unsafe {
-        let gs_base = per_cpu::read_gsbase_any();
-        if gs_base != 0 {
-            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-            pcp.rcu_state.read_depth.load(Ordering::Relaxed) > 0
-        } else {
-            false
-        }
-    }
+    per_cpu::with_current_cold(|cold| cold.rcu_state.read_depth.load(Ordering::Relaxed) > 0)
+        .unwrap_or(false)
 }
 
 // ============================================================================
@@ -134,16 +111,11 @@ pub fn rcu_advance_epoch() {
 /// スケジューラのコンテキストスイッチ処理から呼び出す
 #[inline]
 pub fn rcu_note_context_switch() {
-    unsafe {
-        let gs = per_cpu::read_gsbase_any();
-        if gs != 0 {
-            let pcp = &*(gs as *const per_cpu::PerCpuData);
-            // Only report QS if not in a read section
-            if pcp.rcu_state.read_depth.load(Ordering::Relaxed) == 0 {
-                pcp.rcu_state.qs_count.fetch_add(1, Ordering::Release);
-            }
+    let _ = per_cpu::with_current_cold(|cold| {
+        if cold.rcu_state.read_depth.load(Ordering::Relaxed) == 0 {
+            cold.rcu_state.qs_count.fetch_add(1, Ordering::Release);
         }
-    }
+    });
 }
 
 /// 現在のコンテキストスイッチカウントを取得
@@ -163,9 +135,10 @@ pub fn synchronize_rcu() {
     let mut snapshots = Vec::new();
     for i in 0..per_cpu::MAX_CPUS {
         if per_cpu::is_cpu_online(i) {
-            unsafe {
-                let pcp = per_cpu::get_per_cpu_data(i);
-                snapshots.push((i, pcp.rcu_state.qs_count.load(Ordering::Acquire)));
+            if let Some(qs_count) =
+                per_cpu::with_cpu_cold(i, |cold| cold.rcu_state.qs_count.load(Ordering::Acquire))
+            {
+                snapshots.push((i, qs_count));
             }
         }
     }
@@ -179,9 +152,9 @@ pub fn synchronize_rcu() {
                 // CPU went offline -> Quiescent State
                 break;
             }
-            unsafe {
-                let pcp = per_cpu::get_per_cpu_data(cpu_id);
-                let current_val = pcp.rcu_state.qs_count.load(Ordering::Acquire);
+            if let Some(current_val) = per_cpu::with_cpu_cold(cpu_id, |cold| {
+                cold.rcu_state.qs_count.load(Ordering::Acquire)
+            }) {
                 if current_val != snap_val {
                     break;
                 }
@@ -226,28 +199,26 @@ static RCU_CALLBACK_QUEUE: IrqPoisonLock<VecDeque<RcuCallbackEntry>> =
 /// * `ptr` - 解放対象のポインタ
 /// * `callback` - グレース期間後に呼び出されるコールバック
 pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
-    let entry = RcuCallbackEntry {
+    let mut entry = Some(RcuCallbackEntry {
         ptr,
         callback,
         epoch: rcu_current_epoch(),
-    };
+    });
 
     // Try per-CPU queue first
-    unsafe {
-        let gs_base = per_cpu::read_gsbase_any();
-        if gs_base != 0 {
-            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-            pcp.rcu_state
-                .batch_queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push_back(entry);
-        } else {
-            RCU_CALLBACK_QUEUE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push_back(entry);
-        }
+    if per_cpu::with_current_cold(|cold| {
+        cold.rcu_state
+            .batch_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(entry.take().expect("RCU callback entry already moved"));
+    })
+    .is_none()
+    {
+        RCU_CALLBACK_QUEUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(entry.expect("RCU callback entry missing"));
     }
 }
 
@@ -256,14 +227,8 @@ pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
 /// 定期的に呼び出す（スケジューラのアイドルループやタイマー割り込みから）
 pub fn rcu_process_callbacks() {
     let current_epoch = rcu_current_epoch();
-
-    unsafe {
-        let gs_base = per_cpu::read_gsbase_any();
-        if gs_base == 0 {
-            return;
-        }
-        let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-        let mut queue = pcp
+    let _ = per_cpu::with_current_cold(|cold| {
+        let mut queue = cold
             .rcu_state
             .batch_queue
             .lock()
@@ -281,7 +246,7 @@ pub fn rcu_process_callbacks() {
                 (entry.callback)(entry.ptr);
 
                 // ロック再取得
-                queue = pcp
+                queue = cold
                     .rcu_state
                     .batch_queue
                     .lock()
@@ -290,27 +255,24 @@ pub fn rcu_process_callbacks() {
                 break;
             }
         }
-    }
+    });
 }
 
 /// ペンディング中のRCUコールバック数を取得 (Current CPU)
 pub fn rcu_pending_callbacks() -> usize {
-    unsafe {
-        let gs_base = per_cpu::read_gsbase_any();
-        if gs_base != 0 {
-            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
-            pcp.rcu_state
-                .batch_queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .len()
-        } else {
-            RCU_CALLBACK_QUEUE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .len()
-        }
-    }
+    per_cpu::with_current_cold(|cold| {
+        cold.rcu_state
+            .batch_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    })
+    .unwrap_or_else(|| {
+        RCU_CALLBACK_QUEUE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    })
 }
 
 // ============================================================================

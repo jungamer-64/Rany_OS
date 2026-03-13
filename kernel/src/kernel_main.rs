@@ -604,8 +604,8 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
         }
     }
 
-    crate::task::work_stealing_advanced::configure_from_boot_info(&context.boot_info.numa_info);
-    crate::task::work_stealing_advanced::configure_current_cpu_locality();
+    crate::mm::numa::topology::configure_from_boot_info(&context.boot_info.numa_info);
+    crate::mm::numa::topology::apply_current_cpu_locality();
 
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();

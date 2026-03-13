@@ -38,8 +38,20 @@ fn manager_spawn_and_steal_operate_on_canonical_tasks() {
     let victim = manager.get_executor(0).expect("missing victim executor");
     let thief = manager.get_executor(1).expect("missing thief executor");
 
-    let task_a = ScheduledTask::new(crate::task::Task::new(async {}), Priority::Normal, 0);
-    let task_b = ScheduledTask::new(crate::task::Task::new(async {}), Priority::Normal, 0);
+    let task_a = ScheduledTask::new(
+        crate::task::Task::new(async {}),
+        Priority::Normal,
+        u64::MAX,
+        0,
+        None,
+    );
+    let task_b = ScheduledTask::new(
+        crate::task::Task::new(async {}),
+        Priority::Normal,
+        u64::MAX,
+        0,
+        None,
+    );
     assert!(victim.enqueue_spawned_task(task_a));
     assert!(victim.enqueue_spawned_task(task_b));
 
@@ -62,7 +74,13 @@ fn remote_wake_targets_logical_cpu_mapping() {
 
     let manager = ExecutorManager::new();
     manager.init(2);
-    let task = ScheduledTask::new(crate::task::Task::new(async {}), Priority::Normal, 1);
+    let task = ScheduledTask::new(
+        crate::task::Task::new(async {}),
+        Priority::Normal,
+        u64::MAX,
+        1,
+        None,
+    );
 
     manager.queue_wake(task);
 
@@ -82,7 +100,13 @@ fn remote_wake_broadcasts_when_apic_mapping_is_missing() {
 
     let manager = ExecutorManager::new();
     manager.init(2);
-    let task = ScheduledTask::new(crate::task::Task::new(async {}), Priority::Normal, 1);
+    let task = ScheduledTask::new(
+        crate::task::Task::new(async {}),
+        Priority::Normal,
+        u64::MAX,
+        1,
+        None,
+    );
 
     manager.queue_wake(task);
 
@@ -95,7 +119,13 @@ fn pick_target_cpu_respects_affinity_mask() {
     let manager = ExecutorManager::new();
     manager.init(3);
 
-    let task = ScheduledTask::new(crate::task::Task::new(async {}), Priority::Normal, 0);
+    let task = ScheduledTask::new(
+        crate::task::Task::new(async {}),
+        Priority::Normal,
+        u64::MAX,
+        0,
+        None,
+    );
     task.affinity_mask.store(1u64 << 2, Ordering::Release);
     task.set_preferred_cpu(0);
 
@@ -110,7 +140,13 @@ fn steal_from_skips_tasks_that_cannot_run_on_thief_cpu() {
     let victim = manager.get_executor(0).expect("missing victim executor");
     let thief = manager.get_executor(1).expect("missing thief executor");
 
-    let cpu0_only = ScheduledTask::new(crate::task::Task::new(async {}), Priority::Normal, 0);
+    let cpu0_only = ScheduledTask::new(
+        crate::task::Task::new(async {}),
+        Priority::Normal,
+        1,
+        0,
+        None,
+    );
     cpu0_only.affinity_mask.store(1, Ordering::Release);
     assert!(victim.enqueue_spawned_task(cpu0_only));
 
