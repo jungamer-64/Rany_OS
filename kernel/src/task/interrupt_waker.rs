@@ -271,6 +271,11 @@ impl InterruptEventQueue {
     fn len(&self) -> usize {
         self.buffer.len()
     }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        INTERRUPT_EVENT_QUEUE_SIZE
+    }
 }
 
 /// 割り込みWaker統計
@@ -440,6 +445,7 @@ mod tests {
         }
         assert!(!queue.push_once(usize::MAX));
         assert_eq!(queue.len(), INTERRUPT_EVENT_QUEUE_SIZE);
+        assert_eq!(queue.capacity(), INTERRUPT_EVENT_QUEUE_SIZE);
 
         for i in 0..INTERRUPT_EVENT_QUEUE_SIZE {
             assert_eq!(queue.pop(), Some(i + 1));

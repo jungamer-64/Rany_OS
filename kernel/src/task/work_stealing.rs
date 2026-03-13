@@ -55,13 +55,22 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 // ============================================================================
 // MPMC lock-free queue for global task injection.
 
-const GLOBAL_QUEUE_SIZE: usize = 1024;
+const GLOBAL_QUEUE_CAPACITY: usize = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalQueueStats {
+    pub len: usize,
+    pub capacity: usize,
+    pub enqueued: usize,
+    pub dequeued: usize,
+    pub dropped: usize,
+}
 
 /// Lock-free global injector queue
 #[repr(C, align(64))]
 struct LockFreeGlobalInjector {
     /// Shared MPMC task queue
-    queue: MpmcRingBuffer<Task, GLOBAL_QUEUE_SIZE>,
+    queue: MpmcRingBuffer<Task, GLOBAL_QUEUE_CAPACITY>,
     /// Statistics
     enqueued: AtomicUsize,
     dequeued: AtomicUsize,
@@ -69,6 +78,8 @@ struct LockFreeGlobalInjector {
 }
 
 impl LockFreeGlobalInjector {
+    const CAPACITY: usize = GLOBAL_QUEUE_CAPACITY;
+
     const fn new() -> Self {
         Self {
             queue: MpmcRingBuffer::new(),
@@ -106,13 +117,19 @@ impl LockFreeGlobalInjector {
         self.queue.len()
     }
 
-    /// Get statistics (enqueued, dequeued, dropped)
-    fn stats(&self) -> (usize, usize, usize) {
-        (
-            self.enqueued.load(Ordering::Relaxed),
-            self.dequeued.load(Ordering::Relaxed),
-            self.dropped.load(Ordering::Relaxed),
-        )
+    fn capacity(&self) -> usize {
+        Self::CAPACITY
+    }
+
+    /// Get statistics
+    fn stats(&self) -> GlobalQueueStats {
+        GlobalQueueStats {
+            len: self.len(),
+            capacity: self.capacity(),
+            enqueued: self.enqueued.load(Ordering::Relaxed),
+            dequeued: self.dequeued.load(Ordering::Relaxed),
+            dropped: self.dropped.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -133,8 +150,8 @@ pub fn global_queue_len() -> usize {
     GLOBAL_INJECTOR.len()
 }
 
-/// グローバルキューの統計を取得 (enqueued, dequeued, dropped)
-pub fn global_queue_stats() -> (usize, usize, usize) {
+/// グローバルキューの統計を取得
+pub fn global_queue_stats() -> GlobalQueueStats {
     GLOBAL_INJECTOR.stats()
 }
 
@@ -154,26 +171,30 @@ mod tests {
     fn global_injector_tracks_stats_and_drops_when_full() {
         reset_global_injector_for_tests();
 
-        for _ in 0..GLOBAL_QUEUE_SIZE {
+        for _ in 0..GLOBAL_QUEUE_CAPACITY {
             assert!(GLOBAL_INJECTOR.inject(Task::new(async {})));
         }
         assert!(!GLOBAL_INJECTOR.inject(Task::new(async {})));
 
-        let (enqueued, dequeued, dropped) = GLOBAL_INJECTOR.stats();
-        assert_eq!(enqueued, GLOBAL_QUEUE_SIZE);
-        assert_eq!(dequeued, 0);
-        assert_eq!(dropped, 1);
+        let stats = GLOBAL_INJECTOR.stats();
+        assert_eq!(stats.len, GLOBAL_QUEUE_CAPACITY);
+        assert_eq!(stats.capacity, GLOBAL_QUEUE_CAPACITY);
+        assert_eq!(stats.enqueued, GLOBAL_QUEUE_CAPACITY);
+        assert_eq!(stats.dequeued, 0);
+        assert_eq!(stats.dropped, 1);
 
         let mut drained = 0;
         while GLOBAL_INJECTOR.steal().is_some() {
             drained += 1;
         }
-        assert_eq!(drained, GLOBAL_QUEUE_SIZE);
+        assert_eq!(drained, GLOBAL_QUEUE_CAPACITY);
 
-        let (enqueued, dequeued, dropped) = GLOBAL_INJECTOR.stats();
-        assert_eq!(enqueued, GLOBAL_QUEUE_SIZE);
-        assert_eq!(dequeued, GLOBAL_QUEUE_SIZE);
-        assert_eq!(dropped, 1);
+        let stats = GLOBAL_INJECTOR.stats();
+        assert_eq!(stats.len, 0);
+        assert_eq!(stats.capacity, GLOBAL_QUEUE_CAPACITY);
+        assert_eq!(stats.enqueued, GLOBAL_QUEUE_CAPACITY);
+        assert_eq!(stats.dequeued, GLOBAL_QUEUE_CAPACITY);
+        assert_eq!(stats.dropped, 1);
 
         reset_global_injector_for_tests();
     }

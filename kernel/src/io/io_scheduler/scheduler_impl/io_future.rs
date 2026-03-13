@@ -36,6 +36,8 @@ pub(crate) struct DeferredIoCompletionQueue {
 }
 
 impl DeferredIoCompletionQueue {
+    pub(super) const CAPACITY: usize = IO_COMPLETION_QUEUE_SIZE;
+
     pub(super) const fn new() -> Self {
         Self {
             queue: MpscRingBuffer::new(),
@@ -55,6 +57,18 @@ impl DeferredIoCompletionQueue {
             let result = decode_io_result(result_raw);
             (device, id, result)
         })
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub(super) const fn capacity(&self) -> usize {
+        Self::CAPACITY
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.queue.is_empty()
     }
 }
 
@@ -326,6 +340,9 @@ mod tests {
             IoRequestId(u64::MAX),
             IoResult::Success(0),
         ));
+        assert_eq!(queue.len(), IO_COMPLETION_QUEUE_SIZE);
+        assert_eq!(queue.capacity(), IO_COMPLETION_QUEUE_SIZE);
+        assert!(!queue.is_empty());
 
         for i in 0..IO_COMPLETION_QUEUE_SIZE {
             assert_eq!(
@@ -338,6 +355,7 @@ mod tests {
             );
         }
         assert_eq!(queue.pop(), None);
+        assert!(queue.is_empty());
     }
 }
 

@@ -15,6 +15,8 @@
 //! 既存の呼び出し元はこのモジュール経由で引き続き動作する。
 // ============================================================================
 
+pub use crate::drivers::time::PendingTimerWakerStats;
+
 /// タイマー割り込みハンドラから呼ばれる
 ///
 /// 【設計書 4.2】2段階Wake方式:
@@ -38,9 +40,9 @@ pub fn pending_timer_waker_count() -> usize {
     crate::drivers::time::pending_timer_waker_count()
 }
 
-/// ペンディングキューの統計を取得 (enqueued, dropped)
+/// ペンディングタイマー待ちの統計を取得
 #[inline]
-pub fn pending_waker_stats() -> (usize, usize) {
+pub fn pending_waker_stats() -> PendingTimerWakerStats {
     crate::drivers::time::pending_waker_stats()
 }
 
@@ -68,8 +70,8 @@ mod tests {
 
     #[test_case]
     fn test_delegation_pending_stats() {
-        let (enq, drop) = pending_waker_stats();
+        let stats = pending_waker_stats();
         // 初期状態ではどちらも0または低い値
-        let _ = (enq, drop);
+        let _ = (stats.pending, stats.capacity);
     }
 }

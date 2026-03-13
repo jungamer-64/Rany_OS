@@ -11,15 +11,18 @@ use super::{FaultSummary, IsolationDecision, SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::IommuError;
 use crate::sync::MpscRingBuffer;
 
-const SECURITY_EVENT_QUEUE_SIZE: usize = 256;
+const SECURITY_EVENT_QUEUE_CAPACITY: usize = 256;
+const SECURITY_EVENT_QUEUE_BACKING_CAPACITY: usize = SECURITY_EVENT_QUEUE_CAPACITY + 1;
 
 #[derive(Debug)]
 struct SecurityEventQueue {
-    queue: MpscRingBuffer<SecurityEvent, SECURITY_EVENT_QUEUE_SIZE>,
+    queue: MpscRingBuffer<SecurityEvent, SECURITY_EVENT_QUEUE_BACKING_CAPACITY>,
     dropped: AtomicUsize,
 }
 
 impl SecurityEventQueue {
+    const CAPACITY: usize = SECURITY_EVENT_QUEUE_CAPACITY;
+
     const fn new() -> Self {
         Self {
             queue: MpscRingBuffer::new(),
@@ -33,7 +36,7 @@ impl SecurityEventQueue {
             if self.queue.try_push(event).is_ok() {
                 return;
             }
-            if self.queue.len() >= self.queue.capacity() {
+            if self.len() >= self.capacity() {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -44,6 +47,19 @@ impl SecurityEventQueue {
 
     fn pop(&self) -> Option<SecurityEvent> {
         self.queue.pop()
+    }
+
+    fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    fn capacity(&self) -> usize {
+        Self::CAPACITY
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
     }
 
     fn take_dropped(&self) -> usize {
@@ -163,15 +179,20 @@ mod tests {
         let queue = SecurityEventQueue::new();
         let event = SecurityEvent::EventsDropped { count: 1 };
 
-        for _ in 0..(SECURITY_EVENT_QUEUE_SIZE - 1) {
+        for _ in 0..SECURITY_EVENT_QUEUE_CAPACITY {
             queue.push(event);
         }
         queue.push(event);
 
         assert_eq!(queue.take_dropped(), 1);
-        for _ in 0..(SECURITY_EVENT_QUEUE_SIZE - 1) {
+        assert_eq!(queue.len(), SECURITY_EVENT_QUEUE_CAPACITY);
+        assert_eq!(queue.capacity(), SECURITY_EVENT_QUEUE_CAPACITY);
+        assert!(!queue.is_empty());
+
+        for _ in 0..SECURITY_EVENT_QUEUE_CAPACITY {
             assert!(queue.pop().is_some());
         }
         assert!(queue.pop().is_none());
+        assert!(queue.is_empty());
     }
 }

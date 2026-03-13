@@ -370,6 +370,16 @@ impl DeferredWakerQueue {
     fn pop(&self) -> Option<usize> {
         self.buffer.pop()
     }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        DEFERRED_WAKE_QUEUE_SIZE
+    }
 }
 
 // ============================================================================
@@ -447,6 +457,8 @@ mod tests {
             assert!(queue.push_once(i + 1), "failed at {}", i);
         }
         assert!(!queue.push_once(usize::MAX));
+        assert_eq!(queue.len(), DEFERRED_WAKE_QUEUE_SIZE);
+        assert_eq!(queue.capacity(), DEFERRED_WAKE_QUEUE_SIZE);
 
         for i in 0..DEFERRED_WAKE_QUEUE_SIZE {
             assert_eq!(queue.pop(), Some(i + 1));

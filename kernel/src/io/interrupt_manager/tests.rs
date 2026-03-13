@@ -78,6 +78,7 @@ fn test_interrupt_queue_empty() {
     let queue = InterruptQueue::new();
 
     assert!(queue.is_empty());
+    assert_eq!(queue.capacity(), InterruptQueue::CAPACITY);
     assert_eq!(queue.len(), 0);
 
     queue.push(32);
@@ -100,6 +101,7 @@ fn test_interrupt_queue_full() {
     // Should reject when full
     assert!(!queue.push(255));
     assert_eq!(queue.len(), InterruptQueue::CAPACITY);
+    assert_eq!(queue.capacity(), InterruptQueue::CAPACITY);
 }
 
 // ========================================================================

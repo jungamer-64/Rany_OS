@@ -127,6 +127,8 @@ struct PerCpuCache {
 }
 
 impl PerCpuCache {
+    const CAPACITY: usize = LOCAL_FREE_CACHE_CAPACITY;
+
     fn new() -> Self {
         Self {
             ring: MpmcRingBuffer::new(),
@@ -189,6 +191,11 @@ impl PerCpuCache {
 
     fn len(&self) -> usize {
         self.ring.len()
+    }
+
+    #[allow(dead_code)]
+    fn capacity(&self) -> usize {
+        Self::CAPACITY
     }
 }
 

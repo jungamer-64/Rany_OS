@@ -122,6 +122,8 @@ pub struct NetTxQueue {
 }
 
 impl NetTxQueue {
+    pub const CAPACITY: usize = NET_DEVICE_TX_QUEUE_CAPACITY;
+
     pub fn new() -> Self {
         Self {
             queue: MpmcRingBuffer::new(),
@@ -143,6 +145,14 @@ impl NetTxQueue {
         self.queue.pop()
     }
 
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub const fn capacity(&self) -> usize {
+        Self::CAPACITY
+    }
+
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -162,6 +172,8 @@ pub struct NetEventSink {
 }
 
 impl NetEventSink {
+    pub const CAPACITY: usize = NET_DEVICE_EVENT_QUEUE_CAPACITY;
+
     pub fn new() -> Self {
         Self {
             queue: MpmcRingBuffer::new(),
@@ -191,6 +203,14 @@ impl NetEventSink {
 
     pub fn pop(&self) -> Option<NetDriverEvent> {
         self.queue.pop()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub const fn capacity(&self) -> usize {
+        Self::CAPACITY
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1320,20 +1340,28 @@ mod tests {
         let _ = crate::net::datapath::mempool::init_net_mempool(16);
         let queue = NetTxQueue::new();
         let packet = crate::net::datapath::mempool::alloc_packet().expect("packet");
+        assert_eq!(queue.capacity(), NetTxQueue::CAPACITY);
+        assert_eq!(queue.len(), 0);
         assert!(queue.push(packet, NetTxMeta::default()));
+        assert_eq!(queue.len(), 1);
         assert!(queue.pop().is_some());
         assert!(queue.pop().is_none());
+        assert_eq!(queue.len(), 0);
     }
 
     #[test_case]
     fn event_sink_from_isr_roundtrip_smoke() {
         let sink = NetEventSink::new();
+        assert_eq!(sink.capacity(), NetEventSink::CAPACITY);
+        assert_eq!(sink.len(), 0);
         assert!(sink.push_from_isr(NetDriverEvent::QueueWake { queue_index: 7 }));
+        assert_eq!(sink.len(), 1);
         assert_eq!(
             sink.pop(),
             Some(NetDriverEvent::QueueWake { queue_index: 7 })
         );
         assert!(sink.pop().is_none());
+        assert_eq!(sink.len(), 0);
     }
 
     #[test_case]

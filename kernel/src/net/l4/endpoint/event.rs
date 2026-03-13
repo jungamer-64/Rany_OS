@@ -644,6 +644,10 @@ impl NetworkEventQueue {
         self.queue.len()
     }
 
+    pub const fn capacity(&self) -> usize {
+        Self::CAPACITY
+    }
+
     /// キューが空か
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
@@ -692,12 +696,12 @@ impl<'a> Future for QueueSpaceFuture<'a> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.queue.len() < NetworkEventQueue::CAPACITY {
+        if self.queue.len() < self.queue.capacity() {
             return Poll::Ready(());
         }
 
         self.queue.space_waiters.register(cx.waker());
-        if self.queue.len() < NetworkEventQueue::CAPACITY {
+        if self.queue.len() < self.queue.capacity() {
             Poll::Ready(())
         } else {
             Poll::Pending

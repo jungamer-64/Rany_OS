@@ -98,6 +98,12 @@ impl InterruptQueue {
         self.buffer.is_empty()
     }
 
+    /// キューの論理容量を取得
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        Self::CAPACITY
+    }
+
     /// キューの長さを取得（テスト用）
     pub fn len(&self) -> usize {
         self.buffer.len()

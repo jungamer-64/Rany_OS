@@ -34,17 +34,34 @@ fn s(v: &str) -> String {
 impl TaskNamespace {
     /// タスクシステムの統計情報
     pub fn stats() -> ExoValue<'static> {
-        let (wake_len, wake_cap) = crate::task::waker::wake_queue_stats();
-        let (timer_len, timer_cap) = crate::task::timer::pending_waker_stats();
+        let wake_stats = crate::task::wake_queue_stats();
+        let timer_stats = crate::task::timer::pending_waker_stats();
         let fuel_remaining = crate::task::fuel::Fuel::remaining();
         let fuel_active = crate::task::fuel::Fuel::is_active();
         let current_tick = crate::task::current_tick();
 
         let mut map = BTreeMap::new();
-        map.insert(s("wake_queue_len"), ExoValue::Int(wake_len as i64));
-        map.insert(s("wake_queue_capacity"), ExoValue::Int(wake_cap as i64));
-        map.insert(s("timer_pending"), ExoValue::Int(timer_len as i64));
-        map.insert(s("timer_capacity"), ExoValue::Int(timer_cap as i64));
+        map.insert(s("wake_queue_len"), ExoValue::Int(wake_stats.len as i64));
+        map.insert(
+            s("wake_queue_capacity"),
+            ExoValue::Int(wake_stats.capacity as i64),
+        );
+        map.insert(
+            s("wake_queue_enqueued"),
+            ExoValue::Int(wake_stats.enqueued as i64),
+        );
+        map.insert(
+            s("wake_queue_dropped"),
+            ExoValue::Int(wake_stats.dropped as i64),
+        );
+        map.insert(
+            s("timer_pending"),
+            ExoValue::Int(timer_stats.pending as i64),
+        );
+        map.insert(
+            s("timer_capacity"),
+            ExoValue::Int(timer_stats.capacity as i64),
+        );
         map.insert(s("fuel_remaining"), ExoValue::Int(fuel_remaining as i64));
         map.insert(s("fuel_active"), ExoValue::Bool(fuel_active));
         map.insert(s("current_tick"), ExoValue::Int(current_tick as i64));

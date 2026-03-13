@@ -54,6 +54,8 @@ const QUEUE_SIZE: usize = 1024;
 const QUEUE_BACKING_SIZE: usize = QUEUE_SIZE + 1;
 
 impl LockFreeQueue {
+    pub const CAPACITY: usize = QUEUE_SIZE;
+
     /// 新しいキューを作成
     pub const fn new() -> Self {
         Self {
@@ -79,6 +81,10 @@ impl LockFreeQueue {
     /// キュー内のアイテム数
     pub fn len(&self) -> usize {
         self.buffer.len()
+    }
+
+    pub const fn capacity(&self) -> usize {
+        Self::CAPACITY
     }
 }
 

@@ -4,6 +4,12 @@ use core::task::{Context, Poll};
 
 use kernel_api::service::time::TimeService;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingTimerWakerStats {
+    pub pending: usize,
+    pub capacity: usize,
+}
+
 /// The concrete time cell implementation linked into the kernel.
 #[inline]
 pub(crate) fn concrete_service() -> &'static dyn TimeService {
@@ -44,8 +50,11 @@ pub fn pending_timer_waker_count() -> usize {
 }
 
 #[inline]
-pub fn pending_waker_stats() -> (usize, usize) {
-    (service().stats().pending_wakers, 0)
+pub fn pending_waker_stats() -> PendingTimerWakerStats {
+    PendingTimerWakerStats {
+        pending: service().stats().pending_wakers,
+        capacity: 0,
+    }
 }
 
 #[inline]

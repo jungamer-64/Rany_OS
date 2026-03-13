@@ -119,6 +119,7 @@ fn domain_id_from_scalable_context_entry(
 /// Multiple ISRs (on different cores) can push events concurrently.
 /// Single consumer (async task) drains and processes them.
 const DEFERRED_QUEUE_SIZE: usize = 256;
+const DEFERRED_QUEUE_BACKING_SIZE: usize = DEFERRED_QUEUE_SIZE + 1;
 
 // ============================================================================
 // Critical Fault Slot (Security Event Priority - Issue #4)
@@ -193,13 +194,15 @@ impl CriticalFaultSlot {
 // ============================================================================
 
 struct DeferredFaultQueue {
-    queue: MpscRingBuffer<RawFaultEvent, DEFERRED_QUEUE_SIZE>,
+    queue: MpscRingBuffer<RawFaultEvent, DEFERRED_QUEUE_BACKING_SIZE>,
     dropped: AtomicUsize,
     /// Reserved slot for critical faults (Unknown reason, etc.)
     critical_slot: CriticalFaultSlot,
 }
 
 impl DeferredFaultQueue {
+    const CAPACITY: usize = DEFERRED_QUEUE_SIZE;
+
     const fn new() -> Self {
         Self {
             queue: MpscRingBuffer::new(),
@@ -230,7 +233,7 @@ impl DeferredFaultQueue {
             if self.queue.try_push(*event).is_ok() {
                 return true;
             }
-            if self.queue.len() >= self.queue.capacity() {
+            if self.len() >= self.capacity() {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
@@ -242,7 +245,7 @@ impl DeferredFaultQueue {
     fn push(&self, event: RawFaultEvent) {
         // For critical events, try reserved slot first if queue looks full
         if Self::is_critical(&event) {
-            let queue_len = self.queue.len();
+            let queue_len = self.len();
 
             if queue_len > (DEFERRED_QUEUE_SIZE * 3 / 4) {
                 if self.critical_slot.try_push(event) {
@@ -272,6 +275,14 @@ impl DeferredFaultQueue {
         }
 
         self.queue.pop()
+    }
+
+    fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    fn capacity(&self) -> usize {
+        Self::CAPACITY
     }
 
     /// Get and reset dropped count
@@ -306,6 +317,34 @@ mod tests {
 
         assert_eq!(queue.pop().map(|event| event.reason), Some(0xFF));
         assert_eq!(queue.pop().map(|event| event.reason), Some(1));
+    }
+
+    #[test_case]
+    fn deferred_fault_queue_preserves_full_capacity() {
+        let queue = DeferredFaultQueue::new();
+        let event = RawFaultEvent {
+            source_id: 1,
+            fault_address: 0x1000,
+            reason: 1,
+            pasid: None,
+            lo: 1,
+            hi: 2,
+            is_overflow: false,
+        };
+
+        for _ in 0..DEFERRED_QUEUE_SIZE {
+            queue.push(event);
+        }
+        queue.push(event);
+
+        assert_eq!(queue.len(), DEFERRED_QUEUE_SIZE);
+        assert_eq!(queue.capacity(), DEFERRED_QUEUE_SIZE);
+        assert_eq!(queue.take_dropped(), 1);
+
+        for _ in 0..DEFERRED_QUEUE_SIZE {
+            assert!(queue.pop().is_some());
+        }
+        assert!(queue.pop().is_none());
     }
 }
 

@@ -68,12 +68,16 @@ impl AmdFaultEvent {
 // AmdDeferredFaultQueue — lock-free ring buffer
 // ---------------------------------------------------------------------------
 
+const AMD_FAULT_QUEUE_BACKING_CAPACITY: usize = AMD_FAULT_QUEUE_SIZE + 1;
+
 pub(crate) struct AmdDeferredFaultQueue {
-    queue: MpscRingBuffer<AmdFaultEvent, AMD_FAULT_QUEUE_SIZE>,
+    queue: MpscRingBuffer<AmdFaultEvent, AMD_FAULT_QUEUE_BACKING_CAPACITY>,
     dropped: AtomicUsize,
 }
 
 impl AmdDeferredFaultQueue {
+    pub(crate) const CAPACITY: usize = AMD_FAULT_QUEUE_SIZE;
+
     pub(crate) const fn new() -> Self {
         Self {
             queue: MpscRingBuffer::new(),
@@ -87,7 +91,7 @@ impl AmdDeferredFaultQueue {
             if self.queue.try_push(event).is_ok() {
                 return;
             }
-            if self.queue.len() >= self.queue.capacity() {
+            if self.len() >= self.capacity() {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
@@ -98,6 +102,14 @@ impl AmdDeferredFaultQueue {
 
     pub(super) fn pop(&self) -> Option<AmdFaultEvent> {
         self.queue.pop()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub(super) const fn capacity(&self) -> usize {
+        Self::CAPACITY
     }
 
     pub(super) fn take_dropped(&self) -> usize {
@@ -126,13 +138,16 @@ mod tests {
         let queue = AmdDeferredFaultQueue::new();
         let event = AmdFaultEvent::overflow(0);
 
-        for _ in 0..(AMD_FAULT_QUEUE_SIZE - 1) {
+        for _ in 0..AMD_FAULT_QUEUE_SIZE {
             queue.push(event);
         }
         queue.push(event);
 
         assert_eq!(queue.take_dropped(), 1);
-        for _ in 0..(AMD_FAULT_QUEUE_SIZE - 1) {
+        assert_eq!(queue.len(), AMD_FAULT_QUEUE_SIZE);
+        assert_eq!(queue.capacity(), AMD_FAULT_QUEUE_SIZE);
+
+        for _ in 0..AMD_FAULT_QUEUE_SIZE {
             assert!(queue.pop().is_some());
         }
         assert!(queue.pop().is_none());

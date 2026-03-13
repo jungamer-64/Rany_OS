@@ -106,7 +106,14 @@ pub use preemption::{
 };
 pub use timer::{current_tick, sleep_ms};
 #[allow(unused_imports)]
-pub use work_stealing::{inject_global, steal_from_global};
+pub use waker::{
+    WakeQueueStats, pop_woken_task, wake_queue_capacity, wake_queue_is_empty, wake_queue_len,
+    wake_queue_stats,
+};
+#[allow(unused_imports)]
+pub use work_stealing::{
+    GlobalQueueStats, global_queue_len, global_queue_stats, inject_global, steal_from_global,
+};
 
 // Phase 4: Advanced Work-Stealing re-exports
 #[allow(unused_imports)]
