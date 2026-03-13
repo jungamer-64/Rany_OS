@@ -133,26 +133,55 @@ pub fn enter_quiescent_state() {
 ///
 /// 指定されたエポック以降に全コアが安全な状態に移行するまでブロック。
 pub fn wait_for_quiescent_state(old_epoch: u64) {
-    let active_cores = ACTIVE_CORES.load(Ordering::Acquire) as usize;
-
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-    loop {
-        let all_departed = (0..active_cores.min(MAX_CORES)).all(|cpu| {
-            let core_epoch = PER_CORE_EPOCHS[cpu].local_epoch.load(Ordering::Acquire);
-            let in_cs = PER_CORE_EPOCHS[cpu]
-                .in_critical_section
-                .load(Ordering::Acquire);
-
-            // コアがクリティカルセクション外か、新エポックに移行済み
-            !in_cs || core_epoch > old_epoch
-        });
-
-        if all_departed {
-            break;
-        }
-
-        // 短いスピンウェイト後、再チェック
+    while !all_cores_past_epoch(old_epoch) {
         core::hint::spin_loop();
+    }
+}
+
+pub fn wait_for_quiescent_state_with_timeout(old_epoch: u64, max_attempts: u64) -> bool {
+    for _ in 0..max_attempts {
+        if all_cores_past_epoch(old_epoch) {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
+pub fn all_cores_past_epoch(target_epoch: u64) -> bool {
+    let active_cores = ACTIVE_CORES.load(Ordering::Acquire) as usize;
+    (0..active_cores.min(MAX_CORES)).all(|cpu| {
+        let core_epoch = PER_CORE_EPOCHS[cpu].local_epoch.load(Ordering::Acquire);
+        let in_cs = PER_CORE_EPOCHS[cpu]
+            .in_critical_section
+            .load(Ordering::Acquire);
+
+        !in_cs || core_epoch > target_epoch
+    })
+}
+
+pub fn advance_epoch() -> u64 {
+    GLOBAL_EPOCH.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpochStats {
+    pub current_epoch: u64,
+    pub active_cores: usize,
+    pub in_critical_sections: usize,
+}
+
+pub fn epoch_stats() -> EpochStats {
+    let active_cores = ACTIVE_CORES.load(Ordering::Acquire) as usize;
+    let online = active_cores.min(MAX_CORES);
+    let in_critical_sections = (0..online)
+        .filter(|&cpu| PER_CORE_EPOCHS[cpu].in_critical_section.load(Ordering::Acquire))
+        .count();
+
+    EpochStats {
+        current_epoch: current_epoch(),
+        active_cores: online,
+        in_critical_sections,
     }
 }
 
@@ -420,11 +449,12 @@ impl LiveUpdateManager {
         };
 
         // Step 2: Global Epoch Increment (Pre-swap)
-        let old_epoch = GLOBAL_EPOCH.fetch_add(1, Ordering::SeqCst);
+        let old_epoch = current_epoch();
+        let new_epoch = advance_epoch();
         log::info!(
             "[LIVE_UPDATE] Epoch incremented: {} -> {}\n",
             old_epoch,
-            old_epoch + 1
+            new_epoch
         );
 
         // Step 3: Swap (Update Driver Registry)

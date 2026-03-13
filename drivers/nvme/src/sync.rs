@@ -9,6 +9,39 @@ use core::fmt;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(test)]
+static TEST_INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
+
+#[cfg(not(test))]
+#[inline]
+fn save_and_disable_interrupts() -> bool {
+    let saved_int_state = x86_64::instructions::interrupts::are_enabled();
+    x86_64::instructions::interrupts::disable();
+    saved_int_state
+}
+
+#[cfg(test)]
+#[inline]
+fn save_and_disable_interrupts() -> bool {
+    TEST_INTERRUPTS_ENABLED.swap(false, Ordering::SeqCst)
+}
+
+#[cfg(not(test))]
+#[inline]
+fn restore_interrupts(was_enabled: bool) {
+    if was_enabled {
+        x86_64::instructions::interrupts::enable();
+    }
+}
+
+#[cfg(test)]
+#[inline]
+fn restore_interrupts(was_enabled: bool) {
+    if was_enabled {
+        TEST_INTERRUPTS_ENABLED.store(true, Ordering::SeqCst);
+    }
+}
+
 /// A Mutex that disables interrupts while locked.
 ///
 /// This is necessary for data structures shared between thread context and ISR context.
@@ -44,21 +77,16 @@ impl<T: ?Sized> IrqMutex<T> {
     ///
     /// Returns a guard that will restore the previous interrupt state when dropped.
     pub fn lock(&self) -> IrqMutexGuard<'_, T> {
-        // 1. Disable interrupts and save state
-        let saved_int_state = x86_64::instructions::interrupts::are_enabled();
-        x86_64::instructions::interrupts::disable();
+        let saved_int_state = save_and_disable_interrupts();
 
-        // 2. Acquire lock (spin)
         while self
             .lock
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            // Spin wait
             core::hint::spin_loop();
         }
 
-        // 3. Return guard
         IrqMutexGuard {
             lock: &self.lock,
             data: unsafe { &mut *self.data.get() },
@@ -71,8 +99,7 @@ impl<T: ?Sized> IrqMutex<T> {
     /// If successful, returns the guard. Interrupts are disabled if successful.
     /// If failed, returns None and interrupt state is unchanged (or restored).
     pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
-        let saved_int_state = x86_64::instructions::interrupts::are_enabled();
-        x86_64::instructions::interrupts::disable();
+        let saved_int_state = save_and_disable_interrupts();
 
         if self
             .lock
@@ -85,10 +112,7 @@ impl<T: ?Sized> IrqMutex<T> {
                 saved_int_state,
             })
         } else {
-            // Restore interrupts if we didn't get the lock
-            if saved_int_state {
-                x86_64::instructions::interrupts::enable();
-            }
+            restore_interrupts(saved_int_state);
             None
         }
     }
@@ -110,11 +134,7 @@ impl<'a, T: ?Sized> DerefMut for IrqMutexGuard<'a, T> {
 impl<'a, T: ?Sized> Drop for IrqMutexGuard<'a, T> {
     fn drop(&mut self) {
         self.lock.store(false, Ordering::Release);
-
-        // Restore interrupts if they were enabled before locking
-        if self.saved_int_state {
-            x86_64::instructions::interrupts::enable();
-        }
+        restore_interrupts(self.saved_int_state);
     }
 }
 

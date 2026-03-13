@@ -497,6 +497,29 @@ impl AdaptiveTimeSlice {
 mod tests {
     use super::*;
 
+    fn reset_static_preemption_state(cpu_id: usize) {
+        let controller = controller_for_cpu(cpu_id);
+        controller
+            .time_slice
+            .store(DEFAULT_TIME_SLICE, Ordering::Release);
+        controller.local_tick.store(0, Ordering::Release);
+        controller.task_start_tick.store(0, Ordering::Release);
+        controller
+            .preemption_pending
+            .store(false, Ordering::Release);
+        controller.enabled.store(true, Ordering::Release);
+        controller
+            .forced_preemptions
+            .store(0, Ordering::Release);
+        controller
+            .voluntary_yields
+            .store(0, Ordering::Release);
+        PREEMPTION_PENDING[cpu_id].store(false, Ordering::Release);
+        YIELD_REQUESTED[cpu_id].store(false, Ordering::Release);
+        DOMAIN_QUOTA_EXCEEDED[cpu_id].store(false, Ordering::Release);
+        CURRENT_TASK_DOMAIN[cpu_id].store(0, Ordering::Release);
+    }
+
     #[test_case]
     fn test_preemption_controller() {
         let controller = PreemptionController::new();
@@ -530,5 +553,40 @@ mod tests {
         tracker.stop(30);
         assert_eq!(tracker.total_ticks, 30);
         assert_eq!(tracker.average_run_time(), 15);
+    }
+
+    #[test_case]
+    fn test_preemption_state_is_per_cpu() {
+        if MAX_CPUS < 2 {
+            return;
+        }
+
+        reset_static_preemption_state(0);
+        reset_static_preemption_state(1);
+
+        let cpu0 = controller_for_cpu(0);
+        let cpu1 = controller_for_cpu(1);
+
+        cpu0.task_started(0);
+        cpu1.task_started(0);
+        cpu0.check_time_slice(DEFAULT_TIME_SLICE + 1);
+
+        assert!(cpu0.should_preempt());
+        assert!(!cpu1.should_preempt());
+
+        PREEMPTION_PENDING[0].store(true, Ordering::Release);
+        YIELD_REQUESTED[0].store(true, Ordering::Release);
+        CURRENT_TASK_DOMAIN[0].store(7, Ordering::Release);
+
+        assert!(PREEMPTION_PENDING[0].load(Ordering::Acquire));
+        assert!(YIELD_REQUESTED[0].load(Ordering::Acquire));
+        assert_eq!(CURRENT_TASK_DOMAIN[0].load(Ordering::Acquire), 7);
+
+        assert!(!PREEMPTION_PENDING[1].load(Ordering::Acquire));
+        assert!(!YIELD_REQUESTED[1].load(Ordering::Acquire));
+        assert_eq!(CURRENT_TASK_DOMAIN[1].load(Ordering::Acquire), 0);
+
+        reset_static_preemption_state(0);
+        reset_static_preemption_state(1);
     }
 }

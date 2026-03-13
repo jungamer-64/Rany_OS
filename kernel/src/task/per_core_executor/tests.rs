@@ -89,3 +89,32 @@ fn remote_wake_broadcasts_when_apic_mapping_is_missing() {
     assert_eq!(LAST_REMOTE_WAKE_APIC.load(Ordering::Acquire), u64::MAX);
     assert_eq!(REMOTE_WAKE_BROADCASTS.load(Ordering::Acquire), 1);
 }
+
+#[test_case]
+fn pick_target_cpu_respects_affinity_mask() {
+    let manager = ExecutorManager::new();
+    manager.init(3);
+
+    let task = ScheduledTask::new(crate::task::Task::new(async {}), Priority::Normal, 0);
+    task.affinity_mask.store(1u64 << 2, Ordering::Release);
+    task.set_preferred_cpu(0);
+
+    assert_eq!(manager.pick_target_cpu_for_task(&task), 2);
+}
+
+#[test_case]
+fn steal_from_skips_tasks_that_cannot_run_on_thief_cpu() {
+    let manager = ExecutorManager::new();
+    manager.init(2);
+
+    let victim = manager.get_executor(0).expect("missing victim executor");
+    let thief = manager.get_executor(1).expect("missing thief executor");
+
+    let cpu0_only = ScheduledTask::new(crate::task::Task::new(async {}), Priority::Normal, 0);
+    cpu0_only.affinity_mask.store(1, Ordering::Release);
+    assert!(victim.enqueue_spawned_task(cpu0_only));
+
+    assert!(!thief.steal_from(&victim));
+    assert_eq!(victim.queue_length(), 1);
+    assert_eq!(thief.queue_length(), 0);
+}

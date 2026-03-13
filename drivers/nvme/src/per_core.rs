@@ -735,7 +735,6 @@ pub fn process_local_deferred_completions() -> usize {
 #[inline]
 fn current_apic_id() -> u32 {
     #[cfg(target_arch = "x86_64")]
-    #[cfg(target_arch = "x86_64")]
     #[allow(unused_unsafe)]
     unsafe {
         let res = core::arch::x86_64::__cpuid(1);
@@ -743,4 +742,78 @@ fn current_apic_id() -> u32 {
     }
     #[cfg(not(target_arch = "x86_64"))]
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use alloc::task::Wake;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingWaker {
+        wakes: AtomicUsize,
+    }
+
+    impl CountingWaker {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                wakes: AtomicUsize::new(0),
+            })
+        }
+
+        fn observed(&self) -> usize {
+            self.wakes.load(Ordering::Acquire)
+        }
+    }
+
+    impl Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.wakes.fetch_add(1, Ordering::AcqRel);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.wakes.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn deferred_completion_only_wakes_on_drain() {
+        let queue = PerCoreNvmeQueue::new(0);
+        let waker = CountingWaker::new();
+        let cid = 7u16;
+
+        {
+            let mut pending = queue.pending_requests.lock();
+            pending.register(cid, 1).expect("register request");
+            assert!(
+                pending
+                    .set_waker(cid, Waker::from(waker.clone()))
+                    .is_none(),
+                "request should remain pending until deferred drain",
+            );
+        }
+
+        {
+            let mut deferred = queue.deferred_completions.lock();
+            assert!(deferred.push(DeferredCompletion {
+                cid,
+                cqe: NvmeCompletion {
+                    result: 0,
+                    rsvd: 0,
+                    sq_head: 0,
+                    sq_id: 1,
+                    cid,
+                    status: 0,
+                },
+            }));
+        }
+
+        assert_eq!(waker.observed(), 0);
+        assert!(queue.check_completion(cid).is_none());
+
+        assert_eq!(queue.process_deferred_completions(), 1);
+        assert_eq!(waker.observed(), 1);
+        assert!(queue.check_completion(cid).is_some());
+    }
 }

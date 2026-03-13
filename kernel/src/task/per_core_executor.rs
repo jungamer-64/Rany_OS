@@ -669,32 +669,9 @@ impl PerCoreExecutor {
         }
 
         let topology = super::work_stealing_advanced::NumaTopology::get();
-        let core_id = self.core_id;
-        let my_node = topology.get_numa_node(core_id);
-
-        for &candidate in topology.get_llc_siblings(core_id) {
-            if candidate != core_id && self.try_steal_from_cpu(candidate as usize) {
-                return true;
-            }
-        }
-
-        for &candidate in topology.get_cores_in_node(my_node) {
-            if candidate == core_id || topology.shares_llc(core_id, candidate) {
-                continue;
-            }
+        for candidate in topology.steal_candidates_for(self.core_id) {
             if self.try_steal_from_cpu(candidate as usize) {
                 return true;
-            }
-        }
-
-        for node in 0..topology.num_nodes() {
-            if node == my_node {
-                continue;
-            }
-            for &candidate in topology.get_cores_in_node(node) {
-                if candidate != core_id && self.try_steal_from_cpu(candidate as usize) {
-                    return true;
-                }
             }
         }
 

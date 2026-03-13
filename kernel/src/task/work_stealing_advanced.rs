@@ -105,12 +105,17 @@ impl NumaTopology {
     }
 
     fn from_boot_info(numa_info: &NumaInfo) -> Self {
+        let core_count = core::cmp::min(crate::smp::cpu_count() as usize, MAX_CORES);
+        Self::from_boot_info_with_core_count(numa_info, core_count)
+    }
+
+    fn from_boot_info_with_core_count(numa_info: &NumaInfo, core_count: usize) -> Self {
         let node_count = (numa_info.node_count as usize).min(MAX_NUMA_NODES);
         if node_count == 0 {
             return Self::detect();
         }
 
-        let core_count = core::cmp::min(crate::smp::cpu_count() as usize, MAX_CORES);
+        let core_count = core::cmp::min(core_count, MAX_CORES);
         let mut topology = Self::default();
         let mut assigned = [false; MAX_CORES];
         topology.num_nodes = node_count.max(1);
@@ -208,6 +213,38 @@ impl NumaTopology {
     /// コア数を取得
     pub fn num_cores(&self) -> usize {
         self.num_cores
+    }
+
+    pub fn steal_candidates_for(&self, core_id: u32) -> Vec<u32> {
+        let mut order = Vec::new();
+        let my_node = self.get_numa_node(core_id);
+
+        for &candidate in self.get_llc_siblings(core_id) {
+            if candidate != core_id && !order.contains(&candidate) {
+                order.push(candidate);
+            }
+        }
+
+        for &candidate in self.get_cores_in_node(my_node) {
+            if candidate == core_id || self.shares_llc(core_id, candidate) || order.contains(&candidate)
+            {
+                continue;
+            }
+            order.push(candidate);
+        }
+
+        for node in 0..self.num_nodes() {
+            if node == my_node {
+                continue;
+            }
+            for &candidate in self.get_cores_in_node(node) {
+                if candidate != core_id && !order.contains(&candidate) {
+                    order.push(candidate);
+                }
+            }
+        }
+
+        order
     }
 }
 
@@ -359,6 +396,57 @@ impl CoreAffinity {
 impl Default for CoreAffinity {
     fn default() -> Self {
         Self::all()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test_case]
+    fn boot_info_topology_uses_registered_apic_mappings() {
+        crate::smp::reset_cpu_routing_for_tests();
+        crate::smp::register_cpu_apic_mapping(0, 2);
+        crate::smp::register_cpu_apic_mapping(1, 41);
+        crate::smp::register_cpu_apic_mapping(2, 99);
+
+        let mut info = NumaInfo {
+            node_count: 2,
+            ..Default::default()
+        };
+        info.nodes[0].cpu_apic_mask_low = (1u64 << 2) | (1u64 << 41);
+        info.nodes[1].cpu_apic_mask_high = 1u64 << (99 - 64);
+
+        let topology = NumaTopology::from_boot_info_with_core_count(&info, 3);
+
+        assert_eq!(topology.num_nodes(), 2);
+        assert_eq!(topology.num_cores(), 3);
+        assert_eq!(topology.get_numa_node(0), 0);
+        assert_eq!(topology.get_numa_node(1), 0);
+        assert_eq!(topology.get_numa_node(2), 1);
+        assert_eq!(topology.get_cores_in_node(0), &[0, 1]);
+        assert_eq!(topology.get_cores_in_node(1), &[2]);
+    }
+
+    #[test_case]
+    fn steal_candidates_prioritize_llc_then_local_then_remote() {
+        let mut topology = NumaTopology::default();
+        topology.num_nodes = 2;
+        topology.num_cores = 4;
+        topology.core_to_node[0] = 0;
+        topology.core_to_node[1] = 0;
+        topology.core_to_node[2] = 0;
+        topology.core_to_node[3] = 1;
+        topology.node_cores[0] = vec![0, 1, 2];
+        topology.node_cores[1] = vec![3];
+        topology.llc_siblings[0] = vec![0, 1];
+        topology.llc_siblings[1] = vec![1, 0];
+        topology.llc_siblings[2] = vec![2];
+        topology.llc_siblings[3] = vec![3];
+
+        assert_eq!(topology.steal_candidates_for(0), vec![1, 2, 3]);
+        assert_eq!(topology.steal_candidates_for(3), vec![0, 1, 2]);
     }
 }
 
