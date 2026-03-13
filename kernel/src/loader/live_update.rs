@@ -175,7 +175,11 @@ pub fn epoch_stats() -> EpochStats {
     let active_cores = ACTIVE_CORES.load(Ordering::Acquire) as usize;
     let online = active_cores.min(MAX_CORES);
     let in_critical_sections = (0..online)
-        .filter(|&cpu| PER_CORE_EPOCHS[cpu].in_critical_section.load(Ordering::Acquire))
+        .filter(|&cpu| {
+            PER_CORE_EPOCHS[cpu]
+                .in_critical_section
+                .load(Ordering::Acquire)
+        })
         .count();
 
     EpochStats {

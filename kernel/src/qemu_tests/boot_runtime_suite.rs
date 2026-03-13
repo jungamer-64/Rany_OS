@@ -61,6 +61,26 @@ static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
     ("interrupts_enabled", case_interrupts_enabled),
     ("smp_workers_online", case_smp_workers_online),
     ("per_core_workers_running", case_per_core_workers_running),
+    (
+        "runtime_local_timers_enabled",
+        case_runtime_local_timers_enabled,
+    ),
+    (
+        "pit_irq0_masked_after_handoff",
+        case_pit_irq0_masked_after_handoff,
+    ),
+    (
+        "apic_timers_armed_on_all_online_cpus",
+        case_apic_timers_armed_on_all_online_cpus,
+    ),
+    (
+        "per_cpu_local_ticks_progress",
+        case_per_cpu_local_ticks_progress,
+    ),
+    (
+        "cross_core_preemption_isolated",
+        case_cross_core_preemption_isolated,
+    ),
     ("uptime_ms_progresses", case_uptime_ms_progresses),
     ("tick_progresses", case_tick_progresses),
     ("sleep_ms_resumes", case_sleep_ms_resumes),
@@ -220,6 +240,183 @@ fn case_per_core_workers_running() -> Result<(), BootCaseError> {
                 cpu_id, stage
             )));
         }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_runtime_local_timers_enabled() -> Result<(), BootCaseError> {
+    let snapshot = crate::interrupts::runtime_timer_snapshot();
+    if snapshot.enabled {
+        Ok(())
+    } else {
+        Err(BootCaseError::failed(
+            "runtime handoff did not enable per-core LAPIC timers",
+        ))
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_pit_irq0_masked_after_handoff() -> Result<(), BootCaseError> {
+    if crate::interrupts::pit_irq0_masked() {
+        Ok(())
+    } else {
+        Err(BootCaseError::failed(
+            "legacy PIT IRQ0 is still unmasked after runtime handoff",
+        ))
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_apic_timers_armed_on_all_online_cpus() -> Result<(), BootCaseError> {
+    let deadline_ns = crate::time::precise_time_nanos().saturating_add(250 * 1_000_000);
+
+    while crate::time::precise_time_nanos() < deadline_ns {
+        let snapshot = crate::interrupts::runtime_timer_snapshot();
+        if snapshot.enabled {
+            let mut all_armed = true;
+            let mut cpu_id = 0usize;
+            while cpu_id < snapshot.cpu_count {
+                if !snapshot.armed[cpu_id] {
+                    all_armed = false;
+                    break;
+                }
+                cpu_id += 1;
+            }
+            if all_armed {
+                return Ok(());
+            }
+        }
+        core::hint::spin_loop();
+    }
+
+    let snapshot = crate::interrupts::runtime_timer_snapshot();
+    Err(BootCaseError::failed(format!(
+        "runtime LAPIC timers not armed on all CPUs: enabled={} cpu_count={} armed={:?}",
+        snapshot.enabled,
+        snapshot.cpu_count,
+        &snapshot.armed[..snapshot.cpu_count]
+    )))
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_per_cpu_local_ticks_progress() -> Result<(), BootCaseError> {
+    let before = task::per_cpu_preemption_snapshot();
+    let deadline_ns = crate::time::precise_time_nanos().saturating_add(250 * 1_000_000);
+
+    while crate::time::precise_time_nanos() < deadline_ns {
+        let after = task::per_cpu_preemption_snapshot();
+        let mut all_progressed = true;
+        let mut cpu_id = 0usize;
+        while cpu_id < after.cpu_count {
+            if after.local_ticks[cpu_id] <= before.local_ticks[cpu_id] {
+                all_progressed = false;
+                break;
+            }
+            cpu_id += 1;
+        }
+        if all_progressed {
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+
+    let after = task::per_cpu_preemption_snapshot();
+    Err(BootCaseError::failed(format!(
+        "per-cpu local preemption ticks did not advance: before={:?} after={:?}",
+        &before.local_ticks[..before.cpu_count],
+        &after.local_ticks[..after.cpu_count]
+    )))
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_cross_core_preemption_isolated() -> Result<(), BootCaseError> {
+    let cpu_count = crate::smp::cpu_count() as usize;
+    if cpu_count < 3 {
+        return Err(BootCaseError::blocked(
+            "cross_core_preemption_isolated requires >=3 CPUs so the runtime test runner stays off cpu0/cpu1",
+        ));
+    }
+
+    let timer_snapshot = crate::interrupts::runtime_timer_snapshot();
+    if !timer_snapshot.enabled {
+        return Err(BootCaseError::failed(
+            "runtime LAPIC timers are not enabled for cross-core isolation",
+        ));
+    }
+
+    let before = task::per_cpu_preemption_snapshot();
+    let heartbeat = Arc::new(AtomicU64::new(0));
+    let keep_running = Arc::new(AtomicBool::new(true));
+
+    task::spawn_on_cpu_for_test(0, {
+        let heartbeat = heartbeat.clone();
+        let keep_running = keep_running.clone();
+        async move {
+            while keep_running.load(Ordering::SeqCst) {
+                heartbeat.fetch_add(1, Ordering::SeqCst);
+                task::yield_now().await;
+            }
+        }
+    });
+
+    task::spawn_on_cpu_for_test(1, async move {
+        let deadline_ns = crate::time::precise_time_nanos().saturating_add(150 * 1_000_000);
+        while crate::time::precise_time_nanos() < deadline_ns {
+            let chunk_deadline = crate::time::precise_time_nanos().saturating_add(15 * 1_000_000);
+            while crate::time::precise_time_nanos() < chunk_deadline {
+                task::yield_point_with_quota_check();
+                core::hint::spin_loop();
+            }
+            task::yield_now().await;
+        }
+    });
+
+    let heartbeat_start = heartbeat.load(Ordering::SeqCst);
+    let deadline_ns = crate::time::precise_time_nanos().saturating_add(500 * 1_000_000);
+    let mut forced_seen = false;
+    let mut heartbeat_after_forced_start = None;
+    let mut heartbeat_progress_after_forced = false;
+
+    while crate::time::precise_time_nanos() < deadline_ns {
+        let snapshot = task::per_cpu_preemption_snapshot();
+        forced_seen |= snapshot.forced_preemptions[1] > before.forced_preemptions[1];
+
+        let heartbeat_now = heartbeat.load(Ordering::SeqCst);
+        if forced_seen {
+            if let Some(start) = heartbeat_after_forced_start {
+                if heartbeat_now > start {
+                    heartbeat_progress_after_forced = true;
+                    break;
+                }
+            } else {
+                heartbeat_after_forced_start = Some(heartbeat_now);
+            }
+        } else if heartbeat_now <= heartbeat_start {
+            core::hint::spin_loop();
+            continue;
+        }
+
+        core::hint::spin_loop();
+    }
+
+    keep_running.store(false, Ordering::SeqCst);
+
+    if !forced_seen {
+        let after = task::per_cpu_preemption_snapshot();
+        return Err(BootCaseError::failed(format!(
+            "cpu1 did not record forced preemption: before={} after={}",
+            before.forced_preemptions[1], after.forced_preemptions[1]
+        )));
+    }
+
+    if !heartbeat_progress_after_forced {
+        return Err(BootCaseError::failed(format!(
+            "cpu0 heartbeat stopped while cpu1 was being preempted: heartbeat_start={} heartbeat_end={}",
+            heartbeat_start,
+            heartbeat.load(Ordering::SeqCst)
+        )));
     }
 
     Ok(())

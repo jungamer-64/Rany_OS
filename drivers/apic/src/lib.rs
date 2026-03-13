@@ -703,8 +703,12 @@ fn disable_pic() {
     pic2_data.write(0xFF);
 }
 
+pub fn start_apic_timer_on_vector(vector: u8, interval_ms: u32) {
+    local_apic().start_timer(vector, interval_ms);
+}
+
 pub fn start_apic_timer(interval_ms: u32) {
-    local_apic().start_timer(0x20, interval_ms);
+    start_apic_timer_on_vector(0x20, interval_ms);
 }
 
 pub fn end_of_interrupt() {

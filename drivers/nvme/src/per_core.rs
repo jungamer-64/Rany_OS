@@ -787,9 +787,7 @@ mod tests {
             let mut pending = queue.pending_requests.lock();
             pending.register(cid, 1).expect("register request");
             assert!(
-                pending
-                    .set_waker(cid, Waker::from(waker.clone()))
-                    .is_none(),
+                pending.set_waker(cid, Waker::from(waker.clone())).is_none(),
                 "request should remain pending until deferred drain",
             );
         }

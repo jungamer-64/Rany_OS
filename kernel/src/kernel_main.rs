@@ -855,53 +855,83 @@ fn enable_interrupts_for_runtime(_context: &KernelBootContext) {
     }
 }
 
-/// Run integration tests if requested by build feature or kernel cmdline, then exit QEMU.
-fn run_integration_tests_if_requested(context: &KernelBootContext) {
-    fn exit_with_runtime_summary(summary: crate::test::runtime_dispatch::RuntimeRunSummary) -> ! {
-        use hal::port_io::PortU32;
+#[derive(Clone, Copy)]
+struct RuntimeTestRequest {
+    profile: &'static str,
+    case_filter: Option<&'static str>,
+}
 
-        let mut port = PortU32::new(0xf4);
-        if summary.is_success() {
-            port.write(0x10u32);
-        } else {
-            port.write(0x11u32);
-        }
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            x86_64::instructions::hlt();
-        }
+fn exit_with_runtime_summary(summary: crate::test::runtime_dispatch::RuntimeRunSummary) -> ! {
+    use hal::port_io::PortU32;
+
+    let mut port = PortU32::new(0xf4);
+    if summary.is_success() {
+        port.write(0x10u32);
+    } else {
+        port.write(0x11u32);
     }
+    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
+    loop {
+        x86_64::instructions::hlt();
+    }
+}
 
+fn requested_runtime_test(context: &KernelBootContext) -> Option<RuntimeTestRequest> {
     #[cfg(feature = "run-integration-tests")]
     {
-        info!(
-            target: "init",
-            "Feature run-integration-tests enabled: running runtime test profile 'pr-required'"
-        );
-        let summary = crate::test::runtime_dispatch::run("pr-required", None);
-        exit_with_runtime_summary(summary);
+        return Some(RuntimeTestRequest {
+            profile: "pr-required",
+            case_filter: None,
+        });
     }
 
-    if let Some(cmdline) = context.cmdline {
-        if let Some(profile) = util::get_cmdline_option(cmdline, "run_integration") {
-            let case_filter = util::get_cmdline_option(cmdline, "run_case");
-            match case_filter {
-                Some(case_id) => info!(
-                    target: "init",
-                    "Running runtime test profile '{}' case '{}' as requested by cmdline",
-                    profile,
-                    case_id
-                ),
-                None => info!(
-                    target: "init",
-                    "Running runtime test profile '{}' as requested by cmdline",
-                    profile
-                ),
-            }
-            let summary = crate::test::runtime_dispatch::run(profile, case_filter);
-            exit_with_runtime_summary(summary);
-        }
+    context.cmdline.and_then(|cmdline| {
+        util::get_cmdline_option(cmdline, "run_integration").map(|profile| RuntimeTestRequest {
+            profile,
+            case_filter: util::get_cmdline_option(cmdline, "run_case"),
+        })
+    })
+}
+
+fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
+    let Some(request) = requested_runtime_test(context) else {
+        return;
+    };
+
+    match request.case_filter {
+        Some(case_id) => info!(
+            target: "init",
+            "Scheduling runtime test profile '{}' case '{}' after executor handoff",
+            request.profile,
+            case_id
+        ),
+        None => info!(
+            target: "init",
+            "Scheduling runtime test profile '{}' after executor handoff",
+            request.profile
+        ),
     }
+
+    let cpu_count = crate::smp::cpu_count() as usize;
+    let target_cpu = if cpu_count > 2 {
+        cpu_count - 1
+    } else {
+        cpu_count.saturating_sub(1)
+    };
+
+    #[cfg(feature = "qemu-test-export")]
+    crate::task::spawn_on_cpu_for_test(target_cpu, async move {
+        crate::task::sleep_ms(10).await;
+        let summary = crate::test::runtime_dispatch::run(request.profile, request.case_filter);
+        exit_with_runtime_summary(summary);
+    });
+
+    #[cfg(not(feature = "qemu-test-export"))]
+    crate::task::spawn(async move {
+        crate::task::sleep_ms(10).await;
+        let summary = crate::test::runtime_dispatch::run(request.profile, request.case_filter);
+        exit_with_runtime_summary(summary);
+    });
 }
 
 fn resolve_shell_mode(context: &mut KernelBootContext) {
@@ -960,8 +990,8 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     // Executor起動後に完全非同期で実行される。
     enable_interrupts_for_runtime(context);
 
-    // 6.5. cmdline 指定の統合テスト実行（必要ならここで QEMU へ終了コードを返す）
-    run_integration_tests_if_requested(context);
+    // 6.5. runtime test request is executed after executor handoff so the
+    // checks observe the final per-core runtime state.
 
     // 7. システム統計を表示
     print_system_stats();
@@ -992,6 +1022,8 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
             info!(target: "run", "Starting per-core executor main loop");
         }
     });
+
+    schedule_runtime_tests_if_requested(context);
 
     // =========================================================================
     // STACK OVERFLOW TEST (Double Fault Verification)

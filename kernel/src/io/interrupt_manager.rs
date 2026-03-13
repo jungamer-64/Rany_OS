@@ -53,7 +53,10 @@ const LEGACY_VECTORS_START: u8 = 32;
 const LEGACY_VECTORS_END: u8 = 47;
 
 /// APIC Timer vector
-const APIC_TIMER_VECTOR: u8 = 240;
+///
+/// 0xF0 is reserved for executor wake IPIs and 0xF1..=0xF8 are reserved for
+/// TLB/IPI traffic, so the LAPIC runtime timer uses 0xEF.
+const APIC_TIMER_VECTOR: u8 = 0xEF;
 
 /// IPI vectors
 const IPI_VECTOR_BASE: u8 = 241;

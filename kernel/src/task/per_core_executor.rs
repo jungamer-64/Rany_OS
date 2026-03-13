@@ -811,16 +811,33 @@ impl ExecutorManager {
     }
 
     pub fn spawn_task(&self, task: super::Task, priority: Priority) -> super::TaskId {
-        let task_id = task.id;
         let preferred_cpu = current_core_id().min(self.active_cpu_count().saturating_sub(1));
         let preferred_numa_node =
             super::work_stealing_advanced::NumaTopology::get().get_numa_node(preferred_cpu as u32);
-        let scheduled = ScheduledTask::new(
+        self.spawn_task_with_policy(
             task,
             priority,
             self.default_affinity_mask(),
             preferred_cpu,
             Some(preferred_numa_node),
+        )
+    }
+
+    fn spawn_task_with_policy(
+        &self,
+        task: super::Task,
+        priority: Priority,
+        affinity_mask: u64,
+        preferred_cpu: usize,
+        preferred_numa_node: Option<usize>,
+    ) -> super::TaskId {
+        let task_id = task.id;
+        let scheduled = ScheduledTask::new(
+            task,
+            priority,
+            affinity_mask,
+            preferred_cpu,
+            preferred_numa_node,
         );
         let target_cpu = self.pick_target_cpu_for_task(&scheduled);
         self.global_enqueued.fetch_add(1, Ordering::Relaxed);
@@ -1128,6 +1145,33 @@ where
 
 pub fn spawn_task(task: super::Task) -> super::TaskId {
     EXECUTOR_MANAGER.spawn_task(task, Priority::Normal)
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub fn spawn_on_cpu_for_test<F>(cpu_id: usize, future: F) -> super::TaskId
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let mut task = super::Task::new(future);
+    task.domain_id = crate::domain_system::current_domain();
+
+    let max_cpu = EXECUTOR_MANAGER.active_cpu_count().saturating_sub(1);
+    let target_cpu = cpu_id.min(max_cpu);
+    let affinity_mask = if target_cpu < u64::BITS as usize {
+        1u64 << target_cpu
+    } else {
+        u64::MAX
+    };
+    let preferred_numa_node =
+        super::work_stealing_advanced::NumaTopology::get().get_numa_node(target_cpu as u32);
+
+    EXECUTOR_MANAGER.spawn_task_with_policy(
+        task,
+        Priority::Normal,
+        affinity_mask,
+        target_cpu,
+        Some(preferred_numa_node),
+    )
 }
 
 pub fn run_forever(cpu_id: usize) -> ! {

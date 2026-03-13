@@ -139,6 +139,14 @@ pub struct PreemptionStats {
     pub enabled: bool,
 }
 
+#[cfg(any(test, feature = "qemu-test-export"))]
+#[derive(Debug, Clone, Copy)]
+pub struct PerCpuPreemptionSnapshot {
+    pub cpu_count: usize,
+    pub local_ticks: [u64; MAX_CPUS],
+    pub forced_preemptions: [u64; MAX_CPUS],
+}
+
 static PREEMPTION_CONTROLLERS: [PreemptionController; MAX_CPUS] =
     [const { PreemptionController::new() }; MAX_CPUS];
 static PREEMPTION_PENDING: [AtomicBool; MAX_CPUS] = {
@@ -200,6 +208,27 @@ pub fn aggregate_preemption_stats() -> PreemptionStats {
         voluntary_yields,
         current_time_slice,
         enabled,
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub fn per_cpu_preemption_snapshot() -> PerCpuPreemptionSnapshot {
+    let cpu_count = (crate::smp::cpu_count() as usize).clamp(1, MAX_CPUS);
+    let mut local_ticks = [0u64; MAX_CPUS];
+    let mut forced_preemptions = [0u64; MAX_CPUS];
+
+    let mut cpu_id = 0usize;
+    while cpu_id < cpu_count {
+        let controller = controller_for_cpu(cpu_id);
+        local_ticks[cpu_id] = controller.local_tick();
+        forced_preemptions[cpu_id] = controller.stats().forced_preemptions;
+        cpu_id += 1;
+    }
+
+    PerCpuPreemptionSnapshot {
+        cpu_count,
+        local_ticks,
+        forced_preemptions,
     }
 }
 
@@ -508,12 +537,8 @@ mod tests {
             .preemption_pending
             .store(false, Ordering::Release);
         controller.enabled.store(true, Ordering::Release);
-        controller
-            .forced_preemptions
-            .store(0, Ordering::Release);
-        controller
-            .voluntary_yields
-            .store(0, Ordering::Release);
+        controller.forced_preemptions.store(0, Ordering::Release);
+        controller.voluntary_yields.store(0, Ordering::Release);
         PREEMPTION_PENDING[cpu_id].store(false, Ordering::Release);
         YIELD_REQUESTED[cpu_id].store(false, Ordering::Release);
         DOMAIN_QUOTA_EXCEEDED[cpu_id].store(false, Ordering::Release);

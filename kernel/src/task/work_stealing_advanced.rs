@@ -226,7 +226,9 @@ impl NumaTopology {
         }
 
         for &candidate in self.get_cores_in_node(my_node) {
-            if candidate == core_id || self.shares_llc(core_id, candidate) || order.contains(&candidate)
+            if candidate == core_id
+                || self.shares_llc(core_id, candidate)
+                || order.contains(&candidate)
             {
                 continue;
             }

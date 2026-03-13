@@ -123,6 +123,7 @@ pub fn last_interrupt_context(cpu_id: usize) -> Option<(u8, u64, u64)> {
 /// ハードウェア割り込みのベースオフセット
 pub const PIC1_OFFSET: u8 = 32;
 pub const PIC2_OFFSET: u8 = 40;
+pub const APIC_TIMER_VECTOR: u8 = 0xEF;
 pub const EXECUTOR_WAKE_VECTOR: u8 = 0xF0;
 
 /// 割り込みベクタ番号
@@ -223,6 +224,9 @@ fn init_idt() {
     // ハードウェア割り込みハンド設定
     idt[InterruptVector::Timer as u8].set_handler_fn(handler_to_x86!(
         timer_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+    ));
+    idt[APIC_TIMER_VECTOR].set_handler_fn(handler_to_x86!(
+        apic_timer_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[InterruptVector::Keyboard as u8].set_handler_fn(handler_to_x86!(
         keyboard_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
@@ -556,6 +560,47 @@ pub fn mask_irq(irq: u8) {
     }
 }
 
+#[cfg(any(test, feature = "qemu-test-export"))]
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeTimerSnapshot {
+    pub enabled: bool,
+    pub cpu_count: usize,
+    pub armed: [bool; crate::per_cpu::MAX_CPUS],
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+fn read_pic_irq_masked(irq: u8) -> bool {
+    let (port, bit) = if irq < 8 {
+        (PIC1_DATA, irq)
+    } else {
+        (PIC2_DATA, irq - 8)
+    };
+
+    (crate::io::inb(port) & (1 << bit)) != 0
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub fn runtime_timer_snapshot() -> RuntimeTimerSnapshot {
+    let cpu_count = (crate::smp::cpu_count() as usize).clamp(1, crate::per_cpu::MAX_CPUS);
+    let mut armed = [false; crate::per_cpu::MAX_CPUS];
+    let mut cpu_id = 0usize;
+    while cpu_id < cpu_count {
+        armed[cpu_id] = LOCAL_RUNTIME_TIMER_ARMED[cpu_id].load(Ordering::Acquire);
+        cpu_id += 1;
+    }
+
+    RuntimeTimerSnapshot {
+        enabled: runtime_local_timers_enabled(),
+        cpu_count,
+        armed,
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub fn pit_irq0_masked() -> bool {
+    read_pic_irq_masked(0)
+}
+
 // ============================================================================
 // Hardware Interrupt Handlers
 // ============================================================================
@@ -600,7 +645,7 @@ pub fn ensure_runtime_local_timer_started() {
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        crate::io::apic::start_apic_timer(1);
+        crate::io::apic::start_apic_timer_on_vector(APIC_TIMER_VECTOR, 1);
     }
 }
 
@@ -625,63 +670,71 @@ pub fn transition_to_runtime_local_timers() -> bool {
 // - Wakerを起床させるだけ
 // simple counter for timer debug logging
 static TIMER_LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+fn handle_timer_interrupt_common() {
+    // log first tick to confirm handler firing
+    if !TIMER_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+        // use early_print to avoid acquiring the logger lock inside ISR
+        crate::io::log::early_print("[INT] timer interrupt handler entered\n");
+    }
+
+    let cpu_id = timer_cpu_index();
+    let is_global_tick_cpu = is_global_timekeeping_cpu(cpu_id);
+
+    // 1. 各CPUのローカルtimesliceだけを更新する。
+    crate::task::preemption::handle_timer_tick(0);
+
+    // 2. グローバル時間管理はBSPのみが進める。
+    let global_tick = if is_global_tick_cpu {
+        let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        let tick_nanos = crate::time::timer_tick_nanos();
+        if tick_nanos != 0 {
+            crate::time::tick(tick_nanos);
+        }
+        crate::drivers::time::handle_timer_interrupt();
+        tick
+    } else {
+        TIMER_TICKS.load(Ordering::Relaxed)
+    };
+
+    // 3. 軽量なフラグ設定のみ（重い処理は遅延）
+    TIMER_EVENT_PENDING[cpu_id].store(true, Ordering::Release);
+
+    // 4. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+    if is_global_tick_cpu {
+        crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
+    }
+
+    // IRQが届かない環境向けのcompletionフォールバック:
+    if is_global_tick_cpu
+        && (global_tick & 0x3) == 0
+        && VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
+    {
+        VIRTIO_NET_IRQ_FALLBACK_PENDING.store(true, Ordering::Release);
+    }
+
+    // 5. プリエンプションフラグのみ設定（実際のyieldは遅延）
+    if crate::task::preemption::should_preempt() {
+        crate::task::preemption::set_preemption_pending();
+    }
+}
+
 define_interrupt!(
     fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
         record_interrupt_frame(InterruptVector::Timer as u8, &_stack_frame);
-        // log first tick to confirm handler firing
-        if !TIMER_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-            // use early_print to avoid acquiring the logger lock inside ISR
-            crate::io::log::early_print("[INT] timer interrupt handler entered\n");
-        }
-
-        let cpu_id = timer_cpu_index();
-        let is_global_tick_cpu = is_global_timekeeping_cpu(cpu_id);
-
-        // 1. 各CPUのローカルtimesliceだけを更新する。
-        crate::task::preemption::handle_timer_tick(0);
-
-        // 2. グローバル時間管理はBSPのみが進める。
-        let global_tick = if is_global_tick_cpu {
-            let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-            let tick_nanos = crate::time::timer_tick_nanos();
-            if tick_nanos != 0 {
-                crate::time::tick(tick_nanos);
-            }
-            crate::drivers::time::handle_timer_interrupt();
-            tick
-        } else {
-            TIMER_TICKS.load(Ordering::Relaxed)
-        };
-
-        // 3. 軽量なフラグ設定のみ（重い処理は遅延）
-        // タイマーイベントペンディングフラグを設定
-        TIMER_EVENT_PENDING[cpu_id].store(true, Ordering::Release);
-
-        // 4. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
-        // Timer-related async wakeups are bridged only from poll_timer_events()
-        // so the ISR path remains limited to deferred event publication.
-        if is_global_tick_cpu {
-            crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
-        }
-
-        // IRQが届かない環境向けのcompletionフォールバック:
-        // ISR内では重い処理を行わず、4tickごとに pending フラグのみ立てる。
-        if is_global_tick_cpu
-            && (global_tick & 0x3) == 0
-            && VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
-        {
-            VIRTIO_NET_IRQ_FALLBACK_PENDING.store(true, Ordering::Release);
-        }
-
-        // 5. EOI (End Of Interrupt) を送信
+        handle_timer_interrupt_common();
         unsafe {
             send_eoi(InterruptVector::Timer as u8 - PIC1_OFFSET);
         }
+    }
+);
 
-        // 6. プリエンプションフラグのみ設定（実際のyieldは遅延）
-        if crate::task::preemption::should_preempt() {
-            crate::task::preemption::set_preemption_pending();
-        }
+define_interrupt!(
+    fn apic_timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        record_interrupt_frame(APIC_TIMER_VECTOR, &_stack_frame);
+        handle_timer_interrupt_common();
+        crate::io::interrupt_manager::send_eoi();
     }
 );
 

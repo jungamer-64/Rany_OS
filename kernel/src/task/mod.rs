@@ -64,6 +64,8 @@ pub use interrupt_waker::{
 };
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub use per_core_executor::TestExecutor;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub use per_core_executor::spawn_on_cpu_for_test;
 #[allow(unused_imports)]
 pub use per_core_executor::{
     ExecutorManager, ExecutorStats, GlobalQueueStats, PerCoreExecutor, PolledTaskContext, Priority,
@@ -71,6 +73,10 @@ pub use per_core_executor::{
     executor_manager, global_queue_stats, init_executors, run_forever, spawn, spawn_task,
     spawn_with_priority, wake_queue_stats,
 };
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub use preemption::PerCpuPreemptionSnapshot;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub use preemption::per_cpu_preemption_snapshot;
 #[allow(unused_imports)]
 pub use preemption::{
     AdaptiveTimeSlice,
@@ -89,6 +95,7 @@ pub use preemption::{
     voluntary_yield,
     yield_now,
     yield_point,
+    yield_point_with_quota_check,
 };
 pub use timer::{current_tick, sleep_ms};
 
