@@ -125,6 +125,8 @@ pub enum RunError {
     Build(BuildError),
     QemuNotFound(String),
     FirmwareMissing(String),
+    InvalidAccel(String),
+    AccelUnavailable(String),
     QemuLaunch(std::io::Error),
     Timeout {
         timeout_secs: u64,
@@ -140,6 +142,8 @@ impl fmt::Display for RunError {
             Self::Build(err) => write!(f, "build failed: {err}"),
             Self::QemuNotFound(msg) => write!(f, "{msg}"),
             Self::FirmwareMissing(msg) => write!(f, "{msg}"),
+            Self::InvalidAccel(msg) => write!(f, "{msg}"),
+            Self::AccelUnavailable(msg) => write!(f, "{msg}"),
             Self::QemuLaunch(err) => write!(f, "failed to launch qemu-system-x86_64: {err}"),
             Self::Timeout {
                 timeout_secs,
@@ -164,6 +168,42 @@ impl fmt::Display for RunError {
 }
 
 impl std::error::Error for RunError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccelPreference {
+    Auto,
+    Kvm,
+    Tcg,
+}
+
+impl AccelPreference {
+    fn parse(raw: Option<&str>) -> Result<Self, RunError> {
+        match raw.map(str::trim).filter(|value| !value.is_empty()) {
+            None => Ok(Self::Auto),
+            Some(value) if value.eq_ignore_ascii_case("auto") => Ok(Self::Auto),
+            Some(value) if value.eq_ignore_ascii_case("kvm") => Ok(Self::Kvm),
+            Some(value) if value.eq_ignore_ascii_case("tcg") => Ok(Self::Tcg),
+            Some(value) => Err(RunError::InvalidAccel(format!(
+                "unsupported QEMU_TEST_ACCEL='{value}'. Expected one of: auto, kvm, tcg."
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FullbootAccel {
+    Kvm,
+    Tcg,
+}
+
+impl FullbootAccel {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Kvm => "kvm",
+            Self::Tcg => "tcg",
+        }
+    }
+}
 
 #[must_use]
 pub const fn normalize_qemu_exit_code(host_exit_code: i32) -> Option<u32> {
@@ -653,6 +693,63 @@ fn ensure_qemu_available() -> Result<(), RunError> {
     }
 }
 
+fn qemu_supports_accel(accel: &str) -> bool {
+    let output = match Command::new("qemu-system-x86_64")
+        .arg("-accel")
+        .arg("help")
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return false,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    stdout.lines().chain(stderr.lines()).any(|line| {
+        line.split_whitespace()
+            .any(|token| token.eq_ignore_ascii_case(accel))
+    })
+}
+
+fn kvm_is_available() -> bool {
+    qemu_supports_accel("kvm")
+        && std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/kvm")
+            .is_ok()
+}
+
+fn select_fullboot_accel(
+    preference: AccelPreference,
+    kvm_available: bool,
+) -> Result<FullbootAccel, RunError> {
+    match preference {
+        AccelPreference::Auto | AccelPreference::Kvm => {
+            if kvm_available {
+                Ok(FullbootAccel::Kvm)
+            } else {
+                let mode = match preference {
+                    AccelPreference::Auto => "default",
+                    AccelPreference::Kvm => "QEMU_TEST_ACCEL=kvm",
+                    AccelPreference::Tcg => unreachable!(),
+                };
+                Err(RunError::AccelUnavailable(format!(
+                    "KVM acceleration is unavailable for full-boot tests ({mode}). \
+Set QEMU_TEST_ACCEL=tcg to enable the slower software-emulated path explicitly."
+                )))
+            }
+        }
+        AccelPreference::Tcg => Ok(FullbootAccel::Tcg),
+    }
+}
+
+fn resolve_fullboot_accel() -> Result<FullbootAccel, RunError> {
+    let preference = AccelPreference::parse(std::env::var("QEMU_TEST_ACCEL").ok().as_deref())?;
+    select_fullboot_accel(preference, kvm_is_available())
+}
+
 fn ensure_ovmf_assets(root: &Path) -> Result<(PathBuf, PathBuf), RunError> {
     let ovmf_dir = root.join("assets").join("firmware").join("ovmf-x64");
     let code = ovmf_dir.join("OVMF_CODE.fd");
@@ -767,6 +864,7 @@ fn poll_qemu(
 #[allow(clippy::needless_pass_by_value)]
 pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     ensure_qemu_available()?;
+    let accel = resolve_fullboot_accel()?;
     let image = package_fullboot_image(&config).map_err(RunError::Build)?;
 
     let root = workspace_root();
@@ -801,9 +899,16 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     };
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
+    eprintln!(
+        "full-boot profile '{}' using QEMU accel '{}'",
+        config.profile,
+        accel.as_str()
+    );
     qemu_cmd
         .arg("-machine")
-        .arg("q35,accel=tcg")
+        .arg("q35")
+        .arg("-accel")
+        .arg(accel.as_str())
         .arg("-cpu")
         .arg(&config.cpu)
         .arg("-m")
@@ -887,5 +992,54 @@ mod tests {
 
         assert!(cmdline.contains("run_integration=driver_domain"));
         assert!(cmdline.contains("qemu_no_if=1"));
+    }
+
+    #[test]
+    fn accel_preference_defaults_to_auto() {
+        assert_eq!(AccelPreference::parse(None).unwrap(), AccelPreference::Auto);
+        assert_eq!(
+            AccelPreference::parse(Some("auto")).unwrap(),
+            AccelPreference::Auto
+        );
+    }
+
+    #[test]
+    fn accel_preference_accepts_kvm_and_tcg() {
+        assert_eq!(
+            AccelPreference::parse(Some("kvm")).unwrap(),
+            AccelPreference::Kvm
+        );
+        assert_eq!(
+            AccelPreference::parse(Some("TCG")).unwrap(),
+            AccelPreference::Tcg
+        );
+    }
+
+    #[test]
+    fn accel_preference_rejects_unknown_value() {
+        let err = AccelPreference::parse(Some("hvf")).unwrap_err();
+        assert!(matches!(err, RunError::InvalidAccel(_)));
+    }
+
+    #[test]
+    fn auto_prefers_kvm_when_available() {
+        assert_eq!(
+            select_fullboot_accel(AccelPreference::Auto, true).unwrap(),
+            FullbootAccel::Kvm
+        );
+    }
+
+    #[test]
+    fn auto_requires_explicit_tcg_when_kvm_is_missing() {
+        let err = select_fullboot_accel(AccelPreference::Auto, false).unwrap_err();
+        assert!(matches!(err, RunError::AccelUnavailable(_)));
+    }
+
+    #[test]
+    fn explicit_tcg_is_allowed_without_kvm() {
+        assert_eq!(
+            select_fullboot_accel(AccelPreference::Tcg, false).unwrap(),
+            FullbootAccel::Tcg
+        );
     }
 }

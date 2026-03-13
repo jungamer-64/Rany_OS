@@ -76,6 +76,7 @@ jobs:
       - name: Run full-boot PR-required tier
         env:
           RUST_TEST_THREADS: 1
+          QEMU_TEST_ACCEL: tcg
           QEMU_TEST_CPU: qemu64,+rdtscp
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_SMP: 1
@@ -157,6 +158,7 @@ jobs:
       - name: Run full-boot nightly-required tier
         env:
           RUST_TEST_THREADS: 1
+          QEMU_TEST_ACCEL: tcg
           QEMU_TEST_CPU: qemu64,+rdtscp
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_SMP: 1
@@ -206,6 +208,7 @@ jobs:
       - name: Run full-boot Step9 heavy profile
         env:
           RUST_TEST_THREADS: 1
+          QEMU_TEST_ACCEL: tcg
           QEMU_TEST_CPU: qemu64,+rdtscp
           QEMU_TEST_MEMORY_MB: 1024
           QEMU_TEST_SMP: 1
