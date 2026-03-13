@@ -118,8 +118,8 @@ impl IommuDomain {
     // DMA unmap helpers
     // =========================================================================
 
-    #[cfg(test)]
-    pub fn drop_mapping_for_test(&self, iova: u64) -> Option<DmaMapping> {
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub(crate) fn drop_mapping_for_test(&self, iova: u64) -> Option<DmaMapping> {
         let mapping = self.mapping(iova)?;
         let (start_shard, end_shard) = self.shard_range(iova, mapping.size).ok()?;
         let mut guards = self.lock_shards(start_shard, end_shard).ok()?;

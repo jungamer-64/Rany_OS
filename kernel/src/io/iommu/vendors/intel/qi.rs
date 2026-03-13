@@ -373,8 +373,8 @@ impl InvalidationQueue {
         self.queue_phys
     }
 
-    #[cfg(test)]
-    pub fn queue_virtual_address(&self) -> usize {
+    #[cfg(any(test, feature = "qemu-test-export"))]
+    pub(crate) fn queue_virtual_address(&self) -> usize {
         self.queue_virt
     }
 
