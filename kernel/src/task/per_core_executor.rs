@@ -1188,19 +1188,7 @@ pub(crate) fn read_tsc() -> u64 {
 
 #[inline]
 pub(crate) fn current_core_id() -> usize {
-    if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
-        return cpu_id;
-    }
-
-    #[cfg(not(test))]
-    {
-        let apic_id = crate::io::apic::local_apic().id() as u32;
-        if let Some(cpu_id) = crate::smp::cpu_for_apic_id(apic_id) {
-            return cpu_id;
-        }
-    }
-
-    0
+    crate::smp::cpu_index()
 }
 
 fn mark_current_polled_task(

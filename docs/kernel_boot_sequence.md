@@ -58,7 +58,7 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 ## Phase 6: Runtime Handoff
 
 - 実装関数: `phase_runtime_handoff()`
-- `smp` runtime handoff、per-core executor manager、I/O scheduler、symbol table、test framework、late integration retry、interrupt enable、runtime integration dispatch、stats 出力、runtime worker release、runtime task spawn、`task::run_forever(cpu_id)` を行う。
+- `smp::topology::CpuTopology` / `smp::lifecycle::CpuLifecycle` / `smp::runtime_handoff::RuntimeHandoffCoordinator` を前提に、per-core executor manager、I/O scheduler、symbol table、test framework、late integration retry、interrupt enable、runtime integration dispatch、stats 出力、runtime worker release、runtime task spawn、`task::run_forever(cpu_id)` を行う。
 - `shell_mode` はこの時点で `graphics_console_ready` と cmdline から確定する。
 - 割り込み有効化後も、ネットワークの本格 bring-up は `network_bootstrap_task()` による非同期処理に委譲される。
 - 依存:
@@ -77,3 +77,11 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
   - user_app_1、ipc_demo、preemption demo、memory monitor、waker test、ping demo
 
 これにより、同期初期化の終点と Executor 起動後の責務がコード上で分離される。
+
+## Phase 1 Closure Validation
+
+- Phase 1 の正規 runtime 受け入れ経路は TCG full-boot ではなく、KVM + VFIO + `SERIAL=file` の smoke run を使う。
+- 既定コマンドは `make smoke-multicore-vfio`。これは `make build-kernel`、`timeout 90s make run NETWORK=pcie VFIO_NET_BDFS=0000:06:00.0,0000:06:00.1 VFIO_ACK=1 SERIAL=file`、`scripts/verify_multicore_serial_log.sh` を 1 回で再現する。
+- serial log は `target/x86_64-exorust/debug/serial.log` に出力され、少なくとも `BOOT COMPLETE!`、`Starting per-core executor main loop`、`[SMP][TOPOLOGY]`、`[SMP][ONLINE]`、`[SMP][HANDOFF]` を含む。
+- multicore 実行では `serial.log` に `[C1]` 以上の AP runtime log が現れることを成功条件にする。`make smoke-multicore-vfio SMP=1` では逆に AP runtime log が出ないことを確認する。
+- `>64 CPUs` の clamp / truncation は `CpuTopology` / `CpuLifecycle` の unit test を正ゲートとし、現行の KVM/VFIO runtime smoke の必須条件にはしない。

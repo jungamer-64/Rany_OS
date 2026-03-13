@@ -235,9 +235,7 @@ impl LocklessLocalApic {
         self.write_reg(LapicRegister::IcrHigh, target_apic_id << 24);
         self.write_reg(
             LapicRegister::IcrLow,
-            LvtFlags::DELIVERY_INIT.bits()
-                | Self::ICR_LEVEL_ASSERT
-                | Self::ICR_TRIGGER_LEVEL,
+            LvtFlags::DELIVERY_INIT.bits() | Self::ICR_LEVEL_ASSERT | Self::ICR_TRIGGER_LEVEL,
         );
         if !self.wait_for_delivery(target_apic_id, "init-assert") {
             return;
@@ -272,9 +270,7 @@ impl LocklessLocalApic {
         self.write_reg(LapicRegister::IcrHigh, 0);
         self.write_reg(
             LapicRegister::IcrLow,
-            (vector as u32)
-                | Self::ICR_DEST_ALL_EXCLUDING_SELF
-                | LvtFlags::DELIVERY_FIXED.bits(),
+            (vector as u32) | Self::ICR_DEST_ALL_EXCLUDING_SELF | LvtFlags::DELIVERY_FIXED.bits(),
         );
         let _ = self.wait_for_delivery(u32::MAX, "broadcast");
     }

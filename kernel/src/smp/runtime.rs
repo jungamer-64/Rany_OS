@@ -1,8 +1,6 @@
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 const MAX_ROUTED_CPUS: usize = crate::per_cpu::MAX_CPUS;
-
-static RUNTIME_WORKERS_RELEASED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_WORKER_STAGE: [AtomicU8; MAX_ROUTED_CPUS] = {
     const INIT: AtomicU8 = AtomicU8::new(RuntimeWorkerStage::Unknown as u8);
     [INIT; MAX_ROUTED_CPUS]
@@ -24,37 +22,41 @@ pub(crate) enum RuntimeWorkerStage {
 }
 
 pub fn runtime_workers_released() -> bool {
-    RUNTIME_WORKERS_RELEASED.load(Ordering::Acquire)
+    crate::smp::lifecycle::runtime_workers_released()
 }
 
 pub(crate) fn set_runtime_worker_stage(cpu_id: usize, stage: RuntimeWorkerStage) {
     if cpu_id < MAX_ROUTED_CPUS {
         RUNTIME_WORKER_STAGE[cpu_id].store(stage as u8, Ordering::Release);
+        let lifecycle_stage = match stage {
+            RuntimeWorkerStage::Unknown => crate::smp::lifecycle::CpuLifecycleStage::Detected,
+            RuntimeWorkerStage::BootstrapReady
+            | RuntimeWorkerStage::Registered
+            | RuntimeWorkerStage::ColdStartHelper
+            | RuntimeWorkerStage::ExecutorConstructed => {
+                crate::smp::lifecycle::CpuLifecycleStage::PerCpuReady
+            }
+            RuntimeWorkerStage::Parked => crate::smp::lifecycle::CpuLifecycleStage::Parked,
+            RuntimeWorkerStage::ReleaseObserved | RuntimeWorkerStage::HandoffIrqsMasked => {
+                crate::smp::lifecycle::CpuLifecycleStage::Released
+            }
+            RuntimeWorkerStage::LazyTlbExited => {
+                crate::smp::lifecycle::CpuLifecycleStage::LazyTlbExited
+            }
+            RuntimeWorkerStage::ExecutorRun => {
+                crate::smp::lifecycle::CpuLifecycleStage::ExecutorRun
+            }
+        };
+        crate::smp::set_cpu_lifecycle_stage(cpu_id, lifecycle_stage);
     }
 }
 
 pub fn runtime_worker_stage(cpu_id: usize) -> Option<&'static str> {
-    if cpu_id >= MAX_ROUTED_CPUS {
-        return None;
-    }
-
-    match RUNTIME_WORKER_STAGE[cpu_id].load(Ordering::Acquire) {
-        x if x == RuntimeWorkerStage::Unknown as u8 => Some("unknown"),
-        x if x == RuntimeWorkerStage::BootstrapReady as u8 => Some("bootstrap_ready"),
-        x if x == RuntimeWorkerStage::Parked as u8 => Some("parked"),
-        x if x == RuntimeWorkerStage::ReleaseObserved as u8 => Some("release_observed"),
-        x if x == RuntimeWorkerStage::HandoffIrqsMasked as u8 => Some("handoff_irqs_masked"),
-        x if x == RuntimeWorkerStage::Registered as u8 => Some("registered"),
-        x if x == RuntimeWorkerStage::LazyTlbExited as u8 => Some("lazy_tlb_exited"),
-        x if x == RuntimeWorkerStage::ColdStartHelper as u8 => Some("cold_start_helper"),
-        x if x == RuntimeWorkerStage::ExecutorConstructed as u8 => Some("executor_constructed"),
-        x if x == RuntimeWorkerStage::ExecutorRun as u8 => Some("executor_run"),
-        _ => None,
-    }
+    crate::smp::lifecycle::stage_name(cpu_id)
 }
 
 pub fn release_runtime_workers() {
-    RUNTIME_WORKERS_RELEASED.store(true, Ordering::Release);
+    crate::smp::runtime_handoff::runtime_handoff_coordinator().release_runtime_workers();
 }
 
 pub fn wait_for_runtime_workers() {
@@ -76,7 +78,7 @@ pub fn wait_for_runtime_workers() {
 }
 
 pub(crate) fn reset_runtime_state() {
-    RUNTIME_WORKERS_RELEASED.store(false, Ordering::Relaxed);
+    crate::smp::lifecycle::reset_state();
     for entry in &RUNTIME_WORKER_STAGE {
         entry.store(RuntimeWorkerStage::Unknown as u8, Ordering::Relaxed);
     }

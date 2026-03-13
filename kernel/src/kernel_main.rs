@@ -1010,12 +1010,7 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
         }
         RuntimeHandoffMilestone::StartExecutorRun => {
             let apic_timer_runtime = crate::interrupts::transition_to_runtime_local_timers();
-            crate::smp::release_runtime_workers();
-            if crate::smp::cpu_count() > 1 {
-                crate::io::interrupt_manager::broadcast_ipi(
-                    crate::interrupts::EXECUTOR_WAKE_VECTOR,
-                );
-            }
+            crate::smp::runtime_handoff::runtime_handoff_coordinator().release_runtime_workers();
             if apic_timer_runtime {
                 info!(target: "run", "Runtime handoff switched to per-core APIC timers");
             }

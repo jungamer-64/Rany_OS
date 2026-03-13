@@ -761,6 +761,35 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
     finalize_cpu_topology(num_cpus);
 }
 
+pub unsafe fn register_current_cpu(cpu_id: usize) {
+    if cpu_id >= MAX_CPUS {
+        return;
+    }
+
+    if can_use_fsgsbase() && !is_fsgsbase_enabled() {
+        unsafe {
+            enable_fsgsbase();
+        }
+    }
+
+    let hot_slot_ptr = core::ptr::addr_of!(PER_CPU_HOT[cpu_id]) as usize;
+    if unsafe { PER_CPU_HOT[cpu_id].self_ptr } != hot_slot_ptr {
+        unsafe {
+            PER_CPU_HOT[cpu_id] = PerCpuHot::new(cpu_id);
+            PER_CPU_COLD[cpu_id] = PerCpuCold::new(cpu_id);
+            PER_CPU_HOT[cpu_id].set_self_ptr();
+            PER_CPU_HOT[cpu_id].set_cold(&mut PER_CPU_COLD[cpu_id] as *mut PerCpuCold);
+        }
+    }
+
+    unsafe {
+        write_gsbase_any(hot_slot_ptr as u64);
+        install_tls_for_cpu(cpu_id);
+    }
+
+    mark_cpu_online(cpu_id);
+}
+
 /// 現在のCPUのPer-CPUデータを設定（AP用）
 ///
 /// BSP（CPU 0）のGsBaseは `init_per_cpu()` 内で自動的に設定されるため、
@@ -772,39 +801,7 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
 /// - cpu_idは有効な範囲内である必要がある
 /// - init_per_cpu() が先に呼ばれている必要がある
 pub unsafe fn setup_current_cpu(cpu_id: usize) {
-    if cpu_id >= MAX_CPUS {
-        return;
-    }
-
-    // If fastpath is adopted globally, enable CR4.FSGSBASE on THIS CPU
-    // (CR4 is per-core, so each AP must enable it independently)
-    if can_use_fsgsbase() && !is_fsgsbase_enabled() {
-        unsafe {
-            enable_fsgsbase();
-        }
-    }
-
-    // Use addr_of! to avoid creating a reference to static mut
-    let hot_slot_ptr = core::ptr::addr_of!(PER_CPU_HOT[cpu_id]) as usize;
-
-    // Idempotent: only initialize if not already done (check self_ptr)
-    if unsafe { PER_CPU_HOT[cpu_id].self_ptr } != hot_slot_ptr {
-        unsafe {
-            // Initialize Hot/Cold structures
-            PER_CPU_HOT[cpu_id] = PerCpuHot::new(cpu_id);
-            PER_CPU_COLD[cpu_id] = PerCpuCold::new(cpu_id);
-            PER_CPU_HOT[cpu_id].set_self_ptr();
-            PER_CPU_HOT[cpu_id].set_cold(&mut PER_CPU_COLD[cpu_id] as *mut PerCpuCold);
-        }
-    }
-
-    // Set GSBase to PER_CPU_HOT for this CPU (Phase 3 optimization)
-    unsafe {
-        write_gsbase_any(hot_slot_ptr as u64);
-        install_tls_for_cpu(cpu_id);
-    }
-
-    mark_cpu_online(cpu_id);
+    unsafe { register_current_cpu(cpu_id) };
 }
 
 /// Mark a CPU as online (best-effort)
@@ -818,6 +815,7 @@ pub fn mark_cpu_online(cpu_id: usize) {
     if cpu_id + 1 > *active {
         *active = cpu_id + 1;
     }
+    crate::smp::set_cpu_lifecycle_stage(cpu_id, crate::smp::CpuLifecycleStage::PerCpuReady);
 }
 
 /// Get a list of online CPU IDs
@@ -902,7 +900,10 @@ pub fn active_cpu_count() -> usize {
     #[cfg(all(test, target_os = "linux"))]
     ensure_host_test_bootstrap();
 
-    *ACTIVE_CPUS.lock().expect("lock poisoned")
+    core::cmp::max(
+        *ACTIVE_CPUS.lock().expect("lock poisoned"),
+        crate::smp::cpu_count() as usize,
+    )
 }
 
 // ============================================================================

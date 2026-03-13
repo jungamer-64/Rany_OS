@@ -1225,12 +1225,13 @@ pub mod per_cpu {
         pub fn setup_numa_zonelist(
             &mut self,
             local_node: crate::mm::types::NumaNodeId,
-            sorted_nodes: &[crate::mm::types::NumaNodeId; crate::mm::numa::topology::MAX_NUMA_NODES],
+            sorted_nodes: &[crate::mm::types::NumaNodeId;
+                 crate::mm::numa::topology::MAX_NUMA_NODES],
             node_count: usize,
         ) {
             self.local_numa_node = local_node;
-            self.numa_zonelist_len = (node_count as u8)
-                .min(crate::mm::numa::topology::MAX_NUMA_NODES as u8);
+            self.numa_zonelist_len =
+                (node_count as u8).min(crate::mm::numa::topology::MAX_NUMA_NODES as u8);
             for i in 0..self.numa_zonelist_len as usize {
                 self.numa_zonelist[i] = sorted_nodes[i];
             }

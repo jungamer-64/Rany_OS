@@ -242,7 +242,8 @@ pub fn apply_current_cpu_locality() {
 }
 
 pub fn node_for_cpu(cpu_id: usize) -> usize {
-    with_cpu_locality(|topology| topology.node_for_cpu(cpu_id))
+    crate::smp::topology::numa_node_for_cpu(cpu_id)
+        .unwrap_or_else(|| with_cpu_locality(|topology| topology.node_for_cpu(cpu_id)))
 }
 
 pub fn steal_candidates_for_cpu(cpu_id: usize) -> Vec<usize> {

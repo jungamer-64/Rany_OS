@@ -62,7 +62,8 @@ pub const TLB_BATCH_SIZE: usize = 32;
 pub const TLB_FLUSH_ALL_THRESHOLD: usize = 512;
 
 /// 最大CPU数
-pub const MAX_CPUS: usize = 256;
+pub const MAX_CPUS: usize = crate::per_cpu::MAX_CPUS;
+const CPU_MASK_WORDS: usize = MAX_CPUS.div_ceil(64);
 
 /// TLBフラッシュ用IPIベクタ番号
 /// interrupt_manager.rsのIPI_VECTOR_BASE (241) + オフセット
@@ -72,20 +73,22 @@ pub const TLB_FLUSH_VECTOR: u8 = 241;
 // CPU Mask (Supporting up to MAX_CPUS)
 // ============================================================================
 
-/// CPUビットマスク (256 CPUs = 4 * 64 bits)
+/// CPUビットマスク (up to `MAX_CPUS`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuMask {
-    bits: [u64; 4],
+    bits: [u64; CPU_MASK_WORDS],
 }
 
 impl CpuMask {
     pub const fn new() -> Self {
-        Self { bits: [0; 4] }
+        Self {
+            bits: [0; CPU_MASK_WORDS],
+        }
     }
 
     pub const fn all() -> Self {
         Self {
-            bits: [u64::MAX; 4],
+            bits: [u64::MAX; CPU_MASK_WORDS],
         }
     }
 
@@ -114,7 +117,7 @@ impl CpuMask {
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.bits[0] == 0 && self.bits[1] == 0 && self.bits[2] == 0 && self.bits[3] == 0
+        self.bits.iter().all(|bits| *bits == 0)
     }
 }
 

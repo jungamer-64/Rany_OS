@@ -15,6 +15,9 @@ static APIC_ID_TO_CPU: [AtomicUsize; MAX_APIC_IDS] = {
 };
 
 pub fn apic_id_for_cpu(cpu_id: usize) -> Option<u32> {
+    if let Some(apic_id) = crate::smp::topology::apic_id_for_cpu(cpu_id) {
+        return Some(apic_id);
+    }
     if cpu_id >= MAX_ROUTED_CPUS {
         return None;
     }
@@ -24,6 +27,9 @@ pub fn apic_id_for_cpu(cpu_id: usize) -> Option<u32> {
 }
 
 pub fn cpu_for_apic_id(apic_id: u32) -> Option<usize> {
+    if let Some(cpu_id) = crate::smp::topology::cpu_for_apic_id(apic_id) {
+        return Some(cpu_id);
+    }
     let apic_index = usize::try_from(apic_id).ok()?;
     if apic_index >= MAX_APIC_IDS {
         return None;
@@ -57,6 +63,13 @@ pub(crate) fn register_cpu_apic_mapping(cpu_id: usize, apic_id: u32) {
 
     CPU_TO_APIC_ID[cpu_id].store(apic_id, Ordering::Release);
     APIC_ID_TO_CPU[apic_index].store(cpu_id, Ordering::Release);
+}
+
+pub(crate) fn install_topology_routes(topology: &crate::smp::topology::CpuTopology) {
+    reset_cpu_routing();
+    for record in topology.records() {
+        register_cpu_apic_mapping(record.logical_cpu_id, record.apic_id);
+    }
 }
 
 pub(crate) fn reset_cpu_routing() {

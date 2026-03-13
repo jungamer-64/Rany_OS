@@ -215,6 +215,7 @@ impl ApBootstrap {
         }
 
         log::info!("[SMP] Starting AP {} (APIC ID: {})\n", ap_index, apic_id);
+        crate::smp::mark_launching(cpu_id as usize);
 
         unsafe {
             core::ptr::write_volatile(
@@ -253,7 +254,6 @@ impl ApBootstrap {
 
         if info.started.load(Ordering::Acquire) {
             info.set_state(ApState::Online);
-            crate::smp::register_cpu_apic_mapping(cpu_id as usize, apic_id);
             self.aps_started.fetch_add(1, Ordering::Relaxed);
             log::info!("[SMP] AP {} online\n", ap_index);
             Ok(())
@@ -328,9 +328,7 @@ pub fn start_aps(apic_ids: &[u32]) -> u32 {
 
 /// Get number of online APs
 pub fn online_aps() -> u32 {
-    bootstrap_ref()
-        .map(|bootstrap| bootstrap.aps_online())
-        .unwrap_or(0)
+    crate::smp::cpu_count().saturating_sub(1)
 }
 
 fn ap_stack_base(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
@@ -508,7 +506,7 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
     ap_serial_mark(b'I');
 
     unsafe {
-        crate::per_cpu::setup_current_cpu(cpu_id as usize);
+        crate::per_cpu::register_current_cpu(cpu_id as usize);
     }
     ap_serial_mark(b'C');
 
