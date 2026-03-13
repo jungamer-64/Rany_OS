@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::MpscRingBuffer;
 
 /// 割り込みをマスク
 pub fn mask_interrupt(vector: u8) -> Result<(), InterruptError> {
@@ -58,28 +59,19 @@ use core::task::Waker;
 ///
 /// ISRから安全に呼び出せるよう、Atomic操作のみを使用
 pub struct InterruptQueue {
-    /// リングバッファ本体
-    buffer: [AtomicU32; Self::CAPACITY],
-    /// 書き込み位置（ISRからインクリメント）
-    write_pos: AtomicU32,
-    /// 読み取り位置（Executorからインクリメント）
-    read_pos: AtomicU32,
+    buffer: MpscRingBuffer<u8, INTERRUPT_QUEUE_BACKING_CAPACITY>,
 }
+
+const INTERRUPT_QUEUE_BACKING_CAPACITY: usize = InterruptQueue::CAPACITY + 1;
 
 impl InterruptQueue {
     /// キューのサイズ（2の冪乗）
     pub(super) const CAPACITY: usize = 1024;
-    pub(super) const MASK: u32 = (Self::CAPACITY - 1) as u32;
-    /// 空エントリを示す値
-    pub(super) const EMPTY: u32 = 0xFFFFFFFF;
 
     /// 新しいキューを作成
     pub const fn new() -> Self {
-        const EMPTY_SLOT: AtomicU32 = AtomicU32::new(InterruptQueue::EMPTY);
         Self {
-            buffer: [EMPTY_SLOT; Self::CAPACITY],
-            write_pos: AtomicU32::new(0),
-            read_pos: AtomicU32::new(0),
+            buffer: MpscRingBuffer::new(),
         }
     }
 
@@ -89,33 +81,7 @@ impl InterruptQueue {
     /// ISRコンテキストから呼び出し可能。ロックを取得しない。
     #[inline]
     pub fn push(&self, vector: u8) -> bool {
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            let write = self.write_pos.load(Ordering::Relaxed);
-            let read = self.read_pos.load(Ordering::Acquire);
-
-            // キューがフルかチェック
-            if write.wrapping_sub(read) >= Self::CAPACITY as u32 {
-                return false; // キューフル
-            }
-
-            let idx = (write & Self::MASK) as usize;
-
-            // CASでスロットを確保
-            match self.write_pos.compare_exchange_weak(
-                write,
-                write.wrapping_add(1),
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    // スロット確保成功、値を書き込み
-                    self.buffer[idx].store(vector as u32, Ordering::Release);
-                    return true;
-                }
-                Err(_) => continue, // リトライ
-            }
-        }
+        self.buffer.push(vector).is_ok()
     }
 
     /// 割り込みイベントをキューから取得（Executor用）
@@ -123,55 +89,18 @@ impl InterruptQueue {
     /// 通常コンテキストから呼び出すこと
     #[inline]
     pub fn pop(&self) -> Option<u8> {
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            let read = self.read_pos.load(Ordering::Relaxed);
-            let write = self.write_pos.load(Ordering::Acquire);
-
-            // キューが空かチェック
-            if read == write {
-                return None;
-            }
-
-            let idx = (read & Self::MASK) as usize;
-            let value = self.buffer[idx].load(Ordering::Acquire);
-
-            // まだ書き込み途中の可能性
-            if value == Self::EMPTY {
-                core::hint::spin_loop();
-                continue;
-            }
-
-            // CASで読み取り位置を進める
-            match self.read_pos.compare_exchange_weak(
-                read,
-                read.wrapping_add(1),
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    // スロットをクリア
-                    self.buffer[idx].store(Self::EMPTY, Ordering::Release);
-                    return Some(value as u8);
-                }
-                Err(_) => continue, // リトライ
-            }
-        }
+        self.buffer.pop()
     }
 
     /// キューが空か確認
     #[inline]
     pub fn is_empty(&self) -> bool {
-        let read = self.read_pos.load(Ordering::Acquire);
-        let write = self.write_pos.load(Ordering::Acquire);
-        read == write
+        self.buffer.is_empty()
     }
 
     /// キューの長さを取得（テスト用）
     pub fn len(&self) -> usize {
-        let read = self.read_pos.load(Ordering::Acquire);
-        let write = self.write_pos.load(Ordering::Acquire);
-        write.wrapping_sub(read) as usize
+        self.buffer.len()
     }
 }
 

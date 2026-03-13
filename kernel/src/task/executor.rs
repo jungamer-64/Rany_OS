@@ -23,14 +23,14 @@
 //! - Work Stealingによる負荷分散
 //!
 //! ## 実装
-//! - AtomicベースのMPMC Queueを内部で実装（crossbeam相当）
+//! - AtomicベースのMPSC Queueを内部で実装
 //! - ローカルキュー → グローバルキュー → スティールの優先順位
 //! - batch処理でスループット向上
 //! - Per-coreタスクストアでロックコンテンション削減（設計書 4.3）
 #![allow(dead_code)]
 
 use super::{Task, TaskId, create_waker};
-use crate::sync::PoisonLock;
+use crate::sync::{MpscRingBuffer, PoisonLock};
 use alloc::collections::{BTreeMap, VecDeque};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
@@ -38,7 +38,7 @@ use core::task::{Context, Poll};
 use x86_64::instructions::interrupts;
 
 // ============================================================================
-// ロックフリーキュー（簡易MPMC実装）
+// ロックフリーキュー（単一コンシューマー向け MPSC 実装）
 // ============================================================================
 
 /// ロックフリーのタスクID キュー
@@ -47,113 +47,38 @@ use x86_64::instructions::interrupts;
 /// キューはTaskIdのみを管理してオーバーヘッド削減。
 mod stats_impl;
 pub struct LockFreeQueue {
-    /// リングバッファ
-    buffer: [AtomicU64; QUEUE_SIZE],
-    /// 先頭インデックス
-    head: AtomicUsize,
-    /// 末尾インデックス
-    tail: AtomicUsize,
+    buffer: MpscRingBuffer<TaskId, QUEUE_BACKING_SIZE>,
 }
 
 const QUEUE_SIZE: usize = 1024;
-const EMPTY_SLOT: u64 = u64::MAX;
+const QUEUE_BACKING_SIZE: usize = QUEUE_SIZE + 1;
 
 impl LockFreeQueue {
     /// 新しいキューを作成
     pub const fn new() -> Self {
-        const EMPTY: AtomicU64 = AtomicU64::new(EMPTY_SLOT);
         Self {
-            buffer: [EMPTY; QUEUE_SIZE],
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
+            buffer: MpscRingBuffer::new(),
         }
     }
 
     /// タスクIDをプッシュ（try）
     pub fn push(&self, task_id: TaskId) -> bool {
-        // LOOP_PROOF: mode=event; reason=Tail CAS retries until enqueue succeeds or queue-full detection returns false.;
-        loop {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let head = self.head.load(Ordering::Acquire);
-
-            // キューが満杯
-            if tail.wrapping_sub(head) >= QUEUE_SIZE {
-                return false;
-            }
-
-            let idx = tail % QUEUE_SIZE;
-
-            // CAS for tail
-            if self
-                .tail
-                .compare_exchange_weak(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                self.buffer[idx].store(task_id.as_u64(), Ordering::Release);
-                return true;
-            }
-
-            core::hint::spin_loop();
-        }
+        self.buffer.push(task_id).is_ok()
     }
 
     /// タスクIDをポップ（try）
     pub fn pop(&self) -> Option<TaskId> {
-        // LOOP_PROOF: mode=event; reason=Head CAS retries until dequeue succeeds or queue-empty detection returns None.;
-        loop {
-            let head = self.head.load(Ordering::Relaxed);
-            let tail = self.tail.load(Ordering::Acquire);
-
-            // キューが空
-            if head == tail {
-                return None;
-            }
-
-            let idx = head % QUEUE_SIZE;
-            let task_id = self.buffer[idx].load(Ordering::Acquire);
-
-            // まだ書き込まれていない
-            if task_id == EMPTY_SLOT {
-                core::hint::spin_loop();
-                continue;
-            }
-
-            // CAS for head
-            if self
-                .head
-                .compare_exchange_weak(
-                    head,
-                    head.wrapping_add(1),
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                self.buffer[idx].store(EMPTY_SLOT, Ordering::Release);
-                return Some(TaskId(task_id));
-            }
-
-            core::hint::spin_loop();
-        }
+        self.buffer.pop()
     }
 
     /// キューが空かどうか
     pub fn is_empty(&self) -> bool {
-        let head = self.head.load(Ordering::Acquire);
-        let tail = self.tail.load(Ordering::Acquire);
-        head == tail
+        self.buffer.is_empty()
     }
 
     /// キュー内のアイテム数
     pub fn len(&self) -> usize {
-        let head = self.head.load(Ordering::Acquire);
-        let tail = self.tail.load(Ordering::Acquire);
-        tail.wrapping_sub(head)
+        self.buffer.len()
     }
 }
 
@@ -1201,6 +1126,22 @@ mod tests {
 
         clear_current_polled_task();
         assert!(current_polled_task_context().is_none());
+    }
+
+    #[test_case]
+    fn lock_free_queue_preserves_full_capacity() {
+        let queue = LockFreeQueue::new();
+
+        for i in 0..QUEUE_SIZE {
+            assert!(queue.push(TaskId::from_raw(i as u64)), "failed at {}", i);
+        }
+        assert!(!queue.push(TaskId::from_raw(u64::MAX)));
+        assert_eq!(queue.len(), QUEUE_SIZE);
+
+        for i in 0..QUEUE_SIZE {
+            assert_eq!(queue.pop(), Some(TaskId::from_raw(i as u64)));
+        }
+        assert!(queue.pop().is_none());
     }
 }
 

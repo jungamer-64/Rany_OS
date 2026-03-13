@@ -21,7 +21,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use once_cell::race::OnceBox;
 use spin::{Mutex, RwLock};
 use x86_64::structures::idt::InterruptStackFrame;

@@ -68,7 +68,6 @@ fn test_interrupt_queue_push_pop() {
     // Pop in FIFO order
     assert_eq!(queue.pop(), Some(32));
     assert_eq!(queue.pop(), Some(33));
-    assert_eq!(queue.pop(), Some(44));
 
     // Empty
     assert_eq!(queue.pop(), None);
@@ -93,13 +92,14 @@ fn test_interrupt_queue_empty() {
 fn test_interrupt_queue_full() {
     let queue = InterruptQueue::new();
 
-    // Fill the queue (1024 - 1 slots usable due to ring buffer design)
-    for i in 0..1023 {
+    // Fill the queue (all 1024 slots are usable)
+    for i in 0..InterruptQueue::CAPACITY {
         assert!(queue.push(i as u8), "Failed at {}", i);
     }
 
     // Should reject when full
     assert!(!queue.push(255));
+    assert_eq!(queue.len(), InterruptQueue::CAPACITY);
 }
 
 // ========================================================================

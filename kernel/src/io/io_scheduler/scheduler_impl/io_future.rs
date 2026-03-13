@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::PoisonRwLock;
+use crate::sync::{MpscRingBuffer, PoisonRwLock};
 
 mod coordinator_helpers;
 pub use coordinator_helpers::*;
@@ -27,74 +27,34 @@ impl Drop for IoFuture {
 // ============================================================================
 
 pub(crate) const IO_COMPLETION_QUEUE_SIZE: usize = 256;
-pub(crate) const IO_COMPLETION_QUEUE_MASK: usize = IO_COMPLETION_QUEUE_SIZE - 1;
+pub(crate) const IO_COMPLETION_QUEUE_BACKING_SIZE: usize = IO_COMPLETION_QUEUE_SIZE + 1;
 pub(crate) const IO_RESULT_ERROR_FLAG: u64 = 1 << 63;
+type DeferredIoCompletion = (u64, u64, u64);
 
 pub(crate) struct DeferredIoCompletionQueue {
-    head: AtomicUsize,
-    tail: AtomicUsize,
-    devices: [AtomicU64; IO_COMPLETION_QUEUE_SIZE],
-    ids: [AtomicU64; IO_COMPLETION_QUEUE_SIZE],
-    results: [AtomicU64; IO_COMPLETION_QUEUE_SIZE],
+    queue: MpscRingBuffer<DeferredIoCompletion, IO_COMPLETION_QUEUE_BACKING_SIZE>,
 }
 
 impl DeferredIoCompletionQueue {
     pub(super) const fn new() -> Self {
-        const ZERO: AtomicU64 = AtomicU64::new(0);
         Self {
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-            devices: [ZERO; IO_COMPLETION_QUEUE_SIZE],
-            ids: [ZERO; IO_COMPLETION_QUEUE_SIZE],
-            results: [ZERO; IO_COMPLETION_QUEUE_SIZE],
+            queue: MpscRingBuffer::new(),
         }
     }
 
     pub(super) fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        if head.wrapping_sub(tail) >= IO_COMPLETION_QUEUE_SIZE {
-            return false;
-        }
-        let idx = head & IO_COMPLETION_QUEUE_MASK;
-        self.devices[idx].store(encode_device_id(device), Ordering::Release);
-        self.ids[idx].store(id.0, Ordering::Release);
-        self.results[idx].store(encode_io_result(result), Ordering::Release);
-        self.head.store(head.wrapping_add(1), Ordering::Release);
-        true
+        self.queue
+            .push((encode_device_id(device), id.0, encode_io_result(result)))
+            .is_ok()
     }
 
     pub(super) fn pop(&self) -> Option<(DeviceId, IoRequestId, IoResult)> {
-        loop {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let head = self.head.load(Ordering::Acquire);
-            if tail == head {
-                return None;
-            }
-            let idx = tail & IO_COMPLETION_QUEUE_MASK;
-            if self
-                .tail
-                .compare_exchange_weak(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                let device_raw = self.devices[idx].load(Ordering::Acquire);
-                let id_raw = self.ids[idx].load(Ordering::Acquire);
-                let result_raw = self.results[idx].load(Ordering::Acquire);
-                self.devices[idx].store(0, Ordering::Release);
-                self.ids[idx].store(0, Ordering::Release);
-                self.results[idx].store(0, Ordering::Release);
-                let device = decode_device_id(device_raw).unwrap_or(DeviceId::Custom(0));
-                let id = IoRequestId(id_raw);
-                let result = decode_io_result(result_raw);
-                return Some((device, id, result));
-            }
-            core::hint::spin_loop();
-        }
+        self.queue.pop().map(|(device_raw, id_raw, result_raw)| {
+            let device = decode_device_id(device_raw).unwrap_or(DeviceId::Custom(0));
+            let id = IoRequestId(id_raw);
+            let result = decode_io_result(result_raw);
+            (device, id, result)
+        })
     }
 }
 
@@ -339,6 +299,45 @@ impl IoInterruptBridge {
             .read()
             .unwrap_or_else(|e| e.into_inner());
         guard.get(&device).map(|q| q.len()).unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn deferred_io_completion_queue_preserves_full_capacity() {
+        let queue = DeferredIoCompletionQueue::new();
+
+        for i in 0..IO_COMPLETION_QUEUE_SIZE {
+            assert!(
+                queue.push(
+                    DeviceId::Custom(i as u32),
+                    IoRequestId(i as u64 + 1),
+                    IoResult::Success(i),
+                ),
+                "failed at {}",
+                i
+            );
+        }
+        assert!(!queue.push(
+            DeviceId::Custom(u32::MAX),
+            IoRequestId(u64::MAX),
+            IoResult::Success(0),
+        ));
+
+        for i in 0..IO_COMPLETION_QUEUE_SIZE {
+            assert_eq!(
+                queue.pop(),
+                Some((
+                    DeviceId::Custom(i as u32),
+                    IoRequestId(i as u64 + 1),
+                    IoResult::Success(i),
+                ))
+            );
+        }
+        assert_eq!(queue.pop(), None);
     }
 }
 

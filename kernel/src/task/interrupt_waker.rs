@@ -13,7 +13,6 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;
 
@@ -86,13 +85,14 @@ impl InterruptSource {
 /// 最大インデックスサイズ（配列サイズ）
 const MAX_INTERRUPT_INDICES: usize = 2048;
 const INTERRUPT_EVENT_QUEUE_SIZE: usize = 1024;
-const INTERRUPT_EVENT_QUEUE_MASK: usize = INTERRUPT_EVENT_QUEUE_SIZE - 1;
+const INTERRUPT_EVENT_QUEUE_BACKING_SIZE: usize = INTERRUPT_EVENT_QUEUE_SIZE + 1;
 
 // ============================================================================
 // Atomic Waker - ISR-safe Waker storage
 // ============================================================================
 
 pub use crate::sync::AtomicWaker;
+use crate::sync::MpscRingBuffer;
 
 // ============================================================================
 // Interrupt Waker Registry
@@ -247,81 +247,29 @@ impl InterruptWakerRegistry {
 
 #[repr(C, align(64))]
 struct InterruptEventQueue {
-    head: AtomicUsize,
-    tail: AtomicUsize,
-    buffer: [AtomicUsize; INTERRUPT_EVENT_QUEUE_SIZE],
+    buffer: MpscRingBuffer<usize, INTERRUPT_EVENT_QUEUE_BACKING_SIZE>,
 }
 
 impl InterruptEventQueue {
     const fn new() -> Self {
-        const ZERO: AtomicUsize = AtomicUsize::new(0);
         Self {
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-            buffer: [ZERO; INTERRUPT_EVENT_QUEUE_SIZE],
+            buffer: MpscRingBuffer::new(),
         }
     }
 
     #[inline]
     fn push_once(&self, value: usize) -> bool {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        if head.wrapping_sub(tail) >= INTERRUPT_EVENT_QUEUE_SIZE {
-            return false;
-        }
-        let idx = head & INTERRUPT_EVENT_QUEUE_MASK;
-        if self
-            .head
-            .compare_exchange_weak(
-                head,
-                head.wrapping_add(1),
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            )
-            .is_ok()
-        {
-            self.buffer[idx].store(value, Ordering::Release);
-            true
-        } else {
-            false
-        }
+        self.buffer.try_push(value).is_ok()
     }
 
     #[inline]
     fn pop(&self) -> Option<usize> {
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let head = self.head.load(Ordering::Acquire);
-            if tail == head {
-                return None;
-            }
-
-            let idx = tail & INTERRUPT_EVENT_QUEUE_MASK;
-            if self
-                .tail
-                .compare_exchange_weak(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                let value = self.buffer[idx].load(Ordering::Acquire);
-                self.buffer[idx].store(0, Ordering::Release);
-                return Some(value);
-            }
-
-            core::hint::spin_loop();
-        }
+        self.buffer.pop()
     }
 
     #[inline]
     fn len(&self) -> usize {
-        let head = self.head.load(Ordering::Acquire);
-        let tail = self.tail.load(Ordering::Acquire);
-        head.wrapping_sub(tail)
+        self.buffer.len()
     }
 }
 
@@ -481,5 +429,21 @@ mod tests {
             InterruptSource::from_vector(0x30),
             Some(InterruptSource::VirtioNet(0))
         );
+    }
+
+    #[test_case]
+    fn interrupt_event_queue_preserves_full_capacity() {
+        let queue = InterruptEventQueue::new();
+
+        for i in 0..INTERRUPT_EVENT_QUEUE_SIZE {
+            assert!(queue.push_once(i + 1), "failed at {}", i);
+        }
+        assert!(!queue.push_once(usize::MAX));
+        assert_eq!(queue.len(), INTERRUPT_EVENT_QUEUE_SIZE);
+
+        for i in 0..INTERRUPT_EVENT_QUEUE_SIZE {
+            assert_eq!(queue.pop(), Some(i + 1));
+        }
+        assert_eq!(queue.pop(), None);
     }
 }

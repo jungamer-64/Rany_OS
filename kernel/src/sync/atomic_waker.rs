@@ -11,8 +11,10 @@
 use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use core::task::Waker;
+
+use super::lockfree::MpscRingBuffer;
 
 // ============================================================================
 // Lock-Free AtomicWaker (State Machine Based)
@@ -345,75 +347,28 @@ pub fn process_deferred_waker_queue_wakes() {
 // ============================================================================
 
 const DEFERRED_WAKE_QUEUE_SIZE: usize = 256;
-const DEFERRED_WAKE_QUEUE_MASK: usize = DEFERRED_WAKE_QUEUE_SIZE - 1;
+const DEFERRED_WAKE_QUEUE_BACKING_SIZE: usize = DEFERRED_WAKE_QUEUE_SIZE + 1;
 
 #[repr(C, align(64))]
 struct DeferredWakerQueue {
-    head: AtomicUsize,
-    tail: AtomicUsize,
-    buffer: [AtomicUsize; DEFERRED_WAKE_QUEUE_SIZE],
+    buffer: MpscRingBuffer<usize, DEFERRED_WAKE_QUEUE_BACKING_SIZE>,
 }
 
 impl DeferredWakerQueue {
     const fn new() -> Self {
-        const ZERO: AtomicUsize = AtomicUsize::new(0);
         Self {
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-            buffer: [ZERO; DEFERRED_WAKE_QUEUE_SIZE],
+            buffer: MpscRingBuffer::new(),
         }
     }
 
     #[inline]
     fn push_once(&self, value: usize) -> bool {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        if head.wrapping_sub(tail) >= DEFERRED_WAKE_QUEUE_SIZE {
-            return false;
-        }
-        let idx = head & DEFERRED_WAKE_QUEUE_MASK;
-        if self
-            .head
-            .compare_exchange_weak(
-                head,
-                head.wrapping_add(1),
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            )
-            .is_ok()
-        {
-            self.buffer[idx].store(value, Ordering::Release);
-            true
-        } else {
-            false
-        }
+        self.buffer.try_push(value).is_ok()
     }
 
     #[inline]
     fn pop(&self) -> Option<usize> {
-        loop {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let head = self.head.load(Ordering::Acquire);
-            if tail == head {
-                return None;
-            }
-            let idx = tail & DEFERRED_WAKE_QUEUE_MASK;
-            if self
-                .tail
-                .compare_exchange_weak(
-                    tail,
-                    tail.wrapping_add(1),
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-            {
-                let value = self.buffer[idx].load(Ordering::Acquire);
-                self.buffer[idx].store(0, Ordering::Release);
-                return Some(value);
-            }
-            core::hint::spin_loop();
-        }
+        self.buffer.pop()
     }
 }
 
@@ -482,5 +437,20 @@ mod tests {
         process_deferred_wakes();
         assert!(flag.load(Ordering::Acquire), "expected immediate wake");
         assert!(!atomic_waker.has_waker());
+    }
+
+    #[test_case]
+    fn deferred_waker_queue_preserves_full_capacity() {
+        let queue = DeferredWakerQueue::new();
+
+        for i in 0..DEFERRED_WAKE_QUEUE_SIZE {
+            assert!(queue.push_once(i + 1), "failed at {}", i);
+        }
+        assert!(!queue.push_once(usize::MAX));
+
+        for i in 0..DEFERRED_WAKE_QUEUE_SIZE {
+            assert_eq!(queue.pop(), Some(i + 1));
+        }
+        assert_eq!(queue.pop(), None);
     }
 }

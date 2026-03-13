@@ -45,6 +45,21 @@ fn test_mpsc_basic() {
 }
 
 #[test_case]
+fn test_mpsc_try_push_success_and_full() {
+    let rb: MpscRingBuffer<u32, 4> = MpscRingBuffer::new();
+
+    assert!(rb.try_push(1).is_ok());
+    assert!(rb.try_push(2).is_ok());
+    assert!(rb.try_push(3).is_ok());
+    assert!(rb.try_push(4).is_err());
+
+    assert_eq!(rb.pop(), Some(1));
+    assert_eq!(rb.pop(), Some(2));
+    assert_eq!(rb.pop(), Some(3));
+    assert_eq!(rb.pop(), None);
+}
+
+#[test_case]
 fn test_mpmc_basic() {
     let rb: MpmcRingBuffer<u32, 8> = MpmcRingBuffer::new();
 
@@ -83,6 +98,19 @@ fn test_mpmc_try_operations() {
 
     // Can push again
     assert!(rb.try_push(5).is_ok());
+}
+
+#[test_case]
+fn test_mpmc_static_initialization() {
+    static RB: MpmcRingBuffer<u64, 8> = MpmcRingBuffer::new();
+
+    while RB.pop().is_some() {}
+
+    assert!(RB.push(11).is_ok());
+    assert!(RB.push(22).is_ok());
+    assert_eq!(RB.pop(), Some(11));
+    assert_eq!(RB.pop(), Some(22));
+    assert_eq!(RB.pop(), None);
 }
 
 #[test_case]

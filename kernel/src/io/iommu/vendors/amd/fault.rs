@@ -14,7 +14,7 @@ use crate::io::iommu::runtime::registry::get_iommu_driver;
 use crate::io::iommu::runtime::security::SecurityEvent;
 use crate::io::iommu::types::IommuError;
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
-use crate::sync::WakerQueue;
+use crate::sync::{MpscRingBuffer, WakerQueue};
 
 use super::event_log::AmdEventEntry;
 use super::registers::*;
@@ -69,18 +69,14 @@ impl AmdFaultEvent {
 // ---------------------------------------------------------------------------
 
 pub(crate) struct AmdDeferredFaultQueue {
-    events: [Option<AmdFaultEvent>; AMD_FAULT_QUEUE_SIZE],
-    head: AtomicUsize,
-    tail: AtomicUsize,
+    queue: MpscRingBuffer<AmdFaultEvent, AMD_FAULT_QUEUE_SIZE>,
     dropped: AtomicUsize,
 }
 
 impl AmdDeferredFaultQueue {
     pub(crate) const fn new() -> Self {
         Self {
-            events: [None; AMD_FAULT_QUEUE_SIZE],
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
+            queue: MpscRingBuffer::new(),
             dropped: AtomicUsize::new(0),
         }
     }
@@ -88,23 +84,11 @@ impl AmdDeferredFaultQueue {
     pub(super) fn push(&self, event: AmdFaultEvent) {
         const MAX_RETRIES: usize = 16;
         for _ in 0..MAX_RETRIES {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let next_tail = (tail + 1) % AMD_FAULT_QUEUE_SIZE;
-            let head = self.head.load(Ordering::Acquire);
-            if next_tail == head {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
+            if self.queue.try_push(event).is_ok() {
                 return;
             }
-            if self
-                .tail
-                .compare_exchange_weak(tail, next_tail, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                unsafe {
-                    let ptr = &self.events as *const _
-                        as *mut [Option<AmdFaultEvent>; AMD_FAULT_QUEUE_SIZE];
-                    core::ptr::write_volatile(&mut (*ptr)[tail], Some(event));
-                }
+            if self.queue.len() >= self.queue.capacity() {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
             core::hint::spin_loop();
@@ -113,19 +97,7 @@ impl AmdDeferredFaultQueue {
     }
 
     pub(super) fn pop(&self) -> Option<AmdFaultEvent> {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        if head == tail {
-            return None;
-        }
-        let event = unsafe {
-            let ptr =
-                &self.events as *const _ as *mut [Option<AmdFaultEvent>; AMD_FAULT_QUEUE_SIZE];
-            (*ptr)[head].take()
-        };
-        self.head
-            .store((head + 1) % AMD_FAULT_QUEUE_SIZE, Ordering::Release);
-        event
+        self.queue.pop()
     }
 
     pub(super) fn take_dropped(&self) -> usize {
@@ -133,9 +105,7 @@ impl AmdDeferredFaultQueue {
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        let head = self.head.load(Ordering::Acquire);
-        let tail = self.tail.load(Ordering::Acquire);
-        head == tail
+        self.queue.is_empty()
     }
 }
 
@@ -146,6 +116,28 @@ impl AmdDeferredFaultQueue {
 pub(crate) static AMD_DEFERRED_FAULT_QUEUE: AmdDeferredFaultQueue = AmdDeferredFaultQueue::new();
 pub(crate) static AMD_FAULT_WAKERS: WakerQueue = WakerQueue::new();
 pub(crate) static AMD_CMD_WAITERS: WakerQueue = WakerQueue::new();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn amd_fault_queue_preserves_reserved_slot_capacity() {
+        let queue = AmdDeferredFaultQueue::new();
+        let event = AmdFaultEvent::overflow(0);
+
+        for _ in 0..(AMD_FAULT_QUEUE_SIZE - 1) {
+            queue.push(event);
+        }
+        queue.push(event);
+
+        assert_eq!(queue.take_dropped(), 1);
+        for _ in 0..(AMD_FAULT_QUEUE_SIZE - 1) {
+            assert!(queue.pop().is_some());
+        }
+        assert!(queue.pop().is_none());
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Drain / async worker functions

@@ -67,20 +67,31 @@ unsafe impl<T: Send, const N: usize> Send for MpmcRingBuffer<T, N> {}
 unsafe impl<T: Send, const N: usize> Sync for MpmcRingBuffer<T, N> {}
 
 impl<T, const N: usize> MpmcRingBuffer<T, N> {
+    const fn init_slots() -> [MpmcSlot<T>; N] {
+        let mut slots: [MaybeUninit<MpmcSlot<T>>; N] = [const { MaybeUninit::uninit() }; N];
+        let mut i = 0;
+        while i < N {
+            slots[i] = MaybeUninit::new(MpmcSlot::new(i));
+            i += 1;
+        }
+
+        // SAFETY: Every element in `slots` is initialized exactly once above.
+        unsafe {
+            core::mem::transmute_copy::<[MaybeUninit<MpmcSlot<T>>; N], [MpmcSlot<T>; N]>(&slots)
+        }
+    }
+
     /// 新しいMPMCリングバッファを作成
     ///
     /// # Panics
     /// Nが2以上でない場合パニック
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         assert!(N >= 2, "Ring buffer must have at least 2 slots");
-
-        // スロットを初期化
-        let slots = core::array::from_fn(|i| MpmcSlot::new(i));
 
         Self {
             head: CacheLinePadded::new(AtomicUsize::new(0)),
             tail: CacheLinePadded::new(AtomicUsize::new(0)),
-            slots,
+            slots: Self::init_slots(),
         }
     }
 

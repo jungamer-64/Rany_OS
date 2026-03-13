@@ -9,23 +9,20 @@ use spin::{Once, RwLock};
 
 use super::{FaultSummary, IsolationDecision, SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::IommuError;
+use crate::sync::MpscRingBuffer;
 
 const SECURITY_EVENT_QUEUE_SIZE: usize = 256;
 
 #[derive(Debug)]
 struct SecurityEventQueue {
-    events: [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE],
-    head: AtomicUsize,
-    tail: AtomicUsize,
+    queue: MpscRingBuffer<SecurityEvent, SECURITY_EVENT_QUEUE_SIZE>,
     dropped: AtomicUsize,
 }
 
 impl SecurityEventQueue {
     const fn new() -> Self {
         Self {
-            events: [None; SECURITY_EVENT_QUEUE_SIZE],
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
+            queue: MpscRingBuffer::new(),
             dropped: AtomicUsize::new(0),
         }
     }
@@ -33,23 +30,11 @@ impl SecurityEventQueue {
     fn push(&self, event: SecurityEvent) {
         const MAX_RETRIES: usize = 16;
         for _ in 0..MAX_RETRIES {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let next_tail = (tail + 1) % SECURITY_EVENT_QUEUE_SIZE;
-            let head = self.head.load(Ordering::Acquire);
-            if next_tail == head {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
+            if self.queue.try_push(event).is_ok() {
                 return;
             }
-            if self
-                .tail
-                .compare_exchange_weak(tail, next_tail, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-            {
-                unsafe {
-                    let ptr = &self.events as *const _
-                        as *mut [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE];
-                    core::ptr::write_volatile(&mut (*ptr)[tail], Some(event));
-                }
+            if self.queue.len() >= self.queue.capacity() {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
                 return;
             }
             core::hint::spin_loop();
@@ -58,19 +43,7 @@ impl SecurityEventQueue {
     }
 
     fn pop(&self) -> Option<SecurityEvent> {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        if head == tail {
-            return None;
-        }
-        let event = unsafe {
-            let ptr =
-                &self.events as *const _ as *mut [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE];
-            (*ptr)[head].take()
-        };
-        self.head
-            .store((head + 1) % SECURITY_EVENT_QUEUE_SIZE, Ordering::Release);
-        event
+        self.queue.pop()
     }
 
     fn take_dropped(&self) -> usize {
@@ -178,5 +151,27 @@ pub fn qemu_test_clear_security_notifier() {
 pub(crate) fn notify_security_listener(event: SecurityEvent) {
     if let Some(notifier) = SECURITY_NOTIFIER.read().as_ref() {
         notifier.notify(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn security_event_queue_preserves_reserved_slot_capacity() {
+        let queue = SecurityEventQueue::new();
+        let event = SecurityEvent::EventsDropped { count: 1 };
+
+        for _ in 0..(SECURITY_EVENT_QUEUE_SIZE - 1) {
+            queue.push(event);
+        }
+        queue.push(event);
+
+        assert_eq!(queue.take_dropped(), 1);
+        for _ in 0..(SECURITY_EVENT_QUEUE_SIZE - 1) {
+            assert!(queue.pop().is_some());
+        }
+        assert!(queue.pop().is_none());
     }
 }

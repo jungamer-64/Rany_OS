@@ -21,6 +21,7 @@ use crate::io::iommu::runtime::fault_log::{FaultLog, FaultRecord};
 use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits, regs};
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntry};
+use crate::sync::MpscRingBuffer;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -192,9 +193,7 @@ impl CriticalFaultSlot {
 // ============================================================================
 
 struct DeferredFaultQueue {
-    events: [Option<RawFaultEvent>; DEFERRED_QUEUE_SIZE],
-    head: AtomicUsize, // Consumer reads from here (single consumer)
-    tail: AtomicUsize, // Producers reserve slots here (multi producer)
+    queue: MpscRingBuffer<RawFaultEvent, DEFERRED_QUEUE_SIZE>,
     dropped: AtomicUsize,
     /// Reserved slot for critical faults (Unknown reason, etc.)
     critical_slot: CriticalFaultSlot,
@@ -203,9 +202,7 @@ struct DeferredFaultQueue {
 impl DeferredFaultQueue {
     const fn new() -> Self {
         Self {
-            events: [None; DEFERRED_QUEUE_SIZE],
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
+            queue: MpscRingBuffer::new(),
             dropped: AtomicUsize::new(0),
             critical_slot: CriticalFaultSlot::new(),
         }
@@ -230,34 +227,14 @@ impl DeferredFaultQueue {
         const MAX_RETRIES: usize = 16;
 
         for _ in 0..MAX_RETRIES {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let next_tail = (tail + 1) % DEFERRED_QUEUE_SIZE;
-            let head = self.head.load(Ordering::Acquire);
-
-            if next_tail == head {
+            if self.queue.try_push(*event).is_ok() {
+                return true;
+            }
+            if self.queue.len() >= self.queue.capacity() {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
-
-            match self.tail.compare_exchange_weak(
-                tail,
-                next_tail,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    unsafe {
-                        let ptr = &self.events as *const _
-                            as *mut [Option<RawFaultEvent>; DEFERRED_QUEUE_SIZE];
-                        core::ptr::write_volatile(&mut (*ptr)[tail], Some(*event));
-                    }
-                    return true;
-                }
-                Err(_) => {
-                    core::hint::spin_loop();
-                    continue;
-                }
-            }
+            core::hint::spin_loop();
         }
         false
     }
@@ -265,9 +242,7 @@ impl DeferredFaultQueue {
     fn push(&self, event: RawFaultEvent) {
         // For critical events, try reserved slot first if queue looks full
         if Self::is_critical(&event) {
-            let tail = self.tail.load(Ordering::Relaxed);
-            let head = self.head.load(Ordering::Relaxed);
-            let queue_len = (tail + DEFERRED_QUEUE_SIZE - head) % DEFERRED_QUEUE_SIZE;
+            let queue_len = self.queue.len();
 
             if queue_len > (DEFERRED_QUEUE_SIZE * 3 / 4) {
                 if self.critical_slot.try_push(event) {
@@ -296,27 +271,41 @@ impl DeferredFaultQueue {
             return Some(critical);
         }
 
-        // Normal queue
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-
-        if head == tail {
-            return None; // Empty
-        }
-
-        // SAFETY: Single consumer reads from head slot
-        let event = unsafe {
-            let ptr = &self.events as *const _ as *mut [Option<RawFaultEvent>; DEFERRED_QUEUE_SIZE];
-            (*ptr)[head].take()
-        };
-        self.head
-            .store((head + 1) % DEFERRED_QUEUE_SIZE, Ordering::Release);
-        event
+        self.queue.pop()
     }
 
     /// Get and reset dropped count
     fn take_dropped(&self) -> usize {
         self.dropped.swap(0, Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn deferred_fault_queue_drains_critical_slot_before_normal_queue() {
+        let queue = DeferredFaultQueue::new();
+        let normal = RawFaultEvent {
+            source_id: 1,
+            fault_address: 0x1000,
+            reason: 1,
+            pasid: None,
+            lo: 1,
+            hi: 2,
+            is_overflow: false,
+        };
+        let critical = RawFaultEvent {
+            reason: 0xFF,
+            ..normal
+        };
+
+        assert!(queue.try_push_normal_queue(&normal));
+        queue.push(critical);
+
+        assert_eq!(queue.pop().map(|event| event.reason), Some(0xFF));
+        assert_eq!(queue.pop().map(|event| event.reason), Some(1));
     }
 }
 

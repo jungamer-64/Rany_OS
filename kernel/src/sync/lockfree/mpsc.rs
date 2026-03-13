@@ -114,6 +114,42 @@ impl<T, const N: usize> MpscRingBuffer<T, N> {
         }
     }
 
+    /// 要素をプッシュ（fail-fast）
+    ///
+    /// 既に別プロデューサーが予約中の場合は待機せず失敗する。
+    /// ISR コンテキストなど、無期限にスピンできない呼び出し側向け。
+    #[inline]
+    pub fn try_push(&self, value: T) -> Result<(), T> {
+        let head = self.head.load(Ordering::Relaxed);
+        let committed = self.committed.load(Ordering::Acquire);
+
+        // 先行する未コミット書き込みがある場合は待機せず失敗する。
+        if head != committed {
+            return Err(value);
+        }
+
+        let next_head = (head + 1) % N;
+        if next_head == self.tail.load(Ordering::Acquire) {
+            return Err(value);
+        }
+
+        if self
+            .head
+            .compare_exchange(head, next_head, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err(value);
+        }
+
+        unsafe {
+            let slot = &mut (*self.buffer.value.get())[head];
+            slot.write(value);
+        }
+
+        self.committed.store(next_head, Ordering::Release);
+        Ok(())
+    }
+
     /// 要素をポップ（単一コンシューマー）
     #[inline]
     pub fn pop(&self) -> Option<T> {
@@ -142,9 +178,33 @@ impl<T, const N: usize> Default for MpscRingBuffer<T, N> {
     }
 }
 
+impl<T, const N: usize> core::fmt::Debug for MpscRingBuffer<T, N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MpscRingBuffer")
+            .field("capacity", &self.capacity())
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
 impl<T, const N: usize> Drop for MpscRingBuffer<T, N> {
     fn drop(&mut self) {
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.pop().is_some() {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn try_push_fails_fast_when_previous_reservation_is_uncommitted() {
+        let rb: MpscRingBuffer<u32, 8> = MpscRingBuffer::new();
+
+        rb.head.store(1, Ordering::Relaxed);
+        rb.committed.store(0, Ordering::Relaxed);
+
+        assert_eq!(rb.try_push(7), Err(7));
     }
 }
