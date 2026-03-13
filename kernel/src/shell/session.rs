@@ -9,6 +9,7 @@
 //!
 
 use alloc::format;
+use boot_proto::{BootPolicy, BootShellMode};
 
 use crate::shell::exoshell::frontend::ShellFrontend;
 use crate::shell::exoshell::{ExoShell, ExoValue};
@@ -26,6 +27,15 @@ pub enum ShellLaunchMode {
 impl Default for ShellLaunchMode {
     fn default() -> Self {
         Self::Console
+    }
+}
+
+pub fn shell_launch_mode_from_boot_policy(policy: &BootPolicy) -> ShellLaunchMode {
+    match policy.shell_mode {
+        BootShellMode::Console => ShellLaunchMode::Console,
+        BootShellMode::Serial => ShellLaunchMode::Serial,
+        BootShellMode::Both => ShellLaunchMode::Both,
+        BootShellMode::Off => ShellLaunchMode::Off,
     }
 }
 

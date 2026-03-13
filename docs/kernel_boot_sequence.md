@@ -10,6 +10,7 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 
 - 実装起点: `bootloader/src/main.rs`, `kernel/src/main.rs`, `kernel/src/kernel_content.rs`
 - ExoLoader が署名検証、ELF ロード、HHDM マッピング、`ExoBootInfo` 構築を完了し、`RDI` に boot info を載せてカーネルへ制御を渡す。
+- `ExoBootInfo` には raw `memory_map` / raw `rsdp_addr` / raw `cmdline` に加えて、bootloader が正規化した `usable_memory`、immutable `acpi_snapshot`、boot-critical `boot_policy` が含まれる。
 - カーネル側では `_start -> kmain -> kmain_inner` の順に入る。
 - この段階では ExoLoader が構築したページテーブルと `ExoBootInfo` ABI が前提になる。
 
@@ -26,6 +27,7 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 
 - 実装関数: `phase_early_kernel_substrate()`
 - 例外/割り込み基盤、PIT、メモリ管理、BSP スタックガード、interrupt waker の事前確保を行う。
+- `memory::init()` は `usable_memory` handoff を優先して allocator を起動し、handoff が無効な場合のみ raw `memory_map` を使う。
 - `memory::init()` が完了して初めて、ページテーブル操作や後続の割り当て依存サブシステムを安全に呼べる。
 - 依存:
   - Phase 2 で `physical_memory_offset` が設定済みであること
@@ -35,7 +37,9 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 
 - 実装関数: `phase_platform_and_security_base()`
 - ACPI/IOMMU、heap available 通知、kernel services 登録、async logging 切替、framebuffer/text console 初期化を行う。
+- early ACPI consumer は `platform::acpi` 経由で bootloader の `acpi_snapshot` を優先し、full ACPI parser は DMAR/IVRS/NFIT などの後続用途のために引き続き初期化される。
 - IOMMU は DMA 保護の基盤であり、以後のドライバ起動前に済ませる。
+- IOMMU と shell の boot-critical policy は kernel cmdline を再解釈せず、bootloader が handoff した `boot_policy` を使う。
 - `graphics_console_ready` はこのフェーズで確定し、後段の shell mode 調整に使う。
 - 依存:
   - Phase 3 のメモリ初期化完了

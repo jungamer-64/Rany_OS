@@ -258,10 +258,6 @@ impl KernelBootContext {
         }
     }
 
-    fn rsdp_addr(&self) -> Option<u64> {
-        (self.boot_info.rsdp_addr > 0).then_some(self.boot_info.rsdp_addr)
-    }
-
     fn numa_info(&self) -> Option<&boot_proto::NumaInfo> {
         (self.boot_info.numa_info.node_count > 0).then_some(&self.boot_info.numa_info)
     }
@@ -304,6 +300,7 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     init_early_serial();
     phase_bootloader_handoff(context);
     verify_boot_protocol_version(context.boot_info);
+    crate::platform::acpi::install_boot_snapshot(&context.boot_info.acpi_snapshot);
 
     // SSE/SSE2を有効化（x86_64ではABIで必須）
     init_sse();
@@ -382,11 +379,7 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
 
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    memory::init(
-        context.rsdp_addr(),
-        context.numa_info(),
-        Some(context.boot_info),
-    );
+    memory::init(context.numa_info(), Some(context.boot_info));
     memory::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
@@ -596,7 +589,7 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
 
     // Configure ACPI driver with HHDM offset for physical-to-virtual translation
     io::acpi::set_hhdm_offset(context.phys_mem_offset);
-    init_acpi_and_iommu(context.boot_info, context.phys_mem_offset);
+    init_acpi_and_iommu(context.boot_info);
     match crate::smp::init_smp(context.boot_info) {
         Ok(report) => {
             info!(
@@ -909,7 +902,8 @@ fn run_integration_tests_if_requested(context: &KernelBootContext) {
 }
 
 fn resolve_shell_mode(context: &mut KernelBootContext) {
-    let mode = crate::shell::session::parse_shell_launch_mode(context.cmdline);
+    let mode =
+        crate::shell::session::shell_launch_mode_from_boot_policy(&context.boot_info.boot_policy);
     let adjusted_mode = crate::shell::session::adjust_shell_launch_mode_for_console_availability(
         mode,
         context.graphics_console_ready,

@@ -24,7 +24,6 @@ mod elf_relocations;
 use elf_relocations::*;
 #[cfg(feature = "ui")]
 mod menu;
-mod numa;
 mod page_table;
 mod recovery;
 mod secure_boot;
@@ -229,9 +228,12 @@ fn main() -> Status {
     };
 
     info!("Allocating BootInfo...");
-    let boot_info_phys =
-        page_table::UefiMapper::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA)
-            .expect("Failed to allocate BootInfo");
+    let boot_info_pages = core::mem::size_of::<ExoBootInfo>().div_ceil(4096);
+    let boot_info_phys = page_table::UefiMapper::alloc_zeroed_pages(
+        boot_info_pages,
+        MemoryType::RUNTIME_SERVICES_DATA,
+    )
+    .expect("Failed to allocate BootInfo");
     let boot_info = unsafe { &mut *(boot_info_phys as *mut ExoBootInfo) };
 
     boot_info.version = EXO_BOOT_INFO_VERSION;
@@ -257,6 +259,12 @@ fn main() -> Status {
     // GOP framebuffer setup
     setup_gop_framebuffer(boot_info);
 
+    if let Err(err) = populate_boot_policy(boot_info, &cmdline_data) {
+        error!("Boot policy rejected: {:?}", err);
+        boot::stall(Duration::from_micros(5_000_000));
+        return Status::SECURITY_VIOLATION;
+    }
+
     // 6.5. Initialize boot artifacts and cmdline in boot_info
     copy_boot_artifacts_to_boot_info(boot_info, &boot_artifacts, hhdm_start);
     copy_cmdline_to_boot_info(boot_info, &cmdline_data, hhdm_start);
@@ -270,6 +278,14 @@ fn main() -> Status {
         MemoryType::RUNTIME_SERVICES_DATA,
     )
     .expect("Failed to allocate memory map buffer");
+    let usable_buffer_size =
+        MAX_USABLE_MEMORY_REGIONS * core::mem::size_of::<boot_proto::UsableMemoryRegion>();
+    let usable_buffer_pages = usable_buffer_size.div_ceil(4096);
+    let usable_buffer_phys = page_table::UefiMapper::alloc_zeroed_pages(
+        usable_buffer_pages,
+        MemoryType::RUNTIME_SERVICES_DATA,
+    )
+    .expect("Failed to allocate usable memory buffer");
 
     // Log kernel entry points before exiting boot services
     let entry_addr = elf.header.pt2.entry_point();
@@ -297,6 +313,16 @@ fn main() -> Status {
         boot_info,
         mmap_buffer_phys,
         mmap_estimate_count,
+        hhdm_start,
+    );
+    build_usable_memory_from_uefi(
+        &mmap,
+        boot_info,
+        &segment_info,
+        boot_info_phys,
+        mmap_buffer_phys,
+        mmap_buffer_size as u64,
+        usable_buffer_phys,
         hhdm_start,
     );
 

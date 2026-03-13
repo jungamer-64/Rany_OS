@@ -6,8 +6,9 @@
 use graphic_types::FramebufferInfo;
 
 pub use ap_trampoline::ApBootFlags;
+pub use boot_config::{BootPolicy, BootPolicyError, BootShellMode};
 
-pub const EXO_BOOT_INFO_VERSION: u64 = 5;
+pub const EXO_BOOT_INFO_VERSION: u64 = 6;
 
 /// Boot information passed from ExoLoader (UEFI) to the Kernel.
 ///
@@ -17,7 +18,8 @@ pub const EXO_BOOT_INFO_VERSION: u64 = 5;
 /// # ブートローダー → カーネル ハンドオフプロトコル
 ///
 /// 1. ブートローダーが `ExoBootInfo` を物理メモリに割り当て、全フィールドを設定する
-/// 2. ポインタ型フィールド (`cmdline_ptr`, `boot_artifacts.entries_ptr`, `memory_map.entries`)
+/// 2. ポインタ型フィールド (`cmdline_ptr`, `boot_artifacts.entries_ptr`,
+///    `memory_map.entries`, `usable_memory.entries_ptr`)
 ///    は HHDM 仮想アドレス (`phys_mem_offset + phys_addr`) で格納する
 /// 3. ブートサービス終了後、CR3 を切り替え、`&ExoBootInfo` を RDI に渡してカーネルへジャンプ
 /// 4. カーネルは `version` フィールドを検証し、不一致時はパニックする
@@ -39,6 +41,9 @@ pub struct ExoBootInfo {
     /// Length of the command line string.
     pub cmdline_len: u64,
 
+    /// Boot-critical policy normalized by the bootloader.
+    pub boot_policy: BootPolicy,
+
     /// Physical address of the root page table (CR3 value) created by the bootloader.
     /// This allows the kernel to immediately take over memory management without finding it again.
     pub page_table_base: u64,
@@ -48,6 +53,8 @@ pub struct ExoBootInfo {
 
     /// Memory map provided by UEFI.
     pub memory_map: MemoryMap,
+    /// Bootloader-normalized usable physical memory regions.
+    pub usable_memory: UsableMemoryTable,
 
     /// Framebuffer information (resolution, base address, format).
     pub framebuffer: FramebufferInfo,
@@ -60,6 +67,8 @@ pub struct ExoBootInfo {
     /// NUMA topology information (optional).
     /// Detected from ACPI SRAT table.
     pub numa_info: NumaInfo,
+    /// Immutable ACPI snapshot for early boot consumers.
+    pub acpi_snapshot: AcpiBootSnapshot,
 
     /// AP (Application Processor) boot information.
     /// Contains trampoline code address and stack allocation info.
@@ -242,6 +251,40 @@ pub struct MemoryMap {
     pub count: u64,
 }
 
+/// Single usable physical memory region after bootloader reservations.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsableMemoryRegion {
+    pub base: u64,
+    pub length: u64,
+}
+
+/// Table of bootloader-normalized usable memory regions.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UsableMemoryTable {
+    pub entries_ptr: u64,
+    pub count: u64,
+}
+
+impl UsableMemoryTable {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.entries_ptr == 0 || self.count == 0
+    }
+
+    #[must_use]
+    pub fn regions(&self) -> &[UsableMemoryRegion] {
+        if self.is_empty() {
+            return &[];
+        }
+        let Some(count) = usize::try_from(self.count).ok() else {
+            return &[];
+        };
+        unsafe { core::slice::from_raw_parts(self.entries_ptr as *const UsableMemoryRegion, count) }
+    }
+}
+
 /// Raw memory descriptor from UEFI (simplified or compatible).
 /// For now, we assume this matches `uefi::table::boot::MemoryDescriptor` layout if `uefi-rs` is used,
 /// or we convert it.
@@ -256,6 +299,150 @@ pub struct MemoryDescriptor {
     pub virt_start: u64,
     pub page_count: u64,
     pub attribute: u64,
+}
+
+pub const MAX_ACPI_LOCAL_APICS: usize = 256;
+pub const MAX_ACPI_IO_APICS: usize = 32;
+pub const MAX_ACPI_INTERRUPT_OVERRIDES: usize = 64;
+pub const MAX_ACPI_PCIE_ECAM: usize = 32;
+
+/// ACPI snapshot validity flags.
+pub mod acpi_snapshot_flags {
+    pub const VALID: u32 = 1 << 0;
+    pub const HAS_LEGACY_PICS: u32 = 1 << 1;
+}
+
+/// Local APIC flags stored in `BootLocalApicRecord.flags`.
+pub mod acpi_local_apic_flags {
+    pub const ENABLED: u8 = 1 << 0;
+    pub const ONLINE_CAPABLE: u8 = 1 << 1;
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BootLocalApicRecord {
+    pub processor_id: u8,
+    pub apic_id: u8,
+    pub flags: u8,
+    pub _reserved: u8,
+}
+
+impl BootLocalApicRecord {
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        (self.flags & acpi_local_apic_flags::ENABLED) != 0
+    }
+
+    #[must_use]
+    pub const fn online_capable(&self) -> bool {
+        (self.flags & acpi_local_apic_flags::ONLINE_CAPABLE) != 0
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BootIoApicRecord {
+    pub address: u64,
+    pub gsi_base: u32,
+    pub id: u8,
+    pub _reserved: [u8; 3],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BootInterruptOverrideRecord {
+    pub gsi: u32,
+    pub bus: u8,
+    pub source: u8,
+    pub polarity: u8,
+    pub trigger_mode: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BootPcieEcamRecord {
+    pub base_address: u64,
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+}
+
+/// Immutable ACPI snapshot for early boot consumers.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AcpiBootSnapshot {
+    pub flags: u32,
+    pub revision: u8,
+    pub _reserved: [u8; 3],
+    pub local_apic_address: u64,
+    pub dmar_addr: u64,
+    pub ivrs_addr: u64,
+    pub local_apic_count: u16,
+    pub io_apic_count: u16,
+    pub interrupt_override_count: u16,
+    pub pcie_ecam_count: u16,
+    pub local_apics: [BootLocalApicRecord; MAX_ACPI_LOCAL_APICS],
+    pub io_apics: [BootIoApicRecord; MAX_ACPI_IO_APICS],
+    pub interrupt_overrides: [BootInterruptOverrideRecord; MAX_ACPI_INTERRUPT_OVERRIDES],
+    pub pcie_ecam: [BootPcieEcamRecord; MAX_ACPI_PCIE_ECAM],
+}
+
+impl Default for AcpiBootSnapshot {
+    fn default() -> Self {
+        Self {
+            flags: 0,
+            revision: 0,
+            _reserved: [0; 3],
+            local_apic_address: 0,
+            dmar_addr: 0,
+            ivrs_addr: 0,
+            local_apic_count: 0,
+            io_apic_count: 0,
+            interrupt_override_count: 0,
+            pcie_ecam_count: 0,
+            local_apics: [BootLocalApicRecord::default(); MAX_ACPI_LOCAL_APICS],
+            io_apics: [BootIoApicRecord::default(); MAX_ACPI_IO_APICS],
+            interrupt_overrides: [BootInterruptOverrideRecord::default();
+                MAX_ACPI_INTERRUPT_OVERRIDES],
+            pcie_ecam: [BootPcieEcamRecord::default(); MAX_ACPI_PCIE_ECAM],
+        }
+    }
+}
+
+impl AcpiBootSnapshot {
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        (self.flags & acpi_snapshot_flags::VALID) != 0
+    }
+
+    #[must_use]
+    pub const fn has_legacy_pics(&self) -> bool {
+        (self.flags & acpi_snapshot_flags::HAS_LEGACY_PICS) != 0
+    }
+
+    #[must_use]
+    pub fn local_apics(&self) -> &[BootLocalApicRecord] {
+        let count = usize::from(self.local_apic_count).min(self.local_apics.len());
+        &self.local_apics[..count]
+    }
+
+    #[must_use]
+    pub fn io_apics(&self) -> &[BootIoApicRecord] {
+        let count = usize::from(self.io_apic_count).min(self.io_apics.len());
+        &self.io_apics[..count]
+    }
+
+    #[must_use]
+    pub fn interrupt_overrides(&self) -> &[BootInterruptOverrideRecord] {
+        let count = usize::from(self.interrupt_override_count).min(self.interrupt_overrides.len());
+        &self.interrupt_overrides[..count]
+    }
+
+    #[must_use]
+    pub fn pcie_ecam(&self) -> &[BootPcieEcamRecord] {
+        let count = usize::from(self.pcie_ecam_count).min(self.pcie_ecam.len());
+        &self.pcie_ecam[..count]
+    }
 }
 
 /// Maximum number of NUMA nodes supported
@@ -789,7 +976,12 @@ pub mod self_test_results {
 
 #[cfg(test)]
 mod tests {
-    use super::{BootArtifactEntry, BootArtifactKind, BootArtifactTable};
+    use core::mem::{align_of, size_of};
+
+    use super::{
+        AcpiBootSnapshot, BootArtifactEntry, BootArtifactKind, BootArtifactTable, BootPolicy,
+        UsableMemoryTable,
+    };
 
     #[test]
     fn boot_artifact_entry_accessors_round_trip() {
@@ -847,5 +1039,36 @@ mod tests {
         assert_eq!(table.entries().len(), 1);
         assert_eq!(table.entries()[0].path(), Some("cells/fixture.cell"));
         assert_eq!(table.entries()[0].data(), data);
+    }
+
+    #[test]
+    fn usable_memory_table_empty_when_pointer_or_count_missing() {
+        assert!(UsableMemoryTable::default().is_empty());
+
+        let table = UsableMemoryTable {
+            entries_ptr: 0x1000,
+            count: 0,
+        };
+        assert!(table.is_empty());
+        assert!(table.regions().is_empty());
+    }
+
+    #[test]
+    fn acpi_snapshot_default_is_invalid_and_empty() {
+        let snapshot = AcpiBootSnapshot::default();
+        assert!(!snapshot.is_valid());
+        assert!(!snapshot.has_legacy_pics());
+        assert!(snapshot.local_apics().is_empty());
+        assert!(snapshot.io_apics().is_empty());
+        assert!(snapshot.interrupt_overrides().is_empty());
+        assert!(snapshot.pcie_ecam().is_empty());
+    }
+
+    #[test]
+    fn boot_policy_and_acpi_snapshot_wire_layout_is_stable() {
+        assert_eq!(size_of::<BootPolicy>(), 8);
+        assert_eq!(align_of::<BootPolicy>(), 1);
+        assert_eq!(align_of::<AcpiBootSnapshot>(), 8);
+        assert_eq!(size_of::<UsableMemoryTable>(), 16);
     }
 }

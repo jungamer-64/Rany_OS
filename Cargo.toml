@@ -76,9 +76,9 @@ default-members = [
 
 [workspace.package]
 edition = "2024"
-authors = ["ExoRust Team"]
+authors = ["jungamer-64"]
 license = "MIT"
-repository = "https://github.com/Start-Rany-OS/Rany_OS"
+repository = "https://github.com/jungamer-64/Rany_OS"
 readme = "README.md"
 keywords = ["os", "kernel", "rust"]
 categories = ["os"]

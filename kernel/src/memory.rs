@@ -18,7 +18,7 @@ pub mod oom_killer;
 
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
-use boot_proto::{ExoBootInfo, MemoryDescriptor, MemoryMap, NumaInfo};
+use boot_proto::{MemoryDescriptor, MemoryMap};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};

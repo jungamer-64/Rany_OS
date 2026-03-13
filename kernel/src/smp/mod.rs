@@ -219,10 +219,10 @@ pub fn init_smp(boot_info: &ExoBootInfo) -> Result<SmpBootReport, &'static str> 
     reset_cpu_routing();
 
     // Get LAPIC address from ACPI
-    let lapic_base = crate::io::acpi::local_apic_address().unwrap_or(0xFEE00000); // Default LAPIC address
+    let lapic_base = crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000); // Default LAPIC address
 
     // Get list of APs from ACPI
-    let local_apics = crate::io::acpi::local_apics();
+    let local_apics = crate::platform::acpi::local_apics();
     let bsp_apic_id = crate::io::apic::local_apic().id() as u32;
     register_cpu_apic_mapping(0, bsp_apic_id);
 

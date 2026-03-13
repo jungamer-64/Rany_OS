@@ -24,6 +24,100 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Normalized shell launch mode decided during boot handoff.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BootShellMode {
+    #[default]
+    Console = 0,
+    Serial = 1,
+    Both = 2,
+    Off = 3,
+}
+
+/// Boot-critical policy normalized by the bootloader.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BootPolicy {
+    pub shell_mode: BootShellMode,
+    pub iommu_force: u8,
+    pub iommu_scalable: u8,
+    pub _reserved: [u8; 5],
+}
+
+impl BootPolicy {
+    #[must_use]
+    pub const fn iommu_force_enabled(self) -> bool {
+        self.iommu_force != 0
+    }
+
+    #[must_use]
+    pub const fn iommu_scalable_enabled(self) -> bool {
+        self.iommu_scalable != 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootPolicyError {
+    IommuDisabledRequested,
+    IommuPassthroughRequested,
+    DeprecatedIommuGlobalRequested,
+}
+
+fn get_cmdline_option<'a>(cmdline: &'a str, key: &str) -> Option<&'a str> {
+    for part in cmdline.split_whitespace() {
+        let (candidate, value) = part.split_once('=').unwrap_or((part, ""));
+        if candidate == key {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Parse boot-critical policy from a merged kernel command line.
+pub fn parse_boot_policy(cmdline: &str) -> Result<BootPolicy, BootPolicyError> {
+    let mut policy = BootPolicy::default();
+
+    if let Some(shell) = get_cmdline_option(cmdline, "shell") {
+        policy.shell_mode = match shell {
+            "console" => BootShellMode::Console,
+            "serial" => BootShellMode::Serial,
+            "both" => BootShellMode::Both,
+            "off" => BootShellMode::Off,
+            _ => BootShellMode::Console,
+        };
+    } else if let Some(console) = get_cmdline_option(cmdline, "console") {
+        policy.shell_mode = match console {
+            "serial" => BootShellMode::Serial,
+            "both" => BootShellMode::Both,
+            _ => BootShellMode::Console,
+        };
+    }
+
+    if let Some(value) = get_cmdline_option(cmdline, "iommu") {
+        match value {
+            "off" => return Err(BootPolicyError::IommuDisabledRequested),
+            "pt" | "passthrough" => return Err(BootPolicyError::IommuPassthroughRequested),
+            "force" => policy.iommu_force = 1,
+            _ => {}
+        }
+    }
+
+    if get_cmdline_option(cmdline, "iommu_global").is_some() {
+        return Err(BootPolicyError::DeprecatedIommuGlobalRequested);
+    }
+
+    if let Some(value) = get_cmdline_option(cmdline, "iommu_scalable") {
+        match value {
+            "on" | "1" | "true" => policy.iommu_scalable = 1,
+            "off" | "0" | "false" => policy.iommu_scalable = 0,
+            _ => {}
+        }
+    }
+
+    Ok(policy)
+}
+
 /// Maximum number of boot entries
 #[allow(dead_code)]
 pub const MAX_BOOT_ENTRIES: usize = 8;
@@ -200,7 +294,10 @@ pub fn default_config() -> BootConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{BootConfigError, default_config, parse_config};
+    use super::{
+        BootConfigError, BootPolicy, BootPolicyError, BootShellMode, default_config,
+        parse_boot_policy, parse_config,
+    };
 
     #[test]
     fn parse_basic_config_smoke() {
@@ -232,5 +329,94 @@ mod tests {
         let err = parse_config("[Default]\nkernel=rany_os\ninitramfs=initramfs.tar\n")
             .expect_err("deprecated initramfs key must fail");
         assert_eq!(err, BootConfigError::DeprecatedKey("initramfs"));
+    }
+
+    #[test]
+    fn boot_policy_defaults_to_console_and_iommu_defaults() {
+        assert_eq!(
+            parse_boot_policy("").expect("empty cmdline is valid"),
+            BootPolicy::default()
+        );
+    }
+
+    #[test]
+    fn boot_policy_parses_shell_modes() {
+        assert_eq!(
+            parse_boot_policy("shell=console")
+                .expect("shell=console should parse")
+                .shell_mode,
+            BootShellMode::Console
+        );
+        assert_eq!(
+            parse_boot_policy("shell=serial")
+                .expect("shell=serial should parse")
+                .shell_mode,
+            BootShellMode::Serial
+        );
+        assert_eq!(
+            parse_boot_policy("shell=both")
+                .expect("shell=both should parse")
+                .shell_mode,
+            BootShellMode::Both
+        );
+        assert_eq!(
+            parse_boot_policy("shell=off")
+                .expect("shell=off should parse")
+                .shell_mode,
+            BootShellMode::Off
+        );
+    }
+
+    #[test]
+    fn boot_policy_console_compat_is_supported() {
+        assert_eq!(
+            parse_boot_policy("console=serial")
+                .expect("console=serial should parse")
+                .shell_mode,
+            BootShellMode::Serial
+        );
+        assert_eq!(
+            parse_boot_policy("console=both")
+                .expect("console=both should parse")
+                .shell_mode,
+            BootShellMode::Both
+        );
+    }
+
+    #[test]
+    fn boot_policy_parses_iommu_flags() {
+        let policy = parse_boot_policy("iommu=force iommu_scalable=on")
+            .expect("iommu force/scalable should parse");
+        assert!(policy.iommu_force_enabled());
+        assert!(policy.iommu_scalable_enabled());
+
+        let policy =
+            parse_boot_policy("iommu_scalable=off").expect("iommu_scalable=off should parse");
+        assert!(!policy.iommu_force_enabled());
+        assert!(!policy.iommu_scalable_enabled());
+    }
+
+    #[test]
+    fn boot_policy_rejects_iommu_disable_and_passthrough() {
+        assert_eq!(
+            parse_boot_policy("iommu=off"),
+            Err(BootPolicyError::IommuDisabledRequested)
+        );
+        assert_eq!(
+            parse_boot_policy("iommu=pt"),
+            Err(BootPolicyError::IommuPassthroughRequested)
+        );
+        assert_eq!(
+            parse_boot_policy("iommu=passthrough"),
+            Err(BootPolicyError::IommuPassthroughRequested)
+        );
+    }
+
+    #[test]
+    fn boot_policy_rejects_deprecated_iommu_global() {
+        assert_eq!(
+            parse_boot_policy("console=serial iommu_global=1"),
+            Err(BootPolicyError::DeprecatedIommuGlobalRequested)
+        );
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use boot_proto::{ExoBootInfo, NumaInfo};
 
 /// Reserve AP boot trampoline and stack ranges.
 pub(crate) fn reserve_ap_boot_ranges(
@@ -59,6 +60,14 @@ pub(crate) fn reserve_boot_info_ranges(
         .checked_mul(entry_size)
         .unwrap_or(0);
     regions = subtract_if_valid(regions, hhdm_ptr_to_phys(mmap_ptr), mmap_bytes);
+    regions = subtract_if_valid(
+        regions,
+        hhdm_ptr_to_phys(boot_info.usable_memory.entries_ptr),
+        boot_info
+            .usable_memory
+            .count
+            .saturating_mul(core::mem::size_of::<boot_proto::UsableMemoryRegion>() as u64),
+    );
 
     regions = subtract_if_valid(
         regions,
@@ -91,27 +100,42 @@ pub(crate) fn reserve_boot_info_ranges(
     regions
 }
 
+fn get_boot_usable_regions(usable_memory: &boot_proto::UsableMemoryTable) -> Vec<(PhysAddr, u64)> {
+    let mut regions = Vec::new();
+    for region in usable_memory.regions() {
+        if region.length == 0 {
+            continue;
+        }
+        regions.push((PhysAddr::new(region.base), region.length));
+    }
+    regions
+}
+
 /// ブートメモリマップから使用可能領域を準備してBuddy Allocatorを初期化する
 pub(crate) fn init_buddy_from_boot_info(
     boot_info: Option<&ExoBootInfo>,
 ) -> alloc::vec::Vec<(x86_64::PhysAddr, u64)> {
-    let memory_map = boot_info.map(|info| &info.memory_map);
-    let mut usable_regions = if let Some(map) = memory_map {
-        let regions = get_boot_memory_regions(map);
-        if regions.is_empty() {
-            get_default_memory_regions()
+    let usable_regions = if let Some(info) = boot_info {
+        let authoritative = get_boot_usable_regions(&info.usable_memory);
+        if !authoritative.is_empty() {
+            authoritative
         } else {
-            regions
+            let mut fallback = if info.memory_map.entries.is_null() || info.memory_map.count == 0 {
+                get_default_memory_regions()
+            } else {
+                let regions = get_boot_memory_regions(&info.memory_map);
+                if regions.is_empty() {
+                    get_default_memory_regions()
+                } else {
+                    regions
+                }
+            };
+            fallback = reserve_bootstrap_heaps(fallback);
+            reserve_boot_info_ranges(fallback, info)
         }
     } else {
         get_default_memory_regions()
     };
-
-    usable_regions = reserve_bootstrap_heaps(usable_regions);
-
-    if let Some(info) = boot_info {
-        usable_regions = reserve_boot_info_ranges(usable_regions, info);
-    }
 
     unsafe {
         crate::mm::phys::buddy_allocator::init_buddy_allocator(&usable_regions);
@@ -131,7 +155,6 @@ pub(crate) fn init_buddy_from_boot_info(
 
 /// NUMA情報を使ってPMM (Physical Memory Manager) を初期化する
 pub(crate) fn init_numa_pmm(
-    rsdp_addr: Option<u64>,
     numa_info: Option<&NumaInfo>,
     usable_regions: &[(x86_64::PhysAddr, u64)],
 ) {
@@ -147,35 +170,9 @@ pub(crate) fn init_numa_pmm(
     }
 
     if !pmm_initialized {
-        pmm_initialized = init_pmm_from_srat(rsdp_addr);
-    }
-
-    if !pmm_initialized {
         unsafe {
             crate::mm::phys::frame_allocator::init_frame_allocator(usable_regions);
         }
-    }
-}
-
-/// SRAT (ACPI) からNUMA領域を解析してPMMを初期化する
-pub(crate) fn init_pmm_from_srat(rsdp_addr: Option<u64>) -> bool {
-    let Some(_rsdp_addr_val) = rsdp_addr else {
-        return false;
-    };
-    let regions = crate::io::acpi::numa_memory_regions();
-    let mut numa_regions = alloc::vec::Vec::new();
-    for (base, length, proximity) in regions {
-        let base_phys = x86_64::PhysAddr::new(base);
-        let node = crate::mm::types::NumaNodeId::new(proximity as u8);
-        numa_regions.push((base_phys, length, node));
-    }
-    if !numa_regions.is_empty() {
-        unsafe {
-            crate::mm::phys::frame_allocator::init_numa_frame_allocator(&numa_regions);
-        }
-        true
-    } else {
-        false
     }
 }
 
@@ -204,7 +201,7 @@ pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfo>) {
 /// 3. Exchange Heap（ゼロコピーIPC用）
 /// 4. Per-CPU データ構造
 /// 5. Per-Core Slab Cache
-pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Option<&ExoBootInfo>) {
+pub fn init(numa_info: Option<&NumaInfo>, boot_info: Option<&ExoBootInfo>) {
     use core::sync::atomic::Ordering;
 
     crate::io::log::early_print("[MEM] init start\n");
@@ -224,7 +221,7 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     let usable_regions = init_buddy_from_boot_info(boot_info);
 
     // 2.5. NUMA情報（ブートローダー/ACPI）からPMMを初期化
-    init_numa_pmm(rsdp_addr, numa_info, &usable_regions);
+    init_numa_pmm(numa_info, &usable_regions);
 
     // 3-5. Exchange Heap, Per-CPU, Per-Core Slab Cache
     init_post_buddy(boot_info);

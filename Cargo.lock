@@ -115,6 +115,7 @@ name = "boot_proto"
 version = "0.1.0"
 dependencies = [
  "ap_trampoline",
+ "boot_config",
  "graphic_types",
 ]
 
@@ -334,6 +335,7 @@ dependencies = [
 name = "exoloader"
 version = "0.1.0"
 dependencies = [
+ "acpi_driver",
  "ap_trampoline",
  "boot_config",
  "boot_proto",

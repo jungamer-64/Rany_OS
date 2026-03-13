@@ -576,7 +576,8 @@ pub extern "C" fn ap_entry_inner(ap_slot: u32, cpu_id: u32) -> ! {
     crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(cpu_id as usize);
     ap_serial_mark(b'D');
 
-    let local_apic = LocalApic::new(crate::io::acpi::local_apic_address().unwrap_or(0xFEE00000));
+    let local_apic =
+        LocalApic::new(crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000));
     local_apic.init_current_cpu();
     let apic_id = local_apic.id();
     ap_serial_mark(b'E');
@@ -673,7 +674,8 @@ pub fn broadcast_ipi(vector: u8) {
 
 /// Send EOI to the current CPU's LAPIC without taking the global APIC driver lock.
 pub fn send_eoi_current_cpu() {
-    let local_apic = LocalApic::new(crate::io::acpi::local_apic_address().unwrap_or(0xFEE00000));
+    let local_apic =
+        LocalApic::new(crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000));
     local_apic.eoi();
 }
 

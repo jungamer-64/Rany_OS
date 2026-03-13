@@ -219,7 +219,7 @@ fn dump_idt_gate(label: &str, vector: u8) {
 }
 
 fn dump_local_apic_in_service() {
-    let lapic_base = crate::io::acpi::local_apic_address().unwrap_or(0xFEE0_0000) as usize;
+    let lapic_base = crate::platform::acpi::local_apic_address().unwrap_or(0xFEE0_0000) as usize;
     early_print("  LAPIC ISR:");
     let mut found = false;
 

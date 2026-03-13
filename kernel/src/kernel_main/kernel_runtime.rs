@@ -278,7 +278,7 @@ fn spawn_shell_tasks(
             spawn_console_shell(executor);
         }
         ShellLaunchMode::Off => {
-            info!(target: "init", "Shell launch disabled by cmdline (shell=off)");
+            info!(target: "init", "Shell launch disabled by boot policy (shell=off)");
         }
     }
 }

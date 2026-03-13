@@ -327,7 +327,16 @@ fn init_avx() {
 }
 
 /// ACPI and IOMMU initialization.
-fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
+fn iommu_config_from_boot_policy(
+    policy: &boot_proto::BootPolicy,
+) -> io::iommu::runtime::config::IommuConfig {
+    io::iommu::runtime::config::IommuConfig {
+        force: policy.iommu_force_enabled(),
+        scalable_mode: policy.iommu_scalable_enabled(),
+    }
+}
+
+fn init_acpi_and_iommu(boot_info: &ExoBootInfo) {
     if boot_info.rsdp_addr == 0 {
         panic!(
             "[SECURITY] IOMMU is mandatory but the bootloader did not provide an RSDP. \
@@ -347,7 +356,7 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     };
     info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
 
-    let iommu_config = parse_iommu_cmdline(boot_info, phys_mem_offset);
+    let iommu_config = iommu_config_from_boot_policy(&boot_info.boot_policy);
     init_iommu_driver(&parser, &iommu_config);
     io::iommu::api::enforce_iommu_requirement();
 
@@ -390,155 +399,25 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo, phys_mem_offset: u64) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IommuCmdlinePolicyError {
-    DisabledRequested,
-    PassthroughRequested,
-    DeprecatedGlobalRequested,
-}
-
-fn parse_iommu_cmdline_str(
-    cmdline: &str,
-) -> Result<io::iommu::runtime::config::IommuConfig, IommuCmdlinePolicyError> {
-    let mut config = io::iommu::runtime::config::IommuConfig::default();
-
-    if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
-        match val {
-            "off" => return Err(IommuCmdlinePolicyError::DisabledRequested),
-            "pt" | "passthrough" => return Err(IommuCmdlinePolicyError::PassthroughRequested),
-            "force" => config.force = true,
-            _ => {}
-        }
-    }
-
-    if util::get_cmdline_option(cmdline, "iommu_global").is_some() {
-        return Err(IommuCmdlinePolicyError::DeprecatedGlobalRequested);
-    }
-
-    if let Some(val) = util::get_cmdline_option(cmdline, "iommu_scalable") {
-        match val {
-            "on" | "1" | "true" => config.scalable_mode = true,
-            "off" | "0" | "false" => config.scalable_mode = false,
-            _ => {}
-        }
-    }
-
-    Ok(config)
-}
-
-fn panic_for_iommu_cmdline_policy(err: IommuCmdlinePolicyError) -> ! {
-    match err {
-        IommuCmdlinePolicyError::DisabledRequested => {
-            panic!("[SECURITY] Kernel cmdline requested 'iommu=off', but IOMMU is mandatory.");
-        }
-        IommuCmdlinePolicyError::PassthroughRequested => {
-            panic!(
-                "[SECURITY] Kernel cmdline requested IOMMU passthrough mode, \
-                 but translated IOMMU protection is mandatory."
-            );
-        }
-        IommuCmdlinePolicyError::DeprecatedGlobalRequested => {
-            panic!(
-                "[SECURITY] Kernel cmdline requested deprecated 'iommu_global', \
-                 but all global DMA compatibility paths were removed."
-            );
-        }
-    }
-}
-
-/// Parse IOMMU configuration from kernel command line.
-fn parse_iommu_cmdline(
-    boot_info: &ExoBootInfo,
-    phys_mem_offset: u64,
-) -> io::iommu::runtime::config::IommuConfig {
-    let default_config = io::iommu::runtime::config::IommuConfig::default();
-    if boot_info.cmdline_len == 0 {
-        return default_config;
-    }
-
-    let cmdline_addr = if boot_info.cmdline_ptr >= phys_mem_offset {
-        boot_info.cmdline_ptr
-    } else {
-        match phys_mem_offset.checked_add(boot_info.cmdline_ptr) {
-            Some(addr) => addr,
-            None => {
-                warn!(target: "init", "Skipping IOMMU cmdline parse: address overflow");
-                return default_config;
-            }
-        }
-    };
-    let cmdline_len = match usize::try_from(boot_info.cmdline_len) {
-        Ok(v) => v,
-        Err(_) => {
-            warn!(
-                target: "init",
-                "Skipping IOMMU cmdline parse: invalid length {}",
-                boot_info.cmdline_len
-            );
-            return default_config;
-        }
-    };
-    let ptr = cmdline_addr as *const u8;
-    let slice = unsafe { core::slice::from_raw_parts(ptr, cmdline_len) };
-    let cmdline = match core::str::from_utf8(slice) {
-        Ok(s) => s,
-        Err(_) => return default_config,
-    };
-    info!(target: "init", "Kernel cmdline: {}", cmdline);
-
-    match parse_iommu_cmdline_str(cmdline) {
-        Ok(config) => config,
-        Err(err) => panic_for_iommu_cmdline_policy(err),
-    }
-}
-
 #[cfg(test)]
-mod iommu_cmdline_tests {
+mod iommu_policy_tests {
     use super::*;
 
     #[test_case]
-    fn iommu_cmdline_rejects_off() {
-        assert_eq!(
-            parse_iommu_cmdline_str("iommu=off"),
-            Err(IommuCmdlinePolicyError::DisabledRequested)
-        );
-    }
-
-    #[test_case]
-    fn iommu_cmdline_rejects_pt() {
-        assert_eq!(
-            parse_iommu_cmdline_str("iommu=pt"),
-            Err(IommuCmdlinePolicyError::PassthroughRequested)
-        );
-    }
-
-    #[test_case]
-    fn iommu_cmdline_rejects_passthrough() {
-        assert_eq!(
-            parse_iommu_cmdline_str("iommu=passthrough"),
-            Err(IommuCmdlinePolicyError::PassthroughRequested)
-        );
-    }
-
-    #[test_case]
-    fn iommu_cmdline_rejects_iommu_global() {
-        assert_eq!(
-            parse_iommu_cmdline_str("console=serial iommu_global=1"),
-            Err(IommuCmdlinePolicyError::DeprecatedGlobalRequested)
-        );
-    }
-
-    #[test_case]
-    fn iommu_cmdline_parses_scalable_on_and_force() {
-        let config =
-            parse_iommu_cmdline_str("iommu=force iommu_scalable=on").expect("cmdline should parse");
+    fn iommu_policy_maps_force_and_scalable_flags() {
+        let policy = boot_proto::BootPolicy {
+            iommu_force: 1,
+            iommu_scalable: 1,
+            ..boot_proto::BootPolicy::default()
+        };
+        let config = iommu_config_from_boot_policy(&policy);
         assert!(config.force);
         assert!(config.scalable_mode);
     }
 
     #[test_case]
-    fn iommu_cmdline_parses_scalable_off() {
-        let config = parse_iommu_cmdline_str("iommu_scalable=off").expect("cmdline should parse");
+    fn iommu_policy_defaults_to_translated_mode() {
+        let config = iommu_config_from_boot_policy(&boot_proto::BootPolicy::default());
         assert!(!config.force);
         assert!(!config.scalable_mode);
     }
