@@ -68,7 +68,12 @@ pub use environ::{
     EnvError, EnvKey, EnvValue, Environment, get_home, get_path, get_pwd, get_term, get_user,
     kernel_env, set_pwd,
 };
-pub use executor::{Executor, set_active_cpu_count as set_executor_active_cpu_count};
+pub(crate) use executor::run_boxed_cold_start;
+pub use executor::{
+    Executor, active_cpu_count as executor_active_cpu_count, current_executor_phase,
+    current_polled_task_context, register_cpu,
+    set_active_cpu_count as set_executor_active_cpu_count,
+};
 #[allow(unused_imports)]
 pub use interrupt_waker::{
     AtomicWaker, InterruptFuture, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,

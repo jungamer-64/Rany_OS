@@ -364,7 +364,8 @@ impl DeviceIoModeController {
     /// モードを評価し、必要なら切り替え
     pub fn evaluate_mode(&self, current_tick: u64) -> Option<IoMode> {
         let last = self.last_evaluation.load(Ordering::Acquire);
-        if current_tick - last < self.thresholds.evaluation_interval {
+        let elapsed = current_tick.saturating_sub(last);
+        if elapsed < self.thresholds.evaluation_interval {
             return None;
         }
 

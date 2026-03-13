@@ -59,6 +59,7 @@ type BootCase = fn() -> Result<(), BootCaseError>;
 #[cfg(feature = "qemu-test-export")]
 static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
     ("interrupts_enabled", case_interrupts_enabled),
+    ("smp_workers_online", case_smp_workers_online),
     ("uptime_ms_progresses", case_uptime_ms_progresses),
     ("tick_progresses", case_tick_progresses),
     ("sleep_ms_resumes", case_sleep_ms_resumes),
@@ -159,6 +160,40 @@ fn case_interrupts_enabled() -> Result<(), BootCaseError> {
             "interrupts are disabled in boot-smoke runtime",
         ))
     }
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_smp_workers_online() -> Result<(), BootCaseError> {
+    let cpu_count = crate::smp::cpu_count() as usize;
+    if cpu_count <= 1 {
+        return Err(BootCaseError::blocked(
+            "smp_workers_online requires a multi-core QEMU configuration",
+        ));
+    }
+
+    let per_cpu_count = crate::per_cpu::active_cpu_count();
+    if per_cpu_count != cpu_count {
+        return Err(BootCaseError::failed(format!(
+            "per_cpu active count mismatch: expected={} actual={}",
+            cpu_count, per_cpu_count
+        )));
+    }
+
+    let executor_cpu_count = task::executor_active_cpu_count();
+    if executor_cpu_count != cpu_count {
+        return Err(BootCaseError::failed(format!(
+            "executor active count mismatch: expected={} actual={}",
+            cpu_count, executor_cpu_count
+        )));
+    }
+
+    if !crate::smp::runtime_workers_released() {
+        return Err(BootCaseError::failed(
+            "runtime workers were not released before boot runtime checks",
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "qemu-test-export")]

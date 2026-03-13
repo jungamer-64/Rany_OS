@@ -593,6 +593,14 @@ fn send_tlb_flush_ipi_internal(
         if remote_mask.is_set(cpu_id) {
             let state = get_cpu_tlb_state(cpu_id);
 
+            // Phase-2 runtime handoff前のAP workerは、lazy TLB退出時にまとめて
+            // 同期すれば十分なので、pre-release期間はIPI自体を送らない。
+            if cpu_id != 0 && !crate::smp::runtime_workers_released() {
+                state.mark_pending_flush();
+                remote_mask.clear(cpu_id);
+                continue;
+            }
+
             // Lazyモードのcpuはフラッシュを保留
             if state.get_state() == TlbState::Lazy {
                 state.mark_pending_flush();
@@ -732,8 +740,15 @@ pub fn flush_tlb_all() {
 
 /// 単一CPUにTLBフラッシュIPIを送信
 fn send_tlb_ipi_to_cpu(cpu_id: usize) {
-    // CPU IDをAPIC IDとして使用（通常は1:1マッピング）
-    let apic_id = cpu_id as u8;
+    let apic_id = resolve_tlb_target_apic_id(cpu_id).unwrap_or_else(|| {
+        panic!("[TLB] Missing APIC routing for logical CPU {}", cpu_id);
+    });
+    let apic_id = u8::try_from(apic_id).unwrap_or_else(|_| {
+        panic!(
+            "[TLB] APIC ID {} for logical CPU {} does not fit in xAPIC destination field",
+            apic_id, cpu_id
+        );
+    });
 
     // interrupt_manager経由でIPI送信
     crate::io::interrupt_manager::send_ipi(apic_id, TLB_FLUSH_VECTOR);
@@ -745,6 +760,10 @@ fn send_tlb_ipi_to_cpu(cpu_id: usize) {
 fn broadcast_tlb_flush_ipi() {
     crate::io::interrupt_manager::broadcast_ipi(TLB_FLUSH_VECTOR);
     TLB_STATS.remote_flushes.fetch_add(1, Ordering::Relaxed);
+}
+
+fn resolve_tlb_target_apic_id(cpu_id: usize) -> Option<u32> {
+    crate::smp::apic_id_for_cpu(cpu_id)
 }
 
 // ============================================================================
@@ -1293,6 +1312,7 @@ static LAZY_TLB_STATE: [PerCpuLazyTlb; MAX_CPUS] = {
 /// 即座にフラッシュせず、pending flagを設定するだけになる。
 pub fn enter_lazy_tlb_mode(cpu_id: usize) {
     if cpu_id < MAX_CPUS {
+        CPU_TLB_STATES[cpu_id].enter_lazy();
         LAZY_TLB_STATE[cpu_id].enter_lazy();
     }
 }
@@ -1306,6 +1326,7 @@ pub fn enter_lazy_tlb_mode(cpu_id: usize) {
 /// - `false`: 遅延フラッシュなし
 pub fn exit_lazy_tlb_mode(cpu_id: usize) -> bool {
     if cpu_id < MAX_CPUS {
+        CPU_TLB_STATES[cpu_id].enter_active();
         LAZY_TLB_STATE[cpu_id].exit_lazy()
     } else {
         false
@@ -1788,5 +1809,15 @@ mod tests {
         state.mark_pending_flush();
         state.enter_active();
         assert_eq!(state.get_state(), TlbState::Active);
+    }
+
+    #[cfg(any(feature = "full_mm_tests", feature = "qemu-test-export"))]
+    #[test_case]
+    fn test_tlb_ipi_target_uses_cpu_to_apic_routing() {
+        crate::smp::reset_cpu_routing_for_tests();
+        crate::smp::register_cpu_apic_mapping(3, 45);
+
+        assert_eq!(resolve_tlb_target_apic_id(3), Some(45));
+        assert_eq!(resolve_tlb_target_apic_id(4), None);
     }
 }

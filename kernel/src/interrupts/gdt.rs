@@ -17,6 +17,9 @@ pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 /// Page Fault 用の IST インデックス（オプション）
 pub const PAGE_FAULT_IST_INDEX: u16 = 1;
 
+/// SMP IPI（wake/TLB shootdown）用の IST インデックス
+pub const SMP_IPI_IST_INDEX: u16 = 2;
+
 /// IST スタックサイズ（16KiB）
 const IST_STACK_SIZE: usize = 16 * 1024;
 const MAX_GDT_CPUS: usize = crate::per_cpu::MAX_CPUS;
@@ -29,6 +32,7 @@ struct IstStack([u8; IST_STACK_SIZE]);
 struct PerCpuGdtState {
     double_fault_stack: IstStack,
     page_fault_stack: IstStack,
+    smp_ipi_stack: IstStack,
     tss: MaybeUninit<TaskStateSegment>,
     gdt: MaybeUninit<GlobalDescriptorTable>,
     selectors: MaybeUninit<Selectors>,
@@ -41,6 +45,7 @@ impl PerCpuGdtState {
         Self {
             double_fault_stack: IstStack([0; IST_STACK_SIZE]),
             page_fault_stack: IstStack([0; IST_STACK_SIZE]),
+            smp_ipi_stack: IstStack([0; IST_STACK_SIZE]),
             tss: MaybeUninit::uninit(),
             gdt: MaybeUninit::uninit(),
             selectors: MaybeUninit::uninit(),
@@ -53,6 +58,8 @@ impl PerCpuGdtState {
             VirtAddr::new(self.double_fault_stack_end());
         tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] =
             VirtAddr::new(self.page_fault_stack_end());
+        tss.interrupt_stack_table[SMP_IPI_IST_INDEX as usize] =
+            VirtAddr::new(self.smp_ipi_stack_end());
         self.tss.write(tss);
 
         let mut gdt = GlobalDescriptorTable::new();
@@ -76,6 +83,11 @@ impl PerCpuGdtState {
     #[inline]
     fn page_fault_stack_end(&self) -> u64 {
         &self.page_fault_stack as *const IstStack as u64 + IST_STACK_SIZE as u64
+    }
+
+    #[inline]
+    fn smp_ipi_stack_end(&self) -> u64 {
+        &self.smp_ipi_stack as *const IstStack as u64 + IST_STACK_SIZE as u64
     }
 
     #[inline]
@@ -124,12 +136,7 @@ static PER_CPU_GDT_STATES: [GdtStateSlot; MAX_GDT_CPUS] = {
 
 #[inline]
 fn smp_gdt_mark(marker: u8) {
-    let mut timeout = 100_000u32;
-    while (crate::io::inb(0x3F8 + 5) & 0x20) == 0 && timeout > 0 {
-        core::hint::spin_loop();
-        timeout -= 1;
-    }
-    crate::io::outb(0x3F8, marker);
+    crate::io::log::debug_serial_mark(marker);
 }
 
 /// セグメントセレクタ

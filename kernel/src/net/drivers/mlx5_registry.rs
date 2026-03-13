@@ -748,7 +748,6 @@ impl Mlx5AsyncDriver {
         index: u8,
         pci_dev: &crate::io::pci::PciDeviceInfo,
     ) -> KapiResult<()> {
-        crate::io::log::early_print("[MLX5_PROBE] probe_device enter\n");
         let variant = ConnectXVariant::from_device_id(pci_dev.device_id.0);
         log::info!(
             target: "mlx5",
@@ -790,7 +789,6 @@ impl Mlx5AsyncDriver {
             );
             KapiError::IoError
         })?;
-        crate::io::log::early_print("[MLX5_PROBE] BAR0 mapped\n");
 
         log::info!(
             target: "mlx5",
@@ -851,7 +849,6 @@ impl Mlx5AsyncDriver {
         } else {
             log::warn!(target: "mlx5", "MSI-X not available; using polling mode");
         }
-        crate::io::log::early_print("[MLX5_PROBE] MSI-X phase done\n");
 
         // SR-IOV ケーパビリティの有無を確認して PF/VF 判定を補強
         let has_sriov_cap = pcie_ext_config()
@@ -920,8 +917,6 @@ impl Mlx5AsyncDriver {
             allocated.fw_pages.len(),
             plan.fw_boot_page_count()
         );
-        crate::io::log::early_print("[MLX5_PROBE] DMA allocated\n");
-
         log::info!(
             target: "mlx5",
             "CMD DMA IOVA: cmdq={:#x} in_mbox={:#x} out_mbox={:#x}",
@@ -930,7 +925,6 @@ impl Mlx5AsyncDriver {
             dma_resources.cmd_out_mbox.device_address(),
         );
 
-        crate::io::log::early_print("[MLX5_PROBE] bootstrap start\n");
         let init_result = unsafe { device.bootstrap(&config, &allocated) };
         if let Err(e) = init_result {
             log::error!(target: "mlx5", "Full init failed: {:?}", e);
@@ -941,19 +935,13 @@ impl Mlx5AsyncDriver {
             core::mem::forget(dma_resources);
             return Err(KapiError::IoError);
         }
-        crate::io::log::early_print("[MLX5_PROBE] bootstrap done\n");
-
-        crate::io::log::early_print("[MLX5_PROBE] register bridge device enter\n");
         crate::net::runtime::bridge::mlx5_bridge::register_mlx5_device(index, device);
-        crate::io::log::early_print("[MLX5_PROBE] register bridge device done\n");
         let adapter = crate::net::runtime::bridge::mlx5_bridge::mlx5_net_driver_adapter(index);
-        crate::io::log::early_print("[MLX5_PROBE] register port enter\n");
         let register_result = crate::net::runtime::device::register_port_with_default_config(
             crate::net::runtime::device::NetDeviceKey::Mlx5(index),
             adapter,
             crate::net::runtime::device::primary_if().is_none(),
         );
-        crate::io::log::early_print("[MLX5_PROBE] register port returned\n");
         if let Err(e) = register_result {
             log::error!(target: "mlx5", "Port runtime registration failed: {}", e);
 
@@ -1024,7 +1012,6 @@ impl AsyncDriver for Mlx5AsyncDriver {
 
     fn probe(&mut self, _ctx: &mut DriverContext) -> DriverFuture<'_, KapiResult<()>> {
         Box::pin(async move {
-            crate::io::log::early_print("[MLX5_ASYNC] probe future enter\n");
             log::info!(target: "mlx5", "Probing for ConnectX family devices...");
             clear_mlx5_sriov_state();
             self.devices.clear();
@@ -1050,7 +1037,6 @@ impl AsyncDriver for Mlx5AsyncDriver {
                     pci_device.bdf.function(),
                     index,
                 );
-                crate::io::log::early_print("[MLX5_ASYNC] device found\n");
                 match self.probe_device(index, &pci_device) {
                     Ok(()) => probe_count += 1,
                     Err(err) => {

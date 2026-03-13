@@ -1,8 +1,6 @@
 BITS 16
 ORG 0
 
-%define COM1_PORT 0x03F8
-
 %define TRAMPOLINE_MAILBOX_OFFSET 0x200
 %define AP_MAILBOX_AP_SLOT      (TRAMPOLINE_MAILBOX_OFFSET + 0)
 %define AP_MAILBOX_CPU_ID       (TRAMPOLINE_MAILBOX_OFFSET + 4)
@@ -14,10 +12,6 @@ ORG 0
 ap_trampoline_start:
     cli
     cld
-
-    mov dx, COM1_PORT
-    mov al, 'r'
-    out dx, al
 
     xor ax, ax
     mov ss, ax
@@ -57,10 +51,6 @@ ap_trampoline_start:
 
 BITS 32
 protected_mode_entry:
-    mov dx, COM1_PORT
-    mov al, 'p'
-    out dx, al
-
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -97,10 +87,6 @@ long_mode_far_ptr:
 BITS 64
 DEFAULT REL
 long_mode_entry:
-    mov dx, COM1_PORT
-    mov al, 'l'
-    out dx, al
-
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -122,24 +108,13 @@ long_mode_entry:
     mov rsp, [ap_mailbox + 16]
     mov edi, [ap_mailbox + 0]
     mov esi, [ap_mailbox + 4]
-    mov dx, COM1_PORT
-    mov al, 'R'
-    out dx, al
     mov rbx, [ap_mailbox + 32]
-    mov al, 'H'
-    out dx, al
     mov al, [rbx]
     cmp al, 0x5A
     jne .probe_failed
-    mov dx, COM1_PORT
-    mov al, 'Q'
-    out dx, al
     jmp .probe_done
 
 .probe_failed:
-    mov dx, COM1_PORT
-    mov al, 'q'
-    out dx, al
 
 .probe_done:
     mov rax, [ap_mailbox + 24]

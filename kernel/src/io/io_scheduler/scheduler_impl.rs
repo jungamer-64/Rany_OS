@@ -263,7 +263,7 @@ impl IoScheduler {
 
         // モードコントローラにレイテンシを報告
         if let Some(completed) = request.completed_at {
-            let latency_us = (completed - request.submitted_at) * 1000; // tick to μs (仮)
+            let latency_us = completed.saturating_sub(request.submitted_at) * 1000; // tick to μs (仮)
             if let Some(controller) = self
                 .mode_controllers
                 .read()

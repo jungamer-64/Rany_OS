@@ -35,15 +35,12 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
 }
 
 async fn network_bootstrap_task() {
-    crate::io::log::early_print("[NET_BOOT] task enter\n");
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
-    crate::io::log::early_print("[NET_BOOT] checking virtio presence\n");
     let virtio_net_present = crate::drivers::virtio::virtio_net_driver_adapter(0)
         .info()
         .flags
         != 0;
-    crate::io::log::early_print("[NET_BOOT] virtio presence checked\n");
     if virtio_net_present {
         let virtio_port_registered = crate::net::runtime::device::port_info(
             crate::net::runtime::device::NetDeviceKey::Virtio(0),
@@ -62,10 +59,7 @@ async fn network_bootstrap_task() {
                 use alloc::boxed::Box;
                 use driver_registry::register_driver;
 
-                crate::io::log::early_print("[NET_BOOT] registering virtio driver\n");
                 let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
-                crate::io::log::early_print("[NET_BOOT] registered virtio driver\n");
-                crate::io::log::early_print("[NET_BOOT] probing/starting virtio driver\n");
                 if let Err(e) = driver_registry::driver_registry()
                     .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
                 {
@@ -73,7 +67,6 @@ async fn network_bootstrap_task() {
                 } else {
                     info!(target: "net_boot", "VirtIO-Net driver initialized via DriverRegistry");
                 }
-                crate::io::log::early_print("[NET_BOOT] probe/start virtio driver returned\n");
             }
         }
     } else {
@@ -135,13 +128,10 @@ async fn network_bootstrap_task() {
         use alloc::boxed::Box;
         use driver_registry::register_driver;
 
-        crate::io::log::early_print("[NET_BOOT] registering mlx5 driver\n");
         info!(target: "net_boot", "Probing ConnectX (mlx5) via DriverRegistry");
         let mlx5_handle = register_driver(Box::new(Mlx5ConnectXDriver::new()));
-        crate::io::log::early_print("[NET_BOOT] registered mlx5 driver\n");
         match mlx5_handle {
             Ok(handle) => {
-                crate::io::log::early_print("[NET_BOOT] probing/starting mlx5 driver\n");
                 match driver_registry::driver_registry().probe_and_start(handle) {
                     Ok(()) => {
                         info!(target: "net_boot", "ConnectX (mlx5) driver initialized via DriverRegistry");
@@ -152,7 +142,6 @@ async fn network_bootstrap_task() {
                         info!(target: "net_boot", "ConnectX (mlx5) not found or init failed: {:?}", e);
                     }
                 }
-                crate::io::log::early_print("[NET_BOOT] probe/start mlx5 driver returned\n");
             }
             Err(e) => {
                 warn!(target: "net_boot", "Failed to register mlx5 driver: {:?}", e);
@@ -358,7 +347,6 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
 
         info!(target: "task1", "User application completed");
     }));
-    crate::io::log::early_print("[INIT] Task 1 (User App) spawned\n");
 
     // タスク2: ゼロコピー通信デモ
     let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo"))
@@ -367,28 +355,20 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
 
     executor.spawn(Task::new(async move {
         info!(target: "task2", "IPC demonstration started");
-        crate::io::log::early_print("[TASK2] IPC demo started\n");
-
         // RRefを使用したゼロコピーデータ転送
-        crate::io::log::early_print("[TASK2] Creating RRef...\n");
         let data = RRef::new(
             ipc::DomainId::new(domain1.as_u64()),
             alloc::vec![0xDE, 0xAD, 0xBE, 0xEF],
         );
-        crate::io::log::early_print("[TASK2] RRef created\n");
         debug!(target: "task2", "Created RRef in domain {}", domain1.as_u64());
 
         // 所有権を domain2 に移動
-        crate::io::log::early_print("[TASK2] Moving RRef...\n");
         let data = data.move_to(ipc::DomainId::new(domain2.as_u64()));
-        crate::io::log::early_print("[TASK2] RRef moved\n");
         debug!(target: "task2", "Transferred ownership to domain {} (zero-copy)", data.owner().as_u64());
 
         debug!(target: "task2", "Data: {:?}", &data[..]);
         info!(target: "task2", "IPC demo completed");
-        crate::io::log::early_print("[TASK2] IPC demo completed\n");
     }));
-    crate::io::log::early_print("[INIT] Task 2 (IPC Demo) spawned\n");
 
     // タスク3: プリエンプション統計デモ
     executor.spawn(Task::new(async {
@@ -451,7 +431,6 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
 
         info!(target: "task5", "Completed");
     }));
-    crate::io::log::early_print("[INITDBG] task5 spawned\n");
 
     // タスク6: ベンチマーク実行（オプション）
     // 注意: 大量メモリ割り当てでパニックするため一時的に無効化
@@ -499,7 +478,6 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
             rx_errors
         );
     }));
-    crate::io::log::early_print("[INITDBG] net_test spawned\n");
 
     // タスク7: 統合テスト実行
     // 注意: 大量メモリ割り当てでパニックする可能性があるため一時的に無効化
@@ -540,7 +518,6 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
         shell::graphical::run_async_shell().await;
     }));
     */
-    crate::io::log::early_print("[INITDBG] spawn_kernel_tasks complete\n");
 }
 
 /// カーネルタスクをスポーン

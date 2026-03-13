@@ -236,6 +236,11 @@ impl LocalApic {
         self.write(Self::EOI, 0);
     }
 
+    #[inline]
+    pub fn set_task_priority(&self, priority: u8) {
+        self.write(Self::TPR, priority as u32);
+    }
+
     /// Enable LAPIC
     pub fn enable(&self) {
         let spurious = self.read(Self::SPURIOUS);
@@ -475,6 +480,7 @@ impl ApBootstrap {
 
         if info.started.load(Ordering::Acquire) {
             info.set_state(ApState::Online);
+            crate::smp::register_cpu_apic_mapping(cpu_id as usize, apic_id);
             self.aps_started.fetch_add(1, Ordering::Relaxed);
             log::info!("[SMP] AP {} online\n", ap_index);
             Ok(())
@@ -563,12 +569,15 @@ fn ap_stack_top(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
 
 #[inline]
 fn ap_serial_mark(marker: u8) {
-    let mut timeout = 100_000u32;
-    while (crate::io::inb(0x3F8 + 5) & 0x20) == 0 && timeout > 0 {
-        core::hint::spin_loop();
-        timeout -= 1;
-    }
-    crate::io::outb(0x3F8, marker);
+    crate::io::log::debug_serial_mark(marker);
+}
+
+#[inline(never)]
+fn ap_enter_executor(cpu_id: usize) -> ! {
+    ap_serial_mark(b'J');
+    ap_serial_mark(b'K');
+    ap_serial_mark(b'L');
+    crate::task::run_boxed_cold_start(cpu_id);
 }
 
 /// AP entry point (called from trampoline)
@@ -576,9 +585,6 @@ fn ap_serial_mark(marker: u8) {
 #[unsafe(naked)]
 pub unsafe extern "C" fn ap_entry_stub(_ap_slot: u32, _cpu_id: u32) -> ! {
     core::arch::naked_asm!(
-        "mov dx, 0x3f8",
-        "mov al, 'A'",
-        "out dx, al",
         "jmp {inner}",
         inner = sym ap_entry_inner,
     )
@@ -625,7 +631,15 @@ pub extern "C" fn ap_entry_inner(ap_slot: u32, cpu_id: u32) -> ! {
 
     // Idle APs are not executing kernel work yet, so remote TLB shootdowns can
     // be deferred until they are brought into active scheduling/execution.
-    crate::mm::sync::tlb_batch::get_cpu_tlb_state(cpu_id as usize).enter_lazy();
+    crate::mm::sync::tlb_batch::enter_lazy_tlb_mode(cpu_id as usize);
+    crate::smp::set_runtime_worker_stage(
+        cpu_id as usize,
+        crate::smp::RuntimeWorkerStage::BootstrapReady,
+    );
+
+    // Parked AP workers should only wake for the dedicated executor/TLB IPIs.
+    // Mask lower-priority device IRQs until the runtime handoff completes.
+    local_apic.set_task_priority(0xE0);
 
     if let Some(bootstrap) = bootstrap_ref() {
         if let Some(info) = bootstrap.get_ap_info(ap_slot as usize) {
@@ -644,9 +658,43 @@ pub extern "C" fn ap_entry_inner(ap_slot: u32, cpu_id: u32) -> ! {
     }
     ap_serial_mark(b'G');
 
+    crate::smp::set_runtime_worker_stage(cpu_id as usize, crate::smp::RuntimeWorkerStage::Parked);
+    // Keep the parked wait loop in this frame so the AP does not leave a
+    // long-lived return address on the boot stack while it is sleeping.
     loop {
-        x86_64::instructions::hlt();
+        if crate::smp::runtime_workers_released() {
+            crate::interrupts::disable_interrupts();
+            break;
+        }
+
+        unsafe {
+            core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack));
+        }
     }
+    crate::smp::set_runtime_worker_stage(
+        cpu_id as usize,
+        crate::smp::RuntimeWorkerStage::ReleaseObserved,
+    );
+    local_apic.set_task_priority(0);
+    crate::smp::set_runtime_worker_stage(
+        cpu_id as usize,
+        crate::smp::RuntimeWorkerStage::HandoffIrqsMasked,
+    );
+    ap_serial_mark(b'R');
+
+    crate::task::register_cpu(cpu_id as usize);
+    crate::smp::set_runtime_worker_stage(
+        cpu_id as usize,
+        crate::smp::RuntimeWorkerStage::Registered,
+    );
+    let _ = crate::mm::sync::tlb_batch::exit_lazy_tlb_mode(cpu_id as usize);
+    crate::smp::set_runtime_worker_stage(
+        cpu_id as usize,
+        crate::smp::RuntimeWorkerStage::LazyTlbExited,
+    );
+    ap_serial_mark(b'H');
+
+    ap_enter_executor(cpu_id as usize);
 }
 
 /// Send IPI to specific CPU

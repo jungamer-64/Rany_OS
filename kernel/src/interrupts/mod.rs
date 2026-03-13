@@ -11,7 +11,7 @@ pub mod gdt;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 // Helper macro to coerce handler function items into the expected
@@ -42,6 +42,18 @@ static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static VIRTIO_NET_IRQ_FALLBACK_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Pending flag for deferred VirtIO-Net completion fallback (handled outside ISR).
 static VIRTIO_NET_IRQ_FALLBACK_PENDING: AtomicBool = AtomicBool::new(false);
+static LAST_INTERRUPT_VECTOR: [AtomicU8; crate::per_cpu::MAX_CPUS] = {
+    const INIT: AtomicU8 = AtomicU8::new(0);
+    [INIT; crate::per_cpu::MAX_CPUS]
+};
+static LAST_INTERRUPT_RIP: [AtomicU64; crate::per_cpu::MAX_CPUS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; crate::per_cpu::MAX_CPUS]
+};
+static LAST_INTERRUPT_RSP: [AtomicU64; crate::per_cpu::MAX_CPUS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; crate::per_cpu::MAX_CPUS]
+};
 
 /// IDTコンテナ（Sync実装のため）
 struct IdtContainer(UnsafeCell<MaybeUninit<InterruptDescriptorTable>>);
@@ -51,17 +63,60 @@ static IDT_CONTAINER: IdtContainer = IdtContainer(UnsafeCell::new(MaybeUninit::u
 
 #[inline]
 fn smp_idt_mark(marker: u8) {
-    let mut timeout = 100_000u32;
-    while (crate::io::inb(0x3F8 + 5) & 0x20) == 0 && timeout > 0 {
-        core::hint::spin_loop();
-        timeout -= 1;
+    crate::io::log::debug_serial_mark(marker);
+}
+
+#[inline]
+fn record_interrupt_vector(vector: u8) {
+    let cpu_id =
+        crate::per_cpu::try_current_cpu_id().unwrap_or_else(|| crate::smp::current_cpu() as usize);
+    if cpu_id < crate::per_cpu::MAX_CPUS {
+        LAST_INTERRUPT_VECTOR[cpu_id].store(vector, Ordering::Relaxed);
     }
-    crate::io::outb(0x3F8, marker);
+}
+
+#[inline]
+fn record_interrupt_frame(vector: u8, stack_frame: &InterruptStackFrame) {
+    let cpu_id =
+        crate::per_cpu::try_current_cpu_id().unwrap_or_else(|| crate::smp::current_cpu() as usize);
+    if cpu_id < crate::per_cpu::MAX_CPUS {
+        LAST_INTERRUPT_VECTOR[cpu_id].store(vector, Ordering::Relaxed);
+        LAST_INTERRUPT_RIP[cpu_id]
+            .store(stack_frame.instruction_pointer.as_u64(), Ordering::Relaxed);
+        LAST_INTERRUPT_RSP[cpu_id].store(stack_frame.stack_pointer.as_u64(), Ordering::Relaxed);
+    }
+}
+
+pub fn last_interrupt_vector(cpu_id: usize) -> Option<u8> {
+    if cpu_id >= crate::per_cpu::MAX_CPUS {
+        return None;
+    }
+
+    let vector = LAST_INTERRUPT_VECTOR[cpu_id].load(Ordering::Relaxed);
+    (vector != 0).then_some(vector)
+}
+
+pub fn last_interrupt_context(cpu_id: usize) -> Option<(u8, u64, u64)> {
+    if cpu_id >= crate::per_cpu::MAX_CPUS {
+        return None;
+    }
+
+    let vector = LAST_INTERRUPT_VECTOR[cpu_id].load(Ordering::Relaxed);
+    if vector == 0 {
+        return None;
+    }
+
+    Some((
+        vector,
+        LAST_INTERRUPT_RIP[cpu_id].load(Ordering::Relaxed),
+        LAST_INTERRUPT_RSP[cpu_id].load(Ordering::Relaxed),
+    ))
 }
 
 /// ハードウェア割り込みのベースオフセット
 pub const PIC1_OFFSET: u8 = 32;
 pub const PIC2_OFFSET: u8 = 40;
+pub const EXECUTOR_WAKE_VECTOR: u8 = 0xF0;
 
 /// 割り込みベクタ番号
 #[derive(Debug, Clone, Copy)]
@@ -245,9 +300,23 @@ fn init_idt() {
 
     // TLB Flush IPI Vector (0xF1 = 241)
     // マルチコア環境でのTLBシュートダウンに使用
-    idt[crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR].set_handler_fn(handler_to_x86!(
-        tlb_flush_ipi_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-    ));
+    unsafe {
+        idt[crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR]
+            .set_handler_fn(handler_to_x86!(
+                tlb_flush_ipi_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+            ))
+            .set_stack_index(gdt::SMP_IPI_IST_INDEX);
+    }
+
+    // Executor Wake IPI Vector (0xF0)
+    // Idle worker CPUs are woken with a lightweight EOI-only interrupt.
+    unsafe {
+        idt[EXECUTOR_WAKE_VECTOR]
+            .set_handler_fn(handler_to_x86!(
+                executor_wake_ipi_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+            ))
+            .set_stack_index(gdt::SMP_IPI_IST_INDEX);
+    }
 
     // Spurious Interrupt Vector (0xFF)
     // APICによって生成される偽の割り込みを処理
@@ -326,11 +395,13 @@ pub fn enable_interrupts() {
     // actually enable
     x86_64::instructions::interrupts::enable();
 
-    // Now that interrupts are enabled, there may be pending serial transmit
-    // work left over from earlier synchronous/asynchronous logging attempts.
-    // Kick the transmitter again to ensure any data buffered before IF was set
-    // actually makes it onto the wire.
-    crate::io::log::start_serial_tx();
+    // Serial TX kick is global housekeeping and only needs to run on the BSP.
+    // Avoid touching COM1 TX interrupt state from AP worker bring-up paths.
+    let current_cpu =
+        crate::per_cpu::try_current_cpu_id().unwrap_or_else(|| crate::smp::current_cpu() as usize);
+    if current_cpu == 0 {
+        crate::io::log::start_serial_tx();
+    }
 }
 
 /// 割り込みを無効化
@@ -482,7 +553,6 @@ pub fn mask_irq(irq: u8) {
 // Hardware Interrupt Handlers
 // ============================================================================
 
-use core::sync::atomic::AtomicU64;
 use x86_64::structures::idt::InterruptStackFrame;
 
 /// タイマー割り込みカウンタ
@@ -500,6 +570,7 @@ pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 static TIMER_LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 define_interrupt!(
     fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        record_interrupt_frame(InterruptVector::Timer as u8, &_stack_frame);
         // log first tick to confirm handler firing
         if !TIMER_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
             // use early_print to avoid acquiring the logger lock inside ISR
@@ -625,6 +696,7 @@ define_interrupt!(
 // シリアルポートからのデータ受信時に呼ばれる
 define_interrupt!(
     fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        record_interrupt_frame(InterruptVector::Com1 as u8, &_stack_frame);
         // シリアルポートドライバの割り込みハンドラを呼び出し
         crate::drivers::serial::dispatch_interrupt();
 
@@ -740,7 +812,15 @@ define_interrupt!(
 // マルチコア環境でのTLBシュートダウン用割り込みハンドラ
 // 他CPUからのTLBフラッシュ要求を処理
 define_interrupt!(
+    fn executor_wake_ipi_handler(_stack_frame: InterruptStackFrame) {
+        record_interrupt_frame(EXECUTOR_WAKE_VECTOR, &_stack_frame);
+        crate::io::interrupt_manager::send_eoi();
+    }
+);
+
+define_interrupt!(
     fn tlb_flush_ipi_handler(_stack_frame: InterruptStackFrame) {
+        record_interrupt_frame(crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR, &_stack_frame);
         // TLBフラッシュ処理を実行
         // Safety: 割り込みハンドラとして呼び出されている
         unsafe {
@@ -761,6 +841,7 @@ define_interrupt!(
 static SPURIOUS_LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 define_interrupt!(
     fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        record_interrupt_frame(0xFF, &_stack_frame);
         if !SPURIOUS_LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
             // log once to avoid flooding
             crate::io::log::early_print("[INT] spurious interrupt received\n");

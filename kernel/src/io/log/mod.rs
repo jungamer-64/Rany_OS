@@ -109,6 +109,9 @@ static SERIAL_IO_LOCK: IrqPoisonLock<()> = IrqPoisonLock::new(());
 
 /// パニック中フラグ（デッドロック回避用）
 static IN_PANIC: AtomicBool = AtomicBool::new(false);
+const PANIC_OUTPUT_NO_OWNER: usize = usize::MAX;
+static PANIC_OUTPUT_OWNER: AtomicUsize = AtomicUsize::new(PANIC_OUTPUT_NO_OWNER);
+const DEBUG_SERIAL_MARKS_ENABLED: bool = false;
 
 /// 非同期ログバッファ（固定長リングバッファ、ヒープ不要）
 const INPUT_BUFFER_CAPACITY: usize = 1024;
@@ -382,6 +385,44 @@ impl<const N: usize> RingBuffer<N> {
         to_read
     }
 
+    pub fn peek_until_including(&self, needle: u8, dst: &mut [u8]) -> usize {
+        if N == 0 {
+            return 0;
+        }
+
+        let (head, tail, full) = self.normalized_snapshot();
+        let available = if full {
+            N
+        } else if tail >= head {
+            tail - head
+        } else {
+            N - head + tail
+        };
+        if available == 0 || dst.is_empty() {
+            return 0;
+        }
+
+        let to_scan = core::cmp::min(available, dst.len());
+        let mut idx = head;
+        let mut copied = 0usize;
+        while copied < to_scan {
+            let byte = self.buf[idx];
+            dst[copied] = byte;
+            copied += 1;
+
+            if byte == needle {
+                break;
+            }
+
+            idx += 1;
+            if idx == N {
+                idx = 0;
+            }
+        }
+
+        copied
+    }
+
     pub fn advance_head(&mut self, n: usize) {
         if N == 0 || n == 0 {
             return;
@@ -578,20 +619,91 @@ pub fn set_in_panic(in_panic: bool) {
     IN_PANIC.store(in_panic, Ordering::Relaxed);
 }
 
+#[inline]
+fn current_log_cpu_id() -> usize {
+    crate::per_cpu::try_current_cpu_id().unwrap_or_else(|| crate::smp::current_cpu() as usize)
+}
+
+pub(crate) fn panic_output_allowed() -> bool {
+    if !IN_PANIC.load(Ordering::Relaxed) {
+        return true;
+    }
+
+    let owner = PANIC_OUTPUT_OWNER.load(Ordering::Acquire);
+    if owner == PANIC_OUTPUT_NO_OWNER {
+        return true;
+    }
+
+    current_log_cpu_id() == owner
+}
+
 pub fn enter_panic_mode() {
     set_in_panic(true);
+    let cpu_id = current_log_cpu_id();
+    let _ = PANIC_OUTPUT_OWNER.compare_exchange(
+        PANIC_OUTPUT_NO_OWNER,
+        cpu_id,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
     KernelLogger::reset_serial_for_panic();
 }
 
+/// Debug-only single-byte serial marker.
+///
+/// These markers are intentionally lossy: they are dropped while panic output is
+/// active or whenever the serial lock is busy, so they never corrupt panic
+/// diagnostics.
+pub fn debug_serial_mark(marker: u8) {
+    if !DEBUG_SERIAL_MARKS_ENABLED {
+        let _ = marker;
+        return;
+    }
+
+    if !serial_output_enabled() || IN_PANIC.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let Some(_guard) = SERIAL_LOCK.try_lock().ok() else {
+        return;
+    };
+
+    KernelLogger::write_char_raw(marker);
+}
+
 /// 早期ブート出力（文字列）
+///
+/// 通常時はベストエフォート出力とし、シリアルロックが取れない場合は
+/// 文字列を破損させるより静かにドロップする。panic 時のみ必ずロックを
+/// 取得して整形済みログの一貫性を優先する。
 pub fn early_print(s: &str) {
-    let _guard = SERIAL_LOCK.try_lock();
+    if !panic_output_allowed() {
+        return;
+    }
+    let _guard = if IN_PANIC.load(Ordering::Relaxed) {
+        Some(SERIAL_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+    } else {
+        let Some(guard) = SERIAL_LOCK.try_lock().ok() else {
+            return;
+        };
+        Some(guard)
+    };
     KernelLogger::write_raw(s);
 }
 
 /// 早期ブート出力（1文字）
 pub fn early_print_char(c: u8) {
-    let _guard = SERIAL_LOCK.try_lock();
+    if !panic_output_allowed() {
+        return;
+    }
+    let _guard = if IN_PANIC.load(Ordering::Relaxed) {
+        Some(SERIAL_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+    } else {
+        let Some(guard) = SERIAL_LOCK.try_lock().ok() else {
+            return;
+        };
+        Some(guard)
+    };
     KernelLogger::write_char_raw(c);
 }
 
@@ -603,7 +715,17 @@ fn ascii_bytes_to_str(bytes: &[u8]) -> &str {
 
 /// 10進数出力
 pub fn early_print_dec(n: u64) {
-    let _guard = SERIAL_LOCK.try_lock();
+    if !panic_output_allowed() {
+        return;
+    }
+    let _guard = if IN_PANIC.load(Ordering::Relaxed) {
+        Some(SERIAL_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+    } else {
+        let Some(guard) = SERIAL_LOCK.try_lock().ok() else {
+            return;
+        };
+        Some(guard)
+    };
     let mut value = n;
     let mut buf = [0u8; 20];
     let mut start = buf.len();
@@ -624,7 +746,17 @@ pub fn early_print_dec(n: u64) {
 
 /// 16進数出力
 pub fn early_print_hex(n: u64) {
-    let _guard = SERIAL_LOCK.try_lock();
+    if !panic_output_allowed() {
+        return;
+    }
+    let _guard = if IN_PANIC.load(Ordering::Relaxed) {
+        Some(SERIAL_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+    } else {
+        let Some(guard) = SERIAL_LOCK.try_lock().ok() else {
+            return;
+        };
+        Some(guard)
+    };
     let mut buf = [0u8; 18];
     buf[0] = b'0';
     buf[1] = b'x';

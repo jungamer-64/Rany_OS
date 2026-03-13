@@ -353,18 +353,14 @@ pub fn init() {
     // Ensure quota manager is initialized before any non-kernel domain is created.
     crate::domain::quota::init();
 
-    crate::io::log::early_print("[DOM] lock\n");
     // 初期化時は毒入れされていないはず
     let mut registry = REGISTRY
         .lock()
         .expect("domain registry poisoned during init");
-    crate::io::log::early_print("[DOM] locked\n");
 
     // カーネルドメインを作成
     let mut kernel = Domain::new(DomainId::KERNEL, "kernel".into());
-    crate::io::log::early_print("[DOM] new done\n");
     kernel.state = DomainState::Running;
-    crate::io::log::early_print("[DOM] insert\n");
     registry.domains.push(kernel);
     sync_domain_quota(
         DomainId::KERNEL,
@@ -373,7 +369,6 @@ pub fn init() {
         u64::MAX,
         u64::MAX,
     );
-    crate::io::log::early_print("[DOM] done\n");
 }
 
 /// 新しいドメインを作成

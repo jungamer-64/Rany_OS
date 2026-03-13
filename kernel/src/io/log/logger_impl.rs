@@ -338,32 +338,51 @@ pub fn bench_total_pending_bytes() -> usize {
 
 pub fn aggregate_per_core_to_global(max_bytes: usize) -> usize {
     let mut moved = 0usize;
-    let mut tmp = [0u8; 256];
+    let mut tmp = [0u8; PER_CORE_BUFFER_CAPACITY];
 
-    for i in 0..PER_CPU_COUNT {
+    loop {
         if moved >= max_bytes {
             break;
         }
-        if let Some(mut per_guard) = PER_CORE_LOG_BUFFERS[i].try_lock() {
-            let to_read = core::cmp::min(tmp.len(), max_bytes - moved);
-            let n = per_guard.peek_bulk(&mut tmp[..to_read]);
-            if n == 0 {
-                continue;
-            }
 
-            let wrote = {
-                let mut global_guard = LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
-                let written = global_guard.push_bytes(&tmp[..n]);
-                if written < n {
-                    DROPPED_LOG_BYTES.fetch_add(n - written, Ordering::Relaxed);
+        let mut made_progress = false;
+        for i in 0..PER_CPU_COUNT {
+            if moved >= max_bytes {
+                break;
+            }
+            if let Some(mut per_guard) = PER_CORE_LOG_BUFFERS[i].try_lock() {
+                let available = per_guard.len();
+                if available == 0 {
+                    continue;
                 }
-                written
-            };
 
-            if wrote > 0 {
-                per_guard.advance_head(wrote);
-                moved += wrote;
+                // Preserve record boundaries so long log lines from one CPU cannot be
+                // interleaved mid-line with another CPU's output during aggregation.
+                let n = per_guard.peek_until_including(b'\n', &mut tmp);
+                if n == 0 {
+                    continue;
+                }
+
+                let wrote = {
+                    let mut global_guard = LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
+                    let free = global_guard.capacity().saturating_sub(global_guard.len());
+                    if free < n {
+                        0
+                    } else {
+                        global_guard.push_bytes(&tmp[..n])
+                    }
+                };
+
+                if wrote == n {
+                    per_guard.advance_head(wrote);
+                    moved += wrote;
+                    made_progress = true;
+                }
             }
+        }
+
+        if !made_progress {
+            break;
         }
     }
 

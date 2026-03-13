@@ -74,23 +74,18 @@ impl<T> RRef<T> {
     /// 新しいRRefを作成
     /// データはExchange Heap上に配置される
     pub fn new(owner: DomainId, val: T) -> Self {
-        crate::io::log::early_print("[RRef] new: enter\n");
         let layout = Layout::new::<T>();
 
         // Exchange Heapに割り当て
-        crate::io::log::early_print("[RRef] new: allocating on exchange heap\n");
         let ptr = crate::mm::cache::exchange_heap::allocate_on_exchange(val)
             .expect("Exchange heap allocation failed");
-        crate::io::log::early_print("[RRef] new: allocation successful\n");
 
         // Heap Registryに登録（統合されたSAS APIを使用）
-        crate::io::log::early_print("[RRef] new: registering object\n");
         crate::sas::register_object(
             ptr.as_ptr() as usize,
             layout.size(),
             crate::sas::DomainId::new(owner.as_u64()),
         );
-        crate::io::log::early_print("[RRef] new: registration successful\n");
 
         RRef { ptr, owner }
     }

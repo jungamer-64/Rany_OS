@@ -7,7 +7,7 @@ impl KernelLogger {
     /// タイムアウト時は書き込みをスキップする。
     #[inline]
     pub(super) fn write_byte_raw(byte: u8) {
-        if !serial_output_enabled() {
+        if !serial_output_enabled() || !panic_output_allowed() {
             return;
         }
         let mut status_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_LSR_OFFSET);

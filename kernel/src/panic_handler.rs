@@ -204,22 +204,12 @@ fn panic_notify_domain(domain_id: u64, message_slice: &[u8]) {
     }
 }
 
-/// Build a BsodInfo struct, capturing registers, backtrace, and location.
+/// Build a BsodInfo struct with panic-safe metadata for BSOD rendering.
 fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo<'_> {
-    use crate::graphics::bsod::RegisterDump;
-
-    let registers = RegisterDump::capture();
-    let backtrace = crate::unwind::capture_from_context(
-        registers.rip as usize,
-        registers.rsp as usize,
-        registers.rbp as usize,
-    );
-
-    if let Some(sym_name) = crate::unwind::resolve_symbol_name(registers.rip as usize) {
-        crate::io::log::early_print("[PANIC] Resolved RIP -> ");
-        crate::io::log::early_print(sym_name);
-        crate::io::log::early_print("\n");
-    }
+    // Keep the panic path minimal and allocation-free. Register capture has
+    // triggered secondary faults during SMP bring-up, which hides the original
+    // panic we actually need to diagnose.
+    let backtrace = crate::unwind::Backtrace::capture();
 
     let (file_str, line, col) = unsafe {
         if PANIC_RECORD_STATE.load(Ordering::Acquire) == 2 {
@@ -243,10 +233,10 @@ fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo<'_> {
     if let (Some(f), Some(l), Some(c)) = (file_str, line, col) {
         bsod_info = bsod_info.with_location(f, l, c);
     }
-    bsod_info = bsod_info
-        .with_registers(registers)
-        .with_backtrace(backtrace)
-        .with_error_code(first_word);
+    if !backtrace.is_empty() {
+        bsod_info = bsod_info.with_backtrace(backtrace);
+    }
+    bsod_info = bsod_info.with_error_code(first_word);
 
     if let Some(first) = bsod_info.backtrace.as_ref().and_then(|bt| bt.iter().next()) {
         if let Some(sym) = &first.symbol {

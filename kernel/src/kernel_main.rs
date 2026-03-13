@@ -970,23 +970,26 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     print_system_stats();
 
     // 8. Executorの作成とタスクスポーン
-    crate::io::log::early_print("[INITDBG] before executor create\n");
     info!(target: "init", "Creating async executor");
     let mut executor = task::Executor::new();
-    crate::io::log::early_print("[INITDBG] executor created\n");
 
     for_each_runtime_handoff_milestone(|step| match step {
         RuntimeHandoffMilestone::ResolveShellMode => resolve_shell_mode(context),
         RuntimeHandoffMilestone::SpawnKernelTasks => {
-            crate::io::log::early_print("[INITDBG] before spawn_kernel_tasks\n");
             spawn_kernel_tasks(&mut executor, context);
-            crate::io::log::early_print("[INITDBG] after spawn_kernel_tasks\n");
             info!(target: "init", "Kernel tasks spawned");
         }
         RuntimeHandoffMilestone::BootComplete => {
             info!(target: "boot", "BOOT COMPLETE!");
         }
         RuntimeHandoffMilestone::StartExecutorRun => {
+            task::register_cpu(0);
+            crate::smp::release_runtime_workers();
+            if crate::smp::cpu_count() > 1 {
+                crate::io::interrupt_manager::broadcast_ipi(
+                    crate::interrupts::EXECUTOR_WAKE_VECTOR,
+                );
+            }
             info!(target: "run", "Starting executor main loop");
         }
     });
@@ -1002,7 +1005,6 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     // =========================================================================
 
     // メインループ開始（戻ってこない）
-    crate::io::log::early_print("[INITDBG] entering executor.run\n");
     executor.run();
 }
 
