@@ -24,7 +24,13 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
+        toolchain: nightly-2026-03-13
         components: rust-src, llvm-tools-preview
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm
     
     - name: Ensure no duplicate '-T' in .cargo/config
       run: |
@@ -51,7 +57,7 @@ jobs:
           ${{ runner.os }}-cargo-
     
     - name: Build kernel
-      run: cargo build --target x86_64-exorust.json
+      run: cargo build -p rany_kernel --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
     - name: Install pyelftools
       run: pip install pyelftools
@@ -60,7 +66,7 @@ jobs:
       run: python scripts/check_linker_layout.py || (echo 'Linker layout check failed.' && exit 1)
     
     - name: Build release
-      run: cargo build --target x86_64-exorust.json --release
+      run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -82,10 +88,16 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
+        toolchain: nightly-2026-03-11
         components: rust-src, llvm-tools-preview
 
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm
+
     - name: Build kernel without default features
-      run: cargo build -p rany_kernel --no-default-features --target x86_64-exorust.json
+      run: cargo build -p rany_kernel --no-default-features --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
   # ============================================================================
   # Reproducible Build Check
@@ -100,17 +112,23 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
+        toolchain: nightly-2026-03-11
         components: rust-src, llvm-tools-preview
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm
 
     - name: Build release (run A)
       env:
         CARGO_TARGET_DIR: target/repro-a
-      run: cargo build --target x86_64-exorust.json --release
+      run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
     - name: Build release (run B)
       env:
         CARGO_TARGET_DIR: target/repro-b
-      run: cargo build --target x86_64-exorust.json --release
+      run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
     - name: Compare SHA-256
       run: |
@@ -136,13 +154,19 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
-        components: rustfmt, clippy, rust-src
+        toolchain: nightly-2026-03-11
+        components: rustfmt, clippy, rust-src, llvm-tools-preview
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm
     
     - name: Check formatting
       run: cargo fmt --all -- --check
     
     - name: Clippy lints
-      run: cargo clippy --target x86_64-exorust.json -- -D warnings
+      run: cargo clippy -p rany_kernel --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem -- -D warnings
       continue-on-error: true  # no_std環境では一部警告が出る可能性
 
     - name: No POSIX compatibility surface
@@ -173,10 +197,16 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
+        toolchain: nightly-2026-03-11
         components: rust-src
-    
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm
+
     - name: Build docs
-      run: cargo doc --target x86_64-exorust.json --no-deps
+      run: cargo doc -p rany_kernel --target x86_64-exorust.json --no-deps -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
       continue-on-error: true  # no_std環境のdoc生成
     
     - name: Upload documentation
@@ -230,7 +260,7 @@ jobs:
         for driver in drivers/*/Cargo.toml; do
           if [ -f "$driver" ]; then
             DRIVER_NAME=$(dirname "$driver")
-            if grep -q 'rany_kernel' "$driver" || grep -q 'path.*kernel' "$driver"; then
+            if grep -Eq '^[[:space:]]*rany_kernel[[:space:]]*=' "$driver" || grep -Eq 'path[[:space:]]*=[[:space:]]*".*/kernel(/|")' "$driver"; then
               echo "❌ $DRIVER_NAME: depends on kernel crate!"
               FAILED=1
             else
@@ -298,10 +328,16 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
+        toolchain: nightly-2026-03-11
         components: rust-src, llvm-tools-preview
-    
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y nasm
+
     - name: Build release
-      run: cargo build --target x86_64-exorust.json --release
+      run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
     
     - name: Get version
       id: version

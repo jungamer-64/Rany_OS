@@ -22,8 +22,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
         with:
-          toolchain: nightly-2026-02-01
+          toolchain: nightly-2026-03-13
           components: rust-src, llvm-tools-preview
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -54,13 +59,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
         with:
-          toolchain: nightly-2026-02-01
+          toolchain: nightly-2026-03-11
           components: rust-src, llvm-tools-preview
 
-      - name: Install QEMU
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
+          sudo apt-get install -y nasm qemu-system-x86
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -104,8 +109,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
         with:
-          toolchain: nightly-2026-02-01
+          toolchain: nightly-2026-03-11
           components: rust-src, llvm-tools-preview
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -136,13 +146,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
         with:
-          toolchain: nightly-2026-02-01
+          toolchain: nightly-2026-03-11
           components: rust-src, llvm-tools-preview
 
-      - name: Install QEMU
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
+          sudo apt-get install -y nasm qemu-system-x86
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -186,13 +196,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
         with:
-          toolchain: nightly-2026-02-01
+          toolchain: nightly-2026-03-11
           components: rust-src, llvm-tools-preview
 
-      - name: Install QEMU
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
+          sudo apt-get install -y nasm qemu-system-x86
 
       - name: Cache cargo
         uses: actions/cache@v4
