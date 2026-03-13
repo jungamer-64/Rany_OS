@@ -10,6 +10,7 @@ members = [
     "interfaces/kernel_api",
     # Libs
     "libs/app_sdk",
+    "libs/ap_trampoline",
     "libs/security",
     "libs/boot_config",
     "libs/graphic_types",

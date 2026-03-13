@@ -10,6 +10,7 @@ categories = ["os", "bootloader"]
 keywords = ["uefi", "boot"]
 
 [dependencies]
+ap_trampoline = { path = "../libs/ap_trampoline" }
 uefi = { version = "0.36", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
 uefi-raw = "0.13"
 log = "0.4"

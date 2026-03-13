@@ -5,6 +5,9 @@
 //! - Per-AP stacks
 //! - AP boot information structure
 
+use ap_trampoline::{
+    ApBootFlags, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_BYTES, TRAMPOLINE_SIZE,
+};
 use boot_proto::ApBootInfo;
 use log::info;
 use uefi::Identify;
@@ -13,7 +16,7 @@ use uefi::mem::memory_map::MemoryType;
 use uefi::proto::pi::mp::MpServices;
 
 /// Size of AP trampoline code region (4KB aligned)
-pub const AP_TRAMPOLINE_SIZE: usize = 4096;
+pub const AP_TRAMPOLINE_SIZE: usize = TRAMPOLINE_SIZE;
 
 /// Size of each AP's stack (64KB)
 pub const AP_STACK_SIZE: usize = 64 * 1024;
@@ -58,20 +61,15 @@ pub fn prepare_ap_boot(cpu_count: u32) -> ApBootInfo {
         info!("AP Boot: WARNING - Failed to allocate trampoline region");
         return ApBootInfo::default();
     }
+    if !install_trampoline(trampoline_addr) {
+        info!("AP Boot: WARNING - Failed to populate trampoline region");
+        return ApBootInfo::default();
+    }
 
     // Allocate stacks for APs
     let (stack_base, stack_count) = allocate_ap_stacks(ap_count as usize);
 
-    let ap_boot_info = ApBootInfo {
-        ap_count: ap_count as u16,
-        _reserved: [0; 6],
-        trampoline_addr,
-        trampoline_size: AP_TRAMPOLINE_SIZE as u64,
-        stack_base,
-        stack_size: AP_STACK_SIZE as u64,
-        stack_count: stack_count as u16,
-        _reserved2: [0; 6],
-    };
+    let ap_boot_info = build_ap_boot_info(ap_count, trampoline_addr, stack_base, stack_count, true);
 
     info!(
         "AP Boot: Trampoline at 0x{:x}, {} stacks at 0x{:x}",
@@ -113,6 +111,50 @@ fn detect_cpu_count() -> u32 {
     }
 
     1 // Assume single processor
+}
+
+fn build_ap_boot_info(
+    ap_count: u32,
+    trampoline_addr: u64,
+    stack_base: u64,
+    stack_count: usize,
+    trampoline_ready: bool,
+) -> ApBootInfo {
+    if ap_count == 0 || trampoline_addr == 0 || !trampoline_ready {
+        return ApBootInfo::default();
+    }
+
+    ApBootInfo {
+        ap_count: ap_count.min(u16::MAX as u32) as u16,
+        stack_count: stack_count.min(u16::MAX as usize) as u16,
+        _reserved: [0; 4],
+        flags: ApBootFlags::TRAMPOLINE_READY,
+        trampoline_layout_version: LAYOUT_VERSION,
+        trampoline_mailbox_offset: MAILBOX_OFFSET as u32,
+        _reserved2: [0; 4],
+        trampoline_addr,
+        trampoline_size: AP_TRAMPOLINE_SIZE as u64,
+        stack_base,
+        stack_size: AP_STACK_SIZE as u64,
+    }
+}
+
+fn install_trampoline(trampoline_addr: u64) -> bool {
+    if trampoline_addr == 0 || TRAMPOLINE_BYTES.len() > AP_TRAMPOLINE_SIZE {
+        return false;
+    }
+
+    unsafe {
+        let trampoline_ptr = trampoline_addr as *mut u8;
+        core::ptr::write_bytes(trampoline_ptr, 0, AP_TRAMPOLINE_SIZE);
+        core::ptr::copy_nonoverlapping(
+            TRAMPOLINE_BYTES.as_ptr(),
+            trampoline_ptr,
+            TRAMPOLINE_BYTES.len(),
+        );
+    }
+
+    true
 }
 
 /// Allocate real-mode trampoline region below 1MB
@@ -201,4 +243,31 @@ pub fn get_ap_stack_pointer(ap_boot_info: &ApBootInfo, ap_index: usize) -> u64 {
 
     // Stack grows downward, so return top of allocated region
     ap_boot_info.stack_base + ((ap_index + 1) * ap_boot_info.stack_size as usize) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_ap_boot_info_sets_shared_trampoline_metadata() {
+        let info = build_ap_boot_info(4, 0x8000, 0x20_0000, 3, true);
+
+        assert_eq!(info.ap_count, 4);
+        assert_eq!(info.stack_count, 3);
+        assert_eq!(info.flags, ApBootFlags::TRAMPOLINE_READY);
+        assert_eq!(info.trampoline_layout_version, LAYOUT_VERSION);
+        assert_eq!(info.trampoline_mailbox_offset, MAILBOX_OFFSET as u32);
+        assert_eq!(info.trampoline_addr, 0x8000);
+        assert_eq!(info.trampoline_size, AP_TRAMPOLINE_SIZE as u64);
+        assert_eq!(info.stack_base, 0x20_0000);
+        assert_eq!(info.stack_size, AP_STACK_SIZE as u64);
+    }
+
+    #[test]
+    fn build_ap_boot_info_falls_back_to_default_when_trampoline_is_not_ready() {
+        let info = build_ap_boot_info(2, 0x8000, 0x20_0000, 2, false);
+
+        assert_eq!(info, ApBootInfo::default());
+    }
 }

@@ -2,12 +2,7 @@
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::redundant_closure_for_method_calls)]
 
-use std::path::PathBuf;
-use std::process::Command;
-
 fn main() {
-    assemble_ap_trampoline();
-
     // Only add MSVC host-specific link libraries when building for Windows/MSVC
     // This avoids polluting cross-compiles (e.g., x86_64-unknown-none kernel target).
     let target = std::env::var("TARGET").unwrap_or_default();
@@ -119,32 +114,5 @@ fn main() {
         // Define subsystem explicitly so the linker can set proper entry/CRT
         // initialization; TEST builds expect console I/O.
         println!("cargo:rustc-link-arg=/SUBSYSTEM:CONSOLE");
-    }
-}
-
-fn assemble_ap_trampoline() {
-    let manifest_dir =
-        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set"));
-    let source = manifest_dir.join("src/smp/ap_trampoline.asm");
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is not set"));
-    let output = out_dir.join("ap_trampoline.bin");
-
-    println!("cargo:rerun-if-changed={}", source.display());
-
-    let status = Command::new("nasm")
-        .arg("-f")
-        .arg("bin")
-        .arg("-o")
-        .arg(&output)
-        .arg(&source)
-        .status()
-        .expect("failed to execute nasm for AP trampoline");
-
-    if !status.success() {
-        panic!(
-            "nasm failed while assembling {} -> {}",
-            source.display(),
-            output.display()
-        );
     }
 }

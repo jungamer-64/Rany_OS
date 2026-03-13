@@ -49,6 +49,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5192cca8006f1fd4f7237516f40fa183bb07f8fbdfedaa0036de5ea9b0b45e78"
 
 [[package]]
+name = "ap_trampoline"
+version = "0.1.0"
+
+[[package]]
 name = "apic_driver"
 version = "0.1.0"
 dependencies = [
@@ -110,6 +114,7 @@ version = "0.1.0"
 name = "boot_proto"
 version = "0.1.0"
 dependencies = [
+ "ap_trampoline",
  "graphic_types",
 ]
 
@@ -329,6 +334,7 @@ dependencies = [
 name = "exoloader"
 version = "0.1.0"
 dependencies = [
+ "ap_trampoline",
  "boot_config",
  "boot_proto",
  "ed25519-compact",
@@ -776,6 +782,7 @@ version = "0.3.0"
 dependencies = [
  "acpi_driver",
  "ahci_driver",
+ "ap_trampoline",
  "apic_driver",
  "bitflags 2.11.0",
  "boot_proto",

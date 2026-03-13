@@ -5,7 +5,9 @@
 
 use graphic_types::FramebufferInfo;
 
-pub const EXO_BOOT_INFO_VERSION: u64 = 4;
+pub use ap_trampoline::ApBootFlags;
+
+pub const EXO_BOOT_INFO_VERSION: u64 = 5;
 
 /// Boot information passed from ExoLoader (UEFI) to the Kernel.
 ///
@@ -328,12 +330,22 @@ pub struct NumaMemoryRange {
 /// AP (Application Processor) boot information.
 /// Used by the kernel to initialize secondary CPUs.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApBootInfo {
     /// Number of APs detected (excluding BSP)
     pub ap_count: u16,
+    /// Total number of stacks pre-allocated
+    pub stack_count: u16,
     /// Reserved for alignment
-    pub _reserved: [u8; 6],
+    pub _reserved: [u8; 4],
+    /// AP boot handoff flags.
+    pub flags: u32,
+    /// Shared trampoline layout version.
+    pub trampoline_layout_version: u32,
+    /// Shared trampoline mailbox offset in bytes.
+    pub trampoline_mailbox_offset: u32,
+    /// Reserved for future expansion.
+    pub _reserved2: [u8; 4],
     /// Physical address of AP trampoline code (must be < 1MB for real mode)
     pub trampoline_addr: u64,
     /// Size of trampoline code in bytes
@@ -342,23 +354,22 @@ pub struct ApBootInfo {
     pub stack_base: u64,
     /// Size of each AP stack in bytes
     pub stack_size: u64,
-    /// Total number of stacks pre-allocated
-    pub stack_count: u16,
-    /// Reserved
-    pub _reserved2: [u8; 6],
 }
 
 impl Default for ApBootInfo {
     fn default() -> Self {
         Self {
             ap_count: 0,
-            _reserved: [0; 6],
+            stack_count: 0,
+            _reserved: [0; 4],
+            flags: 0,
+            trampoline_layout_version: 0,
+            trampoline_mailbox_offset: 0,
+            _reserved2: [0; 4],
             trampoline_addr: 0,
             trampoline_size: 0,
             stack_base: 0,
             stack_size: 0,
-            stack_count: 0,
-            _reserved2: [0; 6],
         }
     }
 }

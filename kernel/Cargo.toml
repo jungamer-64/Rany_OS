@@ -53,6 +53,7 @@ vfs = { path = "../filesystems/vfs" }
 
 # ブートローダーAPI（ExoLoader Protocol）
 boot_proto = { path = "../libs/boot_proto" }
+ap_trampoline = { path = "../libs/ap_trampoline" }
 
 # Hardware Abstraction Layer (MMIO/Port I/O wrappers)
 hal = { path = "../hal" }

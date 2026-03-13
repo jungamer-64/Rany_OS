@@ -257,8 +257,16 @@ pub fn init_smp(boot_info: &ExoBootInfo) -> Result<SmpBootReport, &'static str> 
     );
     crate::per_cpu::finalize_cpu_topology((requested + 1) as usize);
 
-    unsafe {
-        init(lapic_base, boot_info, requested)?;
+    if let Err(err) = unsafe { init(lapic_base, boot_info, requested) } {
+        log::warn!(
+            "[SMP] Shared trampoline handoff invalid, falling back to BSP only: {}",
+            err
+        );
+        apply_online_cpu_count(1);
+        return Ok(SmpBootReport {
+            detected,
+            started: 0,
+        });
     }
 
     let started = start_aps(&ap_apic_ids[..requested as usize]);

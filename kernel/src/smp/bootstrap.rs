@@ -12,12 +12,12 @@ extern crate alloc;
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use ap_trampoline::{
+    ApBootFlags, ApTrampolineMailbox, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE,
+};
 use boot_proto::ExoBootInfo;
-use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 
-const TRAMPOLINE_MAILBOX_OFFSET: usize = 0x200;
-static AP_TRAMPOLINE_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ap_trampoline.bin"));
 static AP_BOOT_PROBE: u8 = 0x5A;
 
 fn log_ap_mapping_probe(label: &str, virt: u64) {
@@ -111,17 +111,6 @@ impl ApBootInfo {
             _ => ApState::Failed,
         }
     }
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
-struct TrampolineMailbox {
-    ap_slot: u32,
-    cpu_id: u32,
-    page_table: u64,
-    stack_ptr: u64,
-    entry_point: u64,
-    probe_addr: u64,
 }
 
 /// LAPIC registers (MMIO)
@@ -339,9 +328,6 @@ impl LocalApic {
     }
 }
 
-/// Size of trampoline code
-const TRAMPOLINE_SIZE: usize = 4096;
-
 /// AP Bootstrap manager
 pub struct ApBootstrap {
     /// LAPIC instance
@@ -394,36 +380,10 @@ impl ApBootstrap {
         self.ap_info.get(index)
     }
 
-    /// Setup trampoline code
-    pub unsafe fn setup_trampoline(&self) -> Result<(), &'static str> {
-        if self.trampoline_base == 0 {
-            return Err("missing AP trampoline allocation");
-        }
-
-        if AP_TRAMPOLINE_BIN.len() > TRAMPOLINE_SIZE {
-            return Err("AP trampoline exceeds allocated low-memory page");
-        }
-        if TRAMPOLINE_MAILBOX_OFFSET + size_of::<TrampolineMailbox>() > TRAMPOLINE_SIZE {
-            return Err("AP trampoline mailbox does not fit in low-memory page");
-        }
-
+    unsafe fn mailbox_ptr(&self) -> *mut ApTrampolineMailbox {
         let trampoline_virt =
             crate::memory::phys_to_virt(x86_64::PhysAddr::new(self.trampoline_base)).as_u64();
-        let trampoline_ptr = trampoline_virt as *mut u8;
-        core::ptr::write_bytes(trampoline_ptr, 0, TRAMPOLINE_SIZE);
-        core::ptr::copy_nonoverlapping(
-            AP_TRAMPOLINE_BIN.as_ptr(),
-            trampoline_ptr,
-            AP_TRAMPOLINE_BIN.len(),
-        );
-
-        Ok(())
-    }
-
-    unsafe fn mailbox_ptr(&self) -> *mut TrampolineMailbox {
-        let trampoline_virt =
-            crate::memory::phys_to_virt(x86_64::PhysAddr::new(self.trampoline_base)).as_u64();
-        (trampoline_virt as *mut u8).add(TRAMPOLINE_MAILBOX_OFFSET) as *mut TrampolineMailbox
+        (trampoline_virt as *mut u8).add(MAILBOX_OFFSET) as *mut ApTrampolineMailbox
     }
 
     /// Start a single AP
@@ -446,7 +406,7 @@ impl ApBootstrap {
         unsafe {
             core::ptr::write_volatile(
                 self.mailbox_ptr(),
-                TrampolineMailbox {
+                ApTrampolineMailbox {
                     ap_slot: ap_index as u32,
                     cpu_id,
                     page_table: info.page_table,
@@ -536,8 +496,8 @@ pub unsafe fn init(
     boot_info: &ExoBootInfo,
     num_aps: u32,
 ) -> Result<(), &'static str> {
+    validate_trampoline_handoff(&boot_info.ap_boot)?;
     let bootstrap = Box::leak(Box::new(ApBootstrap::new(lapic_base, boot_info, num_aps)));
-    bootstrap.setup_trampoline()?;
     *AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner()) = Some(bootstrap);
     Ok(())
 }
@@ -715,4 +675,90 @@ pub fn broadcast_ipi(vector: u8) {
 pub fn send_eoi_current_cpu() {
     let local_apic = LocalApic::new(crate::io::acpi::local_apic_address().unwrap_or(0xFEE00000));
     local_apic.eoi();
+}
+
+fn validate_trampoline_handoff(ap_boot: &boot_proto::ApBootInfo) -> Result<(), &'static str> {
+    if ap_boot.trampoline_addr == 0 {
+        return Err("missing AP trampoline allocation");
+    }
+    if (ap_boot.flags & ApBootFlags::TRAMPOLINE_READY) == 0 {
+        return Err("shared AP trampoline is not marked ready");
+    }
+    if ap_boot.trampoline_size < TRAMPOLINE_SIZE as u64 {
+        return Err("shared AP trampoline allocation is smaller than expected");
+    }
+    if ap_boot.trampoline_layout_version != LAYOUT_VERSION {
+        return Err("shared AP trampoline layout version mismatch");
+    }
+    if ap_boot.trampoline_mailbox_offset != MAILBOX_OFFSET as u32 {
+        return Err("shared AP trampoline mailbox offset mismatch");
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_ap_boot_info() -> boot_proto::ApBootInfo {
+        boot_proto::ApBootInfo {
+            ap_count: 2,
+            stack_count: 2,
+            _reserved: [0; 4],
+            flags: ApBootFlags::TRAMPOLINE_READY,
+            trampoline_layout_version: LAYOUT_VERSION,
+            trampoline_mailbox_offset: MAILBOX_OFFSET as u32,
+            _reserved2: [0; 4],
+            trampoline_addr: 0x8000,
+            trampoline_size: TRAMPOLINE_SIZE as u64,
+            stack_base: 0x20_0000,
+            stack_size: 0x10_000,
+        }
+    }
+
+    #[test]
+    fn validate_trampoline_handoff_accepts_shared_layout() {
+        assert!(validate_trampoline_handoff(&valid_ap_boot_info()).is_ok());
+    }
+
+    #[test]
+    fn validate_trampoline_handoff_rejects_missing_ready_flag() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.flags = 0;
+        assert_eq!(
+            validate_trampoline_handoff(&ap_boot),
+            Err("shared AP trampoline is not marked ready")
+        );
+    }
+
+    #[test]
+    fn validate_trampoline_handoff_rejects_small_allocation() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.trampoline_size = (TRAMPOLINE_SIZE - 1) as u64;
+        assert_eq!(
+            validate_trampoline_handoff(&ap_boot),
+            Err("shared AP trampoline allocation is smaller than expected")
+        );
+    }
+
+    #[test]
+    fn validate_trampoline_handoff_rejects_layout_version_mismatch() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.trampoline_layout_version = LAYOUT_VERSION + 1;
+        assert_eq!(
+            validate_trampoline_handoff(&ap_boot),
+            Err("shared AP trampoline layout version mismatch")
+        );
+    }
+
+    #[test]
+    fn validate_trampoline_handoff_rejects_mailbox_offset_mismatch() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.trampoline_mailbox_offset = (MAILBOX_OFFSET + 8) as u32;
+        assert_eq!(
+            validate_trampoline_handoff(&ap_boot),
+            Err("shared AP trampoline mailbox offset mismatch")
+        );
+    }
 }

@@ -1,5 +1,5 @@
 [package]
-name = "boot_proto"
+name = "ap_trampoline"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -8,8 +8,7 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Boot protocol types for RanyOS"
+description = "Shared AP trampoline artifact and mailbox layout for RanyOS"
 
-[dependencies]
-ap_trampoline = { path = "../ap_trampoline" }
-graphic_types = { path = "../graphic_types", default-features = false }
+[build-dependencies]
+
