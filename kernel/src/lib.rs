@@ -169,9 +169,9 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
 macro_rules! println {
     () => (print!("\n"));
     ($($arg:tt)*) => ({
-        if cfg!(feature = "std") {
+        if cfg!(any(feature = "std", target_os = "linux")) {
             // In std-based tests, use std::println
-            #[cfg(feature = "std")]
+            #[cfg(any(feature = "std", target_os = "linux"))]
             std::println!($($arg)*);
         } else {
              // In no_std, use kernel logger
@@ -184,9 +184,9 @@ macro_rules! println {
 macro_rules! eprintln {
     () => (eprint!("\n"));
     ($($arg:tt)*) => ({
-        if cfg!(feature = "std") {
+        if cfg!(any(feature = "std", target_os = "linux")) {
             // In std-based tests, use std::eprintln
-            #[cfg(feature = "std")]
+            #[cfg(any(feature = "std", target_os = "linux"))]
             std::eprintln!($($arg)*);
         } else {
              // In no_std, use kernel logger w/ error level or just print
@@ -197,6 +197,9 @@ macro_rules! eprintln {
 
 #[cfg(all(test, any(feature = "std", target_os = "linux")))]
 pub fn test_runner(tests: &[&dyn Fn()]) {
+    #[cfg(feature = "full_mm_tests")]
+    crate::per_cpu::init_for_host_tests();
+
     eprintln!("[qemu-suite] kernel-unit start");
     eprintln!("[test] running {} tests...", tests.len());
 
@@ -401,7 +404,11 @@ pub mod monitor;
 pub mod net;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod panic_handler;
-#[cfg(any(not(any(test, feature = "bench")), feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod per_cpu;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod platform;

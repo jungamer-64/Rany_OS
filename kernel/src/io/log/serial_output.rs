@@ -7,6 +7,12 @@ impl KernelLogger {
     /// タイムアウト時は書き込みをスキップする。
     #[inline]
     pub(super) fn write_byte_raw(byte: u8) {
+        #[cfg(all(test, target_os = "linux"))]
+        {
+            std::eprint!("{}", byte as char);
+            return;
+        }
+
         if !serial_output_enabled() || !panic_output_allowed() {
             return;
         }
@@ -80,6 +86,12 @@ impl KernelLogger {
     /// ロックは `Log::log()` 実装側で取得するため、この関数自体はロックを取らない。
     /// 早期ブート時やパニック時に直接呼び出される。
     pub(super) fn write_raw(s: &str) {
+        #[cfg(all(test, target_os = "linux"))]
+        {
+            std::eprint!("{}", s);
+            return;
+        }
+
         if !serial_output_enabled() {
             return;
         }

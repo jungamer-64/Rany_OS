@@ -258,10 +258,10 @@ pub(crate) fn test_tls13_client_hello_key_share() {
     let hello = conn.build_client_hello();
 
     // Should have pre-generated ECDH key pair
-    assert!(conn.local_ecdh_keypair.is_some());
+    assert!(conn.has_local_ecdh_keypair());
 
     // Should have initialized transcript hash
-    assert!(conn.transcript_hash.is_some());
+    assert!(conn.has_transcript_hash());
 
     // Record should be valid TLS
     assert_eq!(hello[0], ContentType::Handshake as u8);

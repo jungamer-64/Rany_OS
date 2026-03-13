@@ -376,7 +376,7 @@ pub async fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
+    #[test_case]
     fn list_interfaces_completes_with_event_task() {
         let interfaces = {
             crate::net::l4::endpoint::event::reset_event_system_for_tests();

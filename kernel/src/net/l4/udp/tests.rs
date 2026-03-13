@@ -48,6 +48,85 @@ fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
     CurrentTaskGuard { prev, current }
 }
 
+fn udp_endpoint_poisoned_methods_return_defaults_impl() {
+    use crate::sync::set_panicking;
+
+    let endpoint = UdpEndpoint::new(12345);
+
+    set_panicking(true);
+    if let Ok(_g) = endpoint.inner.lock() {}
+    set_panicking(false);
+
+    assert_eq!(endpoint.local_port(), 0);
+    assert!(endpoint.is_closed());
+    assert_eq!(endpoint.rx_queue_len(), 0);
+    endpoint.close();
+}
+
+fn udp_endpoint_multiple_waiters_woken_on_deliver_impl() {
+    use core::pin::Pin;
+    use core::ptr::addr_of_mut;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    static mut WAITERS_TEST_PACKET: [u8; 3] = [0; 3];
+
+    fn counting_waker(counter: &AtomicUsize) -> Waker {
+        unsafe fn clone(data: *const ()) -> RawWaker {
+            RawWaker::new(data, &VTABLE)
+        }
+        unsafe fn wake(data: *const ()) {
+            let counter = &*(data as *const AtomicUsize);
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe fn wake_by_ref(data: *const ()) {
+            wake(data);
+        }
+        unsafe fn drop_waker(_: *const ()) {}
+
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
+
+        unsafe { Waker::from_raw(RawWaker::new(counter as *const _ as *const (), &VTABLE)) }
+    }
+
+    let endpoint = UdpEndpoint::new(54322);
+    let mut fut1 = endpoint.recv();
+    let mut fut2 = endpoint.recv();
+
+    let wake_count = AtomicUsize::new(0);
+    let waker = counting_waker(&wake_count);
+    let mut cx = Context::from_waker(&waker);
+
+    assert!(matches!(Pin::new(&mut fut1).poll(&mut cx), Poll::Pending));
+    assert!(matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending));
+
+    let mut packet = unsafe {
+        crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
+            addr_of_mut!(WAITERS_TEST_PACKET) as *mut u8,
+            3,
+        )
+        .expect("static test packet")
+    };
+    packet.set_len(3);
+    packet.data_mut().copy_from_slice(b"abc");
+
+    let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
+    endpoint.deliver(NetIfId(7), src, 255, packet);
+
+    assert_eq!(wake_count.load(Ordering::SeqCst), 2);
+
+    match Pin::new(&mut fut1).poll(&mut cx) {
+        Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
+            assert_eq!(if_id, NetIfId(7));
+            assert_eq!(addr, src);
+            assert_eq!(packet.data(), b"abc");
+        }
+        _ => panic!("expected ready packet after wake"),
+    }
+
+    assert!(matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending));
+}
+
 #[cfg_attr(test, test_case)]
 pub fn test_udp_packet() {
     let mut buffer = [0u8; 64];
@@ -116,28 +195,12 @@ pub fn test_udp_v6_checksum_mandatory() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_udp_endpoint_poisoned_methods_return_defaults() {
-    use crate::sync::set_panicking;
-
-    let endpoint = UdpEndpoint::new(12345);
-
-    // Poison the inner lock
-    set_panicking(true);
-    if let Ok(_g) = endpoint.inner.lock() {
-        // drop marks as poisoned
-    }
-    set_panicking(false);
-
-    assert_eq!(endpoint.local_port(), 0);
-    assert!(endpoint.is_closed());
-    assert_eq!(endpoint.rx_queue_len(), 0);
-
-    // Close should be a no-op
-    endpoint.close();
+    udp_endpoint_poisoned_methods_return_defaults_impl();
 }
 
 // Legacy compatibility wrapper referenced by qemu test exports.
 pub fn test_udp_socket_poisoned_methods_return_defaults() {
-    test_udp_endpoint_poisoned_methods_return_defaults();
+    udp_endpoint_poisoned_methods_return_defaults_impl();
 }
 
 #[cfg_attr(test, test_case)]
@@ -269,71 +332,11 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_udp_endpoint_multiple_waiters_woken_on_deliver() {
-    use core::pin::Pin;
-    use core::ptr::addr_of_mut;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-    static mut WAITERS_TEST_PACKET: [u8; 3] = [0; 3];
-
-    fn counting_waker(counter: &AtomicUsize) -> Waker {
-        unsafe fn clone(data: *const ()) -> RawWaker {
-            RawWaker::new(data, &VTABLE)
-        }
-        unsafe fn wake(data: *const ()) {
-            let counter = &*(data as *const AtomicUsize);
-            counter.fetch_add(1, Ordering::SeqCst);
-        }
-        unsafe fn wake_by_ref(data: *const ()) {
-            wake(data);
-        }
-        unsafe fn drop_waker(_: *const ()) {}
-
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
-
-        unsafe { Waker::from_raw(RawWaker::new(counter as *const _ as *const (), &VTABLE)) }
-    }
-
-    let endpoint = UdpEndpoint::new(54322);
-    let mut fut1 = endpoint.recv();
-    let mut fut2 = endpoint.recv();
-
-    let wake_count = AtomicUsize::new(0);
-    let waker = counting_waker(&wake_count);
-    let mut cx = Context::from_waker(&waker);
-
-    assert!(matches!(Pin::new(&mut fut1).poll(&mut cx), Poll::Pending));
-    assert!(matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending));
-
-    let mut packet = unsafe {
-        crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
-            addr_of_mut!(WAITERS_TEST_PACKET) as *mut u8,
-            3,
-        )
-        .expect("static test packet")
-    };
-    packet.set_len(3);
-    packet.data_mut().copy_from_slice(b"abc");
-
-    let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
-    endpoint.deliver(NetIfId(7), src, 255, packet);
-
-    assert_eq!(wake_count.load(Ordering::SeqCst), 2);
-
-    match Pin::new(&mut fut1).poll(&mut cx) {
-        Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
-            assert_eq!(if_id, NetIfId(7));
-            assert_eq!(addr, src);
-            assert_eq!(packet.data(), b"abc");
-        }
-        _ => panic!("expected ready packet after wake"),
-    }
-
-    assert!(matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending));
+    udp_endpoint_multiple_waiters_woken_on_deliver_impl();
 }
 
 pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
-    test_udp_endpoint_multiple_waiters_woken_on_deliver();
+    udp_endpoint_multiple_waiters_woken_on_deliver_impl();
 }
 
 #[cfg_attr(test, test_case)]

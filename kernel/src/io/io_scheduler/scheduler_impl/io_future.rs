@@ -345,16 +345,16 @@ mod tests {
         assert!(!queue.is_empty());
 
         for i in 0..IO_COMPLETION_QUEUE_SIZE {
-            assert_eq!(
-                queue.pop(),
-                Some((
-                    DeviceId::Custom(i as u32),
-                    IoRequestId(i as u64 + 1),
-                    IoResult::Success(i),
-                ))
-            );
+            match queue.pop() {
+                Some((device_id, request_id, IoResult::Success(result))) => {
+                    assert_eq!(device_id, DeviceId::Custom(i as u32));
+                    assert_eq!(request_id, IoRequestId(i as u64 + 1));
+                    assert_eq!(result, i);
+                }
+                other => panic!("unexpected completion entry: {:?}", other),
+            }
         }
-        assert_eq!(queue.pop(), None);
+        assert!(queue.pop().is_none());
         assert!(queue.is_empty());
     }
 }

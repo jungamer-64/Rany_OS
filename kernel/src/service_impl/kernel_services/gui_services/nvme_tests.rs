@@ -11,6 +11,7 @@ mod nvme_tests {
     use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
     use alloc::boxed::Box;
     use alloc::sync::Arc;
+    use kernel_api::service::kernel::KernelServices;
 
     pub(super) fn idle_entry(_: u64) -> ! {
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;

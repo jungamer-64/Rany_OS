@@ -636,7 +636,7 @@ pub fn dhcp_last_released() -> DhcpLastReleasedFuture {
 
 #[cfg(test)]
 mod tests {
-    #[test]
+    #[test_case]
     fn dhcp_state_completes_with_event_task() {
         let state = {
             crate::net::l4::endpoint::event::reset_event_system_for_tests();

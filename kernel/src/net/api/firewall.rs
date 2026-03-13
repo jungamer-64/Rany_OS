@@ -395,7 +395,7 @@ impl ToAsciiLowerStr for str {
 
 #[cfg(test)]
 mod tests {
-    #[test]
+    #[test_case]
     fn firewall_status_completes_with_event_task() {
         let status = {
             crate::net::l4::endpoint::event::reset_event_system_for_tests();

@@ -35,6 +35,38 @@ pub mod qemu_tests;
 
 pub use types::*;
 
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use connection::TlsConnection;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::aes_cbc::{
+    aes_cbc_decrypt, aes_cbc_encrypt, tls_add_padding, tls_verify_padding,
+};
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::aes_core::{aes_ctr, aes_key_expansion, gf_mul};
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::aes_gcm::{aes_gcm_decrypt, aes_gcm_encrypt, gf128_mul};
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::chacha20::{
+    chacha20_block, chacha20_encrypt, chacha20_poly1305_decrypt, chacha20_poly1305_encrypt,
+    poly1305_mac,
+};
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::hkdf::{hkdf_expand, hkdf_extract};
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::hmac::hmac_sha256;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::legacy::{compute_tls_mac, hmac_md5, hmac_sha1, md5_compute, sha1_compute};
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::prf::{derive_key_block, derive_master_secret};
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use crypto::{
+    hkdf_expand_label, tls10_prf, tls13_derive_secret, tls13_derive_traffic_keys,
+    tls13_early_secret, tls13_finished_key, tls13_handshake_secret, tls13_master_secret,
+    tls13_verify_data,
+};
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) use error::TlsError;
+
 // Crypto re-exports (public API)
 
 // Crypto re-exports (crate-internal)

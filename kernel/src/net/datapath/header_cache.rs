@@ -426,7 +426,7 @@ pub struct HeaderCacheStats {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_conn_id_consistency() {
         let id1 = ConnId::from_5tuple(0x0A000001, 0x0A000002, 8080, 80, 6);
         let id2 = ConnId::from_5tuple(0x0A000001, 0x0A000002, 8080, 80, 6);
@@ -436,7 +436,7 @@ mod tests {
         assert_ne!(id1, id3);
     }
 
-    #[test]
+    #[test_case]
     fn test_header_cache_hit_miss() {
         let mut cache = HeaderCache::new();
         let conn_id = ConnId::from_5tuple(0x0A000001, 0x0A000002, 8080, 80, 6);
@@ -461,7 +461,7 @@ mod tests {
         assert!(cache.lookup(conn_id, 100).is_some());
     }
 
-    #[test]
+    #[test_case]
     fn test_header_stamp() {
         let mut cache = HeaderCache::new();
         let conn_id = ConnId::from_5tuple(0x0A000001, 0x0A000002, 8080, 80, 6);

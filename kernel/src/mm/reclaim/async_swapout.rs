@@ -745,6 +745,11 @@ pub fn stop_worker() {
     }
 }
 
+#[cfg(all(test, not(feature = "qemu-test-export")))]
+pub fn set_test_enqueue_override(value: Option<SwapError>) {
+    worker::set_test_enqueue_override(value);
+}
+
 #[cfg(feature = "qemu-test-export")]
 pub fn qemu_test_set_enqueue_override(value: Option<SwapError>) {
     worker::qemu_test_set_enqueue_override(value);

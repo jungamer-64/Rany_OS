@@ -174,7 +174,7 @@ mod tests {
     use super::*;
     use core::sync::atomic::Ordering;
 
-    #[test]
+    #[test_case]
     fn closed_port_rst_rate_counters_increment_but_always_allow() {
         // clear previous state
         CLOSED_PORT_RST_COUNT.store(0, Ordering::Relaxed);

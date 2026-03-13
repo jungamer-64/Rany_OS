@@ -791,7 +791,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test_case]
     fn prefers_msi_when_available() {
         let mut dev = sample_pci_device();
         dev.msi_cap_offset = Some(0x50);
@@ -803,7 +803,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn detects_msix_only_devices() {
         let mut dev = sample_pci_device();
         dev.msix_cap_offset = Some(0x90);
@@ -814,7 +814,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn falls_back_to_legacy_only_when_no_message_signaled_interrupts_exist() {
         let dev = sample_pci_device();
 

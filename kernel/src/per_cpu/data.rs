@@ -63,6 +63,36 @@ pub(crate) static GSBASE_FASTPATH: core::sync::atomic::AtomicBool =
 pub(crate) static BSP_GSBASE_SET: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+#[cfg(all(test, target_os = "linux"))]
+static TEST_GSBASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+#[cfg(all(test, target_os = "linux"))]
+fn ensure_host_test_bootstrap() {
+    INITIALIZED.call_once(|| unsafe {
+        PER_CPU_HOT[0] = PerCpuHot::new(0);
+        PER_CPU_COLD[0] = PerCpuCold::new(0);
+        PER_CPU_HOT[0].set_self_ptr();
+        PER_CPU_HOT[0].set_cold(core::ptr::addr_of_mut!(PER_CPU_COLD[0]));
+
+        PER_CPU_DATA[0] = PerCpuData::new(0);
+        PER_CPU_DATA[0].set_self_ptr();
+
+        GSBASE_FASTPATH.store(false, Ordering::Release);
+        BSP_GSBASE_SET.store(true, Ordering::Release);
+        ONLINE_CPU_MASK.store(1, Ordering::Release);
+        *ACTIVE_CPUS.lock().expect("lock poisoned") = 1;
+    });
+
+    let hot_ptr = unsafe { core::ptr::addr_of!(PER_CPU_HOT[0]) as u64 };
+    TEST_GSBASE.store(hot_ptr, Ordering::Release);
+    BSP_GSBASE_SET.store(true, Ordering::Release);
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub fn init_for_host_tests() {
+    ensure_host_test_bootstrap();
+}
+
 /// Check if FSGSBASE fastpath is adopted (CPUID supports it)
 #[inline]
 pub fn can_use_fsgsbase() -> bool {
@@ -79,6 +109,15 @@ pub fn can_use_fsgsbase() -> bool {
 /// Must be called in kernel mode
 #[inline]
 pub unsafe fn read_gsbase_any() -> u64 {
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        ensure_host_test_bootstrap();
+        let gs_base = TEST_GSBASE.load(Ordering::Acquire);
+        if gs_base != 0 {
+            return gs_base;
+        }
+    }
+
     // GS baseがまだ設定されていなければ0を返す（MSRのゴミ値を防ぐ）
     if !BSP_GSBASE_SET.load(Ordering::Acquire) {
         return 0;
@@ -100,6 +139,14 @@ pub unsafe fn read_gsbase_any() -> u64 {
 /// - Value must point to valid Per-CPU data
 #[inline]
 pub unsafe fn write_gsbase_any(value: u64) {
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        ensure_host_test_bootstrap();
+        TEST_GSBASE.store(value, Ordering::Release);
+        BSP_GSBASE_SET.store(true, Ordering::Release);
+        return;
+    }
+
     if can_use_fsgsbase() && is_fsgsbase_enabled() {
         write_gs_base(value)
     } else {
@@ -203,6 +250,9 @@ pub unsafe fn current_per_cpu_hot_mut() -> Option<&'static mut PerCpuHot> {
 
 /// Check if a CPU is online
 pub fn is_cpu_online(cpu_id: usize) -> bool {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
     if cpu_id >= 64 {
         return false;
     }
@@ -709,6 +759,9 @@ pub fn mark_cpu_online(cpu_id: usize) {
 
 /// Get a list of online CPU IDs
 pub fn online_cpu_ids() -> Vec<usize> {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
     let mask = ONLINE_CPU_MASK.load(Ordering::Acquire);
     let mut ids = Vec::new();
     for cpu_id in 0..MAX_CPUS {
@@ -841,6 +894,9 @@ pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
 /// # Safety
 /// cpu_idは有効な範囲内である必要がある
 pub unsafe fn get_per_cpu(cpu_id: usize) -> Option<&'static PerCpuData> {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
     if cpu_id >= MAX_CPUS {
         return None;
     }
@@ -856,6 +912,9 @@ pub unsafe fn get_per_cpu(cpu_id: usize) -> Option<&'static PerCpuData> {
 
 /// アクティブなCPU数を取得
 pub fn active_cpu_count() -> usize {
+    #[cfg(all(test, target_os = "linux"))]
+    ensure_host_test_bootstrap();
+
     *ACTIVE_CPUS.lock().expect("lock poisoned")
 }
 

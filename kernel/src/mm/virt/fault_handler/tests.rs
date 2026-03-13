@@ -14,9 +14,9 @@ fn test_error_code_parsing() {
 fn test_stack_access_detection() {
     // Valid stack address
     let stack_addr = VirtAddr::new(USER_STACK_TOP - 0x1000);
-    assert!(is_potential_stack_access(stack_addr));
+    assert!(is_potential_stack_access(stack_addr, stack_addr));
 
     // Below stack bottom
     let below = VirtAddr::new(USER_STACK_BOTTOM - 0x1000);
-    assert!(!is_potential_stack_access(below));
+    assert!(!is_potential_stack_access(below, stack_addr));
 }

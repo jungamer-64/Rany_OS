@@ -572,28 +572,29 @@ pub fn test_redirect_cache_basic() {
     assert_eq!(cache.get(dst), Some(new_gateway));
 }
 
-#[cfg_attr(test, test_case)]
-pub fn test_redirect_cache_expiry() {
+fn redirect_cache_expiry_impl() {
     let mut cache = RedirectCache::new();
     let dst = Ipv4Address::new([10, 0, 0, 100]);
     let gateway = Ipv4Address::new([192, 168, 1, 2]);
 
-    // Insert at time 0
     cache.set_time(0);
     cache.insert(dst, gateway);
 
-    // Still valid at TTL - 1
     cache.set_time(REDIRECT_CACHE_TTL - 1);
     assert_eq!(cache.get(dst), Some(gateway));
 
-    // Expired after TTL
     cache.set_time(REDIRECT_CACHE_TTL + 1);
     assert!(cache.get(dst).is_none());
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_redirect_cache_expiry() {
+    redirect_cache_expiry_impl();
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_redirect_cache_cleanup() {
-    test_redirect_cache_expiry();
+    redirect_cache_expiry_impl();
 }
 
 #[cfg_attr(test, test_case)]

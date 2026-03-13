@@ -1,5 +1,6 @@
 #![allow(clippy::wildcard_imports)]
 use super::*;
+use crate::fs::{FileMode, OpenFlags};
 
 #[cfg_attr(test, test_case)]
 pub fn test_file_mode() {

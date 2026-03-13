@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use super::*;
-use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
+use crate::io::virtio::{TransportType, VIRTQUEUE_MAX_SIZE, VirtioDeviceType, VirtioTransport};
 
 fn align_up(value: usize, align: usize) -> usize {
     if align == 0 {
@@ -13,6 +13,7 @@ fn align_up(value: usize, align: usize) -> usize {
     }
 }
 
+#[derive(Debug)]
 struct NoopTransport;
 
 fn test_device() -> crate::io::iommu::types::DeviceId {
@@ -30,7 +31,7 @@ impl VirtioTransport for NoopTransport {
         0
     }
 
-    fn set_status(&mut self, _status: u8) {}
+    fn set_status(&self, _status: u8) {}
 
     fn get_device_features_low(&self) -> u32 {
         0
@@ -40,39 +41,39 @@ impl VirtioTransport for NoopTransport {
         0
     }
 
-    fn set_driver_features_low(&mut self, _features: u32) {}
+    fn set_driver_features_low(&self, _features: u32) {}
 
-    fn set_driver_features_high(&mut self, _features: u32) {}
+    fn set_driver_features_high(&self, _features: u32) {}
 
     fn get_num_queues(&self) -> u16 {
         2
     }
 
-    fn select_queue(&mut self, _queue_index: u16) {}
+    fn select_queue(&self, _queue_index: u16) {}
 
     fn get_queue_max_size(&self) -> u16 {
         VIRTQUEUE_MAX_SIZE
     }
 
-    fn set_queue_size(&mut self, _size: u16) {}
+    fn set_queue_size(&self, _size: u16) {}
 
     fn is_queue_ready(&self) -> bool {
         false
     }
 
-    fn enable_queue(&mut self) {}
+    fn enable_queue(&self) {}
 
-    fn disable_queue(&mut self) {}
+    fn disable_queue(&self) {}
 
-    fn set_queue_desc_addr(&mut self, _addr: u64) {}
+    fn set_queue_desc_addr(&self, _addr: u64) {}
 
-    fn set_queue_avail_addr(&mut self, _addr: u64) {}
+    fn set_queue_avail_addr(&self, _addr: u64) {}
 
-    fn set_queue_used_addr(&mut self, _addr: u64) {}
+    fn set_queue_used_addr(&self, _addr: u64) {}
 
-    fn notify_queue(&mut self, _queue_index: u16) {}
+    fn notify_queue(&self, _queue_index: u16) {}
 
-    fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
+    fn get_notify_addr(&self, _queue_index: u16) -> Option<u64> {
         None
     }
 
@@ -94,11 +95,11 @@ impl VirtioTransport for NoopTransport {
         0
     }
 
-    fn write_config_u8(&mut self, _offset: usize, _value: u8) {}
+    fn write_config_u8(&self, _offset: usize, _value: u8) {}
 
-    fn write_config_u16(&mut self, _offset: usize, _value: u16) {}
+    fn write_config_u16(&self, _offset: usize, _value: u16) {}
 
-    fn write_config_u32(&mut self, _offset: usize, _value: u32) {}
+    fn write_config_u32(&self, _offset: usize, _value: u32) {}
 
     fn transport_type(&self) -> TransportType {
         TransportType::Mmio
@@ -200,7 +201,7 @@ fn test_set_event_handler() {
     fn my_handler(_event: VirtioInputEvent) {}
 
     dev.set_event_handler(my_handler);
-    let handler = dev.event_handler.lock();
+    let handler = dev.event_handler.lock().unwrap_or_else(|e| e.into_inner());
     assert!(handler.is_some());
 }
 

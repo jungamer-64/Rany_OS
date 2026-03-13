@@ -16,6 +16,64 @@ pub mod tests {
     use crate::net::types::InterfaceScope;
     use alloc::vec::Vec;
 
+    fn endpoint_new_with_fd_impl() {
+        let fd = EndpointFd::from_raw(42);
+        let endpoint = Endpoint::new_with_fd(EndpointType::Tcp, fd);
+
+        assert_eq!(endpoint.fd(), fd);
+        assert_eq!(endpoint.endpoint_type(), EndpointType::Tcp);
+        assert_eq!(endpoint.state(), EndpointState::Created);
+    }
+
+    fn endpoint_accept_empty_queue_impl() {
+        let endpoint = Endpoint::new(EndpointType::Tcp);
+
+        {
+            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 8080));
+            let _ = inner.transition_to(EndpointState::Bound);
+            let _ = inner.transition_to(EndpointState::Listening);
+        }
+
+        let result = endpoint.next_incoming_sync();
+        assert!(matches!(result, Err(EndpointError::Timeout)));
+    }
+
+    fn endpoint_accept_with_connection_impl() {
+        let listen_endpoint = Endpoint::new(EndpointType::Tcp);
+
+        {
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 8080));
+            let _ = inner.transition_to(EndpointState::Bound);
+            let _ = inner.transition_to(EndpointState::Listening);
+        }
+
+        let accepted_fd = EndpointFd::from_raw(200);
+        let local = EndpointAddr::new([192, 168, 1, 1], 8080);
+        let remote = EndpointAddr::new([10, 0, 0, 2], 54000);
+        let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
+        let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(0), tcb);
+
+        {
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            inner.ensure_tcp().accept_queue.push_back(conn);
+        }
+
+        let result = endpoint_accept_internal(&listen_endpoint);
+        assert!(result.is_some());
+        let (new_endpoint, addr, if_id) = result.unwrap();
+        assert_eq!(addr, remote);
+        assert_eq!(new_endpoint.fd(), accepted_fd);
+        assert_eq!(if_id, NetIfId(0));
+    }
+
     #[cfg_attr(test, test_case)]
     pub fn test_accepted_connection() {
         let fd = EndpointFd::from_raw(100);
@@ -32,83 +90,30 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_new_with_fd() {
-        let fd = EndpointFd::from_raw(42);
-        let endpoint = Endpoint::new_with_fd(EndpointType::Tcp, fd);
-
-        assert_eq!(endpoint.fd(), fd);
-        assert_eq!(endpoint.endpoint_type(), EndpointType::Tcp);
-        assert_eq!(endpoint.state(), EndpointState::Created);
+        endpoint_new_with_fd_impl();
     }
 
     // Legacy compatibility wrappers referenced by qemu test exports.
     pub fn test_socket_new_with_fd() {
-        test_endpoint_new_with_fd();
+        endpoint_new_with_fd_impl();
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_accept_empty_queue() {
-        let endpoint = Endpoint::new(EndpointType::Tcp);
-
-        // Bound -> Listening
-        {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 8080));
-            let _ = inner.transition_to(EndpointState::Bound);
-            let _ = inner.transition_to(EndpointState::Listening);
-        }
-
-        // 空のキューからnext_incomingするとTimeout
-        let result = endpoint.next_incoming_sync();
-        assert!(matches!(result, Err(EndpointError::Timeout)));
+        endpoint_accept_empty_queue_impl();
     }
 
     pub fn test_socket_accept_empty_queue() {
-        test_endpoint_accept_empty_queue();
+        endpoint_accept_empty_queue_impl();
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_accept_with_connection() {
-        let listen_endpoint = Endpoint::new(EndpointType::Tcp);
-
-        // Bound -> Listening
-        {
-            let mut inner = listen_endpoint
-                .inner()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 8080));
-            let _ = inner.transition_to(EndpointState::Bound);
-            let _ = inner.transition_to(EndpointState::Listening);
-        }
-
-        // 接続をAcceptキューに追加
-        let accepted_fd = EndpointFd::from_raw(200);
-        let local = EndpointAddr::new([192, 168, 1, 1], 8080);
-        let remote = EndpointAddr::new([10, 0, 0, 2], 54000);
-        let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
-        let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(0), tcb);
-
-        {
-            let mut inner = listen_endpoint
-                .inner()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            inner.ensure_tcp().accept_queue.push_back(conn);
-        }
-
-        // accept成功
-        // 注: EndpointManagerが初期化されていないため登録は失敗するが、
-        // 接続情報は正しく返される
-        let result = endpoint_accept_internal(&listen_endpoint);
-        assert!(result.is_some());
-        let (new_endpoint, addr, if_id) = result.unwrap();
-        assert_eq!(addr, remote);
-        assert_eq!(new_endpoint.fd(), accepted_fd);
-        assert_eq!(if_id, NetIfId(0));
+        endpoint_accept_with_connection_impl();
     }
 
     pub fn test_socket_accept_with_connection() {
-        test_endpoint_accept_with_connection();
+        endpoint_accept_with_connection_impl();
     }
 
     #[cfg_attr(test, test_case)]

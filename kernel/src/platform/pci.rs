@@ -212,7 +212,7 @@ pub fn disable_intx(device: &PciDeviceInfo) -> kernel_api::KapiResult<()> {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn to_native_device_preserves_bar_base_addresses() {
         let dev = PciDeviceInfo {
             segment: 0,

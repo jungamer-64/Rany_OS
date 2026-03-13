@@ -248,7 +248,7 @@ pub fn get_tcp_connections() -> GetTcpConnectionsFuture {
 
 #[cfg(test)]
 mod tests {
-    #[test]
+    #[test_case]
     fn connection_queries_complete_with_event_task() {
         let tcp = {
             crate::net::l4::endpoint::event::reset_event_system_for_tests();

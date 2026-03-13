@@ -3,7 +3,9 @@ use alloc::vec;
 use core::sync::atomic::Ordering;
 
 use super::*;
-use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
+use crate::io::virtio::{
+    TransportType, VIRTQUEUE_MAX_SIZE, VirtioDeviceStatus, VirtioDeviceType, VirtioTransport,
+};
 
 fn align_up(value: usize, align: usize) -> usize {
     if align == 0 {
@@ -16,7 +18,13 @@ fn align_up(value: usize, align: usize) -> usize {
 /// Noop transport for unit-testing balloon without real hardware
 struct NoopTransport {
     /// Simulated config space (at least 8 bytes for num_pages + actual)
-    config: [u8; 16],
+    config: crate::sync::PoisonLock<[u8; 16]>,
+}
+
+impl core::fmt::Debug for NoopTransport {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NoopTransport").finish()
+    }
 }
 
 fn test_device() -> crate::io::iommu::types::DeviceId {
@@ -27,14 +35,18 @@ fn test_device() -> crate::io::iommu::types::DeviceId {
 
 impl NoopTransport {
     fn new() -> Self {
-        Self { config: [0u8; 16] }
+        Self {
+            config: crate::sync::PoisonLock::new([0u8; 16]),
+        }
     }
 
     /// Create a transport with a pre-set target num_pages value
     fn with_target(num_pages: u32) -> Self {
         let mut config = [0u8; 16];
         config[0..4].copy_from_slice(&num_pages.to_le_bytes());
-        Self { config }
+        Self {
+            config: crate::sync::PoisonLock::new(config),
+        }
     }
 }
 
@@ -50,7 +62,7 @@ impl VirtioTransport for NoopTransport {
             | VirtioDeviceStatus::FeaturesOk as u8
     }
 
-    fn set_status(&mut self, _status: u8) {}
+    fn set_status(&self, _status: u8) {}
 
     fn get_device_features_low(&self) -> u32 {
         (features::VIRTIO_BALLOON_F_MUST_TELL_HOST | features::VIRTIO_BALLOON_F_DEFLATE_ON_OOM)
@@ -61,39 +73,39 @@ impl VirtioTransport for NoopTransport {
         0
     }
 
-    fn set_driver_features_low(&mut self, _features: u32) {}
+    fn set_driver_features_low(&self, _features: u32) {}
 
-    fn set_driver_features_high(&mut self, _features: u32) {}
+    fn set_driver_features_high(&self, _features: u32) {}
 
     fn get_num_queues(&self) -> u16 {
         2
     }
 
-    fn select_queue(&mut self, _queue_index: u16) {}
+    fn select_queue(&self, _queue_index: u16) {}
 
     fn get_queue_max_size(&self) -> u16 {
         VIRTQUEUE_MAX_SIZE
     }
 
-    fn set_queue_size(&mut self, _size: u16) {}
+    fn set_queue_size(&self, _size: u16) {}
 
     fn is_queue_ready(&self) -> bool {
         false
     }
 
-    fn enable_queue(&mut self) {}
+    fn enable_queue(&self) {}
 
-    fn disable_queue(&mut self) {}
+    fn disable_queue(&self) {}
 
-    fn set_queue_desc_addr(&mut self, _addr: u64) {}
+    fn set_queue_desc_addr(&self, _addr: u64) {}
 
-    fn set_queue_avail_addr(&mut self, _addr: u64) {}
+    fn set_queue_avail_addr(&self, _addr: u64) {}
 
-    fn set_queue_used_addr(&mut self, _addr: u64) {}
+    fn set_queue_used_addr(&self, _addr: u64) {}
 
-    fn notify_queue(&mut self, _queue_index: u16) {}
+    fn notify_queue(&self, _queue_index: u16) {}
 
-    fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
+    fn get_notify_addr(&self, _queue_index: u16) -> Option<u64> {
         None
     }
 
@@ -104,55 +116,61 @@ impl VirtioTransport for NoopTransport {
     fn ack_interrupt(&self, _status: u32) {}
 
     fn read_config_u8(&self, offset: usize) -> u8 {
-        if offset < self.config.len() {
-            self.config[offset]
+        let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        if offset < config.len() {
+            config[offset]
         } else {
             0
         }
     }
 
     fn read_config_u16(&self, offset: usize) -> u16 {
-        if offset + 1 < self.config.len() {
-            u16::from_le_bytes([self.config[offset], self.config[offset + 1]])
+        let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        if offset + 1 < config.len() {
+            u16::from_le_bytes([config[offset], config[offset + 1]])
         } else {
             0
         }
     }
 
     fn read_config_u32(&self, offset: usize) -> u32 {
-        if offset + 3 < self.config.len() {
+        let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        if offset + 3 < config.len() {
             u32::from_le_bytes([
-                self.config[offset],
-                self.config[offset + 1],
-                self.config[offset + 2],
-                self.config[offset + 3],
+                config[offset],
+                config[offset + 1],
+                config[offset + 2],
+                config[offset + 3],
             ])
         } else {
             0
         }
     }
 
-    fn write_config_u8(&mut self, offset: usize, value: u8) {
-        if offset < self.config.len() {
-            self.config[offset] = value;
+    fn write_config_u8(&self, offset: usize, value: u8) {
+        let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        if offset < config.len() {
+            config[offset] = value;
         }
     }
 
-    fn write_config_u16(&mut self, offset: usize, value: u16) {
-        if offset + 1 < self.config.len() {
+    fn write_config_u16(&self, offset: usize, value: u16) {
+        let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        if offset + 1 < config.len() {
             let bytes = value.to_le_bytes();
-            self.config[offset] = bytes[0];
-            self.config[offset + 1] = bytes[1];
+            config[offset] = bytes[0];
+            config[offset + 1] = bytes[1];
         }
     }
 
-    fn write_config_u32(&mut self, offset: usize, value: u32) {
-        if offset + 3 < self.config.len() {
+    fn write_config_u32(&self, offset: usize, value: u32) {
+        let mut config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        if offset + 3 < config.len() {
             let bytes = value.to_le_bytes();
-            self.config[offset] = bytes[0];
-            self.config[offset + 1] = bytes[1];
-            self.config[offset + 2] = bytes[2];
-            self.config[offset + 3] = bytes[3];
+            config[offset] = bytes[0];
+            config[offset + 1] = bytes[1];
+            config[offset + 2] = bytes[2];
+            config[offset + 3] = bytes[3];
         }
     }
 
@@ -300,7 +318,11 @@ fn test_balloon_inflate_submits_descriptor() {
     assert_eq!(desc.flags & vring_flags::VRING_DESC_F_WRITE, 0);
 
     // Verify inflight buffer is tracked
-    assert!(dev.inflight_buffers.lock().contains_key(&0));
+    let inflight = dev
+        .inflight_buffers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    assert!(inflight.contains_key(&0));
 }
 
 #[test_case]

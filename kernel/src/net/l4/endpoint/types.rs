@@ -484,8 +484,7 @@ pub fn seq_geq(a: u32, b: u32) -> bool {
 pub mod tests {
     use super::*;
 
-    #[cfg_attr(test, test_case)]
-    pub fn test_endpoint_fd() {
+    fn endpoint_fd_impl() {
         let fd1 = EndpointFd::from_raw(1);
         let fd2 = EndpointFd::from_raw(2);
 
@@ -494,8 +493,7 @@ pub mod tests {
         assert!(fd1 < fd2);
     }
 
-    #[cfg_attr(test, test_case)]
-    pub fn test_endpoint_addr() {
+    fn endpoint_addr_impl() {
         let addr = EndpointAddr::new([192, 168, 1, 1], 8080);
         assert_eq!(addr.as_ipv4().unwrap(), [192, 168, 1, 1]);
         assert_eq!(addr.port(), 8080);
@@ -506,13 +504,23 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
+    pub fn test_endpoint_fd() {
+        endpoint_fd_impl();
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_endpoint_addr() {
+        endpoint_addr_impl();
+    }
+
+    #[cfg_attr(test, test_case)]
     pub fn test_socket_fd() {
-        test_endpoint_fd();
+        endpoint_fd_impl();
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_socket_addr() {
-        test_endpoint_addr();
+        endpoint_addr_impl();
     }
 }
 

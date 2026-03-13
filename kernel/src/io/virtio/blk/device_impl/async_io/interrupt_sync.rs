@@ -40,15 +40,15 @@ mod unit_tests {
 
     #[test_case]
     pub(super) fn test_virtio_blk_req_type() {
-        assert_eq!(VirtioBlkReqType::In as u32, 0);
-        assert_eq!(VirtioBlkReqType::Out as u32, 1);
-        assert_eq!(VirtioBlkReqType::Flush as u32, 4);
+        assert_eq!(VIRTIO_BLK_T_IN, 0);
+        assert_eq!(VIRTIO_BLK_T_OUT, 1);
+        assert_eq!(VIRTIO_BLK_T_FLUSH, 4);
     }
 
     #[test_case]
     pub(super) fn test_block_device_config_default() {
-        let config = BlockDeviceConfig::default();
-        assert_eq!(config.capacity, 0);
+        let config = VfsBlockDeviceInfo::default();
+        assert_eq!(config.total_blocks, 0);
         assert_eq!(config.block_size, 512);
         assert!(!config.read_only);
     }

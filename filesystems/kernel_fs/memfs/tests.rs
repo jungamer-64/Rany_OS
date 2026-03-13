@@ -18,7 +18,7 @@ pub fn test_paged_content_in_inode() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_large_file_paging() {
-    use super::super::page::PAGE_SIZE;
+    use crate::fs::PAGE_SIZE;
 
     let inode = MemoryInode::new_file(1, "large.bin", FileMode::DEFAULT_FILE);
 
@@ -80,7 +80,7 @@ pub fn test_sparse_file() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_truncate_releases_pages() {
-    use super::super::page::PAGE_SIZE;
+    use crate::fs::PAGE_SIZE;
 
     let inode = MemoryInode::new_file(1, "truncate.bin", FileMode::DEFAULT_FILE);
 

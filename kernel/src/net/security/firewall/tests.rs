@@ -7,6 +7,50 @@ mod tests {
     use super::super::engine::{FirewallEngine, FirewallVerdict};
     use super::super::rules::*;
 
+    fn eval_ipv4(
+        engine: &FirewallEngine,
+        direction: FirewallDirection,
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        protocol: u8,
+        src_port: u16,
+        dst_port: u16,
+    ) -> FirewallVerdict {
+        engine.evaluate(
+            direction,
+            IpAddress::V4(src_ip),
+            IpAddress::V4(dst_ip),
+            protocol,
+            src_port,
+            dst_port,
+            0,
+        )
+    }
+
+    fn eval_ipv4_mut(
+        engine: &mut FirewallEngine,
+        direction: FirewallDirection,
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        protocol: u8,
+        src_port: u16,
+        dst_port: u16,
+    ) -> FirewallVerdict {
+        engine.evaluate_mut(
+            direction,
+            IpAddress::V4(src_ip),
+            IpAddress::V4(dst_ip),
+            protocol,
+            src_port,
+            dst_port,
+            0,
+        )
+    }
+
+    fn matches_ipv4(rule: &IpMatch, addr: [u8; 4]) -> bool {
+        rule.matches(IpAddress::V4(addr))
+    }
+
     /// ヘルパー: デフォルトのエンジンを作成して有効化する
     fn make_engine() -> FirewallEngine {
         let mut engine = FirewallEngine::new_const();
@@ -14,12 +58,13 @@ mod tests {
         engine
     }
 
-    #[test]
+    #[test_case]
     fn test_disabled_engine_allows_all() {
         let engine = FirewallEngine::new_const();
         assert!(!engine.enabled());
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -31,12 +76,13 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_default_allow_policy() {
         let engine = make_engine();
         // ルールなし → デフォルトポリシー (Allow)
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -48,12 +94,13 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_default_deny_policy() {
         let mut engine = make_engine();
         engine.set_default_policy(FirewallDirection::Ingress, FirewallAction::Deny);
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -65,7 +112,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_deny_specific_port() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -79,7 +126,8 @@ mod tests {
 
         // SSH → Deny
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -92,7 +140,8 @@ mod tests {
 
         // HTTP → Allow (no matching rule)
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -104,7 +153,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_allow_specific_subnet() {
         let mut engine = make_engine();
         engine.set_default_policy(FirewallDirection::Ingress, FirewallAction::Deny);
@@ -119,7 +168,8 @@ mod tests {
 
         // LAN → Allow
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [192, 168, 1, 100],
                 [10, 0, 0, 1],
@@ -132,7 +182,8 @@ mod tests {
 
         // WAN → Deny
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [8, 8, 8, 8],
                 [10, 0, 0, 1],
@@ -144,7 +195,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_priority_ordering() {
         let mut engine = make_engine();
 
@@ -174,7 +225,8 @@ mod tests {
 
         // Trusted SSH → Allow (higher priority rule matched first)
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 5],
                 [192, 168, 1, 1],
@@ -187,7 +239,8 @@ mod tests {
 
         // Untrusted SSH → Deny
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [8, 8, 8, 8],
                 [192, 168, 1, 1],
@@ -199,7 +252,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_port_range() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -213,7 +266,8 @@ mod tests {
 
         // Well-known port → Allow
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -226,7 +280,8 @@ mod tests {
 
         // High port → Deny
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -238,7 +293,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_exact_ip_match() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -250,7 +305,8 @@ mod tests {
         engine.add_rule(rule);
 
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [203, 0, 113, 42],
                 [10, 0, 0, 1],
@@ -262,7 +318,8 @@ mod tests {
         );
 
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [203, 0, 113, 43],
                 [10, 0, 0, 1],
@@ -274,7 +331,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_egress_rule() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -288,7 +345,8 @@ mod tests {
 
         // Egress DNS → Deny
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Egress,
                 [192, 168, 1, 1],
                 [8, 8, 8, 8],
@@ -301,7 +359,8 @@ mod tests {
 
         // Ingress DNS → Allow (rule is egress-only)
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [8, 8, 8, 8],
                 [192, 168, 1, 1],
@@ -313,7 +372,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_both_direction_rule() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -326,7 +385,8 @@ mod tests {
 
         // ICMP Ingress → Deny
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -339,7 +399,8 @@ mod tests {
 
         // ICMP Egress → Deny
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Egress,
                 [192, 168, 1, 1],
                 [10, 0, 0, 1],
@@ -351,7 +412,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_remove_rule() {
         let mut engine = make_engine();
         let id = engine.add_rule(
@@ -365,7 +426,8 @@ mod tests {
 
         // ルール有効: Deny
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -381,7 +443,8 @@ mod tests {
 
         // ルール削除後: Allow
         assert_eq!(
-            engine.evaluate(
+            eval_ipv4(
+                &engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -393,7 +456,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_clear_rules() {
         let mut engine = make_engine();
         engine.add_rule(
@@ -418,25 +481,49 @@ mod tests {
         assert_eq!(engine.rule_count(), 0);
     }
 
-    #[test]
+    #[test_case]
     fn test_cidr_masks() {
         // /0 は全アドレスにマッチ
-        assert!(IpMatch::Cidr([0, 0, 0, 0], 0).matches([1, 2, 3, 4]));
+        assert!(matches_ipv4(&IpMatch::Cidr([0, 0, 0, 0], 0), [1, 2, 3, 4]));
         // /32 は完全一致
-        assert!(IpMatch::Cidr([10, 0, 0, 1], 32).matches([10, 0, 0, 1]));
-        assert!(!IpMatch::Cidr([10, 0, 0, 1], 32).matches([10, 0, 0, 2]));
+        assert!(matches_ipv4(
+            &IpMatch::Cidr([10, 0, 0, 1], 32),
+            [10, 0, 0, 1]
+        ));
+        assert!(!matches_ipv4(
+            &IpMatch::Cidr([10, 0, 0, 1], 32),
+            [10, 0, 0, 2],
+        ));
         // /24
-        assert!(IpMatch::Cidr([192, 168, 1, 0], 24).matches([192, 168, 1, 255]));
-        assert!(!IpMatch::Cidr([192, 168, 1, 0], 24).matches([192, 168, 2, 0]));
+        assert!(matches_ipv4(
+            &IpMatch::Cidr([192, 168, 1, 0], 24),
+            [192, 168, 1, 255],
+        ));
+        assert!(!matches_ipv4(
+            &IpMatch::Cidr([192, 168, 1, 0], 24),
+            [192, 168, 2, 0],
+        ));
         // /16
-        assert!(IpMatch::Cidr([172, 16, 0, 0], 16).matches([172, 16, 255, 255]));
-        assert!(!IpMatch::Cidr([172, 16, 0, 0], 16).matches([172, 17, 0, 0]));
+        assert!(matches_ipv4(
+            &IpMatch::Cidr([172, 16, 0, 0], 16),
+            [172, 16, 255, 255],
+        ));
+        assert!(!matches_ipv4(
+            &IpMatch::Cidr([172, 16, 0, 0], 16),
+            [172, 17, 0, 0],
+        ));
         // /8
-        assert!(IpMatch::Cidr([10, 0, 0, 0], 8).matches([10, 255, 255, 255]));
-        assert!(!IpMatch::Cidr([10, 0, 0, 0], 8).matches([11, 0, 0, 0]));
+        assert!(matches_ipv4(
+            &IpMatch::Cidr([10, 0, 0, 0], 8),
+            [10, 255, 255, 255],
+        ));
+        assert!(!matches_ipv4(
+            &IpMatch::Cidr([10, 0, 0, 0], 8),
+            [11, 0, 0, 0],
+        ));
     }
 
-    #[test]
+    #[test_case]
     fn test_stats_tracking() {
         let mut engine = make_engine();
         engine.add_rule(
@@ -449,7 +536,8 @@ mod tests {
         );
 
         // パケットを評価
-        engine.evaluate_mut(
+        eval_ipv4_mut(
+            &mut engine,
             FirewallDirection::Ingress,
             [10, 0, 0, 1],
             [192, 168, 1, 1],
@@ -457,7 +545,8 @@ mod tests {
             55555,
             22,
         );
-        engine.evaluate_mut(
+        eval_ipv4_mut(
+            &mut engine,
             FirewallDirection::Ingress,
             [10, 0, 0, 1],
             [192, 168, 1, 1],
@@ -476,7 +565,7 @@ mod tests {
 
     // ── API パーサーテスト ──
 
-    #[test]
+    #[test_case]
     fn test_ip_match_display() {
         assert_eq!(format!("{}", IpMatch::Any), "*");
         assert_eq!(format!("{}", IpMatch::Exact([10, 0, 2, 15])), "10.0.2.15");
@@ -486,14 +575,14 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test_case]
     fn test_port_match_display() {
         assert_eq!(format!("{}", PortMatch::Any), "*");
         assert_eq!(format!("{}", PortMatch::Exact(80)), "80");
         assert_eq!(format!("{}", PortMatch::Range(1024, 65535)), "1024-65535");
     }
 
-    #[test]
+    #[test_case]
     fn test_protocol_match() {
         assert!(FirewallProtocol::Any.matches(6));
         assert!(FirewallProtocol::Any.matches(17));

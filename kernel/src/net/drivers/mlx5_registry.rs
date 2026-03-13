@@ -1251,7 +1251,7 @@ mod tests {
 
     static DMA_RELEASE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    unsafe fn test_release_dma_buffer(ptr: *mut u8, size: usize, _phys_addr: u64) {
+    fn test_release_dma_buffer(ptr: *mut u8, size: usize, _phys_addr: u64) {
         DMA_RELEASE_COUNT.fetch_add(1, Ordering::SeqCst);
         let layout = Layout::from_size_align(size.max(1), 1).expect("valid test dma layout");
         unsafe { dealloc(ptr, layout) };
@@ -1262,7 +1262,7 @@ mod tests {
         let ptr = unsafe { alloc(layout) };
         assert!(!ptr.is_null());
         unsafe {
-            DmaBuffer::from_raw_parts(
+            DmaBuffer::from_internal_parts(
                 phys_addr,
                 device_addr,
                 ptr,

@@ -919,7 +919,7 @@ mod tests {
         unsafe { Waker::from_raw(raw) }
     }
 
-    #[test]
+    #[test_case]
     fn send_event_waits_for_event_task_readiness() {
         reset_event_system_for_tests();
 
@@ -942,7 +942,7 @@ mod tests {
         reset_event_system_for_tests();
     }
 
-    #[test]
+    #[test_case]
     fn send_event_waits_for_queue_space() {
         reset_event_system_for_tests();
         mark_event_task_running();

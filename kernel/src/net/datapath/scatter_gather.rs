@@ -389,7 +389,7 @@ pub static SG_STATS: SgStats = SgStats::new();
 mod tests {
     use super::*;
 
-    #[test]
+    #[test_case]
     fn test_sg_list_basic() {
         let mut sg = ScatterGatherList::new();
         assert!(sg.is_empty());
@@ -405,7 +405,7 @@ mod tests {
         assert!(!sg.is_empty());
     }
 
-    #[test]
+    #[test_case]
     fn test_sg_list_max_entries() {
         let mut sg = ScatterGatherList::new();
         let data = [0u8; 1];
@@ -418,7 +418,7 @@ mod tests {
         assert!(sg.push(&data).is_err());
     }
 
-    #[test]
+    #[test_case]
     fn test_sg_linearize() {
         let mut sg = ScatterGatherList::new();
         let data1 = [0xAAu8, 0xBB];
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(&output[..5], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
     }
 
-    #[test]
+    #[test_case]
     fn test_sg_tx_builder() {
         let mut builder = SgTxBuilder::new();
         builder.set_ethernet(
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(sg.total_len(), 14 + 40 + 4); // 58
     }
 
-    #[test]
+    #[test_case]
     fn test_ip_checksum() {
         // Standard test vector
         let header: [u8; 20] = [
@@ -460,7 +460,7 @@ mod tests {
             0x00, // checksum field = 0 for calculation
             0xac, 0x10, 0x0a, 0x63, 0xac, 0x10, 0x0a, 0x0c,
         ];
-        let cksum = ip_checksum(&header);
+        let cksum = internet_checksum(&header);
         // Should be non-zero (valid checksum)
         assert_ne!(cksum, 0);
     }
