@@ -328,7 +328,7 @@ pub fn start_aps(apic_ids: &[u32]) -> u32 {
 
 /// Get number of online APs
 pub fn online_aps() -> u32 {
-    crate::smp::cpu_count().saturating_sub(1)
+    crate::cpu::count().saturating_sub(1) as u32
 }
 
 fn ap_stack_base(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
@@ -523,17 +523,12 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
     } else {
         ap_serial_mark(b'?');
     }
-    crate::io::nvme::per_core::register_apic_mapping(apic_id, cpu_id);
-
     crate::interrupts::enable_interrupts();
 
     // Idle APs are not executing kernel work yet, so remote TLB shootdowns can
     // be deferred until they are brought into active scheduling/execution.
     crate::mm::sync::tlb_batch::enter_lazy_tlb_mode(cpu_id as usize);
-    crate::smp::set_runtime_worker_stage(
-        cpu_id as usize,
-        crate::smp::RuntimeWorkerStage::BootstrapReady,
-    );
+    crate::cpu::set_stage(cpu_id as usize, crate::cpu::CpuStage::PerCpuReady);
 
     // Parked AP workers should only wake for the dedicated executor/TLB IPIs.
     // Mask lower-priority device IRQs until the runtime handoff completes.
@@ -556,11 +551,11 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
     }
     ap_serial_mark(b'G');
 
-    crate::smp::set_runtime_worker_stage(cpu_id as usize, crate::smp::RuntimeWorkerStage::Parked);
+    crate::cpu::set_stage(cpu_id as usize, crate::cpu::CpuStage::Parked);
     // Keep the parked wait loop in this frame so the AP does not leave a
     // long-lived return address on the boot stack while it is sleeping.
     loop {
-        if crate::smp::runtime_workers_released() {
+        if crate::cpu::workers_released() {
             crate::interrupts::disable_interrupts();
             break;
         }
@@ -569,25 +564,16 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
             core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack));
         }
     }
-    crate::smp::set_runtime_worker_stage(
-        cpu_id as usize,
-        crate::smp::RuntimeWorkerStage::ReleaseObserved,
-    );
+    crate::cpu::set_stage(cpu_id as usize, crate::cpu::CpuStage::Released);
     local_apic.set_task_priority(0);
-    crate::smp::set_runtime_worker_stage(
-        cpu_id as usize,
-        crate::smp::RuntimeWorkerStage::HandoffIrqsMasked,
-    );
     ap_serial_mark(b'R');
 
     let _ = crate::mm::sync::tlb_batch::exit_lazy_tlb_mode(cpu_id as usize);
-    crate::smp::set_runtime_worker_stage(
-        cpu_id as usize,
-        crate::smp::RuntimeWorkerStage::LazyTlbExited,
-    );
+    crate::cpu::set_stage(cpu_id as usize, crate::cpu::CpuStage::LazyTlbExited);
     ap_serial_mark(b'H');
 
     crate::mm::numa::topology::apply_current_cpu_locality();
+    crate::cpu::set_stage(cpu_id as usize, crate::cpu::CpuStage::ExecutorRunning);
 
     ap_enter_executor(cpu_id as usize);
 }

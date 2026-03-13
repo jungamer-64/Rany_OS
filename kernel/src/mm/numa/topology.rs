@@ -79,7 +79,7 @@ impl CpuLocalityTopology {
                     continue;
                 }
 
-                let Some(cpu_id) = crate::smp::cpu_for_apic_id(apic_id) else {
+                let Some(cpu_id) = crate::cpu::cpu_for_apic(apic_id) else {
                     continue;
                 };
                 if cpu_id >= core_count || assigned[cpu_id] {
@@ -177,7 +177,7 @@ impl Default for CpuLocalityTopology {
 static CPU_LOCALITY_TOPOLOGY: PoisonLock<Option<CpuLocalityTopology>> = PoisonLock::new(None);
 
 fn current_core_count() -> usize {
-    (crate::smp::cpu_count() as usize).clamp(1, crate::per_cpu::MAX_CPUS)
+    (crate::cpu::count() as usize).clamp(1, crate::per_cpu::MAX_CPUS)
 }
 
 fn publish_cpu_locality(topology: &CpuLocalityTopology) {
@@ -212,7 +212,7 @@ pub fn configure_from_boot_info(numa_info: &NumaInfo) {
 }
 
 pub fn apply_current_cpu_locality() {
-    let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() else {
+    let Some(cpu_id) = crate::cpu::try_current_id() else {
         return;
     };
 
@@ -726,7 +726,7 @@ pub fn num_nodes() -> usize {
 }
 
 pub fn current_node() -> usize {
-    if let Some(cpu) = crate::per_cpu::try_current_cpu_id() {
+    if let Some(cpu) = crate::cpu::try_current_id() {
         node_for_cpu(cpu)
     } else {
         0
@@ -832,7 +832,7 @@ pub fn set_cpu_to_node(cpu_id: usize, node_id: u8) {
 
 #[inline]
 pub fn current_numa_node_fast() -> Option<u8> {
-    if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+    if let Some(cpu_id) = crate::cpu::try_current_id() {
         cpu_to_node_rcu(cpu_id)
     } else {
         None
@@ -842,6 +842,30 @@ pub fn current_numa_node_fast() -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn install_cpu_topology(apics: &[u8]) {
+        let mut snapshot = boot_proto::AcpiBootSnapshot::default();
+        snapshot.local_apic_count = apics.len() as u16;
+        for (index, apic_id) in apics.iter().copied().enumerate() {
+            snapshot.local_apics[index].apic_id = apic_id;
+            snapshot.local_apics[index].processor_id = apic_id;
+            snapshot.local_apics[index].flags = boot_proto::acpi_local_apic_flags::ENABLED;
+        }
+
+        let mut ap_boot = boot_proto::ApBootInfo::default();
+        let bootable_aps = apics.len().saturating_sub(1) as u16;
+        ap_boot.ap_count = bootable_aps;
+        ap_boot.stack_count = bootable_aps;
+
+        crate::smp::topology::reset();
+        let topology = crate::smp::topology::CpuTopology::from_sources(
+            &snapshot,
+            &boot_proto::NumaInfo::default(),
+            &ap_boot,
+            apics.first().copied().unwrap_or(0) as u32,
+        );
+        crate::smp::topology::install(topology);
+    }
 
     fn reset_cpu_locality_for_tests() {
         *CPU_LOCALITY_TOPOLOGY
@@ -865,12 +889,8 @@ mod tests {
 
     #[test_case]
     fn boot_info_topology_maps_apic_masks_to_registered_cpus() {
-        crate::smp::reset_cpu_routing_for_tests();
         reset_cpu_locality_for_tests();
-        crate::smp::register_cpu_apic_mapping(0, 2);
-        crate::smp::register_cpu_apic_mapping(1, 9);
-        crate::smp::register_cpu_apic_mapping(2, 41);
-        crate::smp::register_cpu_apic_mapping(3, 44);
+        install_cpu_topology(&[2, 9, 41, 44]);
 
         let topology = CpuLocalityTopology::from_boot_info(
             &numa_info_with_nodes(&[
@@ -888,12 +908,8 @@ mod tests {
 
     #[test_case]
     fn steal_candidates_prefer_same_node_before_remote_nodes() {
-        crate::smp::reset_cpu_routing_for_tests();
         reset_cpu_locality_for_tests();
-        crate::smp::register_cpu_apic_mapping(0, 2);
-        crate::smp::register_cpu_apic_mapping(1, 9);
-        crate::smp::register_cpu_apic_mapping(2, 41);
-        crate::smp::register_cpu_apic_mapping(3, 44);
+        install_cpu_topology(&[2, 9, 41, 44]);
 
         let topology = CpuLocalityTopology::from_boot_info(
             &numa_info_with_nodes(&[
@@ -913,9 +929,8 @@ mod tests {
 
     #[test_case]
     fn apply_current_cpu_locality_updates_per_cpu_cold_state() {
-        crate::smp::reset_cpu_routing_for_tests();
         reset_cpu_locality_for_tests();
-        crate::smp::register_cpu_apic_mapping(0, 2);
+        install_cpu_topology(&[2]);
 
         configure_from_boot_info(&numa_info_with_nodes(&[(0, 0), (1u64 << 2, 0)]));
         apply_current_cpu_locality();

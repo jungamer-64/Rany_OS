@@ -89,7 +89,7 @@ impl NvmeBlockIoAdapter {
     /// 現在のCPUコアIDを取得
     #[inline]
     fn core_id() -> u32 {
-        crate::smp::cpu_index() as u32
+        crate::cpu::current_id() as u32
     }
 
     /// DMA バッファを確保、コマンド発行、完了待機の共通ロジック

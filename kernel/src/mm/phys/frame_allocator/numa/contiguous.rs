@@ -76,7 +76,7 @@ pub fn reset_frame2m_local_alloc_metrics() {
 /// 1GiB フレームを割り当て（設計書5.1: TLBエントリの消費を最小限に）
 pub fn alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
     if let Some(numa) = pmm_numa() {
-        if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::cpu::try_current_id() {
             if let Some(frame) = numa.allocate_1g_local(cpu_id as u8) {
                 return Some(frame);
             }
@@ -256,7 +256,7 @@ pub fn pmm_managed_end() -> Option<u64> {
 ///
 /// 非ISRコンテキストから呼び出すこと。
 pub fn pmm_maintenance_tick(tick: u64) {
-    let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() else {
+    let Some(cpu_id) = crate::cpu::try_current_id() else {
         return;
     };
 
@@ -336,7 +336,7 @@ pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
     let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     let start = start.as_u64();
     let end = start.saturating_add(size);
-    let cpu_ids = crate::per_cpu::online_cpu_ids();
+    let cpu_ids = crate::cpu::active_ids();
 
     if let Some(numa) = unsafe { pmm_numa_mut() } {
         for allocator in numa.node_allocators.iter_mut() {

@@ -73,7 +73,7 @@ pub fn lru_add_page(frame: x86_64::structures::paging::PhysFrame, page_type: Pag
         }
     }
 
-    let cpu_id = crate::per_cpu::current_cpu_id();
+    let cpu_id = crate::cpu::current_id();
 
     unsafe {
         if pagevec_is_full(cpu_id) {

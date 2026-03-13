@@ -10,9 +10,9 @@
 use boot_proto::ExoBootInfo;
 
 pub mod bootstrap;
-mod lifecycle;
-mod routing;
-mod runtime;
+pub(crate) mod lifecycle;
+pub(crate) mod routing;
+pub(crate) mod runtime;
 pub mod runtime_handoff;
 pub mod topology;
 #[allow(unused_imports)]

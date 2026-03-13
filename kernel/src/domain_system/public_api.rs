@@ -280,7 +280,7 @@ pub fn set_current_domain(id: DomainId) {
 
 /// 現在のドメインを取得
 pub fn current_domain() -> DomainId {
-    let cpu_id = crate::smp::current_cpu() as usize;
+    let cpu_id = crate::cpu::current_id();
     if let Some(tcb_ptr) = crate::task::context::get_current_task(cpu_id) {
         // SAFETY: get_current_taskは有効なTCBポインタを返す
         unsafe { (*tcb_ptr).domain_id }

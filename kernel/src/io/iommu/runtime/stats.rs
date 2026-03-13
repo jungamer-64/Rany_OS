@@ -27,7 +27,7 @@ static UNMAP_COUNTS: [AtomicU64; MAX_CPUS] = {
 };
 
 fn for_current_cpu(counters: &[AtomicU64; MAX_CPUS]) -> &AtomicU64 {
-    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
     if cpu_id < MAX_CPUS {
         &counters[cpu_id]
     } else {

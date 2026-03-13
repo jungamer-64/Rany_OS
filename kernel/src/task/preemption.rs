@@ -168,8 +168,8 @@ static CURRENT_TASK_DOMAIN: [AtomicU64; MAX_CPUS] = {
 
 #[inline]
 fn cpu_slot() -> usize {
-    crate::per_cpu::try_current_cpu_id()
-        .unwrap_or_else(|| crate::smp::cpu_index())
+    crate::cpu::try_current_id()
+        .unwrap_or_else(|| crate::cpu::current_id())
         .min(MAX_CPUS.saturating_sub(1))
 }
 
@@ -189,7 +189,7 @@ pub fn preemption_controller() -> &'static PreemptionController {
 }
 
 pub fn aggregate_preemption_stats() -> PreemptionStats {
-    let cpu_count = (crate::smp::cpu_count() as usize).clamp(1, MAX_CPUS);
+    let cpu_count = (crate::cpu::count() as usize).clamp(1, MAX_CPUS);
     let mut forced_preemptions = 0u64;
     let mut voluntary_yields = 0u64;
     let mut current_time_slice = DEFAULT_TIME_SLICE;
@@ -213,7 +213,7 @@ pub fn aggregate_preemption_stats() -> PreemptionStats {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub fn per_cpu_preemption_snapshot() -> PerCpuPreemptionSnapshot {
-    let cpu_count = (crate::smp::cpu_count() as usize).clamp(1, MAX_CPUS);
+    let cpu_count = (crate::cpu::count() as usize).clamp(1, MAX_CPUS);
     let mut local_ticks = [0u64; MAX_CPUS];
     let mut forced_preemptions = [0u64; MAX_CPUS];
 

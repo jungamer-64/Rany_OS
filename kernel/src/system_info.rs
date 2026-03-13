@@ -60,7 +60,7 @@ pub fn uptime_ticks() -> u64 {
 
 /// CPU数
 pub fn cpu_count() -> usize {
-    crate::smp::cpu_count() as usize
+    crate::cpu::count() as usize
 }
 
 /// CPUベンダー文字列

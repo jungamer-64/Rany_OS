@@ -474,7 +474,7 @@ pub unsafe fn pmm_reconfigure_for_cpu_ids(cpu_ids: &[usize]) {
 /// # Safety
 /// Call during early boot while no concurrent allocations are running.
 pub unsafe fn pmm_reconfigure_for_online_cpus() {
-    let cpu_ids = crate::per_cpu::online_cpu_ids();
+    let cpu_ids = crate::cpu::active_ids();
     unsafe {
         pmm_reconfigure_for_cpu_ids(&cpu_ids);
     }
@@ -488,7 +488,7 @@ pub(crate) static FRAME_LOCAL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 /// 現在のCPUのローカルNUMAノードからの割当を優先して試みる
 pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
     if let Some(numa) = pmm_numa() {
-        if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::cpu::try_current_id() {
             FRAME_LOCAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
             if let Some(frame) = numa.allocate_4k_local(cpu_id as u8) {
                 FRAME_LOCAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
@@ -596,7 +596,7 @@ pub(crate) static FRAME2M_LOCAL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 /// NUMAローカル優先で割当を試みる
 pub fn alloc_frame_2m() -> Option<PhysFrame<Size2MiB>> {
     if let Some(numa) = pmm_numa() {
-        if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::cpu::try_current_id() {
             FRAME2M_LOCAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
             if let Some(frame) = numa.allocate_2m_local(cpu_id as u8) {
                 FRAME2M_LOCAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
@@ -679,7 +679,7 @@ pub fn alloc_contiguous_frames_aligned(
     let align = align_size_to_page(align_bytes);
 
     if let Some(numa) = pmm_numa() {
-        if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::cpu::try_current_id() {
             if let Some(addr) =
                 numa.alloc_contiguous_local_aligned(cpu_id as u8, frames_needed, align as u64)
             {

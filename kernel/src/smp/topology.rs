@@ -230,7 +230,7 @@ pub fn bootable_apic_ids() -> Vec<u32> {
 }
 
 pub fn resolve_current_cpu_id() -> Option<usize> {
-    if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+    if let Some(cpu_id) = crate::cpu::try_current_id() {
         return Some(cpu_id);
     }
 

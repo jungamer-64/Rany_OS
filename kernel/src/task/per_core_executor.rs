@@ -441,7 +441,7 @@ impl PerCoreExecutor {
         crate::task::interrupt_waker::process_interrupt_events();
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();
-        crate::io::nvme::per_core::process_local_deferred_completions();
+        crate::io::nvme::per_core::process_deferred_completions_for_core(self.core_id);
         crate::io::io_scheduler::hybrid_coordinator().tick(|| {
             crate::task::interrupt_waker::process_interrupt_events();
         });
@@ -664,7 +664,7 @@ impl PerCoreExecutor {
     }
 
     fn try_steal(&self) -> bool {
-        if executor_active_cpu_count() <= 1 {
+        if executor_slot_count() <= 1 {
             return false;
         }
 
@@ -749,7 +749,6 @@ impl PerCoreExecutor {
 pub struct ExecutorManager {
     executors: PoisonLock<Vec<Arc<PerCoreExecutor>>>,
     bootstrap_queue: PoisonLock<VecDeque<Arc<ScheduledTask>>>,
-    active_cpu_count: AtomicUsize,
     global_enqueued: AtomicUsize,
     global_dequeued: AtomicUsize,
     global_dropped: AtomicUsize,
@@ -760,7 +759,6 @@ impl ExecutorManager {
         Self {
             executors: PoisonLock::new(Vec::new()),
             bootstrap_queue: PoisonLock::new(VecDeque::new()),
-            active_cpu_count: AtomicUsize::new(1),
             global_enqueued: AtomicUsize::new(0),
             global_dequeued: AtomicUsize::new(0),
             global_dropped: AtomicUsize::new(0),
@@ -774,14 +772,16 @@ impl ExecutorManager {
         for cpu_id in 0..count {
             executors.push(Arc::new(PerCoreExecutor::new(cpu_id as u32)));
         }
-        self.active_cpu_count.store(count, Ordering::Release);
         drop(executors);
 
         self.redistribute_bootstrap_queue();
     }
 
     pub fn active_cpu_count(&self) -> usize {
-        self.active_cpu_count.load(Ordering::Acquire)
+        match self.executors.lock() {
+            Ok(executors) => executors.len().clamp(1, MAX_CPUS),
+            Err(_) => 1,
+        }
     }
 
     pub fn get_executor(&self, core_id: u32) -> Option<Arc<PerCoreExecutor>> {
@@ -987,7 +987,7 @@ impl ExecutorManager {
     }
 
     fn notify_remote_cpu(&self, cpu_id: usize) {
-        if self.active_cpu_count() <= 1 || !crate::smp::runtime_workers_released() {
+        if self.active_cpu_count() <= 1 || !crate::cpu::workers_released() {
             return;
         }
 
@@ -995,11 +995,7 @@ impl ExecutorManager {
             return;
         }
 
-        if let Some(apic_id) = crate::smp::apic_id_for_cpu(cpu_id) {
-            send_executor_wake_ipi(apic_id);
-        } else {
-            send_executor_wake_broadcast();
-        }
+        send_executor_wake_to_cpu(cpu_id);
     }
 
     pub fn global_queue_stats(&self) -> GlobalQueueStats {
@@ -1063,7 +1059,11 @@ pub fn init_executors(core_count: usize) {
     EXECUTOR_MANAGER.init(core_count);
 }
 
-pub fn executor_active_cpu_count() -> usize {
+pub fn provision_executors(core_count: usize) {
+    init_executors(core_count);
+}
+
+pub fn executor_slot_count() -> usize {
     EXECUTOR_MANAGER.active_cpu_count()
 }
 
@@ -1177,7 +1177,6 @@ pub fn run_forever(cpu_id: usize) -> ! {
                 .expect("executor must exist after init")
         });
 
-    crate::smp::set_runtime_worker_stage(cpu_id, crate::smp::RuntimeWorkerStage::ExecutorRun);
     executor.run_forever()
 }
 
@@ -1188,7 +1187,7 @@ pub(crate) fn read_tsc() -> u64 {
 
 #[inline]
 pub(crate) fn current_core_id() -> usize {
-    crate::smp::cpu_index()
+    crate::cpu::current_id()
 }
 
 fn mark_current_polled_task(
@@ -1214,23 +1213,17 @@ fn set_current_executor_phase(cpu_id: usize, phase: u8) {
 }
 
 #[cfg(not(test))]
-fn send_executor_wake_ipi(apic_id: u32) {
-    crate::smp::bootstrap::send_ipi(apic_id, crate::interrupts::EXECUTOR_WAKE_VECTOR);
+fn send_executor_wake_to_cpu(cpu_id: usize) {
+    crate::cpu::send_ipi(cpu_id, crate::cpu::IpiKind::ExecutorWake);
 }
 
 #[cfg(test)]
-fn send_executor_wake_ipi(apic_id: u32) {
-    LAST_REMOTE_WAKE_APIC.store(apic_id as u64, Ordering::Release);
-}
-
-#[cfg(not(test))]
-fn send_executor_wake_broadcast() {
-    crate::smp::bootstrap::broadcast_ipi(crate::interrupts::EXECUTOR_WAKE_VECTOR);
-}
-
-#[cfg(test)]
-fn send_executor_wake_broadcast() {
-    REMOTE_WAKE_BROADCASTS.fetch_add(1, Ordering::Relaxed);
+fn send_executor_wake_to_cpu(cpu_id: usize) {
+    if let Some(apic_id) = crate::cpu::apic_id(cpu_id) {
+        LAST_REMOTE_WAKE_APIC.store(apic_id as u64, Ordering::Release);
+    } else {
+        REMOTE_WAKE_BROADCASTS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -1309,7 +1302,7 @@ impl TestExecutor {
         crate::task::interrupt_waker::process_interrupt_events();
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();
-        crate::io::nvme::per_core::process_local_deferred_completions();
+        crate::io::nvme::per_core::process_deferred_completions_for_core(0);
         crate::io::io_scheduler::hybrid_coordinator().tick(|| {
             crate::task::interrupt_waker::process_interrupt_events();
         });

@@ -185,14 +185,14 @@ fn case_interrupts_enabled() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_smp_workers_online() -> Result<(), BootCaseError> {
-    let cpu_count = crate::smp::cpu_count() as usize;
+    let cpu_count = crate::cpu::count() as usize;
     if cpu_count <= 1 {
         return Err(BootCaseError::blocked(
             "smp_workers_online requires a multi-core QEMU configuration",
         ));
     }
 
-    let per_cpu_count = crate::per_cpu::active_cpu_count();
+    let per_cpu_count = crate::cpu::count();
     if per_cpu_count != cpu_count {
         return Err(BootCaseError::failed(format!(
             "per_cpu active count mismatch: expected={} actual={}",
@@ -200,7 +200,7 @@ fn case_smp_workers_online() -> Result<(), BootCaseError> {
         )));
     }
 
-    let executor_cpu_count = task::executor_active_cpu_count();
+    let executor_cpu_count = task::executor_slot_count();
     if executor_cpu_count != cpu_count {
         return Err(BootCaseError::failed(format!(
             "executor active count mismatch: expected={} actual={}",
@@ -208,7 +208,7 @@ fn case_smp_workers_online() -> Result<(), BootCaseError> {
         )));
     }
 
-    if !crate::smp::runtime_workers_released() {
+    if !crate::cpu::workers_released() {
         return Err(BootCaseError::failed(
             "runtime workers were not released before boot runtime checks",
         ));
@@ -219,7 +219,7 @@ fn case_smp_workers_online() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_per_core_workers_running() -> Result<(), BootCaseError> {
-    let cpu_count = crate::smp::cpu_count() as usize;
+    let cpu_count = crate::cpu::count() as usize;
     if cpu_count <= 1 {
         return Err(BootCaseError::blocked(
             "per_core_workers_running requires a multi-core QEMU configuration",
@@ -227,14 +227,14 @@ fn case_per_core_workers_running() -> Result<(), BootCaseError> {
     }
 
     for cpu_id in 0..cpu_count {
-        let Some(stage) = crate::smp::runtime_worker_stage(cpu_id) else {
+        let Some(stage) = crate::cpu::stage_name(cpu_id) else {
             return Err(BootCaseError::failed(format!(
                 "runtime worker stage unavailable for cpu{}",
                 cpu_id
             )));
         };
 
-        if !str_eq(stage, "executor_run") {
+        if !str_eq(stage, "executor_running") {
             return Err(BootCaseError::failed(format!(
                 "cpu{} did not reach per-core executor run stage: stage={}",
                 cpu_id, stage
@@ -332,7 +332,7 @@ fn case_per_cpu_local_ticks_progress() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_cross_core_preemption_isolated() -> Result<(), BootCaseError> {
-    let cpu_count = crate::smp::cpu_count() as usize;
+    let cpu_count = crate::cpu::count() as usize;
     if cpu_count < 3 {
         return Err(BootCaseError::blocked(
             "cross_core_preemption_isolated requires >=3 CPUs so the runtime test runner stays off cpu0/cpu1",

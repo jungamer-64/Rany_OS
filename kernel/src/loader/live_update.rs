@@ -895,14 +895,14 @@ pub fn init() {
 
 /// 現在のCPUコアIDを取得
 fn get_current_core_id() -> usize {
-    if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+    if let Some(cpu_id) = crate::cpu::try_current_id() {
         return cpu_id;
     }
 
     #[cfg(not(test))]
     {
         let apic_id = crate::io::apic::local_apic().id() as u32;
-        if let Some(cpu_id) = crate::smp::cpu_for_apic_id(apic_id) {
+        if let Some(cpu_id) = crate::cpu::cpu_for_apic(apic_id) {
             return cpu_id;
         }
     }

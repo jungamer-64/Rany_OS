@@ -719,7 +719,7 @@ impl PollingExecutor {
             return 0;
         }
 
-        let cpu_idx = crate::smp::cpu_index();
+        let cpu_idx = crate::cpu::current_id();
         let mut completed = 0;
         let handlers = self.poll_handlers.read().unwrap_or_else(|e| e.into_inner());
 

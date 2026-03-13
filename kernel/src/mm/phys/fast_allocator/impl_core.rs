@@ -65,7 +65,7 @@ impl FastBitmapAllocator {
     /// Get current CPU ID
     #[inline]
     pub(super) fn current_cpu_id() -> Option<usize> {
-        crate::per_cpu::try_current_cpu_id().filter(|&cpu_id| cpu_id < MAX_CPUS)
+        crate::cpu::try_current_id().filter(|&cpu_id| cpu_id < MAX_CPUS)
     }
 
     // ========================================================================

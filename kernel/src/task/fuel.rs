@@ -44,7 +44,7 @@ static CURRENT_FUEL: [AtomicU64; MAX_CPUS] = {
 /// Get current CPU index safely (clamped to valid range)
 #[inline]
 fn cpu_index() -> usize {
-    let cpu_id = crate::smp::current_cpu() as usize;
+    let cpu_id = crate::cpu::current_id();
     if cpu_id < MAX_CPUS {
         cpu_id
     } else {

@@ -55,11 +55,8 @@ pub struct NvmeQueueStats {
 // ============================================================================
 
 const MAX_CORES: usize = 256;
-const INVALID_CORE_ID: u32 = u32::MAX;
 static QUEUES: [AtomicPtr<PerCoreNvmeQueue>; MAX_CORES] =
     [const { AtomicPtr::new(ptr::null_mut()) }; MAX_CORES];
-static APIC_TO_CORE: [AtomicU32; MAX_CORES] =
-    [const { AtomicU32::new(INVALID_CORE_ID) }; MAX_CORES];
 const MAX_ISR_COMPLETIONS_PER_PASS: usize = 64;
 const DEFERRED_COMPLETION_QUEUE_SIZE: usize = 256;
 
@@ -121,43 +118,16 @@ pub fn register_queue(core_id: u32, queue: &PerCoreNvmeQueue) {
     }
 }
 
-/// APIC ID -> core ID の対応を登録
-pub fn register_apic_mapping(apic_id: u32, core_id: u32) {
-    if (apic_id as usize) < MAX_CORES {
-        APIC_TO_CORE[apic_id as usize].store(core_id, Ordering::Release);
-    }
-}
-
-/// APIC ID からコアIDを取得
-pub fn apic_to_core(apic_id: u32) -> Option<u32> {
-    if (apic_id as usize) >= MAX_CORES {
+pub fn queue_for_core(core_id: u32) -> Option<&'static PerCoreNvmeQueue> {
+    if (core_id as usize) >= MAX_CORES {
         return None;
     }
-    let core_id = APIC_TO_CORE[apic_id as usize].load(Ordering::Acquire);
-    if core_id == INVALID_CORE_ID {
+    let ptr = QUEUES[core_id as usize].load(Ordering::Acquire);
+    if ptr.is_null() {
         None
     } else {
-        Some(core_id)
+        Some(unsafe { &*ptr })
     }
-}
-
-/// 現在のコアのキューを取得（ISR用、ロックフリー）
-pub fn get_local_queue() -> Option<&'static PerCoreNvmeQueue> {
-    // Note: Assuming crate::cpu::id() exists and returns u32 core ID
-    // If not, we need another way. checking imports/context.
-    // Usually via APIC local ID.
-    // For now, using crate::apic::local_apic_id() if available or similar.
-    // Actually, interrupt_manager has `current_apic_id()`.
-
-    let apic_id = current_apic_id();
-    let core_id = apic_to_core(apic_id).unwrap_or(apic_id);
-    if (core_id as usize) < MAX_CORES {
-        let ptr = QUEUES[core_id as usize].load(Ordering::Acquire);
-        if !ptr.is_null() {
-            return Some(unsafe { &*ptr });
-        }
-    }
-    None
 }
 
 // ============================================================================
@@ -717,31 +687,15 @@ impl PerCoreNvmeQueue {
 
 /// NVMe Interrupt Handler (ISR context)
 pub fn irq_handler() {
-    // 現在のコアのキューを取得して完了処理を実行
-    if let Some(queue) = get_local_queue() {
-        unsafe {
-            queue.process_completions();
-        }
-    }
+    // Kernel-owned interrupt routing now dispatches deferred completions by
+    // logical core ID from the executor side instead of maintaining a driver-
+    // local APIC/core mirror in this crate.
 }
 
-pub fn process_local_deferred_completions() -> usize {
-    get_local_queue()
+pub fn process_deferred_completions_for_core(core_id: u32) -> usize {
+    queue_for_core(core_id)
         .map(|queue| queue.process_deferred_completions())
         .unwrap_or(0)
-}
-
-/// Get current APIC ID (Local CPU ID)
-#[inline]
-fn current_apic_id() -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    #[allow(unused_unsafe)]
-    unsafe {
-        let res = core::arch::x86_64::__cpuid(1);
-        (res.ebx >> 24) as u32
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    0
 }
 
 #[cfg(test)]

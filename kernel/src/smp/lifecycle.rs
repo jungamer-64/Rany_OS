@@ -14,7 +14,7 @@ pub enum CpuLifecycleStage {
     Parked = 4,
     Released = 5,
     LazyTlbExited = 6,
-    ExecutorRun = 7,
+    ExecutorRunning = 7,
     Failed = 8,
 }
 
@@ -108,7 +108,7 @@ pub fn stage_name(cpu_id: usize) -> Option<&'static str> {
         CpuLifecycleStage::Parked => "parked",
         CpuLifecycleStage::Released => "released",
         CpuLifecycleStage::LazyTlbExited => "lazy_tlb_exited",
-        CpuLifecycleStage::ExecutorRun => "executor_run",
+        CpuLifecycleStage::ExecutorRunning => "executor_running",
         CpuLifecycleStage::Failed => "failed",
     })
 }
@@ -126,7 +126,7 @@ pub(crate) fn set_cpu_stage(cpu_id: usize, stage: CpuLifecycleStage) {
             | CpuLifecycleStage::Parked
             | CpuLifecycleStage::Released
             | CpuLifecycleStage::LazyTlbExited
-            | CpuLifecycleStage::ExecutorRun
+            | CpuLifecycleStage::ExecutorRunning
     ) {
         ONLINE_CPU_MASK.fetch_or(bit, Ordering::Release);
     } else if cpu_id != 0 {
@@ -155,7 +155,7 @@ fn stage_from_u8(value: u8) -> CpuLifecycleStage {
         x if x == CpuLifecycleStage::Parked as u8 => CpuLifecycleStage::Parked,
         x if x == CpuLifecycleStage::Released as u8 => CpuLifecycleStage::Released,
         x if x == CpuLifecycleStage::LazyTlbExited as u8 => CpuLifecycleStage::LazyTlbExited,
-        x if x == CpuLifecycleStage::ExecutorRun as u8 => CpuLifecycleStage::ExecutorRun,
+        x if x == CpuLifecycleStage::ExecutorRunning as u8 => CpuLifecycleStage::ExecutorRunning,
         _ => CpuLifecycleStage::Failed,
     }
 }
@@ -176,8 +176,8 @@ mod tests {
         assert_eq!(online_cpu_count(), 2);
         assert_eq!(stage_name(1), Some("parked"));
 
-        set_cpu_stage(1, CpuLifecycleStage::ExecutorRun);
-        assert_eq!(stage_name(1), Some("executor_run"));
+        set_cpu_stage(1, CpuLifecycleStage::ExecutorRunning);
+        assert_eq!(stage_name(1), Some("executor_running"));
         assert_eq!(online_cpu_count(), 2);
     }
 

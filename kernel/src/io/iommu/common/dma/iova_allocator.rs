@@ -225,7 +225,7 @@ impl IovaAllocator {
         addr: u64,
         granularity: PageGranularity,
     ) -> Result<(), IommuError> {
-        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
 
         // Ensure CPU ID is valid
         if cpu_id >= IOVA_ALLOCATOR_MAX_CPUS {
@@ -434,7 +434,7 @@ impl IovaAllocator {
         }
 
         // Opportunistic drain: Try to reclaim memory from current CPU's ring
-        if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::cpu::try_current_id() {
             if cpu_id < IOVA_ALLOCATOR_MAX_CPUS {
                 self.drain_quarantine_for_cpu(cpu_id, false);
             }
@@ -544,7 +544,7 @@ impl IovaAllocator {
         self.inner.drain_remote_frees();
 
         // Drain quarantine if needed
-        if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::cpu::try_current_id() {
             if cpu_id < IOVA_ALLOCATOR_MAX_CPUS {
                 self.drain_quarantine_for_cpu(cpu_id, false);
             }

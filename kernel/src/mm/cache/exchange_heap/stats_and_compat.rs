@@ -60,7 +60,7 @@ impl ExchangeHeap {
     }
 
     pub(super) fn try_per_cpu_cache_alloc(size_class: usize) -> Option<NonNull<u8>> {
-        let cpu_id = crate::per_cpu::try_current_cpu_id()?;
+        let cpu_id = crate::cpu::try_current_id()?;
         if cpu_id >= MAX_CPUS {
             return None;
         }
@@ -118,7 +118,7 @@ impl ExchangeHeap {
 
         // Fast path: try per-CPU cache first
         if size_class < CACHED_SIZE_CLASSES {
-            if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+            if let Some(cpu_id) = crate::cpu::try_current_id() {
                 if cpu_id < MAX_CPUS {
                     let mut cache = PER_CPU_CACHES[cpu_id].lock();
                     if cache.try_cache(addr, size, size_class) {

@@ -417,7 +417,7 @@ pub unsafe fn schedule_switch(
 /// CPUごとに現在実行中のタスクIDを返す。
 /// タスクが存在しない場合は0を返す。
 pub fn current_task_id() -> u64 {
-    let cpu_id = crate::smp::current_cpu() as usize;
+    let cpu_id = crate::cpu::current_id();
     if let Some(tcb_ptr) = get_current_task(cpu_id) {
         // SAFETY: get_current_task は有効なTCBポインタを返す
         unsafe { (*tcb_ptr).id.0 }
@@ -451,7 +451,7 @@ impl Subject {
 
 /// 現在の権限主体を取得（タスク不在時はカーネル主体）
 pub fn current_subject() -> Subject {
-    let cpu_id = crate::smp::current_cpu() as usize;
+    let cpu_id = crate::cpu::current_id();
     if let Some(tcb_ptr) = get_current_task(cpu_id) {
         // SAFETY: get_current_taskは有効なTCBポインタを返す
         unsafe {

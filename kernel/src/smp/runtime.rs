@@ -18,7 +18,7 @@ pub(crate) enum RuntimeWorkerStage {
     LazyTlbExited = 6,
     ColdStartHelper = 7,
     ExecutorConstructed = 8,
-    ExecutorRun = 9,
+    ExecutorRunning = 9,
 }
 
 pub fn runtime_workers_released() -> bool {
@@ -43,8 +43,8 @@ pub(crate) fn set_runtime_worker_stage(cpu_id: usize, stage: RuntimeWorkerStage)
             RuntimeWorkerStage::LazyTlbExited => {
                 crate::smp::lifecycle::CpuLifecycleStage::LazyTlbExited
             }
-            RuntimeWorkerStage::ExecutorRun => {
-                crate::smp::lifecycle::CpuLifecycleStage::ExecutorRun
+            RuntimeWorkerStage::ExecutorRunning => {
+                crate::smp::lifecycle::CpuLifecycleStage::ExecutorRunning
             }
         };
         crate::smp::set_cpu_lifecycle_stage(cpu_id, lifecycle_stage);

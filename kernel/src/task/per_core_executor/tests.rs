@@ -1,5 +1,31 @@
 use super::*;
 
+fn install_cpu_topology(apics: &[u8]) {
+    let mut snapshot = boot_proto::AcpiBootSnapshot::default();
+    snapshot.local_apic_count = apics.len() as u16;
+    for (index, apic_id) in apics.iter().copied().enumerate() {
+        snapshot.local_apics[index].apic_id = apic_id;
+        snapshot.local_apics[index].processor_id = apic_id;
+        snapshot.local_apics[index].flags = boot_proto::acpi_local_apic_flags::ENABLED;
+    }
+
+    let mut ap_boot = boot_proto::ApBootInfo::default();
+    let bootable_aps = apics.len().saturating_sub(1) as u16;
+    ap_boot.ap_count = bootable_aps;
+    ap_boot.stack_count = bootable_aps;
+
+    crate::smp::topology::reset();
+    let topology = crate::smp::topology::CpuTopology::from_sources(
+        &snapshot,
+        &boot_proto::NumaInfo::default(),
+        &ap_boot,
+        apics.first().copied().unwrap_or(0) as u32,
+    );
+    crate::smp::topology::install(topology.clone());
+    crate::smp::lifecycle::initialize_from_topology(&topology);
+    crate::smp::lifecycle::set_cpu_stage(0, crate::smp::lifecycle::CpuLifecycleStage::PerCpuReady);
+}
+
 #[test_case]
 fn priority_ordering_matches_runtime_expectations() {
     assert!(Priority::Realtime < Priority::High);
@@ -63,11 +89,9 @@ fn manager_spawn_and_steal_operate_on_canonical_tasks() {
 
 #[test_case]
 fn remote_wake_targets_logical_cpu_mapping() {
-    crate::smp::reset_cpu_routing_for_tests();
     crate::smp::reset_runtime_workers_for_tests();
-    crate::smp::register_cpu_apic_mapping(0, 2);
-    crate::smp::register_cpu_apic_mapping(1, 41);
-    crate::smp::release_runtime_workers();
+    install_cpu_topology(&[2, 41]);
+    crate::cpu::release_workers();
 
     LAST_REMOTE_WAKE_APIC.store(u64::MAX, Ordering::Release);
     REMOTE_WAKE_BROADCASTS.store(0, Ordering::Release);
@@ -90,10 +114,9 @@ fn remote_wake_targets_logical_cpu_mapping() {
 
 #[test_case]
 fn remote_wake_broadcasts_when_apic_mapping_is_missing() {
-    crate::smp::reset_cpu_routing_for_tests();
     crate::smp::reset_runtime_workers_for_tests();
-    crate::smp::register_cpu_apic_mapping(0, 2);
-    crate::smp::release_runtime_workers();
+    install_cpu_topology(&[2]);
+    crate::cpu::release_workers();
 
     LAST_REMOTE_WAKE_APIC.store(u64::MAX, Ordering::Release);
     REMOTE_WAKE_BROADCASTS.store(0, Ordering::Release);

@@ -560,9 +560,9 @@ fn send_tlb_flush_ipi_internal(
     asid: u16,
 ) {
     // 現在のCPUを除外したターゲットマスクを作成
-    let current_cpu = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let current_cpu = crate::cpu::try_current_id().unwrap_or(0);
     let cpu_scan_limit = core::cmp::max(
-        crate::per_cpu::active_cpu_count().min(MAX_CPUS),
+        crate::cpu::count().min(MAX_CPUS),
         current_cpu.saturating_add(1).min(MAX_CPUS),
     );
     let mut remote_mask = cpu_mask;
@@ -598,7 +598,7 @@ fn send_tlb_flush_ipi_internal(
 
             // Phase-2 runtime handoff前のAP workerは、lazy TLB退出時にまとめて
             // 同期すれば十分なので、pre-release期間はIPI自体を送らない。
-            if cpu_id != 0 && !crate::smp::runtime_workers_released() {
+            if cpu_id != 0 && !crate::cpu::workers_released() {
                 state.mark_pending_flush();
                 remote_mask.clear(cpu_id);
                 continue;
@@ -743,30 +743,22 @@ pub fn flush_tlb_all() {
 
 /// 単一CPUにTLBフラッシュIPIを送信
 fn send_tlb_ipi_to_cpu(cpu_id: usize) {
-    let apic_id = resolve_tlb_target_apic_id(cpu_id).unwrap_or_else(|| {
+    if resolve_tlb_target_apic_id(cpu_id).is_none() {
         panic!("[TLB] Missing APIC routing for logical CPU {}", cpu_id);
-    });
-    let apic_id = u8::try_from(apic_id).unwrap_or_else(|_| {
-        panic!(
-            "[TLB] APIC ID {} for logical CPU {} does not fit in xAPIC destination field",
-            apic_id, cpu_id
-        );
-    });
-
-    // interrupt_manager経由でIPI送信
-    crate::io::interrupt_manager::send_ipi(apic_id, TLB_FLUSH_VECTOR);
+    }
+    crate::cpu::send_ipi(cpu_id, crate::cpu::IpiKind::TlbFlush);
 
     TLB_STATS.remote_flushes.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 全CPUにTLBフラッシュIPIをブロードキャスト
 fn broadcast_tlb_flush_ipi() {
-    crate::io::interrupt_manager::broadcast_ipi(TLB_FLUSH_VECTOR);
+    crate::cpu::broadcast_ipi(crate::cpu::IpiKind::TlbFlush);
     TLB_STATS.remote_flushes.fetch_add(1, Ordering::Relaxed);
 }
 
 fn resolve_tlb_target_apic_id(cpu_id: usize) -> Option<u32> {
-    crate::smp::apic_id_for_cpu(cpu_id)
+    crate::cpu::apic_id(cpu_id)
 }
 
 // ============================================================================
@@ -1668,7 +1660,7 @@ pub fn request_ipl_free_flush(
     };
 
     // 現在のCPUは直接フラッシュ
-    if let Some(current_cpu) = crate::per_cpu::try_current_cpu_id() {
+    if let Some(current_cpu) = crate::cpu::try_current_id() {
         if cpu_mask.is_set(current_cpu) {
             const PAGE_SIZE: u64 = 4096;
             unsafe {
@@ -1690,7 +1682,7 @@ pub fn request_ipl_free_flush(
         if !cpu_mask.is_set(cpu_id) {
             continue;
         }
-        if Some(cpu_id) == crate::per_cpu::try_current_cpu_id() {
+        if Some(cpu_id) == crate::cpu::try_current_id() {
             continue; // 自CPUはすでに処理済み
         }
         IPL_FREE_QUEUES[cpu_id].enqueue(&request);
@@ -1779,6 +1771,30 @@ pub fn ipl_free_stats() -> IplFreeStats {
 mod tests {
     use super::*;
 
+    fn install_cpu_topology(apics: &[u8]) {
+        let mut snapshot = boot_proto::AcpiBootSnapshot::default();
+        snapshot.local_apic_count = apics.len() as u16;
+        for (index, apic_id) in apics.iter().copied().enumerate() {
+            snapshot.local_apics[index].apic_id = apic_id;
+            snapshot.local_apics[index].processor_id = apic_id;
+            snapshot.local_apics[index].flags = boot_proto::acpi_local_apic_flags::ENABLED;
+        }
+
+        let mut ap_boot = boot_proto::ApBootInfo::default();
+        let bootable_aps = apics.len().saturating_sub(1) as u16;
+        ap_boot.ap_count = bootable_aps;
+        ap_boot.stack_count = bootable_aps;
+
+        crate::smp::topology::reset();
+        let topology = crate::smp::topology::CpuTopology::from_sources(
+            &snapshot,
+            &boot_proto::NumaInfo::default(),
+            &ap_boot,
+            apics.first().copied().unwrap_or(0) as u32,
+        );
+        crate::smp::topology::install(topology);
+    }
+
     #[test_case]
     fn test_tlb_batch_add() {
         let mut batch = TlbFlushBatch::new();
@@ -1817,8 +1833,7 @@ mod tests {
     #[cfg(any(feature = "full_mm_tests", feature = "qemu-test-export"))]
     #[test_case]
     fn test_tlb_ipi_target_uses_cpu_to_apic_routing() {
-        crate::smp::reset_cpu_routing_for_tests();
-        crate::smp::register_cpu_apic_mapping(3, 45);
+        install_cpu_topology(&[2, 9, 41, 45]);
 
         assert_eq!(resolve_tlb_target_apic_id(3), Some(45));
         assert_eq!(resolve_tlb_target_apic_id(4), None);

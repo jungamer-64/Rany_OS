@@ -124,7 +124,7 @@ impl PerCoreTxCache {
 
     /// バッファを割り当て（ローカルキャッシュ優先）
     pub fn alloc(&self) -> Option<Vec<u8>> {
-        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
         let idx = cpu_id % self.caches.len();
 
         let mut cache = self.caches[idx].lock().unwrap_or_else(|e| e.into_inner());
@@ -154,7 +154,7 @@ impl PerCoreTxCache {
         }
         buffer.clear();
 
-        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
         let idx = cpu_id % self.caches.len();
 
         let mut cache = self.caches[idx].lock().unwrap_or_else(|e| e.into_inner());

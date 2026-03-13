@@ -336,10 +336,9 @@ define_interrupt!(
         early_print("  Symbol: ");
         early_print(symbol);
         early_print("\n");
-        let current_cpu = crate::per_cpu::try_current_cpu_id()
-            .unwrap_or_else(|| crate::smp::current_cpu() as usize);
+        let current_cpu = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
         let executor_phase = crate::task::current_executor_phase(current_cpu).unwrap_or("unknown");
-        let worker_stage = crate::smp::runtime_worker_stage(current_cpu).unwrap_or("unknown");
+        let worker_stage = crate::cpu::stage_name(current_cpu).unwrap_or("unknown");
         early_print("  CPU: ");
         early_print_dec(current_cpu as u64);
         early_print("\n  Executor phase: ");

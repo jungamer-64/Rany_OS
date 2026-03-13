@@ -1,7 +1,6 @@
 use super::*;
 use crate::sync::poison_lock::PoisonLock;
 use alloc::alloc::{Layout, alloc_zeroed};
-use alloc::vec::Vec;
 use boot_proto::TlsInfo;
 
 // Required for inline assembly macros and atomic ordering constants
@@ -36,10 +35,8 @@ fn is_valid_hot_gs_base(gs_base: u64) -> bool {
 /// Per-CPUデータが初期化済みかどうか
 pub(crate) static INITIALIZED: spin::Once<()> = spin::Once::new();
 
-/// 初期化済みCPU数
-pub(crate) static ACTIVE_CPUS: PoisonLock<usize> = PoisonLock::new(0);
-/// Online CPU bitmask (bit N set => CPU N online)
-pub(crate) static ONLINE_CPU_MASK: AtomicU64 = AtomicU64::new(0);
+/// 準備済みの per-CPU スロット数
+pub(crate) static PREPARED_CPUS: PoisonLock<usize> = PoisonLock::new(0);
 pub(crate) static TLS_TEMPLATE_INFO: PoisonLock<Option<TlsInfo>> = PoisonLock::new(None);
 pub(crate) static TLS_FS_BASES: [AtomicU64; MAX_CPUS] = {
     const ZERO: AtomicU64 = AtomicU64::new(0);
@@ -69,8 +66,7 @@ fn ensure_host_test_bootstrap() {
 
         GSBASE_FASTPATH.store(false, Ordering::Release);
         BSP_GSBASE_SET.store(true, Ordering::Release);
-        ONLINE_CPU_MASK.store(1, Ordering::Release);
-        *ACTIVE_CPUS.lock().expect("lock poisoned") = 1;
+        *PREPARED_CPUS.lock().expect("lock poisoned") = 1;
     });
 
     let hot_ptr = unsafe { core::ptr::addr_of!(PER_CPU_HOT[0]) as u64 };
@@ -150,7 +146,7 @@ pub unsafe fn write_gsbase_any(value: u64) {
 
 #[inline]
 fn active_cpu_limit() -> usize {
-    *ACTIVE_CPUS.lock().expect("lock poisoned")
+    *PREPARED_CPUS.lock().expect("lock poisoned")
 }
 
 #[inline]
@@ -329,7 +325,7 @@ pub fn is_cpu_online(cpu_id: usize) -> bool {
     if cpu_id >= 64 {
         return false;
     }
-    let mask = ONLINE_CPU_MASK.load(Ordering::Acquire);
+    let mask = crate::cpu::snapshot().online_cpu_mask;
     (mask & (1 << cpu_id)) != 0
 }
 
@@ -730,8 +726,7 @@ pub unsafe fn init_bsp_per_cpu(tls_template: Option<&TlsInfo>) {
             install_tls_for_cpu(0);
         }
 
-        *ACTIVE_CPUS.lock().expect("lock poisoned") = 1;
-        mark_cpu_online(0);
+        *PREPARED_CPUS.lock().expect("lock poisoned") = 1;
     });
 }
 
@@ -751,6 +746,11 @@ pub fn finalize_cpu_topology(num_cpus: usize) {
             allocate_tls_for_cpu(i);
         }
         i += 1;
+    }
+
+    let mut prepared = PREPARED_CPUS.lock().expect("lock poisoned");
+    if num_cpus > *prepared {
+        *prepared = num_cpus;
     }
 }
 
@@ -787,7 +787,7 @@ pub unsafe fn register_current_cpu(cpu_id: usize) {
         install_tls_for_cpu(cpu_id);
     }
 
-    mark_cpu_online(cpu_id);
+    publish_prepared_cpu(cpu_id);
 }
 
 /// 現在のCPUのPer-CPUデータを設定（AP用）
@@ -804,36 +804,14 @@ pub unsafe fn setup_current_cpu(cpu_id: usize) {
     unsafe { register_current_cpu(cpu_id) };
 }
 
-/// Mark a CPU as online (best-effort)
-pub fn mark_cpu_online(cpu_id: usize) {
+fn publish_prepared_cpu(cpu_id: usize) {
     if cpu_id >= MAX_CPUS {
         return;
     }
-    let bit = 1u64 << cpu_id;
-    ONLINE_CPU_MASK.fetch_or(bit, Ordering::Release);
-    let mut active = ACTIVE_CPUS.lock_for_init("[PCPU] mark_cpu_online");
-    if cpu_id + 1 > *active {
-        *active = cpu_id + 1;
+    let mut prepared = PREPARED_CPUS.lock_for_init("[PCPU] publish_prepared_cpu");
+    if cpu_id + 1 > *prepared {
+        *prepared = cpu_id + 1;
     }
-    crate::smp::set_cpu_lifecycle_stage(cpu_id, crate::smp::CpuLifecycleStage::PerCpuReady);
-}
-
-/// Get a list of online CPU IDs
-pub fn online_cpu_ids() -> Vec<usize> {
-    #[cfg(all(test, target_os = "linux"))]
-    ensure_host_test_bootstrap();
-
-    let mask = ONLINE_CPU_MASK.load(Ordering::Acquire);
-    let mut ids = Vec::new();
-    for cpu_id in 0..MAX_CPUS {
-        if (mask & (1u64 << cpu_id)) != 0 {
-            ids.push(cpu_id);
-        }
-    }
-    if ids.is_empty() {
-        ids.push(0);
-    }
-    ids
 }
 
 /// 現在のCPU IDを取得
@@ -845,7 +823,7 @@ pub fn online_cpu_ids() -> Vec<usize> {
 /// GsBaseが未初期化（0または不正な値）の場合、panicする。
 /// これにより setup_current_cpu() 呼び忘れを早期に検出できる。
 #[inline]
-pub fn current_cpu_id() -> usize {
+pub(crate) fn current_cpu_id() -> usize {
     // Use unified helper that handles both FSGSBASE and MSR paths
     let gs_base = unsafe { read_gsbase_any() };
 
@@ -876,7 +854,7 @@ pub fn current_cpu_id() -> usize {
 /// 初期化前の状態でも安全に呼べる。
 /// 初期化されていない場合は None を返す。
 #[inline]
-pub fn try_current_cpu_id() -> Option<usize> {
+pub(crate) fn try_current_cpu_id() -> Option<usize> {
     // Use unified helper - safe even before per-CPU init
     let gs_base = unsafe { read_gsbase_any() };
     if !is_valid_hot_gs_base(gs_base) {
@@ -893,17 +871,6 @@ pub fn try_current_cpu_id() -> Option<usize> {
     }
 
     Some(hot.cpu_id)
-}
-
-/// アクティブなCPU数を取得
-pub fn active_cpu_count() -> usize {
-    #[cfg(all(test, target_os = "linux"))]
-    ensure_host_test_bootstrap();
-
-    core::cmp::max(
-        *ACTIVE_CPUS.lock().expect("lock poisoned"),
-        crate::smp::cpu_count() as usize,
-    )
 }
 
 // ============================================================================

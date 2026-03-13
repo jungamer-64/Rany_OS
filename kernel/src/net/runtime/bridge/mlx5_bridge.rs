@@ -959,7 +959,7 @@ fn submit_mlx5_tx_packet_on_device(
     };
     let inline_hdr = &pkt.data()[..inline_hdr_len];
 
-    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
     let num_sqs = tx_bufs_guard.len();
     if num_sqs == 0 {
         log::trace!(target: "mlx5::bridge", "No active SQs available for TX");

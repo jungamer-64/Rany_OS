@@ -217,7 +217,7 @@ impl MemoryPoolInner {
             return None;
         }
 
-        let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
         if cpu_id < self.per_cpu.len() {
             return Some(&self.per_cpu[cpu_id]);
         }

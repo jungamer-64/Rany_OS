@@ -496,7 +496,7 @@ fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
             let stats = get_page_numa_stats(frame);
 
             // 現在のCPUのNUMAノードを取得
-            if let Some(_cpu_id) = crate::per_cpu::try_current_cpu_id() {
+            if let Some(_cpu_id) = crate::cpu::try_current_id() {
                 // NUMAノードIDを取得 (Per-CPUデータから)
                 let node_id =
                     crate::per_cpu::with_current_cold(|cold| cold.get_local_numa_node().as_u8())

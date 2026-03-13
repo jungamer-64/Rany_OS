@@ -212,7 +212,7 @@ pub fn load_for_cpu(cpu_id: usize) -> Result<(), &'static str> {
 }
 
 pub fn load_for_current_cpu() -> Result<(), &'static str> {
-    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
     load_for_cpu(cpu_id)
 }
 
@@ -222,7 +222,7 @@ pub fn tss_selector() -> SegmentSelector {
         panic!("GDT not initialized");
     }
 
-    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
     let state = ensure_cpu_state(cpu_id).expect("missing CPU-local GDT state");
     state.selectors().tss_selector
 }

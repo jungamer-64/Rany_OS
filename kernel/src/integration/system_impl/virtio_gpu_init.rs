@@ -107,7 +107,7 @@ impl SystemIntegration {
                 let bar0_phys = bar0.base();
                 let bar0_virt =
                     crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
-                let num_cores = crate::smp::cpu_count();
+                let num_cores = crate::cpu::count();
                 let packed_device_id = dev.packed_locator();
 
                 let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
@@ -144,9 +144,6 @@ impl SystemIntegration {
                 ) {
                     Ok(()) => {
                         self.log("    NVMe driver initialized (polling)");
-                        let apic_id = crate::platform::apic::local_apic_id();
-                        let core_id = crate::smp::current_cpu();
-                        crate::drivers::nvme::per_core::register_apic_mapping(apic_id, core_id);
                         if let Err(e) = crate::drivers::nvme::register_with_io_scheduler(
                             nvme_controller_id,
                             1,

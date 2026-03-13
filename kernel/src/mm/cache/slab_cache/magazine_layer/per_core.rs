@@ -97,7 +97,7 @@ pub unsafe fn per_core_dealloc(cpu_id: usize, ptr: NonNull<u8>, layout: Layout) 
 /// - GsBaseが設定されていない場合は None を返す（panicしない）
 pub fn per_core_alloc_auto(layout: Layout) -> Option<NonNull<u8>> {
     // try_current_cpu_id を使用し、初期化前でも安全に動作
-    let cpu_id = crate::per_cpu::try_current_cpu_id()?;
+    let cpu_id = crate::cpu::try_current_id()?;
     per_core_alloc(cpu_id, layout)
 }
 
@@ -110,7 +110,7 @@ pub fn per_core_alloc_auto(layout: Layout) -> Option<NonNull<u8>> {
 ///   割り当てられたものである必要がある
 pub unsafe fn per_core_dealloc_auto(ptr: NonNull<u8>, layout: Layout) {
     // try_current_cpu_id を使用し、初期化前でも安全に動作
-    if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+    if let Some(cpu_id) = crate::cpu::try_current_id() {
         // SAFETY: 呼び出し元が保証
         unsafe {
             per_core_dealloc(cpu_id, ptr, layout);

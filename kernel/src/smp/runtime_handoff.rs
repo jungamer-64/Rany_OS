@@ -12,7 +12,7 @@ impl RuntimeHandoffCoordinator {
         crate::mm::cache::slab_cache::init_per_core_caches(count);
         crate::mm::sync::page_table_cache::set_active_cpu_count(count);
         crate::loader::live_update::set_active_cores(count as u64);
-        crate::task::init_executors(count);
+        crate::task::provision_executors(count);
     }
 
     pub fn apply_current_online_cpu_count(&self) {

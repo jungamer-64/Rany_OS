@@ -621,7 +621,7 @@ pub fn set_in_panic(in_panic: bool) {
 
 #[inline]
 fn current_log_cpu_id() -> usize {
-    crate::per_cpu::try_current_cpu_id().unwrap_or_else(|| crate::smp::current_cpu() as usize)
+    crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id())
 }
 
 pub(crate) fn panic_output_allowed() -> bool {

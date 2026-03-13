@@ -125,8 +125,8 @@ impl InterruptWakerRegistry {
 
     #[inline]
     fn current_cpu_index(&self) -> usize {
-        crate::per_cpu::try_current_cpu_id()
-            .unwrap_or_else(|| crate::smp::cpu_index())
+        crate::cpu::try_current_id()
+            .unwrap_or_else(|| crate::cpu::current_id())
             .min(MAX_CPUS.saturating_sub(1))
     }
 

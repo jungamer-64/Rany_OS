@@ -112,7 +112,7 @@ static PER_CPU_BUFFER_CACHE_4K: [PerCpuBufferCache4K; MAX_CPUS] = {
 fn current_cpu_for_cache() -> usize {
     #[cfg(not(any(test, feature = "std")))]
     {
-        crate::smp::current_cpu() as usize % MAX_CPUS
+        crate::cpu::current_id() % MAX_CPUS
     }
     #[cfg(any(test, feature = "std"))]
     {
@@ -745,9 +745,18 @@ pub fn stop_worker() {
     }
 }
 
-#[cfg(all(test, not(feature = "qemu-test-export")))]
+#[cfg(test)]
 pub fn set_test_enqueue_override(value: Option<SwapError>) {
-    worker::set_test_enqueue_override(value);
+    #[cfg(feature = "qemu-test-export")]
+    {
+        worker::qemu_test_set_enqueue_override(value);
+        return;
+    }
+
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        worker::set_test_enqueue_override(value);
+    }
 }
 
 #[cfg(feature = "qemu-test-export")]

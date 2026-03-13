@@ -62,9 +62,9 @@ pub use per_core_executor::spawn_on_cpu_for_test;
 #[allow(unused_imports)]
 pub use per_core_executor::{
     ExecutorManager, ExecutorStats, GlobalQueueStats, PerCoreExecutor, PolledTaskContext, Priority,
-    WakeQueueStats, current_executor_phase, current_polled_task_context, executor_active_cpu_count,
-    executor_manager, global_queue_stats, init_executors, run_forever, spawn, spawn_task,
-    spawn_with_priority, wake_queue_stats,
+    WakeQueueStats, current_executor_phase, current_polled_task_context, executor_manager,
+    executor_slot_count, global_queue_stats, init_executors, provision_executors, run_forever,
+    spawn, spawn_task, spawn_with_priority, wake_queue_stats,
 };
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub use preemption::PerCpuPreemptionSnapshot;

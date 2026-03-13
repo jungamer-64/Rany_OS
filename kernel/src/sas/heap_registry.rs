@@ -132,7 +132,7 @@ impl HeapRegistry {
         // `smp` module may not be available; use a small default CPU
         // count to make shard-sizing deterministic in tests.
         #[cfg(not(any(test, feature = "bench")))]
-        let cpus = crate::smp::cpu_count() as usize;
+        let cpus = crate::cpu::count() as usize;
 
         #[cfg(any(test, feature = "bench"))]
         let cpus = 4usize;

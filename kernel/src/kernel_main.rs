@@ -590,7 +590,7 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
     // Configure ACPI driver with HHDM offset for physical-to-virtual translation
     io::acpi::set_hhdm_offset(context.phys_mem_offset);
     init_acpi_and_iommu(context.boot_info);
-    match crate::smp::init_smp(context.boot_info) {
+    match crate::cpu::initialize(context.boot_info) {
         Ok(report) => {
             info!(
                 target: "init",
@@ -789,7 +789,7 @@ fn phase_core_services_and_drivers(context: &mut KernelBootContext) {
     loader::init_kernel_cell();
     register_kernel_symbols();
     loader::live_update::init();
-    loader::live_update::set_active_cores(crate::per_cpu::active_cpu_count() as u64);
+    loader::live_update::set_active_cores(crate::cpu::count() as u64);
     crate::driver_domain::init();
     info!(target: "init", "Cell loader/live update/DriverDomain initialized");
 
@@ -912,7 +912,7 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
         ),
     }
 
-    let cpu_count = crate::smp::cpu_count() as usize;
+    let cpu_count = crate::cpu::count() as usize;
     let target_cpu = if cpu_count > 2 {
         cpu_count - 1
     } else {
@@ -1010,7 +1010,7 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
         }
         RuntimeHandoffMilestone::StartExecutorRun => {
             let apic_timer_runtime = crate::interrupts::transition_to_runtime_local_timers();
-            crate::smp::runtime_handoff::runtime_handoff_coordinator().release_runtime_workers();
+            crate::cpu::release_workers();
             if apic_timer_runtime {
                 info!(target: "run", "Runtime handoff switched to per-core APIC timers");
             }
@@ -1031,6 +1031,7 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     // =========================================================================
 
     // メインループ開始（戻ってこない）
+    crate::cpu::set_stage(0, crate::cpu::CpuStage::ExecutorRunning);
     task::run_forever(0);
 }
 

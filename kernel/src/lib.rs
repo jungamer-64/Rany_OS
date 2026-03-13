@@ -380,6 +380,8 @@ pub mod mm;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod console;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod cpu;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod crypto;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod domain;
@@ -422,7 +424,7 @@ pub mod security;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod service_impl;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-pub mod smp;
+mod smp;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod sync;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
@@ -1534,6 +1536,165 @@ pub mod ipc {
     ),
     feature = "bench"
 ))]
+pub mod smp {
+    pub fn current_cpu() -> u32 {
+        0
+    }
+    pub fn cpu_count() -> usize {
+        1
+    }
+    pub fn cpu_index() -> usize {
+        0
+    }
+    pub fn try_current_cpu_id() -> Option<u32> {
+        Some(0)
+    }
+    pub fn apic_id_for_cpu(cpu_id: usize) -> Option<u32> {
+        Some(cpu_id as u32)
+    }
+    pub fn cpu_for_apic_id(apic_id: u32) -> Option<usize> {
+        Some(apic_id as usize)
+    }
+    pub fn runtime_workers_released() -> bool {
+        false
+    }
+    pub fn release_runtime_workers() {}
+    pub fn wait_for_runtime_workers() {}
+    pub fn register_cpu_apic_mapping(_cpu_id: usize, _apic_id: u32) {}
+    pub fn reset_cpu_routing_for_tests() {}
+    pub fn reset_runtime_workers_for_tests() {}
+}
+
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
+pub mod cpu {
+    pub use crate::smp::{apic_id_for_cpu as apic_id, cpu_for_apic_id as cpu_for_apic};
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct CpuBootReport {
+        pub detected: u32,
+        pub started: u32,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CpuStage {
+        Detected,
+        BootPrepared,
+        Launching,
+        PerCpuReady,
+        Parked,
+        Released,
+        LazyTlbExited,
+        ExecutorRunning,
+        Failed,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CpuSnapshot {
+        pub detected_cpu_count: usize,
+        pub bootable_cpu_count: usize,
+        pub online_cpu_count: usize,
+        pub online_cpu_mask: u64,
+        pub runtime_workers_released: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum IpiKind {
+        ExecutorWake,
+        TlbFlush,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct CpuRecord {
+        pub logical_cpu_id: usize,
+        pub apic_id: u32,
+        pub is_bsp: bool,
+        pub numa_node: Option<usize>,
+        pub boot_slot: Option<usize>,
+        pub bootable: bool,
+    }
+
+    pub fn initialize(_boot_info: &boot_proto::ExoBootInfo) -> Result<CpuBootReport, &'static str> {
+        Ok(CpuBootReport::default())
+    }
+
+    pub fn count() -> usize {
+        1
+    }
+
+    pub fn detected_count() -> usize {
+        1
+    }
+
+    pub fn bootable_count() -> usize {
+        1
+    }
+
+    pub fn current_id() -> usize {
+        0
+    }
+
+    pub fn try_current_id() -> Option<usize> {
+        Some(0)
+    }
+
+    pub fn active_ids() -> alloc::vec::Vec<usize> {
+        alloc::vec![0]
+    }
+
+    pub fn snapshot() -> CpuSnapshot {
+        CpuSnapshot {
+            detected_cpu_count: 1,
+            bootable_cpu_count: 1,
+            online_cpu_count: 1,
+            online_cpu_mask: 1,
+            runtime_workers_released: false,
+        }
+    }
+
+    pub fn stage(_cpu_id: usize) -> Option<CpuStage> {
+        Some(CpuStage::PerCpuReady)
+    }
+
+    pub fn stage_name(_cpu_id: usize) -> Option<&'static str> {
+        Some("per_cpu_ready")
+    }
+
+    pub fn numa_node(_cpu_id: usize) -> Option<usize> {
+        Some(0)
+    }
+
+    pub fn workers_released() -> bool {
+        false
+    }
+
+    pub fn release_workers() {}
+
+    pub fn send_ipi(_cpu_id: usize, _kind: IpiKind) {}
+
+    pub fn broadcast_ipi(_kind: IpiKind) {}
+
+    pub fn send_eoi_current_cpu() {}
+
+    pub fn current_apic_id() -> u32 {
+        0
+    }
+}
+
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
 pub mod task {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
     pub struct TaskId(u64);
@@ -1826,36 +1987,6 @@ pub mod task {
         pub fn request_yield() {}
         pub fn decrement_time_slice() {}
         pub fn notify_task_started(_tick: u64) {}
-    }
-
-    // Basic smp shim for test builds
-    pub mod smp {
-        pub fn current_cpu() -> u32 {
-            0
-        }
-        pub fn cpu_count() -> usize {
-            1
-        }
-        pub fn cpu_index() -> usize {
-            0
-        }
-        pub fn try_current_cpu_id() -> Option<u32> {
-            Some(0)
-        }
-        pub fn apic_id_for_cpu(cpu_id: usize) -> Option<u32> {
-            Some(cpu_id as u32)
-        }
-        pub fn cpu_for_apic_id(apic_id: u32) -> Option<usize> {
-            Some(apic_id as usize)
-        }
-        pub fn runtime_workers_released() -> bool {
-            false
-        }
-        pub fn release_runtime_workers() {}
-        pub fn wait_for_runtime_workers() {}
-        pub fn register_cpu_apic_mapping(_cpu_id: usize, _apic_id: u32) {}
-        pub fn reset_cpu_routing_for_tests() {}
-        pub fn reset_runtime_workers_for_tests() {}
     }
 
     // Minimal memory helpers for tests
@@ -2349,25 +2480,6 @@ pub use crate::task::domain_system;
     feature = "bench"
 ))]
 pub use crate::task::interrupts;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-// pub use crate::task::memory as memory;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub use crate::task::smp;
-
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod domain_system;
 

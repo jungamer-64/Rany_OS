@@ -75,8 +75,7 @@ fn smp_idt_mark(marker: u8) {
 
 #[inline]
 fn record_interrupt_vector(vector: u8) {
-    let cpu_id =
-        crate::per_cpu::try_current_cpu_id().unwrap_or_else(|| crate::smp::current_cpu() as usize);
+    let cpu_id = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
     if cpu_id < crate::per_cpu::MAX_CPUS {
         LAST_INTERRUPT_VECTOR[cpu_id].store(vector, Ordering::Relaxed);
     }
@@ -84,8 +83,7 @@ fn record_interrupt_vector(vector: u8) {
 
 #[inline]
 fn record_interrupt_frame(vector: u8, stack_frame: &InterruptStackFrame) {
-    let cpu_id =
-        crate::per_cpu::try_current_cpu_id().unwrap_or_else(|| crate::smp::current_cpu() as usize);
+    let cpu_id = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
     if cpu_id < crate::per_cpu::MAX_CPUS {
         LAST_INTERRUPT_VECTOR[cpu_id].store(vector, Ordering::Relaxed);
         LAST_INTERRUPT_RIP[cpu_id]
@@ -387,7 +385,7 @@ pub fn init() {
 }
 
 pub fn load_for_current_cpu() -> Result<(), &'static str> {
-    let cpu_id = crate::per_cpu::try_current_cpu_id().unwrap_or(0);
+    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
     load_for_cpu(cpu_id)
 }
 
@@ -408,8 +406,7 @@ pub fn enable_interrupts() {
 
     // Serial TX kick is global housekeeping and only needs to run on the BSP.
     // Avoid touching COM1 TX interrupt state from AP worker bring-up paths.
-    let current_cpu =
-        crate::per_cpu::try_current_cpu_id().unwrap_or_else(|| crate::smp::current_cpu() as usize);
+    let current_cpu = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
     if current_cpu == 0 {
         crate::io::log::start_serial_tx();
     }
@@ -581,7 +578,7 @@ fn read_pic_irq_masked(irq: u8) -> bool {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub fn runtime_timer_snapshot() -> RuntimeTimerSnapshot {
-    let cpu_count = (crate::smp::cpu_count() as usize).clamp(1, crate::per_cpu::MAX_CPUS);
+    let cpu_count = (crate::cpu::count() as usize).clamp(1, crate::per_cpu::MAX_CPUS);
     let mut armed = [false; crate::per_cpu::MAX_CPUS];
     let mut cpu_id = 0usize;
     while cpu_id < cpu_count {
@@ -621,8 +618,8 @@ static LOCAL_RUNTIME_TIMER_ARMED: [AtomicBool; crate::per_cpu::MAX_CPUS] = {
 
 #[inline]
 fn timer_cpu_index() -> usize {
-    crate::per_cpu::try_current_cpu_id()
-        .unwrap_or_else(|| crate::smp::cpu_index())
+    crate::cpu::try_current_id()
+        .unwrap_or_else(|| crate::cpu::current_id())
         .min(crate::per_cpu::MAX_CPUS.saturating_sub(1))
 }
 

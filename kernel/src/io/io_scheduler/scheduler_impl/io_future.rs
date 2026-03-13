@@ -87,7 +87,7 @@ impl PerCpuDeferredCompletionQueues {
     }
 
     pub(super) fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
-        let cpu_idx = crate::smp::cpu_index();
+        let cpu_idx = crate::cpu::current_id();
         if cpu_idx >= MAX_CPUS {
             return false;
         }
@@ -134,7 +134,7 @@ pub fn process_deferred_completions() -> usize {
 }
 
 pub fn process_deferred_completions_local() -> usize {
-    let cpu_idx = crate::smp::cpu_index();
+    let cpu_idx = crate::cpu::current_id();
     let coordinator = hybrid_coordinator();
     let scheduler = coordinator.scheduler.clone();
     let bridge = coordinator.interrupt_bridge();
@@ -464,7 +464,7 @@ impl HybridIoCoordinator {
         F: FnOnce(),
     {
         process_interrupts();
-        let cpu_idx = crate::smp::cpu_index();
+        let cpu_idx = crate::cpu::current_id();
         while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop_from_cpu(cpu_idx) {
             self.scheduler.complete_request(id, result);
             self.interrupt_bridge.complete_pending(device, id);
@@ -492,7 +492,7 @@ impl HybridIoCoordinator {
                 continue;
             }
             let ops = self.scheduler.get_device_ops(request.device);
-            let cpu_idx = crate::smp::cpu_index();
+            let cpu_idx = crate::cpu::current_id();
             let result = match ops {
                 Some(ops) => ops.submit(&request, cpu_idx),
                 None => Err(IoError::NotSupported),

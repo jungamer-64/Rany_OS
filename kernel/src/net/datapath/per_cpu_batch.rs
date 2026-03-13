@@ -303,5 +303,5 @@ pub fn per_cpu_batch() -> Option<&'static PerCpuBatchProcessor> {
 /// 現在のCPU IDを取得
 #[inline]
 fn current_cpu_id() -> usize {
-    crate::per_cpu::try_current_cpu_id().unwrap_or(0)
+    crate::cpu::try_current_id().unwrap_or(0)
 }

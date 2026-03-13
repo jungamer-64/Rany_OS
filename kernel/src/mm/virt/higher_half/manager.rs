@@ -669,7 +669,7 @@ impl PageTableManager {
     /// 新しいページテーブル用のフレームを割り当て
     pub(super) fn alloc_page_table(&self) -> Result<PhysAddr, MapError> {
         // まず現在のCPUのローカルNUMAノードから割り当てを試みる（優先）
-        let phys = if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        let phys = if let Some(cpu_id) = crate::cpu::try_current_id() {
             if let Some(frame) = crate::mm::phys::frame_allocator::alloc_frame_local(cpu_id as u8) {
                 Some(PhysAddr::new(frame.start_address().as_u64()))
             } else {

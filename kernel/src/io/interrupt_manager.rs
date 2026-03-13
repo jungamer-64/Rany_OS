@@ -136,7 +136,7 @@ pub struct InterruptConfig {
     /// ベクタ番号
     pub vector: u8,
     /// 配送先CPUのAPIC ID（Noneの場合はブロードキャスト）
-    pub target_apic_id: Option<u8>,
+    pub target_apic_id: Option<u32>,
     /// 配送モード
     pub delivery_mode: DeliveryMode,
     /// トリガーモード
@@ -372,7 +372,7 @@ impl InterruptManager {
         &self,
         device_bdf: u32,
         handler_name: String,
-        target_apic_id: Option<u8>,
+        target_apic_id: Option<u32>,
     ) -> Result<VectorAllocation, InterruptError> {
         // MSI範囲から空きベクタを探す
         for vector in MSI_VECTORS_START..=MSI_VECTORS_END {
@@ -392,7 +392,7 @@ impl InterruptManager {
                 let bus = ((device_bdf >> 8) & 0xFF) as u8;
                 let dev = ((device_bdf >> 3) & 0x1F) as u8;
                 let func = (device_bdf & 0x7) as u8;
-                let dest_id = target_apic_id.unwrap_or(0) as u32;
+                let dest_id = target_apic_id.unwrap_or(0);
 
                 if let Ok(handle) =
                     crate::io::iommu::api::map_interrupt(0, bus, dev, func, vector, dest_id, true)
@@ -422,7 +422,7 @@ impl InterruptManager {
         device_bdf: u32,
         count: u16,
         handler_name: String,
-        target_apic_id: Option<u8>,
+        target_apic_id: Option<u32>,
     ) -> Result<Vec<VectorAllocation>, InterruptError> {
         let mut allocations = Vec::with_capacity(count as usize);
 
@@ -607,7 +607,7 @@ pub fn interrupt_manager() -> &'static InterruptManager {
 pub fn allocate_msi(
     device_bdf: u32,
     handler_name: &str,
-    target_apic_id: Option<u8>,
+    target_apic_id: Option<u32>,
 ) -> Result<VectorAllocation, InterruptError> {
     INTERRUPT_MANAGER.allocate_msi_vector(
         device_bdf,
@@ -621,7 +621,7 @@ pub fn allocate_msix(
     device_bdf: u32,
     count: u16,
     handler_name: &str,
-    target_apic_id: Option<u8>,
+    target_apic_id: Option<u32>,
 ) -> Result<Vec<VectorAllocation>, InterruptError> {
     INTERRUPT_MANAGER.allocate_msix_vectors(
         device_bdf,
@@ -685,12 +685,12 @@ pub fn configure_ioapic_interrupt(
 /// 割り込みハンドラの最後で呼び出してください
 #[inline]
 pub fn send_eoi() {
-    crate::smp::bootstrap::send_eoi_current_cpu();
+    crate::cpu::send_eoi_current_cpu();
 }
 
 /// 特定のCPUにIPIを送信
-pub fn send_ipi(target_apic_id: u8, vector: u8) {
-    crate::smp::bootstrap::send_ipi(target_apic_id as u32, vector);
+pub fn send_ipi(target_apic_id: u32, vector: u8) {
+    crate::smp::bootstrap::send_ipi(target_apic_id, vector);
 }
 
 /// 全CPUにブロードキャストIPIを送信
@@ -699,6 +699,6 @@ pub fn broadcast_ipi(vector: u8) {
 }
 
 /// 現在のCPUのAPIC IDを取得
-pub fn current_apic_id() -> u8 {
-    crate::io::apic::local_apic().id()
+pub fn current_apic_id() -> u32 {
+    crate::cpu::current_apic_id()
 }

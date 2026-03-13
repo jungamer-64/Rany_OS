@@ -23,7 +23,7 @@ mod fs_tests {
 
     impl Drop for CurrentTaskGuard {
         fn drop(&mut self) {
-            let cpu_id = crate::smp::current_cpu() as usize;
+            let cpu_id = crate::cpu::current_id();
             let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
             unsafe {
                 set_current_task(cpu_id, prev_ptr);
@@ -33,7 +33,7 @@ mod fs_tests {
     }
 
     pub(super) fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
-        let cpu_id = crate::smp::current_cpu() as usize;
+        let cpu_id = crate::cpu::current_id();
         let prev = get_current_task(cpu_id);
         let mut tcb =
             TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
