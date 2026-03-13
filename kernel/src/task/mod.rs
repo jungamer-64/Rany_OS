@@ -1,8 +1,8 @@
 // ============================================================================
-// src/task/mod.rs - Task Definition and Executor
+// src/task/mod.rs - Task Definition and Per-Core Executor
 // ============================================================================
 //!
-//! # Executor / Work-Stealing モジュール構成
+//! # Task / Per-Core Executor モジュール構成
 //!
 //! タスク実行に関連する複数のモジュールが存在する。それぞれの責務は以下の通り：
 //!
@@ -15,21 +15,12 @@
 //! `TimeoutFuture`, `with_timeout()`, `block_on()`, `spawn_with_timeout()`。
 //! 設計書 4.4 対応のタイマーベースyield。
 //!
-//! ## `executor` (プライマリExecutor)
-//! カーネル起動時に使用されるシンプルなExecutor。ロックフリーMPMCキューベースで、
-//! `Executor::new()` → `executor.spawn()` → `executor.run()` の流れで使用。
-//! `Executor::spawn_global()` でISRからのタスク投入も可能。
-//! **kmain_innerで使用される唯一のExecutorループ。**
-//!
 //! ## `per_core_executor` (Per-Core Executor)
-//! コアごとに独立したExecutorインスタンスを持つ、スケーラブルな実験アーキテクチャ。
-//! `ExecutorManager` が全コアのExecutorを管理し、`spawn()` APIで自動コア選択。
-//! `PoisonLock<VecDeque<T>>` ベースのWorkStealingQueue内包。
-//! **通常ブートのフェーズ2ランタイムでは使用せず、フェーズ4以降の拡張用に維持する。**
-//!
-//! ## `work_stealing` (Global Injector Queue)
-//! グローバルなタスク注入キュー。`inject_global()` / `steal_from_global()` 。
-//! ※Per-Core用キューは `work_stealing_advanced` に移行済み。
+//! 通常 boot/runtime で使う正規の実行基盤。
+//! `ExecutorManager` が全コアの executor を管理し、BSP/AP とも
+//! `run_forever(cpu_id)` で同じ run loop に入る。
+//! タスク本体は canonical な `Task` / `TaskId` を共有し、
+//! per-core 側では内部 wrapper で優先度や統計を管理する。
 //!
 //! ## `work_stealing_advanced` (NUMA対応高性能スケジューラ)
 //! NUMA対応の3段階スティーリング、`WorkStealingDeque`、`PerCoreWorker`、
@@ -37,15 +28,13 @@
 //!
 #![allow(dead_code)]
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::task::{Context, Poll, Waker};
 
 pub mod context;
 pub mod environ;
-mod executor;
 pub mod fuel;
 pub mod interrupt_waker;
 pub mod io;
@@ -53,10 +42,9 @@ pub mod per_core_executor;
 pub mod preemption;
 pub mod timeout;
 pub mod timer;
-pub mod waker;
-mod work_stealing;
+mod waker;
 
-// Phase 4: Advanced Work-Stealing
+// NUMA-aware work-stealing helpers and topology primitives.
 pub mod work_stealing_advanced;
 
 #[allow(unused_imports)]
@@ -68,23 +56,20 @@ pub use environ::{
     EnvError, EnvKey, EnvValue, Environment, get_home, get_path, get_pwd, get_term, get_user,
     kernel_env, set_pwd,
 };
-pub(crate) use executor::run_boxed_cold_start;
-pub use executor::{
-    Executor, active_cpu_count as executor_active_cpu_count, current_executor_phase,
-    current_polled_task_context, register_cpu,
-    set_active_cpu_count as set_executor_active_cpu_count,
-};
 #[allow(unused_imports)]
 pub use interrupt_waker::{
     AtomicWaker, InterruptFuture, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,
     handle_timer_interrupt_waker, interrupt_waker_registry, register_interrupt_waker,
     wait_for_interrupt, wake_from_interrupt,
 };
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub use per_core_executor::TestExecutor;
 #[allow(unused_imports)]
 pub use per_core_executor::{
-    ExecutorManager, ExecutorStats, PerCoreExecutor, Priority, Task as CoreTask,
-    TaskId as CoreTaskId, TaskMetadata, TaskState as CoreTaskState, executor_manager,
-    init_executors, spawn, spawn_with_priority,
+    ExecutorManager, ExecutorStats, GlobalQueueStats, PerCoreExecutor, PolledTaskContext, Priority,
+    WakeQueueStats, current_executor_phase, current_polled_task_context, executor_active_cpu_count,
+    executor_manager, global_queue_stats, init_executors, run_forever, spawn, spawn_task,
+    spawn_with_priority, wake_queue_stats,
 };
 #[allow(unused_imports)]
 pub use preemption::{
@@ -105,16 +90,6 @@ pub use preemption::{
     yield_point,
 };
 pub use timer::{current_tick, sleep_ms};
-#[allow(unused_imports)]
-pub use waker::{
-    WakeQueueStats, pop_woken_task, wake_queue_capacity, wake_queue_is_empty, wake_queue_len,
-    wake_queue_stats,
-};
-#[allow(unused_imports)]
-pub use work_stealing::{
-    GlobalQueueStats, global_queue_capacity, global_queue_is_empty, global_queue_len,
-    global_queue_stats, inject_global, steal_from_global,
-};
 
 // Phase 4: Advanced Work-Stealing re-exports
 #[allow(unused_imports)]
@@ -176,68 +151,14 @@ impl Task {
 }
 
 /// Waker実装用の構造体
-struct TaskWaker {
-    task_id: TaskId,
-}
-
-impl TaskWaker {
-    fn wake_task(&self) {
-        // Wake queueにタスクIDを追加
-        executor::wake_task(self.task_id);
-    }
-}
-
-/// RawWaker用のVTable
-/// これが最も複雑な部分 - 手動でWakerのVTableを構築
 mod raw;
-
-static WAKER_VTABLE: RawWakerVTable =
-    RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
-
-unsafe fn waker_clone(data: *const ()) -> RawWaker {
-    // Arc::cloneと同等の処理
-    // SAFETY: dataはArc::into_rawで変換されたポインタ
-    unsafe {
-        let arc = raw::arc_from_raw(data as *const TaskWaker);
-        let cloned = arc.clone();
-        core::mem::forget(arc); // from_rawで作ったArcはforgetする
-        RawWaker::new(Arc::into_raw(cloned) as *const (), &WAKER_VTABLE)
-    }
-}
-
-unsafe fn waker_wake(data: *const ()) {
-    // 所有権を取得してwake
-    // SAFETY: dataはArc::into_rawで変換されたポインタ
-    unsafe {
-        let arc = raw::arc_from_raw(data as *const TaskWaker);
-        arc.wake_task();
-        // Arcは自動的にdropされる
-    }
-}
-
-unsafe fn waker_wake_by_ref(data: *const ()) {
-    // 参照としてwake
-    // SAFETY: dataはArc::into_rawで変換されたポインタ
-    unsafe {
-        let arc = raw::arc_from_raw(data as *const TaskWaker);
-        arc.wake_task();
-        core::mem::forget(arc); // from_rawで作ったArcはforgetする
-    }
-}
-
-unsafe fn waker_drop(data: *const ()) {
-    // Arc をdrop
-    // SAFETY: dataはArc::into_rawで変換されたポインタ
-    unsafe {
-        drop(raw::arc_from_raw(data as *const TaskWaker));
-    }
-}
 
 /// Wakerを作成する公開API
 pub fn create_waker(task_id: TaskId) -> Waker {
-    let task_waker = Arc::new(TaskWaker { task_id });
-    let raw_waker = RawWaker::new(Arc::into_raw(task_waker) as *const (), &WAKER_VTABLE);
-    unsafe { Waker::from_raw(raw_waker) }
+    let _ = task_id;
+    // Legacy compatibility wrapper for modules that still ask the task layer to
+    // manufacture a generic TaskId-based waker.
+    crate::task::waker::create_waker(task_id)
 }
 
 /// Spawn a detached task onto the primary phase-2 executor path.
@@ -255,7 +176,5 @@ pub fn spawn_detached_in_domain(
 ) -> TaskId {
     let mut task = Task::new(future);
     task.domain_id = domain_id;
-    let task_id = task.id;
-    Executor::spawn_global(task);
-    task_id
+    spawn_task(task)
 }

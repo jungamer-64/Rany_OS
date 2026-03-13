@@ -330,7 +330,7 @@ fn initialize_mlx5_runtime(state: &Arc<Mlx5BridgeState>) -> Result<(), &'static 
     }
 
     if !state.poll_task_started.swap(true, Ordering::AcqRel) {
-        crate::task::Executor::spawn_global(crate::task::Task::new(mlx5_poll_task(state.index)));
+        crate::task::spawn_task(crate::task::Task::new(mlx5_poll_task(state.index)));
     }
 
     Ok(())

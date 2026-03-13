@@ -15,17 +15,17 @@ static BYTES_TX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::
 /// 同時接続数の上限
 const MAX_CONCURRENT_CONNECTIONS: u32 = 16;
 
-pub fn start_once(executor: &mut task::Executor) {
+pub fn start_once() {
     if HOST_HTTP_SERVICE_STARTED.swap(true, Ordering::AcqRel) {
         log::info!("[HOST-HTTP] service already started, skipping");
         return;
     }
 
     log::info!("[HOST-HTTP] scheduling host HTTP service on 0.0.0.0:80");
-    executor.spawn(Task::new(async {
+    task::spawn_task(Task::new(async {
         run_net_poller().await;
     }));
-    executor.spawn(Task::new(async {
+    task::spawn_task(Task::new(async {
         run_service().await;
     }));
 }
@@ -102,7 +102,7 @@ async fn run_service() {
                 );
 
                 // 【設計書準拠】各接続を独立タスクとしてspawn（並行処理）
-                crate::task::Executor::spawn_global(Task::new(async move {
+                crate::task::spawn_task(Task::new(async move {
                     ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
                     handle_client(client).await;
                     ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);

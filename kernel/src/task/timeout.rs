@@ -15,7 +15,7 @@
 //!
 //! ## 注意
 //! コアなタスク型定義 (`TaskId`, `Task`) は `task/mod.rs` に残ります。
-//! Executor は `task/executor.rs` が担当します。
+//! 実行基盤は `task/per_core_executor.rs` が担当します。
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -24,7 +24,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use super::{Executor, Task, TaskId, current_tick};
+use super::{Task, TaskId, current_tick, spawn_task};
 
 // ============================================================================
 // Timeout Support (設計書 4.4)
@@ -220,7 +220,5 @@ where
         }
     });
 
-    let task_id = task.id;
-    Executor::spawn_global(task);
-    task_id
+    spawn_task(task)
 }

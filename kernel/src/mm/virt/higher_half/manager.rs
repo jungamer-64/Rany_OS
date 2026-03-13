@@ -101,6 +101,19 @@ pub fn physical_memory_offset() -> u64 {
     }
 }
 
+/// カーネル専用の仮想アドレス範囲を予約
+pub fn allocate_kernel_virt(pages: usize) -> VirtAddr {
+    let guard = match HIGHER_HALF_MANAGER.lock() {
+        Ok(g) => g,
+        Err(_) => panic!("[MM] Higher Half manager poisoned (allocate_kernel_virt)"),
+    };
+
+    guard
+        .as_ref()
+        .expect("[MM] Higher Half manager not initialized (allocate_kernel_virt)")
+        .allocate_kernel_virt(pages)
+}
+
 /// 物理アドレスを仮想アドレスに変換
 pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
     let guard = match HIGHER_HALF_MANAGER.lock() {

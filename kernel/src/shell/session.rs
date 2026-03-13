@@ -162,11 +162,11 @@ impl<F: ShellFrontend> ShellSession<F> {
 }
 
 /// Spawn a console shell task
-pub fn spawn_console_shell(executor: &mut crate::task::Executor) {
+pub fn spawn_console_shell() {
     use crate::shell::frontend::ConsoleFrontend;
     use crate::task::Task;
 
-    executor.spawn(Task::new(async {
+    crate::task::spawn_task(Task::new(async {
         #[cfg(feature = "qemu-test-export")]
         crate::io::log::early_print("[SHELL] console shell task start\n");
         // Acquire the keyboard stream before yielding so background services
@@ -182,11 +182,11 @@ pub fn spawn_console_shell(executor: &mut crate::task::Executor) {
 }
 
 /// Spawn a serial shell task
-pub fn spawn_serial_shell(executor: &mut crate::task::Executor) {
+pub fn spawn_serial_shell() {
     use crate::shell::exoshell::frontend::serial::SerialFrontend;
     use crate::task::Task;
 
-    executor.spawn(Task::new(async {
+    crate::task::spawn_task(Task::new(async {
         #[cfg(feature = "qemu-test-export")]
         crate::io::log::early_print("[SHELL] serial shell task start\n");
         crate::task::yield_now().await;

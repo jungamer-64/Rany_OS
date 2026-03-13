@@ -78,7 +78,7 @@ pub(crate) mod kernel_impl {
         {
             WORKER_SHUTDOWN.store(false, core::sync::atomic::Ordering::Release);
             let task = Task::new(async move { worker_loop().await });
-            crate::task::Executor::spawn_global(task);
+            crate::task::spawn_task(task);
         }
     }
 

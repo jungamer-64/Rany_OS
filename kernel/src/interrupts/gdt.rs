@@ -119,7 +119,10 @@ impl GdtStateSlot {
     unsafe fn get_or_init(&self) -> &'static PerCpuGdtState {
         if !self.initialized.load(Ordering::Acquire) {
             let state_ptr = (*self.state.get()).as_mut_ptr();
-            state_ptr.write(PerCpuGdtState::uninit());
+            // Avoid constructing a ~48KiB temporary on the current CPU's boot
+            // stack. The slot lives in zeroed static storage already, so we can
+            // initialize the TSS/GDT metadata in place and keep the IST stacks
+            // resident in .bss.
             (*state_ptr).initialize();
             self.initialized.store(true, Ordering::Release);
         }
@@ -136,7 +139,14 @@ static PER_CPU_GDT_STATES: [GdtStateSlot; MAX_GDT_CPUS] = {
 
 #[inline]
 fn smp_gdt_mark(marker: u8) {
-    crate::io::log::debug_serial_mark(marker);
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0x3f8u16,
+            in("al") marker,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 /// セグメントセレクタ

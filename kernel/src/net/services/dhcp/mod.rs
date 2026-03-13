@@ -86,9 +86,9 @@ pub(crate) fn ensure_interface_runtime(
     };
 
     if !runtime.drive_started.swap(true, Ordering::AcqRel) {
-        crate::task::Executor::spawn_global(crate::task::Task::new(dhcp_v4_drive_task(
-            Arc::clone(&runtime),
-        )));
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(Arc::clone(
+            &runtime,
+        ))));
     }
 
     Ok(())
@@ -153,9 +153,9 @@ pub(crate) fn restart_interface_runtime(if_id: NetIfId) -> Result<(), &'static s
     runtime.suspended.store(false, Ordering::Release);
 
     if !runtime.drive_started.swap(true, Ordering::AcqRel) {
-        crate::task::Executor::spawn_global(crate::task::Task::new(dhcp_v4_drive_task(
-            Arc::clone(&runtime),
-        )));
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(Arc::clone(
+            &runtime,
+        ))));
     }
 
     runtime
@@ -206,7 +206,7 @@ fn ensure_v4_dispatcher_task() {
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        crate::task::Executor::spawn_global(crate::task::Task::new(dhcp_v4_dispatcher_task()));
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_dispatcher_task()));
     }
 }
 

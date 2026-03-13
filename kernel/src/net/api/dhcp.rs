@@ -134,7 +134,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
 
     if ipv6_enabled {
         // Spawn DHCPv6 client task only when IPv6 is configured for the active stack.
-        crate::task::Executor::spawn_global(crate::task::Task::new(async move {
+        crate::task::spawn_task(crate::task::Task::new(async move {
             let client_ref: Option<&'static dhcp::DhcpV6Client> = {
                 let guard = match dhcp::DHCPV6_CLIENT.lock() {
                     Ok(g) => g,
@@ -155,7 +155,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     }
 
     // Spawn mDNS service task
-    crate::task::Executor::spawn_global(crate::task::Task::new(async move {
+    crate::task::spawn_task(crate::task::Task::new(async move {
         let svc_ref: Option<&'static mut crate::net::services::mdns::MdnsService> = {
             let mut guard = match crate::net::services::mdns::service().lock() {
                 Ok(g) => g,
@@ -173,7 +173,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     }));
 
     // Spawn DNS client task
-    crate::task::Executor::spawn_global(crate::task::Task::new(async move {
+    crate::task::spawn_task(crate::task::Task::new(async move {
         let client_ref: Option<&'static crate::net::services::dns::DnsClient> = {
             let guard = match crate::net::services::dns::client().lock() {
                 Ok(g) => g,
@@ -642,7 +642,7 @@ mod tests {
             crate::net::l4::endpoint::event::reset_event_system_for_tests();
             let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
             let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-            let mut executor = crate::task::Executor::new();
+            let mut executor = crate::task::TestExecutor::new();
             let result_slot_clone = result_slot.clone();
             let completed_clone = completed.clone();
             executor.spawn(crate::task::Task::new(async move {

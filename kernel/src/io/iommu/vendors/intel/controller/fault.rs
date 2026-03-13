@@ -226,6 +226,9 @@ impl DeferredFaultQueue {
     /// Critical events get priority slot if normal queue is full.
     /// Try to push an event to the normal (non-critical) queue.
     /// Returns true if push succeeded, false if queue full or retry limit.
+    ///
+    /// Drop accounting is handled by the caller so each rejected event is
+    /// counted exactly once regardless of which path failed.
     fn try_push_normal_queue(&self, event: &RawFaultEvent) -> bool {
         const MAX_RETRIES: usize = 16;
 
@@ -234,7 +237,6 @@ impl DeferredFaultQueue {
                 return true;
             }
             if self.len() >= self.capacity() {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
             core::hint::spin_loop();
@@ -243,14 +245,11 @@ impl DeferredFaultQueue {
     }
 
     fn push(&self, event: RawFaultEvent) {
-        // For critical events, try reserved slot first if queue looks full
+        // Critical faults should always get a chance to bypass the normal
+        // queue so we preserve at least one high-signal security event.
         if Self::is_critical(&event) {
-            let queue_len = self.len();
-
-            if queue_len > (DEFERRED_QUEUE_SIZE * 3 / 4) {
-                if self.critical_slot.try_push(event) {
-                    return;
-                }
+            if self.critical_slot.try_push(event) {
+                return;
             }
         }
 

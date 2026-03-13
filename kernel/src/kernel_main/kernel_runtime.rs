@@ -264,18 +264,15 @@ async fn network_bootstrap_task() {
     );
 }
 
-fn spawn_shell_tasks(
-    executor: &mut task::Executor,
-    shell_mode: crate::shell::session::ShellLaunchMode,
-) {
+fn spawn_shell_tasks(shell_mode: crate::shell::session::ShellLaunchMode) {
     use crate::shell::session::{ShellLaunchMode, spawn_console_shell, spawn_serial_shell};
 
     match shell_mode {
-        ShellLaunchMode::Console => spawn_console_shell(executor),
-        ShellLaunchMode::Serial => spawn_serial_shell(executor),
+        ShellLaunchMode::Console => spawn_console_shell(),
+        ShellLaunchMode::Serial => spawn_serial_shell(),
         ShellLaunchMode::Both => {
-            spawn_serial_shell(executor);
-            spawn_console_shell(executor);
+            spawn_serial_shell();
+            spawn_console_shell();
         }
         ShellLaunchMode::Off => {
             info!(target: "init", "Shell launch disabled by boot policy (shell=off)");
@@ -283,39 +280,39 @@ fn spawn_shell_tasks(
     }
 }
 
-pub(crate) fn spawn_core_runtime_tasks(executor: &mut task::Executor) {
+pub(crate) fn spawn_core_runtime_tasks() {
     use task::Task;
 
     // === ネットワークブートストラップ（完全非同期） ===
     // VirtIO-Netドライバ登録 → DHCP → ping をExecutor上で非同期実行
-    executor.spawn(Task::new(network_bootstrap_task()));
+    task::spawn_task(Task::new(network_bootstrap_task()));
     info!(target: "init", "Network bootstrap task spawned (async)");
 
     // IOMMU フォルトハンドラタスク: ISRがキューに積んだフォルトイベントを定期的にdrainする
-    executor.spawn(Task::new(
+    task::spawn_task(Task::new(
         crate::io::iommu::vendors::intel::controller::fault::fault_handler_task(),
     ));
     info!(target: "init", "IOMMU fault handler task spawned");
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
-    crate::net::services::http::server::start_once(executor);
+    crate::net::services::http::server::start_once();
 
     // [PR-COMPLIANCE] ICMP Responder activation log
     info!(target: "init", "ICMP responder server active");
 
     // Initialize network event handler and spawn the background task for async networking
     crate::net::l4::endpoint::handler::init_network_event_handler();
-    executor.spawn(crate::task::Task::new(
+    task::spawn_task(crate::task::Task::new(
         crate::net::l4::endpoint::tcp_rx::network_event_task(),
     ));
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)
-    executor.spawn(crate::task::Task::new(
+    task::spawn_task(crate::task::Task::new(
         crate::net::runtime::stack::timeout_task(),
     ));
 }
 
-pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
+pub(crate) fn spawn_demo_runtime_tasks() {
     use ipc::RRef;
     use task::Task;
 
@@ -333,7 +330,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
     domain_system::start_domain(domain1).ok();
 
     // タスク1: ドメイン1のメインタスク
-    executor.spawn(Task::new(async move {
+    task::spawn_task(Task::new(async move {
         info!(target: "task1", "User application domain started (ID: {})", domain1.as_u64());
 
         // シミュレーション: データ処理
@@ -353,7 +350,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
         .expect("create_domain failed");
     domain_system::start_domain(domain2).ok();
 
-    executor.spawn(Task::new(async move {
+    task::spawn_task(Task::new(async move {
         info!(target: "task2", "IPC demonstration started");
         // RRefを使用したゼロコピーデータ転送
         let data = RRef::new(
@@ -371,7 +368,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
     }));
 
     // タスク3: プリエンプション統計デモ
-    executor.spawn(Task::new(async {
+    task::spawn_task(Task::new(async {
         info!(target: "task3", "Preemption stats demo started");
 
         for i in 0..3 {
@@ -389,7 +386,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
     }));
 
     // タスク4: メモリ統計モニタリング
-    executor.spawn(Task::new(async {
+    task::spawn_task(Task::new(async {
         info!(target: "task4", "Memory monitor started");
 
         for _ in 0..3 {
@@ -410,7 +407,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
     }));
 
     // タスク5: Wakerのテスト
-    executor.spawn(Task::new(async {
+    task::spawn_task(Task::new(async {
         info!(target: "task5", "Waker test started");
 
         use core::future::poll_fn;
@@ -446,7 +443,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
     // }));
 
     // タスク (ネットワーク ping テスト): ゲートウェイへの ICMP を試して結果をログ出力
-    executor.spawn(Task::new(async {
+    task::spawn_task(Task::new(async {
         info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
 
         // DHCP/スタックからゲートウェイを取得
@@ -495,7 +492,7 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
     // タスク8: 非同期シリアルシェル（IRQ4駆動）
     // Serial Shell spawned above
     /*
-    executor.spawn(Task::new(async {
+    task::spawn_task(Task::new(async {
         info!(target: "task8", "Async serial shell task starting...");
         // シェルをすぐに開始（デバッグ用）
         shell::async_shell::run_async_shell().await;
@@ -521,10 +518,10 @@ pub(crate) fn spawn_demo_runtime_tasks(executor: &mut task::Executor) {
 }
 
 /// カーネルタスクをスポーン
-pub(crate) fn spawn_kernel_tasks(executor: &mut task::Executor, context: &KernelBootContext) {
-    spawn_shell_tasks(executor, context.shell_mode);
-    spawn_core_runtime_tasks(executor);
-    spawn_demo_runtime_tasks(executor);
+pub(crate) fn spawn_kernel_tasks(context: &KernelBootContext) {
+    spawn_shell_tasks(context.shell_mode);
+    spawn_core_runtime_tasks();
+    spawn_demo_runtime_tasks();
 }
 
 /// システム統計を表示

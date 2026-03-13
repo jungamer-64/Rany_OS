@@ -382,7 +382,7 @@ mod tests {
             crate::net::l4::endpoint::event::reset_event_system_for_tests();
             let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
             let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-            let mut executor = crate::task::Executor::new();
+            let mut executor = crate::task::TestExecutor::new();
             let result_slot_clone = result_slot.clone();
             let completed_clone = completed.clone();
             executor.spawn(crate::task::Task::new(async move {

@@ -102,9 +102,9 @@ pub async fn run_async_shell() {
 }
 
 /// Start the async shell task
-pub fn spawn_async_shell(executor: &mut crate::task::Executor) {
+pub fn spawn_async_shell() {
     use crate::task::Task;
-    executor.spawn(Task::new(run_async_shell()));
+    crate::task::spawn_task(Task::new(run_async_shell()));
     crate::console::write(&format!("[SHELL] ExoShell task spawned"));
     crate::console::write("\n");
 }

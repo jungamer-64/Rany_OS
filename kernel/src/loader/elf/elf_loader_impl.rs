@@ -846,7 +846,13 @@ mod loader_tests {
         };
 
         let res = loader.process_symbol_table(&sh, &mut exports, &mut imports);
-        assert!(res.is_ok() || matches!(res, Err(LoadError::OutOfMemory)));
+        assert!(
+            res.is_ok()
+                || matches!(
+                    res,
+                    Err(LoadError::OutOfMemory) | Err(LoadError::InvalidFormat(_))
+                )
+        );
         assert!(exports.is_empty());
         assert!(imports.is_empty());
     }

@@ -1,105 +1,138 @@
 // ============================================================================
-// src/task/per_core_executor.rs - Per-Core Executor
-// 設計書 4.3: Per-Core Executorとワークスティーリング
-//
-// 各CPUコアに専用のエグゼキュータを持ち、ロック競合なしでタスクを実行。
-// コア間の負荷分散はWork Stealingで行う。
-//
-// ## アーキテクチャ上の位置づけ
-//
-// SMP起動後に `ExecutorManager` を通じて各コアに配備される Executor。
-// BSP段階で使用される `executor.rs` とは **意図的に型を分離** しており、
-// 独自の `TaskId`, `Task`, `Priority`, `TaskState` を定義する。
-// これは Per-Core ライフサイクル管理（ワークスティーリング、優先度制御）と
-// BSP 段階のシンプルなタスク管理の要件が異なるためである。
-//
-// 参照: `executor.rs` — BSP/シングルコア段階のプライマリExecutor
+// src/task/per_core_executor.rs - Canonical per-core executor runtime
+// 設計書 4.1/4.3: Async-first task runtime with per-core scheduling
 // ============================================================================
 #![allow(dead_code)]
 
-use super::raw;
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
-use core::cell::UnsafeCell;
+use alloc::task::Wake;
+use alloc::vec::Vec;
 use core::future::Future;
-use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use core::task::{Context, Poll, Waker};
+#[cfg(not(feature = "qemu-test-export"))]
+use x86_64::instructions::interrupts;
 
-// ============================================================================
-// Generic Work-Stealing Queue (for Per-Core Executor)
-// ============================================================================
+const MAX_CPUS: usize = crate::per_cpu::MAX_CPUS;
+const EXECUTOR_BATCH_SIZE: usize = 32;
+const LOGICAL_WAKE_QUEUE_CAPACITY: usize = 1024;
+const NO_POLLED_TASK_ID: u64 = u64::MAX;
+const NO_POLLED_TASK_CPU: usize = usize::MAX;
+const EXECUTOR_PHASE_IDLE: u8 = 0;
+const EXECUTOR_PHASE_LOOP: u8 = 1;
+const EXECUTOR_PHASE_SUSPENDED: u8 = 2;
+const EXECUTOR_PHASE_RUN_READY: u8 = 3;
+const EXECUTOR_PHASE_POLLING: u8 = 4;
+const EXECUTOR_PHASE_WAKE_QUEUE: u8 = 5;
+const EXECUTOR_PHASE_FETCH_GLOBAL: u8 = 6;
+const EXECUTOR_PHASE_WORK_STEAL: u8 = 7;
+const EXECUTOR_PHASE_QUIESCENT: u8 = 8;
+const EXECUTOR_PHASE_WAITING: u8 = 9;
 
-/// ジェネリックなワークスティーリングキュー
-///
-/// Per-Core Executor 専用の実装。
-/// Mutex で保護されたVecDequeを使用した簡易実装。
-mod waker_vtable;
-pub use waker_vtable::*;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum Priority {
+    Realtime = 0,
+    High = 1,
+    Normal = 2,
+    Low = 3,
+    Idle = 4,
+}
+
+impl Default for Priority {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutorStats {
+    pub core_id: u32,
+    pub tasks_executed: u64,
+    pub tasks_stolen: u64,
+    pub tasks_stolen_from: u64,
+    pub queue_length: usize,
+    pub running_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WakeQueueStats {
+    pub len: usize,
+    pub capacity: usize,
+    pub enqueued: usize,
+    pub dropped: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GlobalQueueStats {
+    pub len: usize,
+    pub capacity: usize,
+    pub enqueued: usize,
+    pub dequeued: usize,
+    pub dropped: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolledTaskContext {
+    pub cpu_id: usize,
+    pub task_id: u64,
+    pub domain_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum ScheduledTaskState {
+    Ready = 0,
+    Running = 1,
+    Blocked = 2,
+    Completed = 3,
+}
+
 pub struct WorkStealingQueue<T> {
-    /// 内部キュー（Mutex保護）
     inner: PoisonLock<VecDeque<T>>,
 }
 
 impl<T> WorkStealingQueue<T> {
-    /// 新しいキューを作成
     pub fn new() -> Self {
         Self {
             inner: PoisonLock::new(VecDeque::with_capacity(256)),
         }
     }
 
-    /// アイテムをプッシュ
     pub fn push(&self, item: T) {
         match self.inner.lock() {
             Ok(mut guard) => guard.push_back(item),
-            Err(_) => log::error!("[WSQ] WorkStealingQueue poisoned during push - dropping item"),
+            Err(_) => log::error!("[EXECUTOR] queue poisoned during push"),
         }
     }
 
-    /// アイテムをポップ（LIFO: ローカル実行用）
     pub fn pop(&self) -> Option<T> {
         match self.inner.lock() {
             Ok(mut guard) => guard.pop_back(),
             Err(_) => {
-                log::error!("[WSQ] WorkStealingQueue poisoned during pop - returning None");
+                log::error!("[EXECUTOR] queue poisoned during pop");
                 None
             }
         }
     }
 
-    /// アイテムをスチール（FIFO: 他コアからの取得用）
     pub fn steal(&self) -> Option<T> {
         match self.inner.lock() {
             Ok(mut guard) => guard.pop_front(),
             Err(_) => {
-                log::error!("[WSQ] WorkStealingQueue poisoned during steal - returning None");
+                log::error!("[EXECUTOR] queue poisoned during steal");
                 None
             }
         }
     }
 
-    /// キューの長さ
     pub fn len(&self) -> usize {
         match self.inner.lock() {
-            Ok(g) => g.len(),
-            Err(_) => {
-                log::error!("[WSQ] WorkStealingQueue poisoned during len - returning 0");
-                0
-            }
-        }
-    }
-
-    /// キューが空かどうか
-    pub fn is_empty(&self) -> bool {
-        match self.inner.lock() {
-            Ok(g) => g.is_empty(),
-            Err(_) => {
-                log::error!("[WSQ] WorkStealingQueue poisoned during is_empty - returning true");
-                true
-            }
+            Ok(guard) => guard.len(),
+            Err(_) => 0,
         }
     }
 }
@@ -110,480 +143,165 @@ impl<T> Default for WorkStealingQueue<T> {
     }
 }
 
-// ============================================================================
-// Task Types
-// ============================================================================
-
-/// タスクID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TaskId(u64);
-
-impl TaskId {
-    /// 新しいタスクIDを生成
-    pub fn new() -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
-    }
-
-    /// IDの値を取得
-    pub fn as_u64(self) -> u64 {
-        self.0
-    }
+struct ScheduledTask {
+    task: PoisonLock<super::Task>,
+    priority: Priority,
+    domain_id: crate::domain_system::DomainId,
+    state: AtomicU8,
+    queued: AtomicBool,
+    preferred_cpu: AtomicUsize,
+    suspended_until_ns: AtomicU64,
+    last_run_at: AtomicU64,
+    total_run_time: AtomicU64,
+    schedule_count: AtomicU64,
 }
 
-impl Default for TaskId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// タスクの優先度
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum Priority {
-    /// リアルタイム優先度
-    Realtime = 0,
-    /// 高優先度
-    High = 1,
-    /// 通常優先度
-    Normal = 2,
-    /// 低優先度（バックグラウンド）
-    Low = 3,
-    /// アイドル優先度
-    Idle = 4,
-}
-
-impl Default for Priority {
-    fn default() -> Self {
-        Priority::Normal
-    }
-}
-
-/// タスクの状態
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskState {
-    /// 実行可能
-    Ready,
-    /// 実行中
-    Running,
-    /// ブロック中
-    Blocked,
-    /// 完了
-    Completed,
-}
-
-/// タスクのメタデータ
-#[derive(Debug)]
-pub struct TaskMetadata {
-    /// タスクID
-    pub id: TaskId,
-    /// 優先度
-    pub priority: Priority,
-    /// 所属ドメインID
-    pub domain_id: Option<u64>,
-    /// 作成時刻（ticks）
-    pub created_at: u64,
-    /// 最後に実行された時刻
-    pub last_run_at: AtomicU64,
-    /// 総実行時間（cycles）
-    pub total_run_time: AtomicU64,
-    /// スケジュール回数
-    pub schedule_count: AtomicU64,
-}
-
-impl TaskMetadata {
-    /// 新しいメタデータを作成
-    pub fn new(priority: Priority, domain_id: Option<u64>) -> Self {
-        Self {
-            id: TaskId::new(),
+impl ScheduledTask {
+    fn new(task: super::Task, priority: Priority, preferred_cpu: usize) -> Arc<Self> {
+        Arc::new(Self {
+            domain_id: task.domain_id,
+            task: PoisonLock::new(task),
             priority,
-            domain_id,
-            created_at: read_tsc(),
+            state: AtomicU8::new(ScheduledTaskState::Ready as u8),
+            queued: AtomicBool::new(false),
+            preferred_cpu: AtomicUsize::new(preferred_cpu),
+            suspended_until_ns: AtomicU64::new(0),
             last_run_at: AtomicU64::new(0),
             total_run_time: AtomicU64::new(0),
             schedule_count: AtomicU64::new(0),
-        }
-    }
-}
-
-/// タスク構造体
-pub struct Task {
-    /// タスクのメタデータ
-    pub metadata: TaskMetadata,
-    /// Futureの実体
-    future: UnsafeCell<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
-    /// タスクの状態
-    state: AtomicUsize,
-}
-
-// Safety: Task内のUnsafeCellは単一のエグゼキュータスレッドからのみアクセスされる
-unsafe impl Send for Task {}
-unsafe impl Sync for Task {}
-
-impl Task {
-    /// 新しいタスクを作成
-    pub fn new<F>(future: F, priority: Priority, domain_id: Option<u64>) -> Arc<Self>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        Self::new_boxed(Box::pin(future), priority, domain_id)
-    }
-
-    /// 既にBox化されたFutureからタスクを作成（二重Box回避用）
-    ///
-    /// `KernelServices::spawn_task` など、外部から `Pin<Box<dyn Future>>` を
-    /// 受け取る場合は、このコンストラクタを使用して二重Boxを回避する。
-    pub fn new_boxed(
-        future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
-        priority: Priority,
-        domain_id: Option<u64>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            metadata: TaskMetadata::new(priority, domain_id),
-            future: UnsafeCell::new(future),
-            state: AtomicUsize::new(TaskState::Ready as usize),
         })
     }
 
-    /// タスクの状態を取得
-    pub fn state(&self) -> TaskState {
-        match self.state.load(Ordering::Acquire) {
-            0 => TaskState::Ready,
-            1 => TaskState::Running,
-            2 => TaskState::Blocked,
-            _ => TaskState::Completed,
+    fn id(&self) -> super::TaskId {
+        match self.task.lock() {
+            Ok(guard) => guard.id,
+            Err(poisoned) => poisoned.into_inner().id,
         }
     }
 
-    /// タスクの状態を設定
-    pub fn set_state(&self, state: TaskState) {
-        self.state.store(state as usize, Ordering::Release);
+    fn begin_queueing(&self) -> bool {
+        if self.is_completed() {
+            return false;
+        }
+        !self.queued.swap(true, Ordering::AcqRel)
     }
 
-    /// タスクをpollする
-    ///
-    /// # Safety
-    /// 同一のTaskに対して複数のスレッドから同時にpollしてはいけない
-    unsafe fn poll(&self, waker: &Waker) -> Poll<()> {
-        let future = unsafe { &mut *self.future.get() };
-        let mut cx = Context::from_waker(waker);
-        future.as_mut().poll(&mut cx)
+    fn clear_queued(&self) {
+        self.queued.store(false, Ordering::Release);
+    }
+
+    fn is_queued(&self) -> bool {
+        self.queued.load(Ordering::Acquire)
+    }
+
+    fn is_completed(&self) -> bool {
+        self.state.load(Ordering::Acquire) == ScheduledTaskState::Completed as u8
+    }
+
+    fn set_state(&self, state: ScheduledTaskState) {
+        self.state.store(state as u8, Ordering::Release);
+    }
+
+    fn state(&self) -> ScheduledTaskState {
+        match self.state.load(Ordering::Acquire) {
+            x if x == ScheduledTaskState::Ready as u8 => ScheduledTaskState::Ready,
+            x if x == ScheduledTaskState::Running as u8 => ScheduledTaskState::Running,
+            x if x == ScheduledTaskState::Blocked as u8 => ScheduledTaskState::Blocked,
+            _ => ScheduledTaskState::Completed,
+        }
+    }
+
+    fn suspended_until_ns(&self) -> u64 {
+        self.suspended_until_ns.load(Ordering::Acquire)
+    }
+
+    fn set_suspended_until_ns(&self, deadline: u64) {
+        self.suspended_until_ns.store(deadline, Ordering::Release);
+    }
+
+    fn clear_suspended_until_ns(&self) {
+        self.suspended_until_ns.store(0, Ordering::Release);
+    }
+
+    fn preferred_cpu(&self) -> usize {
+        self.preferred_cpu.load(Ordering::Acquire)
+    }
+
+    fn set_preferred_cpu(&self, cpu_id: usize) {
+        self.preferred_cpu.store(cpu_id, Ordering::Release);
+    }
+
+    fn poll(&self, context: &mut Context<'_>) -> Poll<()> {
+        match self.task.lock() {
+            Ok(mut guard) => guard.poll(context),
+            Err(poisoned) => {
+                log::error!("[EXECUTOR] task lock poisoned during poll");
+                let mut guard = poisoned.into_inner();
+                guard.poll(context)
+            }
+        }
     }
 }
 
-// ============================================================================
-// Per-Core Executor
-// ============================================================================
+struct TaskWake {
+    task: Arc<ScheduledTask>,
+}
 
-/// Per-Core エグゼキュータ
-///
-/// 各CPUコアが専用のエグゼキュータを持つ。
-/// ローカルキューへのアクセスはロック不要。
+impl Wake for TaskWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        executor_manager().queue_wake(self.task.clone());
+    }
+}
+
 pub struct PerCoreExecutor {
-    /// コアID
     core_id: u32,
-    /// ローカルの実行キュー
-    local_queue: WorkStealingQueue<Arc<Task>>,
-    /// 高優先度キュー
-    high_priority_queue: PoisonLock<VecDeque<Arc<Task>>>,
-    /// 現在実行中のタスク数
+    local_queue: WorkStealingQueue<Arc<ScheduledTask>>,
+    high_priority_queue: PoisonLock<VecDeque<Arc<ScheduledTask>>>,
+    pending_wakes: WorkStealingQueue<Arc<ScheduledTask>>,
+    suspended_queue: PoisonLock<VecDeque<(u64, Arc<ScheduledTask>)>>,
     running_count: AtomicUsize,
-    /// 統計: 実行したタスク数
     tasks_executed: AtomicU64,
-    /// 統計: スチールしたタスク数
     tasks_stolen: AtomicU64,
-    /// 統計: スチールされたタスク数
     tasks_stolen_from: AtomicU64,
-    /// シャットダウンフラグ
+    wake_enqueued: AtomicUsize,
+    wake_dropped: AtomicUsize,
     shutdown: AtomicBool,
-    /// クォータ超過で一時停止中のタスク
-    suspended_queue: PoisonLock<VecDeque<(u64, Arc<Task>)>>,
 }
 
 impl PerCoreExecutor {
-    /// 新しいエグゼキュータを作成
     pub fn new(core_id: u32) -> Self {
         Self {
             core_id,
             local_queue: WorkStealingQueue::new(),
-            high_priority_queue: PoisonLock::new(VecDeque::new()),
+            high_priority_queue: PoisonLock::new(VecDeque::with_capacity(64)),
+            pending_wakes: WorkStealingQueue::new(),
+            suspended_queue: PoisonLock::new(VecDeque::with_capacity(64)),
             running_count: AtomicUsize::new(0),
             tasks_executed: AtomicU64::new(0),
             tasks_stolen: AtomicU64::new(0),
             tasks_stolen_from: AtomicU64::new(0),
+            wake_enqueued: AtomicUsize::new(0),
+            wake_dropped: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
-            suspended_queue: PoisonLock::new(VecDeque::new()),
         }
     }
 
-    /// コアIDを取得
     pub fn core_id(&self) -> u32 {
         self.core_id
     }
 
-    /// タスクをローカルキューに追加
-    pub fn spawn(&self, task: Arc<Task>) {
-        if task.metadata.priority <= Priority::High {
-            // 高優先度タスクは専用キューへ。ロックが毒入れされていたらローカルキューにフォールバックする
-            match self.high_priority_queue.lock() {
-                Ok(mut guard) => guard.push_back(task),
-                Err(_) => {
-                    log::error!(
-                        "[EXECUTOR] high_priority_queue poisoned during spawn - falling back to local queue"
-                    );
-                    self.local_queue.push(task);
-                }
-            }
-        } else {
-            // 通常タスクはワークスティーリングキューへ
-            self.local_queue.push(task);
-        }
-    }
-
-    /// タスクをスケジュール（Wakerから呼ばれる）
-    pub fn schedule(&self, task: Arc<Task>) {
-        task.set_state(TaskState::Ready);
-        self.spawn(task);
-    }
-
-    /// 次のタスクを取得
-    fn next_task(&self) -> Option<Arc<Task>> {
-        // 1. 高優先度キューを最初にチェック
-        match self.high_priority_queue.lock() {
-            Ok(mut guard) => {
-                if let Some(task) = guard.pop_front() {
-                    return Some(task);
-                }
-            }
-            Err(_) => {
-                log::error!(
-                    "[EXECUTOR] high_priority_queue poisoned (next_task) - skipping high priority check"
-                );
-            }
-        }
-
-        // 2. ローカルキューからpop
-        self.local_queue.pop()
-    }
-
-    /// 他のエグゼキュータからタスクをスチール
-    pub fn steal_from(&self, other: &PerCoreExecutor) -> Option<Arc<Task>> {
-        if let Some(task) = other.local_queue.steal() {
-            self.tasks_stolen.fetch_add(1, Ordering::Relaxed);
-            other.tasks_stolen_from.fetch_add(1, Ordering::Relaxed);
-            Some(task)
-        } else {
-            None
-        }
-    }
-
-    /// 複数のエグゼキュータからタスクをスチール
-    pub fn steal_batch_from(&self, other: &PerCoreExecutor, max_count: usize) -> usize {
-        let mut stolen = 0;
-        for _ in 0..max_count {
-            if let Some(task) = other.local_queue.steal() {
-                self.local_queue.push(task);
-                stolen += 1;
-            } else {
-                break;
-            }
-        }
-
-        if stolen > 0 {
-            self.tasks_stolen
-                .fetch_add(stolen as u64, Ordering::Relaxed);
-            other
-                .tasks_stolen_from
-                .fetch_add(stolen as u64, Ordering::Relaxed);
-        }
-
-        stolen
-    }
-
-    /// エグゼキュータのメインループ（1イテレーション）
-    ///
-    /// 【設計書 4.2】2段階Wake方式:
-    /// タスク実行前に保留中の割り込みイベントを処理
-    pub fn run_once(&self) -> bool {
-        if self.shutdown.load(Ordering::Acquire) {
-            return false;
-        }
-
-        self.process_suspended_tasks();
-
-        // 【重要】保留中の割り込みイベントを処理（2段階Wake方式）
-        // ISRからのwake()はイベントキューに積まれているため、
-        // ここで実際のwake()を実行する
-        // タイマーからの保留Wakerも処理
-        crate::io::hid::keyboard::process_pending_wakes();
-        crate::task::timer::process_pending_timer_wakers();
-        crate::task::interrupt_waker::process_interrupt_events();
-        crate::sync::process_deferred_wakes();
-        crate::sync::process_deferred_waker_queue_wakes();
-
-        // Drive IoScheduler dispatch/poll        // Process IO and interrupts
-        crate::io::io_scheduler::hybrid_coordinator().tick(|| {
-            crate::task::interrupt_waker::process_interrupt_events();
-        });
-
-        if let Some(task) = self.next_task() {
-            if let Some(domain_raw) = task.metadata.domain_id {
-                let domain_id = crate::domain_system::DomainId::new(domain_raw);
-                let now_ns = crate::time::precise_time_nanos();
-                if !crate::domain_system::is_domain_runnable_now(domain_id, now_ns) {
-                    let deadline = crate::domain_system::quota_suspend_deadline_ns(domain_id)
-                        .unwrap_or_else(|| {
-                            now_ns.saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
-                        });
-                    match self.suspended_queue.lock() {
-                        Ok(mut q) => q.push_back((deadline, task)),
-                        Err(_) => log::error!(
-                            "[EXECUTOR] suspended_queue poisoned (run_once) - dropping task"
-                        ),
-                    }
-                    return true;
-                }
-            }
-            self.run_task(&task);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// 単一のタスクを実行
-    fn run_task(&self, task: &Arc<Task>) {
-        self.running_count.fetch_add(1, Ordering::Relaxed);
-        task.set_state(TaskState::Running);
-
-        let start_cycles = read_tsc();
-        task.metadata
-            .last_run_at
-            .store(start_cycles, Ordering::Relaxed);
-        task.metadata.schedule_count.fetch_add(1, Ordering::Relaxed);
-
-        // Refill Fuel
-        crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
-
-        // Wakerを作成
-        let waker = task_waker(task.clone(), self.core_id);
-        let start_ns = crate::time::precise_time_nanos();
-
-        // タスクをpoll
-        let poll_result = unsafe { task.poll(&waker) };
-
-        let end_cycles = read_tsc();
-        let elapsed = end_cycles.saturating_sub(start_cycles);
-        let end_ns = crate::time::precise_time_nanos();
-        let elapsed_ns = end_ns.saturating_sub(start_ns);
-        task.metadata
-            .total_run_time
-            .fetch_add(elapsed, Ordering::Relaxed);
-
-        let mut quota_action = crate::domain_system::CpuQuotaAction::None;
-        if let Some(domain_raw) = task.metadata.domain_id {
-            let domain_id = crate::domain_system::DomainId::new(domain_raw);
-            if domain_id != crate::domain_system::DomainId::KERNEL {
-                let exceeded = crate::domain::quota::quota_manager()
-                    .consume_cpu_time(domain_id, elapsed_ns, end_ns);
-                if exceeded {
-                    quota_action =
-                        crate::domain_system::report_cpu_quota_exceeded(domain_id, end_ns);
-                } else {
-                    crate::domain_system::report_cpu_quota_ok(domain_id);
-                }
-            }
-        }
-
-        match poll_result {
-            Poll::Ready(()) => {
-                // タスク完了
-                task.set_state(TaskState::Completed);
-            }
-            Poll::Pending => {
-                if let crate::domain_system::CpuQuotaAction::Suspend { until_ns } = quota_action {
-                    task.set_state(TaskState::Blocked);
-                    match self.suspended_queue.lock() {
-                        Ok(mut q) => q.push_back((until_ns, task.clone())),
-                        Err(_) => log::error!(
-                            "[EXECUTOR] suspended_queue poisoned (run_task) - dropping task"
-                        ),
-                    }
-                } else {
-                    // タスクはWakerによって再スケジュールされる
-                    task.set_state(TaskState::Blocked);
-                }
-            }
-        }
-
-        if matches!(
-            quota_action,
-            crate::domain_system::CpuQuotaAction::YieldDemote
-                | crate::domain_system::CpuQuotaAction::Suspend { .. }
-        ) {
-            crate::task::preemption::request_yield();
-        }
-
-        self.running_count.fetch_sub(1, Ordering::Relaxed);
-        self.tasks_executed.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn process_suspended_tasks(&self) {
-        let now_ns = crate::time::precise_time_nanos();
-        let mut ready = VecDeque::new();
-
-        match self.suspended_queue.lock() {
-            Ok(mut queue) => {
-                let mut pending = VecDeque::with_capacity(queue.len());
-                while let Some((deadline, task)) = queue.pop_front() {
-                    if now_ns >= deadline {
-                        if let Some(domain_raw) = task.metadata.domain_id {
-                            let domain_id = crate::domain_system::DomainId::new(domain_raw);
-                            if crate::domain_system::is_domain_runnable_now(domain_id, now_ns) {
-                                ready.push_back(task);
-                                continue;
-                            }
-                        } else {
-                            ready.push_back(task);
-                            continue;
-                        }
-                    }
-                    pending.push_back((deadline, task));
-                }
-                *queue = pending;
-            }
-            Err(_) => {
-                log::error!("[EXECUTOR] suspended_queue poisoned (process_suspended_tasks)");
-                return;
-            }
-        }
-
-        while let Some(task) = ready.pop_front() {
-            self.schedule(task);
-        }
-    }
-
-    /// エグゼキュータをシャットダウン
-    pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Release);
-    }
-
-    /// キューの長さを取得
     pub fn queue_length(&self) -> usize {
-        let hp_len = match self.high_priority_queue.lock() {
-            Ok(g) => g.len(),
-            Err(_) => {
-                log::error!(
-                    "[EXECUTOR] high_priority_queue poisoned (queue_length) - treating as empty"
-                );
-                0
-            }
+        let high = match self.high_priority_queue.lock() {
+            Ok(guard) => guard.len(),
+            Err(_) => 0,
         };
-
-        self.local_queue.len() + hp_len
+        self.local_queue.len() + self.pending_wakes.len() + high
     }
 
-    /// 統計を取得
     pub fn stats(&self) -> ExecutorStats {
         ExecutorStats {
             core_id: self.core_id,
@@ -594,213 +312,1007 @@ impl PerCoreExecutor {
             running_count: self.running_count.load(Ordering::Relaxed),
         }
     }
-}
 
-/// エグゼキュータ統計
-#[derive(Debug, Clone)]
-pub struct ExecutorStats {
-    /// コアID
-    pub core_id: u32,
-    /// 実行したタスク数
-    pub tasks_executed: u64,
-    /// スチールしたタスク数
-    pub tasks_stolen: u64,
-    /// スチールされたタスク数
-    pub tasks_stolen_from: u64,
-    /// キューの長さ
-    pub queue_length: usize,
-    /// 現在実行中のタスク数
-    pub running_count: usize,
-}
-
-// ============================================================================
-// Global Executor Manager
-// ============================================================================
-
-/// グローバルエグゼキュータマネージャ
-pub struct ExecutorManager {
-    /// 全コアのエグゼキュータ
-    executors: PoisonLock<alloc::vec::Vec<Arc<PerCoreExecutor>>>,
-    /// コア数
-    core_count: AtomicUsize,
-    /// グローバルタスクキュー（コア指定なしのspawn用）
-    global_queue: PoisonLock<VecDeque<Arc<Task>>>,
-}
-
-impl ExecutorManager {
-    /// 新しいマネージャを作成
-    pub const fn new() -> Self {
-        Self {
-            executors: PoisonLock::new(alloc::vec::Vec::new()),
-            core_count: AtomicUsize::new(0),
-            global_queue: PoisonLock::new(VecDeque::new()),
-        }
+    pub fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
     }
 
-    /// エグゼキュータを初期化
-    pub fn init(&self, core_count: usize) {
-        // Initialization-time best-effort recovery: use helper to centralize behavior
-        let mut executors = self.executors.lock_for_init("[EXECUTOR] Manager init");
-        executors.clear();
-
-        for i in 0..core_count {
-            executors.push(Arc::new(PerCoreExecutor::new(i as u32)));
+    fn enqueue_spawned_task(&self, task: Arc<ScheduledTask>) -> bool {
+        if !task.begin_queueing() {
+            return false;
         }
-
-        self.core_count.store(core_count, Ordering::Release);
+        task.set_state(ScheduledTaskState::Ready);
+        self.push_ready_already_queued(task)
     }
 
-    /// 指定コアのエグゼキュータを取得
-    pub fn get_executor(&self, core_id: u32) -> Option<Arc<PerCoreExecutor>> {
-        match self.executors.lock() {
-            Ok(executors) => executors.get(core_id as usize).cloned(),
-            Err(_) => {
-                log::error!("[EXECUTOR] Manager executors lock poisoned (get_executor)");
-                None
+    fn enqueue_woken_task(&self, task: Arc<ScheduledTask>) -> bool {
+        if task.is_completed() {
+            return false;
+        }
+
+        let suspended_until = task.suspended_until_ns();
+        if suspended_until != 0 && crate::time::precise_time_nanos() < suspended_until {
+            return false;
+        }
+
+        if !task.begin_queueing() {
+            return false;
+        }
+
+        self.wake_enqueued.fetch_add(1, Ordering::Relaxed);
+        task.set_state(ScheduledTaskState::Ready);
+        self.pending_wakes.push(task);
+        true
+    }
+
+    fn push_ready_already_queued(&self, task: Arc<ScheduledTask>) -> bool {
+        if task.priority <= Priority::High {
+            match self.high_priority_queue.lock() {
+                Ok(mut guard) => {
+                    guard.push_back(task);
+                    true
+                }
+                Err(_) => {
+                    log::error!("[EXECUTOR] high priority queue poisoned");
+                    task.clear_queued();
+                    self.wake_dropped.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
             }
+        } else {
+            self.local_queue.push(task);
+            true
         }
     }
 
-    /// 現在のコアのエグゼキュータを取得
-    pub fn current_executor(&self) -> Option<Arc<PerCoreExecutor>> {
-        let core_id = current_core_id();
-        self.get_executor(core_id)
+    fn next_task(&self) -> Option<Arc<ScheduledTask>> {
+        match self.high_priority_queue.lock() {
+            Ok(mut guard) => {
+                if let Some(task) = guard.pop_front() {
+                    task.clear_queued();
+                    return Some(task);
+                }
+            }
+            Err(_) => log::error!("[EXECUTOR] high priority queue poisoned"),
+        }
+
+        let task = self.local_queue.pop()?;
+        task.clear_queued();
+        Some(task)
     }
 
-    /// タスクをspawn（負荷分散考慮）
-    pub fn spawn(&self, task: Arc<Task>) {
-        match self.executors.lock() {
-            Ok(executors) => {
-                if executors.is_empty() {
-                    // エグゼキュータが初期化されていない場合はグローバルキューへ
-                    drop(executors);
-                    match self.global_queue.lock() {
-                        Ok(mut g) => g.push_back(task),
-                        Err(_) => log::error!(
-                            "[EXECUTOR] global_queue poisoned during spawn - dropping task"
-                        ),
+    fn runs_global_runtime_maintenance(&self) -> bool {
+        self.core_id == 0
+    }
+
+    fn run_global_runtime_maintenance(&self) {
+        if !self.runs_global_runtime_maintenance() {
+            return;
+        }
+
+        crate::interrupts::poll_timer_events();
+        crate::io::hid::keyboard::process_pending_wakes();
+        crate::task::timer::process_pending_timer_wakers();
+        crate::task::interrupt_waker::process_interrupt_events();
+        crate::io::io_scheduler::process_deferred_completions();
+        crate::sync::process_deferred_wakes();
+        crate::sync::process_deferred_waker_queue_wakes();
+        crate::io::io_scheduler::hybrid_coordinator().tick(|| {
+            crate::task::interrupt_waker::process_interrupt_events();
+        });
+        crate::io::iommu::api::process_pending_command_queues();
+    }
+
+    fn complete_global_runtime_maintenance(&self) {
+        crate::loader::live_update::enter_quiescent_state();
+        if self.runs_global_runtime_maintenance() {
+            crate::loader::live_update::poll_pending_updates();
+            crate::driver_domain::hot_swap::poll_validation_windows();
+            crate::io::log::kick_serial_tx();
+        }
+    }
+
+    fn process_suspended_tasks(&self) {
+        let now_ns = crate::time::precise_time_nanos();
+        let mut ready = VecDeque::new();
+
+        match self.suspended_queue.lock() {
+            Ok(mut queue) => {
+                let mut pending = VecDeque::with_capacity(queue.len());
+                while let Some((deadline, task)) = queue.pop_front() {
+                    if now_ns >= deadline
+                        && crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns)
+                    {
+                        task.clear_suspended_until_ns();
+                        ready.push_back(task);
+                    } else {
+                        pending.push_back((deadline, task));
                     }
-                    return;
                 }
-
-                // 最も負荷の低いエグゼキュータを選択
-                let min_executor = executors.iter().min_by_key(|e| e.queue_length()).cloned();
-
-                drop(executors);
-
-                if let Some(executor) = min_executor {
-                    executor.spawn(task);
-                }
+                *queue = pending;
             }
+            Err(_) => log::error!("[EXECUTOR] suspended queue poisoned"),
+        }
+
+        while let Some(task) = ready.pop_front() {
+            let _ = self.enqueue_spawned_task(task);
+        }
+    }
+
+    fn push_suspended_task(&self, deadline: u64, task: Arc<ScheduledTask>) {
+        task.set_suspended_until_ns(deadline);
+        match self.suspended_queue.lock() {
+            Ok(mut queue) => queue.push_back((deadline, task)),
             Err(_) => {
-                log::error!(
-                    "[EXECUTOR] Manager executors lock poisoned (spawn) - pushing to global queue"
-                );
-                match self.global_queue.lock() {
-                    Ok(mut g) => g.push_back(task),
-                    Err(_) => {
-                        log::error!("[EXECUTOR] global_queue poisoned during spawn - dropping task")
-                    }
-                }
+                log::error!("[EXECUTOR] suspended queue poisoned");
+                task.clear_suspended_until_ns();
             }
         }
     }
 
-    /// ワークスティーリングを実行
-    pub fn try_steal(&self, core_id: u32) -> bool {
-        // executors lock が毒入れされている場合は失敗とする
-        let executors_guard = match self.executors.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("[EXECUTOR] executors lock poisoned (try_steal)");
-                return false;
+    fn process_wake_queue(&self) -> usize {
+        let mut drained = 0;
+
+        while drained < EXECUTOR_BATCH_SIZE {
+            let Some(task) = self.pending_wakes.pop() else {
+                break;
+            };
+
+            if task.is_completed() {
+                task.clear_queued();
+                continue;
             }
-        };
 
-        let thief = match executors_guard.get(core_id as usize) {
-            Some(e) => e.clone(),
-            None => return false,
-        };
+            let suspended_until = task.suspended_until_ns();
+            if suspended_until != 0 && crate::time::precise_time_nanos() < suspended_until {
+                task.clear_queued();
+                self.push_suspended_task(suspended_until, task);
+                continue;
+            }
 
-        // グローバルキューからまず取得
-        drop(executors_guard);
-        match self.global_queue.lock() {
-            Ok(mut g) => {
-                if let Some(task) = g.pop_front() {
-                    thief.spawn(task);
+            task.clear_suspended_until_ns();
+            let _ = self.push_ready_already_queued(task);
+            drained += 1;
+        }
+
+        drained
+    }
+
+    fn run_ready_tasks(&self) -> usize {
+        let mut processed = 0;
+
+        while processed < EXECUTOR_BATCH_SIZE {
+            let Some(task) = self.next_task() else {
+                break;
+            };
+
+            let now_ns = crate::time::precise_time_nanos();
+            if !crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns) {
+                let deadline = crate::domain_system::quota_suspend_deadline_ns(task.domain_id)
+                    .unwrap_or_else(|| {
+                        now_ns.saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
+                    });
+                self.push_suspended_task(deadline, task);
+                continue;
+            }
+
+            self.run_task(task);
+            processed += 1;
+
+            if crate::task::preemption::is_preemption_pending() {
+                crate::task::fuel::Fuel::exhaust();
+                crate::task::preemption::clear_preemption_pending();
+                break;
+            }
+
+            if crate::task::preemption::check_and_clear_yield_request() {
+                break;
+            }
+        }
+
+        processed
+    }
+
+    fn run_task(&self, task: Arc<ScheduledTask>) {
+        self.running_count.fetch_add(1, Ordering::Relaxed);
+        task.set_state(ScheduledTaskState::Running);
+        task.set_preferred_cpu(self.core_id as usize);
+        task.schedule_count.fetch_add(1, Ordering::Relaxed);
+
+        let start_cycles = read_tsc();
+        task.last_run_at.store(start_cycles, Ordering::Relaxed);
+        let start_ns = crate::time::precise_time_nanos();
+
+        crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
+        crate::domain_system::set_current_domain(task.domain_id);
+        crate::task::preemption::set_current_task_domain(task.domain_id.as_u64());
+        crate::task::notify_task_started(crate::task::current_tick());
+        mark_current_polled_task(self.core_id as usize, task.id(), task.domain_id);
+        set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_POLLING);
+
+        let waker = Waker::from(Arc::new(TaskWake { task: task.clone() }));
+        let mut context = Context::from_waker(&waker);
+        let poll_result = task.poll(&mut context);
+
+        clear_current_polled_task();
+        crate::task::preemption::set_current_task_domain(0);
+        crate::domain_system::set_current_domain(crate::domain_system::DomainId::KERNEL);
+
+        let end_cycles = read_tsc();
+        let end_ns = crate::time::precise_time_nanos();
+        let elapsed_cycles = end_cycles.saturating_sub(start_cycles);
+        let elapsed_ns = end_ns.saturating_sub(start_ns);
+        task.total_run_time
+            .fetch_add(elapsed_cycles, Ordering::Relaxed);
+
+        let mut quota_action = crate::domain_system::CpuQuotaAction::None;
+        if task.domain_id != crate::domain_system::DomainId::KERNEL {
+            let exceeded = crate::domain::quota::quota_manager().consume_cpu_time(
+                task.domain_id,
+                elapsed_ns,
+                end_ns,
+            );
+            if exceeded {
+                quota_action =
+                    crate::domain_system::report_cpu_quota_exceeded(task.domain_id, end_ns);
+            } else {
+                crate::domain_system::report_cpu_quota_ok(task.domain_id);
+            }
+        }
+
+        match poll_result {
+            Poll::Ready(()) => {
+                task.set_state(ScheduledTaskState::Completed);
+                task.clear_suspended_until_ns();
+            }
+            Poll::Pending => match quota_action {
+                crate::domain_system::CpuQuotaAction::Suspend { until_ns } => {
+                    task.set_state(ScheduledTaskState::Blocked);
+                    if !task.is_queued() {
+                        self.push_suspended_task(until_ns, task.clone());
+                    } else {
+                        task.set_suspended_until_ns(until_ns);
+                    }
+                    crate::task::preemption::request_yield();
+                }
+                crate::domain_system::CpuQuotaAction::YieldDemote => {
+                    task.set_state(ScheduledTaskState::Blocked);
+                    crate::task::preemption::request_yield();
+                }
+                crate::domain_system::CpuQuotaAction::None => {
+                    task.set_state(ScheduledTaskState::Blocked);
+                }
+            },
+        }
+
+        self.running_count.fetch_sub(1, Ordering::Relaxed);
+        self.tasks_executed.fetch_add(1, Ordering::Relaxed);
+        set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_RUN_READY);
+    }
+
+    fn steal_from(&self, victim: &PerCoreExecutor) -> bool {
+        if let Some(task) = victim.local_queue.steal() {
+            self.local_queue.push(task);
+            self.tasks_stolen.fetch_add(1, Ordering::Relaxed);
+            victim.tasks_stolen_from.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn try_steal(&self) -> bool {
+        if executor_active_cpu_count() <= 1 {
+            return false;
+        }
+
+        let topology = super::work_stealing_advanced::NumaTopology::get();
+        let core_id = self.core_id;
+        let my_node = topology.get_numa_node(core_id);
+
+        for &candidate in topology.get_llc_siblings(core_id) {
+            if candidate != core_id && self.try_steal_from_cpu(candidate as usize) {
+                return true;
+            }
+        }
+
+        for &candidate in topology.get_cores_in_node(my_node) {
+            if candidate == core_id || topology.shares_llc(core_id, candidate) {
+                continue;
+            }
+            if self.try_steal_from_cpu(candidate as usize) {
+                return true;
+            }
+        }
+
+        for node in 0..topology.num_nodes() {
+            if node == my_node {
+                continue;
+            }
+            for &candidate in topology.get_cores_in_node(node) {
+                if candidate != core_id && self.try_steal_from_cpu(candidate as usize) {
                     return true;
                 }
-            }
-            Err(_) => {
-                log::error!("[EXECUTOR] global_queue poisoned (try_steal) - skipping global queue")
-            }
-        }
-
-        let executors_guard = match self.executors.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
-
-        // 最も負荷の高いエグゼキュータからスチール
-        let victim = executors_guard
-            .iter()
-            .filter(|e| e.core_id() != core_id)
-            .max_by_key(|e| e.queue_length());
-
-        if let Some(victim) = victim {
-            if victim.queue_length() > 1 {
-                return thief.steal_from(victim).is_some();
             }
         }
 
         false
     }
 
-    /// 全エグゼキュータの統計を取得
-    pub fn all_stats(&self) -> alloc::vec::Vec<ExecutorStats> {
-        match self.executors.lock() {
-            Ok(executors) => executors.iter().map(|e| e.stats()).collect(),
-            Err(_) => {
-                log::error!(
-                    "[EXECUTOR] executors lock poisoned (all_stats) - returning empty stats"
-                );
-                alloc::vec::Vec::new()
+    fn try_steal_from_cpu(&self, cpu_id: usize) -> bool {
+        let Some(victim) = executor_manager().get_executor(cpu_id as u32) else {
+            return false;
+        };
+        if victim.core_id == self.core_id || victim.queue_length() <= 1 {
+            return false;
+        }
+        self.steal_from(&victim)
+    }
+
+    fn run_single_iteration(&self, allow_idle_wait: bool) {
+        set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_LOOP);
+        self.run_global_runtime_maintenance();
+
+        set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_SUSPENDED);
+        self.process_suspended_tasks();
+
+        crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
+        set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_RUN_READY);
+        self.run_ready_tasks();
+
+        set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_WAKE_QUEUE);
+        self.process_wake_queue();
+
+        set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_FETCH_GLOBAL);
+        executor_manager().drain_bootstrap_queue_to(self.core_id as usize, EXECUTOR_BATCH_SIZE);
+
+        if self.queue_length() == 0 {
+            set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_WORK_STEAL);
+            let _ = self.try_steal();
+        }
+
+        set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_QUIESCENT);
+        self.complete_global_runtime_maintenance();
+
+        if allow_idle_wait && self.queue_length() == 0 {
+            set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_WAITING);
+
+            #[cfg(feature = "qemu-test-export")]
+            {
+                core::hint::spin_loop();
+                return;
             }
+
+            #[cfg(not(feature = "qemu-test-export"))]
+            interrupts::enable_and_hlt();
         }
     }
 
-    /// 全エグゼキュータをシャットダウン
+    fn run_forever(&self) -> ! {
+        if !crate::interrupts::are_interrupts_enabled() {
+            crate::interrupts::enable_interrupts();
+        }
+
+        loop {
+            if self.shutdown.load(Ordering::Acquire) {
+                set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_IDLE);
+                core::hint::spin_loop();
+                continue;
+            }
+
+            self.run_single_iteration(true);
+        }
+    }
+}
+
+pub struct ExecutorManager {
+    executors: PoisonLock<Vec<Arc<PerCoreExecutor>>>,
+    bootstrap_queue: PoisonLock<VecDeque<Arc<ScheduledTask>>>,
+    active_cpu_count: AtomicUsize,
+    global_enqueued: AtomicUsize,
+    global_dequeued: AtomicUsize,
+    global_dropped: AtomicUsize,
+}
+
+impl ExecutorManager {
+    pub const fn new() -> Self {
+        Self {
+            executors: PoisonLock::new(Vec::new()),
+            bootstrap_queue: PoisonLock::new(VecDeque::new()),
+            active_cpu_count: AtomicUsize::new(1),
+            global_enqueued: AtomicUsize::new(0),
+            global_dequeued: AtomicUsize::new(0),
+            global_dropped: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn init(&self, core_count: usize) {
+        let count = core_count.max(1).min(MAX_CPUS);
+        let mut executors = self.executors.lock_for_init("[EXECUTOR] init");
+        executors.clear();
+        for cpu_id in 0..count {
+            executors.push(Arc::new(PerCoreExecutor::new(cpu_id as u32)));
+        }
+        self.active_cpu_count.store(count, Ordering::Release);
+        drop(executors);
+
+        self.redistribute_bootstrap_queue();
+    }
+
+    pub fn active_cpu_count(&self) -> usize {
+        self.active_cpu_count.load(Ordering::Acquire)
+    }
+
+    pub fn get_executor(&self, core_id: u32) -> Option<Arc<PerCoreExecutor>> {
+        match self.executors.lock() {
+            Ok(executors) => executors.get(core_id as usize).cloned(),
+            Err(_) => None,
+        }
+    }
+
+    pub fn current_executor(&self) -> Option<Arc<PerCoreExecutor>> {
+        self.get_executor(current_core_id() as u32)
+    }
+
+    pub fn all_stats(&self) -> Vec<ExecutorStats> {
+        match self.executors.lock() {
+            Ok(executors) => executors.iter().map(|executor| executor.stats()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn shutdown_all(&self) {
         if let Ok(executors) = self.executors.lock() {
             for executor in executors.iter() {
                 executor.shutdown();
             }
+        }
+    }
+
+    pub fn spawn_task(&self, task: super::Task, priority: Priority) -> super::TaskId {
+        let task_id = task.id;
+        let target_cpu = self.pick_target_cpu();
+        let scheduled = ScheduledTask::new(task, priority, target_cpu);
+        self.global_enqueued.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(executor) = self.get_executor(target_cpu as u32) {
+            if executor.enqueue_spawned_task(scheduled) {
+                self.global_dequeued.fetch_add(1, Ordering::Relaxed);
+                self.notify_remote_cpu(target_cpu);
+            } else {
+                self.global_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        } else if let Ok(mut queue) = self.bootstrap_queue.lock() {
+            queue.push_back(scheduled);
         } else {
-            log::error!("[EXECUTOR] executors lock poisoned (shutdown_all) - skipping shutdown");
+            self.global_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+
+        task_id
+    }
+
+    pub fn queue_wake(&self, task: Arc<ScheduledTask>) {
+        let target_cpu = task
+            .preferred_cpu()
+            .min(self.active_cpu_count().saturating_sub(1));
+
+        if let Some(executor) = self.get_executor(target_cpu as u32) {
+            if executor.enqueue_woken_task(task) {
+                self.notify_remote_cpu(target_cpu);
+            }
+            return;
+        }
+
+        if let Some(fallback) = self.get_executor(0) {
+            if fallback.enqueue_woken_task(task) {
+                self.notify_remote_cpu(0);
+            }
+        }
+    }
+
+    fn redistribute_bootstrap_queue(&self) {
+        let mut pending = match self.bootstrap_queue.lock() {
+            Ok(mut queue) => core::mem::take(&mut *queue),
+            Err(_) => {
+                self.global_dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        while let Some(task) = pending.pop_front() {
+            let target_cpu = self.pick_target_cpu();
+            task.set_preferred_cpu(target_cpu);
+            if let Some(executor) = self.get_executor(target_cpu as u32) {
+                if executor.enqueue_spawned_task(task) {
+                    self.global_dequeued.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.global_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            } else {
+                self.global_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn drain_bootstrap_queue_to(&self, cpu_id: usize, budget: usize) {
+        let Some(executor) = self.get_executor(cpu_id as u32) else {
+            return;
+        };
+
+        let mut drained = 0;
+        while drained < budget {
+            let task = match self.bootstrap_queue.lock() {
+                Ok(mut queue) => queue.pop_front(),
+                Err(_) => None,
+            };
+
+            let Some(task) = task else {
+                break;
+            };
+
+            task.set_preferred_cpu(cpu_id);
+            if executor.enqueue_spawned_task(task) {
+                self.global_dequeued.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.global_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            drained += 1;
+        }
+    }
+
+    fn pick_target_cpu(&self) -> usize {
+        let Ok(executors) = self.executors.lock() else {
+            return 0;
+        };
+
+        executors
+            .iter()
+            .take(self.active_cpu_count())
+            .min_by_key(|executor| executor.queue_length())
+            .map(|executor| executor.core_id as usize)
+            .unwrap_or(0)
+    }
+
+    fn notify_remote_cpu(&self, cpu_id: usize) {
+        if self.active_cpu_count() <= 1 || !crate::smp::runtime_workers_released() {
+            return;
+        }
+
+        if current_core_id() == cpu_id {
+            return;
+        }
+
+        if let Some(apic_id) = crate::smp::apic_id_for_cpu(cpu_id) {
+            send_executor_wake_ipi(apic_id);
+        } else {
+            send_executor_wake_broadcast();
+        }
+    }
+
+    pub fn global_queue_stats(&self) -> GlobalQueueStats {
+        let (len, capacity) = match self.bootstrap_queue.lock() {
+            Ok(queue) => (queue.len(), queue.capacity()),
+            Err(_) => (0, 0),
+        };
+
+        GlobalQueueStats {
+            len,
+            capacity,
+            enqueued: self.global_enqueued.load(Ordering::Relaxed),
+            dequeued: self.global_dequeued.load(Ordering::Relaxed),
+            dropped: self.global_dropped.load(Ordering::Relaxed),
+        }
+    }
+
+    pub fn wake_queue_stats(&self) -> WakeQueueStats {
+        let mut len = 0usize;
+        let mut enqueued = 0usize;
+        let mut dropped = 0usize;
+        let mut capacity = 0usize;
+
+        if let Ok(executors) = self.executors.lock() {
+            for executor in executors.iter().take(self.active_cpu_count()) {
+                len = len.saturating_add(executor.pending_wakes.len());
+                enqueued = enqueued.saturating_add(executor.wake_enqueued.load(Ordering::Relaxed));
+                dropped = dropped.saturating_add(executor.wake_dropped.load(Ordering::Relaxed));
+                capacity = capacity.saturating_add(LOGICAL_WAKE_QUEUE_CAPACITY);
+            }
+        }
+
+        WakeQueueStats {
+            len,
+            capacity,
+            enqueued,
+            dropped,
         }
     }
 }
 
-// ============================================================================
-// Waker Implementation
-// ============================================================================
+static EXECUTOR_MANAGER: ExecutorManager = ExecutorManager::new();
+static CURRENT_POLLED_TASK_ID: AtomicU64 = AtomicU64::new(NO_POLLED_TASK_ID);
+static CURRENT_POLLED_TASK_DOMAIN: AtomicU64 = AtomicU64::new(0);
+static CURRENT_POLLED_TASK_CPU: AtomicUsize = AtomicUsize::new(NO_POLLED_TASK_CPU);
+static CURRENT_EXECUTOR_PHASE: [AtomicU8; MAX_CPUS] = {
+    const INIT: AtomicU8 = AtomicU8::new(EXECUTOR_PHASE_IDLE);
+    [INIT; MAX_CPUS]
+};
 
-/// タスク用Wakerを作成
-fn task_waker(task: Arc<Task>, core_id: u32) -> Waker {
-    // ArcをRawPointerに変換
-    let task_ptr = Arc::into_raw(task) as *const ();
-    let data = TaskWakerData {
-        task: task_ptr,
-        core_id,
-    };
+#[cfg(test)]
+static LAST_REMOTE_WAKE_APIC: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(test)]
+static REMOTE_WAKE_BROADCASTS: AtomicUsize = AtomicUsize::new(0);
 
-    let raw_waker = RawWaker::new(Box::into_raw(Box::new(data)) as *const (), &WAKER_VTABLE);
-
-    unsafe { Waker::from_raw(raw_waker) }
+pub fn executor_manager() -> &'static ExecutorManager {
+    &EXECUTOR_MANAGER
 }
 
-/// Wakerのデータ
-struct TaskWakerData {
-    task: *const (),
-    core_id: u32,
+pub fn init_executors(core_count: usize) {
+    EXECUTOR_MANAGER.init(core_count);
 }
+
+pub fn executor_active_cpu_count() -> usize {
+    EXECUTOR_MANAGER.active_cpu_count()
+}
+
+pub fn current_polled_task_context() -> Option<PolledTaskContext> {
+    let task_id = CURRENT_POLLED_TASK_ID.load(Ordering::Acquire);
+    if task_id == NO_POLLED_TASK_ID {
+        return None;
+    }
+
+    let cpu_id = CURRENT_POLLED_TASK_CPU.load(Ordering::Acquire);
+    if cpu_id == NO_POLLED_TASK_CPU {
+        return None;
+    }
+
+    Some(PolledTaskContext {
+        cpu_id,
+        task_id,
+        domain_id: CURRENT_POLLED_TASK_DOMAIN.load(Ordering::Acquire),
+    })
+}
+
+pub fn current_executor_phase(cpu_id: usize) -> Option<&'static str> {
+    if cpu_id >= MAX_CPUS {
+        return None;
+    }
+
+    match CURRENT_EXECUTOR_PHASE[cpu_id].load(Ordering::Acquire) {
+        EXECUTOR_PHASE_IDLE => Some("idle"),
+        EXECUTOR_PHASE_LOOP => Some("loop"),
+        EXECUTOR_PHASE_SUSPENDED => Some("suspended"),
+        EXECUTOR_PHASE_RUN_READY => Some("run_ready"),
+        EXECUTOR_PHASE_POLLING => Some("polling"),
+        EXECUTOR_PHASE_WAKE_QUEUE => Some("wake_queue"),
+        EXECUTOR_PHASE_FETCH_GLOBAL => Some("fetch_global"),
+        EXECUTOR_PHASE_WORK_STEAL => Some("work_steal"),
+        EXECUTOR_PHASE_QUIESCENT => Some("quiescent"),
+        EXECUTOR_PHASE_WAITING => Some("waiting"),
+        _ => None,
+    }
+}
+
+pub fn global_queue_stats() -> GlobalQueueStats {
+    EXECUTOR_MANAGER.global_queue_stats()
+}
+
+pub fn wake_queue_stats() -> WakeQueueStats {
+    EXECUTOR_MANAGER.wake_queue_stats()
+}
+
+pub fn spawn<F>(future: F) -> super::TaskId
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let mut task = super::Task::new(future);
+    task.domain_id = crate::domain_system::current_domain();
+    EXECUTOR_MANAGER.spawn_task(task, Priority::Normal)
+}
+
+pub fn spawn_with_priority<F>(
+    future: F,
+    priority: Priority,
+    domain_id: Option<u64>,
+) -> super::TaskId
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let mut task = super::Task::new(future);
+    if let Some(domain) = domain_id {
+        task.domain_id = crate::domain_system::DomainId::new(domain);
+    }
+    EXECUTOR_MANAGER.spawn_task(task, priority)
+}
+
+pub fn spawn_task(task: super::Task) -> super::TaskId {
+    EXECUTOR_MANAGER.spawn_task(task, Priority::Normal)
+}
+
+pub fn run_forever(cpu_id: usize) -> ! {
+    let executor = EXECUTOR_MANAGER
+        .get_executor(cpu_id as u32)
+        .unwrap_or_else(|| {
+            init_executors(cpu_id.saturating_add(1));
+            EXECUTOR_MANAGER
+                .get_executor(cpu_id as u32)
+                .expect("executor must exist after init")
+        });
+
+    crate::smp::set_runtime_worker_stage(cpu_id, crate::smp::RuntimeWorkerStage::ExecutorRun);
+    executor.run_forever()
+}
+
+#[inline]
+pub(crate) fn read_tsc() -> u64 {
+    crate::time::rdtsc_unserialized()
+}
+
+#[inline]
+pub(crate) fn current_core_id() -> usize {
+    if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
+        return cpu_id;
+    }
+
+    #[cfg(not(test))]
+    {
+        let apic_id = crate::io::apic::local_apic().id() as u32;
+        if let Some(cpu_id) = crate::smp::cpu_for_apic_id(apic_id) {
+            return cpu_id;
+        }
+    }
+
+    0
+}
+
+fn mark_current_polled_task(
+    cpu_id: usize,
+    task_id: super::TaskId,
+    domain_id: crate::domain_system::DomainId,
+) {
+    CURRENT_POLLED_TASK_CPU.store(cpu_id, Ordering::Release);
+    CURRENT_POLLED_TASK_DOMAIN.store(domain_id.as_u64(), Ordering::Release);
+    CURRENT_POLLED_TASK_ID.store(task_id.as_u64(), Ordering::Release);
+}
+
+fn clear_current_polled_task() {
+    CURRENT_POLLED_TASK_ID.store(NO_POLLED_TASK_ID, Ordering::Release);
+    CURRENT_POLLED_TASK_DOMAIN.store(0, Ordering::Release);
+    CURRENT_POLLED_TASK_CPU.store(NO_POLLED_TASK_CPU, Ordering::Release);
+}
+
+fn set_current_executor_phase(cpu_id: usize, phase: u8) {
+    if cpu_id < MAX_CPUS {
+        CURRENT_EXECUTOR_PHASE[cpu_id].store(phase, Ordering::Release);
+    }
+}
+
+#[cfg(not(test))]
+fn send_executor_wake_ipi(apic_id: u32) {
+    crate::smp::bootstrap::send_ipi(apic_id, crate::interrupts::EXECUTOR_WAKE_VECTOR);
+}
+
+#[cfg(test)]
+fn send_executor_wake_ipi(apic_id: u32) {
+    LAST_REMOTE_WAKE_APIC.store(apic_id as u64, Ordering::Release);
+}
+
+#[cfg(not(test))]
+fn send_executor_wake_broadcast() {
+    crate::smp::bootstrap::broadcast_ipi(crate::interrupts::EXECUTOR_WAKE_VECTOR);
+}
+
+#[cfg(test)]
+fn send_executor_wake_broadcast() {
+    REMOTE_WAKE_BROADCASTS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub struct TestExecutor {
+    local_queue: VecDeque<TestScheduledTask>,
+    suspended_queue: VecDeque<(u64, TestScheduledTask)>,
+    wake_queue: Arc<TestWakeQueue>,
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+type TestScheduledTask = Arc<PoisonLock<super::Task>>;
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+struct TestWakeQueue {
+    queue: PoisonLock<VecDeque<TestScheduledTask>>,
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+impl TestWakeQueue {
+    fn new() -> Self {
+        Self {
+            queue: PoisonLock::new(VecDeque::with_capacity(128)),
+        }
+    }
+
+    fn push(&self, task: TestScheduledTask) {
+        match self.queue.lock() {
+            Ok(mut queue) => queue.push_back(task),
+            Err(_) => log::error!("[EXECUTOR][TEST] wake queue poisoned"),
+        }
+    }
+
+    fn pop(&self) -> Option<TestScheduledTask> {
+        match self.queue.lock() {
+            Ok(mut queue) => queue.pop_front(),
+            Err(_) => None,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+struct TestTaskWake {
+    task: TestScheduledTask,
+    wake_queue: Arc<TestWakeQueue>,
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+impl Wake for TestTaskWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wake_queue.push(self.task.clone());
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+impl TestExecutor {
+    pub fn new() -> Self {
+        Self {
+            local_queue: VecDeque::with_capacity(128),
+            suspended_queue: VecDeque::with_capacity(64),
+            wake_queue: Arc::new(TestWakeQueue::new()),
+        }
+    }
+
+    pub fn spawn(&mut self, task: super::Task) {
+        self.local_queue.push_back(Arc::new(PoisonLock::new(task)));
+    }
+
+    pub fn drive_once_for_test(&mut self) {
+        crate::interrupts::poll_timer_events();
+        crate::io::hid::keyboard::process_pending_wakes();
+        crate::task::timer::process_pending_timer_wakers();
+        crate::task::interrupt_waker::process_interrupt_events();
+        crate::io::io_scheduler::process_deferred_completions();
+        crate::sync::process_deferred_wakes();
+        crate::sync::process_deferred_waker_queue_wakes();
+        crate::io::io_scheduler::hybrid_coordinator().tick(|| {
+            crate::task::interrupt_waker::process_interrupt_events();
+        });
+        crate::io::iommu::api::process_pending_command_queues();
+
+        self.process_suspended_tasks();
+        crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
+        self.run_ready_tasks();
+        self.process_wake_queue();
+        crate::loader::live_update::enter_quiescent_state();
+        crate::loader::live_update::poll_pending_updates();
+        crate::driver_domain::hot_swap::poll_validation_windows();
+        crate::io::log::kick_serial_tx();
+    }
+
+    fn process_suspended_tasks(&mut self) {
+        if self.suspended_queue.is_empty() {
+            return;
+        }
+
+        let now_ns = crate::time::precise_time_nanos();
+        let mut pending = VecDeque::with_capacity(self.suspended_queue.len());
+
+        while let Some((deadline, task)) = self.suspended_queue.pop_front() {
+            let domain_id = match task.lock() {
+                Ok(guard) => guard.domain_id,
+                Err(poisoned) => poisoned.into_inner().domain_id,
+            };
+
+            if now_ns >= deadline && crate::domain_system::is_domain_runnable_now(domain_id, now_ns)
+            {
+                self.local_queue.push_back(task);
+            } else {
+                pending.push_back((deadline, task));
+            }
+        }
+
+        self.suspended_queue = pending;
+    }
+
+    fn run_ready_tasks(&mut self) {
+        let mut processed = 0usize;
+
+        while processed < EXECUTOR_BATCH_SIZE {
+            let Some(task) = self.local_queue.pop_front() else {
+                break;
+            };
+
+            let domain_id = match task.lock() {
+                Ok(guard) => guard.domain_id,
+                Err(poisoned) => poisoned.into_inner().domain_id,
+            };
+            let now_ns = crate::time::precise_time_nanos();
+            if !crate::domain_system::is_domain_runnable_now(domain_id, now_ns) {
+                let deadline = crate::domain_system::quota_suspend_deadline_ns(domain_id)
+                    .unwrap_or_else(|| {
+                        now_ns.saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
+                    });
+                self.suspended_queue.push_back((deadline, task));
+                continue;
+            }
+
+            let waker = Waker::from(Arc::new(TestTaskWake {
+                task: task.clone(),
+                wake_queue: self.wake_queue.clone(),
+            }));
+            let mut context = Context::from_waker(&waker);
+            let start_ns = crate::time::precise_time_nanos();
+
+            let poll_result = match task.lock() {
+                Ok(mut guard) => {
+                    crate::domain_system::set_current_domain(guard.domain_id);
+                    crate::task::preemption::set_current_task_domain(guard.domain_id.as_u64());
+                    guard.poll(&mut context)
+                }
+                Err(poisoned) => {
+                    let mut guard = poisoned.into_inner();
+                    crate::domain_system::set_current_domain(guard.domain_id);
+                    crate::task::preemption::set_current_task_domain(guard.domain_id.as_u64());
+                    guard.poll(&mut context)
+                }
+            };
+
+            crate::task::preemption::set_current_task_domain(0);
+            crate::domain_system::set_current_domain(crate::domain_system::DomainId::KERNEL);
+
+            if let Poll::Pending = poll_result {
+                let end_ns = crate::time::precise_time_nanos();
+                let elapsed_ns = end_ns.saturating_sub(start_ns);
+                if domain_id != crate::domain_system::DomainId::KERNEL {
+                    let exceeded = crate::domain::quota::quota_manager()
+                        .consume_cpu_time(domain_id, elapsed_ns, end_ns);
+                    if exceeded {
+                        if let crate::domain_system::CpuQuotaAction::Suspend { until_ns } =
+                            crate::domain_system::report_cpu_quota_exceeded(domain_id, end_ns)
+                        {
+                            self.suspended_queue.push_back((until_ns, task));
+                        }
+                    } else {
+                        crate::domain_system::report_cpu_quota_ok(domain_id);
+                    }
+                }
+            }
+
+            processed += 1;
+            if crate::task::preemption::check_and_clear_yield_request() {
+                break;
+            }
+        }
+    }
+
+    fn process_wake_queue(&mut self) {
+        let mut drained = 0usize;
+        while drained < EXECUTOR_BATCH_SIZE {
+            let Some(task) = self.wake_queue.pop() else {
+                break;
+            };
+            self.local_queue.push_back(task);
+            drained += 1;
+        }
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+impl Default for TestExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+#[path = "per_core_executor/tests.rs"]
+mod tests;

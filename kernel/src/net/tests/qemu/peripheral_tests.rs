@@ -126,7 +126,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut executor = crate::task::Executor::new();
+        let mut executor = crate::task::TestExecutor::new();
 
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
@@ -184,7 +184,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut executor = crate::task::Executor::new();
+        let mut executor = crate::task::TestExecutor::new();
 
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
@@ -225,7 +225,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut executor = crate::task::Executor::new();
+        let mut executor = crate::task::TestExecutor::new();
 
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();

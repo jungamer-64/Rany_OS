@@ -924,7 +924,7 @@ fn resolve_shell_mode(context: &mut KernelBootContext) {
 fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     info!(
         target: "init",
-        "Phase-2 runtime uses the primary Executor path; per-core executors remain experimental"
+        "Phase-2 runtime handoff entering the per-core executor path"
     );
 
     // 4.6. I/Oスケジューラの初期化
@@ -963,28 +963,26 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     // 7. システム統計を表示
     print_system_stats();
 
-    // 8. Executorの作成とタスクスポーン
-    info!(target: "init", "Creating async executor");
-    let mut executor = task::Executor::new();
+    // 8. per-core executor へタスクを投入
+    info!(target: "init", "Scheduling runtime tasks onto per-core executors");
 
     for_each_runtime_handoff_milestone(|step| match step {
         RuntimeHandoffMilestone::ResolveShellMode => resolve_shell_mode(context),
         RuntimeHandoffMilestone::SpawnKernelTasks => {
-            spawn_kernel_tasks(&mut executor, context);
+            spawn_kernel_tasks(context);
             info!(target: "init", "Kernel tasks spawned");
         }
         RuntimeHandoffMilestone::BootComplete => {
             info!(target: "boot", "BOOT COMPLETE!");
         }
         RuntimeHandoffMilestone::StartExecutorRun => {
-            task::register_cpu(0);
             crate::smp::release_runtime_workers();
             if crate::smp::cpu_count() > 1 {
                 crate::io::interrupt_manager::broadcast_ipi(
                     crate::interrupts::EXECUTOR_WAKE_VECTOR,
                 );
             }
-            info!(target: "run", "Starting executor main loop");
+            info!(target: "run", "Starting per-core executor main loop");
         }
     });
 
@@ -999,7 +997,7 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
     // =========================================================================
 
     // メインループ開始（戻ってこない）
-    executor.run();
+    task::run_forever(0);
 }
 
 /// Scan PCI bus for USB xHCI controllers and initialize them.

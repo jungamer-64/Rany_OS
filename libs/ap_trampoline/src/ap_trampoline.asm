@@ -9,9 +9,40 @@ ORG 0
 %define AP_MAILBOX_ENTRY_POINT  (TRAMPOLINE_MAILBOX_OFFSET + 24)
 %define AP_MAILBOX_PROBE_ADDR   (TRAMPOLINE_MAILBOX_OFFSET + 32)
 
+%macro serial_mark16 1
+    push ax
+    push dx
+    mov dx, 0x3F8
+    mov al, %1
+    out dx, al
+    pop dx
+    pop ax
+%endmacro
+
+%macro serial_mark32 1
+    push eax
+    push edx
+    mov dx, 0x3F8
+    mov al, %1
+    out dx, al
+    pop edx
+    pop eax
+%endmacro
+
+%macro serial_mark64 1
+    push rax
+    push rdx
+    mov dx, 0x3F8
+    mov al, %1
+    out dx, al
+    pop rdx
+    pop rax
+%endmacro
+
 ap_trampoline_start:
     cli
     cld
+    serial_mark16 'r'
 
     xor ax, ax
     mov ss, ax
@@ -51,6 +82,7 @@ ap_trampoline_start:
 
 BITS 32
 protected_mode_entry:
+    serial_mark32 'p'
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -87,6 +119,7 @@ long_mode_far_ptr:
 BITS 64
 DEFAULT REL
 long_mode_entry:
+    serial_mark64 'l'
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -117,6 +150,7 @@ long_mode_entry:
 .probe_failed:
 
 .probe_done:
+    serial_mark64 'c'
     mov rax, [ap_mailbox + 24]
     call rax
 

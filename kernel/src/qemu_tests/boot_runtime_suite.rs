@@ -60,6 +60,7 @@ type BootCase = fn() -> Result<(), BootCaseError>;
 static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
     ("interrupts_enabled", case_interrupts_enabled),
     ("smp_workers_online", case_smp_workers_online),
+    ("per_core_workers_running", case_per_core_workers_running),
     ("uptime_ms_progresses", case_uptime_ms_progresses),
     ("tick_progresses", case_tick_progresses),
     ("sleep_ms_resumes", case_sleep_ms_resumes),
@@ -197,6 +198,34 @@ fn case_smp_workers_online() -> Result<(), BootCaseError> {
 }
 
 #[cfg(feature = "qemu-test-export")]
+fn case_per_core_workers_running() -> Result<(), BootCaseError> {
+    let cpu_count = crate::smp::cpu_count() as usize;
+    if cpu_count <= 1 {
+        return Err(BootCaseError::blocked(
+            "per_core_workers_running requires a multi-core QEMU configuration",
+        ));
+    }
+
+    for cpu_id in 0..cpu_count {
+        let Some(stage) = crate::smp::runtime_worker_stage(cpu_id) else {
+            return Err(BootCaseError::failed(format!(
+                "runtime worker stage unavailable for cpu{}",
+                cpu_id
+            )));
+        };
+
+        if !str_eq(stage, "executor_run") {
+            return Err(BootCaseError::failed(format!(
+                "cpu{} did not reach per-core executor run stage: stage={}",
+                cpu_id, stage
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
 fn case_uptime_ms_progresses() -> Result<(), BootCaseError> {
     let raw_before = crate::interrupts::get_timer_ticks();
     let uptime_before = crate::time::get_uptime_ms();
@@ -247,7 +276,7 @@ fn case_tick_progresses() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_sleep_ms_resumes() -> Result<(), BootCaseError> {
-    let mut executor = task::Executor::new();
+    let mut executor = task::TestExecutor::new();
     let completed = Arc::new(AtomicBool::new(false));
     let completed_at_tick = Arc::new(AtomicU64::new(0));
     let completed_clone = completed.clone();
@@ -284,7 +313,7 @@ fn case_sleep_ms_resumes() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
-    let mut executor = task::Executor::new();
+    let mut executor = task::TestExecutor::new();
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = completed.clone();
     executor.spawn(Task::new(async move {
@@ -409,7 +438,7 @@ fn case_synthetic_interrupt_deferred_path(
     source: InterruptSource,
     label: &str,
 ) -> Result<(), BootCaseError> {
-    let mut executor = task::Executor::new();
+    let mut executor = task::TestExecutor::new();
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = completed.clone();
     executor.spawn(Task::new(async move {
@@ -470,7 +499,7 @@ enum PumpResult {
 
 #[cfg(feature = "qemu-test-export")]
 fn drive_executor_until(
-    executor: &mut task::Executor,
+    executor: &mut task::TestExecutor,
     completed: &AtomicBool,
     raw_tick_start: u64,
     timeout_ms: u64,

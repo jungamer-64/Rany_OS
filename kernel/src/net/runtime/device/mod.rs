@@ -475,10 +475,10 @@ impl NetDeviceHandle {
 
     pub fn start_workers(self: &Arc<Self>) {
         if !self.tx_worker_started.swap(true, Ordering::AcqRel) {
-            crate::task::Executor::spawn_global(crate::task::Task::new(tx_worker(self.clone())));
+            crate::task::spawn_task(crate::task::Task::new(tx_worker(self.clone())));
         }
         if !self.event_worker_started.swap(true, Ordering::AcqRel) {
-            crate::task::Executor::spawn_global(crate::task::Task::new(event_worker(self.clone())));
+            crate::task::spawn_task(crate::task::Task::new(event_worker(self.clone())));
         }
     }
 

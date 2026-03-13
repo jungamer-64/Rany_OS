@@ -85,7 +85,7 @@ fn validate_elf_sections(elf_data: &[u8]) -> Result<(usize, usize, usize, usize)
         ));
     }
 
-    let header = crate::util::get_ref::<Elf64Header>(elf_data, 0)
+    let header = crate::util::read_struct::<Elf64Header>(elf_data, 0)
         .ok_or(LoopProofError::InvalidElf("failed to read ELF header"))?;
     crate::io::log::early_print("[LP] header read ok\n");
 
@@ -142,10 +142,10 @@ fn get_shstrtab_range(
             "shstrtab header offset overflow",
         ))?;
     crate::io::log::early_print("[LP] shstr header offset ok\n");
-    let shstr_header = crate::util::get_ref::<Elf64SectionHeader>(elf_data, shstr_header_offset)
-        .ok_or(LoopProofError::InvalidElf(
-            "failed to parse shstrtab header",
-        ))?;
+    let shstr_header =
+        crate::util::read_struct::<Elf64SectionHeader>(elf_data, shstr_header_offset).ok_or(
+            LoopProofError::InvalidElf("failed to parse shstrtab header"),
+        )?;
     crate::io::log::early_print("[LP] shstr header read ok\n");
 
     let shstr_start = shstr_header.sh_offset as usize;
@@ -187,7 +187,7 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
             )
             .ok_or(LoopProofError::InvalidElf("section header offset overflow"))?;
         let section_header =
-            crate::util::get_ref::<Elf64SectionHeader>(elf_data, section_header_offset)
+            crate::util::read_struct::<Elf64SectionHeader>(elf_data, section_header_offset)
                 .ok_or(LoopProofError::InvalidElf("failed to parse section header"))?;
         crate::io::log::early_print("[LP] section header ok\n");
 

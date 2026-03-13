@@ -59,21 +59,27 @@ pub fn cpu_count() -> u32 {
     1 + online_aps()
 }
 
-/// Get current CPU ID
+/// Get current logical CPU ID.
 pub fn current_cpu() -> u32 {
     if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
         return cpu_id as u32;
     }
-    let apic_id = crate::io::apic::local_apic().id() as u32;
-    cpu_for_apic_id(apic_id)
-        .map(|cpu_id| cpu_id as u32)
-        .unwrap_or(apic_id)
+
+    #[cfg(not(test))]
+    {
+        let apic_id = crate::io::apic::local_apic().id() as u32;
+        if let Some(cpu_id) = cpu_for_apic_id(apic_id) {
+            return cpu_id as u32;
+        }
+    }
+
+    0
 }
 
 /// Get current CPU index (0-based contiguous index for array access)
 ///
-/// Unlike `current_cpu()` which may return APIC IDs (potentially non-contiguous),
-/// this returns a safe 0-based index in range [0, cpu_count()).
+/// This mirrors `current_cpu()`'s logical CPU numbering and remains safe for
+/// array access in range [0, cpu_count()).
 /// Falls back to 0 if per-CPU data isn't initialized.
 pub fn cpu_index() -> usize {
     if let Some(cpu_id) = crate::per_cpu::try_current_cpu_id() {
@@ -286,7 +292,7 @@ fn apply_online_cpu_count(count: usize) {
     crate::mm::cache::slab_cache::init_per_core_caches(count);
     crate::mm::sync::page_table_cache::set_active_cpu_count(count);
     crate::loader::live_update::set_active_cores(count as u64);
-    crate::task::set_executor_active_cpu_count(count);
+    crate::task::init_executors(count);
 }
 
 #[cfg(test)]

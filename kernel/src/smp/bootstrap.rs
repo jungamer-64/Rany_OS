@@ -19,6 +19,17 @@ use boot_proto::ExoBootInfo;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 
 static AP_BOOT_PROBE: u8 = 0x5A;
+const PAGE_SIZE: u64 = 4096;
+const AP_RUNTIME_STACK_PAGES: usize = 256;
+const AP_RUNTIME_STACK_SIZE: usize = AP_RUNTIME_STACK_PAGES * PAGE_SIZE as usize;
+
+#[repr(C, align(4096))]
+struct PageAlignedApRuntimeStack([u8; AP_RUNTIME_STACK_SIZE]);
+
+struct ApRuntimeStack {
+    _backing: Box<PageAlignedApRuntimeStack>,
+    top: u64,
+}
 
 fn log_ap_mapping_probe(label: &str, virt: u64) {
     let mapper = crate::mm::virt::higher_half::PhysicalMemoryMapper::new(
@@ -262,6 +273,10 @@ impl LocalApic {
 
     /// Send INIT IPI to target AP
     pub fn send_init(&self, target_apic_id: u32) {
+        crate::io::log::early_print("[SMP] send_init: target=");
+        crate::io::log::early_print_dec(target_apic_id as u64);
+        crate::io::log::early_print("\n");
+
         // Set destination
         self.write(Self::ICR_HIGH, target_apic_id << 24);
 
@@ -273,7 +288,9 @@ impl LocalApic {
 
         // Wait for delivery
         unsafe {
-            self.wait_for_delivery();
+            if !self.wait_for_delivery("init-assert", target_apic_id) {
+                return;
+            }
         }
 
         // Send INIT deassert
@@ -283,12 +300,18 @@ impl LocalApic {
         );
 
         unsafe {
-            self.wait_for_delivery();
+            let _ = self.wait_for_delivery("init-deassert", target_apic_id);
         }
     }
 
     /// Send SIPI (Startup IPI) to target AP
     pub fn send_sipi(&self, target_apic_id: u32, vector: u8) {
+        crate::io::log::early_print("[SMP] send_sipi: target=");
+        crate::io::log::early_print_dec(target_apic_id as u64);
+        crate::io::log::early_print(" vector=");
+        crate::io::log::early_print_hex(vector as u64);
+        crate::io::log::early_print("\n");
+
         // Set destination
         self.write(Self::ICR_HIGH, target_apic_id << 24);
 
@@ -296,17 +319,31 @@ impl LocalApic {
         self.write(Self::ICR_LOW, Self::DELIVERY_STARTUP | (vector as u32));
 
         unsafe {
-            self.wait_for_delivery();
+            let _ = self.wait_for_delivery("sipi", target_apic_id);
         }
     }
 
     /// Wait for IPI delivery
-    unsafe fn wait_for_delivery(&self) {
+    unsafe fn wait_for_delivery(&self, phase: &str, target_apic_id: u32) -> bool {
+        const MAX_SPINS: usize = 1_000_000;
         // Bit 12 = Delivery Status (0 = idle, 1 = pending)
-        // LOOP_PROOF: mode=condition; reason=Delivery wait loop exits as soon as LAPIC delivery-status pending bit clears.;
+        // LOOP_PROOF: mode=condition; reason=Delivery wait loop exits as soon as LAPIC delivery-status pending bit clears or the bounded diagnostic spin limit is reached.;
+        let mut spins = 0usize;
         while (self.read(Self::ICR_LOW) & (1 << 12)) != 0 {
+            if spins >= MAX_SPINS {
+                crate::io::log::early_print("[SMP] APIC delivery timeout phase=");
+                crate::io::log::early_print(phase);
+                crate::io::log::early_print(" target=");
+                crate::io::log::early_print_dec(target_apic_id as u64);
+                crate::io::log::early_print(" icr_low=");
+                crate::io::log::early_print_hex(self.read(Self::ICR_LOW) as u64);
+                crate::io::log::early_print("\n");
+                return false;
+            }
             core::hint::spin_loop();
+            spins += 1;
         }
+        true
     }
 
     /// Send IPI to specific CPU
@@ -314,7 +351,7 @@ impl LocalApic {
         self.write(Self::ICR_HIGH, target_apic_id << 24);
         self.write(Self::ICR_LOW, vector as u32);
         unsafe {
-            self.wait_for_delivery();
+            let _ = self.wait_for_delivery("ipi", target_apic_id);
         }
     }
 
@@ -323,7 +360,7 @@ impl LocalApic {
         // All excluding self
         self.write(Self::ICR_LOW, (vector as u32) | (3 << 18));
         unsafe {
-            self.wait_for_delivery();
+            let _ = self.wait_for_delivery("broadcast", u32::MAX);
         }
     }
 }
@@ -334,6 +371,8 @@ pub struct ApBootstrap {
     lapic: LocalApic,
     /// Boot info for each AP
     ap_info: Vec<ApBootInfo>,
+    /// Long-lived runtime stacks for AP workers after bootstrap handoff
+    runtime_stacks: Vec<ApRuntimeStack>,
     /// Physical address of the low-memory trampoline area provided by the bootloader
     trampoline_base: u64,
     /// Number of APs started
@@ -344,7 +383,7 @@ pub struct ApBootstrap {
 
 impl ApBootstrap {
     /// Create new AP bootstrap manager
-    pub fn new(lapic_base: u64, boot_info: &ExoBootInfo, num_aps: u32) -> Self {
+    pub fn new(lapic_base: u64, boot_info: &ExoBootInfo, num_aps: u32) -> Result<Self, &'static str> {
         let current_page_table = crate::mm::virt::higher_half::get_cr3().as_u64();
         if current_page_table != boot_info.page_table_base {
             log::info!(
@@ -357,27 +396,37 @@ impl ApBootstrap {
         log_ap_mapping_probe("ap_boot_probe", core::ptr::addr_of!(AP_BOOT_PROBE) as u64);
         log_ap_mapping_probe("ap_bootstrap", core::ptr::addr_of!(AP_BOOTSTRAP) as u64);
 
+        let mut runtime_stacks = Vec::with_capacity(num_aps as usize);
+        for _ in 0..num_aps as usize {
+            runtime_stacks.push(allocate_ap_runtime_stack()?);
+        }
+
         let mut ap_info = Vec::with_capacity(num_aps as usize);
         for ap_index in 0..num_aps as usize {
             let mut info = ApBootInfo::new();
-            info.stack_ptr = ap_stack_top(&boot_info.ap_boot, ap_index);
+            info.stack_ptr = map_ap_stack_window(&boot_info.ap_boot, ap_index)?;
             info.page_table = current_page_table;
             info.entry_point = ap_entry_stub as *const () as usize as u64;
             ap_info.push(info);
         }
 
-        ApBootstrap {
+        Ok(ApBootstrap {
             lapic: LocalApic::new(lapic_base),
             ap_info,
+            runtime_stacks,
             trampoline_base: boot_info.ap_boot.trampoline_addr,
             aps_started: AtomicU32::new(0),
             expected_aps: num_aps,
-        }
+        })
     }
 
     /// Get boot info for AP
     pub fn get_ap_info(&self, index: usize) -> Option<&ApBootInfo> {
         self.ap_info.get(index)
+    }
+
+    pub fn runtime_stack_top(&self, index: usize) -> Option<u64> {
+        self.runtime_stacks.get(index).map(|stack| stack.top)
     }
 
     unsafe fn mailbox_ptr(&self) -> *mut ApTrampolineMailbox {
@@ -497,7 +546,11 @@ pub unsafe fn init(
     num_aps: u32,
 ) -> Result<(), &'static str> {
     validate_trampoline_handoff(&boot_info.ap_boot)?;
-    let bootstrap = Box::leak(Box::new(ApBootstrap::new(lapic_base, boot_info, num_aps)));
+    let bootstrap = Box::leak(Box::new(ApBootstrap::new(lapic_base, boot_info, num_aps)?));
+    log::info!(
+        "[SMP] Prepared {} AP stack guard page(s) in dedicated virtual windows",
+        bootstrap.ap_info.len()
+    );
     *AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner()) = Some(bootstrap);
     Ok(())
 }
@@ -516,7 +569,7 @@ pub fn online_aps() -> u32 {
         .unwrap_or(0)
 }
 
-fn ap_stack_top(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
+fn ap_stack_base(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
     if ap_boot.stack_base == 0
         || ap_boot.stack_size == 0
         || ap_index >= ap_boot.stack_count as usize
@@ -524,12 +577,103 @@ fn ap_stack_top(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
         return 0;
     }
 
-    ap_boot.stack_base + ((ap_index + 1) * ap_boot.stack_size as usize) as u64
+    ap_boot.stack_base + (ap_index * ap_boot.stack_size as usize) as u64
+}
+
+fn ap_stack_top(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
+    let stack_base = ap_stack_base(ap_boot, ap_index);
+    if stack_base == 0 {
+        return 0;
+    }
+
+    stack_base + ap_boot.stack_size
+}
+
+fn ap_stack_window_size(ap_boot: &boot_proto::ApBootInfo) -> Result<u64, &'static str> {
+    if ap_boot.stack_size == 0 || ap_boot.stack_size % PAGE_SIZE != 0 {
+        return Err("AP stack size must be page aligned");
+    }
+
+    if ap_boot.stack_size <= PAGE_SIZE {
+        return Err("AP stack size must include one mapped page above the guard");
+    }
+
+    Ok(ap_boot.stack_size)
+}
+
+fn map_ap_stack_window(
+    ap_boot: &boot_proto::ApBootInfo,
+    ap_index: usize,
+) -> Result<u64, &'static str> {
+    let stack_phys_base = ap_stack_base(ap_boot, ap_index);
+    if stack_phys_base == 0 {
+        return Err("missing AP stack allocation");
+    }
+
+    let window_size = ap_stack_window_size(ap_boot)?;
+    let window_pages = usize::try_from(window_size / PAGE_SIZE)
+        .map_err(|_| "AP stack size exceeds kernel virtual allocation limits")?;
+    let window_base = crate::mm::virt::higher_half::allocate_kernel_virt(window_pages);
+
+    let mapped_virt = window_base + PAGE_SIZE;
+    let mapped_phys = crate::mm::virt::higher_half::PhysAddr::new(stack_phys_base + PAGE_SIZE);
+    let mapped_size = window_size - PAGE_SIZE;
+
+    unsafe {
+        crate::mm::virt::higher_half::global_map_range(
+            mapped_virt,
+            mapped_phys,
+            mapped_size,
+            crate::mm::virt::higher_half::PageFlags::kernel_data(),
+        )
+    }
+    .map_err(|_| "failed to map AP stack window")?;
+
+    Ok(window_base.as_u64() + window_size)
+}
+
+fn allocate_ap_runtime_stack() -> Result<ApRuntimeStack, &'static str> {
+    let layout = core::alloc::Layout::new::<PageAlignedApRuntimeStack>();
+    let non_null =
+        crate::util::allocate_zeroed(layout).ok_or("failed to allocate AP runtime stack")?;
+    let backing = unsafe { Box::from_raw(non_null.as_ptr() as *mut PageAlignedApRuntimeStack) };
+    let backing_bottom = backing.0.as_ptr() as u64;
+    let backing_phys = crate::mm::virt::higher_half::global_translate(
+        crate::mm::virt::higher_half::VirtAddr::new(backing_bottom),
+    )
+    .ok_or("failed to translate AP runtime stack backing")?;
+
+    let window_base = crate::mm::virt::higher_half::allocate_kernel_virt(AP_RUNTIME_STACK_PAGES);
+    let mapped_virt = window_base + PAGE_SIZE;
+    let mapped_phys = backing_phys + PAGE_SIZE;
+    let mapped_size = (AP_RUNTIME_STACK_SIZE as u64) - PAGE_SIZE;
+
+    unsafe {
+        crate::mm::virt::higher_half::global_map_range(
+            mapped_virt,
+            mapped_phys,
+            mapped_size,
+            crate::mm::virt::higher_half::PageFlags::kernel_data(),
+        )
+    }
+    .map_err(|_| "failed to map AP runtime stack window")?;
+
+    Ok(ApRuntimeStack {
+        _backing: backing,
+        top: window_base.as_u64() + AP_RUNTIME_STACK_SIZE as u64,
+    })
 }
 
 #[inline]
 fn ap_serial_mark(marker: u8) {
-    crate::io::log::debug_serial_mark(marker);
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0x3f8u16,
+            in("al") marker,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 #[inline(never)]
@@ -537,7 +681,7 @@ fn ap_enter_executor(cpu_id: usize) -> ! {
     ap_serial_mark(b'J');
     ap_serial_mark(b'K');
     ap_serial_mark(b'L');
-    crate::task::run_boxed_cold_start(cpu_id);
+    crate::task::run_forever(cpu_id);
 }
 
 /// AP entry point (called from trampoline)
@@ -560,12 +704,43 @@ pub extern "C" fn ap_entry_inner(ap_slot: u32, cpu_id: u32) -> ! {
         ap_serial_mark(b'p');
     }
 
+    if let Some(runtime_stack_top) = bootstrap_ref()
+        .and_then(|bootstrap| bootstrap.runtime_stack_top(ap_slot as usize))
+    {
+        unsafe {
+            switch_to_ap_runtime_stack(runtime_stack_top, ap_slot, cpu_id);
+        }
+    }
+
+    ap_entry_runtime(ap_slot, cpu_id)
+}
+
+#[inline(never)]
+unsafe fn switch_to_ap_runtime_stack(stack_top: u64, ap_slot: u32, cpu_id: u32) -> ! {
+    core::arch::asm!(
+        "mov rsp, {stack_top}",
+        "mov edi, {ap_slot:e}",
+        "mov esi, {cpu_id:e}",
+        "jmp {target}",
+        stack_top = in(reg) stack_top,
+        ap_slot = in(reg) ap_slot,
+        cpu_id = in(reg) cpu_id,
+        target = sym ap_entry_runtime,
+        options(noreturn)
+    );
+}
+
+#[inline(never)]
+pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
+    ap_serial_mark(b'S');
+    ap_serial_mark(b'Q');
     if crate::interrupts::load_for_cpu(cpu_id as usize).is_err() {
         ap_serial_mark(b'X');
         loop {
             core::hint::spin_loop();
         }
     }
+    ap_serial_mark(b'V');
     ap_serial_mark(b'I');
 
     unsafe {
@@ -643,11 +818,6 @@ pub extern "C" fn ap_entry_inner(ap_slot: u32, cpu_id: u32) -> ! {
     );
     ap_serial_mark(b'R');
 
-    crate::task::register_cpu(cpu_id as usize);
-    crate::smp::set_runtime_worker_stage(
-        cpu_id as usize,
-        crate::smp::RuntimeWorkerStage::Registered,
-    );
     let _ = crate::mm::sync::tlb_batch::exit_lazy_tlb_mode(cpu_id as usize);
     crate::smp::set_runtime_worker_stage(
         cpu_id as usize,
@@ -761,6 +931,37 @@ mod tests {
         assert_eq!(
             validate_trampoline_handoff(&ap_boot),
             Err("shared AP trampoline mailbox offset mismatch")
+        );
+    }
+
+    #[test]
+    fn ap_stack_base_and_top_follow_boot_stack_blocks() {
+        let ap_boot = valid_ap_boot_info();
+        assert_eq!(ap_stack_base(&ap_boot, 0), 0x20_0000);
+        assert_eq!(ap_stack_top(&ap_boot, 0), 0x21_0000);
+        assert_eq!(ap_stack_base(&ap_boot, 1), 0x21_0000);
+        assert_eq!(ap_stack_top(&ap_boot, 1), 0x22_0000);
+    }
+
+    #[test]
+    fn ap_stack_window_requires_page_aligned_stack_size() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.stack_size = 0x18_000 + 1;
+
+        assert_eq!(
+            ap_stack_window_size(&ap_boot),
+            Err("AP stack size must be page aligned")
+        );
+    }
+
+    #[test]
+    fn ap_stack_window_requires_mapped_page_above_guard() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.stack_size = 0x1000;
+
+        assert_eq!(
+            ap_stack_window_size(&ap_boot),
+            Err("AP stack size must include one mapped page above the guard")
         );
     }
 }

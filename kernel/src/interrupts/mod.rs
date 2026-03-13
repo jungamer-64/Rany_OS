@@ -63,7 +63,14 @@ static IDT_CONTAINER: IdtContainer = IdtContainer(UnsafeCell::new(MaybeUninit::u
 
 #[inline]
 fn smp_idt_mark(marker: u8) {
-    crate::io::log::debug_serial_mark(marker);
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0x3f8u16,
+            in("al") marker,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 #[inline]

@@ -581,22 +581,18 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
     use core::mem;
 
     if data.len() < mem::size_of::<SignatureHeader>() {
-        return Err(LoadError::InvalidFormat(
-            "Signature section too small".into(),
-        ));
+        return Err(LoadError::InvalidSignature);
     }
 
-    let header: SignatureHeader = crate::util::read_struct(data, 0)
-        .ok_or_else(|| LoadError::InvalidFormat("Invalid signature header".into()))?;
+    let header: SignatureHeader =
+        crate::util::read_struct(data, 0).ok_or(LoadError::InvalidSignature)?;
 
     if header.magic != SIGNATURE_MAGIC {
         return Err(LoadError::InvalidSignature);
     }
 
     if header.version != SIGNATURE_VERSION {
-        return Err(LoadError::InvalidFormat(
-            "Unsupported signature version".into(),
-        ));
+        return Err(LoadError::InvalidSignature);
     }
 
     let compiler_version = read_compiler_version(data, &header)?;
@@ -605,7 +601,7 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
     let sig_end = sig_start + header.signature_len as usize;
 
     if sig_end > data.len() {
-        return Err(LoadError::InvalidFormat("Invalid signature data".into()));
+        return Err(LoadError::InvalidSignature);
     }
 
     let signature = data[sig_start..sig_end].to_vec();

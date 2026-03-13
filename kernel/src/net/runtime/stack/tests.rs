@@ -49,7 +49,7 @@ where
 
     let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
     let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-    let mut executor = crate::task::Executor::new();
+    let mut executor = crate::task::TestExecutor::new();
 
     let result_slot_clone = result_slot.clone();
     let completed_clone = completed.clone();
@@ -133,7 +133,7 @@ pub fn test_send_udp_event_task_zero_copy() {
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut executor = crate::task::Executor::new();
+        let mut executor = crate::task::TestExecutor::new();
 
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
@@ -190,7 +190,7 @@ pub fn test_send_icmp_event_dispatch_smoke() {
 
     let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
     let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-    let mut executor = crate::task::Executor::new();
+    let mut executor = crate::task::TestExecutor::new();
 
     let result_slot_clone = result_slot.clone();
     let completed_clone = completed.clone();
@@ -342,7 +342,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut executor = crate::task::Executor::new();
+        let mut executor = crate::task::TestExecutor::new();
 
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
@@ -394,7 +394,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-        let mut executor = crate::task::Executor::new();
+        let mut executor = crate::task::TestExecutor::new();
 
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
