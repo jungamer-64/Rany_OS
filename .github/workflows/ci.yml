@@ -55,6 +55,12 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           ${{ runner.os }}-cargo-
+
+    - name: Generate signing keys
+      run: |
+        if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
+          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+        fi
     
     - name: Build kernel
       run: cargo build -p rany_kernel --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
@@ -96,6 +102,12 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y nasm
 
+    - name: Generate signing keys
+      run: |
+        if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
+          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+        fi
+
     - name: Build kernel without default features
       run: cargo build -p rany_kernel --no-default-features --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
@@ -119,6 +131,12 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y nasm
+
+    - name: Generate signing keys
+      run: |
+        if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
+          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+        fi
 
     - name: Build release (run A)
       env:
@@ -161,6 +179,12 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y nasm
+
+    - name: Generate signing keys
+      run: |
+        if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
+          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+        fi
     
     - name: Check formatting
       run: cargo fmt --all -- --check
@@ -204,6 +228,12 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y nasm
+
+    - name: Generate signing keys
+      run: |
+        if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
+          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+        fi
 
     - name: Build docs
       run: cargo doc -p rany_kernel --target x86_64-exorust.json --no-deps -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
