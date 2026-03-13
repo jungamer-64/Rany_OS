@@ -17,6 +17,7 @@ extern crate alloc;
 
 use crate::cmd::CmdMailbox;
 use crate::defs::MLX5_CMD_MBOX_SIZE;
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 
@@ -47,6 +48,8 @@ pub struct PageAllocation {
 pub struct PageManager {
     /// 提供済みページの一覧
     allocated_pages: Vec<PageAllocation>,
+    /// 既知ページの高速インデックス
+    allocated_page_index: BTreeSet<u64>,
     /// ドライバが追加確保した FW ページの所有権
     owned_pages: Vec<OwnedPageBuffer>,
     /// 合計提供ページ数
@@ -68,6 +71,7 @@ impl PageManager {
     pub fn new() -> Self {
         Self {
             allocated_pages: Vec::new(),
+            allocated_page_index: BTreeSet::new(),
             owned_pages: Vec::new(),
             total_given: 0,
         }
@@ -80,11 +84,7 @@ impl PageManager {
 
     /// ページ割り当て記録を追加
     pub fn record_allocation(&mut self, alloc: PageAllocation) {
-        if self
-            .allocated_pages
-            .iter()
-            .any(|page| page.phys_addr == alloc.phys_addr)
-        {
+        if !self.allocated_page_index.insert(alloc.phys_addr) {
             return;
         }
         self.allocated_pages.push(alloc);
@@ -118,6 +118,9 @@ impl PageManager {
 
     /// 回収されたページを記録から削除
     pub fn remove_pages(&mut self, phys_addrs: &[u64]) {
+        for &phys in phys_addrs {
+            self.allocated_page_index.remove(&phys);
+        }
         self.allocated_pages
             .retain(|p| !phys_addrs.contains(&p.phys_addr));
         self.owned_pages

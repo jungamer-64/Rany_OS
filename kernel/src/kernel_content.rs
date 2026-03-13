@@ -595,7 +595,6 @@ fn init_single_nvme_controller(
 
 /// Scan PCI bus for AHCI controllers and initialize them.
 fn init_ahci_controllers() {
-    io::log::early_print("[DEBUG] AHCI scan STARTING\n");
     info!(target: "init", "Scanning for AHCI controllers...");
 
     let ahci_devices = crate::platform::pci::find_by_class(0x01, 0x06);
@@ -693,7 +692,6 @@ fn init_single_ahci_controller(dev: &kernel_api::service::platform::PciDeviceInf
                 .get_port_start_index()
                 .unwrap_or(0) as u8;
             crate::drivers::ahci::register_ahci_with_io_scheduler(controller.clone(), first_port);
-            crate::io::log::early_print("[HEAP_CHECK] after AHCI controller init\n");
             crate::memory::verify_buddy_integrity();
         }
         Err(e) => warn!(target: "init", "AHCI init failed: {:?}", e),

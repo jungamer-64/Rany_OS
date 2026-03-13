@@ -442,6 +442,7 @@ impl Mlx5Device {
             let additional_needed = target_total - fw_page_addrs.len();
             let device_id = self.packed_device_id();
             let mut added_pages = 0usize;
+            let allocation_start_tick = kernel_api::service::kernel::instance().current_tick();
 
             log::info!(
                 target: "mlx5",
@@ -459,6 +460,19 @@ impl Mlx5Device {
                         let dma_addr = self.page_manager.record_owned_dma_page(buf, func_id);
                         fw_page_addrs.push(dma_addr);
                         added_pages += 1;
+                        if added_pages == 1 || added_pages % 256 == 0 {
+                            let elapsed_ticks = kernel_api::service::kernel::instance()
+                                .current_tick()
+                                .saturating_sub(allocation_start_tick);
+                            log::info!(
+                                target: "mlx5",
+                                "FW page expansion progress for {} phase: {}/{} pages allocated (elapsed_ticks={})",
+                                phase,
+                                added_pages,
+                                additional_needed,
+                                elapsed_ticks
+                            );
+                        }
                     }
                     Err(err) => {
                         log::warn!(
