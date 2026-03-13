@@ -649,7 +649,9 @@ pub fn init() {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_capabilities() {
         let sandboxed = SecurityCapabilities::SANDBOXED;
         assert!(!sandboxed.can_call_kernel_api);
@@ -661,14 +663,18 @@ mod tests {
         assert!(!user.allows_unsafe);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_level() {
         assert!(SecurityLevel::KernelCore.has_privilege_over(SecurityLevel::Framework));
         assert!(SecurityLevel::Framework.has_privilege_over(SecurityLevel::SafeRust));
         assert!(!SecurityLevel::SafeRust.has_privilege_over(SecurityLevel::AuditedUnsafe));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_zero_copy_barrier() {
         let barrier = ZeroCopySecurityBarrier::new();
 

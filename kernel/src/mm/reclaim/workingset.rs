@@ -521,7 +521,9 @@ pub fn workingset_adjust_threshold() {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_shadow_entry_basic() {
         let shadow = ShadowEntry::new(100, MglruGen::Gen1, 0, 0);
         assert!(shadow.is_valid());
@@ -529,7 +531,9 @@ mod tests {
         assert_eq!(shadow.generation(), MglruGen::Gen1);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_shadow_table_insert_lookup() {
         let table = ShadowTable::new();
         let frame = FrameIndex::new(1234);
@@ -547,7 +551,9 @@ mod tests {
         assert!(table.lookup_and_remove(frame).is_none());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_workingset_controller() {
         let ctrl = WorkingsetController::new();
         let frame = FrameIndex::new(9999);
@@ -572,7 +578,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_workingset_not_in_workingset() {
         let ctrl = WorkingsetController::new();
         let frame = FrameIndex::new(8888);

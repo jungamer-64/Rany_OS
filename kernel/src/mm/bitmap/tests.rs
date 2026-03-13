@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_basic_allocation() {
     let bitmap = HierarchicalBitmap::new(1000);
     assert_eq!(bitmap.free_count(), 1000);
@@ -15,7 +17,9 @@ fn test_basic_allocation() {
     assert!(bitmap.is_free(idx));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mark_allocated_free() {
     let bitmap = HierarchicalBitmap::new(100);
 
@@ -28,7 +32,9 @@ fn test_mark_allocated_free() {
     assert!(!bitmap.mark_free(50)); // Already free
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_exhaustion() {
     let bitmap = HierarchicalBitmap::new(64);
     let mut allocated = Vec::new();
@@ -51,7 +57,9 @@ fn test_exhaustion() {
     assert_eq!(bitmap.free_count(), 64);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_range_free() {
     let bitmap = HierarchicalBitmap::new(200);
 
@@ -64,7 +72,9 @@ fn test_range_free() {
     assert!(bitmap.is_range_free(111, 39));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_claim_word() {
     let bitmap = HierarchicalBitmap::new(128);
 
@@ -81,7 +91,9 @@ fn test_claim_word() {
     assert_eq!(bitmap.free_count(), 128);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_last_word_partial() {
     // 100 units = 1 full word + 36 bits in last word
     let bitmap = HierarchicalBitmap::new(100);

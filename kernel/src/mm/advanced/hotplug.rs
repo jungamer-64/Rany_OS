@@ -498,14 +498,16 @@ pub fn hotplug_retry_offline(block_id: u64) -> Result<(), HotplugError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_memory_block_state() {
         let block = MemoryBlock::new(0, 0, MEMORY_BLOCK_SIZE, NumaNodeId::new(0));
         assert_eq!(block.state(), MemoryBlockState::Offline);
         block.set_state(MemoryBlockState::Online);
         assert_eq!(block.state(), MemoryBlockState::Online);
     }
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_frame_range() {
         let block = MemoryBlock::new(0, 0x1000_0000, MEMORY_BLOCK_SIZE, NumaNodeId::new(0));
         let (start, end) = block.frame_range();

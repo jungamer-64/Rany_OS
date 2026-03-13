@@ -1344,7 +1344,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn sriov_status_snapshot_includes_active_vf_bdfs() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let state = Mlx5SriovRuntimeState {
@@ -1368,7 +1370,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn enable_vfs_rolls_back_when_port_runtime_sync_fails() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let mut state = Mlx5SriovRuntimeState {
@@ -1399,7 +1403,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn disable_vfs_still_disables_pci_when_admin_down_fails() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let mut state = Mlx5SriovRuntimeState {
@@ -1430,7 +1436,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn dma_resources_to_allocated_resources_preserve_rmp_regions() {
         let dma_resources = Mlx5DmaResources {
             cmdq: DmaSlot::from_dma_buffer(test_dma_buffer(0x100, 0x1000, 0x2000)),
@@ -1479,7 +1487,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn dma_slot_subregion_keeps_owner_in_parent_buffer() {
         DMA_RELEASE_COUNT.store(0, Ordering::SeqCst);
 

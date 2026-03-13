@@ -484,7 +484,9 @@ macro_rules! audit {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_audit_record() {
         let record = AuditRecord::new(AuditEventType::DomainCreate, 42, true)
             .with_message("Test domain created")
@@ -495,7 +497,9 @@ mod tests {
         assert_eq!(record.event_type, AuditEventType::DomainCreate);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_audit_event() {
         let event = AuditEvent::new(AuditEventType::CapabilityCheck, 1)
             .success(false)
@@ -507,7 +511,9 @@ mod tests {
         assert_eq!(record.fields.len(), 1);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_event_type_critical() {
         assert!(AuditEventType::PrivilegeEscalation.is_critical());
         assert!(AuditEventType::AuthFailure.is_critical());

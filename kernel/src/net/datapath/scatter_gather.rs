@@ -389,7 +389,9 @@ pub static SG_STATS: SgStats = SgStats::new();
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_sg_list_basic() {
         let mut sg = ScatterGatherList::new();
         assert!(sg.is_empty());
@@ -405,7 +407,9 @@ mod tests {
         assert!(!sg.is_empty());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_sg_list_max_entries() {
         let mut sg = ScatterGatherList::new();
         let data = [0u8; 1];
@@ -418,7 +422,9 @@ mod tests {
         assert!(sg.push(&data).is_err());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_sg_linearize() {
         let mut sg = ScatterGatherList::new();
         let data1 = [0xAAu8, 0xBB];
@@ -434,7 +440,9 @@ mod tests {
         assert_eq!(&output[..5], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_sg_tx_builder() {
         let mut builder = SgTxBuilder::new();
         builder.set_ethernet(
@@ -452,7 +460,9 @@ mod tests {
         assert_eq!(sg.total_len(), 14 + 40 + 4); // 58
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_ip_checksum() {
         // Standard test vector
         let header: [u8; 20] = [

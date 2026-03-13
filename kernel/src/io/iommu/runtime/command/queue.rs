@@ -1123,7 +1123,8 @@ mod tests {
     }
 
     #[cfg(feature = "std")]
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cmd_queue_basic() {
         // Leak the queue to get a 'static reference for thread spawn in tests
         let q = Box::leak(Box::new(CommandQueue::new()));
@@ -1154,7 +1155,8 @@ mod tests {
     }
 
     #[cfg(feature = "std")]
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cmd_queue_map_unmap() {
         // Leak the queue to get a 'static reference for thread spawn in tests
         let q = Box::leak(Box::new(CommandQueue::new()));
@@ -1226,7 +1228,8 @@ mod tests {
 
     // Ensure `CommandCompletion` works as a Future (wakes properly)
     #[cfg(feature = "std")]
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cmd_completion_future() {
         let q = Box::leak(Box::new(CommandQueue::new()));
         let worker_q: &'static CommandQueue = &*q;
@@ -1261,7 +1264,9 @@ mod tests {
         worker.join().expect("worker join failed");
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_new_with_numa_allocates_slots() {
         // Ensure we can allocate CommandQueue with a NUMA hint and slots are initialized
         let q = CommandQueue::new_with_numa(Some(0));
@@ -1275,7 +1280,9 @@ mod tests {
         assert_eq!(q.numa_node, Some(0));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_wait_result_spin_times_out_for_never_completed_slot() {
         let slot = CompletionSlot::new();
         assert!(slot.try_acquire());
@@ -1283,7 +1290,9 @@ mod tests {
         assert_eq!(slot.state.load(Ordering::Acquire), 1);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_releases_slot_when_channel_remains_full() {
         let q = CommandQueue::new();
 
@@ -1310,7 +1319,8 @@ mod tests {
     }
 
     #[cfg(feature = "std")]
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_detects_receiver_poison() {
         let q = CommandQueue::new();
         poison_receiver_lock(&q);
@@ -1323,7 +1333,8 @@ mod tests {
     }
 
     #[cfg(feature = "std")]
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_async_detects_receiver_poison() {
         let q = CommandQueue::new();
         poison_receiver_lock(&q);
@@ -1338,7 +1349,8 @@ mod tests {
     }
 
     #[cfg(feature = "std")]
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_wait_for_work_returns_when_queue_poisoned() {
         let q = CommandQueue::new();
 
@@ -1359,7 +1371,8 @@ mod tests {
     }
 
     #[cfg(feature = "std")]
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_async_basic() {
         let q = Box::leak(Box::new(CommandQueue::new()));
         let worker_q: &'static CommandQueue = &*q;

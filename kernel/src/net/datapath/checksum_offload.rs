@@ -535,7 +535,9 @@ fn verify_tcp_udp_checksum(src_ip: &[u8; 4], dst_ip: &[u8; 4], protocol: u8, dat
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_internet_checksum() {
         // RFC 1071 example
         let data = [0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7];
@@ -543,7 +545,9 @@ mod tests {
         assert_ne!(cksum, 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_internet_checksum_verify() {
         // Construct a simple IPv4-like header and verify
         let mut header = [0u8; 20];
@@ -564,14 +568,18 @@ mod tests {
         assert_eq!(internet_checksum(&header), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_capabilities_default() {
         let caps = ChecksumCapabilities::default();
         assert!(!caps.any_tx());
         assert!(!caps.any_rx());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_capabilities_virtio() {
         let caps = ChecksumCapabilities::from_virtio(true, true);
         assert!(caps.any_tx());
@@ -580,7 +588,9 @@ mod tests {
         assert!(caps.rx_tcp);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_pseudo_header_partial_sum() {
         let src = [10, 0, 0, 1];
         let dst = [10, 0, 0, 2];
@@ -588,7 +598,9 @@ mod tests {
         assert!(partial > 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_offload_manager_sw_mode() {
         let mgr = ChecksumOffloadManager::new(ChecksumCapabilities::NONE);
 
@@ -606,7 +618,9 @@ mod tests {
         assert_eq!(internet_checksum(&header), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_offload_manager_hw_mode() {
         let mgr = ChecksumOffloadManager::new(ChecksumCapabilities::ALL);
 

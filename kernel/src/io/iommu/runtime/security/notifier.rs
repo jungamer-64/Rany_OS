@@ -174,7 +174,9 @@ pub(crate) fn notify_security_listener(event: SecurityEvent) {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn security_event_queue_preserves_reserved_slot_capacity() {
         let queue = SecurityEventQueue::new();
         let event = SecurityEvent::EventsDropped { count: 1 };

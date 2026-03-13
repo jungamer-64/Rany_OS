@@ -43,7 +43,8 @@ pub async fn network_recent_events(limit: usize) -> Vec<NetTraceEvent> {
 
 #[cfg(test)]
 mod tests {
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recent_events_complete_with_event_task() {
         let events = {
             crate::net::l4::endpoint::event::reset_event_system_for_tests();

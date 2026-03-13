@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_decode_hour_24h_mode() {
     // 24時間表記: そのまま返す
 
@@ -16,7 +18,9 @@ fn test_decode_hour_24h_mode() {
     assert_eq!(Rtc::decode_hour(0x23, false, true), 23); // BCD 0x23 -> 23
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_decode_hour_12h_mode_edge_cases() {
     // 12 AM (midnight) → 0
     assert_eq!(Rtc::decode_hour(0x12, false, false), 0); // BCD 12, no PM bit
@@ -35,7 +39,9 @@ fn test_decode_hour_12h_mode_edge_cases() {
     assert_eq!(Rtc::decode_hour(0x91, false, false), 23); // BCD 11 with PM (0x80 | 0x11)
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tsc_to_nanos_overflow_safe() {
     // Use TscInfo::new() which computes mult/shift automatically
     let info = TscInfo::new(3_000_000_000, true); // 3 GHz
@@ -60,7 +66,9 @@ fn test_tsc_to_nanos_overflow_safe() {
     );
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_compute_tsc_mult_shift() {
     // Test that mult/shift computation works for typical CPU frequencies
     let (mult, shift) = compute_tsc_mult_shift(3_000_000_000); // 3 GHz
@@ -85,7 +93,9 @@ fn test_compute_tsc_mult_shift() {
     );
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tsc_to_nanos_precise_vs_optimized() {
     let info = TscInfo::new(2_500_000_000, true); // 2.5 GHz
 
@@ -111,7 +121,9 @@ fn test_tsc_to_nanos_precise_vs_optimized() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_system_clock_timer_tick_nanos_round_trip() {
     let clock = SystemClock::new();
     assert_eq!(clock.timer_tick_nanos(), 0);

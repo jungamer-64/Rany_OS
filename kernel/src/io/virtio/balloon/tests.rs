@@ -260,7 +260,9 @@ struct TestQueues {
     deflate_desc_ptr: *mut VringDesc,
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_device_creation() {
     let transport = NoopTransport::new();
     let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
@@ -268,14 +270,18 @@ fn test_balloon_device_creation() {
     assert_eq!(dev.features(), 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_read_target() {
     let transport = NoopTransport::with_target(1024);
     let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
     assert_eq!(dev.read_target(), 1024);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_write_actual() {
     let transport = NoopTransport::new();
     let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
@@ -285,7 +291,9 @@ fn test_balloon_write_actual() {
     assert_eq!(actual, 512);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_inflate_not_ready() {
     let transport = NoopTransport::new();
     let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
@@ -294,7 +302,9 @@ fn test_balloon_inflate_not_ready() {
     assert_eq!(dev.inflate_pages(&pfns), Err(BalloonError::NotReady));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_inflate_empty_pfns() {
     let transport = NoopTransport::new();
     let (dev, _queues) = make_test_device(transport);
@@ -302,7 +312,9 @@ fn test_balloon_inflate_empty_pfns() {
     assert_eq!(dev.inflate_pages(&[]), Ok(()));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_inflate_submits_descriptor() {
     let transport = NoopTransport::new();
     let (dev, queues) = make_test_device(transport);
@@ -325,7 +337,9 @@ fn test_balloon_inflate_submits_descriptor() {
     assert!(inflight.contains_key(&0));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_deflate_submits_descriptor() {
     let transport = NoopTransport::new();
     let (dev, queues) = make_test_device(transport);
@@ -340,7 +354,9 @@ fn test_balloon_deflate_submits_descriptor() {
     assert_eq!(desc.flags & vring_flags::VRING_DESC_F_WRITE, 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_feature_bits() {
     assert_eq!(features::VIRTIO_BALLOON_F_MUST_TELL_HOST, 1 << 0);
     assert_eq!(features::VIRTIO_BALLOON_F_STATS_VQ, 1 << 1);
@@ -349,13 +365,17 @@ fn test_balloon_feature_bits() {
     assert_eq!(features::VIRTIO_BALLOON_F_PAGE_REPORTING, 1 << 5);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_error_variants() {
     assert_ne!(BalloonError::NotReady, BalloonError::IoError);
     assert_ne!(BalloonError::QueueFull, BalloonError::AllocFailed);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_handle_interrupt_no_panic() {
     let transport = NoopTransport::new();
     let (dev, _queues) = make_test_device(transport);
@@ -363,7 +383,9 @@ fn test_balloon_handle_interrupt_no_panic() {
     dev.handle_interrupt();
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_balloon_align_up() {
     assert_eq!(align_up(0, 4), 0);
     assert_eq!(align_up(1, 4), 4);

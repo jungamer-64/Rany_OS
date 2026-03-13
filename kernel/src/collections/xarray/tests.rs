@@ -4,7 +4,9 @@ use super::*;
 mod tests_usize {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_usize_basic() {
         let mut xa = XArrayUsize::new();
 
@@ -23,7 +25,9 @@ mod tests_usize {
         assert_eq!(xa.len(), 1);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_usize_marks() {
         let mut xa = XArrayUsize::new();
 
@@ -37,7 +41,9 @@ mod tests_usize {
         assert!(!xa.has_mark(0, XA_MARK_0));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_usize_zero_value() {
         let mut xa = XArrayUsize::new();
 

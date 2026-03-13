@@ -4,7 +4,9 @@ use super::*;
 // TLS MAC Tests
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_mac_sha1() {
     let key = [0x0Au8; 20];
     let mac = compute_tls_mac(
@@ -28,7 +30,9 @@ pub(crate) fn test_tls_mac_sha1() {
     assert_eq!(mac, mac2);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_mac_sha256() {
     let key = [0x0Bu8; 32];
     let mac = compute_tls_mac(
@@ -42,7 +46,9 @@ pub(crate) fn test_tls_mac_sha256() {
     assert_eq!(mac.len(), 32); // SHA-256 output
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_mac_seq_affects_output() {
     let key = [0x0Au8; 20];
     let mac1 = compute_tls_mac(
@@ -68,7 +74,9 @@ pub(crate) fn test_tls_mac_seq_affects_output() {
 // CBC Cipher Suite Helper Tests
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_cbc_cipher_suite_helpers() {
     let suite = CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA;
     assert!(suite.is_cbc());
@@ -80,7 +88,9 @@ pub(crate) fn test_cbc_cipher_suite_helpers() {
     assert!(suite.is_legacy_compatible());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_cbc_ecdhe_cipher_suite() {
     let suite = CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256;
     assert!(suite.is_cbc());
@@ -90,7 +100,9 @@ pub(crate) fn test_cbc_ecdhe_cipher_suite() {
     assert_eq!(suite.mac_len(), 32);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_aead_not_cbc() {
     let suite = CipherSuite::TLS_AES_128_GCM_SHA256;
     assert!(!suite.is_cbc());

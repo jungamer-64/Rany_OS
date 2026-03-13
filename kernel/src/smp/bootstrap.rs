@@ -639,12 +639,16 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_trampoline_handoff_accepts_shared_layout() {
         assert!(validate_trampoline_handoff(&valid_ap_boot_info()).is_ok());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_trampoline_handoff_rejects_missing_ready_flag() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.flags = 0;
@@ -654,7 +658,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_trampoline_handoff_rejects_small_allocation() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_size = (TRAMPOLINE_SIZE - 1) as u64;
@@ -664,7 +670,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_trampoline_handoff_rejects_layout_version_mismatch() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_layout_version = LAYOUT_VERSION + 1;
@@ -674,7 +682,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_trampoline_handoff_rejects_mailbox_offset_mismatch() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_mailbox_offset = (MAILBOX_OFFSET + 8) as u32;
@@ -684,7 +694,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn ap_stack_base_and_top_follow_boot_stack_blocks() {
         let ap_boot = valid_ap_boot_info();
         assert_eq!(ap_stack_base(&ap_boot, 0), 0x20_0000);
@@ -693,7 +705,9 @@ mod tests {
         assert_eq!(ap_stack_top(&ap_boot, 1), 0x22_0000);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn ap_stack_window_requires_page_aligned_stack_size() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.stack_size = 0x18_000 + 1;
@@ -704,7 +718,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn ap_stack_window_requires_mapped_page_above_guard() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.stack_size = 0x1000;

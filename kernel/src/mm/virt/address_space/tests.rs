@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_protection_conversion() {
     let prot = Protection::READ_WRITE;
     let flags = prot.to_page_flags();
@@ -8,7 +10,9 @@ fn test_protection_conversion() {
     assert!(flags.bits() & PageFlags::WRITABLE != 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_region_contains() {
     let region = MemoryRegion::new(
         VirtAddr::new(0x1000),
@@ -23,7 +27,9 @@ fn test_region_contains() {
     assert!(!region.contains(VirtAddr::new(0x0FFF)));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_clone_region_with_range_adjusts_file_info() {
     let mut base = MemoryRegion::new(
         VirtAddr::new(0x1000),

@@ -201,13 +201,17 @@ pub fn spawn_serial_shell() {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn parse_shell_mode_defaults_to_console() {
         assert_eq!(parse_shell_launch_mode(None), ShellLaunchMode::Console);
         assert_eq!(parse_shell_launch_mode(Some("")), ShellLaunchMode::Console);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn parse_shell_mode_from_shell_key() {
         assert_eq!(
             parse_shell_launch_mode(Some("shell=serial")),
@@ -223,7 +227,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn parse_shell_mode_uses_console_key_as_compat_fallback() {
         assert_eq!(
             parse_shell_launch_mode(Some("console=serial")),
@@ -235,7 +241,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn parse_shell_mode_prefers_shell_key_over_console_key() {
         assert_eq!(
             parse_shell_launch_mode(Some("shell=console console=serial")),

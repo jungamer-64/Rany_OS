@@ -29,7 +29,9 @@ mod tests {
     use nvme_driver::controller::NvmeCapabilities;
     use nvme_driver::defs::PrpList;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_nvme_command_read() {
         let cmd = NvmeCommand::read(0, 1, 0, 8, 0, 0);
         assert_eq!(cmd.nsid, 1);
@@ -37,7 +39,9 @@ mod tests {
         assert_eq!(cmd.cdw12, 7);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_nvme_command_write() {
         let cmd = NvmeCommand::write(0, 1, 100, 16, 0, 0);
         assert_eq!(cmd.nsid, 1);
@@ -45,7 +49,9 @@ mod tests {
         assert_eq!(cmd.cdw12, 15);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_capabilities() {
         let cap = NvmeCapabilities::new(0x00FF_2003_0020_FFFF);
         assert_eq!(cap.mqes(), 0xFFFF);
@@ -54,7 +60,9 @@ mod tests {
         assert_eq!(cap.max_queue_depth(), 0x10000);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_prp_list() {
         let mut prp_list = PrpList::new();
         assert!(prp_list.is_empty());

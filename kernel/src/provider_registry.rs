@@ -60,6 +60,13 @@ impl ProviderRegistry {
         }
     }
 
+    #[cfg(test)]
+    fn reset_for_tests(&self) {
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.clear();
+        self.next_handle.store(1, Ordering::Relaxed);
+    }
+
     fn allocate_handle(&self) -> ProviderHandle {
         ProviderHandle::new(self.next_handle.fetch_add(1, Ordering::Relaxed))
     }
@@ -436,6 +443,11 @@ pub fn provider_registry() -> &'static ProviderRegistry {
     &PROVIDER_REGISTRY
 }
 
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    PROVIDER_REGISTRY.reset_for_tests();
+}
+
 pub fn acpi_service() -> Option<&'static dyn AcpiServices> {
     provider_registry().acpi()
 }
@@ -677,64 +689,59 @@ mod tests {
     static FAKE_NETDEV: FakeNetdev = FakeNetdev;
     static FAKE_AUDIO: FakeAudio = FakeAudio;
 
-    #[test_case]
-    fn builtin_provider_registration_smoke() {
-        let acpi_handle = provider_registry().register_builtin_acpi(&FAKE_ACPI);
-        let pci_handle = provider_registry().register_builtin_pci(&FAKE_PCI);
-        let apic_handle = provider_registry().register_builtin_apic(&FAKE_APIC);
-        let time_handle = provider_registry().register_builtin_time(&FAKE_TIME);
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 
-        assert!(provider_registry().contains(acpi_handle));
-        assert!(provider_registry().contains(pci_handle));
-        assert!(provider_registry().contains(apic_handle));
-        assert!(provider_registry().contains(time_handle));
-        assert_eq!(
-            provider_registry().apic().map(|svc| svc.local_apic_id()),
-            Some(7)
-        );
-        assert_eq!(
-            provider_registry().pci().unwrap().scan_all_devices().len(),
-            1
-        );
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn builtin_provider_registration_smoke() {
+        let registry = ProviderRegistry::new();
+        let acpi_handle = registry.register_builtin_acpi(&FAKE_ACPI);
+        let pci_handle = registry.register_builtin_pci(&FAKE_PCI);
+        let apic_handle = registry.register_builtin_apic(&FAKE_APIC);
+        let time_handle = registry.register_builtin_time(&FAKE_TIME);
+
+        assert!(registry.contains(acpi_handle));
+        assert!(registry.contains(pci_handle));
+        assert!(registry.contains(apic_handle));
+        assert!(registry.contains(time_handle));
+        assert_eq!(registry.apic().map(|svc| svc.local_apic_id()), Some(7));
+        assert_eq!(registry.pci().unwrap().scan_all_devices().len(), 1);
     }
 
-    #[test_case]
-    fn builtin_service_provider_registration_smoke() {
-        let storage_handle = provider_registry().register_builtin_storage(&FAKE_STORAGE);
-        let netdev_handle = provider_registry().register_builtin_netdev(&FAKE_NETDEV);
-        let audio_handle = provider_registry().register_builtin_audio(&FAKE_AUDIO);
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 
-        assert!(provider_registry().contains(storage_handle));
-        assert!(provider_registry().contains(netdev_handle));
-        assert!(provider_registry().contains(audio_handle));
-        assert_eq!(provider_registry().storage().unwrap().devices().len(), 1);
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn builtin_service_provider_registration_smoke() {
+        let registry = ProviderRegistry::new();
+        let storage_handle = registry.register_builtin_storage(&FAKE_STORAGE);
+        let netdev_handle = registry.register_builtin_netdev(&FAKE_NETDEV);
+        let audio_handle = registry.register_builtin_audio(&FAKE_AUDIO);
+
+        assert!(registry.contains(storage_handle));
+        assert!(registry.contains(netdev_handle));
+        assert!(registry.contains(audio_handle));
+        assert_eq!(registry.storage().unwrap().devices().len(), 1);
         assert_eq!(
-            provider_registry()
-                .netdev()
-                .unwrap()
-                .primary_device()
-                .unwrap()
-                .mtu,
+            registry.netdev().unwrap().primary_device().unwrap().mtu,
             1500
         );
-        assert_eq!(
-            provider_registry().audio().unwrap().devices()[0].device_id,
-            9
-        );
+        assert_eq!(registry.audio().unwrap().devices()[0].device_id, 9);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn unregister_driver_only_removes_matching_owner() {
+        let registry = ProviderRegistry::new();
         let handle = DriverHandle::from_index(42);
-        let registered = provider_registry().insert_or_replace(
+        let registered = registry.insert_or_replace(
             ProviderOwner::Driver(handle),
             ProviderKind::Time,
             ProviderRef::Time(&FAKE_TIME),
         );
-        assert!(provider_registry().contains(registered));
+        assert!(registry.contains(registered));
 
-        provider_registry().unregister_driver(handle);
+        registry.unregister_driver(handle);
 
-        assert!(!provider_registry().contains(registered));
+        assert!(!registry.contains(registered));
     }
 }

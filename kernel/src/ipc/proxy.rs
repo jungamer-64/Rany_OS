@@ -389,14 +389,18 @@ mod tests {
     use super::*;
     use alloc::string::ToString;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_proxy_error_display() {
         let error = ProxyError::DomainPanicked("test panic".into());
         let error_str = alloc::format!("{}", error);
         assert!(error_str.contains("test panic"));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_retry_config_default() {
         let config = RetryConfig::default();
         assert_eq!(config.max_retries, 3);

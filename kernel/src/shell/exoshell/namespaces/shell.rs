@@ -445,7 +445,9 @@ mod tests {
         CurrentTaskGuard { prev, current }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_spawn_proxy_basic() {
         let caller = DomainId::new(200);
         let _guard = set_current_subject(caller);
@@ -460,7 +462,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_spawn_with_caps_helper() {
         let caller = DomainId::new(210);
         let _guard = set_current_subject(caller);
@@ -484,7 +488,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_proxy_chain_with_cap_and_run() {
         let caller = DomainId::new(220);
         let _guard = set_current_subject(caller);

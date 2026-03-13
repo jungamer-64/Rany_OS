@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_histogram() {
     let hist = Histogram::new();
 
@@ -14,7 +16,9 @@ fn test_histogram() {
     assert_eq!(stats.max, 100);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_histogram_percentile() {
     let hist = Histogram::new();
 
@@ -27,7 +31,9 @@ fn test_histogram_percentile() {
     assert!(p50 <= p99);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_trace_event() {
     let buf = TraceBuffer::new(100);
     buf.enable();
@@ -38,7 +44,9 @@ fn test_trace_event() {
     assert_eq!(events[0].data, 42);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_benchmark_runner() {
     let mut counter = 0u64;
     let result = BenchmarkRunner::run("test", 1000, || {

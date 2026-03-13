@@ -561,7 +561,9 @@ mod tests {
         (old_offset, state.write_offset)
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn replay_skips_uncommitted_transactions() {
         let wal = WalManager::new();
         let tx1 = wal.begin();
@@ -591,7 +593,9 @@ mod tests {
         assert_eq!(stats.applied_operations, 1);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn replay_preserves_interleaved_tx_operation_order() {
         let wal = WalManager::new();
         let tx1 = wal.begin();
@@ -625,7 +629,9 @@ mod tests {
         assert_eq!(applied[2].0, tx2);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn checkpoint_drops_committed_prefix_and_keeps_pending() {
         let wal = WalManager::new();
         let tx_committed = wal.begin();
@@ -657,7 +663,9 @@ mod tests {
         assert!(snapshot.iter().all(|r| r.tx_id == tx_pending));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recover_best_effort_truncates_corrupt_tail() {
         let wal = WalManager::new();
         let (backend, media) = SharedMemBackend::with_capacity(64 * 1024);
@@ -691,7 +699,9 @@ mod tests {
         assert_eq!(repaired.write_offset, valid_end);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recover_strict_rejects_corrupt_tail() {
         let wal = WalManager::new();
         let (backend, media) = SharedMemBackend::with_capacity(64 * 1024);

@@ -401,7 +401,9 @@ pub fn allocate_huge_page_2mb_fast(numa_node: usize) -> HugePageAllocResult {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_huge_page_sizes() {
         assert_eq!(HugePageSize::Size2MB.size_bytes(), 2 * 1024 * 1024);
         assert_eq!(HugePageSize::Size1GB.size_bytes(), 1024 * 1024 * 1024);
@@ -409,7 +411,9 @@ mod tests {
         assert_eq!(HugePageSize::Size1GB.order(), 18);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_pool_new() {
         let pool = HugePagePool::new(0);
         assert_eq!(pool.numa_node, 0);
@@ -417,7 +421,9 @@ mod tests {
         assert_eq!(pool.pool_size(HugePageSize::Size1GB), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_pool_needs_refill() {
         let pool = HugePagePool::new(0);
         assert!(pool.needs_refill(HugePageSize::Size2MB));

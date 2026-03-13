@@ -472,13 +472,17 @@ pub fn current_subject() -> Subject {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_context_size() {
         // CpuContext のサイズが期待通りか確認
         assert_eq!(core::mem::size_of::<CpuContext>(), 72); // 9 * 8 bytes
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_context_alignment() {
         // 8バイトアラインメント
         assert_eq!(core::mem::align_of::<CpuContext>(), 8);

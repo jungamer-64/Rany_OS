@@ -219,8 +219,12 @@ cargo build --target x86_64-exorust.json
 # 3. QEMUで実行 (UEFIモード推奨)
 ./scripts/run.sh --uefi
 
-# 4. テスト実行（純 / host/std, デフォルト）
+# 4. テスト実行（純 / host, デフォルト）
 cargo test
+
+# kernel 純ロジックテストは stock `#[test]` ハーネス
+cargo test -p rany_kernel -- --list
+cargo test -p rany_kernel security::capability::tests::test_capability_set -- --exact --nocapture
 
 # 5. 任意: 純テストの required tier（中央TOML経由）
 python3 scripts/verify_pure_tier_map.py
@@ -240,13 +244,15 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 
 テスト構成は 2 層です。
 
-* `純` (crate-local `std #[test]`): host/std の高速ロジック検証。`cargo test`（root）は host純全体を実行します。
+* `純` (crate-local host `#[test]`): 高速ロジック検証。`cargo test`（root）は workspace default-members の pure tier を実行し、`rany_kernel` もここに含まれます。
 * `QEMU実` (`qemu-tests`): `exoloader -> 実kernel ELF` の full-boot 検証。`run_integration=<profile>` を `exoloader.cmdline` に注入して runtime dispatcher を起動します。
 
 補足:
 
 * pure tier (`pr-required` / `nightly-required`) の真実源は `tests/pure_tiers.toml` です。
-* `pure-tests` は削除済み。純テストは crate-local `std #[test]` に集約。
+* `pure-tests` は削除済み。純テストは crate-local host `#[test]` に集約されています。
+* `rany_kernel` は hybrid crate として pure host test と full-boot QEMU test の両方に参加します。
+* kernel 純テストは stock harness なので `--list` と `--exact` がそのまま使えます。
 * `pending` / `runtime_pending` スイートは廃止されました。
 * 旧 `qemu-suites/*` からの移行棚卸しは `tests/migration_case_map.toml` を参照してください。
 * `qemu-tests` 実行時のログは `target/qemu-logs/` に出力されます（serial / QEMU stderr）。

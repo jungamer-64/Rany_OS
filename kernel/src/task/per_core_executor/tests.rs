@@ -26,7 +26,9 @@ fn install_cpu_topology(apics: &[u8]) {
     crate::smp::lifecycle::set_cpu_stage(0, crate::smp::lifecycle::CpuLifecycleStage::PerCpuReady);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn priority_ordering_matches_runtime_expectations() {
     assert!(Priority::Realtime < Priority::High);
     assert!(Priority::High < Priority::Normal);
@@ -34,14 +36,18 @@ fn priority_ordering_matches_runtime_expectations() {
     assert!(Priority::Low < Priority::Idle);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn executor_creation_tracks_core_id() {
     let executor = PerCoreExecutor::new(3);
     assert_eq!(executor.core_id(), 3);
     assert_eq!(executor.queue_length(), 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn polled_task_context_round_trips() {
     mark_current_polled_task(
         2,
@@ -56,7 +62,9 @@ fn polled_task_context_round_trips() {
     assert!(current_polled_task_context().is_none());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn manager_spawn_and_steal_operate_on_canonical_tasks() {
     let manager = ExecutorManager::new();
     manager.init(2);
@@ -87,7 +95,9 @@ fn manager_spawn_and_steal_operate_on_canonical_tasks() {
     assert!(victim.stats().tasks_stolen_from >= 1);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn remote_wake_targets_logical_cpu_mapping() {
     crate::smp::reset_runtime_workers_for_tests();
     install_cpu_topology(&[2, 41]);
@@ -112,7 +122,9 @@ fn remote_wake_targets_logical_cpu_mapping() {
     assert_eq!(REMOTE_WAKE_BROADCASTS.load(Ordering::Acquire), 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn remote_wake_broadcasts_when_apic_mapping_is_missing() {
     crate::smp::reset_runtime_workers_for_tests();
     install_cpu_topology(&[2]);
@@ -137,7 +149,9 @@ fn remote_wake_broadcasts_when_apic_mapping_is_missing() {
     assert_eq!(REMOTE_WAKE_BROADCASTS.load(Ordering::Acquire), 1);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn pick_target_cpu_respects_affinity_mask() {
     let manager = ExecutorManager::new();
     manager.init(3);
@@ -155,7 +169,9 @@ fn pick_target_cpu_respects_affinity_mask() {
     assert_eq!(manager.pick_target_cpu_for_task(&task), 2);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn steal_from_skips_tasks_that_cannot_run_on_thief_cpu() {
     let manager = ExecutorManager::new();
     manager.init(2);

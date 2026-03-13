@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_io_priority_ordering() {
     assert!(IoPriority::Realtime > IoPriority::High);
     assert!(IoPriority::High > IoPriority::Normal);
@@ -8,7 +10,9 @@ fn test_io_priority_ordering() {
     assert!(IoPriority::Idle > IoPriority::Background);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_io_mode_stats() {
     let stats = IoModeStats::new();
     stats.record_io(100);
@@ -19,7 +23,9 @@ fn test_io_mode_stats() {
     assert_eq!(stats.avg_latency_us(), 116); // (100+200+50)/3
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_scheduler_submit() {
     let scheduler = IoScheduler::new();
     let device = DeviceId::Nvme {

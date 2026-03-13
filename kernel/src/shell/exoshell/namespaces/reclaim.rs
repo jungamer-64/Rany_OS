@@ -139,7 +139,9 @@ mod tests {
     use super::*;
     use crate::security::CapabilitySet;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_status_contains_expected_keys() {
         let val = ReclaimNamespace::status();
         match val {
@@ -153,7 +155,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_set_requires_cap() {
         let ns = ReclaimNamespace;
         let caps = CapabilitySet::empty();
@@ -166,7 +170,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_set_with_admin() {
         let ns = ReclaimNamespace;
         let caps = CapabilitySet::full();

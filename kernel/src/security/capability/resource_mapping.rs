@@ -26,6 +26,11 @@ pub fn manager() -> &'static CapabilityManager {
     &CAPABILITY_MANAGER
 }
 
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    CAPABILITY_MANAGER.reset_for_tests();
+}
+
 /// Initialize capabilities for kernel domain
 pub fn init() {
     // Kernel domain gets all capabilities

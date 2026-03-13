@@ -93,7 +93,9 @@ pub(crate) fn reset_runtime_workers_for_tests() {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn runtime_worker_release_flag_is_observable() {
         reset_runtime_state();
 

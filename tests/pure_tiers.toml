@@ -2,6 +2,7 @@ schema_version = 1
 
 [root_default]
 packages = [
+  "kernel",
   "libs/boot_config",
   "libs/security",
   "interfaces/kernel_api",
@@ -9,6 +10,7 @@ packages = [
   "libs/graphic_types",
   "filesystems/vfs",
   "filesystems/fat32",
+  "filesystems/nvme_ns",
   "drivers/pci",
   "drivers/ahci",
   "drivers/usb",
@@ -18,9 +20,20 @@ packages = [
   "drivers/virtio",
   "drivers/acpi",
   "drivers/time",
+  "drivers/mlx5",
   "apps",
   "tools/cap_harness",
 ]
+
+[[package]]
+name = "rany_kernel"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+mode = "hybrid"
 
 [[package]]
 name = "boot_config"
@@ -159,6 +172,15 @@ exact = true
 serial = false
 
 [[package]]
+name = "nvme_ns"
+tier = "pr-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
 name = "cap_harness"
 tier = "pr-required"
 root_default = true
@@ -178,6 +200,15 @@ serial = false
 
 [[package]]
 name = "nvme_driver"
+tier = "nightly-required"
+root_default = true
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "mlx5_driver"
 tier = "nightly-required"
 root_default = true
 run_ignored = false

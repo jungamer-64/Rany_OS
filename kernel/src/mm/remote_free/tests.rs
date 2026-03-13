@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_remote_free_entry_basics() {
     let empty = RemoteFreeEntry::empty();
     assert!(empty.is_empty());
@@ -18,7 +20,9 @@ fn test_remote_free_entry_basics() {
     assert_eq!(range.total_bytes(), (8 * PAGE_SIZE_2M) as u64);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_quarantine_ring_push_drain() {
     let mut ring: QuarantineRing<8> = QuarantineRing::new();
 
@@ -38,7 +42,9 @@ fn test_quarantine_ring_push_drain() {
     assert_eq!(ring.oldest_epoch(), Some(3));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_quarantine_ring_full() {
     let mut ring: QuarantineRing<4> = QuarantineRing::new();
 
@@ -59,7 +65,9 @@ fn test_quarantine_ring_full() {
     assert!(ring.push(0x5000, 0, 5));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_quarantine_epoch_wraparound() {
     let mut ring: QuarantineRing<8> = QuarantineRing::new();
 

@@ -796,7 +796,9 @@ pub unsafe fn zero_page_with_prefetch(addr: *mut u8, size: usize) {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_choose_zero_strategy() {
         assert_eq!(
             choose_zero_strategy(PAGE_SIZE_4K, false),
@@ -814,7 +816,9 @@ mod tests {
         assert_eq!(choose_zero_strategy(32, false), ZeroStrategy::Memset);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_zero_policy() {
         set_zero_policy(ZeroPolicy::ZeroOnFree);
         assert_eq!(get_zero_policy(), ZeroPolicy::ZeroOnFree);

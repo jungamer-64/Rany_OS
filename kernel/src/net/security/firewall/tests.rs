@@ -58,7 +58,9 @@ mod tests {
         engine
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_disabled_engine_allows_all() {
         let engine = FirewallEngine::new_const();
         assert!(!engine.enabled());
@@ -76,7 +78,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_default_allow_policy() {
         let engine = make_engine();
         // ルールなし → デフォルトポリシー (Allow)
@@ -94,7 +98,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_default_deny_policy() {
         let mut engine = make_engine();
         engine.set_default_policy(FirewallDirection::Ingress, FirewallAction::Deny);
@@ -112,7 +118,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_deny_specific_port() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -153,7 +161,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_allow_specific_subnet() {
         let mut engine = make_engine();
         engine.set_default_policy(FirewallDirection::Ingress, FirewallAction::Deny);
@@ -195,7 +205,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_priority_ordering() {
         let mut engine = make_engine();
 
@@ -252,7 +264,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_port_range() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -293,7 +307,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_exact_ip_match() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -331,7 +347,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_egress_rule() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -372,7 +390,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_both_direction_rule() {
         let mut engine = make_engine();
         let rule = FirewallRule::builder()
@@ -412,7 +432,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_remove_rule() {
         let mut engine = make_engine();
         let id = engine.add_rule(
@@ -456,7 +478,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_clear_rules() {
         let mut engine = make_engine();
         engine.add_rule(
@@ -481,7 +505,9 @@ mod tests {
         assert_eq!(engine.rule_count(), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cidr_masks() {
         // /0 は全アドレスにマッチ
         assert!(matches_ipv4(&IpMatch::Cidr([0, 0, 0, 0], 0), [1, 2, 3, 4]));
@@ -523,7 +549,9 @@ mod tests {
         ));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_stats_tracking() {
         let mut engine = make_engine();
         engine.add_rule(
@@ -565,7 +593,9 @@ mod tests {
 
     // ── API パーサーテスト ──
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_ip_match_display() {
         assert_eq!(format!("{}", IpMatch::Any), "*");
         assert_eq!(format!("{}", IpMatch::Exact([10, 0, 2, 15])), "10.0.2.15");
@@ -575,14 +605,18 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_port_match_display() {
         assert_eq!(format!("{}", PortMatch::Any), "*");
         assert_eq!(format!("{}", PortMatch::Exact(80)), "80");
         assert_eq!(format!("{}", PortMatch::Range(1024, 65535)), "1024-65535");
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_protocol_match() {
         assert!(FirewallProtocol::Any.matches(6));
         assert!(FirewallProtocol::Any.matches(17));

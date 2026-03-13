@@ -485,7 +485,9 @@ impl fmt::Debug for UnwindContext {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_register_from_u8() {
         assert_eq!(DwarfRegister::from_u8(0), Some(DwarfRegister::Rax));
         assert_eq!(DwarfRegister::from_u8(6), Some(DwarfRegister::Rbp));
@@ -497,7 +499,9 @@ mod tests {
         assert_eq!(DwarfRegister::from_u8(100), None);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_register_set() {
         let mut regs = RegisterSet::new();
 
@@ -516,7 +520,9 @@ mod tests {
         assert!(!regs.set_by_number(100, RegisterRule::SameValue));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_callee_saved() {
         assert!(DwarfRegister::Rbx.is_callee_saved());
         assert!(DwarfRegister::Rbp.is_callee_saved());

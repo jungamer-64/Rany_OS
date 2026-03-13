@@ -767,7 +767,9 @@ impl IommuController {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_setup_root_table_returns_poisoned_on_hardware_lock_poison() {
         let mut controller = IommuController::new(0x1000, 0);
 

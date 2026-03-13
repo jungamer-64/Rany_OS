@@ -43,7 +43,9 @@ unsafe impl KeyAdapter for TestAdapter {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_empty_tree() {
     let tree: RBTree<TestAdapter> = RBTree::new();
     assert!(tree.is_empty());
@@ -52,7 +54,9 @@ fn test_empty_tree() {
     assert!(tree.last().is_none());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_insert_find() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
     let mut entry = Box::new(TestEntry::new(42, 100));
@@ -80,7 +84,9 @@ fn test_insert_find() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_multiple_inserts() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
     let mut entries: Vec<Box<TestEntry>> = (0..10)
@@ -109,7 +115,9 @@ fn test_multiple_inserts() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ordering() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
     let keys = [50, 30, 70, 20, 40, 60, 80];
@@ -146,7 +154,9 @@ fn test_ordering() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_duplicate_key() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
     let mut entry1 = Box::new(TestEntry::new(42, 100));
@@ -166,7 +176,9 @@ fn test_duplicate_key() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_remove() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
     let mut entries: Vec<Box<TestEntry>> = (0..5)

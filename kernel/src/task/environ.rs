@@ -353,7 +353,9 @@ pub fn get_term() -> Option<EnvValue> {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_env_basic() {
         let env = Environment::new();
 
@@ -364,7 +366,9 @@ mod tests {
         assert!(env.get("TEST_VAR").is_none());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_env_key_validation() {
         assert!(EnvKey::new("VALID_KEY").is_valid());
         assert!(EnvKey::new("_also_valid").is_valid());
@@ -375,7 +379,9 @@ mod tests {
         assert!(!EnvKey::new("key-with-dash").is_valid());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_env_expand() {
         let env = Environment::new();
         env.set("USER", "testuser").unwrap();
@@ -385,7 +391,9 @@ mod tests {
         assert_eq!(env.expand("Home is ${HOME}"), "Home is /home/testuser");
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_environ_parsing() {
         use alloc::vec;
         let value = EnvValue::new("/bin:/usr/bin:/usr/local/bin");

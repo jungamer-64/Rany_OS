@@ -11,7 +11,9 @@ mod tests {
     use crate::sync::set_panicking;
     use alloc::sync::Arc;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_basic_lock() {
         let lock = PoisonLock::new(42);
 
@@ -23,7 +25,9 @@ mod tests {
         assert!(!lock.is_poisoned());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_poisoned_after_simulated_panic() {
         let lock = PoisonLock::new(42);
 
@@ -47,7 +51,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_lock_for_init_recovers_on_poison() {
         use crate::sync::set_panicking;
 
@@ -77,7 +83,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_lock_contention_metrics() {
         use std::sync::Arc;
         use std::thread;
@@ -117,7 +125,8 @@ mod tests {
     /// multiple `PoisonLock` instances and having many threads randomly lock
     /// them repeatedly. This approximates contention patterns seen in
     /// sharded registries without depending on the full `sas` module.
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_sharded_poisonlock_stress() {
         use std::sync::Arc;
         use std::thread;
@@ -161,7 +170,8 @@ mod tests {
     }
 
     /// Higher contention scenario: fewer shards, more threads and longer holds.
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_sharded_poisonlock_high_contention() {
         use std::sync::Arc;
         use std::thread;
@@ -206,7 +216,8 @@ mod tests {
     /// CSV-style measurements so we can pick shard counts and judge contention.
     /// This test is intended to run on the host (cfg(test)) only and prints
     /// results to stdout for quick inspection.
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_lock_metrics_sweep() {
         use std::sync::Arc;
         use std::thread;

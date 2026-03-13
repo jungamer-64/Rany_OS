@@ -501,7 +501,9 @@ pub struct SpectreMitigationStatus {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_speculation_safe_index() {
         assert_eq!(speculation_safe_index(0, 10), 0);
         assert_eq!(speculation_safe_index(5, 10), 5);
@@ -510,7 +512,9 @@ mod tests {
         assert_eq!(speculation_safe_index(100, 10), 0); // 境界外
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_bounds_check() {
         let arr = [1, 2, 3, 4, 5];
         assert_eq!(bounds_check_speculation_safe(&arr, 0), Some(&1));

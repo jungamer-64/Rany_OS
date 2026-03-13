@@ -4,7 +4,9 @@ use alloc::string::String;
 #[cfg(any(feature = "full_mm_tests", feature = "qemu-test-export"))]
 use core::alloc::{GlobalAlloc, Layout};
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn exchange_heap_after_global_heap() {
     // Exchange heap must be placed after the global heap (no overlap)
     let heap_end = heap_start().saturating_add(HEAP_SIZE as u64);
@@ -12,7 +14,8 @@ fn exchange_heap_after_global_heap() {
 }
 
 #[cfg(any(feature = "full_mm_tests", feature = "qemu-test-export"))]
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_global_alloc_quota_charge_and_uncharge_with_header() {
     use crate::domain::quota::quota_manager;
     use crate::domain_system::{

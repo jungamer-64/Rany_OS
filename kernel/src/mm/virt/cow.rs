@@ -678,7 +678,9 @@ pub fn cow_debug_info() {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_page_refcount_basic() {
         let phys = 0x100_000; // 1MB
 
@@ -695,7 +697,9 @@ mod tests {
         assert_eq!(page_refcount(phys), 1);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cow_stats() {
         let stats = cow_stats();
         // 統計が取得できることを確認

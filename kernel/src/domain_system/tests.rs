@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_set_and_get_domain_numa() {
     let id = create_domain(String::from("numa_test")).expect("create_domain failed");
     assert_eq!(get_domain_numa(id), None);
@@ -8,7 +10,9 @@ fn test_set_and_get_domain_numa() {
     assert_eq!(get_domain_numa(id), Some(3usize));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_quota_sync_and_unregister_on_terminate() {
     use crate::domain::quota::{DomainPriority, quota_manager};
 
@@ -36,7 +40,9 @@ fn test_quota_sync_and_unregister_on_terminate() {
     );
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_poisoned_readers_return_defaults() {
     use crate::sync::set_panicking;
 
@@ -61,7 +67,9 @@ fn test_domain_poisoned_readers_return_defaults() {
     print_domain_list();
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_create_domain_poisoned_returns_error() {
     use crate::error::{DomainErrorKind, KernelError};
     use crate::sync::set_panicking;
@@ -80,7 +88,9 @@ fn test_create_domain_poisoned_returns_error() {
     );
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_poisoned_add_remove_task_no_panic() {
     use crate::sync::set_panicking;
 
@@ -97,7 +107,9 @@ fn test_domain_poisoned_add_remove_task_no_panic() {
     remove_task_from_domain(id, 1234);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_reclaim_domain_resources_poisoned_no_panic() {
     use crate::sync::set_panicking;
 
@@ -112,7 +124,9 @@ fn test_reclaim_domain_resources_poisoned_no_panic() {
     reclaim_domain_resources(id);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cpu_quota_demote_then_suspend() {
     use crate::domain::quota::DomainPriority;
 
@@ -160,7 +174,9 @@ fn test_cpu_quota_demote_then_suspend() {
     );
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_quota_suspend_auto_resume_after_window() {
     let id = create_domain(String::from("cpu_quota_resume")).expect("create_domain failed");
 

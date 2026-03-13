@@ -4,9 +4,18 @@
 // runner.
 #![cfg_attr(all(not(feature = "std"), not(all(test, target_os = "linux"))), no_std)]
 #![cfg_attr(all(test, not(feature = "std"), not(target_os = "linux")), no_main)]
-#![feature(custom_test_frameworks)]
-#![cfg_attr(test, test_runner(crate::test_runner))]
-#![reexport_test_harness_main = "test_main"]
+#![cfg_attr(
+    all(test, not(any(feature = "std", target_os = "linux"))),
+    feature(custom_test_frameworks)
+)]
+#![cfg_attr(
+    all(test, not(any(feature = "std", target_os = "linux"))),
+    test_runner(crate::test_runner)
+)]
+#![cfg_attr(
+    all(test, not(any(feature = "std", target_os = "linux"))),
+    reexport_test_harness_main = "test_main"
+)]
 #![cfg_attr(
     any(not(test), feature = "full_mm_tests"),
     allow(unsafe_op_in_unsafe_fn)
@@ -169,9 +178,9 @@ pub fn panic(info: &core::panic::PanicInfo) -> ! {
 macro_rules! println {
     () => (print!("\n"));
     ($($arg:tt)*) => ({
-        if cfg!(feature = "std") {
-            // In std-based tests, use std::println
-            #[cfg(feature = "std")]
+        if cfg!(any(feature = "std", all(test, target_os = "linux"))) {
+            // Host tests and std-enabled builds can use the stock stdout path.
+            #[cfg(any(feature = "std", all(test, target_os = "linux")))]
             std::println!($($arg)*);
         } else {
              // In no_std, use kernel logger
@@ -184,69 +193,15 @@ macro_rules! println {
 macro_rules! eprintln {
     () => (eprint!("\n"));
     ($($arg:tt)*) => ({
-        if cfg!(feature = "std") {
-            // In std-based tests, use std::eprintln
-            #[cfg(feature = "std")]
+        if cfg!(any(feature = "std", all(test, target_os = "linux"))) {
+            // Host tests and std-enabled builds can use the stock stderr path.
+            #[cfg(any(feature = "std", all(test, target_os = "linux")))]
             std::eprintln!($($arg)*);
         } else {
              // In no_std, use kernel logger w/ error level or just print
              $crate::io::log::print(format_args!("{}\n", format_args!($($arg)*)));
         }
     });
-}
-
-#[cfg(all(test, any(feature = "std", target_os = "linux")))]
-pub fn test_runner(tests: &[&dyn Fn()]) {
-    #[cfg(feature = "full_mm_tests")]
-    crate::per_cpu::init_for_host_tests();
-
-    eprintln!("[qemu-suite] kernel-unit start");
-    eprintln!("[test] running {} tests...", tests.len());
-
-    let mut passed = 0usize;
-    let mut failed = 0usize;
-    let mut failed_indices: [usize; 64] = [0; 64];
-
-    for (i, t) in tests.iter().enumerate() {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            t();
-        }));
-        match result {
-            Ok(()) => {
-                eprintln!("[test] #{} ... [test] ok", i);
-                passed += 1;
-            }
-            Err(_) => {
-                eprintln!("[test] #{} ... [test] FAILED", i);
-                if failed < 64 {
-                    failed_indices[failed] = i;
-                }
-                failed += 1;
-            }
-        }
-    }
-
-    eprintln!("\n[test] results: {} passed, {} failed", passed, failed);
-
-    if failed > 0 {
-        let mut indices = String::new();
-        let show = if failed < 64 { failed } else { 64 };
-        for fi in 0..show {
-            if fi > 0 {
-                indices.push_str(", ");
-            }
-            use core::fmt::Write as _;
-            let _ = write!(&mut indices, "{}", failed_indices[fi]);
-        }
-        eprintln!("[test] failed indices: {}", indices);
-    }
-
-    if failed > 0 {
-        eprintln!("[qemu-suite] kernel-unit FAIL");
-        std::process::exit(1);
-    }
-
-    eprintln!("[qemu-suite] kernel-unit pass");
 }
 
 #[cfg(all(test, not(feature = "std"), not(target_os = "linux")))]
@@ -296,6 +251,29 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
     }
 
     crate::io::log::early_print("[qemu-suite] kernel-unit pass\n");
+}
+
+#[cfg(test)]
+pub(crate) mod host_test_support {
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    pub struct Guard(std::sync::MutexGuard<'static, ()>);
+
+    #[cfg(not(any(feature = "std", target_os = "linux")))]
+    pub struct Guard;
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    pub fn guard() -> Guard {
+        use std::sync::{Mutex, OnceLock};
+
+        static HOST_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let lock = HOST_TEST_LOCK.get_or_init(|| Mutex::new(()));
+        Guard(lock.lock().expect("host test lock poisoned"))
+    }
+
+    #[cfg(not(any(feature = "std", target_os = "linux")))]
+    pub fn guard() -> Guard {
+        Guard
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2504,7 +2482,9 @@ mod async_swapout_sim_lib {
         kind: SwapKind,
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn async_swapout_sim_short_baseline() {
         // Simulation parameters (short baseline run)
         // Allow overriding via environment variables for quick parameter sweeps

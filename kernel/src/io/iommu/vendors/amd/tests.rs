@@ -60,7 +60,9 @@ fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alias_devids_for_device_dedup() {
     let device = DeviceId::new(0, 1, 0, 0);
     let devid = device.requester_id();
@@ -93,7 +95,9 @@ fn test_alias_devids_for_device_dedup() {
     assert_eq!(aliases, alloc::vec![0x0200, 0x0300]);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alias_devids_for_device_no_match() {
     let driver = make_driver(alloc::vec![IvhdDeviceEntry::Select {
         devid: 0x0100,
@@ -104,7 +108,9 @@ fn test_alias_devids_for_device_no_match() {
     assert!(aliases.is_empty());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ivhd_flags_for_device_combined() {
     let device = DeviceId::new(0, 2, 0, 0);
     let devid = device.requester_id();
@@ -150,7 +156,9 @@ fn test_ivhd_flags_for_device_combined() {
     assert_eq!(flags, 0xff);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ivhd_flags_for_device_acpi_hid() {
     let device = DeviceId::new(0, 2, 0, 0);
     let devid = device.requester_id();
@@ -160,7 +168,9 @@ fn test_ivhd_flags_for_device_acpi_hid() {
     assert_eq!(flags, 0x03);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_ivmd_ranges_exclusion_splits() {
     let pool = PageTablePool::new(1, 1);
     let domain = DomainState::new(
@@ -209,7 +219,9 @@ fn test_map_ivmd_ranges_exclusion_splits() {
     assert_eq!(mappings.len(), 2);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_for_device_rejects_exclusion_range() {
     let device = DeviceId::new(0, 0, 1, 0);
     let devid = device.requester_id();
@@ -329,7 +341,9 @@ fn make_test_driver_small() -> AmdIommuDriver {
 // Wave1 #[test_case] tests
 // ---------------------------------------------------------------------------
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cmdqueue_map_unmap_with_domain() {
     let driver = make_test_driver_small();
 
@@ -403,7 +417,9 @@ fn test_cmdqueue_map_unmap_with_domain() {
     assert!(domain.mapping(iova).is_none());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_device_nonblocking() {
     let driver = make_test_driver_small();
 
@@ -431,7 +447,9 @@ fn test_map_device_nonblocking() {
     assert!(domain.mapping(iova).is_none());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_dma_mask_respects_32bit_limit() {
     let driver = make_test_driver_small();
 
@@ -443,7 +461,9 @@ fn test_dma_mask_respects_32bit_limit() {
     driver.free_iova(iova, size).unwrap();
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_security_notifier_dispatch() {
     let driver = make_test_driver_small();
     let notifier: alloc::sync::Arc<dyn SecurityNotifier> = alloc::sync::Arc::new(TestMockNotifier);
@@ -457,7 +477,9 @@ fn test_security_notifier_dispatch() {
         .unwrap();
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cmdqueue_pressure() {
     let cq = alloc::boxed::Box::leak(alloc::boxed::Box::new(CommandQueue::new()));
     let count = 32usize;
@@ -498,7 +520,9 @@ fn test_cmdqueue_pressure() {
 use super::cmd::AmdCommand;
 use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_entry_construction() {
     let irte = AmdIrte::fixed(0x42, 0x0A, false, None);
     assert!(irte.is_present());
@@ -515,7 +539,9 @@ fn test_wave5_irt_entry_construction() {
     assert!(!empty.is_present());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_alloc_free() {
     let mut irt = AmdInterruptRemapTable::new(4).unwrap();
     let h0 = irt.allocate().unwrap();
@@ -534,7 +560,9 @@ fn test_wave5_irt_alloc_free() {
     assert!(!irt.get_entry(h0).unwrap().is_present());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_exhaustion() {
     let mut irt = AmdInterruptRemapTable::new(2).unwrap(); // 4 entries
     assert_eq!(irt.capacity(), 4);
@@ -549,7 +577,9 @@ fn test_wave5_irt_exhaustion() {
     assert_eq!(irt.allocate().unwrap(), handles[1]);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_invalidation_cmd_format() {
     let devid: u16 = 0x0108;
     let cmd = AmdCommand::invalidate_interrupt_table(devid);
@@ -557,7 +587,9 @@ fn test_wave5_irt_invalidation_cmd_format() {
     assert_eq!((cmd.data[1] >> 28) & 0x0F, 0x05);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_map_interrupt_returns_handle() {
     let mut driver = make_test_driver_small();
     let unit_irt = AmdUnitIrt::new(4).unwrap();
@@ -570,7 +602,9 @@ fn test_wave5_map_interrupt_returns_handle() {
     assert!(handle < 16); // 2^4 = 16 entries
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_get_remap_msi_message_format() {
     let (addr, _data) = encode_remap_msi(5);
     assert_eq!(addr & 0xFFF0_0000, 0xFEE0_0000);

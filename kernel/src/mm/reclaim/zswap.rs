@@ -695,7 +695,9 @@ pub fn zswap_get_writeback_candidates(count: usize) -> Vec<u64> {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_same_filled_detection() {
         let pool = Zpool::new();
 
@@ -710,7 +712,9 @@ mod tests {
         assert_eq!(pool.detect_same_filled(&mixed), None);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_compression_ratio() {
         let entry = ZswapEntry {
             data: vec![0; 1000],
@@ -725,7 +729,9 @@ mod tests {
         assert!(ratio > 0.24 && ratio < 0.25);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_zswap_store_load_2m() {
         // Ensure pool is initialized and sized
         ZSWAP_POOL.init();

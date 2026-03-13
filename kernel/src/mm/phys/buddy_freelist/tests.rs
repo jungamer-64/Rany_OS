@@ -1,13 +1,17 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_migrate_type_fallback() {
     let fallbacks = MigrateType::Movable.fallback_order();
     assert!(fallbacks.contains(&MigrateType::Reclaimable));
     assert!(fallbacks.contains(&MigrateType::Unmovable));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_frame_to_color() {
     assert_eq!(frame_to_color(0), 0);
     assert_eq!(frame_to_color(64), 0);
@@ -15,7 +19,9 @@ fn test_frame_to_color() {
     assert_eq!(frame_to_color(63), 63);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_page_flags() {
     let mut flags = PageFlags::NONE;
     assert!(!flags.contains(PageFlags::FREE));
@@ -32,7 +38,9 @@ fn test_page_flags() {
     assert!(flags.contains(PageFlags::ZEROED));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_basic_alloc_dealloc() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 4MB at 1MB
@@ -48,7 +56,9 @@ fn test_freelist_basic_alloc_dealloc() {
     allocator.deallocate_4k_frame(frame);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_buddy_coalescing() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 2MB at 2MB boundary
@@ -70,7 +80,9 @@ fn test_freelist_buddy_coalescing() {
     assert_eq!(allocator.free_count(), initial_free);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_split_and_merge() {
     let mut allocator = FreeListBuddyAllocator::new();
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
@@ -91,7 +103,9 @@ fn test_freelist_split_and_merge() {
     assert_eq!(allocator.free_count(), initial_free);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_migrate_fallback_alloc() {
     let mut allocator = FreeListBuddyAllocator::new();
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
@@ -107,7 +121,9 @@ fn test_freelist_migrate_fallback_alloc() {
     assert!(stats.fallback_count > 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_stats() {
     let mut allocator = FreeListBuddyAllocator::new();
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
@@ -120,7 +136,9 @@ fn test_freelist_stats() {
     assert!(stats.free_frames > 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_2m_allocation() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 2MB at 2MB boundary
@@ -136,7 +154,9 @@ fn test_freelist_2m_allocation() {
     assert_eq!(frame.start_address().as_u64() % (PAGE_SIZE_2M as u64), 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_contiguous_allocation() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 4MB at 1MB
@@ -154,7 +174,9 @@ fn test_freelist_contiguous_allocation() {
     assert_eq!(addr.as_u64() % (16 * PAGE_SIZE_4K as u64), 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_frames_to_order() {
     assert_eq!(FreeListBuddyAllocator::frames_to_order(0), 0);
     assert_eq!(FreeListBuddyAllocator::frames_to_order(1), 0);
@@ -165,7 +187,9 @@ fn test_freelist_frames_to_order() {
     assert_eq!(FreeListBuddyAllocator::frames_to_order(512), 9);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_allocate_with_color() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 4MB at 2MB boundary — 十分なフレームでカラー分散を確保
@@ -182,7 +206,9 @@ fn test_freelist_allocate_with_color() {
     assert_eq!(actual_color, preferred_color);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_max_order_rejection() {
     let mut allocator = FreeListBuddyAllocator::new();
     let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
@@ -195,7 +221,9 @@ fn test_freelist_max_order_rejection() {
     assert!(result.is_none());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_allocate_from_empty() {
     // 未初期化アロケータからの割り当ては None を返す
     let mut allocator = FreeListBuddyAllocator::new();
@@ -203,7 +231,9 @@ fn test_freelist_allocate_from_empty() {
     assert!(result.is_none());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_multi_order_coalescing() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 2MB at 2MB boundary
@@ -235,7 +265,9 @@ fn test_freelist_multi_order_coalescing() {
     );
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_fragmentation_stress() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 2MB at 2MB boundary
@@ -268,7 +300,9 @@ fn test_freelist_fragmentation_stress() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_move_freepages_block() {
     let mut allocator = FreeListBuddyAllocator::new();
     // 4MB at 2MB boundary

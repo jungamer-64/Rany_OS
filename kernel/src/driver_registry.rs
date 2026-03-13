@@ -285,6 +285,12 @@ impl DriverRegistry {
         }
     }
 
+    #[cfg(test)]
+    fn reset_for_tests(&self) {
+        let mut drivers = self.drivers.lock().unwrap_or_else(|e| e.into_inner());
+        drivers.clear();
+    }
+
     /// Register a new driver
     ///
     /// Returns `Err(DriverError::Poisoned)` if the registry lock is poisoned.
@@ -1116,6 +1122,16 @@ static DRIVER_REGISTRY: DriverRegistry = DriverRegistry::new();
 /// Get the global driver registry
 pub fn driver_registry() -> &'static DriverRegistry {
     &DRIVER_REGISTRY
+}
+
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    DRIVER_REGISTRY.reset_for_tests();
+    IRQ_BINDINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    crate::provider_registry::reset_for_tests();
 }
 
 /// Register a driver (convenience function)

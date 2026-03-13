@@ -149,7 +149,9 @@ mod tests {
     use super::{extract_driver_name, load_cells_from_boot_artifacts};
     use boot_proto::{BootArtifactEntry, BootArtifactKind, BootArtifactTable};
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn empty_boot_artifact_table_is_noop() {
         assert_eq!(
             load_cells_from_boot_artifacts(&BootArtifactTable::default()),
@@ -157,7 +159,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn fixture_artifacts_are_not_started_as_driver_cells() {
         let path = b"cells/driver_cell_probe_v1.cell";
         let data = b"fixture";
@@ -177,7 +181,9 @@ mod tests {
         assert_eq!(load_cells_from_boot_artifacts(&table), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn extract_driver_name_drops_directory_and_extension() {
         assert_eq!(
             extract_driver_name("drivers/nvme_driver.cell"),

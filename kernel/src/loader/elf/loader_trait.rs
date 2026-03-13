@@ -203,7 +203,8 @@ mod tests {
 
     /// PKEY integration test: verify that loading a cell allocates a PKEY and
     /// unloading the cell frees it.
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_pkey_alloc_and_free_on_load_unload() {
         use core::mem;
 

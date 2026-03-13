@@ -213,7 +213,9 @@ pub fn add_domain_dependency(dependent: DomainId, dependency: DomainId) -> Resul
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_domain_lifecycle() {
         // ドメイン作成
         let id = create_domain("test_domain".into()).expect("create_domain failed");

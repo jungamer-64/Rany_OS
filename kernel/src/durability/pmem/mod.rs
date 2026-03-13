@@ -297,14 +297,18 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn register_region_and_lookup() {
         let region = setup_region();
         assert_eq!(region.len, TEST_REGION_LEN);
         assert!(region.base != 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn persist_range_rejects_out_of_range() {
         let region = setup_region();
         let ptr = (region.end() - 8) as *const u8;
@@ -312,7 +316,9 @@ mod tests {
         assert_eq!(err, PmemError::OutOfRange);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn persist_ordered_preserves_flush_fence_sequence() {
         let region = setup_region();
         let log_ptr = region.base as *const u8;

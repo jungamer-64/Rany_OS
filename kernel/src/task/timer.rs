@@ -62,13 +62,17 @@ pub async fn sleep_ms(duration_ms: u64) {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_delegation_current_tick() {
         // ティックはtime_driver::TIME_MANAGERのアトミック値を参照
         let _tick = current_tick();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_delegation_pending_stats() {
         let stats = pending_waker_stats();
         // 初期状態ではどちらも0または低い値

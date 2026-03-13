@@ -46,7 +46,9 @@ fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
     CurrentTaskGuard { prev, current }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_grant_requires_permissions() {
     let caller = DomainId::new(100);
     let _guard = set_current_subject(caller);
@@ -68,7 +70,9 @@ fn test_grant_requires_permissions() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_grant_with_permitted() {
     let caller = DomainId::new(110);
     let _guard = set_current_subject(caller);
@@ -100,7 +104,9 @@ fn test_grant_with_permitted() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tokens_listing_and_revoke() {
     let caller = DomainId::new(120);
     let mut _guard = set_current_subject(caller);
@@ -152,7 +158,9 @@ fn test_tokens_listing_and_revoke() {
     assert!(manager().list_grants(target.as_u64()).is_empty());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_sysadmin_can_revoke() {
     let issuer = DomainId::new(130);
     let mut _guard = set_current_subject(issuer);
@@ -184,7 +192,9 @@ fn test_sysadmin_can_revoke() {
     assert!(manager().list_grants(target.as_u64()).is_empty());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_delegation_allows_regrant() {
     let parent = DomainId::new(140);
     let mut _guard = set_current_subject(parent);
@@ -217,7 +227,9 @@ fn test_delegation_allows_regrant() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_delegation_denies_regrant_when_not_delegatable() {
     let parent = DomainId::new(150);
     let mut _guard = set_current_subject(parent);

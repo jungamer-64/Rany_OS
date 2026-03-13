@@ -1,7 +1,8 @@
 use super::*;
 
 /// DERパーサー基本テスト: タグ・長さの読み取り
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_basic() {
     // INTEGER (0x02), length 1, value 0x2A
     let data = [0x02, 0x01, 0x2A];
@@ -13,7 +14,8 @@ fn test_der_parser_basic() {
 }
 
 /// DERパーサー長形式長さテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_long_length() {
     // Tag 0x30, long-form length 0x81 0x80 = 128 bytes
     let mut data = [0u8; 131];
@@ -28,7 +30,8 @@ fn test_der_parser_long_length() {
 }
 
 /// DERパーサーSEQUENCE読み取りテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_sequence() {
     // SEQUENCE { INTEGER 1, INTEGER 2 }
     let data = [0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02];
@@ -45,7 +48,8 @@ fn test_der_parser_sequence() {
 }
 
 /// DERパーサーINTEGER読み取りテスト（先頭0x00付き）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_integer() {
     // INTEGER with leading 0x00: 02 02 00 FF
     let data = [0x02, 0x02, 0x00, 0xFF];
@@ -55,7 +59,8 @@ fn test_der_parser_integer() {
 }
 
 /// DERパーサーOID読み取りテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_oid() {
     // OID for CN (2.5.4.3): 06 03 55 04 03
     let data = [0x06, 0x03, 0x55, 0x04, 0x03];
@@ -65,7 +70,8 @@ fn test_der_parser_oid() {
 }
 
 /// DERパーサーBIT STRING読み取りテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_bitstring() {
     // BIT STRING: 03 03 00 AA BB (0 unused bits, data = AA BB)
     let data = [0x03, 0x03, 0x00, 0xAA, 0xBB];
@@ -75,7 +81,8 @@ fn test_der_parser_bitstring() {
 }
 
 /// DERパーサーOCTET STRING読み取りテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_octet_string() {
     // OCTET STRING: 04 02 CC DD
     let data = [0x04, 0x02, 0xCC, 0xDD];
@@ -85,7 +92,8 @@ fn test_der_parser_octet_string() {
 }
 
 /// DERパーサーskip_tlvテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_skip_tlv() {
     // Two TLVs: INTEGER 0x01, INTEGER 0x02
     let data = [0x02, 0x01, 0x01, 0x02, 0x01, 0x02];
@@ -100,7 +108,8 @@ fn test_der_parser_skip_tlv() {
 }
 
 /// DERパーサー不正入力拒否テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_parser_invalid_input() {
     // 空入力
     let mut parser = DerParser::new(&[]);
@@ -118,7 +127,8 @@ fn test_der_parser_invalid_input() {
 }
 
 /// X.509証明書パース基本テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_basic() {
     let cert = parse_x509(&TEST_CERT_DER).expect("parse test cert");
 
@@ -135,7 +145,8 @@ fn test_parse_x509_basic() {
 }
 
 /// raw_tbs抽出テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_raw_tbs() {
     let cert = parse_x509(&TEST_CERT_DER).expect("parse test cert");
 
@@ -148,7 +159,8 @@ fn test_parse_x509_raw_tbs() {
 }
 
 /// 発行者・サブジェクト抽出テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_issuer_subject() {
     let cert = parse_x509(&TEST_CERT_DER).expect("parse test cert");
 
@@ -173,7 +185,8 @@ fn test_parse_x509_issuer_subject() {
 }
 
 /// RSA公開鍵抽出テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_rsa_spki() {
     let cert = parse_x509(&TEST_CERT_DER).expect("parse test cert");
 
@@ -197,7 +210,8 @@ fn test_parse_x509_rsa_spki() {
 }
 
 /// 署名アルゴリズムOIDマッピングテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_signature_algorithm_oid() {
     assert_eq!(
         parse_signature_algorithm_id(OID_SHA256_WITH_RSA),
@@ -226,7 +240,8 @@ fn test_signature_algorithm_oid() {
 }
 
 /// 不正入力拒否テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_invalid_input() {
     // 空入力
     assert!(parse_x509(&[]).is_none(), "empty input must fail");
@@ -245,7 +260,8 @@ fn test_parse_x509_invalid_input() {
 }
 
 /// 証明書チェーン検証テスト（自己署名証明書1枚、未信頼）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_chain_single_cert_untrusted() {
     // 信頼されたルートに含まれていない自己署名証明書1枚は拒否される
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
@@ -257,7 +273,8 @@ fn test_validate_chain_single_cert_untrusted() {
 }
 
 /// 証明書チェーン検証テスト（自己署名証明書1枚、信頼済み）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_chain_single_cert_trusted() {
     // 信頼されたルートに含まれていれば、自己署名証明書1枚でも成功する
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
@@ -270,7 +287,8 @@ fn test_validate_chain_single_cert_trusted() {
 }
 
 /// 証明書チェーン検証テスト（空チェーン）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_chain_empty() {
     let chain: &[&[u8]] = &[];
     let result = validate_certificate_chain(chain, None, &[]);
@@ -278,7 +296,8 @@ fn test_validate_chain_empty() {
 }
 
 /// 証明書チェーン検証テスト（サーバー名一致、信頼済み）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_chain_server_name_match_trusted() {
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
     let trusted: &[&[u8]] = &[&TEST_CERT_DER];
@@ -290,7 +309,8 @@ fn test_validate_chain_server_name_match_trusted() {
 }
 
 /// 証明書チェーン検証テスト（サーバー名不一致、信頼済み）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_chain_server_name_mismatch_trusted() {
     let chain: &[&[u8]] = &[&TEST_CERT_DER];
     let trusted: &[&[u8]] = &[&TEST_CERT_DER];
@@ -302,7 +322,8 @@ fn test_validate_chain_server_name_mismatch_trusted() {
 }
 
 /// ワイルドカード照合テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wildcard_matching() {
     assert!(match_wildcard(b"*.google.com", "www.google.com"));
     assert!(match_wildcard(b"*.google.com", "google.com") == false); // Should not match

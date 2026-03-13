@@ -433,13 +433,15 @@ pub static BENCHMARK_STATS: BenchmarkStats = BenchmarkStats::new();
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_tsc_timer() {
         let timer = TscTimer::new();
         let elapsed = timer.elapsed_ns();
         assert!(elapsed >= 0);
     }
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_benchmark_runner() {
         let mut runner = BenchmarkRunner::new();
         let result = runner.bench("test_bench", 100, || {

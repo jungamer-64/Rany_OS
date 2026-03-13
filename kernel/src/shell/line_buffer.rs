@@ -152,7 +152,9 @@ impl Default for LineBuffer {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn middle_insert_and_cursor_tracking() {
         let mut buf = LineBuffer::new();
         buf.insert('a');
@@ -164,7 +166,9 @@ mod tests {
         assert_eq!(buf.cursor, 3);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn delete_and_backspace_keep_expected_content() {
         let mut buf = LineBuffer::new();
         buf.insert_str("abcd");

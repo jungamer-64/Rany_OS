@@ -5,7 +5,9 @@ mod tests {
     use crate::mm::meta::frame_backing;
     use crate::mm::types::PAGE_SIZE_4K;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_async_swapout_file_backed() {
         // セットアップ: page cache にページを入れ、対応するフレームを確保して frame_backing を登録
         let cache = crate::fs::PageCache::new(64 * 1024);
@@ -48,7 +50,9 @@ mod tests {
         assert!(read.is_some(), "page should exist and be readable");
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_async_swapout_dedup() {
         // setup similar to file-backed test
         let cache = crate::fs::PageCache::new(64 * 1024);
@@ -91,7 +95,9 @@ mod tests {
         assert!(frame_backing::get_frame_backing(frame_idx).is_none());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(not(feature = "full_mm_tests"))]
     pub(super) fn test_enqueue_override_forces_error() {
         crate::mm::reclaim::async_swapout::set_test_enqueue_override(Some(SwapError::QueueFull));
@@ -114,7 +120,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_memcg_concurrent_swapout() {
         // Initialize memcg and global page cache
@@ -209,7 +217,9 @@ mod tests {
         assert_eq!(stats.anon_pages, 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_async_swapout_concurrent_dedup() {
         // Initialize global cache
@@ -299,7 +309,9 @@ mod tests {
         assert!(crate::mm::meta::frame_backing::get_frame_backing(frame_idx).is_none());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_worker_restart() {
         // ensure worker lifecycle control works via top-level API
@@ -327,7 +339,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_async_swapout_qos_reservation() {
         crate::fs::init_page_cache(64 * 1024);
@@ -402,7 +416,9 @@ mod tests {
         assert!(crate::mm::meta::memcg::memcg_get_page_info(frame_idx).is_none());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_token_bucket_exhaustion_and_refill() {
         // Ensure worker controlled
@@ -444,7 +460,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_token_refill_on_processing() {
         // Stop worker to control processing
@@ -492,7 +510,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_async_swapout_stress_concurrency() {
         crate::mm::meta::memcg::init_memcg();
@@ -631,7 +651,9 @@ mod tests {
         assert_eq!(stats.anon_pages, 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     pub(super) fn test_async_swapout_heavy_stress() {
         crate::mm::meta::memcg::init_memcg();
@@ -761,7 +783,9 @@ mod tests {
         assert_eq!(stats.anon_pages, 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     pub(super) fn bench_enqueue_throughput() {
         crate::fs::init_page_cache(64 * 1024);
@@ -788,7 +812,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_zswap_failure_does_not_dealloc() {
         crate::fs::init_page_cache(64 * 1024);
 
@@ -831,7 +857,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_huge_page_2m_anon_store() {
         // Ensure deterministic worker lifecycle
         test_impl::stop_worker();
@@ -875,7 +903,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_global_async_swapout_metrics_update() {
         // ensure metrics are zeroed in the beginning
         // Note: These are global, so we don't reset them here; just ensure they are accessible and behave monotonically
@@ -917,7 +947,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_notify_failure_on_file_writeback_error() {
         crate::fs::init_page_cache(64 * 1024);
 
@@ -978,7 +1010,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_notify_failure_on_anon_zswap_error() {
         test_impl::stop_worker();
         for _ in 0..20 {
@@ -1033,7 +1067,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_notify_success_once_per_pending() {
         test_impl::stop_worker();
         for _ in 0..20 {
@@ -1083,7 +1119,9 @@ mod tests {
         stop_worker();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_notify_failure_once_per_pending() {
         let before = crate::mm::reclaim::page_reclaim::PAGE_RECLAIM.stats();
 
@@ -1121,7 +1159,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_token_exhaustion_does_not_leave_pending() {
         test_impl::stop_worker();
         for _ in 0..20 {
@@ -1145,7 +1185,9 @@ mod tests {
         assert_eq!(test_impl::_pending_len(), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_file_queue_counter_saturation() {
         test_impl::stop_worker();
         for _ in 0..20 {
@@ -1162,7 +1204,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_buffer_pool_basic() {
         // Ensure pool is cleared and capacity is small
         crate::mm::reclaim::async_swapout::buffer_pool_4k_clear();
@@ -1190,7 +1234,9 @@ mod tests {
         crate::mm::reclaim::async_swapout::buffer_pool_4k_clear();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_buffer_pool_concurrent() {
         crate::mm::reclaim::async_swapout::buffer_pool_4k_clear();
         crate::mm::reclaim::async_swapout::buffer_pool_4k_set_capacity(16);
@@ -1221,7 +1267,9 @@ mod tests {
         crate::mm::reclaim::async_swapout::buffer_pool_4k_clear();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_buffer_pool_2m_basic() {
         crate::mm::reclaim::async_swapout::buffer_pool_2m_clear();
         crate::mm::reclaim::async_swapout::buffer_pool_2m_set_capacity(2);
@@ -1248,7 +1296,9 @@ mod tests {
         crate::mm::reclaim::async_swapout::buffer_pool_2m_clear();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_buffer_pool_2m_concurrent() {
         crate::mm::reclaim::async_swapout::buffer_pool_2m_clear();
         crate::mm::reclaim::async_swapout::buffer_pool_2m_set_capacity(8);
@@ -1278,7 +1328,9 @@ mod tests {
         crate::mm::reclaim::async_swapout::buffer_pool_2m_clear();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     pub(super) fn test_buffer_pool_1g_basic() {
         crate::mm::reclaim::async_swapout::buffer_pool_1g_clear();
@@ -1303,7 +1355,9 @@ mod tests {
         crate::mm::reclaim::async_swapout::buffer_pool_1g_clear();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     #[cfg(feature = "std")]
     pub(super) fn bench_enqueue_throughput_pool_vs_nopool() {
@@ -1367,7 +1421,9 @@ mod tests {
         assert!(hits + misses > 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     #[cfg(feature = "std")]
     pub(super) fn bench_buffer_pool_2m_throughput() {
@@ -1404,7 +1460,9 @@ mod tests {
         assert!(hits + misses > 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     #[cfg(feature = "std")]
     pub(super) fn bench_buffer_pool_1g_throughput() {

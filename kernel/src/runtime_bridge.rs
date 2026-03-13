@@ -953,7 +953,9 @@ mod tests {
         )
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn block_registry_rejects_duplicate_scheduler_device_and_cleans_owner() {
         let registry = BlockBridgeRegistry::new();
         let owner_a = DomainId::new(11);
@@ -978,7 +980,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn nvme_namespace_registry_enforces_unique_namespace_and_owner() {
         let registry = NvmeNamespaceRegistry::new();
         let owner_a = DomainId::new(21);
@@ -1015,7 +1019,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn audio_registry_surfaces_devices_and_cleans_owner() {
         let registry = AudioBridgeRegistry::new();
         let owner = DomainId::new(31);

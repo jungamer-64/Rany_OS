@@ -3,7 +3,8 @@ use super::*;
 /// X25519 鍵交換対称性テスト
 ///
 /// Alice.shared_secret(Bob.pk) == Bob.shared_secret(Alice.pk)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_x25519_key_exchange_symmetry() {
     let alice = EcdhKeyPair::generate(EcdhGroup::X25519).expect("Alice keygen");
     let bob = EcdhKeyPair::generate(EcdhGroup::X25519).expect("Bob keygen");
@@ -23,21 +24,24 @@ fn test_x25519_key_exchange_symmetry() {
 }
 
 /// X25519 公開鍵の長さテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_x25519_public_key_length() {
     let kp = EcdhKeyPair::generate(EcdhGroup::X25519).expect("keygen");
     assert_eq!(kp.public_key_bytes().len(), 32);
 }
 
 /// X25519 グループ識別テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_x25519_group() {
     let kp = EcdhKeyPair::generate(EcdhGroup::X25519).expect("keygen");
     assert_eq!(kp.group(), EcdhGroup::X25519);
 }
 
 /// NamedGroup変換テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ecdh_group_from_named_group() {
     assert_eq!(EcdhGroup::from_named_group(0x001D), Some(EcdhGroup::X25519));
     assert_eq!(
@@ -48,7 +52,8 @@ fn test_ecdh_group_from_named_group() {
 }
 
 /// 不正なピア公開鍵の拒否テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_x25519_reject_invalid_peer_key() {
     let kp = EcdhKeyPair::generate(EcdhGroup::X25519).expect("keygen");
 
@@ -64,7 +69,8 @@ fn test_x25519_reject_invalid_peer_key() {
 /// X25519 RFC 7748 テストベクトル
 ///
 /// Section 6.1 の既知のスカラー倍算結果を検証
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_x25519_rfc7748_vector() {
     // テストベクトル（RFC 7748 Section 6.1）:
     // scalar: a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4
@@ -107,7 +113,8 @@ fn test_x25519_rfc7748_vector() {
 /// P-256 鍵交換対称性テスト
 ///
 /// Alice.shared_secret(Bob.pk) == Bob.shared_secret(Alice.pk)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_key_exchange_symmetry() {
     let alice = EcdhKeyPair::generate(EcdhGroup::Secp256r1).expect("Alice keygen");
     let bob = EcdhKeyPair::generate(EcdhGroup::Secp256r1).expect("Bob keygen");
@@ -130,7 +137,8 @@ fn test_p256_key_exchange_symmetry() {
 }
 
 /// P-256 公開鍵の長さテスト（65バイト: 04 || x || y）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_public_key_length() {
     let kp = EcdhKeyPair::generate(EcdhGroup::Secp256r1).expect("keygen");
     assert_eq!(
@@ -141,7 +149,8 @@ fn test_p256_public_key_length() {
 }
 
 /// P-256 公開鍵が曲線上の有効な点であることを確認
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_public_key_on_curve() {
     let kp = EcdhKeyPair::generate(EcdhGroup::Secp256r1).expect("keygen");
     let pk_bytes = kp.public_key_bytes();
@@ -162,14 +171,16 @@ fn test_p256_public_key_on_curve() {
 }
 
 /// P-256 グループ識別テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_group() {
     let kp = EcdhKeyPair::generate(EcdhGroup::Secp256r1).expect("keygen");
     assert_eq!(kp.group(), EcdhGroup::Secp256r1);
 }
 
 /// P-256 不正なピア公開鍵の拒否テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_reject_invalid_peer_key() {
     let kp = EcdhKeyPair::generate(EcdhGroup::Secp256r1).expect("keygen");
 
@@ -205,14 +216,16 @@ fn test_p256_reject_invalid_peer_key() {
 }
 
 /// P-256 ベースポイントが曲線上にあることを確認
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_generator_on_curve() {
     let g = p256::P256Point::generator();
     assert!(g.is_on_curve(), "P-256 generator must be on curve");
 }
 
 /// P-256 フィールド演算基本テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_field_arithmetic() {
     let a = p256::P256FieldElement::from_limbs([1, 0, 0, 0]);
     let b = p256::P256FieldElement::from_limbs([2, 0, 0, 0]);
@@ -238,7 +251,8 @@ fn test_p256_field_arithmetic() {
 }
 
 /// P-256 ポイント2倍算テスト（Gの2倍が曲線上にある）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_point_double() {
     let g = p256::P256Point::generator();
     let g2 = g.double();
@@ -247,7 +261,8 @@ fn test_p256_point_double() {
 }
 
 /// P-256 ポイント加算テスト（G + G = 2G）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_point_add() {
     let g = p256::P256Point::generator();
     let g_plus_g = g.add(&g);
@@ -261,7 +276,8 @@ fn test_p256_point_add() {
 }
 
 /// P-256 スカラー倍算テスト（[1]G = G）
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_scalar_mul_one() {
     let g = p256::P256Point::generator();
     let mut scalar = [0u8; 32];
@@ -276,7 +292,8 @@ fn test_p256_scalar_mul_one() {
 }
 
 /// P-256 無限遠点テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_identity() {
     let id = p256::P256Point::identity();
     assert!(id.is_identity(), "identity must be identity");
@@ -290,7 +307,8 @@ fn test_p256_identity() {
 }
 
 /// P-256 スカラー有効性検証テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_scalar_validity() {
     // ゼロスカラーは無効
     assert!(
@@ -309,7 +327,8 @@ fn test_p256_scalar_validity() {
 }
 
 /// P-256 バイトエンコーディングのラウンドトリップテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_p256_field_element_roundtrip() {
     let original = p256::P256FieldElement::from_limbs([
         0xF4A13945D898C296,

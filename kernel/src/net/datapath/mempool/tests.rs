@@ -2,7 +2,9 @@ use super::*;
 use crate::sync::set_panicking;
 use core::sync::atomic::Ordering;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mempool_poisoned_alloc_fails() {
     let pool = Box::leak(Box::new(Mempool::new(1)));
     pool.init(1).expect("init should succeed");
@@ -19,7 +21,9 @@ fn test_mempool_poisoned_alloc_fails() {
     assert!(pool.alloc_failed.load(Ordering::Relaxed) > 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mempool_stats() {
     let pool = Box::leak(Box::new(Mempool::new(1)));
     let stats = pool.stats();

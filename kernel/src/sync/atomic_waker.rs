@@ -430,7 +430,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_atomic_waker() {
         let atomic_waker = AtomicWaker::new();
         let waker = dummy_waker();
@@ -441,7 +443,9 @@ mod tests {
         assert!(!atomic_waker.has_waker());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_atomic_waker_isr_notify() {
         let atomic_waker = AtomicWaker::new();
         let flag = AtomicBool::new(false);
@@ -454,7 +458,9 @@ mod tests {
         assert!(!atomic_waker.has_waker());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn deferred_waker_queue_preserves_full_capacity() {
         let queue = DeferredWakerQueue::new();
         assert!(queue.is_empty());

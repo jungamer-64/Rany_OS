@@ -98,7 +98,9 @@ impl VirtioTransport for NoopTransport {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_device_creation() {
     let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
     assert!(!dev.is_ready());
@@ -106,14 +108,18 @@ fn test_console_device_creation() {
     assert_eq!(dev.config().rows, 24);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_write_not_ready() {
     let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
     let result = dev.write_bytes(b"hello");
     assert_eq!(result, Err(ConsoleError::NotReady));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_write_empty_data() {
     // Create a device that is "ready" with a manually constructed TX queue
     let queue_size: u16 = 8;
@@ -139,14 +145,18 @@ fn test_console_write_empty_data() {
     assert_eq!(result, Ok(()));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_read_no_data() {
     let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
     // No RX queue set up, should return None
     assert!(dev.read_bytes().is_none());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_config_default() {
     let config = VirtioConsoleConfig::default();
     assert_eq!(config.cols, 80);
@@ -154,13 +164,17 @@ fn test_console_config_default() {
     assert_eq!(config.max_nr_ports, 1);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_error_variants() {
     assert_ne!(ConsoleError::NotReady, ConsoleError::IoError);
     assert_ne!(ConsoleError::QueueFull, ConsoleError::Unsupported);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtqueue_alloc_free_desc() {
     let queue_size: u16 = 8;
     let mut descs = alloc::vec![VringDesc::default(); queue_size as usize];

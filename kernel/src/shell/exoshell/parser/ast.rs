@@ -431,7 +431,9 @@ impl<'a> Expr<'a> {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_binary_op_precedence() {
         assert!(BinaryOp::Mul.precedence() > BinaryOp::Add.precedence());
         assert!(BinaryOp::Add.precedence() > BinaryOp::Gt.precedence());
@@ -439,7 +441,9 @@ mod tests {
         assert!(BinaryOp::And.precedence() > BinaryOp::Or.precedence());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_binary_op_from_str() {
         assert_eq!(BinaryOp::from_str("&&"), Some(BinaryOp::And));
         assert_eq!(BinaryOp::from_str("||"), Some(BinaryOp::Or));
@@ -447,7 +451,9 @@ mod tests {
         assert_eq!(BinaryOp::from_str("invalid"), None);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_expr_construction() {
         // size > 1024
         let expr = Expr::binary(Expr::ident("size"), BinaryOp::Gt, Expr::int(1024));

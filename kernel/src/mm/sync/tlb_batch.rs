@@ -1795,7 +1795,9 @@ mod tests {
         crate::smp::topology::install(topology);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_tlb_batch_add() {
         let mut batch = TlbFlushBatch::new();
 
@@ -1807,7 +1809,9 @@ mod tests {
         assert_eq!(batch.count, 2);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_tlb_batch_threshold() {
         let mut batch = TlbFlushBatch::new();
 
@@ -1816,7 +1820,9 @@ mod tests {
         assert!(batch.flush_all);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cpu_tlb_state() {
         let state = CpuTlbState::new();
 
@@ -1831,7 +1837,8 @@ mod tests {
     }
 
     #[cfg(any(feature = "full_mm_tests", feature = "qemu-test-export"))]
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_tlb_ipi_target_uses_cpu_to_apic_routing() {
         install_cpu_topology(&[2, 9, 41, 45]);
 

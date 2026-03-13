@@ -71,14 +71,18 @@ impl VirtioTransport for NoopTransport {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_device_creation() {
     let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
     assert!(!gpu.is_initialized());
     assert!(!gpu.has_3d_support());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_alloc_resource_id() {
     let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
     assert_eq!(gpu.alloc_resource_id(), 1);
@@ -86,14 +90,18 @@ fn test_gpu_alloc_resource_id() {
     assert_eq!(gpu.alloc_resource_id(), 3);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_alloc_fence_id() {
     let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
     assert_eq!(gpu.alloc_fence_id(), 1);
     assert_eq!(gpu.alloc_fence_id(), 2);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_ctrl_hdr_new() {
     let hdr = GpuCtrlHdr::new(GpuCmd::GetDisplayInfo);
     assert_eq!(hdr.cmd_type, GpuCmd::GetDisplayInfo as u32);
@@ -101,14 +109,18 @@ fn test_gpu_ctrl_hdr_new() {
     assert_eq!(hdr.fence_id, 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_ctrl_hdr_with_fence() {
     let hdr = GpuCtrlHdr::new(GpuCmd::ResourceFlush).with_fence(42);
     assert_eq!(hdr.flags, 1);
     assert_eq!(hdr.fence_id, 42);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_rect_new() {
     let r = Rect::new(10, 20, 640, 480);
     assert_eq!(r.x, 10);
@@ -117,13 +129,17 @@ fn test_rect_new() {
     assert_eq!(r.height, 480);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_error_variants() {
     assert_ne!(GpuError::DeviceNotFound, GpuError::InitFailed);
     assert_ne!(GpuError::OutOfMemory, GpuError::DeviceError);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_align_up() {
     assert_eq!(align_up(0, 4), 0);
     assert_eq!(align_up(1, 4), 4);
@@ -133,7 +149,9 @@ fn test_align_up() {
     assert_eq!(align_up(4097, 4096), 8192);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pixel_format_values() {
     assert_eq!(PixelFormat::B8G8R8A8Unorm as u32, 1);
     assert_eq!(PixelFormat::R8G8B8A8Unorm as u32, 67);

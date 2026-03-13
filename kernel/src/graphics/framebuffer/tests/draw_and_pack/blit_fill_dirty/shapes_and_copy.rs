@@ -1,7 +1,8 @@
 use super::*;
 
 mod simd_pack_32bit;
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
     let info = fb_info(3, 1, PixelFormat::Rgb565);
     let (mut fb, mut vram) = make_flush_fb(&info);
@@ -23,7 +24,9 @@ pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
     assert_eq!(vram[5], 0x00);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_backbuffer_same_row_overlap() {
     let info = fb_info(8, 1, PixelFormat::Bgra8888);
     let mut fb = make_backbuf_fb(&info);
@@ -46,7 +49,9 @@ pub(crate) fn test_copy_rect_backbuffer_same_row_overlap() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_backbuffer_vertical_copy() {
     let info = fb_info(4, 4, PixelFormat::Bgra8888);
     let mut fb = make_backbuf_fb(&info);
@@ -73,7 +78,9 @@ pub(crate) fn test_copy_rect_backbuffer_vertical_copy() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
     let info = fb_info(8, 1, PixelFormat::Bgra8888);
     let (mut fb, mut vram) = make_mmio_fb(&info);
@@ -93,7 +100,9 @@ pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_rect_backbuffer_full_width_span() {
     let info = fb_info(6, 4, PixelFormat::Bgra8888);
     let mut fb = make_backbuf_fb(&info);
@@ -118,7 +127,9 @@ pub(crate) fn test_fill_rect_backbuffer_full_width_span() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
     let info = fb_info(8, 16, PixelFormat::Rgb565);
     let (mut fb, mut vram) = make_mmio_fb(&info);
@@ -141,7 +152,9 @@ pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
     assert_eq!(&vram[off(5)..off(5) + 2], &[0x00, 0x00]);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_clear_rgb565_mmio() {
     let info = fb_info(6, 3, PixelFormat::Rgb565);
     let (mut fb, mut vram) = make_mmio_fb(&info);
@@ -158,7 +171,9 @@ pub(crate) fn test_clear_rgb565_mmio() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_char_8x16_rgb565_mmio() {
     let info = fb_info(8, 16, PixelFormat::Rgb565);
     let (mut fb, mut vram) = make_mmio_fb(&info);
@@ -182,7 +197,8 @@ pub(crate) fn test_draw_char_8x16_rgb565_mmio() {
 // ── Session-3 regression tests ──────────────────────────────────────
 
 /// draw_circle: symmetric 8-pixel pattern check on 32-bit backbuffer
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_circle_symmetric_32bit_backbuffer() {
     let info = fb_info(32, 32, PixelFormat::Bgra8888);
     let mut fb = make_backbuf_fb(&info);
@@ -219,7 +235,8 @@ pub(crate) fn test_draw_circle_symmetric_32bit_backbuffer() {
 }
 
 /// fill_circle: all pixels inside radius must be set, no gaps
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_circle_no_gaps_32bit_backbuffer() {
     let info = fb_info(32, 32, PixelFormat::Bgra8888);
     let mut fb = make_backbuf_fb(&info);
@@ -245,7 +262,8 @@ pub(crate) fn test_fill_circle_no_gaps_32bit_backbuffer() {
 }
 
 /// draw_rect: outline must have exactly the border pixels set
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_rect_outline_32bit_backbuffer() {
     let info = fb_info(20, 20, PixelFormat::Bgra8888);
     let mut fb = make_backbuf_fb(&info);
@@ -276,7 +294,8 @@ pub(crate) fn test_draw_rect_outline_32bit_backbuffer() {
 }
 
 /// draw_line steep: matches naive Bresenham on MMIO (RGB565)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_line_steep_rgb565_mmio() {
     let info = fb_info(20, 20, PixelFormat::Rgb565);
 
@@ -333,7 +352,8 @@ pub(crate) fn test_draw_line_steep_rgb565_mmio() {
 }
 
 /// copy_rect overlapping on MMIO: verify data integrity
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
     let info = fb_info(16, 16, PixelFormat::Bgra8888);
     let (mut fb, mut vram) = make_mmio_fb(&info);
@@ -371,7 +391,8 @@ pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
 }
 
 /// draw_text 24bpp single-pass MMIO: verify fg/bg pattern for '!'
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
     let info = fb_info(8, 16, PixelFormat::Bgr888);
     let (mut fb, mut vram) = make_mmio_fb(&info);
@@ -393,7 +414,8 @@ pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
 }
 
 /// draw_char_8x16 24bpp MMIO single-pass: verify fg/bg pattern
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_char_8x16_24bit_mmio() {
     let info = fb_info(8, 16, PixelFormat::Bgr888);
     let (mut fb, mut vram) = make_mmio_fb(&info);
@@ -414,7 +436,8 @@ pub(crate) fn test_draw_char_8x16_24bit_mmio() {
 }
 
 /// draw_image 16bpp MMIO: blit_mmio_row RGB565 path
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_rgb565_mmio() {
     let info = fb_info(4, 2, PixelFormat::Rgb565);
     let (mut fb, mut vram) = make_mmio_fb(&info);

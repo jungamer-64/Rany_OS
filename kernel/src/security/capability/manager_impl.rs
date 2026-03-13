@@ -14,6 +14,34 @@ impl CapabilityManager {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn reset_for_tests(&self) {
+        self.domains
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        *self
+            .bounding_set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = CAP_ALL;
+        self.grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.next_grant_id.store(1, Ordering::Relaxed);
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        #[cfg(test)]
+        {
+            *self
+                .fail_next_grant_for
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
     /// Get or create capabilities for a domain
     pub fn get_capabilities(&self, domain_id: u64) -> CapabilitySet {
         let domains = self.domains.lock().unwrap_or_else(|e| e.into_inner());

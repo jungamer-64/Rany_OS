@@ -91,7 +91,8 @@ fn run_aead_empty(
 /// Data = "Hi There"
 mod handshake_cipher;
 pub use handshake_cipher::*;
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hmac_sha256_rfc4231_case1() {
     let key = [0x0bu8; 20];
     let data = b"Hi There";
@@ -107,7 +108,8 @@ fn test_hmac_sha256_rfc4231_case1() {
 /// RFC 4231 Test Case 2
 /// Key  = "Jefe"
 /// Data = "what do ya want for nothing?"
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hmac_sha256_rfc4231_case2() {
     let key = b"Jefe";
     let data = b"what do ya want for nothing?";
@@ -123,7 +125,8 @@ fn test_hmac_sha256_rfc4231_case2() {
 /// RFC 4231 Test Case 3
 /// Key  = 0xaaaa... (20 bytes)
 /// Data = 0xdddd... (50 bytes)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hmac_sha256_rfc4231_case3() {
     let key = [0xaau8; 20];
     let data = [0xddu8; 50];
@@ -140,7 +143,8 @@ fn test_hmac_sha256_rfc4231_case3() {
 /// RFC 4231 Test Case 6
 /// Key = 0xaaaa... (131 bytes)
 /// Data = "Test Using Larger Than Block-Size Key - Hash Key First"
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hmac_sha256_long_key() {
     let key = [0xaau8; 131];
     let data = b"Test Using Larger Than Block-Size Key - Hash Key First";
@@ -160,7 +164,8 @@ fn test_hmac_sha256_long_key() {
 /// RFC 5869 Test Case 1 - HKDF-Extract
 /// IKM  = 0x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b (22 bytes)
 /// Salt = 0x000102030405060708090a0b0c (13 bytes)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hkdf_rfc5869_case1_extract() {
     let ikm = [0x0bu8; 22];
     let salt: [u8; 13] = [
@@ -179,7 +184,8 @@ fn test_hkdf_rfc5869_case1_extract() {
 /// PRK  = (from extract above)
 /// Info = 0xf0f1f2f3f4f5f6f7f8f9 (10 bytes)
 /// L    = 42
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hkdf_rfc5869_case1_expand() {
     let prk: [u8; 32] = [
         0x07, 0x77, 0x09, 0x36, 0x2c, 0x2e, 0x32, 0xdf, 0x0d, 0xdc, 0x3f, 0x0d, 0xc4, 0x7b, 0xba,
@@ -197,7 +203,8 @@ fn test_hkdf_rfc5869_case1_expand() {
 }
 
 /// HKDF-Extract with empty salt (uses zero-filled hash-length key)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hkdf_extract_empty_salt() {
     let ikm = [0x0bu8; 22];
     let prk = hkdf_extract(&[], &ikm);
@@ -208,7 +215,8 @@ fn test_hkdf_extract_empty_salt() {
 }
 
 /// HKDF-Expand with zero-length output
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hkdf_expand_zero_length() {
     let prk = [0x42u8; 32];
     let okm = hkdf_expand(&prk, b"test", 0);
@@ -220,7 +228,8 @@ fn test_hkdf_expand_zero_length() {
 // ========================================================================
 
 /// RFC 8439 Section 2.3.2 - ChaCha20 Block Function Test Vector
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_chacha20_rfc8439_block() {
     let key: [u8; 32] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -250,7 +259,8 @@ fn test_chacha20_rfc8439_block() {
 }
 
 /// RFC 8439 Section 2.4.2 - ChaCha20 Encryption Test Vector
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_chacha20_rfc8439_encrypt() {
     let key: [u8; 32] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -285,7 +295,8 @@ fn test_chacha20_rfc8439_encrypt() {
 // ========================================================================
 
 /// RFC 8439 Section 2.5.2 - Poly1305 MAC Test Vector
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_poly1305_rfc8439() {
     let key: [u8; 32] = [
         0x85, 0xd6, 0xbe, 0x78, 0x57, 0x55, 0x6d, 0x33, 0x7f, 0x44, 0x52, 0xfe, 0x42, 0xd5, 0x06,
@@ -307,7 +318,8 @@ fn test_poly1305_rfc8439() {
 // ========================================================================
 
 /// RFC 8439 Section 2.8.2 - AEAD Encryption Test Vector
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_chacha20_poly1305_rfc8439_encrypt() {
     let (ciphertext, tag) = chacha20_poly1305_encrypt(
         &RFC8439_AEAD_KEY,
@@ -320,7 +332,8 @@ fn test_chacha20_poly1305_rfc8439_encrypt() {
 }
 
 /// RFC 8439 Section 2.8.2 - AEAD Decryption Test Vector
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_chacha20_poly1305_rfc8439_decrypt() {
     let plaintext = chacha20_poly1305_decrypt(
         &RFC8439_AEAD_KEY,
@@ -334,7 +347,8 @@ fn test_chacha20_poly1305_rfc8439_decrypt() {
 }
 
 /// ChaCha20-Poly1305 authentication failure test
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_chacha20_poly1305_auth_failure() {
     let key = [0x42u8; 32];
     let nonce = [0x01u8; 12];
@@ -347,7 +361,8 @@ fn test_chacha20_poly1305_auth_failure() {
 }
 
 /// ChaCha20-Poly1305 roundtrip test
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_chacha20_poly1305_roundtrip() {
     let key = [0x55u8; 32];
     let nonce = [0xAAu8; 12];
@@ -360,7 +375,8 @@ fn test_chacha20_poly1305_roundtrip() {
 }
 
 /// ChaCha20-Poly1305 with empty plaintext
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_chacha20_poly1305_empty_plaintext() {
     let key = [0x33u8; 32];
     let nonce = [0x44u8; 12];
@@ -376,7 +392,8 @@ fn test_chacha20_poly1305_empty_plaintext() {
 // ========================================================================
 
 /// AES-128-GCM roundtrip encrypt/decrypt
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_aes_gcm_roundtrip() {
     let key: [u8; 16] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -394,7 +411,8 @@ fn test_aes_gcm_roundtrip() {
 }
 
 /// AES-256-GCM roundtrip encrypt/decrypt
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_aes_gcm_256_roundtrip() {
     let key: [u8; 32] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -413,7 +431,8 @@ fn test_aes_gcm_256_roundtrip() {
 }
 
 /// AES-128-GCM authentication failure
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_aes_gcm_auth_failure() {
     let key = [0x42u8; 16];
     let nonce = [0x01u8; 12];
@@ -426,7 +445,8 @@ fn test_aes_gcm_auth_failure() {
 }
 
 /// AES-128-GCM with corrupted ciphertext
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_aes_gcm_corrupted_ciphertext() {
     let key = [0x42u8; 16];
     let nonce = [0x01u8; 12];
@@ -445,7 +465,8 @@ fn test_aes_gcm_corrupted_ciphertext() {
 }
 
 /// AES-128-GCM with empty plaintext
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_aes_gcm_empty_plaintext() {
     let key = [0x11u8; 16];
     let nonce = [0x22u8; 12];
@@ -461,7 +482,8 @@ fn test_aes_gcm_empty_plaintext() {
 // ========================================================================
 
 /// AES-128 key expansion sanity check
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_aes_key_expansion() {
     let key: [u8; 16] = [
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
@@ -479,7 +501,8 @@ fn test_aes_key_expansion() {
 }
 
 /// AES-128 encrypt/decrypt roundtrip via CTR mode
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_aes_ctr_roundtrip() {
     let key: [u8; 16] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
@@ -501,14 +524,16 @@ fn test_aes_ctr_roundtrip() {
 // ========================================================================
 
 /// Random output should not be all zeros
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_generate_random_not_all_zeros() {
     let random = generate_random();
     assert!(random.iter().any(|&b| b != 0));
 }
 
 /// Two consecutive random calls should produce different results
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_generate_random_different_calls() {
     let r1 = generate_random();
     let r2 = generate_random();
@@ -521,7 +546,8 @@ fn test_generate_random_different_calls() {
 // ========================================================================
 
 /// Master secret derivation should produce 48 bytes
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_derive_master_secret_length() {
     let pre_master = [0x42u8; 48];
     let client_random = [0x01u8; 32];
@@ -534,7 +560,8 @@ fn test_derive_master_secret_length() {
 }
 
 /// Key block derivation should produce requested length
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_derive_key_block_length() {
     let master_secret = [0x55u8; 48];
     let server_random = [0xAAu8; 32];
@@ -551,7 +578,8 @@ fn test_derive_key_block_length() {
 }
 
 /// Master secret should be deterministic for same inputs
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_derive_master_secret_deterministic() {
     let pre_master = [0x42u8; 48];
     let client_random = [0x01u8; 32];
@@ -563,7 +591,8 @@ fn test_derive_master_secret_deterministic() {
 }
 
 /// Different pre-master secrets should produce different master secrets
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_derive_master_secret_differs_with_input() {
     let client_random = [0x01u8; 32];
     let server_random = [0x02u8; 32];
@@ -578,7 +607,8 @@ fn test_derive_master_secret_differs_with_input() {
 // ========================================================================
 
 /// PRF output should be deterministic
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tls12_prf_deterministic() {
     let secret = b"test secret";
     let label = b"test label";
@@ -592,7 +622,8 @@ fn test_tls12_prf_deterministic() {
 }
 
 /// PRF with different labels should produce different output
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tls12_prf_different_labels() {
     let secret = b"test secret";
     let seed = b"test seed";
@@ -609,7 +640,8 @@ fn test_tls12_prf_different_labels() {
 // ========================================================================
 
 /// HKDF-Expand-Label should produce correct length output
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hkdf_expand_label_length() {
     let secret = [0x42u8; 32];
     let result = hkdf_expand_label(&secret, b"key", b"", 16);
@@ -620,7 +652,8 @@ fn test_hkdf_expand_label_length() {
 }
 
 /// HKDF-Expand-Label with different labels should produce different output
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hkdf_expand_label_different_labels() {
     let secret = [0x42u8; 32];
     let result1 = hkdf_expand_label(&secret, b"key", b"", 32);
@@ -633,7 +666,8 @@ fn test_hkdf_expand_label_different_labels() {
 // ========================================================================
 
 /// TLS connection state machine: initial state
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tls_connection_initial_state() {
     let config = TlsConfig::new();
     let conn = TlsConnection::new(config);
@@ -642,7 +676,8 @@ fn test_tls_connection_initial_state() {
 }
 
 /// TLS connection: build ClientHello
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tls_connection_client_hello() {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
@@ -660,7 +695,8 @@ fn test_tls_connection_client_hello() {
 }
 
 /// TLS connection: encrypt fails when not established
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tls_connection_encrypt_not_established() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
@@ -669,7 +705,8 @@ fn test_tls_connection_encrypt_not_established() {
 }
 
 /// TLS handshake parser should handle multiple handshake messages in one record
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_process_handshake_multiple_messages() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
@@ -682,7 +719,8 @@ fn test_process_handshake_multiple_messages() {
 }
 
 /// Finished(len=0) is invalid for TLS 1.2 and must be rejected.
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_process_handshake_finished_without_verify_data_rejected() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);

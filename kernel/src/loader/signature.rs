@@ -734,7 +734,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_revoked_key_is_rejected_before_hash_check() {
         let mut verifier = SignatureVerifier::new();
         let key = [7u8; 32];
@@ -748,7 +750,9 @@ mod tests {
         assert_eq!(err, VerificationError::RevokedKey);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_invalid_chain_without_kernel_issuer_is_rejected() {
         let mut verifier = SignatureVerifier::new();
         let driver_key = [9u8; 32];

@@ -50,7 +50,9 @@ mod fs_tests {
         CurrentTaskGuard { prev, current }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_fs_open_with_token_reclaim() {
         // Setup: create caller and target domains
         let caller = DomainId::new(400);

@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_msi_allocation() {
     let manager = InterruptManager::new();
     manager.init();
@@ -17,7 +19,9 @@ fn test_msi_allocation() {
     assert!(alloc.vector <= MSI_VECTORS_END);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gsi_allocation() {
     let manager = InterruptManager::new();
     manager.init();
@@ -32,7 +36,9 @@ fn test_gsi_allocation() {
     assert!(result.is_ok());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_vector_free() {
     let manager = InterruptManager::new();
     manager.init();
@@ -57,7 +63,9 @@ fn test_vector_free() {
 // InterruptQueue Tests (設計書 4.2: ロックフリーキュー)
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_interrupt_queue_push_pop() {
     let queue = InterruptQueue::new();
 
@@ -73,7 +81,9 @@ fn test_interrupt_queue_push_pop() {
     assert_eq!(queue.pop(), None);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_interrupt_queue_empty() {
     let queue = InterruptQueue::new();
 
@@ -89,7 +99,9 @@ fn test_interrupt_queue_empty() {
     assert!(queue.is_empty());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_interrupt_queue_full() {
     let queue = InterruptQueue::new();
 
@@ -108,7 +120,9 @@ fn test_interrupt_queue_full() {
 // WakerRegistry Tests (設計書 4.2: Waker管理)
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_waker_registry_register_count() {
     let registry = WakerRegistry::new();
 

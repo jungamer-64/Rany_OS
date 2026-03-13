@@ -767,7 +767,9 @@ impl QuarantineQueue {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_commit_invalidation_batch_advance_poisoned() {
         let queue = QuarantineQueue::new();
         let expected_batch = {

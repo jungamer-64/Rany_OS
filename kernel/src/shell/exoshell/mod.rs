@@ -73,7 +73,9 @@ where
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_exovalue_display() {
         let val = ExoValue::Int(42);
         assert_eq!(alloc::format!("{}", val), "42");
@@ -82,7 +84,9 @@ mod tests {
         assert_eq!(alloc::format!("{}", val), "hello");
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_namespace_registration() {
         let shell = ExoShell::new();
         assert!(shell.is_namespace("fs"));

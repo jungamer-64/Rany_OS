@@ -329,7 +329,9 @@ pub fn range_overlaps_protected(start: u64, size: u64) -> bool {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_dma_protection_boundary_hole() {
         let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;
         let start = boundary - 4096;

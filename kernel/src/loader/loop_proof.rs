@@ -375,7 +375,9 @@ mod tests {
         elf
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_accepts_valid_section() {
         let valid_section = [b'R', b'L', b'O', b'P', 1, 0, 0, 0, 7, 0, 0, 0];
         let elf = build_test_elf(Some(&valid_section));
@@ -385,14 +387,18 @@ mod tests {
         assert_eq!(meta.policy_flags, 7);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_missing_section() {
         let elf = build_test_elf(None);
         let err = verify_loop_proof_metadata(&elf).expect_err("missing section must fail");
         assert_eq!(err, LoopProofError::MissingSection);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_invalid_magic() {
         let bad_magic = [b'X', b'L', b'O', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
         let elf = build_test_elf(Some(&bad_magic));
@@ -401,7 +407,9 @@ mod tests {
         assert!(matches!(err, LoopProofError::InvalidMagic(_)));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_unsupported_version() {
         let bad_version = [b'R', b'L', b'O', b'P', 2, 0, 0, 0, 0, 0, 0, 0];
         let elf = build_test_elf(Some(&bad_version));
@@ -410,7 +418,9 @@ mod tests {
         assert_eq!(err, LoopProofError::UnsupportedVersion(2));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_short_section() {
         let short = [b'R', b'L', b'O'];
         let elf = build_test_elf(Some(&short));

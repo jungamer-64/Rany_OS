@@ -637,19 +637,25 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_validate_iommu_device_requirement_rejects_missing_device_id_when_enabled() {
         let result = VirtioNetDevice::validate_iommu_device_requirement(false);
         assert_eq!(result, Err(VirtioNetError::DeviceError));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_validate_iommu_device_requirement_accepts_device_id_when_enabled() {
         let result = VirtioNetDevice::validate_iommu_device_requirement(true);
         assert_eq!(result, Ok(()));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn bounce_pool_init_prefills_both_queues() {
         let device = VirtioNetDevice::new_at_index(0x30, Box::new(NoopTransport));
         assert_eq!(device.tx_bounce_pool.capacity(), BOUNCE_POOL_CAPACITY);
@@ -663,7 +669,9 @@ mod tests {
         assert_eq!(device.rx_bounce_pool.len(), BOUNCE_POOL_PREFILL_COUNT);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn bounce_pool_preserves_full_capacity() {
         let device = VirtioNetDevice::new_at_index(0x31, Box::new(NoopTransport));
 

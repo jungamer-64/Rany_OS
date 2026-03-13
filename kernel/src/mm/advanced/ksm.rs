@@ -423,7 +423,9 @@ pub fn ksm_idle_work(current_time: u64) -> usize {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_page_hash_compute() {
         let mut data1 = [0u8; PAGE_SIZE_4K];
         let mut data2 = [0u8; PAGE_SIZE_4K];
@@ -441,7 +443,9 @@ mod tests {
         assert_ne!(hash1, hash3);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_page_hash_bucket() {
         let data = [0u8; PAGE_SIZE_4K];
         let hash = PageHash::compute(&data);

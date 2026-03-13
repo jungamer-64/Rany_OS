@@ -364,7 +364,9 @@ pub fn return_zeroed_frame(frame: PhysFrame<Size4KiB>, node: usize) -> bool {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_zeroed_pool_basic() {
         let mut pool = ZeroedFramePool::new(0);
         assert!(pool.is_empty());

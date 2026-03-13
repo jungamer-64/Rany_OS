@@ -675,7 +675,9 @@ impl<T: TypeIdHash, const N: usize> TypeIdHash for [T; N] {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_rref_ownership() {
         let domain1 = DomainId::new(1);
         let domain2 = DomainId::new(2);

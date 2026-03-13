@@ -99,7 +99,9 @@ impl VirtioTransport for NoopTransport {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_submit_read_uses_dma_addr() {
     let iommu_device_id = IommuDeviceId::new(0, 0, 0x20, 0);
     ensure_test_intel_iommu_device(iommu_device_id);
@@ -171,7 +173,9 @@ fn test_submit_read_uses_dma_addr() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_submit_write_uses_dma_addr() {
     let iommu_device_id = IommuDeviceId::new(0, 0, 0x21, 0);
     ensure_test_intel_iommu_device(iommu_device_id);

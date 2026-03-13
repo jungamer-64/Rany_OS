@@ -1,7 +1,9 @@
 use super::*;
 use crate::sync::set_panicking;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_per_core_alloc_poisoned_fallbacks_to_global() {
     // Initialize per-core caches for CPU 0
     init_per_core_caches(1);
@@ -20,7 +22,9 @@ fn test_per_core_alloc_poisoned_fallbacks_to_global() {
     unsafe { per_core_dealloc(0, ptr, layout) };
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_slab_cache() {
     let mut cache = SlabCache::new(64);
 

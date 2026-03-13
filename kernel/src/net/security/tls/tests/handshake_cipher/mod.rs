@@ -25,7 +25,8 @@ fn run_cbc_roundtrip(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) {
 /// TLS handshake parser should reject truncated handshake headers
 mod mac_tests;
 pub use mac_tests::*;
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_truncated_header() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
@@ -36,7 +37,8 @@ pub(crate) fn test_process_handshake_truncated_header() {
 }
 
 /// CipherSuite helper methods
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_cipher_suite_helpers() {
     // ChaCha20-Poly1305 suites
     assert!(CipherSuite::TLS_CHACHA20_POLY1305_SHA256.is_chacha20_poly1305());
@@ -62,7 +64,8 @@ pub(crate) fn test_cipher_suite_helpers() {
 }
 
 /// Base64 decode test
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_base64_decode() {
     // "Hello" in Base64 = "SGVsbG8="
     let result = base64_decode("SGVsbG8=");
@@ -76,7 +79,8 @@ pub(crate) fn test_base64_decode() {
 }
 
 /// TLS version helpers
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_version() {
     assert_eq!(TlsVersion::TLS_1_2.major(), 3);
     assert_eq!(TlsVersion::TLS_1_2.minor(), 3);
@@ -86,7 +90,8 @@ pub(crate) fn test_tls_version() {
 }
 
 /// Default cipher suite list should include modern suites
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_cipher_suite_defaults() {
     let defaults = CipherSuite::defaults();
     assert!(!defaults.is_empty());
@@ -97,7 +102,8 @@ pub(crate) fn test_cipher_suite_defaults() {
 }
 
 /// GF(2^128) multiplication sanity check
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_gf128_mul_zero() {
     let zero = [0u8; 16];
     let h = [0x42u8; 16];
@@ -107,7 +113,8 @@ pub(crate) fn test_gf128_mul_zero() {
 }
 
 /// GF(2^8) multiplication sanity check
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_gf_mul_basic() {
     // 0x02 * 0x87 = 0x15 in AES GF(2^8) with irreducible polynomial x^8 + x^4 + x^3 + x + 1
     // 0x87 = 10000111, shift left: 100001110 = 0x10E, reduce: 0x10E XOR 0x11B = 0x15
@@ -123,7 +130,8 @@ pub(crate) fn test_gf_mul_basic() {
 // ========================================================================
 
 /// TLS 1.3: Early Secret derivation (PSK=0)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_early_secret_no_psk() {
     let early_secret = tls13_early_secret(None);
     assert_eq!(early_secret.len(), 32);
@@ -135,7 +143,8 @@ pub(crate) fn test_tls13_early_secret_no_psk() {
 }
 
 /// TLS 1.3: Handshake Secret derivation
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_handshake_secret() {
     let early_secret = tls13_early_secret(None);
     let shared_secret = [0x42u8; 32];
@@ -149,7 +158,8 @@ pub(crate) fn test_tls13_handshake_secret() {
 }
 
 /// TLS 1.3: Master Secret derivation
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_master_secret() {
     let early_secret = tls13_early_secret(None);
     let hs_secret = tls13_handshake_secret(&early_secret, &[0x42u8; 32]);
@@ -159,7 +169,8 @@ pub(crate) fn test_tls13_master_secret() {
 }
 
 /// TLS 1.3: Derive-Secret produces expected-length output
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_derive_secret() {
     let secret = [0x55u8; 32];
     let transcript = [0xAAu8; 32];
@@ -173,7 +184,8 @@ pub(crate) fn test_tls13_derive_secret() {
 }
 
 /// TLS 1.3: Traffic key derivation
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_derive_traffic_keys() {
     let secret = [0x42u8; 32];
 
@@ -192,7 +204,8 @@ pub(crate) fn test_tls13_derive_traffic_keys() {
 }
 
 /// TLS 1.3: Finished key and verify_data
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_finished_key_and_verify_data() {
     let base_key = [0x42u8; 32];
     let finished_key = tls13_finished_key(&base_key);
@@ -213,7 +226,8 @@ pub(crate) fn test_tls13_finished_key_and_verify_data() {
 }
 
 /// TLS 1.3: Full key schedule chain (Early -> Handshake -> Master)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_full_key_schedule() {
     let shared_secret = [0x01u8; 32];
 
@@ -251,7 +265,8 @@ pub(crate) fn test_tls13_full_key_schedule() {
 // ========================================================================
 
 /// TLS 1.3: ClientHello should include KeyShare extension
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_key_share() {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
@@ -274,7 +289,8 @@ pub(crate) fn test_tls13_client_hello_key_share() {
 }
 
 /// TLS 1.3: Supported Versions extension should list both TLS 1.3 and 1.2
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_supported_versions() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
@@ -296,7 +312,8 @@ pub(crate) fn test_tls13_client_hello_supported_versions() {
 }
 
 /// TLS 1.3: PSK Key Exchange Modes extension present
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_psk_modes() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
@@ -309,7 +326,8 @@ pub(crate) fn test_tls13_client_hello_psk_modes() {
 }
 
 /// TLS 1.3: strip_content_type helper
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_strip_content_type() {
     // Normal case: plaintext + content_type
     let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17]; // "Hello" + ApplicationData(23)
@@ -336,7 +354,8 @@ pub(crate) fn test_tls13_strip_content_type() {
 }
 
 /// TLS 1.3: is_tls13 flag starts false
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_initial_state() {
     let config = TlsConfig::new();
     let conn = TlsConnection::new(config);
@@ -346,7 +365,8 @@ pub(crate) fn test_tls13_initial_state() {
 
 /// TLS 1.3: RFC 8446 Appendix A test vector for key schedule
 /// Tests HKDF-Expand-Label with known inputs/outputs
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_hkdf_expand_label_rfc8446() {
     // RFC 8446 doesn't provide standalone HKDF-Expand-Label vectors,
     // but we can verify the label construction is correct by testing
@@ -364,7 +384,8 @@ pub(crate) fn test_tls13_hkdf_expand_label_rfc8446() {
 
 /// TLS 1.3: Verify the key schedule produces consistent results
 /// matching the expected chain: Early -> derive("derived") -> Handshake -> derive("derived") -> Master
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_key_schedule_chain_consistency() {
     use crate::crypto::sha256;
 
@@ -387,7 +408,8 @@ pub(crate) fn test_tls13_key_schedule_chain_consistency() {
 }
 
 /// TLS 1.3: Finished verification round-trip
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_finished_round_trip() {
     let base_key = [0x77u8; 32];
     let transcript_hash = [0x88u8; 32];
@@ -401,7 +423,8 @@ pub(crate) fn test_tls13_finished_round_trip() {
 }
 
 /// TLS 1.3: TlsVersion ordering
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_version_ordering() {
     assert!(TlsVersion::TLS_1_0 < TlsVersion::TLS_1_1);
     assert!(TlsVersion::TLS_1_1 < TlsVersion::TLS_1_2);
@@ -413,7 +436,9 @@ pub(crate) fn test_tls_version_ordering() {
 // MD5 Tests (RFC 1321 Appendix A.5)
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_empty() {
     let result = md5_compute(b"");
     let expected = [
@@ -423,7 +448,9 @@ pub(crate) fn test_md5_empty() {
     assert_eq!(result, expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_a() {
     let result = md5_compute(b"a");
     let expected = [
@@ -433,7 +460,9 @@ pub(crate) fn test_md5_a() {
     assert_eq!(result, expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_abc() {
     let result = md5_compute(b"abc");
     let expected = [
@@ -443,7 +472,9 @@ pub(crate) fn test_md5_abc() {
     assert_eq!(result, expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_message_digest() {
     let result = md5_compute(b"message digest");
     let expected = [
@@ -453,7 +484,9 @@ pub(crate) fn test_md5_message_digest() {
     assert_eq!(result, expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_alphabet() {
     let result = md5_compute(b"abcdefghijklmnopqrstuvwxyz");
     let expected = [
@@ -467,7 +500,9 @@ pub(crate) fn test_md5_alphabet() {
 // SHA-1 Tests (FIPS 180-4)
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_sha1_abc() {
     let result = sha1_compute(b"abc");
     let expected = [
@@ -477,7 +512,9 @@ pub(crate) fn test_sha1_abc() {
     assert_eq!(result, expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_sha1_empty() {
     let result = sha1_compute(b"");
     let expected = [
@@ -487,7 +524,9 @@ pub(crate) fn test_sha1_empty() {
     assert_eq!(result, expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_sha1_long() {
     // "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
     let result = sha1_compute(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
@@ -502,7 +541,9 @@ pub(crate) fn test_sha1_long() {
 // HMAC-MD5 / HMAC-SHA1 Tests (RFC 2202)
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_hmac_md5_rfc2202_case1() {
     let key = [0x0bu8; 16];
     let data = b"Hi There";
@@ -513,7 +554,9 @@ pub(crate) fn test_hmac_md5_rfc2202_case1() {
     assert_eq!(hmac_md5(&key, data), expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_hmac_md5_rfc2202_case2() {
     let key = b"Jefe";
     let data = b"what do ya want for nothing?";
@@ -524,7 +567,9 @@ pub(crate) fn test_hmac_md5_rfc2202_case2() {
     assert_eq!(hmac_md5(key, data), expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_hmac_sha1_rfc2202_case1() {
     let key = [0x0bu8; 20];
     let data = b"Hi There";
@@ -535,7 +580,9 @@ pub(crate) fn test_hmac_sha1_rfc2202_case1() {
     assert_eq!(hmac_sha1(&key, data), expected);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_hmac_sha1_rfc2202_case2() {
     let key = b"Jefe";
     let data = b"what do ya want for nothing?";
@@ -550,12 +597,16 @@ pub(crate) fn test_hmac_sha1_rfc2202_case2() {
 // AES-CBC Tests
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_aes_cbc_roundtrip_128() {
     run_cbc_roundtrip(&[0x2bu8; 16], &[0x00u8; 16], b"Hello, AES-CBC mode test!");
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_aes_cbc_roundtrip_256() {
     run_cbc_roundtrip(
         &[0x60u8; 32],
@@ -564,7 +615,9 @@ pub(crate) fn test_aes_cbc_roundtrip_256() {
     );
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_aes_cbc_empty() {
     let key = [0x00u8; 16];
     let iv = [0x00u8; 16];
@@ -580,7 +633,9 @@ pub(crate) fn test_aes_cbc_empty() {
 // TLS Padding Tests
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_padding_add_verify() {
     let data = b"test data";
     let padded = tls_add_padding(data, 16);
@@ -592,7 +647,9 @@ pub(crate) fn test_tls_padding_add_verify() {
     assert_eq!(valid_len.unwrap(), data.len());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_padding_exact_block() {
     // Data that's exactly one block minus 1 (needs 1 byte of padding content)
     let data = [0xAA; 15];
@@ -604,7 +661,9 @@ pub(crate) fn test_tls_padding_exact_block() {
     assert_eq!(valid_len.unwrap(), 15);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_padding_full_block_pad() {
     // Data that falls exactly on block boundary -> full block of padding
     let data = [0xBB; 16];
@@ -619,7 +678,9 @@ pub(crate) fn test_tls_padding_full_block_pad() {
 // TLS 1.0 PRF Tests
 // ========================================================================
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls10_prf_deterministic() {
     let secret = [0x42u8; 48];
     let label = b"master secret";
@@ -633,7 +694,9 @@ pub(crate) fn test_tls10_prf_deterministic() {
     assert!(out1.iter().any(|&b| b != 0));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls10_prf_different_labels() {
     let secret = [0x42u8; 48];
     let seed = [0x01u8; 64];

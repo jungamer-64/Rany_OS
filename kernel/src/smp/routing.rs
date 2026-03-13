@@ -45,7 +45,9 @@ mod tests {
         crate::smp::topology::install(topology);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn cpu_routing_tracks_bsp_and_ap_round_trip() {
         reset_cpu_routing();
         install_cpu_topology(&[3, 17]);
@@ -56,7 +58,9 @@ mod tests {
         assert_eq!(cpu_for_apic_id(17), Some(1));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn cpu_routing_handles_sparse_apic_ids() {
         reset_cpu_routing();
         install_cpu_topology(&[2, 41, 199]);
@@ -66,7 +70,9 @@ mod tests {
         assert_eq!(cpu_for_apic_id(199), Some(2));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn cpu_routing_returns_none_for_unregistered_entries() {
         reset_cpu_routing();
 

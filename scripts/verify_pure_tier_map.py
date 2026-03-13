@@ -18,7 +18,8 @@ REQUIRED_PACKAGE_KEYS = {
     "exact",
     "serial",
 }
-OPTIONAL_PACKAGE_KEYS = {"features"}
+OPTIONAL_PACKAGE_KEYS = {"features", "mode"}
+VALID_PACKAGE_MODES = {"pure-only", "hybrid"}
 VALID_MIGRATION_DEST_KINDS = {"crate-test", "qemu-fullboot", "dropped"}
 VALID_MIGRATION_CLASSIFICATIONS = {"pure", "qemu_fullboot", "dropped"}
 BANNED_MIGRATION_CASE_TAGS = {"pending", "runtime_pending"}
@@ -278,6 +279,7 @@ def main() -> int:
 
     seen = set()
     root_default_entry_names = set()
+    package_modes: dict[str, str] = {}
     for idx, entry in enumerate(pkg_entries):
         entry_keys = set(entry.keys())
         missing = REQUIRED_PACKAGE_KEYS - entry_keys
@@ -299,6 +301,19 @@ def main() -> int:
         features = entry.get("features", [])
         if not isinstance(features, list) or not all(isinstance(v, str) and v for v in features):
             return fail(f"package[{idx}] features must be a list of non-empty strings")
+        mode = entry.get("mode", "pure-only")
+        if mode not in VALID_PACKAGE_MODES:
+            return fail(
+                f"package[{idx}] invalid mode: {mode} "
+                f"(allowed: {sorted(VALID_PACKAGE_MODES)})"
+            )
+        existing_mode = package_modes.get(entry["name"])
+        if existing_mode is not None and existing_mode != mode:
+            return fail(
+                f"package[{idx}] mode for package '{entry['name']}' conflicts with earlier entry: "
+                f"{existing_mode} vs {mode}"
+            )
+        package_modes[entry["name"]] = mode
         key = (
             entry["name"],
             entry["tier"],
@@ -352,6 +367,10 @@ def main() -> int:
         cargo_toml = pkg_root / "Cargo.toml"
         if not cargo_toml.exists():
             return fail(f"missing Cargo.toml for pure-tier package path: {member_path}")
+
+        pkg_name = member_path_to_name[member_path]
+        if package_modes.get(pkg_name, "pure-only") == "hybrid":
+            continue
 
         cargo_text = cargo_toml.read_text(encoding="utf-8")
         if BANNED_PURE_CARGO_RE.search(cargo_text):

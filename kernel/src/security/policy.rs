@@ -593,7 +593,9 @@ pub fn init() {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_policy_rule() {
         let rule = PolicyRule::new(
             PolicySubject::Domain(1),
@@ -607,7 +609,9 @@ mod tests {
         assert!(!rule.matches(1, "app", 100, "network", PolicyOperation::Read));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_path_matching() {
         let rule = PolicyRule::new(
             PolicySubject::Any,
@@ -621,7 +625,9 @@ mod tests {
         assert!(!rule.matches_path(1, "app", "/etc/passwd", PolicyOperation::Read));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_policy() {
         let mut policy = SecurityPolicy::new("test");
 

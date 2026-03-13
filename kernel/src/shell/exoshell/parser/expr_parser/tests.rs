@@ -1,12 +1,16 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_simple_literal() {
     let expr = parse_expression("42").unwrap();
     assert!(matches!(expr, Expr::Literal(ExoValue::Int(42))));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_binary_comparison() {
     let expr = parse_expression("size > 1024").unwrap();
     match expr {
@@ -19,7 +23,9 @@ fn test_binary_comparison() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_complex_and_or() {
     // a && b || c は (a && b) || c としてパースされる
     let expr = parse_expression("a && b || c").unwrap();
@@ -42,7 +48,9 @@ fn test_complex_and_or() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_grouped_expression() {
     // (a || b) && c
     let expr = parse_expression("(a || b) && c").unwrap();
@@ -58,7 +66,9 @@ fn test_grouped_expression() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_block_expression() {
     let expr = parse_expression("{ let x = 1; x }").unwrap();
     match expr {
@@ -69,7 +79,9 @@ fn test_parse_block_expression() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_if_expression() {
     let expr = parse_expression("if true { 1 } else { 2 }").unwrap();
     match expr {
@@ -86,7 +98,9 @@ fn test_parse_if_expression() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_for_expression() {
     let expr = parse_expression("for x in [1,2,3] { x }").unwrap();
     match expr {
@@ -103,7 +117,9 @@ fn test_parse_for_expression() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_break_statement() {
     let stmt = parse("break").unwrap();
     match stmt {
@@ -112,7 +128,9 @@ fn test_parse_break_statement() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_continue_statement() {
     let stmt = parse("continue").unwrap();
     match stmt {

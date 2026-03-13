@@ -1,12 +1,16 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mixer_creation() {
     let mixer = Mixer::default_mixer();
     assert_eq!(mixer.active_channels(), 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_add_channel() {
     let mut mixer = Mixer::default_mixer();
     let id = mixer.add_channel(ChannelConfig::default()).unwrap();
@@ -14,7 +18,9 @@ fn test_add_channel() {
     assert_eq!(mixer.active_channels(), 1);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_volume_control() {
     let mut mixer = Mixer::default_mixer();
     let id = mixer.add_channel(ChannelConfig::default()).unwrap();
@@ -23,7 +29,9 @@ fn test_volume_control() {
     assert!((config.volume - 0.5).abs() < 0.001);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pan_control() {
     let mut mixer = Mixer::default_mixer();
     let id = mixer.add_channel(ChannelConfig::default()).unwrap();
@@ -32,7 +40,9 @@ fn test_pan_control() {
     assert!((config.pan - (-0.5)).abs() < 0.001);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mono_to_stereo() {
     let mono = vec![0.5, -0.5, 0.25];
     let stereo = Mixer::mono_to_stereo(&mono);
@@ -40,7 +50,9 @@ fn test_mono_to_stereo() {
     assert_eq!(stereo, vec![0.5, 0.5, -0.5, -0.5, 0.25, 0.25]);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_limiter_soft_clip() {
     let mut mixer = Mixer::default_mixer();
     mixer.output_buffer = vec![1.5, -1.5, 0.5, -0.5];

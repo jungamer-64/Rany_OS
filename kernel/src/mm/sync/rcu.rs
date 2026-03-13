@@ -454,7 +454,9 @@ pub fn rcu_stats() -> RcuStats {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_rcu_read_guard() {
         {
             let _guard = rcu_read_lock();
@@ -464,7 +466,9 @@ mod tests {
         assert!(!rcu_read_active());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_rcu_epoch() {
         let epoch1 = rcu_current_epoch();
         rcu_advance_epoch();
@@ -472,7 +476,9 @@ mod tests {
         assert_eq!(epoch2, epoch1 + 1);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_per_cpu_rcu_state() {
         let state = PerCpuRcuState::new();
 

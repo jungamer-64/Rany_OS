@@ -1,7 +1,8 @@
 use super::*;
 
 mod blit_fill_dirty;
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_line_matches_naive_32bit_backbuffer() {
     let info = fb_info(16, 16, PixelFormat::Bgra8888);
     let mut fb_opt = make_backbuf_fb(&info);
@@ -34,7 +35,9 @@ pub(crate) fn test_draw_line_matches_naive_32bit_backbuffer() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_line_matches_naive_24bit_backbuffer() {
     let info = fb_info(16, 16, PixelFormat::Bgr888);
     let mut fb_opt = make_backbuf_fb(&info);
@@ -60,7 +63,9 @@ pub(crate) fn test_draw_line_matches_naive_24bit_backbuffer() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_space_24bit_backbuffer() {
     let info = fb_info(16, 16, PixelFormat::Bgr888);
     let mut fb = make_backbuf_fb(&info);
@@ -83,7 +88,9 @@ pub(crate) fn test_draw_text_space_24bit_backbuffer() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_32bit_mmio() {
     let info = fb_info(4, 4, PixelFormat::Bgra8888);
     let (mut fb, mut mem) = make_mmio_fb(&info);
@@ -99,7 +106,9 @@ pub(crate) fn test_draw_image_32bit_mmio() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_24bit_mmio() {
     let info = fb_info(3, 2, PixelFormat::Bgr888);
     let (mut fb, mut mem) = make_mmio_fb(&info);
@@ -114,7 +123,9 @@ pub(crate) fn test_draw_image_24bit_mmio() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_32bit_mmio_rgba() {
     let info = fb_info(4, 4, PixelFormat::Rgba8888);
     let (mut fb, mut mem) = make_mmio_fb(&info);
@@ -130,7 +141,9 @@ pub(crate) fn test_draw_image_32bit_mmio_rgba() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_write_bytes_mmio_alignment() {
     // Ensure write_bytes_mmio uses u64 writes when destination is 8-byte aligned
     let info = fb_info(8, 1, PixelFormat::Bgr888);
@@ -170,7 +183,9 @@ pub(crate) fn test_write_bytes_mmio_alignment() {
     assert_eq!(mem[start + 8], 1);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_write_bgr_run_large() {
     // Ensure large runs of a single color are written correctly
     let info = fb_info(1024, 1, PixelFormat::Bgr888);
@@ -186,7 +201,9 @@ pub(crate) fn test_write_bgr_run_large() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_write_opaque_run_24bit_even_odd_mmio() {
     use crate::graphics::image::Image;
 
@@ -230,7 +247,9 @@ pub(crate) fn test_write_opaque_run_24bit_even_odd_mmio() {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgra_basic() {
     // Build a simple RGBA pattern and verify BGRA result matches expected
     let mut src = Vec::new();
@@ -255,7 +274,8 @@ pub(crate) fn test_pack_rgba_to_bgra_basic() {
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "ssse3"))]
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
     #[cfg(feature = "std")]
     if !std::is_x86_feature_detected!("ssse3") {
@@ -275,7 +295,8 @@ pub(crate) fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
     #[cfg(feature = "std")]
     if !std::is_x86_feature_detected!("avx2") {
@@ -295,7 +316,8 @@ pub(crate) fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
     #[cfg(feature = "std")]
     if !std::is_x86_feature_detected!("avx2") {
@@ -310,7 +332,8 @@ pub(crate) fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
 }
 
 #[cfg(all(target_arch = "x86_64", target_feature = "ssse3"))]
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
     #[cfg(feature = "std")]
     if !std::is_x86_feature_detected!("ssse3") {
@@ -325,7 +348,8 @@ pub(crate) fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgra_neon_matches_scalar() {
     if !std::is_aarch64_feature_detected!("neon") {
         return;

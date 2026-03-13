@@ -276,7 +276,9 @@ impl BitmapFont {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn default_font_properties() {
         let f = BitmapFont::default_8x16();
         assert_eq!(f.width(), 8);
@@ -284,7 +286,9 @@ mod tests {
         assert!(f.data_len() >= 2048);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn glyph_accessors() {
         let f = BitmapFont::default_8x16();
         // Printable ASCII should exist

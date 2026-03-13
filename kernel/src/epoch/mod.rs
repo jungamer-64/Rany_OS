@@ -177,7 +177,9 @@ pub fn stats() -> EpochStats {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_epoch_advance() {
         let e1 = current_epoch();
         let e2 = advance_epoch();
@@ -185,7 +187,9 @@ mod tests {
         assert_eq!(current_epoch(), e2);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_epoch_guard() {
         live_update::set_active_cores(1);
         let start_epoch = current_epoch();
@@ -196,7 +200,9 @@ mod tests {
         assert!(all_cores_past_epoch(start_epoch));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_quiescent_detection() {
         live_update::set_active_cores(1);
         let guard = EpochGuard::enter(0);

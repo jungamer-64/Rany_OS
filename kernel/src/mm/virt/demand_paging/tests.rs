@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_prot_flags() {
     let prot = ProtFlags::READ | ProtFlags::WRITE;
     assert!(prot.readable());
@@ -8,7 +10,9 @@ fn test_prot_flags() {
     assert!(!prot.executable());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_vm_region_contains() {
     let region = VmRegion::new_anonymous(
         VirtAddr::new(0x1000),
@@ -22,7 +26,9 @@ fn test_vm_region_contains() {
     assert!(!region.contains(VirtAddr::new(0x0FFF)));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_config_default() {
     let config = DemandPagingConfig::default();
     assert!(config.use_zero_page_cow);

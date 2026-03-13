@@ -5,7 +5,9 @@
 use super::*;
 use crate::io::iommu::common::dma::handle::MappingKind;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_zombie_queue_basic() {
     let queue = ZombieQueue::new();
 
@@ -46,7 +48,9 @@ fn test_zombie_queue_basic() {
     assert_eq!(queue.pending_estimate(), 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_zombie_queue_failed_cleanup() {
     let queue = ZombieQueue::new();
 
@@ -80,7 +84,9 @@ fn test_zombie_queue_failed_cleanup() {
     assert_eq!(queue.pending_estimate(), 0); // accurate estimate
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_zombie_queue_probe_limit() {
     let queue = ZombieQueue::new();
 
@@ -103,7 +109,9 @@ fn test_zombie_queue_probe_limit() {
     // Some may have been dropped if all probed slots were taken
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mapping_kind_encoding() {
     use crate::io::iommu::common::dma::handle::MappingKind;
     use crate::io::iommu::types::DeviceId;
@@ -128,7 +136,9 @@ fn test_mapping_kind_encoding() {
     assert!(decode_mapping_kind(0).is_none());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_state_transitions() {
     let entry = ZombieEntry::new();
 

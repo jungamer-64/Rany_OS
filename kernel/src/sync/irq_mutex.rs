@@ -277,7 +277,9 @@ pub fn disable_interrupts() {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_irq_mutex_basic() {
         let mutex = IrqMutex::new(42u64);
 
@@ -293,7 +295,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_try_lock() {
         let mutex = IrqMutex::new(0u64);
 

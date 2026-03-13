@@ -669,7 +669,9 @@ impl PageTablePool {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_pool_basic() {
         let pool = PageTablePool::new(2, 4);
 

@@ -133,7 +133,9 @@ pub(crate) static AMD_CMD_WAITERS: WakerQueue = WakerQueue::new();
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn amd_fault_queue_preserves_reserved_slot_capacity() {
         let queue = AmdDeferredFaultQueue::new();
         let event = AmdFaultEvent::overflow(0);

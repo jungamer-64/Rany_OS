@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alloc_page_table_prefers_numa_local_or_buddy() {
     // Verify alloc_page_table succeeds regardless of NUMA availability
     let manager = unsafe { PageTableManager::from_current_cr3(0) };
@@ -8,7 +10,9 @@ fn test_alloc_page_table_prefers_numa_local_or_buddy() {
     assert!(res.is_ok());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_global_map_page_poisoned_returns_hardware_error() {
     // Poison the PAGE_TABLE_MANAGER lock
     {
@@ -28,7 +32,9 @@ fn test_global_map_page_poisoned_returns_hardware_error() {
     assert_eq!(res, Err(MapError::HardwareError));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_global_unmap_page_poisoned_returns_hardware_error() {
     // Poison the PAGE_TABLE_MANAGER lock
     {

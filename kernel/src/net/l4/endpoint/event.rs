@@ -919,7 +919,9 @@ mod tests {
         unsafe { Waker::from_raw(raw) }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn send_event_waits_for_event_task_readiness() {
         reset_event_system_for_tests();
 
@@ -942,7 +944,9 @@ mod tests {
         reset_event_system_for_tests();
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn send_event_waits_for_queue_space() {
         reset_event_system_for_tests();
         mark_event_task_running();

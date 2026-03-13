@@ -426,7 +426,9 @@ use kernel_api::abi::driver::DRIVER_ABI_VERSION;
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn manifest_accepts_exact_vendor_device_selector() {
         let manifest = DriverManifestV1 {
             abi_version: DRIVER_MANIFEST_VERSION,
@@ -457,7 +459,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn manifest_accepts_vendor_qualified_class_selector() {
         let manifest = DriverManifestV1 {
             abi_version: DRIVER_MANIFEST_VERSION,
@@ -490,7 +494,9 @@ mod tests {
         );
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn manifest_rejects_partial_class_selector() {
         let manifest = DriverManifestV1 {
             abi_version: DRIVER_MANIFEST_VERSION,
@@ -515,7 +521,9 @@ mod tests {
         assert!(manifest.pci_selector().is_err());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn manifest_rejects_vendor_only_selector() {
         let manifest = DriverManifestV1 {
             abi_version: DRIVER_MANIFEST_VERSION,

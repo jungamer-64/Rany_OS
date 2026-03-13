@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_error_code_parsing() {
     // Write fault, user mode, not present
     let code = PageFaultErrorCode::from_bits(0b0110);
@@ -10,7 +12,9 @@ fn test_error_code_parsing() {
     assert!(!code.is_instruction_fetch());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_stack_access_detection() {
     // Valid stack address
     let stack_addr = VirtAddr::new(USER_STACK_TOP - 0x1000);

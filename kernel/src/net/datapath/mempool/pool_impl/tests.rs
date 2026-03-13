@@ -1,7 +1,9 @@
 use super::*;
 use alloc::vec;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_packet_pool_alloc_and_free_smoke() {
     let pool = PacketPool::new(2, 128);
     assert_eq!(pool.available(), 2);
@@ -14,7 +16,9 @@ fn test_packet_pool_alloc_and_free_smoke() {
     assert_eq!(pool.available(), 2);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_packet_pool_free_rebuilds_wrong_capacity_buffer() {
     let pool = PacketPool::new(1, 64);
     let _ = pool.alloc().expect("pool must return a buffer");

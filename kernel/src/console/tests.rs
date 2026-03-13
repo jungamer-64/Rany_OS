@@ -10,14 +10,18 @@ fn key_event(key: KeyCode, state: KeyState, modifiers: Modifiers) -> KeyEvent {
     }
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ansi_color_rgb() {
     assert_eq!(AnsiColor::Black.to_rgb(), 0x000000);
     assert_eq!(AnsiColor::White.to_rgb(), 0xAAAAAA);
     assert_eq!(AnsiColor::BrightWhite.to_rgb(), 0xFFFFFF);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_terminal_buffer() {
     let mut buffer = TerminalBuffer::new(80, 25);
     buffer.write_str("Hello, World!");
@@ -27,7 +31,9 @@ fn test_terminal_buffer() {
     assert_eq!(buffer.cursor(), (0, 1));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ansi_parser() {
     let mut parser = AnsiParser::new();
 
@@ -47,7 +53,9 @@ fn test_ansi_parser() {
     ));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtual_console() {
     let mut vc = VirtualConsole::new(0, 80, 25);
     vc.write("Hello\n");
@@ -57,7 +65,9 @@ fn test_virtual_console() {
     vc.write("\x1b[31mRed\x1b[0m");
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_csi_cursor_default_param_moves_one() {
     let mut vc = VirtualConsole::new(0, 20, 5);
     vc.write("abc\nxyz");
@@ -68,7 +78,9 @@ fn test_csi_cursor_default_param_moves_one() {
     assert_eq!(vc.buffer().cursor(), (3, 0));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_private_mode_cursor_visibility() {
     let mut vc = VirtualConsole::new(0, 20, 5);
     vc.write("A\x1b[?25lB");
@@ -81,7 +93,9 @@ fn test_private_mode_cursor_visibility() {
     assert!(vc.buffer().cursor_visible());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_osc_st_terminator_is_not_rendered() {
     let mut vc = VirtualConsole::new(0, 40, 5);
     vc.write("X\x1b]0;title\x1b\\Y");
@@ -91,7 +105,9 @@ fn test_osc_st_terminator_is_not_rendered() {
     assert_eq!(vc.buffer().cursor(), (2, 0));
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_input_hub_tty_and_gui_paths() {
     reset_input_hub_for_tests();
 
@@ -116,7 +132,9 @@ fn test_console_input_hub_tty_and_gui_paths() {
     assert_eq!(&buf[..n], b"a\x1b[D");
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_input_hub_vt_switch_hotkey_is_swallowed() {
     reset_input_hub_for_tests();
     init_default();
@@ -140,7 +158,9 @@ fn test_console_input_hub_vt_switch_hotkey_is_swallowed() {
     assert_eq!(read_tty_bytes(&mut buf), 0);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_input_hub_drop_counters_increment_when_full() {
     reset_input_hub_for_tests();
 

@@ -222,7 +222,9 @@ pub(crate) fn aes_gcm_encrypt(
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_aes_gcm_nist_vector() {
         // NIST SP 800-38D Test Case 1 (AES-128)
         // Key: 00000000000000000000000000000000
@@ -252,7 +254,9 @@ mod tests {
         assert_eq!(decrypted.unwrap().len(), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_aes_gcm_nist_vector_2() {
         // NIST SP 800-38D Test Case 2 (AES-128)
         // Key: 00000000000000000000000000000000

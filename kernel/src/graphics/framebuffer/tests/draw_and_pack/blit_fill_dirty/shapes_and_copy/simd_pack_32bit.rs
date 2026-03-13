@@ -1,7 +1,8 @@
 use super::*;
 
 /// write_opaque_run_32bit: verify SIMD pack_rgba_to_bgra path
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_write_opaque_run_32bit_simd_pack() {
     let width = 64u32;
     let height = 4u32;

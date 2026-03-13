@@ -1,6 +1,8 @@
 use super::*;
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_per_cpu_hot_layout() {
     // PerCpuHotはキャッシュラインにアラインされていることを確認
     assert_eq!(core::mem::align_of::<PerCpuHot>(), 64);
@@ -8,7 +10,9 @@ fn test_per_cpu_hot_layout() {
     assert!(core::mem::size_of::<PerCpuHot>() <= 64);
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_per_cpu_hot_and_cold_linkage() {
     let hot = hot_for_cpu(0).expect("cpu0 hot state missing");
     let cold = cold_for_cpu(0).expect("cpu0 cold state missing");

@@ -701,14 +701,18 @@ pub fn balloon_handle_virtio_target(target_mb: u32) {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_balloon_config() {
         let config = BalloonConfig::default();
         assert_eq!(config.min_pages, 1024);
         assert_eq!(config.batch_size, 256);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_balloon_state() {
         assert_eq!(BalloonState::from(0), BalloonState::Idle);
         assert_eq!(BalloonState::from(1), BalloonState::Inflating);

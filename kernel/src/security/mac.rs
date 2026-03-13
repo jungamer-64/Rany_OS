@@ -477,14 +477,18 @@ pub fn set_enforcing(enforcing: bool) {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_level_dominance() {
         assert!(SecurityLevel::TopSecret.dominates(SecurityLevel::Secret));
         assert!(SecurityLevel::Secret.dominates(SecurityLevel::Confidential));
         assert!(!SecurityLevel::Public.dominates(SecurityLevel::Internal));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_context_dominance() {
         let mut high = SecurityContext::new(SecurityLevel::Secret, 0, 0);
         high.add_category(SecurityCategory::Network);
@@ -497,7 +501,9 @@ mod tests {
         assert!(!low.dominates(&high));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_read_up_denied() {
         let mut policy = MacPolicy::new();
         policy.enable();
@@ -510,7 +516,9 @@ mod tests {
         assert!(policy.check_access(&high, &low, AccessType::Read).is_ok());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_write_down_denied() {
         let mut policy = MacPolicy::new();
         policy.enable();

@@ -320,7 +320,9 @@ impl IoInterruptBridge {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn deferred_io_completion_queue_preserves_full_capacity() {
         let queue = DeferredIoCompletionQueue::new();
 

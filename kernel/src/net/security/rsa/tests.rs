@@ -5,7 +5,8 @@ use super::*;
 // ========================================================================
 
 /// ゼロ値テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_zero() {
     let z = BigUint::zero();
     assert!(z.is_zero());
@@ -14,7 +15,8 @@ fn test_biguint_zero() {
 }
 
 /// 1値テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_one() {
     let one = BigUint::one();
     assert!(!one.is_zero());
@@ -23,7 +25,8 @@ fn test_biguint_one() {
 }
 
 /// ビッグエンディアンバイト列のラウンドトリップ
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_be_bytes_roundtrip() {
     let original = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
     let n = BigUint::from_be_bytes(&original);
@@ -32,7 +35,8 @@ fn test_biguint_be_bytes_roundtrip() {
 }
 
 /// 先頭ゼロの除去テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_leading_zeros() {
     let padded = [0x00, 0x00, 0x42, 0xFF];
     let n = BigUint::from_be_bytes(&padded);
@@ -44,7 +48,8 @@ fn test_biguint_leading_zeros() {
 // ========================================================================
 
 /// 加算テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_add() {
     let a = BigUint::from_be_bytes(&[0xFF]);
     let b = BigUint::from_be_bytes(&[0x01]);
@@ -53,7 +58,8 @@ fn test_biguint_add() {
 }
 
 /// 減算テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_sub() {
     let a = BigUint::from_be_bytes(&[0x01, 0x00]);
     let b = BigUint::from_be_bytes(&[0x01]);
@@ -62,7 +68,8 @@ fn test_biguint_sub() {
 }
 
 /// 乗算テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_mul() {
     let a = BigUint::from_be_bytes(&[0xFF]); // 255
     let b = BigUint::from_be_bytes(&[0xFF]); // 255
@@ -72,7 +79,8 @@ fn test_biguint_mul() {
 }
 
 /// 除算・剰余テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_div_rem() {
     let a = BigUint::from_be_bytes(&[0x64]); // 100
     let b = BigUint::from_be_bytes(&[0x07]); // 7
@@ -83,7 +91,8 @@ fn test_biguint_div_rem() {
 }
 
 /// 乗算・除算ラウンドトリップ
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_mul_div_roundtrip() {
     let a = BigUint::from_be_bytes(&[0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF]);
     let b = BigUint::from_be_bytes(&[0xFE, 0xDC, 0xBA, 0x98]);
@@ -100,7 +109,8 @@ fn test_biguint_mul_div_roundtrip() {
 // ========================================================================
 
 /// 比較テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_comparison() {
     let a = BigUint::from_be_bytes(&[0x01, 0x00]); // 256
     let b = BigUint::from_be_bytes(&[0xFF]); // 255
@@ -116,7 +126,8 @@ fn test_biguint_comparison() {
 // ========================================================================
 
 /// 小さな値のモジュラ冪乗: 3^7 mod 11 = 9
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_modexp_small() {
     let base = BigUint::from_be_bytes(&[3]);
     let exp = BigUint::from_be_bytes(&[7]);
@@ -128,7 +139,8 @@ fn test_modexp_small() {
 }
 
 /// x^0 mod n = 1
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_modexp_zero_exponent() {
     let base = BigUint::from_be_bytes(&[42]);
     let exp = BigUint::zero();
@@ -139,7 +151,8 @@ fn test_modexp_zero_exponent() {
 }
 
 /// x^1 mod n = x mod n
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_modexp_one_exponent() {
     let base = BigUint::from_be_bytes(&[42]);
     let exp = BigUint::one();
@@ -151,7 +164,8 @@ fn test_modexp_one_exponent() {
 }
 
 /// 2^10 mod 1000 = 1024 mod 1000 = 24
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_modexp_power_of_two() {
     let base = BigUint::from_be_bytes(&[2]);
     let exp = BigUint::from_be_bytes(&[10]);
@@ -166,7 +180,8 @@ fn test_modexp_power_of_two() {
 // ========================================================================
 
 /// PKCS#1 v1.5 検証テスト (e=1 トリック)
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pkcs1_verify_e1() {
     let digest = [0xABu8; 32];
     let k = 128;
@@ -197,7 +212,8 @@ fn test_pkcs1_verify_e1() {
 }
 
 /// PKCS#1 v1.5 不正署名テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pkcs1_verify_bad_signature() {
     let digest = [0xABu8; 32];
     let k = 128;
@@ -232,7 +248,8 @@ fn test_pkcs1_verify_bad_signature() {
 }
 
 /// 署名長不一致テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pkcs1_verify_wrong_length() {
     let digest = [0xABu8; 32];
     let n_bytes = vec![0xFFu8; 128];
@@ -249,7 +266,8 @@ fn test_pkcs1_verify_wrong_length() {
 }
 
 /// SHA-384 DigestInfo テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pkcs1_verify_sha384_e1() {
     let digest = [0xCDu8; 48];
     let k = 128;
@@ -279,7 +297,8 @@ fn test_pkcs1_verify_sha384_e1() {
 }
 
 /// パディングバイト長不足テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pkcs1_verify_short_padding() {
     let digest = [0xABu8; 32];
     let k = 128;
@@ -318,7 +337,8 @@ fn test_pkcs1_verify_short_padding() {
 // ========================================================================
 
 /// ゼロパディングテスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_to_be_bytes_padded() {
     let n = BigUint::from_be_bytes(&[0x42]);
     let padded = n.to_be_bytes_padded(4);
@@ -326,7 +346,8 @@ fn test_biguint_to_be_bytes_padded() {
 }
 
 /// パディング不要テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_biguint_to_be_bytes_padded_no_padding() {
     let n = BigUint::from_be_bytes(&[0x01, 0x02, 0x03, 0x04]);
     let padded = n.to_be_bytes_padded(4);
@@ -338,7 +359,8 @@ fn test_biguint_to_be_bytes_padded_no_padding() {
 // ========================================================================
 
 /// ダイジェスト長テスト
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_hash_algorithm_digest_len() {
     assert_eq!(HashAlgorithm::Sha256.digest_len(), 32);
     assert_eq!(HashAlgorithm::Sha384.digest_len(), 48);

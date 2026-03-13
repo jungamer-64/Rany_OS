@@ -671,7 +671,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn gdb_memory_read_and_write() {
         let stub = GdbStub::new();
         let mut target = DummyTarget {
@@ -687,7 +689,9 @@ mod tests {
         assert_eq!(r, Some(String::from("01020304")));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn gdb_packet_roundtrip() {
         let payload = "g";
         let framed = frame_packet(payload);
@@ -695,7 +699,9 @@ mod tests {
         assert_eq!(parsed, payload);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn gdb_required_command_set_smoke() {
         let stub = GdbStub::new();
         let mut target = DummyTarget {
@@ -803,7 +809,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn gdb_server_uses_single_active_transport_lock() {
         let server = GdbServer::new();
         let t0 = Arc::new(DummyTransport::default());

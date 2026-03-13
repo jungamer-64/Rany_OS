@@ -125,8 +125,23 @@ extern "C" fn irq_entry_fn() -> *const DriverVTable {
     &IRQ_VTABLE
 }
 
-#[test_case]
+fn reset_test_state() -> crate::host_test_support::Guard {
+    let guard = crate::host_test_support::guard();
+    crate::loader::reset_for_tests();
+    super::reset_for_tests();
+    PROBE_CALLED.store(false, Ordering::SeqCst);
+    REMOVE_CALLED.store(false, Ordering::SeqCst);
+    IRQ_HANDLER_CALLED.store(false, Ordering::SeqCst);
+    LAST_IRQ.store(0, Ordering::SeqCst);
+    *LAST_PROBE_CONTEXT.lock() = None;
+    guard
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_register_abi_driver_and_block_unload() {
+    let _guard = reset_test_state();
     // Register driver
     let handle = register_abi_driver(entry_fn).expect("register failed");
 
@@ -171,10 +186,11 @@ fn test_register_abi_driver_and_block_unload() {
     assert!(res2.is_ok());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_register_abi_driver_with_context_passes_pci_locator() {
-    PROBE_CALLED.store(false, Ordering::SeqCst);
-    *LAST_PROBE_CONTEXT.lock() = None;
+    let _guard = reset_test_state();
 
     let locator = PackedPciLocation::new(0x1234, 0x56, 0x1a, 0x07);
     let ctx = DriverContext::for_pci(0xfeed_0000, 11, 0x8086, 0x1234, 0x0108_02, locator);
@@ -199,14 +215,20 @@ fn test_register_abi_driver_with_context_passes_pci_locator() {
         .expect("unregister after probe failed");
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_register_abi_driver_rejects_old_abi_version() {
+    let _guard = reset_test_state();
     let res = register_abi_driver(old_abi_entry_fn);
     assert!(res.is_err());
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_unregister_running_fails() {
+    let _guard = reset_test_state();
     // Register driver
     let handle = register_abi_driver(entry_fn).expect("register failed");
 
@@ -224,8 +246,11 @@ fn test_unregister_running_fails() {
         .expect("unregister after stop failed");
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_driver_provider_descriptors_follow_lifecycle() {
+    let _guard = reset_test_state();
     let handle = register_abi_driver(entry_fn).expect("register failed");
     assert!(
         crate::provider_registry::provider_registry()
@@ -252,10 +277,11 @@ fn test_driver_provider_descriptors_follow_lifecycle() {
         .expect("unregister failed");
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_dispatch_irq_updates_ctx_irq_for_abi_driver() {
-    IRQ_HANDLER_CALLED.store(false, Ordering::SeqCst);
-    LAST_IRQ.store(0, Ordering::SeqCst);
+    let _guard = reset_test_state();
 
     let handle = register_abi_driver(irq_entry_fn).expect("register failed");
     DRIVER_REGISTRY.probe(handle).expect("probe failed");
@@ -272,8 +298,11 @@ fn test_dispatch_irq_updates_ctx_irq_for_abi_driver() {
         .expect("unregister failed");
 }
 
-#[test_case]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_registry_poisoned_readers_return_defaults() {
+    let _guard = reset_test_state();
     use crate::sync::set_panicking;
 
     let reg = DriverRegistry::new();

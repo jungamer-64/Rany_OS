@@ -528,7 +528,9 @@ mod tests {
     use super::super::expr_parser::parse_expression;
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_eval_literal() {
         let expr = parse_expression("42").unwrap();
         let ctx = EvalContext::empty();
@@ -536,7 +538,9 @@ mod tests {
         assert!(matches!(result, ExoValue::Int(42)));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_eval_comparison() {
         let expr = parse_expression("100 > 50").unwrap();
         let ctx = EvalContext::empty();
@@ -544,7 +548,9 @@ mod tests {
         assert!(matches!(result, ExoValue::Bool(true)));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_eval_arithmetic() {
         let expr = parse_expression("10 + 5 * 2").unwrap();
         let ctx = EvalContext::empty();
@@ -553,7 +559,9 @@ mod tests {
         assert!(matches!(result, ExoValue::Int(20)));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_eval_logical() {
         let expr = parse_expression("true && false").unwrap();
         let ctx = EvalContext::empty();

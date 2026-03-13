@@ -448,7 +448,9 @@ mod tests {
     use super::*;
     use alloc::vec::Vec;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_magazine_basic() {
         let mut mag: Magazine<u64, 4> = Magazine::new();
 
@@ -477,7 +479,9 @@ mod tests {
         assert!(mag.is_empty());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_magazine_peek() {
         let mut mag: Magazine<u64, 4> = Magazine::new();
 
@@ -491,7 +495,9 @@ mod tests {
         assert_eq!(mag.peek(), Some(43)); // Top changed
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_magazine_drain() {
         let mut mag: Magazine<u64, 4> = Magazine::new();
         mag.push(1);
@@ -505,7 +511,9 @@ mod tests {
         assert!(mag.is_empty());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_magazine_transfer() {
         let mut src: Magazine<u64, 4> = Magazine::new();
         let mut dst: Magazine<u64, 4> = Magazine::new();
@@ -520,7 +528,9 @@ mod tests {
         assert_eq!(dst.len(), 2);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_magazine_set() {
         let mut set: MagazineSet<u64, 4, 3> = MagazineSet::new();
 

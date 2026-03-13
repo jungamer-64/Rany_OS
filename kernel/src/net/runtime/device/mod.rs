@@ -1335,7 +1335,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_queue_roundtrip_smoke() {
         let _ = crate::net::datapath::mempool::init_net_mempool(16);
         let queue = NetTxQueue::new();
@@ -1349,7 +1351,9 @@ mod tests {
         assert_eq!(queue.len(), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn event_sink_from_isr_roundtrip_smoke() {
         let sink = NetEventSink::new();
         assert_eq!(sink.capacity(), NetEventSink::CAPACITY);
@@ -1364,7 +1368,9 @@ mod tests {
         assert_eq!(sink.len(), 0);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn device_handle_rebind_updates_binding_smoke() {
         let driver = Arc::new(FakeDriver::new());
         let handle = NetDeviceHandle::new(
@@ -1391,7 +1397,9 @@ mod tests {
         assert_eq!(driver.last_if_id.load(Ordering::Acquire), 22);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn register_port_with_default_config_exposes_snapshot_smoke() {
         let driver = Arc::new(FakeDriver::new());
         driver.set_stats(11, 7, true);
@@ -1414,7 +1422,9 @@ mod tests {
         assert_eq!(driver.stop_calls.load(Ordering::Relaxed), 1);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn register_port_make_primary_updates_primary_selection_smoke() {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
@@ -1438,7 +1448,9 @@ mod tests {
         assert!(unregister_port(if_a));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn primary_link_down_promotes_secondary_and_updates_runtime_config() {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
@@ -1499,7 +1511,9 @@ mod tests {
         assert!(unregister_port(if_a));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn unregister_primary_without_survivor_clears_primary_runtime() {
         let driver = Arc::new(FakeDriver::new());
         let if_a = register_port_with_default_config(NetDeviceKey::Virtio(95), driver, false)
@@ -1524,7 +1538,9 @@ mod tests {
         assert!(cfg.ipv4.dns.is_none());
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recovered_interface_does_not_reclaim_primary_after_failover() {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
@@ -1561,7 +1577,9 @@ mod tests {
         assert!(unregister_port(if_a));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn claim_bound_primary_interface_with_stack_state_updates_primary_without_global_lock() {
         DHCP_BOUND_PRIMARY_SELECTED.store(false, Ordering::Release);
 
@@ -1588,14 +1606,18 @@ mod tests {
         assert!(unregister_port(if_a));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_completion_future_resolves_success() {
         let (completion_id, future) = register_tx_completion();
         assert!(complete_tx_request(completion_id, Ok(())));
         assert_eq!(crate::task::block_on(future), Ok(()));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_completion_future_resolves_error() {
         let (completion_id, future) = register_tx_completion();
         assert!(complete_tx_request(completion_id, Err("submit failed")));

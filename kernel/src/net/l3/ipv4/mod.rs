@@ -711,7 +711,9 @@ impl<'a> Ipv4PacketMut<'a> {
 mod packet_mut_tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_ipv4_packet_mut_finalize_clamp() {
         let mut buffer = [0u8; 30]; // 20 bytes header + 10 bytes payload
         let mut packet = Ipv4PacketMut::new(&mut buffer).unwrap();
@@ -730,7 +732,9 @@ mod packet_mut_tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_ipv4_packet_mut_manual_overflow_protection() {
         let mut buffer = [0u8; 30];
         let mut packet = Ipv4PacketMut::new(&mut buffer).unwrap();

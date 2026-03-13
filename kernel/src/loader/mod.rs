@@ -315,6 +315,12 @@ pub struct ExoCellInfo {
 /// グローバルセルレジストリ
 static CELL_REGISTRY: PoisonLock<CellRegistry> = PoisonLock::new(CellRegistry::new());
 
+#[cfg(test)]
+pub(crate) fn reset_for_tests() {
+    let mut registry = CELL_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    *registry = CellRegistry::new();
+}
+
 /// セルレジストリにアクセス
 pub fn with_registry<F, R>(f: F) -> R
 where
@@ -972,7 +978,9 @@ mod tests {
         elf
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn load_driver_pack_rejects_too_new_kernel_api_version() {
         let pack = driver_pack::build_unsigned_driver_pack(
             "test_driver",
@@ -991,7 +999,9 @@ mod tests {
         assert_eq!(registry_snapshot(), before);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn artifact_path_rejects_too_new_kernel_api_version() {
         let pack = driver_pack::build_unsigned_driver_pack(
             "test_driver",
@@ -1010,7 +1020,9 @@ mod tests {
         assert_eq!(registry_snapshot(), before);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn artifact_cell_path_rejects_too_new_kernel_api_version() {
         let pack = driver_pack::build_unsigned_driver_pack(
             "test_driver",
@@ -1029,7 +1041,9 @@ mod tests {
         assert_eq!(registry_snapshot(), before);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_requirements_rejects_missing_loop_proof_section() {
         let elf = build_test_elf(None);
         let err = validate_cell_requirements("test-cell", &elf, true, false)
@@ -1037,7 +1051,9 @@ mod tests {
         assert!(matches!(err, LoadError::LoopProofMissing));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_requirements_rejects_invalid_loop_proof_section() {
         let bad = [b'R', b'L', b'X', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
         let elf = build_test_elf(Some((loop_proof::LOOP_PROOF_SECTION_NAME, &bad)));
@@ -1046,7 +1062,9 @@ mod tests {
         assert!(matches!(err, LoadError::LoopProofInvalid(_)));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_requirements_accepts_valid_loop_proof_section() {
         let good = [b'R', b'L', b'O', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
         let elf = build_test_elf(Some((loop_proof::LOOP_PROOF_SECTION_NAME, &good)));
@@ -1054,7 +1072,9 @@ mod tests {
             .expect("valid loop proof should pass");
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn load_cell_with_flags_rejects_missing_loop_proof_section() {
         let elf = build_test_elf(None);
         let before = registry_snapshot();
@@ -1064,7 +1084,9 @@ mod tests {
         assert_eq!(registry_snapshot(), before);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn load_cell_rejects_missing_signature_without_mutating_registry() {
         let elf = build_test_elf(Some((".exorust_sig", b"bad-signature")));
         let before = registry_snapshot();

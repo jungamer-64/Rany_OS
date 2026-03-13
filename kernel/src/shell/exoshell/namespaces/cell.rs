@@ -1216,27 +1216,35 @@ mod tests {
     use crate::driver_domain::lifecycle::DriverDomainConfig;
     use futures::executor::block_on;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_list_returns_array() {
         let val = CellNamespace::dispatch_list();
         assert!(matches!(val, ExoValue::Array(_)));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_resolve_driver_domain_id_numeric() {
         let v = ExoValue::Int(42);
         let id = CellNamespace::resolve_driver_domain_id(&v).unwrap();
         assert_eq!(id.as_u64(), 42);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_resolve_driver_domain_ref_name_not_found() {
         let args = [CellNamespace::vstr("definitely_missing_driver_domain_name")];
         let res = CellNamespace::resolve_driver_domain_ref(&args);
         assert!(matches!(res, Err(ExoValue::Error(_))));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_resolve_driver_domain_ref_name_exists() {
         let name = "cell_ns_test_exists";
         if let Some(existing) = crate::driver_domain::driver_domain_manager().find_by_name(name) {
@@ -1251,7 +1259,9 @@ mod tests {
         let _ = crate::driver_domain::driver_domain_manager().remove(id);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_wait_quiescent_requires_admin_cap() {
         let ns = CellNamespace;
         let caps = CapabilitySet::empty();
@@ -1263,7 +1273,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_wait_quiescent_returns_structured_map() {
         let ns = CellNamespace;
         let caps = CapabilitySet::full();
@@ -1279,7 +1291,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_mutating_api_requires_module_cap() {
         let ns = CellNamespace;
         let caps = CapabilitySet::empty();
@@ -1294,7 +1308,9 @@ mod tests {
         }
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_update_alias_uses_same_permission_gate_as_swap() {
         let ns = CellNamespace;
         let caps = CapabilitySet::empty();

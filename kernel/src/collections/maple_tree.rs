@@ -287,14 +287,18 @@ pub mod qemu_tests {
 mod tests {
     use super::*;
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_empty() {
         let mt: MapleTree<u32> = MapleTree::new();
         assert!(mt.is_empty());
         assert_eq!(mt.load(0), None);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_single_range() {
         let mut mt: MapleTree<u32> = MapleTree::new();
         mt.store_range(10, 20, 42);
@@ -306,7 +310,9 @@ mod tests {
         assert_eq!(mt.load(20), None);
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_multiple_ranges() {
         let mut mt: MapleTree<u32> = MapleTree::new();
 
@@ -320,7 +326,9 @@ mod tests {
         assert_eq!(mt.load(250), Some(&2));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_overlapping_store() {
         let mut mt: MapleTree<u32> = MapleTree::new();
 
@@ -331,7 +339,9 @@ mod tests {
         assert_eq!(mt.load(75), Some(&2));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_erase() {
         let mut mt: MapleTree<u32> = MapleTree::new();
 
@@ -344,7 +354,9 @@ mod tests {
         assert_eq!(mt.load(250), Some(&2));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_find_gap() {
         let mut mt: MapleTree<u32> = MapleTree::new();
 
@@ -355,7 +367,9 @@ mod tests {
         assert_eq!(gap, (100, 200));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_range_coalescing() {
         let mut mt: MapleTree<u32> = MapleTree::new();
 
@@ -368,7 +382,9 @@ mod tests {
         assert_eq!(mt.load(150), Some(&1));
     }
 
-    #[test_case]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_many_ranges() {
         let mut mt: MapleTree<u32> = MapleTree::new();
 
