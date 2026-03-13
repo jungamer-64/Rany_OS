@@ -107,7 +107,7 @@ impl SystemIntegration {
                 let bar0_phys = bar0.base();
                 let bar0_virt =
                     crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
-                let num_cores = crate::cpu::count();
+                let num_cores = crate::cpu::count() as u32;
                 let packed_device_id = dev.packed_locator();
 
                 let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
