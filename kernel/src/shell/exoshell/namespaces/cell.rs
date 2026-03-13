@@ -1217,7 +1217,6 @@ mod tests {
     use futures::executor::block_on;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_list_returns_array() {
         let val = CellNamespace::dispatch_list();
@@ -1225,7 +1224,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_resolve_driver_domain_id_numeric() {
         let v = ExoValue::Int(42);
@@ -1234,7 +1232,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_resolve_driver_domain_ref_name_not_found() {
         let args = [CellNamespace::vstr("definitely_missing_driver_domain_name")];
@@ -1243,7 +1240,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_resolve_driver_domain_ref_name_exists() {
         let name = "cell_ns_test_exists";
@@ -1260,7 +1256,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_wait_quiescent_requires_admin_cap() {
         let ns = CellNamespace;
@@ -1274,7 +1269,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_wait_quiescent_returns_structured_map() {
         let ns = CellNamespace;
@@ -1292,7 +1286,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_mutating_api_requires_module_cap() {
         let ns = CellNamespace;
@@ -1309,7 +1302,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_update_alias_uses_same_permission_gate_as_swap() {
         let ns = CellNamespace;

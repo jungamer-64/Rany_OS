@@ -3,7 +3,6 @@ use crate::mm::types::FrameIndex;
 use core::sync::atomic::Ordering;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_memcg_counter() {
     let counter = MemcgCounter::new();
@@ -19,7 +18,6 @@ fn test_memcg_counter() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_memcg_id() {
     let id = MemcgId::new(42);
@@ -28,7 +26,6 @@ fn test_memcg_id() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_memcg_page_track_and_untrack() {
     // Ensure manager initialized
@@ -60,7 +57,6 @@ fn test_memcg_page_track_and_untrack() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_memcg_untrack_returns_none_if_not_tracked() {
     init_memcg();
@@ -69,7 +65,6 @@ fn test_memcg_untrack_returns_none_if_not_tracked() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_memcg_charge_rollup_to_parent() {
     init_memcg();

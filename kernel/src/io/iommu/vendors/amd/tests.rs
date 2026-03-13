@@ -61,7 +61,6 @@ fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alias_devids_for_device_dedup() {
     let device = DeviceId::new(0, 1, 0, 0);
@@ -96,7 +95,6 @@ fn test_alias_devids_for_device_dedup() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alias_devids_for_device_no_match() {
     let driver = make_driver(alloc::vec![IvhdDeviceEntry::Select {
@@ -109,7 +107,6 @@ fn test_alias_devids_for_device_no_match() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ivhd_flags_for_device_combined() {
     let device = DeviceId::new(0, 2, 0, 0);
@@ -157,7 +154,6 @@ fn test_ivhd_flags_for_device_combined() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ivhd_flags_for_device_acpi_hid() {
     let device = DeviceId::new(0, 2, 0, 0);
@@ -169,7 +165,6 @@ fn test_ivhd_flags_for_device_acpi_hid() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_ivmd_ranges_exclusion_splits() {
     let pool = PageTablePool::new(1, 1);
@@ -220,7 +215,6 @@ fn test_map_ivmd_ranges_exclusion_splits() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_for_device_rejects_exclusion_range() {
     let device = DeviceId::new(0, 0, 1, 0);
@@ -342,7 +336,6 @@ fn make_test_driver_small() -> AmdIommuDriver {
 // ---------------------------------------------------------------------------
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cmdqueue_map_unmap_with_domain() {
     let driver = make_test_driver_small();
@@ -418,7 +411,6 @@ fn test_cmdqueue_map_unmap_with_domain() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_device_nonblocking() {
     let driver = make_test_driver_small();
@@ -448,7 +440,6 @@ fn test_map_device_nonblocking() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_dma_mask_respects_32bit_limit() {
     let driver = make_test_driver_small();
@@ -462,7 +453,6 @@ fn test_dma_mask_respects_32bit_limit() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_security_notifier_dispatch() {
     let driver = make_test_driver_small();
@@ -478,7 +468,6 @@ fn test_security_notifier_dispatch() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cmdqueue_pressure() {
     let cq = alloc::boxed::Box::leak(alloc::boxed::Box::new(CommandQueue::new()));
@@ -521,7 +510,6 @@ use super::cmd::AmdCommand;
 use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_entry_construction() {
     let irte = AmdIrte::fixed(0x42, 0x0A, false, None);
@@ -540,7 +528,6 @@ fn test_wave5_irt_entry_construction() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_alloc_free() {
     let mut irt = AmdInterruptRemapTable::new(4).unwrap();
@@ -561,7 +548,6 @@ fn test_wave5_irt_alloc_free() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_exhaustion() {
     let mut irt = AmdInterruptRemapTable::new(2).unwrap(); // 4 entries
@@ -578,7 +564,6 @@ fn test_wave5_irt_exhaustion() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_invalidation_cmd_format() {
     let devid: u16 = 0x0108;
@@ -588,7 +573,6 @@ fn test_wave5_irt_invalidation_cmd_format() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_map_interrupt_returns_handle() {
     let mut driver = make_test_driver_small();
@@ -603,7 +587,6 @@ fn test_wave5_map_interrupt_returns_handle() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_get_remap_msi_message_format() {
     let (addr, _data) = encode_remap_msi(5);

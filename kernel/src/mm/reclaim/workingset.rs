@@ -522,7 +522,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_shadow_entry_basic() {
         let shadow = ShadowEntry::new(100, MglruGen::Gen1, 0, 0);
@@ -532,7 +531,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_shadow_table_insert_lookup() {
         let table = ShadowTable::new();
@@ -552,7 +550,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_workingset_controller() {
         let ctrl = WorkingsetController::new();
@@ -579,7 +576,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_workingset_not_in_workingset() {
         let ctrl = WorkingsetController::new();

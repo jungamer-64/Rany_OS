@@ -39,7 +39,6 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_device_id() {
     let dev = DeviceId::new(0, 0, 1, 0);
@@ -47,7 +46,6 @@ fn test_device_id() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_sl_pte() {
     let pte = SlPte::mapping(0x1000, true, true);
@@ -58,7 +56,6 @@ fn test_sl_pte() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_iommu_domain() {
     let domain = IommuDomain::new(
@@ -84,7 +81,6 @@ fn test_iommu_domain() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_page_table_addr_returns_root_phys() {
     let domain = IommuDomain::new(
@@ -105,7 +101,6 @@ fn test_page_table_addr_returns_root_phys() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_intel_select_agaw_prefers_highest_supported() {
     assert_eq!(IommuController::select_agaw(0b1111, 39), Ok((1, 39, 3)));
@@ -118,7 +113,6 @@ fn test_intel_select_agaw_prefers_highest_supported() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_entry_agaw_encoding_uses_selected_code() {
     let mut ctx = ContextEntry::default();
@@ -134,7 +128,6 @@ fn test_entry_agaw_encoding_uses_selected_code() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_map_unmap_4k_for_levels_2_to_5() {
     for (levels, max_bits) in [(2u8, 30u8), (3, 39), (4, 48), (5, 57)] {
@@ -161,7 +154,6 @@ fn test_domain_map_unmap_4k_for_levels_2_to_5() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_superpage_level_guards() {
     let level2 = IommuDomain::new(
@@ -206,7 +198,6 @@ fn test_superpage_level_guards() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_invalidation_queue_uses_physical_addresses_for_hw() {
     let mut queue = InvalidationQueue::new(8).expect("failed to allocate invalidation queue");
@@ -282,7 +273,6 @@ unsafe fn is_superpage_2mb_mapped(domain: &IommuDomain, iova: u64, format: PteFo
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_rollback_on_overlap_hidden_mapping() {
     let format = PteFormat::Intel;
@@ -324,7 +314,6 @@ fn test_map_rollback_on_overlap_hidden_mapping() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_rollback_on_overlap_hidden_mapping_amd() {
     let format = PteFormat::Amd;
@@ -373,7 +362,6 @@ fn test_map_rollback_on_overlap_hidden_mapping_amd() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_rollback_superpage_2mb_collision() {
     let format = PteFormat::Amd;
@@ -420,7 +408,6 @@ fn test_map_rollback_superpage_2mb_collision() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_create_domain_with_numa_hint() {
     let ctrl = IommuController::new(0x0, 0);
@@ -438,7 +425,6 @@ fn test_create_domain_with_numa_hint() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_process_page_requests_poisoned_returns_empty() {
     use crate::sync::set_panicking;
@@ -453,7 +439,6 @@ fn test_process_page_requests_poisoned_returns_empty() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_create_domain_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
@@ -472,7 +457,6 @@ fn test_create_domain_poisoned_returns_hw_error() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_isolate_faulting_device_poisoned_attempts_isolation() {
     use crate::sync::set_panicking;
@@ -533,7 +517,6 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_scalable_mode_pasid0_fault_resolution() {
     #[derive(Debug)]
@@ -648,7 +631,6 @@ fn test_scalable_mode_pasid0_fault_resolution() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_map_poisoned_returns_none() {
     use crate::sync::set_panicking;
@@ -668,7 +650,6 @@ fn test_domain_map_poisoned_returns_none() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_get_domain_for_device_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
@@ -700,7 +681,6 @@ fn test_get_domain_for_device_poisoned_returns_hw_error() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_set_domain_numa_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
@@ -723,7 +703,6 @@ fn test_set_domain_numa_poisoned_returns_hw_error() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_iova_allocator_basic() {
     let ctrl = IommuController::new(0x0, 0);
@@ -770,7 +749,6 @@ fn test_iova_allocator_basic() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_init_iova_poisoned_proceeds_with_best_effort() {
     use crate::sync::set_panicking;
@@ -798,7 +776,6 @@ fn test_init_iova_poisoned_proceeds_with_best_effort() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_init_interrupt_remapping_poisoned_proceeds_with_best_effort() {
     use crate::sync::set_panicking;
@@ -828,7 +805,6 @@ fn test_init_interrupt_remapping_poisoned_proceeds_with_best_effort() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
@@ -846,7 +822,6 @@ fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_iova_alloc_non_identity() {
     let ctrl = IommuController::new(0x0, 0);
@@ -1142,7 +1117,6 @@ fn test_map_for_device_async_and_unmap() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_for_device_respects_dma_mask() {
     use alloc::sync::Arc as AllocArc;
@@ -1210,7 +1184,6 @@ fn test_map_for_device_respects_dma_mask() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_unmap_for_device_does_not_leak_iova() {
     use alloc::sync::Arc as AllocArc;
@@ -1297,7 +1270,6 @@ fn test_init_iommu_registers_drhd_and_rmrr_and_applies_rmrr() {
 */
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_unmap_reclaims_empty_tables() {
     let domain = IommuDomain::new(
@@ -1336,7 +1308,6 @@ fn test_unmap_reclaims_empty_tables() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_unmap_partial_keeps_tables() {
     let domain = IommuDomain::new(
@@ -1384,7 +1355,6 @@ fn test_unmap_partial_keeps_tables() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_unmap_mixed_superpages() {
     const SIZE_1GB: u64 = 1024 * 1024 * 1024;
@@ -1538,7 +1508,6 @@ fn test_qi_metrics_pressure() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_page_table_scope_commit_preserves_counts() {
     // Verify that commit doesn't overwrite existing counts and increments parent count.
@@ -1578,7 +1547,6 @@ fn test_page_table_scope_commit_preserves_counts() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_page_table_scope_drop_rolls_back_parent() {
     // Verify that dropping an uncommitted scope clears parent entry and frees memory.
@@ -1916,7 +1884,6 @@ fn test_mapping_iova_phys_distinct() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ats_enable_requires_qi() {
     let mut ctrl = IommuController::new(0x0, 0);
@@ -1947,7 +1914,6 @@ fn test_ats_enable_requires_qi() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_iova_quarantine_and_epoch_drain() {
     let ctrl = IommuController::new(0x0, 0);
@@ -2006,7 +1972,6 @@ fn test_iova_quarantine_and_epoch_drain() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_invalidate_request_ats_flag() {
     use crate::io::iommu::common::domain::{InvalidateFlags, InvalidateRequest};

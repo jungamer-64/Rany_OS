@@ -824,7 +824,6 @@ mod loader_tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn symtab_overflow_does_not_panic() {
         let loader = dummy_loader();

@@ -485,7 +485,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_audit_record() {
         let record = AuditRecord::new(AuditEventType::DomainCreate, 42, true)
@@ -498,7 +497,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_audit_event() {
         let event = AuditEvent::new(AuditEventType::CapabilityCheck, 1)
@@ -512,7 +510,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_event_type_critical() {
         assert!(AuditEventType::PrivilegeEscalation.is_critical());

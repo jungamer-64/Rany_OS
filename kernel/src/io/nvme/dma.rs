@@ -293,7 +293,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn align_up_page_rounds_to_4k() {
         assert_eq!(align_up_page(1), NVME_PAGE_SIZE);
@@ -302,7 +301,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn write_region_tracks_logical_and_alloc_len() {
         let dma = NvmeDmaRegion::for_write(5, &[1, 2, 3], test_device()).expect("write region");
@@ -313,7 +311,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn write_region_zero_fills_tail_and_copy_respects_logical_len() {
         let dma = NvmeDmaRegion::for_write(5, &[1, 2, 3], test_device()).expect("write region");
@@ -334,7 +331,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn prp2_selection_handles_two_page_transfer() {
         let dma = NvmeDmaRegion::for_write(NVME_PAGE_SIZE + 1, &[0x5A], test_device())
@@ -345,7 +341,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn prp2_selection_uses_prp_list_for_multi_page_transfer() {
         let dma =

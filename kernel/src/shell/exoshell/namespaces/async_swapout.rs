@@ -146,7 +146,6 @@ mod tests {
     use crate::shell::exoshell::types::ExoValue;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_status_contains_expected_keys() {
         let val = AsyncSwapoutNamespace::status();
@@ -162,7 +161,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_set_requires_cap() {
         let ns = AsyncSwapoutNamespace;
@@ -177,7 +175,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_set_with_admin() {
         let ns = AsyncSwapoutNamespace;

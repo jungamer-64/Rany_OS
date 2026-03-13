@@ -735,7 +735,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_revoked_key_is_rejected_before_hash_check() {
         let mut verifier = SignatureVerifier::new();
@@ -751,7 +750,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_invalid_chain_without_kernel_issuer_is_rejected() {
         let mut verifier = SignatureVerifier::new();

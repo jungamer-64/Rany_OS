@@ -437,7 +437,6 @@ pub(crate) fn test_tls_version_ordering() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_empty() {
     let result = md5_compute(b"");
@@ -449,7 +448,6 @@ pub(crate) fn test_md5_empty() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_a() {
     let result = md5_compute(b"a");
@@ -461,7 +459,6 @@ pub(crate) fn test_md5_a() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_abc() {
     let result = md5_compute(b"abc");
@@ -473,7 +470,6 @@ pub(crate) fn test_md5_abc() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_message_digest() {
     let result = md5_compute(b"message digest");
@@ -485,7 +481,6 @@ pub(crate) fn test_md5_message_digest() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_md5_alphabet() {
     let result = md5_compute(b"abcdefghijklmnopqrstuvwxyz");
@@ -501,7 +496,6 @@ pub(crate) fn test_md5_alphabet() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_sha1_abc() {
     let result = sha1_compute(b"abc");
@@ -513,7 +507,6 @@ pub(crate) fn test_sha1_abc() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_sha1_empty() {
     let result = sha1_compute(b"");
@@ -525,7 +518,6 @@ pub(crate) fn test_sha1_empty() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_sha1_long() {
     // "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
@@ -542,7 +534,6 @@ pub(crate) fn test_sha1_long() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_hmac_md5_rfc2202_case1() {
     let key = [0x0bu8; 16];
@@ -555,7 +546,6 @@ pub(crate) fn test_hmac_md5_rfc2202_case1() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_hmac_md5_rfc2202_case2() {
     let key = b"Jefe";
@@ -568,7 +558,6 @@ pub(crate) fn test_hmac_md5_rfc2202_case2() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_hmac_sha1_rfc2202_case1() {
     let key = [0x0bu8; 20];
@@ -581,7 +570,6 @@ pub(crate) fn test_hmac_sha1_rfc2202_case1() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_hmac_sha1_rfc2202_case2() {
     let key = b"Jefe";
@@ -598,14 +586,12 @@ pub(crate) fn test_hmac_sha1_rfc2202_case2() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_aes_cbc_roundtrip_128() {
     run_cbc_roundtrip(&[0x2bu8; 16], &[0x00u8; 16], b"Hello, AES-CBC mode test!");
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_aes_cbc_roundtrip_256() {
     run_cbc_roundtrip(
@@ -616,7 +602,6 @@ pub(crate) fn test_aes_cbc_roundtrip_256() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_aes_cbc_empty() {
     let key = [0x00u8; 16];
@@ -634,7 +619,6 @@ pub(crate) fn test_aes_cbc_empty() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_padding_add_verify() {
     let data = b"test data";
@@ -648,7 +632,6 @@ pub(crate) fn test_tls_padding_add_verify() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_padding_exact_block() {
     // Data that's exactly one block minus 1 (needs 1 byte of padding content)
@@ -662,7 +645,6 @@ pub(crate) fn test_tls_padding_exact_block() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_padding_full_block_pad() {
     // Data that falls exactly on block boundary -> full block of padding
@@ -679,7 +661,6 @@ pub(crate) fn test_tls_padding_full_block_pad() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls10_prf_deterministic() {
     let secret = [0x42u8; 48];
@@ -695,7 +676,6 @@ pub(crate) fn test_tls10_prf_deterministic() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls10_prf_different_labels() {
     let secret = [0x42u8; 48];

@@ -667,7 +667,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cpu_quota() {
         let quota = CpuQuota::new(50, 100); // 50%, 100ms period
@@ -682,7 +681,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_memory_quota() {
         let quota = MemoryQuota::new(1); // 1MB
@@ -699,7 +697,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_oom_victim_selection() {
         let mut quotas = BTreeMap::new();

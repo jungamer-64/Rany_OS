@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_uleb128() {
     let mut reader = MemoryReader::new(&[0x00]);
@@ -21,7 +20,6 @@ fn test_uleb128() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_sleb128() {
     let mut reader = MemoryReader::new(&[0x00]);

@@ -107,14 +107,12 @@ impl VirtioTransport for NoopTransport {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtio_input_event_size() {
     assert_eq!(core::mem::size_of::<VirtioInputEvent>(), 8);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtio_input_event_default() {
     let event = VirtioInputEvent::default();
@@ -124,7 +122,6 @@ fn test_virtio_input_event_default() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtio_input_device_new() {
     let dev = VirtioInputDevice::new(Box::new(NoopTransport), test_device());
@@ -134,7 +131,6 @@ fn test_virtio_input_device_new() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtio_input_device_new_with_device() {
     use crate::io::iommu::types::DeviceId;
@@ -146,7 +142,6 @@ fn test_virtio_input_device_new_with_device() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtqueue_alloc_free_desc() {
     let queue_size: u16 = 8;
@@ -180,7 +175,6 @@ fn test_virtqueue_alloc_free_desc() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_config_select_constants() {
     assert_eq!(config_select::VIRTIO_INPUT_CFG_UNSET, 0x00);
@@ -193,7 +187,6 @@ fn test_config_select_constants() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_query_config_returns_none_for_zero_size() {
     let dev = VirtioInputDevice::new(Box::new(NoopTransport), test_device());
@@ -203,7 +196,6 @@ fn test_query_config_returns_none_for_zero_size() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_device_name_returns_none_for_noop() {
     let dev = VirtioInputDevice::new(Box::new(NoopTransport), test_device());
@@ -211,7 +203,6 @@ fn test_device_name_returns_none_for_noop() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_set_event_handler() {
     let dev = VirtioInputDevice::new(Box::new(NoopTransport), test_device());
@@ -224,7 +215,6 @@ fn test_set_event_handler() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_align_up() {
     assert_eq!(align_up(0, 4), 0);
@@ -236,7 +226,6 @@ fn test_align_up() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_input_error_display() {
     use alloc::format;

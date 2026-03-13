@@ -11,7 +11,6 @@ fn with_global_manager_test<T>(f: impl FnOnce() -> T) -> T {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_capability_set() {
     let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND | CAP_NET_RAW);
@@ -29,7 +28,6 @@ fn test_capability_set() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_raise_not_permitted() {
     let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND);
@@ -38,7 +36,6 @@ fn test_raise_not_permitted() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_grant_with_options() {
     let manager = fresh_manager();
@@ -64,7 +61,6 @@ fn test_grant_with_options() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_revoke_grant() {
     let manager = fresh_manager();
@@ -90,7 +86,6 @@ fn test_revoke_grant() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_expire_grants() {
     let manager = fresh_manager();
@@ -113,7 +108,6 @@ fn test_expire_grants() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_expire_grants_wrapper() {
     with_global_manager_test(|| {
@@ -135,7 +129,6 @@ fn test_expire_grants_wrapper() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_spawn_expiry_daemon_task_idempotent() {
     with_global_manager_test(|| {
@@ -145,7 +138,6 @@ fn test_spawn_expiry_daemon_task_idempotent() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_grant_requires_permissions_manager() {
     let manager = fresh_manager();
@@ -161,7 +153,6 @@ fn test_grant_requires_permissions_manager() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_reclaim_token() {
     let manager = fresh_manager();
@@ -191,7 +182,6 @@ fn test_reclaim_token() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_in_flight_blocks_reclaim() {
     let manager = fresh_manager();
@@ -230,7 +220,6 @@ fn test_in_flight_blocks_reclaim() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_spawn_reclamation_daemon_task_idempotent() {
     with_global_manager_test(|| {
@@ -240,7 +229,6 @@ fn test_spawn_reclamation_daemon_task_idempotent() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_capability_init_idempotent() {
     with_global_manager_test(|| {
@@ -253,7 +241,6 @@ fn test_capability_init_idempotent() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_grant_with_permitted_manager() {
     let manager = fresh_manager();

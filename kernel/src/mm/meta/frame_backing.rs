@@ -84,7 +84,6 @@ mod tests {
     use crate::mm::types::FrameIndex;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_track_and_get_untrack() {
         let f = FrameIndex::new(12345);

@@ -175,7 +175,6 @@ mod tests {
     use core::sync::atomic::Ordering;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn closed_port_rst_rate_counters_increment_but_always_allow() {
         // clear previous state

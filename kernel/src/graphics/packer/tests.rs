@@ -15,7 +15,6 @@ fn fill_src(buf: &mut [u8], pixels: usize) {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn pack_rgba_to_bgra_matches_scalar_mode() {
     let pixels_list = [1usize, 2, 7, 8, 9, 15, 16, 17, 24, 32, 33, 64];
@@ -39,7 +38,6 @@ fn pack_rgba_to_bgra_matches_scalar_mode() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn pack_rgba_to_bgra_matches_simd_if_available() {
     #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
@@ -89,7 +87,6 @@ fn pack_rgba_to_bgra_matches_simd_if_available() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn pack_rgba_to_bgr24_matches_scalar_mode() {
     let pixels_list = [1usize, 2, 7, 8, 9, 15, 16, 17, 24, 31, 32, 33, 64];
@@ -113,7 +110,6 @@ fn pack_rgba_to_bgr24_matches_scalar_mode() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn pack_rgba_to_bgr24_matches_simd_if_available() {
     #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]

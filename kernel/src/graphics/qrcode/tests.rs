@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_rs_ec7_known_vector() {
     // Known vector test for Reed-Solomon RS(26,19) over GF(256) with primitive 0x11D.

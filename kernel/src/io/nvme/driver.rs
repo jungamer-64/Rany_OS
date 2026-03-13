@@ -30,7 +30,6 @@ mod tests {
     use nvme_driver::defs::PrpList;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_nvme_command_read() {
         let cmd = NvmeCommand::read(0, 1, 0, 8, 0, 0);
@@ -40,7 +39,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_nvme_command_write() {
         let cmd = NvmeCommand::write(0, 1, 100, 16, 0, 0);
@@ -50,7 +48,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_capabilities() {
         let cap = NvmeCapabilities::new(0x00FF_2003_0020_FFFF);
@@ -61,7 +58,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_prp_list() {
         let mut prp_list = PrpList::new();

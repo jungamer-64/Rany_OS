@@ -36,7 +36,6 @@ pub(crate) fn test_draw_line_matches_naive_32bit_backbuffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_line_matches_naive_24bit_backbuffer() {
     let info = fb_info(16, 16, PixelFormat::Bgr888);
@@ -64,7 +63,6 @@ pub(crate) fn test_draw_line_matches_naive_24bit_backbuffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_space_24bit_backbuffer() {
     let info = fb_info(16, 16, PixelFormat::Bgr888);
@@ -89,7 +87,6 @@ pub(crate) fn test_draw_text_space_24bit_backbuffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_32bit_mmio() {
     let info = fb_info(4, 4, PixelFormat::Bgra8888);
@@ -107,7 +104,6 @@ pub(crate) fn test_draw_image_32bit_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_24bit_mmio() {
     let info = fb_info(3, 2, PixelFormat::Bgr888);
@@ -124,7 +120,6 @@ pub(crate) fn test_draw_image_24bit_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_32bit_mmio_rgba() {
     let info = fb_info(4, 4, PixelFormat::Rgba8888);
@@ -142,7 +137,6 @@ pub(crate) fn test_draw_image_32bit_mmio_rgba() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_write_bytes_mmio_alignment() {
     // Ensure write_bytes_mmio uses u64 writes when destination is 8-byte aligned
@@ -184,7 +178,6 @@ pub(crate) fn test_write_bytes_mmio_alignment() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_write_bgr_run_large() {
     // Ensure large runs of a single color are written correctly
@@ -202,7 +195,6 @@ pub(crate) fn test_write_bgr_run_large() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_write_opaque_run_24bit_even_odd_mmio() {
     use crate::graphics::image::Image;
@@ -248,7 +240,6 @@ pub(crate) fn test_write_opaque_run_24bit_even_odd_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgra_basic() {
     // Build a simple RGBA pattern and verify BGRA result matches expected

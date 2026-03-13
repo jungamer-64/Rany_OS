@@ -722,7 +722,6 @@ mod tests {
     use kernel_api::abi::driver::{DriverContext as AbiDriverContext, PackedPciLocation};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn from_config_preserves_abi_driver_context() {
         let locator = PackedPciLocation::new(0x1234, 0x56, 0x07, 0x01);

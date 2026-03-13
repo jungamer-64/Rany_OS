@@ -288,7 +288,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_empty() {
         let mt: MapleTree<u32> = MapleTree::new();
@@ -297,7 +296,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_single_range() {
         let mut mt: MapleTree<u32> = MapleTree::new();
@@ -311,7 +309,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_multiple_ranges() {
         let mut mt: MapleTree<u32> = MapleTree::new();
@@ -327,7 +324,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_overlapping_store() {
         let mut mt: MapleTree<u32> = MapleTree::new();
@@ -340,7 +336,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_erase() {
         let mut mt: MapleTree<u32> = MapleTree::new();
@@ -355,7 +350,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_find_gap() {
         let mut mt: MapleTree<u32> = MapleTree::new();
@@ -368,7 +362,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_range_coalescing() {
         let mut mt: MapleTree<u32> = MapleTree::new();
@@ -383,7 +376,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_many_ranges() {
         let mut mt: MapleTree<u32> = MapleTree::new();

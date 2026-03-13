@@ -615,7 +615,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_get_and_list_kernel_interfaces() {
         let name = "TypeIdTestManualIface";
@@ -633,7 +632,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_verify_cell_dependencies_accepts_matching_hash() {
         let iface = "TypeIdVerifyMatchIface";
@@ -655,7 +653,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_verify_cell_dependencies_rejects_hash_mismatch() {
         let iface = "TypeIdVerifyMismatchIface";

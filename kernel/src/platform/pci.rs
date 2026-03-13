@@ -213,7 +213,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn to_native_device_preserves_bar_base_addresses() {
         let dev = PciDeviceInfo {

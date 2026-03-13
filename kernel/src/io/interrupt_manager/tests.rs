@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_msi_allocation() {
     let manager = InterruptManager::new();
@@ -20,7 +19,6 @@ fn test_msi_allocation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gsi_allocation() {
     let manager = InterruptManager::new();
@@ -37,7 +35,6 @@ fn test_gsi_allocation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_vector_free() {
     let manager = InterruptManager::new();
@@ -64,7 +61,6 @@ fn test_vector_free() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_interrupt_queue_push_pop() {
     let queue = InterruptQueue::new();
@@ -82,7 +78,6 @@ fn test_interrupt_queue_push_pop() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_interrupt_queue_empty() {
     let queue = InterruptQueue::new();
@@ -100,7 +95,6 @@ fn test_interrupt_queue_empty() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_interrupt_queue_full() {
     let queue = InterruptQueue::new();
@@ -121,7 +115,6 @@ fn test_interrupt_queue_full() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_waker_registry_register_count() {
     let registry = WakerRegistry::new();

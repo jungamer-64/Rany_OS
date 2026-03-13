@@ -422,21 +422,18 @@ mod tests {
     use crate::io::interrupt_manager::InterruptConfig;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_request_rejects_zero() {
         assert_eq!(validate_request(0, 1), Err(KapiError::InvalidHandle));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_request_rejects_oversized_request() {
         assert_eq!(validate_request(4, 2), Err(KapiError::InvalidHandle));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn program_device_msix_writes_table_and_control_bits() {
         use alloc::collections::BTreeMap;

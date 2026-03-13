@@ -449,7 +449,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn runtime_registration_step_order_is_canonical() {
         let mut seen = [RuntimeRegistrationStep::PlatformProviders; 3];
@@ -472,7 +471,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn runtime_handoff_milestone_order_places_boot_complete_before_executor_run() {
         let mut seen = [RuntimeHandoffMilestone::ResolveShellMode; 4];

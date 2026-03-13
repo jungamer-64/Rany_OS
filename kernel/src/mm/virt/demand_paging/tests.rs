@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_prot_flags() {
     let prot = ProtFlags::READ | ProtFlags::WRITE;
@@ -11,7 +10,6 @@ fn test_prot_flags() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_vm_region_contains() {
     let region = VmRegion::new_anonymous(
@@ -27,7 +25,6 @@ fn test_vm_region_contains() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_config_default() {
     let config = DemandPagingConfig::default();

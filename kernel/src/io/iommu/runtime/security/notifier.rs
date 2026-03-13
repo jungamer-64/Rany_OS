@@ -175,7 +175,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn security_event_queue_preserves_reserved_slot_capacity() {
         let queue = SecurityEventQueue::new();

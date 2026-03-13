@@ -138,7 +138,6 @@ fn reset_test_state() -> crate::host_test_support::Guard {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_register_abi_driver_and_block_unload() {
     let _guard = reset_test_state();
@@ -187,7 +186,6 @@ fn test_register_abi_driver_and_block_unload() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_register_abi_driver_with_context_passes_pci_locator() {
     let _guard = reset_test_state();
@@ -216,7 +214,6 @@ fn test_register_abi_driver_with_context_passes_pci_locator() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_register_abi_driver_rejects_old_abi_version() {
     let _guard = reset_test_state();
@@ -225,7 +222,6 @@ fn test_register_abi_driver_rejects_old_abi_version() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_unregister_running_fails() {
     let _guard = reset_test_state();
@@ -247,7 +243,6 @@ fn test_unregister_running_fails() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_driver_provider_descriptors_follow_lifecycle() {
     let _guard = reset_test_state();
@@ -278,7 +273,6 @@ fn test_driver_provider_descriptors_follow_lifecycle() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_dispatch_irq_updates_ctx_irq_for_abi_driver() {
     let _guard = reset_test_state();
@@ -299,7 +293,6 @@ fn test_dispatch_irq_updates_ctx_irq_for_abi_driver() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_registry_poisoned_readers_return_defaults() {
     let _guard = reset_test_state();

@@ -424,7 +424,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_page_hash_compute() {
         let mut data1 = [0u8; PAGE_SIZE_4K];
@@ -444,7 +443,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_page_hash_bucket() {
         let data = [0u8; PAGE_SIZE_4K];

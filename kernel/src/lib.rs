@@ -2483,7 +2483,6 @@ mod async_swapout_sim_lib {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn async_swapout_sim_short_baseline() {
         // Simulation parameters (short baseline run)

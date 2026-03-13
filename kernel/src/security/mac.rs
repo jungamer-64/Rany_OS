@@ -478,7 +478,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_level_dominance() {
         assert!(SecurityLevel::TopSecret.dominates(SecurityLevel::Secret));
@@ -487,7 +486,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_context_dominance() {
         let mut high = SecurityContext::new(SecurityLevel::Secret, 0, 0);
@@ -502,7 +500,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_read_up_denied() {
         let mut policy = MacPolicy::new();
@@ -517,7 +514,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_write_down_denied() {
         let mut policy = MacPolicy::new();

@@ -51,7 +51,6 @@ mod fs_tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_fs_open_with_token_reclaim() {
         // Setup: create caller and target domains

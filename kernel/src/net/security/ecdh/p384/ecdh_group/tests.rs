@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_named_group_roundtrip() {
     assert_eq!(EcdhGroup::from_named_group(0x001D), Some(EcdhGroup::X25519));
@@ -15,7 +14,6 @@ fn test_named_group_roundtrip() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_public_key_len_constants() {
     assert_eq!(EcdhGroup::X25519.public_key_len(), 32);

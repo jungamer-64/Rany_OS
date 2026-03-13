@@ -5,7 +5,6 @@ use alloc::string::String;
 use core::alloc::{GlobalAlloc, Layout};
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn exchange_heap_after_global_heap() {
     // Exchange heap must be placed after the global heap (no overlap)

@@ -198,7 +198,6 @@ mod tests {
     use alloc::string::String;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_oom_killer_uses_quota_victim_selection() {
         let low = create_domain(String::from("oom_quota_low")).expect("create_domain low failed");

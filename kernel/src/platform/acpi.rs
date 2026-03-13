@@ -238,7 +238,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn builtin_provider_prefers_valid_boot_snapshot() {
         clear_boot_snapshot_for_tests();
@@ -255,7 +254,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn invalid_snapshot_falls_back_to_parser_path() {
         clear_boot_snapshot_for_tests();

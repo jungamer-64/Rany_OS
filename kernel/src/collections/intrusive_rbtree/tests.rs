@@ -44,7 +44,6 @@ unsafe impl KeyAdapter for TestAdapter {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_empty_tree() {
     let tree: RBTree<TestAdapter> = RBTree::new();
@@ -55,7 +54,6 @@ fn test_empty_tree() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_insert_find() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
@@ -85,7 +83,6 @@ fn test_insert_find() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_multiple_inserts() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
@@ -116,7 +113,6 @@ fn test_multiple_inserts() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ordering() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
@@ -155,7 +151,6 @@ fn test_ordering() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_duplicate_key() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();
@@ -177,7 +172,6 @@ fn test_duplicate_key() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_remove() {
     let mut tree: RBTree<TestAdapter> = RBTree::new();

@@ -39,7 +39,6 @@ mod unit_tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_virtio_blk_req_type() {
         assert_eq!(VIRTIO_BLK_T_IN, 0);
@@ -48,7 +47,6 @@ mod unit_tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_block_device_config_default() {
         let config = VfsBlockDeviceInfo::default();
@@ -58,7 +56,6 @@ mod unit_tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_bounce_map_unmap_via_dmahandle() {
         // Verify that bounce allocation + DmaHandle mapping/unmap works

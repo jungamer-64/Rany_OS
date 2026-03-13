@@ -46,7 +46,6 @@ fn alloc_dirty_entry(page_type: PageType) -> (FrameIndex, MglruEntry) {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_watermarks_calculation() {
     let wm = Watermarks::calculate(100000);
@@ -56,7 +55,6 @@ fn test_watermarks_calculation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pressure_level() {
     let wm = Watermarks::calculate(10000);
@@ -68,7 +66,6 @@ fn test_pressure_level() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mglru_list_add() {
     let lru = MglruList::new();
@@ -80,7 +77,6 @@ fn test_mglru_list_add() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_blocked_unsafe_requeues_victim() {
     let controller = PageReclaimController::new();
@@ -100,7 +96,6 @@ fn test_blocked_unsafe_requeues_victim() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_blocked_unsafe_requeues_anonymous_dirty_victim() {
     reset_test_overrides();
@@ -124,7 +119,6 @@ fn test_blocked_unsafe_requeues_anonymous_dirty_victim() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_file_backed_clean_reclaims_with_unsafe_disabled() {
     reset_test_overrides();
@@ -148,7 +142,6 @@ fn test_file_backed_clean_reclaims_with_unsafe_disabled() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "full_mm_tests"))]
 fn test_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled() {
@@ -183,7 +176,6 @@ fn test_file_backed_dirty_reclaims_on_writeback_success_with_unsafe_disabled() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "full_mm_tests"))]
 fn test_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled() {
@@ -220,7 +212,6 @@ fn test_file_backed_dirty_requeues_on_writeback_failure_with_unsafe_disabled() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "full_mm_tests"))]
 fn test_file_backed_dirty_without_backing_requeues_with_unsafe_disabled() {
@@ -249,7 +240,6 @@ fn test_file_backed_dirty_without_backing_requeues_with_unsafe_disabled() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_already_pending_does_not_count_writeback_skipped() {
     let controller = PageReclaimController::new();
@@ -279,7 +269,6 @@ fn test_already_pending_does_not_count_writeback_skipped() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "full_mm_tests"))]
 fn test_already_pending_without_registered_pending_requeues() {
@@ -306,7 +295,6 @@ fn test_already_pending_without_registered_pending_requeues() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "full_mm_tests"))]
 fn test_already_pending_without_registered_pending_requeues_once_in_direct_reclaim() {
@@ -334,7 +322,6 @@ fn test_already_pending_without_registered_pending_requeues_once_in_direct_recla
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_queuefull_does_not_count_writeback_skipped() {
     let controller = PageReclaimController::new();
@@ -358,7 +345,6 @@ fn test_queuefull_does_not_count_writeback_skipped() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "full_mm_tests"))]
 fn test_notsupported_anonymous_dirty_requeues_without_writeback_skipped() {
@@ -388,7 +374,6 @@ fn test_notsupported_anonymous_dirty_requeues_without_writeback_skipped() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "full_mm_tests"))]
 fn test_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success() {
@@ -419,7 +404,6 @@ fn test_notsupported_file_dirty_falls_back_without_writeback_skipped_on_success(
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "full_mm_tests"))]
 fn test_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure() {
@@ -453,7 +437,6 @@ fn test_notsupported_file_dirty_requeues_and_counts_writeback_skipped_on_failure
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_async_success_clears_pending_and_accounts_success() {
     let controller = PageReclaimController::new();
@@ -471,7 +454,6 @@ fn test_async_success_clears_pending_and_accounts_success() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_async_failure_requeues_and_clears_pending() {
     let controller = PageReclaimController::new();

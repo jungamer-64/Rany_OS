@@ -888,7 +888,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn boot_info_topology_maps_apic_masks_to_registered_cpus() {
         reset_cpu_locality_for_tests();
@@ -909,7 +908,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn steal_candidates_prefer_same_node_before_remote_nodes() {
         reset_cpu_locality_for_tests();
@@ -932,7 +930,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn apply_current_cpu_locality_updates_per_cpu_cold_state() {
         reset_cpu_locality_for_tests();

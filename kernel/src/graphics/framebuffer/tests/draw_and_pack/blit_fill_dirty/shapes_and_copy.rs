@@ -25,7 +25,6 @@ pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_backbuffer_same_row_overlap() {
     let info = fb_info(8, 1, PixelFormat::Bgra8888);
@@ -50,7 +49,6 @@ pub(crate) fn test_copy_rect_backbuffer_same_row_overlap() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_backbuffer_vertical_copy() {
     let info = fb_info(4, 4, PixelFormat::Bgra8888);
@@ -79,7 +77,6 @@ pub(crate) fn test_copy_rect_backbuffer_vertical_copy() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
     let info = fb_info(8, 1, PixelFormat::Bgra8888);
@@ -101,7 +98,6 @@ pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_rect_backbuffer_full_width_span() {
     let info = fb_info(6, 4, PixelFormat::Bgra8888);
@@ -128,7 +124,6 @@ pub(crate) fn test_fill_rect_backbuffer_full_width_span() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
     let info = fb_info(8, 16, PixelFormat::Rgb565);
@@ -153,7 +148,6 @@ pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_clear_rgb565_mmio() {
     let info = fb_info(6, 3, PixelFormat::Rgb565);
@@ -172,7 +166,6 @@ pub(crate) fn test_clear_rgb565_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_char_8x16_rgb565_mmio() {
     let info = fb_info(8, 16, PixelFormat::Rgb565);

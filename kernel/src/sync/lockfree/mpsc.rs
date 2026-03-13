@@ -199,7 +199,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn try_push_fails_fast_when_previous_reservation_is_uncommitted() {
         let rb: MpscRingBuffer<u32, 8> = MpscRingBuffer::new();

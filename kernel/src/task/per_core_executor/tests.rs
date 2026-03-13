@@ -27,7 +27,6 @@ fn install_cpu_topology(apics: &[u8]) {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn priority_ordering_matches_runtime_expectations() {
     assert!(Priority::Realtime < Priority::High);
@@ -37,7 +36,6 @@ fn priority_ordering_matches_runtime_expectations() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn executor_creation_tracks_core_id() {
     let executor = PerCoreExecutor::new(3);
@@ -46,7 +44,6 @@ fn executor_creation_tracks_core_id() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn polled_task_context_round_trips() {
     mark_current_polled_task(
@@ -63,7 +60,6 @@ fn polled_task_context_round_trips() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn manager_spawn_and_steal_operate_on_canonical_tasks() {
     let manager = ExecutorManager::new();
@@ -96,7 +92,6 @@ fn manager_spawn_and_steal_operate_on_canonical_tasks() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn remote_wake_targets_logical_cpu_mapping() {
     crate::smp::reset_runtime_workers_for_tests();
@@ -123,7 +118,6 @@ fn remote_wake_targets_logical_cpu_mapping() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn remote_wake_broadcasts_when_apic_mapping_is_missing() {
     crate::smp::reset_runtime_workers_for_tests();
@@ -150,7 +144,6 @@ fn remote_wake_broadcasts_when_apic_mapping_is_missing() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn pick_target_cpu_respects_affinity_mask() {
     let manager = ExecutorManager::new();
@@ -170,7 +163,6 @@ fn pick_target_cpu_respects_affinity_mask() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn steal_from_skips_tasks_that_cannot_run_on_thief_cpu() {
     let manager = ExecutorManager::new();

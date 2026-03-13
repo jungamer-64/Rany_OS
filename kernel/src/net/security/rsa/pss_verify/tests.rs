@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mgf1_produces_requested_length() {
     let seed = [0x11u8, 0x22, 0x33, 0x44];
@@ -10,7 +9,6 @@ fn test_mgf1_produces_requested_length() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mgf1_is_deterministic_for_same_input() {
     let seed = [0xAAu8, 0xBB, 0xCC, 0xDD];

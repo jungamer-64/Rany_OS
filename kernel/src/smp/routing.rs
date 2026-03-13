@@ -46,7 +46,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn cpu_routing_tracks_bsp_and_ap_round_trip() {
         reset_cpu_routing();
@@ -59,7 +58,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn cpu_routing_handles_sparse_apic_ids() {
         reset_cpu_routing();
@@ -71,7 +69,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn cpu_routing_returns_none_for_unregistered_entries() {
         reset_cpu_routing();

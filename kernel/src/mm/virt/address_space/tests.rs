@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_protection_conversion() {
     let prot = Protection::READ_WRITE;
@@ -11,7 +10,6 @@ fn test_protection_conversion() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_region_contains() {
     let region = MemoryRegion::new(
@@ -28,7 +26,6 @@ fn test_region_contains() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_clone_region_with_range_adjusts_file_info() {
     let mut base = MemoryRegion::new(

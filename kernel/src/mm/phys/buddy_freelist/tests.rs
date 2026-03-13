@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_migrate_type_fallback() {
     let fallbacks = MigrateType::Movable.fallback_order();
@@ -10,7 +9,6 @@ fn test_migrate_type_fallback() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_frame_to_color() {
     assert_eq!(frame_to_color(0), 0);
@@ -20,7 +18,6 @@ fn test_frame_to_color() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_page_flags() {
     let mut flags = PageFlags::NONE;
@@ -39,7 +36,6 @@ fn test_page_flags() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_basic_alloc_dealloc() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -57,7 +53,6 @@ fn test_freelist_basic_alloc_dealloc() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_buddy_coalescing() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -81,7 +76,6 @@ fn test_freelist_buddy_coalescing() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_split_and_merge() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -104,7 +98,6 @@ fn test_freelist_split_and_merge() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_migrate_fallback_alloc() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -122,7 +115,6 @@ fn test_freelist_migrate_fallback_alloc() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_stats() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -137,7 +129,6 @@ fn test_freelist_stats() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_2m_allocation() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -155,7 +146,6 @@ fn test_freelist_2m_allocation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_contiguous_allocation() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -175,7 +165,6 @@ fn test_freelist_contiguous_allocation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_frames_to_order() {
     assert_eq!(FreeListBuddyAllocator::frames_to_order(0), 0);
@@ -188,7 +177,6 @@ fn test_freelist_frames_to_order() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_allocate_with_color() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -207,7 +195,6 @@ fn test_freelist_allocate_with_color() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_max_order_rejection() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -222,7 +209,6 @@ fn test_freelist_max_order_rejection() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_allocate_from_empty() {
     // 未初期化アロケータからの割り当ては None を返す
@@ -232,7 +218,6 @@ fn test_freelist_allocate_from_empty() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_multi_order_coalescing() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -266,7 +251,6 @@ fn test_freelist_multi_order_coalescing() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_fragmentation_stress() {
     let mut allocator = FreeListBuddyAllocator::new();
@@ -301,7 +285,6 @@ fn test_freelist_fragmentation_stress() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_freelist_move_freepages_block() {
     let mut allocator = FreeListBuddyAllocator::new();

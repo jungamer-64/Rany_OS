@@ -650,7 +650,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_capabilities() {
         let sandboxed = SecurityCapabilities::SANDBOXED;
@@ -664,7 +663,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_level() {
         assert!(SecurityLevel::KernelCore.has_privilege_over(SecurityLevel::Framework));
@@ -673,7 +671,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_zero_copy_barrier() {
         let barrier = ZeroCopySecurityBarrier::new();

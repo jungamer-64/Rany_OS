@@ -163,7 +163,6 @@ fn test_draw_image_32bit_bgra_backbuffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_draw_image_24bit_bgr_backbuffer() {
     let width = 3u32;
@@ -329,7 +328,6 @@ fn bench_draw_hline_bulk() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_write_bgr_run_small_mmio() {
     let width = 10u32;
@@ -359,7 +357,6 @@ fn test_write_bgr_run_small_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_write_bgr_run_large_mmio() {
     let width = 80u32;
@@ -391,7 +388,6 @@ fn test_write_bgr_run_large_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_write_bgr_run_large_mmio_full() {
     // Verify full buffer contents for a large BGR run to catch alignment
@@ -422,7 +418,6 @@ fn test_write_bgr_run_large_mmio_full() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_write_bgr_run_large_mmio_full_unaligned() {
     // Starting at an unaligned byte offset should still produce the
@@ -455,7 +450,6 @@ fn test_write_bgr_run_large_mmio_full_unaligned() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_write_bgr_run_small_mmio_pairs_aligned() {
     // Test pair-based fast-path when address is 4-byte aligned
@@ -484,7 +478,6 @@ fn test_write_bgr_run_small_mmio_pairs_aligned() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_write_bgr_run_small_mmio_generic_unaligned() {
     // Non-4-byte aligned address should fall back to per-byte writes
@@ -519,7 +512,6 @@ pub fn _test_get_packer_mode() -> u8 {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(feature = "std")]
 fn test_packer_env_override() {
@@ -541,7 +533,6 @@ fn test_packer_env_override() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 #[cfg(not(feature = "std"))]
 fn test_packer_env_override_no_std() {
@@ -592,7 +583,6 @@ fn bench_draw_text_bulk() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_draw_hline_32bit_backbuffer() {
     let width = 10u32;
@@ -714,7 +704,6 @@ fn test_draw_hline_32bit_backbuffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_draw_text_space_32bit_backbuffer() {
     let width = 16u32;

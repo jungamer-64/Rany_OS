@@ -979,7 +979,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn load_driver_pack_rejects_too_new_kernel_api_version() {
         let pack = driver_pack::build_unsigned_driver_pack(
@@ -1000,7 +999,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn artifact_path_rejects_too_new_kernel_api_version() {
         let pack = driver_pack::build_unsigned_driver_pack(
@@ -1021,7 +1019,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn artifact_cell_path_rejects_too_new_kernel_api_version() {
         let pack = driver_pack::build_unsigned_driver_pack(
@@ -1042,7 +1039,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_requirements_rejects_missing_loop_proof_section() {
         let elf = build_test_elf(None);
@@ -1052,7 +1048,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_requirements_rejects_invalid_loop_proof_section() {
         let bad = [b'R', b'L', b'X', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
@@ -1063,7 +1058,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_requirements_accepts_valid_loop_proof_section() {
         let good = [b'R', b'L', b'O', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
@@ -1073,7 +1067,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn load_cell_with_flags_rejects_missing_loop_proof_section() {
         let elf = build_test_elf(None);
@@ -1085,7 +1078,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn load_cell_rejects_missing_signature_without_mutating_registry() {
         let elf = build_test_elf(Some((".exorust_sig", b"bad-signature")));

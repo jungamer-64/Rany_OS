@@ -5,7 +5,6 @@ use super::*;
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_mac_sha1() {
     let key = [0x0Au8; 20];
@@ -31,7 +30,6 @@ pub(crate) fn test_tls_mac_sha1() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_mac_sha256() {
     let key = [0x0Bu8; 32];
@@ -47,7 +45,6 @@ pub(crate) fn test_tls_mac_sha256() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_mac_seq_affects_output() {
     let key = [0x0Au8; 20];
@@ -75,7 +72,6 @@ pub(crate) fn test_tls_mac_seq_affects_output() {
 // ========================================================================
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_cbc_cipher_suite_helpers() {
     let suite = CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA;
@@ -89,7 +85,6 @@ pub(crate) fn test_cbc_cipher_suite_helpers() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_cbc_ecdhe_cipher_suite() {
     let suite = CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256;
@@ -101,7 +96,6 @@ pub(crate) fn test_cbc_ecdhe_cipher_suite() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_aead_not_cbc() {
     let suite = CipherSuite::TLS_AES_128_GCM_SHA256;

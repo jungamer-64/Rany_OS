@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_basic_allocation() {
     let bitmap = HierarchicalBitmap::new(1000);
@@ -18,7 +17,6 @@ fn test_basic_allocation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mark_allocated_free() {
     let bitmap = HierarchicalBitmap::new(100);
@@ -33,7 +31,6 @@ fn test_mark_allocated_free() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_exhaustion() {
     let bitmap = HierarchicalBitmap::new(64);
@@ -58,7 +55,6 @@ fn test_exhaustion() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_range_free() {
     let bitmap = HierarchicalBitmap::new(200);
@@ -73,7 +69,6 @@ fn test_range_free() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_claim_word() {
     let bitmap = HierarchicalBitmap::new(128);
@@ -92,7 +87,6 @@ fn test_claim_word() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_last_word_partial() {
     // 100 units = 1 full word + 36 bits in last word

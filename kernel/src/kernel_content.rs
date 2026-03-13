@@ -405,7 +405,6 @@ mod iommu_policy_tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn iommu_policy_maps_force_and_scalable_flags() {
         let policy = boot_proto::BootPolicy {
@@ -419,7 +418,6 @@ mod iommu_policy_tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn iommu_policy_defaults_to_translated_mode() {
         let config = iommu_config_from_boot_policy(&boot_proto::BootPolicy::default());

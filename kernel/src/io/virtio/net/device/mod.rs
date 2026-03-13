@@ -638,7 +638,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_validate_iommu_device_requirement_rejects_missing_device_id_when_enabled() {
         let result = VirtioNetDevice::validate_iommu_device_requirement(false);
@@ -646,7 +645,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_validate_iommu_device_requirement_accepts_device_id_when_enabled() {
         let result = VirtioNetDevice::validate_iommu_device_requirement(true);
@@ -654,7 +652,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn bounce_pool_init_prefills_both_queues() {
         let device = VirtioNetDevice::new_at_index(0x30, Box::new(NoopTransport));
@@ -670,7 +667,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn bounce_pool_preserves_full_capacity() {
         let device = VirtioNetDevice::new_at_index(0x31, Box::new(NoopTransport));

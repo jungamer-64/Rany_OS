@@ -150,7 +150,6 @@ mod tests {
     use boot_proto::{BootArtifactEntry, BootArtifactKind, BootArtifactTable};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn empty_boot_artifact_table_is_noop() {
         assert_eq!(
@@ -160,7 +159,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn fixture_artifacts_are_not_started_as_driver_cells() {
         let path = b"cells/driver_cell_probe_v1.cell";
@@ -182,7 +180,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn extract_driver_name_drops_directory_and_extension() {
         assert_eq!(

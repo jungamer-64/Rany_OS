@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_bitmap_allocator() {
     let mut allocator = BitmapFrameAllocator::new();
@@ -27,7 +26,6 @@ fn test_bitmap_allocator() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alloc_frame_numa_prefers_local_or_fallback() {
     let regions = [(PhysAddr::new(0x100000), 0x200000u64)];
@@ -42,7 +40,6 @@ fn test_alloc_frame_numa_prefers_local_or_fallback() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alloc_frame_2m_numa_prefers_local_or_fallback() {
     let regions = [(PhysAddr::new(0x100000), 0x200000u64)];
@@ -56,7 +53,6 @@ fn test_alloc_frame_2m_numa_prefers_local_or_fallback() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alloc_dealloc_contiguous_wrapper() {
     // Try to allocate a single contiguous 4KiB frame; if not available, test is a no-op

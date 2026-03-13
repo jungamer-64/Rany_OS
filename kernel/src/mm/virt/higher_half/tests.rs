@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_alloc_page_table_prefers_numa_local_or_buddy() {
     // Verify alloc_page_table succeeds regardless of NUMA availability
@@ -11,7 +10,6 @@ fn test_alloc_page_table_prefers_numa_local_or_buddy() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_global_map_page_poisoned_returns_hardware_error() {
     // Poison the PAGE_TABLE_MANAGER lock
@@ -33,7 +31,6 @@ fn test_global_map_page_poisoned_returns_hardware_error() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_global_unmap_page_poisoned_returns_hardware_error() {
     // Poison the PAGE_TABLE_MANAGER lock

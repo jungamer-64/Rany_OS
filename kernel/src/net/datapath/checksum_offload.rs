@@ -536,7 +536,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_internet_checksum() {
         // RFC 1071 example
@@ -546,7 +545,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_internet_checksum_verify() {
         // Construct a simple IPv4-like header and verify
@@ -569,7 +567,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_capabilities_default() {
         let caps = ChecksumCapabilities::default();
@@ -578,7 +575,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_capabilities_virtio() {
         let caps = ChecksumCapabilities::from_virtio(true, true);
@@ -589,7 +585,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_pseudo_header_partial_sum() {
         let src = [10, 0, 0, 1];
@@ -599,7 +594,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_offload_manager_sw_mode() {
         let mgr = ChecksumOffloadManager::new(ChecksumCapabilities::NONE);
@@ -619,7 +613,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_offload_manager_hw_mode() {
         let mgr = ChecksumOffloadManager::new(ChecksumCapabilities::ALL);

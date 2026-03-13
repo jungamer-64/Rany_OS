@@ -12,7 +12,6 @@ mod tests {
     use alloc::sync::Arc;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_basic_lock() {
         let lock = PoisonLock::new(42);
@@ -26,7 +25,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_poisoned_after_simulated_panic() {
         let lock = PoisonLock::new(42);
@@ -52,7 +50,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_lock_for_init_recovers_on_poison() {
         use crate::sync::set_panicking;
@@ -84,7 +81,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_lock_contention_metrics() {
         use std::sync::Arc;

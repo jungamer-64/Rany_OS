@@ -4,7 +4,6 @@ use crate::shell::exoshell::parser::parse_expression;
 use crate::task::block_on;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_block_scoping() {
     let mut shell = ExoShell::with_capabilities(CapabilitySet::full());
@@ -16,7 +15,6 @@ fn test_block_scoping() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_if_expression_evaluation() {
     let mut shell = ExoShell::new();
@@ -26,7 +24,6 @@ fn test_if_expression_evaluation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_for_expression_evaluation() {
     let mut shell = ExoShell::new();
@@ -37,7 +34,6 @@ fn test_for_expression_evaluation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_else_if_chain() {
     let mut shell = ExoShell::new();
@@ -47,7 +43,6 @@ fn test_else_if_chain() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_break_in_loop() {
     let mut shell = ExoShell::new();
@@ -56,7 +51,6 @@ fn test_break_in_loop() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_continue_in_loop() {
     let mut shell = ExoShell::new();
@@ -65,7 +59,6 @@ fn test_continue_in_loop() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_break_outside_loop_error() {
     let mut shell = ExoShell::new();
@@ -74,7 +67,6 @@ fn test_break_outside_loop_error() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cell_list_namespace_call_returns_array() {
     let mut shell = ExoShell::new();
@@ -83,7 +75,6 @@ fn test_cell_list_namespace_call_returns_array() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_legacy_cell_command_syntax_is_rejected() {
     let mut shell = ExoShell::new();
@@ -95,7 +86,6 @@ fn test_legacy_cell_command_syntax_is_rejected() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cell_inspect_artifact_missing_file_returns_error() {
     let mut shell = ExoShell::new();

@@ -376,7 +376,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_accepts_valid_section() {
         let valid_section = [b'R', b'L', b'O', b'P', 1, 0, 0, 0, 7, 0, 0, 0];
@@ -388,7 +387,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_missing_section() {
         let elf = build_test_elf(None);
@@ -397,7 +395,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_invalid_magic() {
         let bad_magic = [b'X', b'L', b'O', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
@@ -408,7 +405,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_unsupported_version() {
         let bad_version = [b'R', b'L', b'O', b'P', 2, 0, 0, 0, 0, 0, 0, 0];
@@ -419,7 +415,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_short_section() {
         let short = [b'R', b'L', b'O'];

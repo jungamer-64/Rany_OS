@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_per_cpu_hot_layout() {
     // PerCpuHotはキャッシュラインにアラインされていることを確認
@@ -11,7 +10,6 @@ fn test_per_cpu_hot_layout() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_per_cpu_hot_and_cold_linkage() {
     let hot = hot_for_cpu(0).expect("cpu0 hot state missing");

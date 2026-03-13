@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_io_priority_ordering() {
     assert!(IoPriority::Realtime > IoPriority::High);
@@ -11,7 +10,6 @@ fn test_io_priority_ordering() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_io_mode_stats() {
     let stats = IoModeStats::new();
@@ -24,7 +22,6 @@ fn test_io_mode_stats() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_scheduler_submit() {
     let scheduler = IoScheduler::new();

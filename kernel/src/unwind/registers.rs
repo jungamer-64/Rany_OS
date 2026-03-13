@@ -486,7 +486,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_register_from_u8() {
         assert_eq!(DwarfRegister::from_u8(0), Some(DwarfRegister::Rax));
@@ -500,7 +499,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_register_set() {
         let mut regs = RegisterSet::new();
@@ -521,7 +519,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_callee_saved() {
         assert!(DwarfRegister::Rbx.is_callee_saved());

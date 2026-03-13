@@ -6,7 +6,6 @@ mod tests {
     use crate::mm::types::PAGE_SIZE_4K;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_async_swapout_file_backed() {
         // セットアップ: page cache にページを入れ、対応するフレームを確保して frame_backing を登録
@@ -51,7 +50,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_async_swapout_dedup() {
         // setup similar to file-backed test
@@ -96,7 +94,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(not(feature = "full_mm_tests"))]
     pub(super) fn test_enqueue_override_forces_error() {
@@ -121,7 +118,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_memcg_concurrent_swapout() {
@@ -218,7 +214,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_async_swapout_concurrent_dedup() {
@@ -310,7 +305,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_worker_restart() {
@@ -340,7 +334,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_async_swapout_qos_reservation() {
@@ -417,7 +410,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_token_bucket_exhaustion_and_refill() {
@@ -461,7 +453,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_token_refill_on_processing() {
@@ -511,7 +502,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[cfg(feature = "std")]
     pub(super) fn test_async_swapout_stress_concurrency() {
@@ -652,7 +642,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     pub(super) fn test_async_swapout_heavy_stress() {
@@ -784,7 +773,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     pub(super) fn bench_enqueue_throughput() {
@@ -813,7 +801,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_zswap_failure_does_not_dealloc() {
         crate::fs::init_page_cache(64 * 1024);
@@ -858,7 +845,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_huge_page_2m_anon_store() {
         // Ensure deterministic worker lifecycle
@@ -904,7 +890,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_global_async_swapout_metrics_update() {
         // ensure metrics are zeroed in the beginning
@@ -948,7 +933,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_notify_failure_on_file_writeback_error() {
         crate::fs::init_page_cache(64 * 1024);
@@ -1011,7 +995,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_notify_failure_on_anon_zswap_error() {
         test_impl::stop_worker();
@@ -1068,7 +1051,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_notify_success_once_per_pending() {
         test_impl::stop_worker();
@@ -1120,7 +1102,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_notify_failure_once_per_pending() {
         let before = crate::mm::reclaim::page_reclaim::PAGE_RECLAIM.stats();
@@ -1160,7 +1141,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_token_exhaustion_does_not_leave_pending() {
         test_impl::stop_worker();
@@ -1186,7 +1166,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_file_queue_counter_saturation() {
         test_impl::stop_worker();
@@ -1205,7 +1184,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_buffer_pool_basic() {
         // Ensure pool is cleared and capacity is small
@@ -1235,7 +1213,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_buffer_pool_concurrent() {
         crate::mm::reclaim::async_swapout::buffer_pool_4k_clear();
@@ -1268,7 +1245,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_buffer_pool_2m_basic() {
         crate::mm::reclaim::async_swapout::buffer_pool_2m_clear();
@@ -1297,7 +1273,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_buffer_pool_2m_concurrent() {
         crate::mm::reclaim::async_swapout::buffer_pool_2m_clear();
@@ -1329,7 +1304,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     pub(super) fn test_buffer_pool_1g_basic() {
@@ -1356,7 +1330,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     #[cfg(feature = "std")]
@@ -1422,7 +1395,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     #[cfg(feature = "std")]
@@ -1461,7 +1433,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     #[ignore]
     #[cfg(feature = "std")]

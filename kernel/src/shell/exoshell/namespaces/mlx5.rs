@@ -141,7 +141,6 @@ mod tests {
     use alloc::vec::Vec;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_status_map_contains_expected_keys() {
         let value = Mlx5Namespace::status_value_from_snapshot(Mlx5SriovStatus {
@@ -176,7 +175,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_enable_vfs_requires_capability() {
         let ns = Mlx5Namespace;
@@ -191,7 +189,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_enable_vfs_validates_arguments() {
         let ns = Mlx5Namespace;

@@ -20,10 +20,7 @@ impl CapabilityManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
-        *self
-            .bounding_set
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = CAP_ALL;
+        *self.bounding_set.lock().unwrap_or_else(|e| e.into_inner()) = CAP_ALL;
         self.grants
             .lock()
             .unwrap_or_else(|e| e.into_inner())

@@ -11,7 +11,6 @@ fn key_event(key: KeyCode, state: KeyState, modifiers: Modifiers) -> KeyEvent {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ansi_color_rgb() {
     assert_eq!(AnsiColor::Black.to_rgb(), 0x000000);
@@ -20,7 +19,6 @@ fn test_ansi_color_rgb() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_terminal_buffer() {
     let mut buffer = TerminalBuffer::new(80, 25);
@@ -32,7 +30,6 @@ fn test_terminal_buffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ansi_parser() {
     let mut parser = AnsiParser::new();
@@ -54,7 +51,6 @@ fn test_ansi_parser() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtual_console() {
     let mut vc = VirtualConsole::new(0, 80, 25);
@@ -66,7 +62,6 @@ fn test_virtual_console() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_csi_cursor_default_param_moves_one() {
     let mut vc = VirtualConsole::new(0, 20, 5);
@@ -79,7 +74,6 @@ fn test_csi_cursor_default_param_moves_one() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_private_mode_cursor_visibility() {
     let mut vc = VirtualConsole::new(0, 20, 5);
@@ -94,7 +88,6 @@ fn test_private_mode_cursor_visibility() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_osc_st_terminator_is_not_rendered() {
     let mut vc = VirtualConsole::new(0, 40, 5);
@@ -106,7 +99,6 @@ fn test_osc_st_terminator_is_not_rendered() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_input_hub_tty_and_gui_paths() {
     reset_input_hub_for_tests();
@@ -133,7 +125,6 @@ fn test_console_input_hub_tty_and_gui_paths() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_input_hub_vt_switch_hotkey_is_swallowed() {
     reset_input_hub_for_tests();
@@ -159,7 +150,6 @@ fn test_console_input_hub_vt_switch_hotkey_is_swallowed() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_input_hub_drop_counters_increment_when_full() {
     reset_input_hub_for_tests();

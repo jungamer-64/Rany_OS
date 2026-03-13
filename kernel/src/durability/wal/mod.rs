@@ -562,7 +562,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn replay_skips_uncommitted_transactions() {
         let wal = WalManager::new();
@@ -594,7 +593,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn replay_preserves_interleaved_tx_operation_order() {
         let wal = WalManager::new();
@@ -630,7 +628,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn checkpoint_drops_committed_prefix_and_keeps_pending() {
         let wal = WalManager::new();
@@ -664,7 +661,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recover_best_effort_truncates_corrupt_tail() {
         let wal = WalManager::new();
@@ -700,7 +696,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recover_strict_rejects_corrupt_tail() {
         let wal = WalManager::new();

@@ -367,7 +367,6 @@ mod gui_input_queue_tests {
     use kernel_api::service::gui::{GuiServices, InputEvent, KeyState as KapiKeyState};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn poll_input_event_uses_console_shared_queue() {
         crate::console::reset_input_hub_for_tests();

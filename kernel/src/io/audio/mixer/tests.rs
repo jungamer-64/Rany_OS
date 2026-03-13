@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mixer_creation() {
     let mixer = Mixer::default_mixer();
@@ -9,7 +8,6 @@ fn test_mixer_creation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_add_channel() {
     let mut mixer = Mixer::default_mixer();
@@ -19,7 +17,6 @@ fn test_add_channel() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_volume_control() {
     let mut mixer = Mixer::default_mixer();
@@ -30,7 +27,6 @@ fn test_volume_control() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pan_control() {
     let mut mixer = Mixer::default_mixer();
@@ -41,7 +37,6 @@ fn test_pan_control() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mono_to_stereo() {
     let mono = vec![0.5, -0.5, 0.25];
@@ -51,7 +46,6 @@ fn test_mono_to_stereo() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_limiter_soft_clip() {
     let mut mixer = Mixer::default_mixer();

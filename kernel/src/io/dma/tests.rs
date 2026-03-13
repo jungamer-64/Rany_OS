@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_typed_dma_buffer() {
     let buffer = TypedDmaBuffer::<u32, CpuOwned>::new(42).expect("Failed to allocate");
@@ -23,7 +22,6 @@ fn test_typed_dma_buffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_typed_dma_slice() {
     let mut slice = TypedDmaSlice::<CpuOwned>::new(4096).expect("Failed to allocate");

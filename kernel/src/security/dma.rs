@@ -330,7 +330,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_dma_protection_boundary_hole() {
         let boundary = PROTECTED_BITMAP_PAGES as u64 * 4096;

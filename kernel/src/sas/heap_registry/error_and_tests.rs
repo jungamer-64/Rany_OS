@@ -196,7 +196,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_register_spanning_shards() {
         reset_lock_metrics();
@@ -237,7 +236,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_overlapping_detection_across_shards() {
         let registry = HeapRegistry::new(4);
@@ -254,7 +252,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_shard_node_mapping() {
         let shards = 8usize;
@@ -273,7 +270,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_register_poisoned_returns_permission_denied() {
         let registry = HeapRegistry::new(4);
@@ -291,7 +287,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_unregister_poisoned_returns_permission_denied() {
         let registry = HeapRegistry::new(4);
@@ -312,7 +307,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_transfer_poisoned_returns_permission_denied() {
         let registry = HeapRegistry::new(4);
@@ -333,7 +327,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_get_owner_poisoned_returns_none() {
         let registry = HeapRegistry::new(4);
@@ -353,7 +346,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_check_access_poisoned_returns_false() {
         let registry = HeapRegistry::new(4);
@@ -373,7 +365,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_unregister_any_poisoned_returns_none() {
         let registry = HeapRegistry::new(4);

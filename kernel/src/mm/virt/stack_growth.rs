@@ -577,7 +577,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_stack_region_new() {
         let stack = StackRegion::new(VirtAddr::new(0x8000_0000), 64 * 1024, 8 * 1024 * 1024);
@@ -587,7 +586,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_stack_region_contains() {
         let stack = StackRegion::new(VirtAddr::new(0x8000_0000), 64 * 1024, 8 * 1024 * 1024);
@@ -600,7 +598,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_stack_can_grow() {
         let stack = StackRegion::new(VirtAddr::new(0x8000_0000), 64 * 1024, 8 * 1024 * 1024);

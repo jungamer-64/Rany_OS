@@ -3,7 +3,6 @@ use crate::sync::set_panicking;
 use core::sync::atomic::Ordering;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mempool_poisoned_alloc_fails() {
     let pool = Box::leak(Box::new(Mempool::new(1)));
@@ -22,7 +21,6 @@ fn test_mempool_poisoned_alloc_fails() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mempool_stats() {
     let pool = Box::leak(Box::new(Mempool::new(1)));

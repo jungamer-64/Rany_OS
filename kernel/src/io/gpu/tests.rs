@@ -72,7 +72,6 @@ impl VirtioTransport for NoopTransport {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_device_creation() {
     let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
@@ -81,7 +80,6 @@ fn test_gpu_device_creation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_alloc_resource_id() {
     let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
@@ -91,7 +89,6 @@ fn test_gpu_alloc_resource_id() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_alloc_fence_id() {
     let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
@@ -100,7 +97,6 @@ fn test_gpu_alloc_fence_id() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_ctrl_hdr_new() {
     let hdr = GpuCtrlHdr::new(GpuCmd::GetDisplayInfo);
@@ -110,7 +106,6 @@ fn test_gpu_ctrl_hdr_new() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_ctrl_hdr_with_fence() {
     let hdr = GpuCtrlHdr::new(GpuCmd::ResourceFlush).with_fence(42);
@@ -119,7 +114,6 @@ fn test_gpu_ctrl_hdr_with_fence() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_rect_new() {
     let r = Rect::new(10, 20, 640, 480);
@@ -130,7 +124,6 @@ fn test_rect_new() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_error_variants() {
     assert_ne!(GpuError::DeviceNotFound, GpuError::InitFailed);
@@ -138,7 +131,6 @@ fn test_gpu_error_variants() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_align_up() {
     assert_eq!(align_up(0, 4), 0);
@@ -150,7 +142,6 @@ fn test_align_up() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_pixel_format_values() {
     assert_eq!(PixelFormat::B8G8R8A8Unorm as u32, 1);

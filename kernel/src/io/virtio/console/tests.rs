@@ -99,7 +99,6 @@ impl VirtioTransport for NoopTransport {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_device_creation() {
     let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
@@ -109,7 +108,6 @@ fn test_console_device_creation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_write_not_ready() {
     let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
@@ -118,7 +116,6 @@ fn test_console_write_not_ready() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_write_empty_data() {
     // Create a device that is "ready" with a manually constructed TX queue
@@ -146,7 +143,6 @@ fn test_console_write_empty_data() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_read_no_data() {
     let dev = VirtioConsoleDevice::new(Box::new(NoopTransport), test_device());
@@ -155,7 +151,6 @@ fn test_console_read_no_data() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_config_default() {
     let config = VirtioConsoleConfig::default();
@@ -165,7 +160,6 @@ fn test_console_config_default() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_console_error_variants() {
     assert_ne!(ConsoleError::NotReady, ConsoleError::IoError);
@@ -173,7 +167,6 @@ fn test_console_error_variants() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_virtqueue_alloc_free_desc() {
     let queue_size: u16 = 8;

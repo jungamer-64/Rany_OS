@@ -299,7 +299,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn deferred_fault_queue_drains_critical_slot_before_normal_queue() {
         let queue = DeferredFaultQueue::new();
@@ -325,7 +324,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn deferred_fault_queue_preserves_full_capacity() {
         let queue = DeferredFaultQueue::new();

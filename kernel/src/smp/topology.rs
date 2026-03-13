@@ -315,7 +315,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn assigns_bsp_and_aps_in_acpi_order() {
         let topology = CpuTopology::from_sources(
@@ -340,7 +339,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn marks_stack_exhausted_aps_as_unbootable() {
         let topology = CpuTopology::from_sources(
@@ -366,7 +364,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn records_numa_node_from_apic_masks() {
         let topology = CpuTopology::from_sources(
@@ -391,7 +388,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tracks_detected_total_even_when_cpu_limit_is_exceeded() {
         let mut apics = Vec::new();

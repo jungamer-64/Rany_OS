@@ -22,7 +22,6 @@ pub(crate) fn test_pack_rgba_to_bgr24_neon_matches_scalar_rgb() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgra_scalar_random() {
     // Randomized verification to guard against bit-twiddling regressions
@@ -49,7 +48,6 @@ pub(crate) fn test_pack_rgba_to_bgra_scalar_random() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_bgra_stream_matches_backbuffer() {
     use crate::graphics::image::Image;
@@ -85,7 +83,6 @@ pub(crate) fn test_draw_image_bgra_stream_matches_backbuffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_rect_32bit_mmio() {
     let info = fb_info(8, 8, PixelFormat::Bgra8888);
@@ -105,7 +102,6 @@ pub(crate) fn test_fill_rect_32bit_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_rect_rgb565_mmio() {
     let info = fb_info(8, 4, PixelFormat::Rgb565);
@@ -128,7 +124,6 @@ pub(crate) fn test_fill_rect_rgb565_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_dirty_rect_tracking() {
     let info = fb_info(100, 100, PixelFormat::Bgra8888);
@@ -155,7 +150,6 @@ pub(crate) fn test_dirty_rect_tracking() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_dirty_rect_flush_only_marked_area() {
     // Verify that flush_dirty_area only copies the marked region
@@ -200,7 +194,6 @@ pub(crate) fn test_dirty_rect_flush_only_marked_area() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_partial_left_clip_32bit_backbuffer() {
     // Draw a '!' partially off the left edge and ensure visible pixels
@@ -243,7 +236,6 @@ pub(crate) fn test_draw_text_partial_left_clip_32bit_backbuffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_24bit_rgb888_backbuffer() {
     use crate::graphics::image::Image;
@@ -285,7 +277,6 @@ pub(crate) fn test_draw_image_24bit_rgb888_backbuffer() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_hline_24bit_rgb888_mmio() {
     let info = fb_info(10, 2, PixelFormat::Rgb888);
@@ -304,7 +295,6 @@ pub(crate) fn test_draw_hline_24bit_rgb888_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_hline_rgb565_mmio() {
     let info = fb_info(8, 1, PixelFormat::Rgb565);
@@ -326,7 +316,6 @@ pub(crate) fn test_draw_hline_rgb565_mmio() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush() {
     let info = fb_info(4, 1, PixelFormat::Rgb888);
@@ -352,7 +341,6 @@ pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush_odd_width() {
     let info = fb_info(5, 1, PixelFormat::Rgb888);
@@ -380,7 +368,6 @@ pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush_odd_width() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_bgr888_backbuffer_flush() {
     let info = fb_info(3, 1, PixelFormat::Bgr888);
@@ -406,7 +393,6 @@ pub(crate) fn test_blit_rect_24bit_bgr888_backbuffer_flush() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush() {
     let info = fb_info(2, 1, PixelFormat::Rgb565);

@@ -180,7 +180,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_buffer_view_basic() {
         let data = vec![1, 2, 3, 4, 5];
@@ -191,7 +190,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_buffer_view_slice() {
         let data = vec![1, 2, 3, 4, 5];
@@ -202,7 +200,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_buffer_view_clone_shares_data() {
         let data = vec![1, 2, 3, 4, 5];
@@ -214,7 +211,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_string_view() {
         let data = "Hello, World!".as_bytes().to_vec();
@@ -225,7 +221,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_string_view_invalid_utf8() {
         let data = vec![0xff, 0xfe]; // Invalid UTF-8
@@ -234,7 +229,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_buffer_view_from_arc() {
         let data = vec![10, 20, 30, 40, 50];
@@ -251,7 +245,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_buffer_view_from_arc_shares_data() {
         let original = vec![1, 2, 3];
@@ -266,7 +259,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_buffer_view_from_arc_slice() {
         let arc = Arc::new(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);

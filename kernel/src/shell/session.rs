@@ -202,7 +202,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn parse_shell_mode_defaults_to_console() {
         assert_eq!(parse_shell_launch_mode(None), ShellLaunchMode::Console);
@@ -210,7 +209,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn parse_shell_mode_from_shell_key() {
         assert_eq!(
@@ -228,7 +226,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn parse_shell_mode_uses_console_key_as_compat_fallback() {
         assert_eq!(
@@ -242,7 +239,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn parse_shell_mode_prefers_shell_key_over_console_key() {
         assert_eq!(

@@ -2,7 +2,6 @@ use super::*;
 use alloc::vec::Vec;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_spsc_basic() {
     let rb: SpscRingBuffer<u32, 8> = SpscRingBuffer::new();
@@ -29,7 +28,6 @@ fn test_spsc_basic() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mpsc_basic() {
     let rb: MpscRingBuffer<u32, 8> = MpscRingBuffer::new();
@@ -49,7 +47,6 @@ fn test_mpsc_basic() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mpsc_try_push_success_and_full() {
     let rb: MpscRingBuffer<u32, 4> = MpscRingBuffer::new();
@@ -66,7 +63,6 @@ fn test_mpsc_try_push_success_and_full() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mpmc_basic() {
     let rb: MpmcRingBuffer<u32, 8> = MpmcRingBuffer::new();
@@ -88,7 +84,6 @@ fn test_mpmc_basic() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mpmc_try_operations() {
     let rb: MpmcRingBuffer<u32, 4> = MpmcRingBuffer::new();
@@ -111,7 +106,6 @@ fn test_mpmc_try_operations() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mpmc_static_initialization() {
     static RB: MpmcRingBuffer<u64, 8> = MpmcRingBuffer::new();
@@ -126,7 +120,6 @@ fn test_mpmc_static_initialization() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_lock_free_index_stack_basic() {
     let stack = LockFreeIndexStack::new_empty(4);
@@ -148,7 +141,6 @@ fn test_lock_free_index_stack_basic() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_lock_free_index_stack_new_filled_drains_unique() {
     let cap = 8;
@@ -171,7 +163,6 @@ fn test_lock_free_index_stack_new_filled_drains_unique() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_lock_free_index_stack_push_out_of_range() {
     let stack = LockFreeIndexStack::new_empty(2);
@@ -180,7 +171,6 @@ fn test_lock_free_index_stack_push_out_of_range() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_lock_free_index_stack_push_duplicate_returns_already_present() {
     let stack = LockFreeIndexStack::new_empty(4);
@@ -196,7 +186,6 @@ fn test_lock_free_index_stack_push_duplicate_returns_already_present() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_lock_free_index_stack_pop_then_repush_succeeds() {
     let stack = LockFreeIndexStack::new_empty(4);
@@ -209,7 +198,6 @@ fn test_lock_free_index_stack_pop_then_repush_succeeds() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_backoff() {
     let mut backoff = Backoff::new();
@@ -229,7 +217,6 @@ fn test_backoff() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_seqlock() {
     let lock: Seqlock<u64> = Seqlock::new(0);
@@ -248,7 +235,6 @@ fn test_seqlock() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_bounded_channel_static() {
     static BUF: MpscRingBuffer<u64, 8> = MpscRingBuffer::new();
@@ -273,7 +259,6 @@ fn test_bounded_channel_static() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_bounded_channel_new_leak() {
     let (tx, rx) = BoundedChannel::<u32, 8>::new();

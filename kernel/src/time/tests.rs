@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_decode_hour_24h_mode() {
     // 24時間表記: そのまま返す
@@ -19,7 +18,6 @@ fn test_decode_hour_24h_mode() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_decode_hour_12h_mode_edge_cases() {
     // 12 AM (midnight) → 0
@@ -40,7 +38,6 @@ fn test_decode_hour_12h_mode_edge_cases() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tsc_to_nanos_overflow_safe() {
     // Use TscInfo::new() which computes mult/shift automatically
@@ -67,7 +64,6 @@ fn test_tsc_to_nanos_overflow_safe() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_compute_tsc_mult_shift() {
     // Test that mult/shift computation works for typical CPU frequencies
@@ -94,7 +90,6 @@ fn test_compute_tsc_mult_shift() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tsc_to_nanos_precise_vs_optimized() {
     let info = TscInfo::new(2_500_000_000, true); // 2.5 GHz
@@ -122,7 +117,6 @@ fn test_tsc_to_nanos_precise_vs_optimized() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_system_clock_timer_tick_nanos_round_trip() {
     let clock = SystemClock::new();

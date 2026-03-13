@@ -6,7 +6,6 @@ use super::*;
 use crate::io::iommu::common::dma::handle::MappingKind;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_zombie_queue_basic() {
     let queue = ZombieQueue::new();
@@ -49,7 +48,6 @@ fn test_zombie_queue_basic() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_zombie_queue_failed_cleanup() {
     let queue = ZombieQueue::new();
@@ -85,7 +83,6 @@ fn test_zombie_queue_failed_cleanup() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_zombie_queue_probe_limit() {
     let queue = ZombieQueue::new();
@@ -110,7 +107,6 @@ fn test_zombie_queue_probe_limit() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mapping_kind_encoding() {
     use crate::io::iommu::common::dma::handle::MappingKind;
@@ -137,7 +133,6 @@ fn test_mapping_kind_encoding() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_state_transitions() {
     let entry = ZombieEntry::new();

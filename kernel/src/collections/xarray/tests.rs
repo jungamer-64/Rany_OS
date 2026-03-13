@@ -5,7 +5,6 @@ mod tests_usize {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_usize_basic() {
         let mut xa = XArrayUsize::new();
@@ -26,7 +25,6 @@ mod tests_usize {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_usize_marks() {
         let mut xa = XArrayUsize::new();
@@ -42,7 +40,6 @@ mod tests_usize {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_usize_zero_value() {
         let mut xa = XArrayUsize::new();

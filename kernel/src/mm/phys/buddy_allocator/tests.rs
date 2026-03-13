@@ -1,7 +1,6 @@
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_buddy_allocator() {
     let mut allocator = BuddyFrameAllocator::new();
@@ -18,7 +17,6 @@ fn test_buddy_allocator() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_init_numa_frame_allocator_registers_region_with_buddy() {
     use crate::mm::phys::buddy_allocator::init_buddy_allocator;
@@ -50,7 +48,6 @@ fn test_init_numa_frame_allocator_registers_region_with_buddy() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_order_calculation() {
     assert_eq!(BuddyFrameAllocator::frames_to_order(1), 0);
@@ -62,7 +59,6 @@ fn test_order_calculation() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_numa_register_and_alloc_local() {
     let mut allocator = BuddyFrameAllocator::new();
@@ -84,7 +80,6 @@ fn test_numa_register_and_alloc_local() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_numa_2m_alloc_local() {
     let mut allocator = BuddyFrameAllocator::new();

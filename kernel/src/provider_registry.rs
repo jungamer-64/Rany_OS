@@ -690,7 +690,6 @@ mod tests {
     static FAKE_AUDIO: FakeAudio = FakeAudio;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn builtin_provider_registration_smoke() {
         let registry = ProviderRegistry::new();
@@ -708,7 +707,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn builtin_service_provider_registration_smoke() {
         let registry = ProviderRegistry::new();
@@ -728,7 +726,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn unregister_driver_only_removes_matching_owner() {
         let registry = ProviderRegistry::new();

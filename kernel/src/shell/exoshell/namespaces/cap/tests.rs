@@ -47,7 +47,6 @@ fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_grant_requires_permissions() {
     let caller = DomainId::new(100);
@@ -71,7 +70,6 @@ fn test_grant_requires_permissions() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_grant_with_permitted() {
     let caller = DomainId::new(110);
@@ -105,7 +103,6 @@ fn test_grant_with_permitted() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tokens_listing_and_revoke() {
     let caller = DomainId::new(120);
@@ -159,7 +156,6 @@ fn test_tokens_listing_and_revoke() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_sysadmin_can_revoke() {
     let issuer = DomainId::new(130);
@@ -193,7 +189,6 @@ fn test_sysadmin_can_revoke() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_delegation_allows_regrant() {
     let parent = DomainId::new(140);
@@ -228,7 +223,6 @@ fn test_delegation_allows_regrant() {
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_delegation_denies_regrant_when_not_delegatable() {
     let parent = DomainId::new(150);

@@ -427,7 +427,6 @@ mod tests {
     use super::*;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_conn_id_consistency() {
         let id1 = ConnId::from_5tuple(0x0A000001, 0x0A000002, 8080, 80, 6);
@@ -439,7 +438,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_header_cache_hit_miss() {
         let mut cache = HeaderCache::new();
@@ -466,7 +464,6 @@ mod tests {
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_header_stamp() {
         let mut cache = HeaderCache::new();
