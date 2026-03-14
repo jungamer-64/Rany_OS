@@ -34,19 +34,11 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 // Time Measurement
 // ============================================================================
 
-/// タイムスタンプカウンタを読む
-///
-/// **注意**: 実装は `crate::time::rdtsc()` に一元化。
-/// 本関数は後方互換のためのエイリアスです。
 mod accessors;
 // The accessors module provides helpers that may be consumed by
 // other crates/tests. We don't re-export its contents here to
 // avoid unused-import warnings, though the module is kept for
 // organization and future use.
-#[inline(always)]
-pub fn rdtsc() -> u64 {
-    crate::time::rdtsc()
-}
 
 /// 高精度タイムスタンプ（RDTSCP）
 #[inline(always)]
@@ -81,14 +73,14 @@ pub struct MeasureScope {
 impl MeasureScope {
     pub fn new(name: &'static str) -> Self {
         Self {
-            start: rdtsc(),
+            start: crate::time::rdtsc(),
             name,
         }
     }
 
     /// 経過サイクルを取得
     pub fn elapsed_cycles(&self) -> u64 {
-        rdtsc().saturating_sub(self.start)
+        crate::time::rdtsc().saturating_sub(self.start)
     }
 }
 

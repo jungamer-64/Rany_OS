@@ -603,46 +603,6 @@ pub fn wave5_cmdqueue_map_unmap_with_domain_canonical_smoke() -> bool {
     wave5_cmdqueue_map_unmap_with_domain_canonical_impl()
 }
 
-/// Wave5 residual export retained for compatibility with parity monitoring.
-pub fn wave5_cmdqueue_map_unmap_with_domain_residual_smoke() -> bool {
-    wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
-}
-
-/// Wave5 residual export retained as compat alias.
-pub fn wave5_map_for_device_async_and_unmap_residual_smoke() -> bool {
-    wave5_map_for_device_async_and_unmap_canonical_smoke()
-}
-
-// Compat alias: legacy wave2 residual name.
-// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
-pub fn wave2_cmdqueue_map_unmap_with_domain_smoke() -> bool {
-    wave5_cmdqueue_map_unmap_with_domain_canonical_smoke()
-}
-
-// Compat alias: legacy wave2 residual name.
-// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
-pub fn wave2_cmdqueue_map_device_nonblocking_smoke() -> bool {
-    wave5_map_for_device_async_and_unmap_canonical_smoke()
-}
-
-// Compat alias: legacy wave2 residual name.
-// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
-pub fn wave2_dma_mask_respects_32bit_limit_smoke() -> bool {
-    wave5_map_for_device_respects_dma_mask_canonical_smoke()
-}
-
-// Compat alias: legacy wave2 residual name.
-// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
-pub fn wave2_controller_security_notifier_dispatch_smoke() -> bool {
-    wave5_api_security_notifier_registration_canonical_smoke()
-}
-
-// Compat alias: legacy wave2 residual name.
-// Required suite does not use this entrypoint; it forwards to the Wave5 canonical export.
-pub fn wave2_qi_metrics_pressure_smoke() -> bool {
-    wave5_qi_metrics_pressure_canonical_smoke()
-}
-
 pub fn amd_wave0_alias_devids_for_device_dedup_smoke() -> bool {
     crate::io::iommu::vendors::amd::qemu_tests::wave0_alias_devids_for_device_dedup_smoke()
 }

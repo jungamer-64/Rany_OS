@@ -154,5 +154,5 @@ Expected:
 
 ## Notes
 
-- `cell.update(...)` is kept as a compatibility alias for `cell.swap(...)` in this phase.
+- Use `cell.swap(...)` for DriverCell hot-swap operations.
 - Legacy `cell <method> ...` command syntax was removed; use `cell.xxx(...)`.

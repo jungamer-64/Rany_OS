@@ -9,7 +9,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use super::{BoxFuture, ShellNamespace};
+use super::{BoxFuture, ShellNamespace, dynamic_driver};
 use crate::driver_domain;
 #[cfg(feature = "qemu-test-export")]
 use crate::driver_domain::fault::{self, TestFaultKind};
@@ -27,11 +27,11 @@ impl CellNamespace {
     fn valid_methods_help() -> &'static str {
         #[cfg(feature = "qemu-test-export")]
         {
-            "list, info, graph, inspect_artifact, epoch_status, wait_quiescent, load, swap, update, unload, rollback, commit, stats, health, debug_fault"
+            "list, info, graph, inspect_artifact, epoch_status, wait_quiescent, load, swap, unload, rollback, commit, stats, health, debug_fault"
         }
         #[cfg(not(feature = "qemu-test-export"))]
         {
-            "list, info, graph, inspect_artifact, epoch_status, wait_quiescent, load, swap, update, unload, rollback, commit, stats, health"
+            "list, info, graph, inspect_artifact, epoch_status, wait_quiescent, load, swap, unload, rollback, commit, stats, health"
         }
     }
 
@@ -939,6 +939,10 @@ impl CellNamespace {
                         |h| ExoValue::Int(core::cmp::min(h.index() as u64, i64::MAX as u64) as i64),
                     )
                     .collect::<Vec<_>>();
+                let namespace_list = dynamic_driver::register_namespaces(&name, &handles)
+                    .into_iter()
+                    .map(Self::vstr)
+                    .collect::<Vec<_>>();
                 let mut map = BTreeMap::new();
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
                 Self::map_insert(
@@ -947,6 +951,7 @@ impl CellNamespace {
                     Self::vint_u64(driver_domain_id.as_u64()),
                 );
                 Self::map_insert(&mut map, "driver_handles", ExoValue::Array(handle_list));
+                Self::map_insert(&mut map, "namespaces", ExoValue::Array(namespace_list));
                 Self::map_insert(&mut map, "name", Self::vstr(name.clone()));
                 Self::map_insert(
                     &mut map,
@@ -1199,7 +1204,6 @@ impl ShellNamespace for CellNamespace {
                 "wait_quiescent" => Self::dispatch_wait_quiescent(args, caps),
                 "load" => Self::dispatch_load(args, caps),
                 "swap" => Self::dispatch_swap(args, caps),
-                "update" => Self::dispatch_swap(args, caps),
                 "unload" => Self::dispatch_unload(args, caps),
                 "rollback" => Self::dispatch_rollback(args, caps),
                 "commit" => Self::dispatch_commit(args, caps),
@@ -1302,17 +1306,4 @@ mod tests {
         }
     }
 
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_update_alias_uses_same_permission_gate_as_swap() {
-        let ns = CellNamespace;
-        let caps = CapabilitySet::empty();
-        let args = [
-            CellNamespace::vstr("dummy"),
-            CellNamespace::vstr("/tmp/x.cell"),
-        ];
-        let swap_res = block_on(ns.call("swap", &args, &caps));
-        let update_res = block_on(ns.call("update", &args, &caps));
-        assert_eq!(swap_res, update_res);
-    }
 }

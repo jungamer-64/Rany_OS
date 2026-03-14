@@ -10,8 +10,6 @@
 //! ## 例
 //! ```text
 //! cell.load("/drivers/gpu.elf")
-//! # もしくは互換エイリアス:
-//! driver.load("/drivers/gpu.elf")
 //! # -> gpu 名前空間が自動登録
 //! gpu.info()
 //! gpu.status()
@@ -22,10 +20,31 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::driver_registry::{self, DriverHandle};
 use crate::shell::exoshell::types::ExoValue;
+
+pub fn register_namespaces(driver_name: &str, handles: &[DriverHandle]) -> Vec<String> {
+    use super::registry;
+
+    let mut registered = Vec::new();
+    for (index, handle) in handles.iter().enumerate() {
+        let namespace_name = if index == 0 {
+            String::from(driver_name)
+        } else {
+            format!("{}_{}", driver_name, index + 1)
+        };
+        registry::register_namespace(Arc::new(DynamicDriverNamespace::new(
+            namespace_name.clone(),
+            *handle,
+        )));
+        registered.push(namespace_name);
+    }
+    registered
+}
 
 /// ドライバ固有の名前空間
 ///

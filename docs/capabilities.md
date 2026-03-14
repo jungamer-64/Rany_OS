@@ -101,7 +101,7 @@ MVP では `shell.spawn()` により**限定的な子シェル表現 (ShellProxy
 
 ## 安全上の注意点
 
-- 危険 API (`cell.swap`, `mmio.write`, `driver.update`, など) は **必ず** `CAP_SYS_ADMIN` か明示的な capability チェックを通す。公開前に確認すること。
+- 危険 API (`cell.swap`, `mmio.write` など) は **必ず** `CAP_SYS_ADMIN` か明示的な capability チェックを通す。公開前に確認すること。
 - `delegatable` を持つトークンは強力なので、デフォルト `false` を維持する。
 
 ---
