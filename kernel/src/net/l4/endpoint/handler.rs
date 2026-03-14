@@ -2571,13 +2571,7 @@ impl NetworkEventHandler {
                             64,
                         )
                     } else {
-                        stack.send_udp_raw_scoped(
-                            pinned,
-                            local_port,
-                            dst_ip,
-                            remote.port(),
-                            &data,
-                        )
+                        stack.send_udp_raw_scoped(pinned, local_port, dst_ip, remote.port(), &data)
                     }
                 }
                 Ok((None, _, _)) => {

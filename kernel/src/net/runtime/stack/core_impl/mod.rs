@@ -369,85 +369,8 @@ impl NetworkStack {
 
         for timer in expired {
             match timer.kind {
-                TimerKind::Dhcpv4Renewal => {
-                    self.maintenance_dhcpv4();
-                }
-                TimerKind::Dhcpv6Renewal => {
-                    self.maintenance_dhcpv6();
-                }
                 // Other timer kinds handled elsewhere or to be implemented
                 _ => {}
-            }
-        }
-
-        // Always reschedule DHCP maintenance if not already scheduled
-        // (Simplified logic: schedule every 10s for lease checking)
-        const DHCP_MAINTENANCE_INTERVAL_MS: u64 = 10_000;
-        self.timeout_wheel
-            .schedule(DHCP_MAINTENANCE_INTERVAL_MS, TimerKind::Dhcpv4Renewal, now);
-        self.timeout_wheel
-            .schedule(DHCP_MAINTENANCE_INTERVAL_MS, TimerKind::Dhcpv6Renewal, now);
-    }
-
-    /// Perform DHCPv4 maintenance (renewal/rebinding)
-    fn maintenance_dhcpv4(&mut self) {
-        if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
-            if let Some(ref client) = *guard {
-                let now = self.current_time();
-                if let Some(lease) = client.lease() {
-                    // Check T1 (Renewal) or T2 (Rebinding)
-                    // Tick rate is assumed 1000 ticks/sec (1ms)
-                    if lease.needs_rebind(now, 1000) {
-                        log::info!("[DHCP] Lease needs rebinding (T2)");
-                        // Build and send REQUEST (broadcast)
-                        self.trigger_dhcpv4_request(true);
-                    } else if lease.needs_renewal(now, 1000) {
-                        log::info!("[DHCP] Lease needs renewal (T1)");
-                        // Build and send REQUEST (unicast to server)
-                        self.trigger_dhcpv4_request(false);
-                    }
-                }
-            }
-        }
-    }
-
-    fn trigger_dhcpv4_request(&mut self, broadcast: bool) {
-        let mut buffer = [0u8; 576];
-        let now = self.current_time();
-
-        let client_opt = crate::net::services::dhcp::DHCP_CLIENT.lock();
-        if let Ok(guard) = client_opt {
-            if let Some(ref client) = *guard {
-                if let Ok(len) = client.build_request(&mut buffer, now) {
-                    let dst_ip = if broadcast {
-                        Ipv4Address::BROADCAST
-                    } else if let Some(lease) = client.lease() {
-                        lease.server_ip
-                    } else {
-                        Ipv4Address::BROADCAST
-                    };
-
-                    // DHCP uses source port 68, destination port 67
-                    // Note: We use 0.0.0.0 as source IP if not bound yet,
-                    // or current IP for renewal as per RFC 2131.
-                    let src_ip = if broadcast {
-                        Ipv4Address::ANY
-                    } else {
-                        self.config.ipv4.address
-                    };
-
-                    self.send_udp_raw_with_src_ttl(src_ip, 68, dst_ip, 67, &buffer[..len], 64);
-                }
-            }
-        }
-    }
-
-    /// Perform DHCPv6 maintenance
-    fn maintenance_dhcpv6(&mut self) {
-        if let Ok(guard) = crate::net::services::dhcp::DHCPV6_CLIENT.lock() {
-            if let Some(ref client) = *guard {
-                // Similar logic for DHCPv6...
-                let _ = client;
             }
         }
     }

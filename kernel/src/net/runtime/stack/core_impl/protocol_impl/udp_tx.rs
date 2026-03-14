@@ -166,8 +166,7 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        let Ok((if_id, config, src_ip)) =
-            self.resolve_ipv4_egress(scope, None, None, dst_ip)
+        let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(scope, None, None, dst_ip)
         else {
             self.stats.record_dropped();
             return false;
@@ -209,12 +208,9 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        let Ok((if_id, config, resolved_src)) = self.resolve_ipv4_egress(
-            scope,
-            None,
-            Some(src_ip),
-            dst_ip,
-        ) else {
+        let Ok((if_id, config, resolved_src)) =
+            self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)
+        else {
             self.stats.record_dropped();
             return false;
         };

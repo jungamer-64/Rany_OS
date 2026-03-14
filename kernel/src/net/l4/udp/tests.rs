@@ -198,11 +198,6 @@ pub fn test_udp_endpoint_poisoned_methods_return_defaults() {
     udp_endpoint_poisoned_methods_return_defaults_impl();
 }
 
-// Legacy compatibility wrapper referenced by qemu test exports.
-pub fn test_udp_socket_poisoned_methods_return_defaults() {
-    udp_endpoint_poisoned_methods_return_defaults_impl();
-}
-
 #[cfg_attr(test, test_case)]
 pub fn test_bind_with_token_reclaim() {
     // Setup: create caller and target domains

@@ -197,7 +197,7 @@ pub enum EndpointAddr {
 }
 
 impl EndpointAddr {
-    /// Backwards-compatible constructor for IPv4
+    /// Create an IPv4 endpoint address
     #[inline(always)]
     pub const fn new(ip: [u8; 4], port: u16) -> Self {
         EndpointAddr::V4 { ip, port }
@@ -534,5 +534,4 @@ pub mod qemu_tests {
         let localhost = EndpointAddr::LOCALHOST.with_port(3000);
         localhost.as_ipv4().unwrap() == [127, 0, 0, 1] && localhost.port() == 3000
     }
-
 }

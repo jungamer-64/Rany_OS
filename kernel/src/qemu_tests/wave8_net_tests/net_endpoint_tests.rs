@@ -155,7 +155,7 @@ pub fn net_endpoint_handler_handle_data_ready_retry_when_no_device_smoke() -> bo
 }
 
 pub fn net_endpoint_inner_socket_state_transitions_smoke() -> bool {
-    crate::net::l4::endpoint::inner::qemu_tests::socket_state_transitions_smoke()
+    crate::net::l4::endpoint::inner::qemu_tests::endpoint_state_transitions_smoke()
 }
 
 pub fn net_endpoint_inner_vecdeque_buffer_smoke() -> bool {
@@ -227,31 +227,31 @@ pub fn net_endpoint_tcb_tcp_flags_smoke() -> bool {
 }
 
 pub fn net_endpoint_core_accepted_connection_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::accepted_connection_smoke()
+    crate::net::l4::endpoint::qemu_tests::core_accepted_connection_smoke()
 }
 
 pub fn net_endpoint_core_socket_new_with_fd_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::socket_new_with_fd_smoke()
+    crate::net::l4::endpoint::qemu_tests::core_socket_new_with_fd_smoke()
 }
 
 pub fn net_endpoint_core_socket_accept_empty_queue_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::socket_accept_empty_queue_smoke()
+    crate::net::l4::endpoint::qemu_tests::core_socket_accept_empty_queue_smoke()
 }
 
 pub fn net_endpoint_core_socket_accept_with_connection_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::socket_accept_with_connection_smoke()
+    crate::net::l4::endpoint::qemu_tests::core_socket_accept_with_connection_smoke()
 }
 
 pub fn net_endpoint_core_accept_backlog_limit_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::accept_backlog_limit_smoke()
+    crate::net::l4::endpoint::qemu_tests::core_accept_backlog_limit_smoke()
 }
 
 pub fn net_endpoint_types_socket_fd_smoke() -> bool {
-    crate::net::l4::endpoint::types::qemu_tests::socket_fd_smoke()
+    crate::net::l4::endpoint::types::qemu_tests::endpoint_fd_smoke()
 }
 
 pub fn net_endpoint_types_socket_addr_smoke() -> bool {
-    crate::net::l4::endpoint::types::qemu_tests::socket_addr_smoke()
+    crate::net::l4::endpoint::types::qemu_tests::endpoint_addr_smoke()
 }
 
 pub fn net_endpoint_window_scale_window_scale_disabled_smoke() -> bool {

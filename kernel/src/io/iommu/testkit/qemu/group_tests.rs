@@ -420,12 +420,6 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
 
     result
 }
-
-/// Compat implementation alias retained for wave5/wave2 legacy names.
-pub(crate) fn wave5_map_for_device_async_and_unmap_residual_impl() -> bool {
-    wave5_map_for_device_async_and_unmap_canonical_impl()
-}
-
 /// DMA mask validation: register 32-bit mask → allocate IOVA → verify within mask bounds.
 /// Migrated from test_map_for_device_respects_dma_mask (removed global singleton dependency).
 pub(crate) fn wave5_map_for_device_respects_dma_mask_canonical_impl() -> bool {

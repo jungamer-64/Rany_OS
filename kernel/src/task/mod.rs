@@ -40,6 +40,11 @@ pub mod timeout;
 mod waker;
 
 #[allow(unused_imports)]
+pub use crate::drivers::time::{
+    PendingTimerWakerStats, current_tick, handle_timer_interrupt, pending_timer_waker_count,
+    pending_waker_stats, process_pending_timer_wakers, sleep_ms,
+};
+#[allow(unused_imports)]
 pub use context::{
     CpuContext, KernelStack, Subject, TaskControlBlock, TaskState, current_subject, current_task_id,
 };
@@ -88,11 +93,6 @@ pub use preemption::{
     yield_now,
     yield_point,
     yield_point_with_quota_check,
-};
-#[allow(unused_imports)]
-pub use crate::drivers::time::{
-    PendingTimerWakerStats, current_tick, handle_timer_interrupt, pending_timer_waker_count,
-    pending_waker_stats, process_pending_timer_wakers, sleep_ms,
 };
 #[allow(unused_imports)]
 pub use waker::create_waker;

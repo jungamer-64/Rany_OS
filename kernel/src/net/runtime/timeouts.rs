@@ -55,10 +55,6 @@ pub enum TimerKind {
     ArpExpire,
     /// IGMPレポートタイマー
     IgmpReport,
-    /// DHCPv4 リース更新 (T1) / 再バインド (T2)
-    Dhcpv4Renewal,
-    /// DHCPv6 リース更新 (T1) / 再バインド (T2)
-    Dhcpv6Renewal,
     /// 汎用タイマー
     Generic,
 }

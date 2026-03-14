@@ -38,7 +38,7 @@ use crate::net::obs::{
     trace::{self, NetEventKind, NetLayer},
 };
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::timeouts::{TimeoutWheel, TimerKind}; // required for new transmit callback signature
+use crate::net::runtime::timeouts::TimeoutWheel; // required for new transmit callback signature
 
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;

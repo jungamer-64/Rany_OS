@@ -884,7 +884,8 @@ impl CellNamespace {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let reached = live_update::wait_for_quiescent_state_with_timeout(target_epoch, max_attempts);
+        let reached =
+            live_update::wait_for_quiescent_state_with_timeout(target_epoch, max_attempts);
         let mut out = BTreeMap::new();
         Self::map_insert(&mut out, "target_epoch", Self::vint_u64(target_epoch));
         Self::map_insert(&mut out, "max_attempts", Self::vint_u64(max_attempts));
@@ -1305,5 +1306,4 @@ mod tests {
             _ => panic!("expected permission error"),
         }
     }
-
 }

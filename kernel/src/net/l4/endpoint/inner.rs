@@ -157,7 +157,7 @@ impl EndpointInner {
     pub const DEFAULT_BUFFER_SIZE: usize = 8192;
     /// 最大バッファサイズ
     pub const MAX_BUFFER_SIZE: usize = 65536;
-    /// デフォルトのAcceptバックログサイズ (後方互換)
+    /// デフォルトの Accept バックログサイズ
     pub const DEFAULT_BACKLOG: usize = TcpProtocolState::DEFAULT_BACKLOG;
 
     /// 新規作成
@@ -253,7 +253,7 @@ impl EndpointInner {
     }
 
     // ================================================================
-    // TCP専用便利メソッド（後方互換）
+    // TCP専用状態ヘルパー
     // ================================================================
 
     /// Set urgent data pending flag
@@ -416,7 +416,7 @@ pub mod tests {
 pub mod qemu_tests {
     use super::*;
 
-    pub fn socket_state_transitions_smoke() -> bool {
+    pub fn endpoint_state_transitions_smoke() -> bool {
         let mut inner = EndpointInner::new();
 
         if inner.transition_to(EndpointState::Bound).is_err() || inner.state != EndpointState::Bound

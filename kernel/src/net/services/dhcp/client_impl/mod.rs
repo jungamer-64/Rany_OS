@@ -798,8 +798,3 @@ pub(crate) fn update_client_mac(mac_address: MacAddress) {
         Err(_) => log::error!("[NET] DHCP Global lock poisoned (update_client_mac)"),
     }
 }
-
-/// DHCPクライアントを取得
-pub fn client() -> Option<&'static PoisonLock<Option<DhcpClient>>> {
-    Some(&DHCP_CLIENT)
-}

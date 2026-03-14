@@ -1261,12 +1261,6 @@ pub(crate) fn update_client_v6_mac(mac_address: crate::net::l2::ethernet::MacAdd
         Err(_) => log::error!("[NET] DHCPv6 Global lock poisoned (update_client_v6_mac)"),
     }
 }
-
-/// DHCPv6 クライアント取得
-pub fn client_v6() -> Option<&'static PoisonLock<Option<DhcpV6Client>>> {
-    Some(&DHCPV6_CLIENT)
-}
-
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) mod tests {
     use super::*;

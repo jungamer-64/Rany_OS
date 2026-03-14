@@ -395,24 +395,3 @@ pub fn window_scale_option_builder_smoke() -> bool {
 pub fn window_scale_option_parser_smoke() -> bool {
     run_case!(window_scale::tests::test_option_parser)
 }
-
-// Compatibility aliases for upstream endpoint wrapper names after rebase.
-pub fn accepted_connection_smoke() -> bool {
-    core_accepted_connection_smoke()
-}
-
-pub fn socket_new_with_fd_smoke() -> bool {
-    core_socket_new_with_fd_smoke()
-}
-
-pub fn socket_accept_empty_queue_smoke() -> bool {
-    core_socket_accept_empty_queue_smoke()
-}
-
-pub fn socket_accept_with_connection_smoke() -> bool {
-    core_socket_accept_with_connection_smoke()
-}
-
-pub fn accept_backlog_limit_smoke() -> bool {
-    core_accept_backlog_limit_smoke()
-}

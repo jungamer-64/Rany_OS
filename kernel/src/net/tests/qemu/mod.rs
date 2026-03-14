@@ -160,7 +160,7 @@ pub fn udp_udp_packet_smoke() -> bool {
 }
 
 pub fn udp_udp_socket_poisoned_methods_return_defaults_smoke() -> bool {
-    run_case!(udp::tests::test_udp_socket_poisoned_methods_return_defaults)
+    run_case!(udp::tests::test_udp_endpoint_poisoned_methods_return_defaults)
 }
 
 pub fn udp_bind_with_token_reclaim_smoke() -> bool {
