@@ -13,7 +13,7 @@ use hashbrown::HashMap;
 use x86_64::PhysAddr;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
-use crate::io::iommu::common::dma::iova_allocator::{IovaAllocator, IovaAllocatorFast};
+use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain as DomainState;
 use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
@@ -49,7 +49,7 @@ fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
         next_domain_id: AtomicU64::new(1),
         page_table_pool: PageTablePool::new(1, 1),
         command_queue: None,
-        iova_allocator: IovaAllocatorFast::new(
+        iova_allocator: IovaAllocator::new(
             PAGE_SIZE_4K as u64,
             (1u64 << AMD_DEFAULT_MAX_ADDR_BITS).saturating_sub(PAGE_SIZE_4K as u64),
         ),
@@ -290,7 +290,7 @@ fn make_test_driver_small() -> AmdIommuDriver {
 
     let page_table_pool = PageTablePool::new(1, 1);
     let iova_allocator =
-        IovaAllocatorFast::new(PAGE_SIZE_4K as u64, (1u64 << 20) - PAGE_SIZE_4K as u64);
+        IovaAllocator::new(PAGE_SIZE_4K as u64, (1u64 << 20) - PAGE_SIZE_4K as u64);
 
     let default_domain = DomainState::new(
         0,

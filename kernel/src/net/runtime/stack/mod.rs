@@ -164,8 +164,8 @@ impl NetworkStats {
 ///
 /// The `Option<NetIfId>` parameter indicates which logical interface the
 /// packet should be emitted on.  `None` is used when the stack has no
-/// particular interface preference (e.g. legacy single-NIC mode or when the
-/// caller elected not to specify an interface).  This extra metadata allows
+/// particular interface preference or when the caller elected not to specify
+/// an interface. This extra metadata allows
 /// the bridge layer to support multiple VirtIO ports and other multi‑NIC
 /// configurations without racing for a single global transmit function.
 ///
@@ -252,7 +252,7 @@ impl RedirectCache {
 pub struct NetworkStack {
     /// Per-interface L2/L3 state and snapshots.
     pub interfaces: BTreeMap<NetIfId, InterfaceStackState>,
-    /// Preferred interface for legacy internal helpers.
+    /// Preferred interface for scope-less runtime resolution.
     pub primary_interface: Option<NetIfId>,
     /// Configuration
     pub config: NetworkConfig,

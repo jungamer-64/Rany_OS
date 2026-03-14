@@ -94,7 +94,7 @@ impl IommuDomain {
             // Per-domain IOVA allocator: Default 256GB space starting at 4GB
             // Avoids low addresses (reserved for 32-bit legacy devices) and
             // provides ample space for typical workloads.
-            // Uses bitmap-based IovaAllocatorFast with O(1) magazine allocation.
+            // Uses the bitmap-based IovaAllocator with O(1) magazine allocation.
             per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),
             pending_pt_release: PoisonLock::new(Vec::new()),
@@ -177,13 +177,13 @@ impl IommuDomain {
 
     /// Allocate IOVA from this domain's allocator.
     ///
-    /// Uses IovaAllocatorFast with O(1) per-CPU magazine allocation.
+    /// Uses IovaAllocator with O(1) per-CPU magazine allocation.
     /// All domains have their own IOVA allocator, eliminating lock contention.
     #[inline]
     pub fn allocate_iova(&self, size: u64) -> Result<u64, crate::io::iommu::types::IommuError> {
         use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
 
-        // IovaAllocatorFast is internally lock-free for common paths
+        // IovaAllocator is internally lock-free for common paths
         self.per_domain_iova
             .allocate(size, PageGranularity::Page4K)
             .ok_or(crate::io::iommu::types::IommuError::OutOfIova)
@@ -191,14 +191,14 @@ impl IommuDomain {
 
     /// Free IOVA back to this domain's allocator.
     ///
-    /// Uses IovaAllocatorFast with O(1) per-CPU magazine deallocation.
+    /// Uses IovaAllocator with O(1) per-CPU magazine deallocation.
     #[inline]
     pub fn free_iova(
         &self,
         iova: u64,
         size: u64,
     ) -> Result<(), crate::io::iommu::types::IommuError> {
-        // IovaAllocatorFast is internally lock-free for common paths
+        // IovaAllocator is internally lock-free for common paths
         self.per_domain_iova.free(iova, size)
     }
 

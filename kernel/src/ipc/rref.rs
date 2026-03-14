@@ -631,9 +631,6 @@ pub fn verify_type_hash<T: TypeIdHash>(expected: TypeHash) -> Result<(), TypeHas
     }
 }
 
-// Re-export from util for backward compatibility
-pub use crate::util::fnv1a_hash;
-
 pub const fn compute_simple_type_hash(type_name: &str, size: usize, align: usize) -> TypeHash {
     TypeHash::new(crate::util::compute_type_hash(type_name, size, align))
 }
@@ -668,7 +665,7 @@ impl TypeIdHash for bool {
 
 impl<T: TypeIdHash, const N: usize> TypeIdHash for [T; N] {
     const TYPE_HASH: TypeHash =
-        TypeHash::new(T::TYPE_HASH.value() ^ fnv1a_hash(b"array") ^ (N as u64));
+        TypeHash::new(T::TYPE_HASH.value() ^ crate::util::fnv1a_hash(b"array") ^ (N as u64));
 }
 
 #[cfg(test)]

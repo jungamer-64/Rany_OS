@@ -10,9 +10,9 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `app_count()` ❌ **removed**
     - Migration: Use `domain_count()`.
 
-- `kernel/src/lib.rs` (test shim)
-  - `crate::task::current_tick()` ❌ **removed** (was deprecated)
-    - Migration: Use `crate::task::timer::current_tick()` directly in tests/benches.
+- `kernel/src/task/timer.rs`
+  - `crate::task::timer::*` ❌ **removed**
+    - Migration: Use the canonical root-level task time APIs directly, e.g. `crate::task::current_tick()`, `crate::task::sleep_ms()`, `crate::task::handle_timer_interrupt()`, `crate::task::process_pending_timer_wakers()`.
 
 - `kernel/src/fs/mod.rs` (fs alias)
   - `vfs` alias ❌ **removed**

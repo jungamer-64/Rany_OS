@@ -16,6 +16,7 @@ use crate::driver_domain::fault::{self, TestFaultKind};
 use crate::driver_domain::hot_swap::{self, HotSwapState};
 use crate::driver_domain::lifecycle;
 use crate::driver_domain::{DriverDomainId, DriverDomainSnapshot};
+use crate::loader::live_update;
 use crate::security::CapabilitySet;
 use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_MODULE};
 use crate::shell::exoshell::types::ExoValue;
@@ -551,7 +552,7 @@ impl CellNamespace {
             Self::pending_live_update_map(snap.cell_id),
         );
 
-        let current_epoch = crate::epoch::current_epoch();
+        let current_epoch = live_update::current_epoch();
         let target_epoch = current_epoch.saturating_sub(1);
         let mut epoch_hint = BTreeMap::new();
         Self::map_insert(
@@ -567,12 +568,12 @@ impl CellNamespace {
         Self::map_insert(
             &mut epoch_hint,
             "all_cores_past_target",
-            ExoValue::Bool(crate::epoch::all_cores_past_epoch(target_epoch)),
+            ExoValue::Bool(live_update::all_cores_past_epoch(target_epoch)),
         );
         Self::map_insert(
             &mut epoch_hint,
             "live_update_epoch",
-            Self::vint_u64(crate::loader::live_update::current_epoch()),
+            Self::vint_u64(live_update::current_epoch()),
         );
 
         let mut out = BTreeMap::new();
@@ -798,7 +799,7 @@ impl CellNamespace {
     }
 
     fn dispatch_epoch_status() -> ExoValue<'static> {
-        let stats = crate::epoch::stats();
+        let stats = live_update::epoch_stats();
         let current_epoch = stats.current_epoch;
         let target_epoch = current_epoch.saturating_sub(1);
 
@@ -810,8 +811,8 @@ impl CellNamespace {
         );
         Self::map_insert(
             &mut epoch,
-            "deferred_queue_size",
-            Self::vint_usize(stats.deferred_queue_size),
+            "in_critical_sections",
+            Self::vint_usize(stats.in_critical_sections),
         );
         Self::map_insert(
             &mut epoch,
@@ -853,7 +854,7 @@ impl CellNamespace {
         Self::map_insert(
             &mut quiescent_check,
             "all_cores_past",
-            ExoValue::Bool(crate::epoch::all_cores_past_epoch(target_epoch)),
+            ExoValue::Bool(live_update::all_cores_past_epoch(target_epoch)),
         );
 
         let mut out = BTreeMap::new();
@@ -861,7 +862,7 @@ impl CellNamespace {
         Self::map_insert(
             &mut out,
             "live_update_epoch",
-            Self::vint_u64(crate::loader::live_update::current_epoch()),
+            Self::vint_u64(live_update::current_epoch()),
         );
         Self::map_insert(
             &mut out,
@@ -883,7 +884,7 @@ impl CellNamespace {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let reached = crate::epoch::wait_for_quiescent_state(target_epoch, max_attempts);
+        let reached = live_update::wait_for_quiescent_state_with_timeout(target_epoch, max_attempts);
         let mut out = BTreeMap::new();
         Self::map_insert(&mut out, "target_epoch", Self::vint_u64(target_epoch));
         Self::map_insert(&mut out, "max_attempts", Self::vint_u64(max_attempts));
@@ -891,7 +892,7 @@ impl CellNamespace {
         Self::map_insert(
             &mut out,
             "current_epoch",
-            Self::vint_u64(crate::epoch::current_epoch()),
+            Self::vint_u64(live_update::current_epoch()),
         );
         ExoValue::Map(out)
     }

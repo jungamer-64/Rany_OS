@@ -36,7 +36,7 @@ impl TaskNamespace {
     pub fn stats() -> ExoValue<'static> {
         let wake_stats = crate::task::wake_queue_stats();
         let global_stats = crate::task::global_queue_stats();
-        let timer_stats = crate::task::timer::pending_waker_stats();
+        let timer_stats = crate::task::pending_waker_stats();
         let fuel_remaining = crate::task::fuel::Fuel::remaining();
         let fuel_active = crate::task::fuel::Fuel::is_active();
         let current_tick = crate::task::current_tick();

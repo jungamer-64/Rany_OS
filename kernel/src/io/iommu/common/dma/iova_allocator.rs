@@ -45,11 +45,6 @@ use crate::per_cpu::MAX_CPUS;
 
 use crate::io::iommu::types::IommuError;
 
-/// Backward compatibility alias
-pub type IovaGranularity = PageGranularity;
-/// Backward compatibility alias for older tests/callers.
-pub type IovaAllocatorFast = IovaAllocator;
-
 /// Default capacity for quarantine ring (must be power of 2)
 const QUARANTINE_CAPACITY: usize = 256;
 
@@ -180,9 +175,9 @@ impl IovaAllocator {
         self.inner.allocate_contiguous(size, align)
     }
 
-    /// Allocate with granularity (Backward Compatibility)
+    /// Allocate with a specific page granularity.
     #[inline]
-    pub fn allocate(&self, size: u64, granularity: IovaGranularity) -> Option<u64> {
+    pub fn allocate(&self, size: u64, granularity: PageGranularity) -> Option<u64> {
         if size != granularity.size_bytes() {
             return None;
         }
@@ -340,7 +335,7 @@ impl IovaAllocator {
     pub fn allocate_with_limit(
         &self,
         size: u64,
-        granularity: IovaGranularity,
+        granularity: PageGranularity,
         limit: u64,
     ) -> Option<u64> {
         if size > granularity.size_bytes() {
@@ -370,9 +365,9 @@ impl IovaAllocator {
             }
         } else {
             match granularity {
-                IovaGranularity::Page4K => self.inner.allocate_4k_below(limit),
-                IovaGranularity::Page2M => self.inner.allocate_2m_below(limit),
-                IovaGranularity::Page1G => self.inner.allocate_1g_below(limit),
+                PageGranularity::Page4K => self.inner.allocate_4k_below(limit),
+                PageGranularity::Page2M => self.inner.allocate_2m_below(limit),
+                PageGranularity::Page1G => self.inner.allocate_1g_below(limit),
             }
         }
     }

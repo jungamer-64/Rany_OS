@@ -470,8 +470,8 @@ fn spin_wait_ticks(delay_ticks: u64) {
                 // Full-boot tests run with qemu_no_if=1, so timer IRQs may not
                 // advance. Inject synthetic ticks to avoid deadlocking fault
                 // backoff waits in restart paths.
-                crate::task::timer::handle_timer_interrupt();
-                crate::task::timer::process_pending_timer_wakers();
+                crate::task::handle_timer_interrupt();
+                crate::task::process_pending_timer_wakers();
             }
         }
         core::hint::spin_loop();

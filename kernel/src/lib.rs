@@ -1677,6 +1677,12 @@ pub mod task {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
     pub struct TaskId(u64);
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PendingTimerWakerStats {
+        pub pending: usize,
+        pub capacity: usize,
+    }
+
     impl TaskId {
         pub const fn from_raw(id: u64) -> Self {
             Self(id)
@@ -1686,15 +1692,6 @@ pub mod task {
             self.0
         }
     }
-
-    pub mod timer {
-        /// Return current tick in milliseconds (test stub)
-        pub fn current_tick() -> u64 {
-            0
-        }
-    }
-
-    // Convenience shim for tests/benches removed — use `crate::task::current_tick()` directly.
 
     pub mod per_core_executor {
         pub fn spawn<F>(_future: F)
@@ -1707,7 +1704,22 @@ pub mod task {
     pub async fn sleep_ms(_ms: u64) {}
 
     pub fn current_tick() -> u64 {
-        timer::current_tick()
+        0
+    }
+
+    pub fn handle_timer_interrupt() {}
+
+    pub fn process_pending_timer_wakers() {}
+
+    pub fn pending_timer_waker_count() -> usize {
+        0
+    }
+
+    pub fn pending_waker_stats() -> PendingTimerWakerStats {
+        PendingTimerWakerStats {
+            pending: 0,
+            capacity: 0,
+        }
     }
 
     pub fn spawn_detached<F>(_future: F) -> TaskId

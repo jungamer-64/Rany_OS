@@ -416,7 +416,19 @@ impl NetworkStack {
         Some(Err((None, ndp.our_link_local, ns_msg)))
     }
 
-    fn send_udp_v6_raw_scoped_with_ttl(
+    pub fn send_udp_v6_raw_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        src_port: u16,
+        src_ip: Ipv6Address,
+        dst: Ipv6Address,
+        dst_port: u16,
+        data: &[u8],
+    ) -> bool {
+        self.send_udp_v6_raw_scoped_with_ttl(scope, src_port, src_ip, dst, dst_port, data, 64)
+    }
+
+    pub fn send_udp_v6_raw_scoped_with_ttl(
         &mut self,
         scope: crate::net::types::InterfaceScope,
         src_port: u16,
@@ -550,119 +562,6 @@ impl NetworkStack {
             src_port,
             src_ip,
             dst,
-            dst_port,
-            data,
-            ttl,
-        )
-    }
-
-    /// Transmit a UDP datagram on a given interface (portions of the stack still
-    /// assume a single global configuration, so the interface ID is currently
-    /// ignored).  This shim exists to exercise the new transmit callback
-    /// signature from higher layers.
-    pub fn send_udp_raw_on(
-        &mut self,
-        if_id: super::NetIfId,
-        src_port: u16,
-        dst: Ipv4Address,
-        dst_port: u16,
-        data: &[u8],
-    ) -> bool {
-        self.send_udp_raw_on_auto_ttl(if_id, src_port, dst, dst_port, data, 64)
-    }
-
-    pub fn send_udp_raw_on_auto_ttl(
-        &mut self,
-        if_id: super::NetIfId,
-        src_port: u16,
-        dst: Ipv4Address,
-        dst_port: u16,
-        data: &[u8],
-        ttl: u8,
-    ) -> bool {
-        let Ok((resolved_if, config, src_ip)) = self.resolve_ipv4_egress(
-            crate::net::types::InterfaceScope::Pinned(if_id),
-            None,
-            None,
-            dst,
-        ) else {
-            self.stats.record_dropped();
-            return false;
-        };
-        self.send_udp_raw_with_config_and_if_ttl(
-            resolved_if,
-            &config,
-            src_ip,
-            src_port,
-            dst,
-            dst_port,
-            data,
-            ttl,
-        )
-    }
-
-    /// UDP transmit helper with explicit source IPv4 and TTL.
-    /// Interface selection is currently ignored (transitional multi-NIC shim).
-    pub fn send_udp_raw_on_with_src_ttl(
-        &mut self,
-        if_id: super::NetIfId,
-        src_ip: Ipv4Address,
-        src_port: u16,
-        dst: Ipv4Address,
-        dst_port: u16,
-        data: &[u8],
-        ttl: u8,
-    ) -> bool {
-        let Ok((resolved_if, config, resolved_src)) = self.resolve_ipv4_egress(
-            crate::net::types::InterfaceScope::Pinned(if_id),
-            None,
-            Some(src_ip),
-            dst,
-        ) else {
-            self.stats.record_dropped();
-            return false;
-        };
-        self.send_udp_raw_with_config_and_if_ttl(
-            resolved_if,
-            &config,
-            resolved_src,
-            src_port,
-            dst,
-            dst_port,
-            data,
-            ttl,
-        )
-    }
-
-    /// Transmit an IPv6 UDP datagram on a specific interface (ignored for now)
-    pub fn send_udp_v6_raw_on(
-        &mut self,
-        if_id: super::NetIfId,
-        src_port: u16,
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        dst_port: u16,
-        data: &[u8],
-    ) -> bool {
-        self.send_udp_v6_raw_on_with_ttl(if_id, src_port, src_ip, dst_ip, dst_port, data, 64)
-    }
-
-    /// Transmit an IPv6 UDP datagram on a specific interface with explicit TTL
-    pub fn send_udp_v6_raw_on_with_ttl(
-        &mut self,
-        if_id: super::NetIfId,
-        src_port: u16,
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        dst_port: u16,
-        data: &[u8],
-        ttl: u8,
-    ) -> bool {
-        self.send_udp_v6_raw_scoped_with_ttl(
-            crate::net::types::InterfaceScope::Pinned(if_id),
-            src_port,
-            src_ip,
-            dst_ip,
             dst_port,
             data,
             ttl,
@@ -828,8 +727,14 @@ impl NetworkStack {
                     data,
                 } => {
                     if let Some(if_id) = if_id {
-                        let _ = self.send_udp_v6_raw_on_with_ttl(
-                            if_id, src_port, pkt.src, pkt.dst, dst_port, &data, hop_limit,
+                        let _ = self.send_udp_v6_raw_scoped_with_ttl(
+                            crate::net::types::InterfaceScope::Pinned(if_id),
+                            src_port,
+                            pkt.src,
+                            pkt.dst,
+                            dst_port,
+                            &data,
+                            hop_limit,
                         );
                     } else {
                         let _ = self.send_udp_v6_raw_with_ttl(

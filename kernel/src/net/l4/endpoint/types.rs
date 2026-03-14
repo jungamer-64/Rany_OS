@@ -512,16 +512,6 @@ pub mod tests {
     pub fn test_endpoint_addr() {
         endpoint_addr_impl();
     }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_socket_fd() {
-        endpoint_fd_impl();
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_socket_addr() {
-        endpoint_addr_impl();
-    }
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -545,11 +535,4 @@ pub mod qemu_tests {
         localhost.as_ipv4().unwrap() == [127, 0, 0, 1] && localhost.port() == 3000
     }
 
-    pub fn socket_fd_smoke() -> bool {
-        endpoint_fd_smoke()
-    }
-
-    pub fn socket_addr_smoke() -> bool {
-        endpoint_addr_smoke()
-    }
 }

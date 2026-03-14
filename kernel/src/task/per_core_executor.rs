@@ -437,7 +437,7 @@ impl PerCoreExecutor {
     fn run_local_runtime_maintenance(&self) {
         crate::interrupts::poll_timer_events();
         crate::io::hid::keyboard::process_pending_wakes();
-        crate::task::timer::process_pending_timer_wakers();
+        crate::task::process_pending_timer_wakers();
         crate::task::interrupt_waker::process_interrupt_events();
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();
@@ -1298,7 +1298,7 @@ impl TestExecutor {
     pub fn drive_once_for_test(&mut self) {
         crate::interrupts::poll_timer_events();
         crate::io::hid::keyboard::process_pending_wakes();
-        crate::task::timer::process_pending_timer_wakers();
+        crate::task::process_pending_timer_wakers();
         crate::task::interrupt_waker::process_interrupt_events();
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();

@@ -1131,8 +1131,8 @@ fn maybe_inject_test_tick(stagnant_loops: usize) {
         if !LOGGED.swap(true, core::sync::atomic::Ordering::Relaxed) {
             runtime_log_line("[driver-cell-runtime] injecting synthetic timer ticks");
         }
-        crate::task::timer::handle_timer_interrupt();
-        crate::task::timer::process_pending_timer_wakers();
+        crate::task::handle_timer_interrupt();
+        crate::task::process_pending_timer_wakers();
     }
 }
 

@@ -19,7 +19,7 @@ impl NetworkStack {
         })
     }
 
-    fn legacy_single_interface_runtime(&self) -> Option<(Option<NetIfId>, NetworkConfig)> {
+    fn bootstrap_runtime_config(&self) -> Option<(Option<NetIfId>, NetworkConfig)> {
         if self.interfaces.is_empty() {
             Some((None, self.config()))
         } else {
@@ -110,7 +110,7 @@ impl NetworkStack {
                             .map(|cfg| (Some(route.if_id), cfg))
                     })
             })
-            .or_else(|| self.legacy_single_interface_runtime())
+            .or_else(|| self.bootstrap_runtime_config())
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
 
         let src_ip = self.select_ipv4_source(resolved.1, explicit_src)?;
@@ -143,7 +143,7 @@ impl NetworkStack {
                             .map(|cfg| (Some(route.if_id), cfg))
                     })
             })
-            .or_else(|| self.legacy_single_interface_runtime())
+            .or_else(|| self.bootstrap_runtime_config())
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
 
         let src_ip = self.select_ipv6_source(resolved.1, explicit_src, dst_ip)?;
@@ -264,7 +264,7 @@ impl NetworkStack {
         }
     }
 
-    /// Select the preferred interface used by legacy internal helpers.
+    /// Select the preferred interface used for scope-less runtime resolution.
     pub fn set_primary_interface_state(&mut self, if_id: Option<NetIfId>) {
         self.primary_interface = if_id;
     }

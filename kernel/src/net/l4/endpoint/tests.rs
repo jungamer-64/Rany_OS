@@ -21,7 +21,7 @@ pub mod tests {
         let endpoint = Endpoint::new_with_fd(EndpointType::Tcp, fd);
 
         assert_eq!(endpoint.fd(), fd);
-        assert_eq!(endpoint.endpoint_type(), EndpointType::Tcp);
+        assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
         assert_eq!(endpoint.state(), EndpointState::Created);
     }
 
@@ -93,26 +93,13 @@ pub mod tests {
         endpoint_new_with_fd_impl();
     }
 
-    // Legacy compatibility wrappers referenced by qemu test exports.
-    pub fn test_socket_new_with_fd() {
-        endpoint_new_with_fd_impl();
-    }
-
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_accept_empty_queue() {
         endpoint_accept_empty_queue_impl();
     }
 
-    pub fn test_socket_accept_empty_queue() {
-        endpoint_accept_empty_queue_impl();
-    }
-
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_accept_with_connection() {
-        endpoint_accept_with_connection_impl();
-    }
-
-    pub fn test_socket_accept_with_connection() {
         endpoint_accept_with_connection_impl();
     }
 

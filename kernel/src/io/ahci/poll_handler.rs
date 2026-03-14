@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::io::io_scheduler::{
     DeviceId, DeviceOps, DmaBufHandle, IoCommand, IoError, IoRequest, IoRequestId, IoResult,
-    PollHandler, hybrid_coordinator, io_scheduler,
+    PollHandler,
 };
 
 use super::controller::AhciController;
@@ -296,17 +296,4 @@ pub fn register_ahci_with(
 
     let ahci_ops = Arc::new(AhciOps::new(controller.clone(), port_number, Some(handler)));
     scheduler.register_device_ops(device_id, ahci_ops);
-}
-
-/// AHCI を IoScheduler に登録（後方互換wrapper）
-pub fn register_ahci_with_io_scheduler(
-    controller: Arc<PoisonLock<AhciController>>,
-    port_number: u8,
-) {
-    register_ahci_with(
-        &io_scheduler(),
-        &hybrid_coordinator(),
-        controller,
-        port_number,
-    );
 }

@@ -266,7 +266,7 @@ pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
 }
 
 pub fn inner_socket_state_transitions_smoke() -> bool {
-    run_case!(inner::tests::test_socket_state_transitions)
+    run_case!(inner::tests::test_endpoint_state_transitions)
 }
 
 pub fn inner_vecdeque_buffer_smoke() -> bool {
@@ -353,15 +353,15 @@ pub fn core_accepted_connection_smoke() -> bool {
 }
 
 pub fn core_socket_new_with_fd_smoke() -> bool {
-    run_case!(tests::tests::test_socket_new_with_fd)
+    run_case!(tests::tests::test_endpoint_new_with_fd)
 }
 
 pub fn core_socket_accept_empty_queue_smoke() -> bool {
-    run_case!(tests::tests::test_socket_accept_empty_queue)
+    run_case!(tests::tests::test_endpoint_accept_empty_queue)
 }
 
 pub fn core_socket_accept_with_connection_smoke() -> bool {
-    run_case!(tests::tests::test_socket_accept_with_connection)
+    run_case!(tests::tests::test_endpoint_accept_with_connection)
 }
 
 pub fn core_accept_backlog_limit_smoke() -> bool {

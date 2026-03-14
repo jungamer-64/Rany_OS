@@ -1414,8 +1414,8 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
-                        Some(src_ip) => stack.send_udp_raw_on_with_src_ttl(
-                            net_if,
+                        Some(src_ip) => stack.send_udp_raw_scoped_with_src_ttl(
+                            crate::net::types::InterfaceScope::Pinned(net_if),
                             crate::net::l3::ipv4::Ipv4Address::new(src_ip),
                             src_port,
                             dst,
@@ -1423,12 +1423,18 @@ impl NetworkEventHandler {
                             &data,
                             ttl,
                         ),
-                        None => stack
-                            .send_udp_raw_on_auto_ttl(net_if, src_port, dst, dst_port, &data, ttl),
+                        None => stack.send_udp_raw_scoped_auto_ttl(
+                            crate::net::types::InterfaceScope::Pinned(net_if),
+                            src_port,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
+                        ),
                     }),
                     None => match src_ip {
-                        Some(src_ip) => stack.send_udp_raw_on_with_src_ttl(
-                            net_if,
+                        Some(src_ip) => stack.send_udp_raw_scoped_with_src_ttl(
+                            crate::net::types::InterfaceScope::Pinned(net_if),
                             crate::net::l3::ipv4::Ipv4Address::new(src_ip),
                             src_port,
                             dst,
@@ -1436,8 +1442,14 @@ impl NetworkEventHandler {
                             &data,
                             ttl,
                         ),
-                        None => stack
-                            .send_udp_raw_on_auto_ttl(net_if, src_port, dst, dst_port, &data, ttl),
+                        None => stack.send_udp_raw_scoped_auto_ttl(
+                            crate::net::types::InterfaceScope::Pinned(net_if),
+                            src_port,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
+                        ),
                     },
                 };
                 let result = if sent {
@@ -1525,12 +1537,24 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_udp_v6_raw_on_with_ttl(
-                            net_if, src_port, src, dst, dst_port, &data, ttl,
+                        stack.send_udp_v6_raw_scoped_with_ttl(
+                            crate::net::types::InterfaceScope::Pinned(net_if),
+                            src_port,
+                            src,
+                            dst,
+                            dst_port,
+                            &data,
+                            ttl,
                         )
                     }),
-                    None => stack.send_udp_v6_raw_on_with_ttl(
-                        net_if, src_port, src, dst, dst_port, &data, ttl,
+                    None => stack.send_udp_v6_raw_scoped_with_ttl(
+                        crate::net::types::InterfaceScope::Pinned(net_if),
+                        src_port,
+                        src,
+                        dst,
+                        dst_port,
+                        &data,
+                        ttl,
                     ),
                 };
                 let result = if sent {
@@ -1641,7 +1665,15 @@ impl NetworkEventHandler {
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
                 let s = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let d = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                stack.send_udp_raw_on_with_src_ttl(net_if, s, src_port, d, dst_port, &payload, ttl);
+                stack.send_udp_raw_scoped_with_src_ttl(
+                    crate::net::types::InterfaceScope::Pinned(net_if),
+                    s,
+                    src_port,
+                    d,
+                    dst_port,
+                    &payload,
+                    ttl,
+                );
                 EventHandleResult::Success
             }
             NetworkEvent::NatForwardTcp {
@@ -2527,9 +2559,10 @@ impl NetworkEventHandler {
 
             match stack.resolve_ipv4_egress(scope, None, explicit_src, dst_ip) {
                 Ok((Some(if_id), _, _)) => {
+                    let pinned = crate::net::types::InterfaceScope::Pinned(if_id);
                     if let Some(src_ip) = explicit_src {
-                        stack.send_udp_raw_on_with_src_ttl(
-                            if_id,
+                        stack.send_udp_raw_scoped_with_src_ttl(
+                            pinned,
                             src_ip,
                             local_port,
                             dst_ip,
@@ -2538,7 +2571,13 @@ impl NetworkEventHandler {
                             64,
                         )
                     } else {
-                        stack.send_udp_raw_on(if_id, local_port, dst_ip, remote.port(), &data)
+                        stack.send_udp_raw_scoped(
+                            pinned,
+                            local_port,
+                            dst_ip,
+                            remote.port(),
+                            &data,
+                        )
                     }
                 }
                 Ok((None, _, _)) => {
@@ -2566,8 +2605,8 @@ impl NetworkEventHandler {
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
 
             match stack.resolve_ipv6_egress(scope, None, Some(src_v6), dst_v6) {
-                Ok((Some(if_id), _, _)) => stack.send_udp_v6_raw_on_with_ttl(
-                    if_id,
+                Ok((Some(if_id), _, _)) => stack.send_udp_v6_raw_scoped_with_ttl(
+                    crate::net::types::InterfaceScope::Pinned(if_id),
                     local_port,
                     src_v6,
                     dst_v6,

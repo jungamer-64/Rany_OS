@@ -59,9 +59,6 @@ pub enum PageMetaFlags {
     CompoundTail = 1 << 6,
 }
 
-/// 後方互換性のための型エイリアス
-pub type PageFlags = PageMetaFlags;
-
 impl PageMetaFlags {
     #[inline]
     pub const fn bits(self) -> u8 {

@@ -374,9 +374,6 @@ impl<T> Default for RcuPointer<T> {
 unsafe impl<T: Send + Sync> Send for RcuPointer<T> {}
 unsafe impl<T: Send + Sync> Sync for RcuPointer<T> {}
 
-/// 後方互換エイリアス（旧 RcuPtr → 新 RcuPointer）
-pub type RcuPtr<T> = RcuPointer<T>;
-
 // ============================================================================
 // Per-CPU RCU state (simplified version)
 // ============================================================================

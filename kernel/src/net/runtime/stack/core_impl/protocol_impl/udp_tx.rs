@@ -119,7 +119,13 @@ impl NetworkStack {
         dst_port: u16,
         data: &[u8],
     ) -> bool {
-        self.send_udp_raw_auto_ttl(src_port, dst_ip, dst_port, data, 64)
+        self.send_udp_raw_scoped(
+            crate::net::types::InterfaceScope::Any,
+            src_port,
+            dst_ip,
+            dst_port,
+            data,
+        )
     }
 
     pub fn send_udp_raw_auto_ttl(
@@ -130,8 +136,38 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
+        self.send_udp_raw_scoped_auto_ttl(
+            crate::net::types::InterfaceScope::Any,
+            src_port,
+            dst_ip,
+            dst_port,
+            data,
+            ttl,
+        )
+    }
+
+    pub fn send_udp_raw_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        src_port: u16,
+        dst_ip: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+    ) -> bool {
+        self.send_udp_raw_scoped_auto_ttl(scope, src_port, dst_ip, dst_port, data, 64)
+    }
+
+    pub fn send_udp_raw_scoped_auto_ttl(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        src_port: u16,
+        dst_ip: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
         let Ok((if_id, config, src_ip)) =
-            self.resolve_ipv4_egress(crate::net::types::InterfaceScope::Any, None, None, dst_ip)
+            self.resolve_ipv4_egress(scope, None, None, dst_ip)
         else {
             self.stats.record_dropped();
             return false;
@@ -152,8 +188,29 @@ impl NetworkStack {
         data: &[u8],
         ttl: u8,
     ) -> bool {
-        let Ok((if_id, config, resolved_src)) = self.resolve_ipv4_egress(
+        self.send_udp_raw_scoped_with_src_ttl(
             crate::net::types::InterfaceScope::Any,
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+            data,
+            ttl,
+        )
+    }
+
+    pub fn send_udp_raw_scoped_with_src_ttl(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        src_ip: Ipv4Address,
+        src_port: u16,
+        dst_ip: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+        ttl: u8,
+    ) -> bool {
+        let Ok((if_id, config, resolved_src)) = self.resolve_ipv4_egress(
+            scope,
             None,
             Some(src_ip),
             dst_ip,

@@ -27,7 +27,7 @@ use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
-use core::task::{Context, Poll, Waker};
+use core::task::{Context, Poll};
 
 pub mod context;
 pub mod environ;
@@ -37,7 +37,6 @@ pub mod io;
 pub mod per_core_executor;
 pub mod preemption;
 pub mod timeout;
-pub mod timer;
 mod waker;
 
 #[allow(unused_imports)]
@@ -90,7 +89,13 @@ pub use preemption::{
     yield_point,
     yield_point_with_quota_check,
 };
-pub use timer::{current_tick, sleep_ms};
+#[allow(unused_imports)]
+pub use crate::drivers::time::{
+    PendingTimerWakerStats, current_tick, handle_timer_interrupt, pending_timer_waker_count,
+    pending_waker_stats, process_pending_timer_wakers, sleep_ms,
+};
+#[allow(unused_imports)]
+pub use waker::create_waker;
 
 // Timeout/block_on utilities re-exported from timeout.rs
 #[allow(unused_imports)]
@@ -145,14 +150,6 @@ impl Task {
 
 /// Waker実装用の構造体
 mod raw;
-
-/// Wakerを作成する公開API
-pub fn create_waker(task_id: TaskId) -> Waker {
-    let _ = task_id;
-    // Legacy compatibility wrapper for modules that still ask the task layer to
-    // manufacture a generic TaskId-based waker.
-    crate::task::waker::create_waker(task_id)
-}
 
 /// Spawn a detached task onto the primary phase-2 executor path.
 ///

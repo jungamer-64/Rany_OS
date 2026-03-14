@@ -380,7 +380,7 @@ pub mod tests {
     use super::*;
 
     #[cfg_attr(test, test_case)]
-    pub fn test_socket_state_transitions() {
+    pub fn test_endpoint_state_transitions() {
         let mut inner = EndpointInner::new();
 
         // Created -> Bound

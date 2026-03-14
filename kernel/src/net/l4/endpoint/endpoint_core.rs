@@ -63,12 +63,6 @@ impl Endpoint {
         self.endpoint_type
     }
 
-    /// Backward-compatible alias for legacy tests.
-    #[inline(always)]
-    pub const fn endpoint_type(&self) -> EndpointType {
-        self.socket_type()
-    }
-
     /// 現在の状態取得
     #[inline]
     pub fn state(&self) -> EndpointState {
@@ -630,9 +624,6 @@ impl Clone for Endpoint {
         }
     }
 }
-
-/// Backward-compatible alias used by legacy endpoint tests.
-pub type Socket = Endpoint;
 
 // =====================================================
 // OwnedEndpoint - RAII リソース管理

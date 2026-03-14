@@ -1,10 +1,5 @@
 use super::*;
 
-// ============================================================================
-// 後方互換性のための型エイリアス（内部実装が変わっても外部APIは同じ）
-// ============================================================================
-pub(crate) type SimpleFreeListHeap = SegregatedFreeListHeap;
-
 /// 拡張ヒープ統計情報
 #[derive(Debug, Clone, Copy)]
 pub struct ExtendedHeapStats {
@@ -18,28 +13,17 @@ pub struct ExtendedHeapStats {
     pub non_empty_classes: u32,
 }
 
-// ============================================================================
-// 旧API互換のSimpleFreeListHeap実装（削除済み、上記で置換）
-// ============================================================================
-
-impl SegregatedFreeListHeap {
-    /// 旧API互換: allocate_first_fit
-    pub(super) fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
-        self.allocate(layout)
-    }
-}
-
 /// Exchange Heap: ドメイン間でゼロコピー通信するためのヒープ
 /// プライベートヒープとは別に管理される
 pub struct ExchangeHeap {
-    heap: PoisonLock<SimpleFreeListHeap>,
+    heap: PoisonLock<SegregatedFreeListHeap>,
 }
 
 impl ExchangeHeap {
     /// 新しいExchange Heapを作成（未初期化）
     pub const fn new() -> Self {
         Self {
-            heap: PoisonLock::new(SimpleFreeListHeap::empty()),
+            heap: PoisonLock::new(SegregatedFreeListHeap::empty()),
         }
     }
 
@@ -98,7 +82,7 @@ impl ExchangeHeap {
 
         // Slow path: global heap
         match self.heap.lock() {
-            Ok(mut guard) => guard.allocate_first_fit(layout).ok(),
+            Ok(mut guard) => guard.allocate(layout).ok(),
             Err(_) => {
                 log::error!("[MEM] Exchange Heap poisoned - allocation failed");
                 None

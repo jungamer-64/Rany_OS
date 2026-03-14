@@ -14,7 +14,6 @@ mod debug;
 mod domain;
 mod domain_system;
 mod durability;
-mod epoch;
 mod error;
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 mod fs;

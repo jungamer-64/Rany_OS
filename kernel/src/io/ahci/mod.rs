@@ -85,7 +85,7 @@ pub use types::{
 // Re-export types from local modules
 pub use controller::AhciController;
 pub use dma_buffer::{AhciDmaReadBuffer, AhciDmaWriteBuffer, AhciIdentifyBuffer};
-pub use poll_handler::{AhciPollHandler, register_ahci_with_io_scheduler};
+pub use poll_handler::AhciPollHandler;
 pub use port::AhciPort;
 
 pub fn init_from_pci(

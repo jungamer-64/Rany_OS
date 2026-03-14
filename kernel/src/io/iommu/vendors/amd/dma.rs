@@ -36,7 +36,7 @@ impl AmdIommuDriver {
 
     /// Allocate an IOVA address
     ///
-    /// The IovaAllocatorFast is lock-free internally with per-CPU magazine caching.
+    /// The IovaAllocator is lock-free internally with per-CPU magazine caching.
     pub(super) fn allocate_iova(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
         let iova = match mask {
             Some(limit) => {
@@ -50,7 +50,7 @@ impl AmdIommuDriver {
 
     /// Fast path IOVA allocation (4KB pages)
     ///
-    /// IovaAllocatorFast already provides O(1) allocation with per-CPU magazine,
+    /// IovaAllocator already provides O(1) allocation with per-CPU magazine,
     /// so this just delegates to allocate_iova.
     pub(super) fn allocate_iova_fast(
         &self,
@@ -67,7 +67,7 @@ impl AmdIommuDriver {
 
     /// Fast path IOVA free (4KB pages)
     ///
-    /// IovaAllocatorFast already provides O(1) free with per-CPU magazine,
+    /// IovaAllocator already provides O(1) free with per-CPU magazine,
     /// so this just delegates to free_iova.
     pub(super) fn free_iova_fast(&self, iova: u64, size: u64) -> Result<(), IommuError> {
         self.free_iova(iova, size)
