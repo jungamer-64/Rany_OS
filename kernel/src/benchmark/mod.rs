@@ -15,8 +15,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-// TSC計測は diag モジュールの正規実装を使用（重複排除）
-use crate::diag::{rdtsc, rdtscp};
+// TSC計測は time/diag の正規実装を使用（重複排除）
+use crate::diag::rdtscp;
+use crate::time::rdtsc;
 
 /// Benchmark result
 #[derive(Debug, Clone)]

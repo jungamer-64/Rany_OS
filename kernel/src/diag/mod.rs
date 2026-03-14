@@ -24,6 +24,7 @@
 #![allow(dead_code)]
 
 use crate::sync::PoisonLock;
+use crate::time::rdtsc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;

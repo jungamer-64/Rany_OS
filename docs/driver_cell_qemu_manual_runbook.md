@@ -42,7 +42,7 @@ Shell mode selection via cmdline:
 
 Notes:
 - Canonical key is `shell=console|serial|both|off`.
-- `console=serial|both` is still accepted as a compatibility fallback.
+- Shell launch mode is configured with `shell=console|serial|both|off`.
 
 Confirm startup logs mention:
 

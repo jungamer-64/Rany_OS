@@ -297,3 +297,16 @@ pub fn register_ahci_with(
     let ahci_ops = Arc::new(AhciOps::new(controller.clone(), port_number, Some(handler)));
     scheduler.register_device_ops(device_id, ahci_ops);
 }
+
+/// AHCI を IoScheduler に登録（グローバルランタイム使用の便利ヘルパー）
+pub fn register_ahci_with_io_scheduler(
+    controller: Arc<PoisonLock<AhciController>>,
+    port_number: u8,
+) {
+    register_ahci_with(
+        &crate::io::io_scheduler::io_scheduler(),
+        &crate::io::io_scheduler::hybrid_coordinator(),
+        controller,
+        port_number,
+    );
+}

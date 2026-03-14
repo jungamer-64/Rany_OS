@@ -43,7 +43,6 @@ pub fn shell_launch_mode_from_boot_policy(policy: &BootPolicy) -> ShellLaunchMod
 ///
 /// Priority:
 /// 1. `shell=...` (canonical)
-/// 2. `console=serial|both` (compat fallback)
 pub fn parse_shell_launch_mode(cmdline: Option<&str>) -> ShellLaunchMode {
     let Some(cmdline) = cmdline else {
         return ShellLaunchMode::default();
@@ -55,14 +54,6 @@ pub fn parse_shell_launch_mode(cmdline: Option<&str>) -> ShellLaunchMode {
             "serial" => ShellLaunchMode::Serial,
             "both" => ShellLaunchMode::Both,
             "off" => ShellLaunchMode::Off,
-            _ => ShellLaunchMode::default(),
-        };
-    }
-
-    if let Some(console) = util::get_cmdline_option(cmdline, "console") {
-        return match console {
-            "serial" => ShellLaunchMode::Serial,
-            "both" => ShellLaunchMode::Both,
             _ => ShellLaunchMode::default(),
         };
     }
@@ -227,14 +218,14 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn parse_shell_mode_uses_console_key_as_compat_fallback() {
+    fn parse_shell_mode_ignores_legacy_console_key() {
         assert_eq!(
             parse_shell_launch_mode(Some("console=serial")),
-            ShellLaunchMode::Serial
+            ShellLaunchMode::Console
         );
         assert_eq!(
             parse_shell_launch_mode(Some("console=both")),
-            ShellLaunchMode::Both
+            ShellLaunchMode::Console
         );
     }
 
