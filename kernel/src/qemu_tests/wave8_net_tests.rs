@@ -1,7 +1,5 @@
 use super::*;
 
-mod iommu_wave2_tests;
-pub use iommu_wave2_tests::*;
 mod net_endpoint_tests;
 pub use net_endpoint_tests::*;
 mod net_peripheral_tests;
@@ -509,60 +507,4 @@ pub fn iommu_cmdqueue_fuel_shim_basic_smoke() -> bool {
 
 pub fn iommu_cmdqueue_metrics_counts_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave3::cmdqueue_metrics_counts_smoke()
-}
-
-pub fn iommu_wave2_device_id_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_device_id_smoke()
-}
-
-pub fn iommu_wave2_sl_pte_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_sl_pte_smoke()
-}
-
-pub fn iommu_wave2_iommu_domain_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_iommu_domain_smoke()
-}
-
-pub fn iommu_wave2_map_rollback_hidden_mapping_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_map_rollback_hidden_mapping_smoke()
-}
-
-pub fn iommu_wave2_map_rollback_hidden_mapping_amd_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_map_rollback_hidden_mapping_amd_smoke()
-}
-
-pub fn iommu_wave2_map_rollback_superpage_2mb_collision_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_map_rollback_superpage_2mb_collision_smoke()
-}
-
-pub fn iommu_wave2_create_domain_with_numa_hint_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_create_domain_with_numa_hint_smoke()
-}
-
-pub fn iommu_wave2_iova_allocator_basic_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_iova_allocator_basic_smoke()
-}
-
-pub fn iommu_wave2_domain_iova_alloc_non_identity_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_domain_iova_alloc_non_identity_smoke()
-}
-
-pub fn iommu_wave2_unmap_reclaims_empty_tables_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_unmap_reclaims_empty_tables_smoke()
-}
-
-pub fn iommu_wave2_unmap_partial_keeps_tables_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_unmap_partial_keeps_tables_smoke()
-}
-
-pub fn iommu_wave2_unmap_mixed_superpages_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_unmap_mixed_superpages_smoke()
-}
-
-pub fn iommu_wave2_page_table_scope_commit_preserves_counts_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_page_table_scope_commit_preserves_counts_smoke()
-}
-
-pub fn iommu_wave2_page_table_scope_drop_rolls_back_parent_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave2::wave2_page_table_scope_drop_rolls_back_parent_smoke()
 }

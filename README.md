@@ -258,7 +258,7 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 * `qemu-tests` 実行時のログは `target/qemu-logs/` に出力されます（serial / QEMU stderr）。
 * `fullboot_pr_required` の対象プロファイルは `boot-smoke`, `storage`, `driver_domain`, `iommu`, `network` です。
 * IOMMU residual canonical: `none`
-* 旧 `iommu_wave2_*` residual 名は compat alias として残置（required の正規導線は `iommu_wave5_*`）
+* 旧 `iommu_wave2_*` residual alias は削除済み。IOMMU の full-boot 検証は `iommu` profile と canonical な `test_iommu()` / `crate::io::iommu::qemu_tests::*` 導線に集約されています。
 * IOMMU wave3 residual monitored smoke（required 未投入）: `none`
 * AMD-Vi Wave0 required 実行対象（6件）: `alias_devids_for_device_dedup`, `alias_devids_for_device_no_match`, `ivhd_flags_for_device_combined`, `ivhd_flags_for_device_acpi_hid`, `map_ivmd_ranges_exclusion_splits`, `map_for_device_rejects_exclusion_range`
 * AMD-Vi Wave1 required 実行対象（5件）: `cmdqueue_map_unmap_with_domain`, `map_device_nonblocking`, `dma_mask_respects_32bit_limit`, `security_notifier_dispatch`, `cmdqueue_pressure`

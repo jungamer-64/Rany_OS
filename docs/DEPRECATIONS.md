@@ -156,6 +156,10 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `TASK_STORE` (legacy global task store) ❌ **removed**
     - Migration: Per-core task stores (`PER_CORE_STORES`) are used exclusively; all legacy TASK_STORE references have been cleaned up.
 
+- `kernel/src/qemu_tests/wave8_net_tests.rs`
+  - IOMMU compatibility exports (`iommu_wave2_*`, `iommu_wave5_*`, `iommu_amd_wave*`) ❌ **removed**
+    - Migration: Use the canonical IOMMU full-boot suite via `crate::test::integration::test_iommu()` or call the underlying testkit entry points in `crate::io::iommu::qemu_tests::{wave2, wave3, group_tests, amd}` directly when extending coverage.
+
 ## Drivers
 
 - `drivers/pci` (`drivers/pci/src/lib.rs`)
