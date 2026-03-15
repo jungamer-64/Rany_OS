@@ -14,8 +14,9 @@ categories.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-# No standard library dependencies, keep it no_std
-x86_64 = "0.15"
+# No standard library dependencies, keep it no_std.
+# Only port-I/O helpers are needed here; avoid x86_64's nightly default feature set.
+x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 
 [features]
 default = []

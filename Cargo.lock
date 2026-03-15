@@ -532,7 +532,6 @@ dependencies = [
  "kernel_api",
  "log",
  "spin",
- "x86_64",
 ]
 
 [[package]]
@@ -692,7 +691,6 @@ dependencies = [
  "hal",
  "log",
  "spin",
- "x86_64",
 ]
 
 [[package]]

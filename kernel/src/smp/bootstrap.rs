@@ -15,9 +15,10 @@ use alloc::vec::Vec;
 use ap_trampoline::{
     ApBootFlags, ApTrampolineMailbox, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE,
 };
-use apic_driver::LocklessLocalApic;
 use boot_proto::ExoBootInfo;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
+
+use crate::drivers::apic::LocklessLocalApic;
 
 static AP_BOOT_PROBE: u8 = 0x5A;
 const PAGE_SIZE: u64 = 4096;

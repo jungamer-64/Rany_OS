@@ -47,6 +47,9 @@ DEPLOY_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/cells"
 CELL_PROBE_MANIFEST="$ROOT_DIR/tools/driver_cell_probe/Cargo.toml"
 DRIVER_PACK_BUILDER_MANIFEST="$ROOT_DIR/tools/driver_pack_builder/Cargo.toml"
 
+source "$ROOT_DIR/scripts/lib_host_toolchain.sh"
+configure_host_linker_env
+
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
         echo "required command not found: $1" >&2

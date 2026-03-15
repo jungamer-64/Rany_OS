@@ -1,7 +1,7 @@
 use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use hid_driver::keyboard::KeyEventExt;
 
+use crate::drivers::hid::keyboard::KeyEventExt;
 use crate::io::hid::keyboard::{self, KeyCode, KeyEvent, KeyState};
 
 const TTY_RX_CAPACITY: usize = 4096;

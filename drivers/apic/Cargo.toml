@@ -11,7 +11,7 @@ categories.workspace = true
 description = "APIC interrupt controller driver for RanyOS"
 
 [dependencies]
-x86_64 = "0.15"
+x86_64 = { version = "0.15", default-features = false, features = ["instructions"] }
 bitflags = "2.4"
 spin = "0.10"
 log = "0.4"

@@ -44,6 +44,9 @@ PROBE_CELLS_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/cells"
 STANDALONE_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/standalone_drivers"
 BOOT_ARTIFACTS_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/boot_artifacts"
 
+source "$ROOT_DIR/scripts/lib_host_toolchain.sh"
+configure_host_linker_env
+
 (cd "$ROOT_DIR" && bash scripts/build_driver_cell_probe_fixtures.sh --profile "$PROFILE")
 (cd "$ROOT_DIR" && bash scripts/build_standalone_driver_packs.sh --profile "$PROFILE")
 

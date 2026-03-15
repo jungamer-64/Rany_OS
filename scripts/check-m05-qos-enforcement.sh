@@ -42,10 +42,10 @@ if [[ "$future_hits" -ne 0 ]]; then
 fi
 
 echo "[M05-GUARD] Checking consume_cpu_time wiring..."
-executor_hits=$(search_count "consume_cpu_time\(" kernel/src/task/executor.rs)
+preemption_hits=$(search_count "consume_cpu_time\(" kernel/src/task/preemption.rs)
 percore_hits=$(search_count "consume_cpu_time\(" kernel/src/task/per_core_executor.rs)
-if [[ "$executor_hits" -eq 0 || "$percore_hits" -eq 0 ]]; then
-  echo "[M05-GUARD] FAIL: consume_cpu_time wiring missing (executor=$executor_hits per_core=$percore_hits)"
+if [[ "$preemption_hits" -eq 0 || "$percore_hits" -eq 0 ]]; then
+  echo "[M05-GUARD] FAIL: consume_cpu_time wiring missing (preemption=$preemption_hits per_core=$percore_hits)"
   fail=1
 fi
 

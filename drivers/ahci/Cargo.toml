@@ -20,7 +20,7 @@ path = "src/lib.rs"
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
 spin = "0.10"
-x86_64 = "0.15"
+x86_64 = { version = "0.15", default-features = false }
 exorust_sync = { path = "../../libs/sync" }
 
 [features]

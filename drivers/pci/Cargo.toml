@@ -18,9 +18,6 @@ path = "src/lib.rs"
 spin = "0.10"
 exorust_sync = { path = "../../libs/sync" }
 
-# x86_64 port I/O
-x86_64 = "0.15"
-
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 

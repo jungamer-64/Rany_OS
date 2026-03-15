@@ -240,7 +240,7 @@ impl GuiServices for ExoKernel {
     }
 
     fn poll_input_event(&self) -> Option<kernel_api::service::gui::InputEvent> {
-        use hid_driver::keyboard::KeyEventExt;
+        use crate::drivers::hid::keyboard::KeyEventExt;
         use kernel_api::service::gui::{
             InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState,
         };

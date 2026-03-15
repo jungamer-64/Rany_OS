@@ -10,8 +10,8 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use core::fmt::Write;
-use hid_driver::keyboard::KeyEventExt;
 
+use crate::drivers::hid::keyboard::KeyEventExt;
 use crate::io::hid::keyboard::{self, KeyCode, KeyState, KeyboardStream};
 use crate::shell::exoshell::display;
 use crate::shell::exoshell::error::ExoResult;

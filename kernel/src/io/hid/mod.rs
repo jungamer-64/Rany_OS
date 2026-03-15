@@ -37,6 +37,7 @@ pub use keyboard::{
     // Core types
     KeyCode,
     KeyEvent,
+    KeyEventExt,
     // Async futures
     KeyEventFuture,
     KeyState,

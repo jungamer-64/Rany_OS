@@ -83,6 +83,30 @@ required_boot_artifact_entries=(
   'cells/driver_cell_probe_v2.cell'
 )
 
+boot_artifacts_complete() {
+  [[ -d "$boot_artifacts_root" ]] || return 1
+
+  for entry in "${required_boot_artifact_entries[@]}"; do
+    [[ -f "$boot_artifacts_root/$entry" ]] || return 1
+  done
+
+  find "$boot_artifacts_root/drivers" -maxdepth 1 -type f | grep -Eq '/mlx5_driver_[0-9a-f]+\.cell$'
+}
+
+ensure_release_boot_artifacts() {
+  if boot_artifacts_complete; then
+    return 0
+  fi
+
+  echo "[check-kernel-api-surface] release boot artifacts missing or incomplete; building them now..." >&2
+  if ! bash scripts/build_runtime_boot_artifacts.sh --profile release; then
+    echo "ERROR: failed to build release runtime boot artifacts" >&2
+    exit 1
+  fi
+}
+
+ensure_release_boot_artifacts
+
 if [[ ! -d "$boot_artifacts_root" ]]; then
   echo "missing runtime boot artifacts: $boot_artifacts_root" >&2
   status=1

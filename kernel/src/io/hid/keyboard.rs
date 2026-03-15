@@ -41,6 +41,7 @@
 
 // Core types
 pub use hid_driver::{KeyCode, KeyEvent, KeyState, Modifiers};
+pub use hid_driver::keyboard::KeyEventExt;
 
 // Driver
 pub use hid_driver::KeyboardDriver;

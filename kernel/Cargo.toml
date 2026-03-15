@@ -62,7 +62,8 @@ hal = { path = "../hal" }
 security = { path = "../libs/security" }
 
 # x86_64アーキテクチャサポート
-x86_64 = "0.15"
+# The kernel owns interrupt ABI usage; keep the required feature set explicit.
+x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
 
 # スピンロック（no_std互換）
 spin = "0.10"

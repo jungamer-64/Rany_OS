@@ -100,7 +100,7 @@ pub fn init(tick_frequency: u64) {
     // RTCから現在時刻を読み取り
     let datetime = RTC.read_datetime();
     let boot_time = datetime.to_unix_timestamp_safe().unwrap_or(0);
-    let time_service = time_driver::time_service();
+    let time_service = crate::drivers::time::service();
     let current_ms = time_service.unix_timestamp_ms();
     let target_ms = boot_time.saturating_mul(1000);
     let delta_ms = target_ms as i128 - current_ms as i128;

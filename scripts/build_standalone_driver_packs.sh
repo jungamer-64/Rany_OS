@@ -42,10 +42,14 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CELL_TARGET_SPEC="$ROOT_DIR/x86_64-exorust-cell.json"
 CELL_TARGET_DIR_NAME="x86_64-exorust-cell"
-BUILD_PROFILE_DIR="$ROOT_DIR/target/$CELL_TARGET_DIR_NAME/$PROFILE"
 DEPLOY_DIR="$ROOT_DIR/target/x86_64-exorust/$PROFILE/standalone_drivers"
 WRAPPER_MANIFEST="$ROOT_DIR/tools/standalone_driver_wrapper/Cargo.toml"
 DRIVER_PACK_BUILDER_MANIFEST="$ROOT_DIR/tools/driver_pack_builder/Cargo.toml"
+STANDALONE_BUILD_TARGET_DIR="$ROOT_DIR/target/standalone_driver_build"
+BUILD_PROFILE_DIR="$STANDALONE_BUILD_TARGET_DIR/$CELL_TARGET_DIR_NAME/$PROFILE"
+
+source "$ROOT_DIR/scripts/lib_host_toolchain.sh"
+configure_host_linker_env
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -92,7 +96,9 @@ build_wrapper_cell() {
         -Zbuild-std=core,alloc
         -Zbuild-std-features=compiler-builtins-mem
         --manifest-path "$WRAPPER_MANIFEST"
-        --target-dir "$ROOT_DIR/target"
+        # Keep host proc-macro/build-script artifacts isolated from other builds so
+        # stale linker outputs do not poison standalone cell packaging.
+        --target-dir "$STANDALONE_BUILD_TARGET_DIR"
         -Zjson-target-spec
         --target "$CELL_TARGET_SPEC"
         --no-default-features
