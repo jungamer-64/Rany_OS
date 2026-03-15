@@ -121,11 +121,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     // DNS 初期化
     crate::net::services::dns::init(1000);
     if !dns_servers.is_empty() {
-        if let Ok(guard) = crate::net::services::dns::client().lock() {
-            if let Some(ref client) = *guard {
-                client.set_ipv4_servers(dns_servers);
-            }
-        }
+        crate::net::services::dns::set_ipv4_servers(dns_servers);
     }
 
     // DHCPv4 itself is now driven by the per-interface runtime registry.
@@ -175,18 +171,8 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
 
     // Spawn DNS client task
     crate::task::spawn_task(crate::task::Task::new(async move {
-        let client_ref: Option<&'static crate::net::services::dns::DnsClient> = {
-            let guard = match crate::net::services::dns::client().lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            guard.as_ref().map(|c| {
-                // SAFETY: DNS クライアントはカーネル静的変数で init() 後は
-                // Some のまま変更されず、カーネル寿命と同等に存続する。
-                unsafe { &*(c as *const crate::net::services::dns::DnsClient) }
-            })
-        }; // guard ドロップ → ロック解放
-        if let Some(client) = client_ref {
+        let client = crate::net::services::dns::cloned_client();
+        if let Some(client) = client {
             let _ = client.run().await;
         }
     }));

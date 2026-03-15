@@ -2,8 +2,6 @@
 // kernel/src/memory/oom_killer.rs - OOM Killer for Memory Exhaustion Handling
 // ============================================================================
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
@@ -30,16 +28,6 @@ pub enum DomainPriority {
     Normal,
     High,
     Critical,
-}
-
-/// ドメインメモリ情報（互換API）
-#[derive(Debug, Clone)]
-pub struct DomainMemoryInfo {
-    pub domain_id: u64,
-    pub name: String,
-    pub priority: DomainPriority,
-    pub memory_usage: u64,
-    pub last_activity: u64,
 }
 
 /// OOM統計情報
@@ -140,30 +128,6 @@ impl OomKiller {
             in_progress: self.in_progress.load(Ordering::Relaxed),
         }
     }
-
-    fn list_domains(&self) -> Vec<DomainMemoryInfo> {
-        #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-        {
-            let mut result = Vec::new();
-            for snapshot in crate::domain_system::list_domain_snapshots() {
-                if let Some(stats) = quota_manager().get_stats(snapshot.id) {
-                    result.push(DomainMemoryInfo {
-                        domain_id: snapshot.id.as_u64(),
-                        name: snapshot.name,
-                        priority: stats.priority,
-                        memory_usage: stats.memory_used,
-                        last_activity: snapshot.created_at,
-                    });
-                }
-            }
-            return result;
-        }
-
-        #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-        {
-            Vec::new()
-        }
-    }
 }
 
 // ============================================================================
@@ -180,10 +144,6 @@ pub fn try_free_memory() -> bool {
 
 pub fn stats() -> OomStats {
     OOM_KILLER.stats()
-}
-
-pub fn list_domains() -> Vec<DomainMemoryInfo> {
-    OOM_KILLER.list_domains()
 }
 
 #[cfg(all(test, any(feature = "full_mm_tests", feature = "qemu-test-export")))]

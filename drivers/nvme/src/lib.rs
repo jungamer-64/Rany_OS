@@ -17,7 +17,7 @@
 //! ## Kernel-Dependent (excluded)
 //! ## Kernel-Dependent (excluded)
 //! - `polling_driver`
-//! - `async_io`, `global`, `scheduler`, `driver`
+//! - `async_io`, `global`, `scheduler`
 
 #![no_std]
 #![allow(dead_code)]
@@ -51,7 +51,6 @@ pub mod requests;
 pub mod sync;
 
 // pub mod scheduler; // Requires kernel io_scheduler - stays local to kernel
-// pub mod driver; // Re-exports only - stays local to kernel
 
 // Re-exports
 pub use defs::{

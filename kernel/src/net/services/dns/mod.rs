@@ -370,14 +370,12 @@ impl DnsStats {
 }
 
 pub(crate) struct DnsRuntimeState {
-    legacy_client: PoisonLock<Option<DnsClient>>,
     shared_client: PoisonLock<Option<Arc<DnsClient>>>,
 }
 
 impl DnsRuntimeState {
     pub const fn new() -> Self {
         Self {
-            legacy_client: PoisonLock::new(None),
             shared_client: PoisonLock::new(None),
         }
     }
@@ -387,30 +385,28 @@ pub(crate) fn runtime_state() -> &'static DnsRuntimeState {
     &default_runtime_context().dns
 }
 
-pub(crate) fn legacy_client_lock() -> &'static PoisonLock<Option<DnsClient>> {
-    &runtime_state().legacy_client
-}
-
 pub(crate) fn shared_client_lock() -> &'static PoisonLock<Option<Arc<DnsClient>>> {
     &runtime_state().shared_client
 }
 
+pub(crate) fn cloned_client() -> Option<Arc<DnsClient>> {
+    shared_client_lock()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().cloned())
+}
+
 /// DNSクライアントを初期化
 pub fn init(tick_rate: u64) {
-    let client = DnsClient::new(tick_rate);
-    if let Ok(mut guard) = legacy_client_lock().lock() {
+    let client = Arc::new(DnsClient::new(tick_rate));
+    if let Ok(mut guard) = shared_client_lock().lock() {
         *guard = Some(client);
     }
 }
 
-/// DNSクライアントを取得
-pub fn client() -> &'static PoisonLock<Option<DnsClient>> {
-    legacy_client_lock()
-}
-
 /// DNSキャッシュをクリーンアップ (periodic maintenance)
 pub fn cleanup_cache(current_tick: u64) {
-    if let Ok(guard) = legacy_client_lock().lock() {
+    if let Ok(guard) = shared_client_lock().lock() {
         if let Some(ref client) = *guard {
             if let Ok(mut cache) = client.cache.lock() {
                 cache.cleanup(current_tick);

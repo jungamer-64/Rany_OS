@@ -151,6 +151,16 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `kernel/src/memory/oom_killer.rs`
   - `register_domain()`, `unregister_domain()`, `update_memory_usage()`, `register_simple()` ❌ **removed** (were deprecated stubs)
     - Migration: Use `crate::domain::quota::quota_manager()` directly. The quota manager is the authoritative source for domain memory tracking.
+  - `DomainMemoryInfo` / `list_domains()` ❌ **removed**
+    - Migration: Use `crate::domain_system::list_domain_snapshots()` plus `crate::domain::quota::quota_manager().get_stats(...)` when you need per-domain memory data.
+
+- `kernel/src/net/services/dns/mod.rs`
+  - `client()` ❌ **removed**
+    - Migration: Use high-level DNS helpers such as `init()`, `set_ipv4_servers()`, `set_ipv6_servers()`, `resolve_ipv4()`, `build_tcp_query()`, and `cleanup_cache()` instead of locking the singleton directly.
+
+- `kernel/src/io/iommu/runtime/command/queue.rs`
+  - `CommandQueue::submit_sync()` ❌ **removed**
+    - Migration: Use `submit(kind)?.wait_blocking()` for simple blocking callers, or `submit_sync_with_worker()` when the current thread must also drive queue progress.
 
 - `interfaces/kernel_api/src/services.rs`
   - `KernelServices::fs_open()` ❌ **removed**
@@ -189,6 +199,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Read the public fields directly (`event.modifiers`, `event.modifiers.shift`, など) instead of compatibility getters.
 
 - `drivers/nvme` (`drivers/nvme/src/driver.rs`)
+  - `nvme_driver::driver` compatibility module ❌ **removed**
+    - Migration: Import concrete modules directly (`nvme_driver::queue`, `nvme_driver::polling_driver`, `nvme_driver::async_io`, `nvme_driver::global`, `nvme_driver::commands`).
   - Re-exported convenience APIs (e.g., `queue::CompletionQueue`, `QueuePair`, `SubmissionQueue`, `per_core::NvmeQueueStats`, `per_core::PerCoreNvmeQueue`, `polling_driver::NvmeDriverStats`, `NvmePollingDriver`, `async_io::{async_read, async_write, ReadFuture, WriteFuture}`, `error::NvmeError`, `global::{get_stats, init, poll, poll_batch}`, `scheduler::{register_with_io_scheduler, NvmePollHandler}`, `commands::{NvmeCommand, NvmeCompletion}`) ❌ **removed**
     - Migration: Import the specific types from `nvme_driver` module paths directly (for example, `nvme_driver::queue::CompletionQueue`, `nvme_driver::async_io::ReadFuture`, `nvme_driver::global::init`). These re-exports are removed as of 2026-01-17; update any usage to import from `nvme_driver` directly.
 
@@ -208,6 +220,10 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `KernelServices::nvme_open_direct()` — `nvme_open_direct_with_token(device_id, start_block, block_count, None)` に移行
 - `drivers::hid::KeyEvent` compatibility getters — public fields / `Modifiers` fields に移行
 - `fat32::AsyncMutex::lock()` — `blocking_lock()` / `lock_async()` に移行
+- `nvme_driver::driver` compatibility module — concrete NVMe submodules に移行
+- `memory::oom_killer::{DomainMemoryInfo, list_domains}` — `domain_system` + `quota_manager()` に移行
+- `net::services::dns::client()` — high-level DNS helpers / shared Arc-backed runtime access に移行
+- `iommu::runtime::command::CommandQueue::submit_sync()` — `submit(...).wait_blocking()` / `submit_sync_with_worker()` に移行
 
 ## 2026-03-04 更新サマリー
 

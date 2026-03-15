@@ -20,7 +20,6 @@
 //! - `async_io`: 非同期I/Oサポート
 //! - `global`: グローバルインスタンス
 //! - `scheduler`: IoScheduler統合
-//! - `driver`: 後方互換性のための再エクスポート
 
 #![allow(dead_code)]
 
@@ -33,7 +32,6 @@ pub mod regs;
 
 // New split modules
 pub mod async_io;
-pub mod driver;
 pub mod error;
 pub mod global;
 pub mod per_core;

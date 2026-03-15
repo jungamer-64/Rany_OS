@@ -6,7 +6,7 @@
 // Command Queue for IOMMU - initial implementation
 // - Per-controller MPSC queue using existing BoundedChannel
 // - Preallocated completion slots (no per-command heap allocations)
-// - submit_sync() API that blocks by using backoff spin until completion
+// - `submit()` + `CommandCompletion::wait_blocking()` for blocking callers
 // - process_once() worker to be called periodically by the Executor
 
 use crate::sync::PoisonLock;
@@ -223,7 +223,7 @@ pub struct CommandCompletion {
 }
 
 impl CommandCompletion {
-    /// Blocking wait until command completes (legacy blocking shim)
+    /// Blocking wait until command completes.
     pub fn wait_blocking(&self) -> i32 {
         let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
         let mut backoff = Backoff::new();
@@ -590,16 +590,6 @@ impl CommandQueue {
     /// Async submit (non-busy): returns a Future that waits for slot & channel space
     pub fn submit_async(&self, kind: IommuCommandKind) -> SubmitFuture {
         SubmitFuture::new(self as *const CommandQueue, kind)
-    }
-
-    /// Synchronous submit (blocking shim) preserved for compatibility
-    pub fn submit_sync(&self, kind: IommuCommandKind) -> Result<(), ()> {
-        if self.is_poisoned() {
-            return Err(());
-        }
-        let comp = self.submit(kind)?;
-        let rc = comp.wait_blocking();
-        if rc == RESULT_OK { Ok(()) } else { Err(()) }
     }
 
     /// Synchronous submit with polling worker implementation to prevent deadlocks
@@ -1148,8 +1138,11 @@ mod tests {
 
         // Submit a simple command and wait for completion
         let kind = IommuCommandKind::InvalidateIotlbDomain { domain: 1 };
-        let res = q.submit_sync(kind);
-        assert!(res.is_ok());
+        let res = q
+            .submit(kind)
+            .map(|comp| comp.wait_blocking())
+            .map(|rc| rc == RESULT_OK);
+        assert_eq!(res, Ok(true));
 
         worker.join().expect("worker join failed");
     }
@@ -1213,7 +1206,11 @@ mod tests {
             write: true,
         };
 
-        assert!(q.submit_sync(map_cmd).is_ok());
+        let map_res = q
+            .submit(map_cmd)
+            .map(|comp| comp.wait_blocking())
+            .map(|rc| rc == RESULT_OK);
+        assert_eq!(map_res, Ok(true));
 
         // Submit UnmapRegion command
         let unmap_cmd = IommuCommandKind::UnmapRegion {
@@ -1221,7 +1218,11 @@ mod tests {
             iova: 0x1000,
             size: 0x1000,
         };
-        assert!(q.submit_sync(unmap_cmd).is_ok());
+        let unmap_res = q
+            .submit(unmap_cmd)
+            .map(|comp| comp.wait_blocking())
+            .map(|rc| rc == RESULT_OK);
+        assert_eq!(unmap_res, Ok(true));
 
         worker.join().expect("worker join failed");
     }

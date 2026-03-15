@@ -964,7 +964,11 @@ fn test_cmdqueue_map_unmap_with_domain() {
         read: true,
         write: true,
     };
-    assert!(cq.submit_sync(map_cmd).is_ok());
+    let map_res = cq
+        .submit(map_cmd)
+        .map(|comp| comp.wait_blocking())
+        .map(|rc| rc == 0);
+    assert_eq!(map_res, Ok(true));
 
     // Confirm mapping exists
     let domain_arc = ctrl.domain(domain_id).expect("domain not found");
@@ -976,7 +980,11 @@ fn test_cmdqueue_map_unmap_with_domain() {
         iova: 0x1000,
         size: 0x1000,
     };
-    assert!(cq.submit_sync(unmap_cmd).is_ok());
+    let unmap_res = cq
+        .submit(unmap_cmd)
+        .map(|comp| comp.wait_blocking())
+        .map(|rc| rc == 0);
+    assert_eq!(unmap_res, Ok(true));
 
     worker.join().expect("worker join failed");
 
