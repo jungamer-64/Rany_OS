@@ -511,10 +511,15 @@ unsafe fn write_fsbase_any(value: u64) {
 }
 
 fn record_tls_template(tls_template: Option<&TlsInfo>) {
-    let mut guard = TLS_TEMPLATE_INFO.lock_for_init("[PCPU] record_tls_template");
-    *guard = tls_template
+    let Some(tls_template) = tls_template
         .copied()
-        .filter(|info| info.start_addr != 0 && info.mem_size != 0);
+        .filter(|info| info.start_addr != 0 && info.mem_size != 0)
+    else {
+        return;
+    };
+
+    let mut guard = TLS_TEMPLATE_INFO.lock_for_init("[PCPU] record_tls_template");
+    *guard = Some(tls_template);
 }
 
 fn tls_template() -> Option<TlsInfo> {
@@ -680,20 +685,11 @@ pub unsafe fn check_fsgsbase_support() -> bool {
     (ebx_result & 1) != 0
 }
 
-/// Per-CPUシステムを初期化
+/// Install the BSP hot/cold slot and GSBase as early as possible.
 ///
-/// # Safety
-/// - カーネル初期化時に一度だけ呼ばれる必要がある
-/// - BSP（ブートストラッププロセッサ）から呼ぶ
-///
-/// # 初期化順序
-/// 1. FSGSBASEを有効化（サポートされている場合）
-/// 2. BSPのGsBaseを先に設定（current_cpu_id()が使えるように）
-/// 3. 各CPUのデータを初期化
-///
-/// これにより、初期化中でも `current_cpu_id()` や `try_current_cpu_id()` を
-/// 安全に呼び出すことができる。
-pub unsafe fn init_bsp_per_cpu(tls_template: Option<&TlsInfo>) {
+/// This stage must remain allocation-free so it can run before the heap and
+/// TLS template are available. It is safe to call multiple times.
+pub unsafe fn bootstrap_bsp_per_cpu_early() {
     INITIALIZED.call_once(|| {
         // 1. FSGSBASEを有効化（サポートされている場合のみ）
         #[cfg(not(feature = "qemu-test-export"))]
@@ -722,12 +718,43 @@ pub unsafe fn init_bsp_per_cpu(tls_template: Option<&TlsInfo>) {
             }
 
             BSP_GSBASE_SET.store(true, Ordering::Release);
-            record_tls_template(tls_template);
-            install_tls_for_cpu(0);
         }
 
-        *PREPARED_CPUS.lock().expect("lock poisoned") = 1;
+        *PREPARED_CPUS.lock_for_init("[PCPU] bootstrap_bsp_per_cpu_early") = 1;
     });
+}
+
+/// Complete BSP TLS installation once heap-backed allocation is safe.
+///
+/// This stage may be invoked after `bootstrap_bsp_per_cpu_early()` and is also
+/// safe to call repeatedly. Passing `None` preserves any previously recorded
+/// TLS template.
+pub unsafe fn complete_bsp_per_cpu_tls(tls_template: Option<&TlsInfo>) {
+    unsafe {
+        bootstrap_bsp_per_cpu_early();
+    }
+
+    record_tls_template(tls_template);
+
+    unsafe {
+        install_tls_for_cpu(0);
+    }
+}
+
+/// Per-CPUシステムを初期化
+///
+/// # Safety
+/// - カーネル初期化時に一度だけ呼ばれる必要がある
+/// - BSP（ブートストラッププロセッサ）から呼ぶ
+///
+/// # 初期化順序
+/// 1. FSGSBASEを有効化（サポートされている場合）
+/// 2. BSPのGsBaseを先に設定（current_cpu_id()が使えるように）
+/// 3. TLSテンプレートが利用可能になった後でBSPのTLSを補完する
+pub unsafe fn init_bsp_per_cpu(tls_template: Option<&TlsInfo>) {
+    unsafe {
+        complete_bsp_per_cpu_tls(tls_template);
+    }
 }
 
 pub fn finalize_cpu_topology(num_cpus: usize) {

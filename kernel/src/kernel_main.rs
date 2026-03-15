@@ -317,6 +317,10 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     graphics::vga::init();
     io::log::early_print("[BOOT] VGA initialized\n");
 
+    unsafe {
+        crate::per_cpu::bootstrap_bsp_per_cpu_early();
+    }
+
     // ロギングシステムの初期化（最優先、ヒープ不要）
     io::log::early_print("[BOOT] Initializing logger...\n");
     if io::log::init().is_err() {

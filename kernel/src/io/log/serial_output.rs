@@ -1,6 +1,43 @@
 use super::*;
 
 impl KernelLogger {
+    fn write_header_prefix<W: Write>(
+        w: &mut W,
+        uptime_ms: u64,
+        core_id: Option<usize>,
+        level: Level,
+        target: &str,
+    ) {
+        let secs = uptime_ms / 1000;
+        let millis = uptime_ms % 1000;
+
+        let _ = write!(w, "[");
+        // Pad seconds to 5 spaces for alignment
+        if secs < 10000 {
+            let _ = write!(w, " ");
+        }
+        if secs < 1000 {
+            let _ = write!(w, " ");
+        }
+        if secs < 100 {
+            let _ = write!(w, " ");
+        }
+        if secs < 10 {
+            let _ = write!(w, " ");
+        }
+        let _ = write!(w, "{}.{:03}] ", secs, millis);
+
+        if let Some(core_id) = core_id {
+            let _ = write!(w, "[C{}] ", core_id);
+        }
+
+        let _ = write!(w, "{}", Self::level_prefix(level));
+
+        if !target.is_empty() {
+            let _ = write!(w, "[{}] ", target);
+        }
+    }
+
     /// シリアルポートに1バイト書き込み（内部用、ロックなし）
     ///
     /// 送信バッファが空になるまで待機してから書き込む。
@@ -160,46 +197,31 @@ impl KernelLogger {
     }
 
     pub(super) fn print_header<W: Write>(&self, w: &mut W, record: &Record) {
-        // Timestamp and Core ID
         // Always use the unified kernel timebase so log timestamps advance with PIT IRQs.
         let uptime_ms = crate::time::get_uptime_ms();
+        let core_id = current_log_cpu_id();
+        Self::write_header_prefix(w, uptime_ms, core_id, record.level(), record.target());
+    }
+}
 
-        let core_id = {
-            #[cfg(not(feature = "bench"))]
-            {
-                crate::cpu::current_id()
-            }
-            #[cfg(feature = "bench")]
-            {
-                0usize
-            }
-        };
-        let secs = uptime_ms / 1000;
-        let millis = uptime_ms % 1000;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
 
-        let _ = write!(w, "[");
-        // Pad seconds to 5 spaces for alignment
-        if secs < 10000 {
-            let _ = write!(w, " ");
-        }
-        if secs < 1000 {
-            let _ = write!(w, " ");
-        }
-        if secs < 100 {
-            let _ = write!(w, " ");
-        }
-        if secs < 10 {
-            let _ = write!(w, " ");
-        }
-        let _ = write!(w, "{}.{:03}] [C{}] ", secs, millis, core_id);
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn header_omits_cpu_field_before_per_cpu_is_ready() {
+        let mut out = String::new();
+        KernelLogger::write_header_prefix(&mut out, 1234, None, Level::Info, "boot");
+        assert_eq!(out, "[    1.234] [INFO]  [boot] ");
+    }
 
-        // ログレベルプレフィックス
-        let _ = write!(w, "{}", Self::level_prefix(record.level()));
-
-        // モジュールパス（オプション）
-        let target = record.target();
-        if !target.is_empty() {
-            let _ = write!(w, "[{}] ", target);
-        }
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn header_keeps_cpu_field_after_per_cpu_is_ready() {
+        let mut out = String::new();
+        KernelLogger::write_header_prefix(&mut out, 1234, Some(2), Level::Info, "boot");
+        assert_eq!(out, "[    1.234] [C2] [INFO]  [boot] ");
     }
 }

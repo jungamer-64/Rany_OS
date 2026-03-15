@@ -620,8 +620,13 @@ pub fn set_in_panic(in_panic: bool) {
 }
 
 #[inline]
-fn current_log_cpu_id() -> usize {
-    crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id())
+fn current_log_cpu_id() -> Option<usize> {
+    crate::cpu::try_current_id()
+}
+
+#[inline]
+fn panic_output_allowed_for_owner(owner: usize, cpu_id: Option<usize>) -> bool {
+    owner == PANIC_OUTPUT_NO_OWNER || cpu_id == Some(owner)
 }
 
 pub(crate) fn panic_output_allowed() -> bool {
@@ -630,22 +635,22 @@ pub(crate) fn panic_output_allowed() -> bool {
     }
 
     let owner = PANIC_OUTPUT_OWNER.load(Ordering::Acquire);
-    if owner == PANIC_OUTPUT_NO_OWNER {
-        return true;
-    }
-
-    current_log_cpu_id() == owner
+    panic_output_allowed_for_owner(owner, current_log_cpu_id())
 }
 
 pub fn enter_panic_mode() {
     set_in_panic(true);
-    let cpu_id = current_log_cpu_id();
-    let _ = PANIC_OUTPUT_OWNER.compare_exchange(
-        PANIC_OUTPUT_NO_OWNER,
-        cpu_id,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    );
+    // If the panic interrupted a log write while SERIAL_LOCK was held, later
+    // panic diagnostics must not block forever trying to reacquire it.
+    SERIAL_LOCK.force_unlock();
+    if let Some(cpu_id) = current_log_cpu_id() {
+        let _ = PANIC_OUTPUT_OWNER.compare_exchange(
+            PANIC_OUTPUT_NO_OWNER,
+            cpu_id,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
     KernelLogger::reset_serial_for_panic();
 }
 
@@ -800,4 +805,36 @@ pub fn trim_spaces_before_newline(s: &str) -> alloc::string::String {
         i += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::AtomicUsize;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn panic_owner_allows_output_when_cpu_id_is_unavailable() {
+        assert!(panic_output_allowed_for_owner(PANIC_OUTPUT_NO_OWNER, None));
+        assert!(!panic_output_allowed_for_owner(0, None));
+        assert!(panic_output_allowed_for_owner(0, Some(0)));
+        assert!(!panic_output_allowed_for_owner(1, Some(0)));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn panic_owner_is_not_pinned_without_cpu_identity() {
+        let owner = AtomicUsize::new(PANIC_OUTPUT_NO_OWNER);
+
+        if let Some(cpu_id) = None::<usize> {
+            let _ = owner.compare_exchange(
+                PANIC_OUTPUT_NO_OWNER,
+                cpu_id,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+
+        assert_eq!(owner.load(Ordering::Acquire), PANIC_OUTPUT_NO_OWNER);
+    }
 }

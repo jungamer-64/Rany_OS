@@ -187,7 +187,7 @@ pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfo>) {
     verify_buddy_integrity();
 
     unsafe {
-        crate::per_cpu::init_bsp_per_cpu(boot_info.map(|info| &info.tls_template));
+        crate::per_cpu::complete_bsp_per_cpu_tls(boot_info.map(|info| &info.tls_template));
     }
 
     crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(0);
