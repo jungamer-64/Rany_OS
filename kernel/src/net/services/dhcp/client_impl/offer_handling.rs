@@ -595,7 +595,7 @@ impl DhcpClient {
         _current_tick: u64,
     ) -> bool {
         // ARP解決結果を非同期で取得（RFC 2131 Section 2.2 / RFC 5227）
-        // get_arp_cache() は現在のARPキャッシュスナップショットを返す
+        // get_arp_cache_in(self.runtime) は現在のARPキャッシュスナップショットを返す
         let entries = crate::net::api::connections::get_arp_cache_in(self.runtime).await;
         for entry in entries {
             // offered_ip に対する解決済みエントリが存在すれば、他者がそのIPを使用中と判断

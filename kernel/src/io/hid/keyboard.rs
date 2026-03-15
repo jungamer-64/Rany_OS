@@ -51,15 +51,6 @@ pub use hid_driver::{
     KeyboardStreamArc,
 };
 
-// Extension traits
-pub use hid_driver::keyboard::{KeyCodeExt, KeyEventExt};
-
-// to_char() method on KeyEvent
-// use hid_driver::KeyEventExt as _KeyEventExt;
-
-// Error types
-pub use hid_driver::StreamAlreadyTaken;
-
 // Keymap re-exports
 pub use super::keymap::{DEFAULT_KEYMAP, DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap};
 
@@ -142,8 +133,8 @@ pub fn has_event() -> bool {
 /// デフォルトのUSキーマップを使用します。
 ///
 /// # Errors
-/// 既にストリームが発行されている場合は`Err(StreamAlreadyTaken)`を返す。
-pub fn take_stream() -> Result<KeyboardStream, StreamAlreadyTaken> {
+/// 既にストリームが発行されている場合は`Err(hid_driver::StreamAlreadyTaken)`を返す。
+pub fn take_stream() -> Result<KeyboardStream, hid_driver::StreamAlreadyTaken> {
     PS2_KEYBOARD.take_stream()
 }
 
@@ -153,7 +144,7 @@ pub fn take_stream() -> Result<KeyboardStream, StreamAlreadyTaken> {
 /// * `keymap` - 使用するキーマップ（'staticライフタイム必須）
 pub fn take_stream_with_keymap(
     keymap: &'static dyn Keymap,
-) -> Result<KeyboardStream, StreamAlreadyTaken> {
+) -> Result<KeyboardStream, hid_driver::StreamAlreadyTaken> {
     PS2_KEYBOARD.take_stream_with_keymap(keymap)
 }
 
@@ -162,7 +153,7 @@ pub fn take_stream_with_keymap(
 /// 動的なキーマップ切り替えが必要な場合に使用。
 pub fn take_stream_with_arc_keymap(
     keymap: alloc::sync::Arc<dyn Keymap>,
-) -> Result<KeyboardStreamArc, StreamAlreadyTaken> {
+) -> Result<KeyboardStreamArc, hid_driver::StreamAlreadyTaken> {
     PS2_KEYBOARD.take_stream_with_arc_keymap(keymap)
 }
 

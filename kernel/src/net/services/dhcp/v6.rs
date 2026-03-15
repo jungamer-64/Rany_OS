@@ -1248,11 +1248,6 @@ impl DhcpV6Client {
     }
 }
 
-/// DHCPv6 クライアントをグローバルに初期化
-pub fn init_v6(mac_address: crate::net::l2::ethernet::MacAddress) {
-    init_v6_in(crate::net::runtime::default_runtime(), mac_address);
-}
-
 pub fn init_v6_in(
     runtime: crate::net::runtime::NetRuntimeHandle,
     mac_address: crate::net::l2::ethernet::MacAddress,
@@ -1265,7 +1260,7 @@ pub fn init_v6_in(
 }
 
 pub(crate) fn update_client_v6_mac(mac_address: crate::net::l2::ethernet::MacAddress) {
-    match super::legacy_v6_client_lock().lock() {
+    match super::legacy_v6_client_lock_in(crate::net::runtime::default_runtime()).lock() {
         Ok(mut guard) => {
             if let Some(client) = guard.as_mut() {
                 client.mac = mac_address;

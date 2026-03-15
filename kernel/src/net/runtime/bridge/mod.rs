@@ -498,19 +498,9 @@ pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<NetIfId> {
 }
 
 pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
-    let preferred_if = device::primary_if().or_else(|| {
-        crate::net::runtime::manager::list_interfaces()
-            .ok()
-            .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
-    });
-    preferred_if
-        .and_then(crate::net::api::config::get_interface_config_from_runtime)
-        .map(|cfg| NetworkConfigSnapshot {
-            ip: cfg.ip,
-            netmask: cfg.netmask,
-            gateway: cfg.gateway,
-            mac: cfg.mac,
-        })
+    crate::net::api::config::primary_interface_config_snapshot_sync_in(
+        crate::net::runtime::default_runtime(),
+    )
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]

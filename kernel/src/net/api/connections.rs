@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::{TcpConnectionState, tcb_table};
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
+use crate::net::runtime::NetRuntimeHandle;
 
 extern crate alloc;
 
@@ -128,28 +128,8 @@ impl Future for GetArpCacheFuture {
     }
 }
 
-/// 非同期ARPキャッシュ取得（推奨API）
-///
-/// イベントキュー経由でスタックにアクセスするため、
-/// 同期ロック取得を完全に回避する。
-///
-/// # 使用例
-/// ```ignore
-/// let entries = get_arp_cache().await;
-/// ```
-pub fn get_arp_cache() -> GetArpCacheFuture {
-    get_arp_cache_in(default_runtime())
-}
-
 pub fn get_arp_cache_in(runtime: NetRuntimeHandle) -> GetArpCacheFuture {
     GetArpCacheFuture::new(runtime)
-}
-
-/// 非同期ARPキャッシュ挿入（推奨API）
-///
-/// イベントキュー経由でスタックにARP挿入イベントを送出する。
-pub fn enqueue_arp_cache_insert(ip: Ipv4Address, mac: MacAddress) {
-    enqueue_arp_cache_insert_in(default_runtime(), ip, mac);
 }
 
 pub fn enqueue_arp_cache_insert_in(runtime: NetRuntimeHandle, ip: Ipv4Address, mac: MacAddress) {
@@ -206,11 +186,6 @@ impl Future for GetUdpEndpointsFuture {
     }
 }
 
-/// 非同期UDPエンドポイント一覧取得（推奨API）
-pub fn get_udp_endpoints() -> GetUdpEndpointsFuture {
-    get_udp_endpoints_in(default_runtime())
-}
-
 pub fn get_udp_endpoints_in(runtime: NetRuntimeHandle) -> GetUdpEndpointsFuture {
     GetUdpEndpointsFuture::new(runtime)
 }
@@ -259,16 +234,6 @@ impl Future for GetTcpConnectionsFuture {
     }
 }
 
-/// 非同期TCP接続一覧取得（推奨API）
-///
-/// # 使用例
-/// ```ignore
-/// let connections = get_tcp_connections().await;
-/// ```
-pub fn get_tcp_connections() -> GetTcpConnectionsFuture {
-    get_tcp_connections_in(default_runtime())
-}
-
 pub fn get_tcp_connections_in(runtime: NetRuntimeHandle) -> GetTcpConnectionsFuture {
     GetTcpConnectionsFuture::new(runtime)
 }
@@ -286,7 +251,8 @@ mod tests {
             let result_slot_clone = result_slot.clone();
             let completed_clone = completed.clone();
             executor.spawn(crate::task::Task::new(async move {
-                let output = super::get_tcp_connections().await;
+                let output =
+                    super::get_tcp_connections_in(crate::net::runtime::default_runtime()).await;
                 let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
                 *slot = Some(output);
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
@@ -314,7 +280,8 @@ mod tests {
             let result_slot_clone = result_slot.clone();
             let completed_clone = completed.clone();
             executor.spawn(crate::task::Task::new(async move {
-                let output = super::get_udp_endpoints().await;
+                let output =
+                    super::get_udp_endpoints_in(crate::net::runtime::default_runtime()).await;
                 let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
                 *slot = Some(output);
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
@@ -342,7 +309,7 @@ mod tests {
             let result_slot_clone = result_slot.clone();
             let completed_clone = completed.clone();
             executor.spawn(crate::task::Task::new(async move {
-                let output = super::get_arp_cache().await;
+                let output = super::get_arp_cache_in(crate::net::runtime::default_runtime()).await;
                 let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
                 *slot = Some(output);
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);

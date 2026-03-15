@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::net::runtime::{
-    NetRuntimeHandle, default_runtime, device,
+    NetRuntimeHandle, device,
     manager::{self, NetIfId, NetworkInterfaceInfo},
     stack,
 };
@@ -81,74 +81,6 @@ pub(crate) fn interface_config_snapshot(
     })
 }
 
-fn interface_stats_snapshot(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
-    interface_stats_snapshot_in(default_runtime(), if_id)
-}
-
-fn interface_stats_snapshot_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-) -> Option<InterfaceStatsSnapshot> {
-    let mut stack_snapshot = InterfaceStatsSnapshot {
-        if_id: if_id.0,
-        rx_packets: 0,
-        tx_packets: 0,
-        rx_bytes: 0,
-        tx_bytes: 0,
-        rx_errors: 0,
-        tx_errors: 0,
-        rx_dropped: 0,
-    };
-
-    if let Ok(guard) = runtime.context().stack.lock() {
-        if let Some(stack) = guard.as_ref() {
-            if let Some(stats) = stack.interface_stats(if_id) {
-                stack_snapshot.rx_packets =
-                    stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
-                stack_snapshot.tx_packets =
-                    stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
-                stack_snapshot.rx_bytes =
-                    stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-                stack_snapshot.tx_bytes =
-                    stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-                stack_snapshot.rx_errors =
-                    stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
-                stack_snapshot.rx_dropped =
-                    stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
-            }
-        }
-    }
-
-    if let Some(port) = device::lookup_port_in(runtime, if_id) {
-        let driver_stats = port.driver().stats();
-        stack_snapshot.rx_packets = stack_snapshot.rx_packets.max(driver_stats.rx_packets);
-        stack_snapshot.tx_packets = stack_snapshot.tx_packets.max(driver_stats.tx_packets);
-        stack_snapshot.rx_errors = stack_snapshot.rx_errors.max(driver_stats.rx_errors);
-        stack_snapshot.tx_errors = stack_snapshot.tx_errors.max(driver_stats.tx_errors);
-        return Some(stack_snapshot);
-    }
-
-    if stack_snapshot.rx_packets != 0
-        || stack_snapshot.tx_packets != 0
-        || stack_snapshot.rx_bytes != 0
-        || stack_snapshot.tx_bytes != 0
-        || stack_snapshot.rx_errors != 0
-        || stack_snapshot.tx_errors != 0
-        || stack_snapshot.rx_dropped != 0
-    {
-        return Some(stack_snapshot);
-    }
-
-    None
-}
-
-pub(crate) fn interface_stats_snapshot_with_stack(
-    if_id: NetIfId,
-    stack: Option<&stack::NetworkStack>,
-) -> Option<InterfaceStatsSnapshot> {
-    interface_stats_snapshot_with_stack_in(default_runtime(), if_id, stack)
-}
-
 pub(crate) fn interface_stats_snapshot_with_stack_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
@@ -215,10 +147,6 @@ pub(crate) fn interface_summary_snapshot(iface: NetworkInterfaceInfo) -> Interfa
     }
 }
 
-pub(crate) fn primary_interface_id() -> Option<NetIfId> {
-    primary_interface_id_in(default_runtime())
-}
-
 pub(crate) fn primary_interface_id_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
     device::primary_if_in(runtime).or_else(|| {
         manager::list_interfaces_in(runtime)
@@ -244,10 +172,6 @@ pub(crate) fn aggregate_network_stats_from_list(
     })
 }
 
-pub(crate) fn get_interface_config_from_runtime(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
-    get_interface_config_from_runtime_in(default_runtime(), if_id)
-}
-
 pub(crate) fn get_interface_config_from_runtime_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
@@ -256,10 +180,6 @@ pub(crate) fn get_interface_config_from_runtime_in(
         .ok()
         .flatten()
         .and_then(interface_config_snapshot)
-}
-
-pub(crate) fn list_interface_configs_from_runtime() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
-    list_interface_configs_from_runtime_in(default_runtime())
 }
 
 pub(crate) fn list_interface_configs_from_runtime_in(
@@ -272,21 +192,11 @@ pub(crate) fn list_interface_configs_from_runtime_in(
         .collect()
 }
 
-pub(crate) fn get_interface_stats_without_stack(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
-    get_interface_stats_without_stack_in(default_runtime(), if_id)
-}
-
 pub(crate) fn get_interface_stats_without_stack_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Option<InterfaceStatsSnapshot> {
     interface_stats_snapshot_with_stack_in(runtime, if_id, None)
-}
-
-pub(crate) fn list_interface_stats_with_stack(
-    stack: Option<&stack::NetworkStack>,
-) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
-    list_interface_stats_with_stack_in(default_runtime(), stack)
 }
 
 pub(crate) fn list_interface_stats_with_stack_in(
@@ -300,10 +210,6 @@ pub(crate) fn list_interface_stats_with_stack_in(
         .collect()
 }
 
-pub(crate) fn list_interfaces_from_runtime() -> alloc::vec::Vec<InterfaceSnapshot> {
-    list_interfaces_from_runtime_in(default_runtime())
-}
-
 pub(crate) fn list_interfaces_from_runtime_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceSnapshot> {
@@ -314,9 +220,11 @@ pub(crate) fn list_interfaces_from_runtime_in(
         .collect()
 }
 
-pub(crate) fn primary_interface_config_snapshot_sync() -> Option<NetworkConfigSnapshot> {
-    let preferred_if = primary_interface_id()?;
-    get_interface_config_sync(preferred_if).map(|cfg| NetworkConfigSnapshot {
+pub(crate) fn primary_interface_config_snapshot_sync_in(
+    runtime: NetRuntimeHandle,
+) -> Option<NetworkConfigSnapshot> {
+    let preferred_if = primary_interface_id_in(runtime)?;
+    get_interface_config_from_runtime_in(runtime, preferred_if).map(|cfg| NetworkConfigSnapshot {
         ip: cfg.ip,
         netmask: cfg.netmask,
         gateway: cfg.gateway,
@@ -324,37 +232,21 @@ pub(crate) fn primary_interface_config_snapshot_sync() -> Option<NetworkConfigSn
     })
 }
 
-pub(crate) fn aggregate_network_stats_snapshot_sync() -> Option<NetworkStatsSnapshot> {
-    aggregate_network_stats_from_list(&list_interface_stats_sync())
+pub(crate) fn aggregate_network_stats_snapshot_sync_in(
+    runtime: NetRuntimeHandle,
+) -> Option<NetworkStatsSnapshot> {
+    aggregate_network_stats_from_list(&list_interface_stats_sync_in(runtime))
 }
 
-fn get_interface_config_sync(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
-    get_interface_config_from_runtime(if_id)
-}
-
-fn list_interface_configs_sync() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
-    list_interface_configs_from_runtime()
-}
-
-fn get_interface_stats_sync(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
-    interface_stats_snapshot(if_id)
-}
-
-pub(crate) fn list_interface_stats_sync() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
-    if let Ok(guard) = stack::stack().lock() {
+pub(crate) fn list_interface_stats_sync_in(
+    runtime: NetRuntimeHandle,
+) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
+    if let Ok(guard) = runtime.context().stack.lock() {
         if let Some(stack) = guard.as_ref() {
-            return list_interface_stats_with_stack(Some(stack));
+            return list_interface_stats_with_stack_in(runtime, Some(stack));
         }
     }
-    list_interface_stats_with_stack(None)
-}
-
-fn list_interfaces_sync() -> alloc::vec::Vec<InterfaceSnapshot> {
-    list_interfaces_from_runtime()
-}
-
-pub async fn primary_interface_config_snapshot() -> Option<NetworkConfigSnapshot> {
-    primary_interface_config_snapshot_in(default_runtime()).await
+    list_interface_stats_with_stack_in(runtime, None)
 }
 
 pub async fn primary_interface_config_snapshot_in(
@@ -370,10 +262,6 @@ pub async fn primary_interface_config_snapshot_in(
     command_future.await
 }
 
-pub async fn aggregate_network_stats_snapshot() -> Option<NetworkStatsSnapshot> {
-    aggregate_network_stats_snapshot_in(default_runtime()).await
-}
-
 pub async fn aggregate_network_stats_snapshot_in(
     runtime: NetRuntimeHandle,
 ) -> Option<NetworkStatsSnapshot> {
@@ -385,10 +273,6 @@ pub async fn aggregate_network_stats_snapshot_in(
     };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
-}
-
-pub async fn get_interface_config(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
-    get_interface_config_in(default_runtime(), if_id).await
 }
 
 pub async fn get_interface_config_in(
@@ -406,10 +290,6 @@ pub async fn get_interface_config_in(
     command_future.await
 }
 
-pub async fn list_interface_configs() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
-    list_interface_configs_in(default_runtime()).await
-}
-
 pub async fn list_interface_configs_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceConfigSnapshot> {
@@ -419,10 +299,6 @@ pub async fn list_interface_configs_in(
         crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceConfigs { result_slot, waker };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
-}
-
-pub async fn get_interface_stats(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
-    get_interface_stats_in(default_runtime(), if_id).await
 }
 
 pub async fn get_interface_stats_in(
@@ -440,10 +316,6 @@ pub async fn get_interface_stats_in(
     command_future.await
 }
 
-pub async fn list_interface_stats() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
-    list_interface_stats_in(default_runtime()).await
-}
-
 pub async fn list_interface_stats_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
@@ -453,10 +325,6 @@ pub async fn list_interface_stats_in(
         crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceStats { result_slot, waker };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
-}
-
-pub async fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
-    list_interfaces_in(default_runtime()).await
 }
 
 pub async fn list_interfaces_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceSnapshot> {
@@ -523,7 +391,7 @@ mod tests {
             let result_slot_clone = result_slot.clone();
             let completed_clone = completed.clone();
             executor.spawn(crate::task::Task::new(async move {
-                let output = super::list_interfaces().await;
+                let output = super::list_interfaces_in(default_runtime()).await;
                 let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
                 *slot = Some(output);
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);

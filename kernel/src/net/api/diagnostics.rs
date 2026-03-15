@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use crate::net::obs::{NetSnapshot, NetTraceEvent, snapshot};
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
+use crate::net::runtime::NetRuntimeHandle;
 
 extern crate alloc;
 
@@ -21,10 +21,6 @@ fn network_recent_events_sync(limit: usize) -> Vec<NetTraceEvent> {
     snap.recent_events.into_iter().take(limit).collect()
 }
 
-pub async fn network_snapshot() -> NetSnapshot {
-    network_snapshot_in(default_runtime()).await
-}
-
 pub async fn network_snapshot_in(runtime: NetRuntimeHandle) -> NetSnapshot {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<NetSnapshot>();
@@ -32,10 +28,6 @@ pub async fn network_snapshot_in(runtime: NetRuntimeHandle) -> NetSnapshot {
         crate::net::l4::endpoint::event::NetworkEvent::GetNetworkSnapshot { result_slot, waker };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
-}
-
-pub async fn network_recent_events(limit: usize) -> Vec<NetTraceEvent> {
-    network_recent_events_in(default_runtime(), limit).await
 }
 
 pub async fn network_recent_events_in(
@@ -66,7 +58,9 @@ mod tests {
             let result_slot_clone = result_slot.clone();
             let completed_clone = completed.clone();
             executor.spawn(crate::task::Task::new(async move {
-                let output = super::network_recent_events(1).await;
+                let output =
+                    super::network_recent_events_in(crate::net::runtime::default_runtime(), 1)
+                        .await;
                 let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
                 *slot = Some(output);
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);

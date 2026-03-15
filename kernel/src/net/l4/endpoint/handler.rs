@@ -378,12 +378,12 @@ impl NetworkEventHandler {
             NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::primary_interface_config_snapshot_sync(),
+                crate::net::api::config::primary_interface_config_snapshot_sync_in(runtime),
             ),
             NetworkEvent::GetAggregateNetworkStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::aggregate_network_stats_snapshot_sync(),
+                crate::net::api::config::aggregate_network_stats_snapshot_sync_in(runtime),
             ),
             NetworkEvent::GetInterfaceConfig {
                 if_id,

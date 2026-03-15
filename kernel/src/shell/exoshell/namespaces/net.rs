@@ -36,7 +36,12 @@ impl NetNamespace {
             Ok(if_id) => if_id,
             Err(err) => return err,
         };
-        match crate::net::api::config::get_interface_config(if_id).await {
+        match crate::net::api::config::get_interface_config_in(
+            crate::net::runtime::default_runtime(),
+            if_id,
+        )
+        .await
+        {
             Some(cfg) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("if_id"), ExoValue::Int(cfg.if_id as i64));
@@ -81,7 +86,12 @@ impl NetNamespace {
             Ok(if_id) => if_id,
             Err(err) => return err,
         };
-        match crate::net::api::config::get_interface_stats(if_id).await {
+        match crate::net::api::config::get_interface_stats_in(
+            crate::net::runtime::default_runtime(),
+            if_id,
+        )
+        .await
+        {
             Some(stats) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("if_id"), ExoValue::Int(stats.if_id as i64));
@@ -121,7 +131,10 @@ impl NetNamespace {
 
     /// ARPキャッシュ（非同期版）
     pub async fn arp_cache() -> ExoValue<'static> {
-        let entries = crate::net::api::connections::get_arp_cache().await;
+        let entries = crate::net::api::connections::get_arp_cache_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
         let values: Vec<ExoValue> = entries
             .into_iter()
             .map(|e| {
@@ -192,7 +205,11 @@ impl NetNamespace {
             }
             _ => return ExoValue::Error(String::from("mac must be string")),
         };
-        crate::net::api::connections::enqueue_arp_cache_insert(ip, mac);
+        crate::net::api::connections::enqueue_arp_cache_insert_in(
+            crate::net::runtime::default_runtime(),
+            ip,
+            mac,
+        );
         ExoValue::Bool(true)
     }
 
@@ -206,7 +223,9 @@ impl NetNamespace {
             Ok(if_id) => if_id,
             Err(err) => return err,
         };
-        let state = crate::net::api::dhcp::get_dhcp_state(if_id).await;
+        let state =
+            crate::net::api::dhcp::get_dhcp_state_in(crate::net::runtime::default_runtime(), if_id)
+                .await;
         Self::format_dhcp_state(state)
     }
 
@@ -257,7 +276,7 @@ impl NetNamespace {
 
     /// DHCP renew — 非同期版（推奨）
     pub async fn dhcp_renew() -> ExoValue<'static> {
-        match crate::net::api::dhcp::dhcp_renew().await {
+        match crate::net::api::dhcp::dhcp_renew_in(crate::net::runtime::default_runtime()).await {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
@@ -265,7 +284,9 @@ impl NetNamespace {
 
     /// DHCP discover — 非同期版（推奨）
     pub async fn dhcp_discover() -> ExoValue<'static> {
-        if let Some(info) = crate::net::api::dhcp::dhcp_discover().await {
+        if let Some(info) =
+            crate::net::api::dhcp::dhcp_discover_in(crate::net::runtime::default_runtime()).await
+        {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("server_ip"),
@@ -289,47 +310,34 @@ impl NetNamespace {
 
     /// DHCP release — 非同期版（推奨）
     pub async fn dhcp_release() -> ExoValue<'static> {
-        let released = crate::net::api::dhcp::dhcp_release().await;
+        let released =
+            crate::net::api::dhcp::dhcp_release_in(crate::net::runtime::default_runtime()).await;
         ExoValue::Bool(released)
     }
 
     /// DHCP last declined — 非同期版（推奨）
     pub async fn dhcp_last_declined() -> ExoValue<'static> {
-        use crate::net::services::dhcp;
-        match dhcp::legacy_v4_client_lock().lock() {
-            Ok(guard) => {
-                if let Some(ref client) = *guard {
-                    if let Some(ip) = client.last_declined_ip() {
-                        let o = ip.as_bytes();
-                        return ExoValue::String(Cow::Owned(format!(
-                            "{}.{}.{}.{}",
-                            o[0], o[1], o[2], o[3]
-                        )));
-                    }
-                }
-                ExoValue::Nil
-            }
-            Err(_) => ExoValue::Error(String::from("DHCP client lock poisoned")),
+        match crate::net::api::dhcp::dhcp_last_declined_in(crate::net::runtime::default_runtime())
+            .await
+        {
+            Some(o) => ExoValue::String(Cow::Owned(format!(
+                "{}.{}.{}.{}",
+                o[0], o[1], o[2], o[3]
+            ))),
+            None => ExoValue::Nil,
         }
     }
 
     /// DHCP last released — 非同期版（推奨）
     pub async fn dhcp_last_released() -> ExoValue<'static> {
-        use crate::net::services::dhcp;
-        match dhcp::legacy_v4_client_lock().lock() {
-            Ok(guard) => {
-                if let Some(ref client) = *guard {
-                    if let Some(ip) = client.last_released_ip() {
-                        let o = ip.as_bytes();
-                        return ExoValue::String(Cow::Owned(format!(
-                            "{}.{}.{}.{}",
-                            o[0], o[1], o[2], o[3]
-                        )));
-                    }
-                }
-                ExoValue::Nil
-            }
-            Err(_) => ExoValue::Error(String::from("DHCP client lock poisoned")),
+        match crate::net::api::dhcp::dhcp_last_released_in(crate::net::runtime::default_runtime())
+            .await
+        {
+            Some(o) => ExoValue::String(Cow::Owned(format!(
+                "{}.{}.{}.{}",
+                o[0], o[1], o[2], o[3]
+            ))),
+            None => ExoValue::Nil,
         }
     }
 
@@ -356,7 +364,13 @@ impl NetNamespace {
             crate::task::yield_now().await;
 
             // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
-            match crate::net::api::icmp::ping(ip, seq).await {
+            match crate::net::api::icmp::ping_in(
+                crate::net::runtime::default_runtime(),
+                ip,
+                seq,
+            )
+            .await
+            {
                 Ok(echo) => {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
@@ -394,7 +408,10 @@ impl NetNamespace {
 
     /// TCP接続一覧 (非同期版)
     pub async fn tcp_connections() -> ExoValue<'static> {
-        let connections = crate::net::api::connections::get_tcp_connections().await;
+        let connections = crate::net::api::connections::get_tcp_connections_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
         let values: Vec<ExoValue> = connections
             .into_iter()
             .map(|c| {
@@ -416,7 +433,10 @@ impl NetNamespace {
 
     /// UDP エンドポイント一覧 (非同期版)
     pub async fn udp_endpoints() -> ExoValue<'static> {
-        let endpoints = crate::net::api::connections::get_udp_endpoints().await;
+        let endpoints = crate::net::api::connections::get_udp_endpoints_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
         let values: Vec<ExoValue> = endpoints
             .into_iter()
             .map(|e| {
@@ -437,8 +457,14 @@ impl NetNamespace {
 
     /// netstat相当 — TCP接続 + UDPエンドポイント統合表示
     pub async fn netstat() -> ExoValue<'static> {
-        let tcp_connections = crate::net::api::connections::get_tcp_connections().await;
-        let udp_endpoints = crate::net::api::connections::get_udp_endpoints().await;
+        let tcp_connections = crate::net::api::connections::get_tcp_connections_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
+        let udp_endpoints = crate::net::api::connections::get_udp_endpoints_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
 
         let tcp_values: Vec<ExoValue> = tcp_connections
             .into_iter()
@@ -493,7 +519,9 @@ impl NetNamespace {
 
     /// ネットワークインターフェース一覧
     pub async fn interfaces() -> ExoValue<'static> {
-        let values: Vec<ExoValue> = crate::net::api::config::list_interfaces()
+        let values: Vec<ExoValue> = crate::net::api::config::list_interfaces_in(
+            crate::net::runtime::default_runtime(),
+        )
             .await
             .into_iter()
             .map(|iface| {
@@ -783,7 +811,10 @@ impl NetNamespace {
 
     /// ファイアウォール状態表示
     pub async fn firewall_status() -> ExoValue<'static> {
-        let status = crate::net::api::firewall::firewall_status().await;
+        let status = crate::net::api::firewall::firewall_status_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
         ExoValue::String(Cow::Owned(status))
     }
 
@@ -796,7 +827,9 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        match crate::net::api::firewall::firewall_enable().await {
+        match crate::net::api::firewall::firewall_enable_in(crate::net::runtime::default_runtime())
+            .await
+        {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(String::from(e)),
         }
@@ -811,7 +844,11 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        match crate::net::api::firewall::firewall_disable().await {
+        match crate::net::api::firewall::firewall_disable_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await
+        {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(String::from(e)),
         }
@@ -819,13 +856,19 @@ impl NetNamespace {
 
     /// ファイアウォールルール一覧表示
     pub async fn firewall_rules() -> ExoValue<'static> {
-        let rules = crate::net::api::firewall::firewall_list_rules().await;
+        let rules = crate::net::api::firewall::firewall_list_rules_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
         ExoValue::String(Cow::Owned(rules))
     }
 
     /// ファイアウォール統計情報
     pub async fn firewall_stats() -> ExoValue<'static> {
-        let stats = crate::net::api::firewall::firewall_stats().await;
+        let stats = crate::net::api::firewall::firewall_stats_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
         ExoValue::String(Cow::Owned(stats))
     }
 
@@ -893,8 +936,17 @@ impl NetNamespace {
             })
             .unwrap_or("");
 
-        match crate::net::api::firewall::firewall_add_rule(
-            action, direction, src_ip, dst_ip, protocol, src_port, dst_port, priority, name,
+        match crate::net::api::firewall::firewall_add_rule_in(
+            crate::net::runtime::default_runtime(),
+            action,
+            direction,
+            src_ip,
+            dst_ip,
+            protocol,
+            src_port,
+            dst_port,
+            priority,
+            name,
         )
         .await
         {
@@ -921,7 +973,12 @@ impl NetNamespace {
             Some(ExoValue::Int(n)) => *n as u64,
             _ => return ExoValue::Error(String::from("usage: net.firewall_remove(rule_id)")),
         };
-        match crate::net::api::firewall::firewall_remove_rule(rule_id).await {
+        match crate::net::api::firewall::firewall_remove_rule_in(
+            crate::net::runtime::default_runtime(),
+            rule_id,
+        )
+        .await
+        {
             Ok(deleted) => ExoValue::Bool(deleted),
             Err(e) => ExoValue::Error(e),
         }
@@ -936,7 +993,11 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        match crate::net::api::firewall::firewall_clear_rules().await {
+        match crate::net::api::firewall::firewall_clear_rules_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await
+        {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
@@ -967,7 +1028,13 @@ impl NetNamespace {
             ExoValue::String(s) => s.as_ref(),
             _ => return ExoValue::Error(String::from("action must be string")),
         };
-        match crate::net::api::firewall::firewall_set_default_policy(direction, action).await {
+        match crate::net::api::firewall::firewall_set_default_policy_in(
+            crate::net::runtime::default_runtime(),
+            direction,
+            action,
+        )
+        .await
+        {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(e),
         }
@@ -1001,7 +1068,10 @@ impl NetNamespace {
 
     /// ネットワーク全体のスナップショット (カウンタ + インターフェース + イベント)
     pub async fn snapshot() -> ExoValue<'static> {
-        let snap = crate::net::api::diagnostics::network_snapshot().await;
+        let snap = crate::net::api::diagnostics::network_snapshot_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await;
         let mut map = BTreeMap::new();
         map.insert(
             String::from("rx_packets"),
@@ -1062,7 +1132,11 @@ impl NetNamespace {
                 _ => None,
             })
             .unwrap_or(20);
-        let events = crate::net::api::diagnostics::network_recent_events(limit).await;
+        let events = crate::net::api::diagnostics::network_recent_events_in(
+            crate::net::runtime::default_runtime(),
+            limit,
+        )
+        .await;
         let values: Vec<ExoValue> = events
             .into_iter()
             .map(|e| {

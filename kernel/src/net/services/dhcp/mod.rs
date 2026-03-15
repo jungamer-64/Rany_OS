@@ -88,18 +88,10 @@ pub(crate) fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static DhcpRunti
     &runtime.context().dhcp
 }
 
-pub(crate) fn legacy_v4_client_lock() -> &'static PoisonLock<Option<DhcpClient>> {
-    &runtime_state().legacy_v4_client
-}
-
 pub(crate) fn legacy_v4_client_lock_in(
     runtime: NetRuntimeHandle,
 ) -> &'static PoisonLock<Option<DhcpClient>> {
     &runtime_state_for(runtime).legacy_v4_client
-}
-
-pub(crate) fn legacy_v6_client_lock() -> &'static PoisonLock<Option<DhcpV6Client>> {
-    &runtime_state().legacy_v6_client
 }
 
 pub(crate) fn legacy_v6_client_lock_in(
@@ -275,10 +267,6 @@ fn primary_interface_runtime_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpInt
             runtime.active.load(Ordering::Acquire) && !runtime.suspended.load(Ordering::Acquire)
         })
         .cloned()
-}
-
-pub(crate) fn primary_v4_client() -> Option<Arc<DhcpClient>> {
-    primary_interface_runtime().map(|runtime| Arc::clone(&runtime.v4))
 }
 
 pub(crate) fn primary_v4_client_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpClient>> {

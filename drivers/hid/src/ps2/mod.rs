@@ -17,7 +17,7 @@ mod keycode;
 mod mouse;
 mod mouse_types;
 
-pub use constants::{commands, kbd_commands, mouse_commands, ports, status};
+pub use constants::{commands, ports, status};
 pub use controller::{DeviceType, Ps2Controller};
 pub use driver::Ps2Driver;
 pub use keyboard::KeyboardHandler;

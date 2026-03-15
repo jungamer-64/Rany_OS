@@ -5,19 +5,15 @@
 
 extern crate alloc;
 
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
+use crate::net::runtime::NetRuntimeHandle;
 
-// Removed: `send_icmp_echo()` — deprecated, use `enqueue_icmp_echo()` or `ping()` instead.
+// Removed: `send_icmp_echo()` — deprecated, use `enqueue_icmp_echo_in()` or `ping_in()` instead.
 
 /// 非同期ICMP Echo送信（fire-and-forget）
 ///
 /// ICMP Echoリクエストをイベントキュー経由で送信する。
 /// エグゼキュータが起動しているasyncコンテキストから呼び出す。
-/// 応答を待機するには `ping()` または `IcmpEchoFuture` を使用すること。
-pub fn enqueue_icmp_echo(target: [u8; 4], seq: u16) -> bool {
-    enqueue_icmp_echo_in(default_runtime(), target, seq)
-}
-
+/// 応答を待機するには `ping_in(runtime, ...)` または `IcmpEchoFuture` を使用すること。
 pub fn enqueue_icmp_echo_in(runtime: NetRuntimeHandle, target: [u8; 4], seq: u16) -> bool {
     crate::net::l4::endpoint::event::enqueue_event_ignore_in(
         runtime,
@@ -36,16 +32,12 @@ pub fn enqueue_icmp_echo_in(runtime: NetRuntimeHandle, target: [u8; 4], seq: u16
 ///
 /// # 使用例
 /// ```ignore
-/// let result = ping([8, 8, 8, 8], 1).await;
+/// let result = ping_in(runtime, [8, 8, 8, 8], 1).await;
 /// match result {
 ///     Ok(echo) => log::info!("RTT: {} us", echo.rtt_us),
 ///     Err(e) => log::warn!("ping failed: {:?}", e),
 /// }
 /// ```
-pub fn ping(target: [u8; 4], seq: u16) -> crate::net::l4::endpoint::futures::IcmpEchoFuture {
-    ping_in(default_runtime(), target, seq)
-}
-
 pub fn ping_in(
     runtime: NetRuntimeHandle,
     target: [u8; 4],
@@ -55,14 +47,6 @@ pub fn ping_in(
 }
 
 /// カスタムタイムアウト付き非同期ICMP Echo
-pub fn ping_with_timeout(
-    target: [u8; 4],
-    seq: u16,
-    timeout_us: u64,
-) -> crate::net::l4::endpoint::futures::IcmpEchoFuture {
-    ping_with_timeout_in(default_runtime(), target, seq, timeout_us)
-}
-
 pub fn ping_with_timeout_in(
     runtime: NetRuntimeHandle,
     target: [u8; 4],

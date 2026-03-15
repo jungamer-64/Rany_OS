@@ -231,7 +231,11 @@ pub fn test_send_icmp_event_dispatch_smoke() {
     let result_slot_clone = result_slot.clone();
     let completed_clone = completed.clone();
     executor.spawn(crate::task::Task::new(async move {
-        assert!(crate::net::api::icmp::enqueue_icmp_echo([8, 8, 8, 8], 1));
+        assert!(crate::net::api::icmp::enqueue_icmp_echo_in(
+            crate::net::runtime::default_runtime(),
+            [8, 8, 8, 8],
+            1,
+        ));
         crate::task::yield_now().await;
         let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
         *slot = Some(());
@@ -305,11 +309,15 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     init_default();
 
     let client_mac = MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
-    crate::net::services::dhcp::init(client_mac);
+    crate::net::services::dhcp::init_in(crate::net::runtime::default_runtime(), client_mac);
 
     let xid = {
         let mut discover = [0u8; crate::net::services::dhcp::DHCP_MAX_MESSAGE_SIZE];
-        let guard = match crate::net::services::dhcp::legacy_v4_client_lock().lock() {
+        let guard = match crate::net::services::dhcp::legacy_v4_client_lock_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .lock()
+        {
             Ok(g) => g,
             Err(_) => panic!("dhcp lock"),
         };
@@ -431,7 +439,8 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
         executor.spawn(crate::task::Task::new(async move {
-            let output = crate::net::api::dhcp::dhcp_state().await;
+            let output =
+                crate::net::api::dhcp::dhcp_state_in(crate::net::runtime::default_runtime()).await;
             let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(output);
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
@@ -463,7 +472,10 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     // simulate a conflict/decline via internal client API to verify state snapshot
     let test_ip = [192, 168, 123, 45];
     let server_ip = [192, 168, 123, 1];
-    if let Ok(guard) = crate::net::services::dhcp::legacy_v4_client_lock().lock() {
+    if let Ok(guard) =
+        crate::net::services::dhcp::legacy_v4_client_lock_in(crate::net::runtime::default_runtime())
+            .lock()
+    {
         if let Some(ref client) = *guard {
             let _ = client.send_decline(
                 crate::net::l3::ipv4::Ipv4Address::new(test_ip),
@@ -483,7 +495,8 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
         executor.spawn(crate::task::Task::new(async move {
-            let output = crate::net::api::dhcp::dhcp_state().await;
+            let output =
+                crate::net::api::dhcp::dhcp_state_in(crate::net::runtime::default_runtime()).await;
             let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(output);
             completed_clone.store(true, core::sync::atomic::Ordering::Release);

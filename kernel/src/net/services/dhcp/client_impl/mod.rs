@@ -786,11 +786,6 @@ pub enum DhcpResponseResult {
     Nak,
 }
 
-/// DHCPクライアントを初期化
-pub fn init(mac_address: MacAddress) {
-    init_in(crate::net::runtime::default_runtime(), mac_address);
-}
-
 pub fn init_in(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacAddress) {
     let client = DhcpClient::new_in(runtime, mac_address);
     match super::legacy_v4_client_lock_in(runtime).lock() {
@@ -800,7 +795,7 @@ pub fn init_in(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacA
 }
 
 pub(crate) fn update_client_mac(mac_address: MacAddress) {
-    match super::legacy_v4_client_lock().lock() {
+    match super::legacy_v4_client_lock_in(crate::net::runtime::default_runtime()).lock() {
         Ok(mut guard) => {
             if let Some(client) = guard.as_mut() {
                 client.mac_address = mac_address;

@@ -102,9 +102,9 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     let mac = bootstrap_config.mac;
     let ipv6_enabled = bootstrap_config.ipv6.is_some();
 
-    dhcp::init(mac);
+    dhcp::init_in(default_runtime(), mac);
     if ipv6_enabled {
-        dhcp::init_v6(mac);
+        dhcp::init_v6_in(default_runtime(), mac);
     } else {
         log::info!("[NET] DHCPv6 runtime disabled: IPv6 is not configured");
     }
@@ -133,12 +133,12 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         // Spawn DHCPv6 client task only when IPv6 is configured for the active stack.
         crate::task::spawn_task(crate::task::Task::new(async move {
             let client_ref: Option<&'static dhcp::DhcpV6Client> = {
-                let guard = match dhcp::legacy_v6_client_lock().lock() {
+                let guard = match dhcp::legacy_v6_client_lock_in(default_runtime()).lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };
                 guard.as_ref().map(|c| {
-                    // SAFETY: DHCPV6_CLIENT はカーネル静的変数で init_v6() 後は
+                    // SAFETY: default runtime の DHCPv6 クライアントは init_v6_in() 後は
                     // Some のまま変更されず、カーネル寿命と同等に存続する。
                     unsafe { &*(c as *const dhcp::DhcpV6Client) }
                 })
@@ -178,10 +178,6 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     }));
 
     Ok(())
-}
-
-fn snapshot_for_interface(if_id: NetIfId) -> DhcpRuntimeState {
-    snapshot_for_interface_in(default_runtime(), if_id)
 }
 
 fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
@@ -243,19 +239,11 @@ fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpR
     out
 }
 
-pub(crate) fn get_dhcp_state_sync(if_id: NetIfId) -> DhcpRuntimeState {
-    get_dhcp_state_sync_in(default_runtime(), if_id)
-}
-
 pub(crate) fn get_dhcp_state_sync_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> DhcpRuntimeState {
     snapshot_for_interface_in(runtime, if_id)
-}
-
-pub(crate) fn list_dhcp_states_sync() -> alloc::vec::Vec<InterfaceDhcpState> {
-    list_dhcp_states_sync_in(default_runtime())
 }
 
 pub(crate) fn list_dhcp_states_sync_in(
@@ -269,14 +257,6 @@ pub(crate) fn list_dhcp_states_sync_in(
             state: snapshot_for_interface_in(runtime, iface.if_id),
         })
         .collect()
-}
-
-/// DHCP状態取得（読み取り専用・短命ロック）
-///
-/// DHCPv4/v6クライアントの現在の状態をスナップショットとして取得する。
-/// 読み取り専用のためロック保持時間は最小限。
-pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
-    dhcp_state_sync_in(default_runtime())
 }
 
 pub(crate) fn dhcp_state_sync_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
@@ -359,13 +339,6 @@ pub(crate) fn dhcp_state_sync_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState 
 
 // 旧同期 dhcp_renew は削除済み（dhcp_renew を使用すること）
 
-/// 非同期DHCP状態取得（推奨API）
-///
-/// イベントキュー経由でDHCPクライアントにアクセスし、同期ロックを回避する。
-pub async fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
-    get_dhcp_state_in(default_runtime(), if_id).await
-}
-
 pub async fn get_dhcp_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
@@ -378,10 +351,6 @@ pub async fn get_dhcp_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Dhc
     command_future.await
 }
 
-pub async fn list_dhcp_states() -> alloc::vec::Vec<InterfaceDhcpState> {
-    list_dhcp_states_in(default_runtime()).await
-}
-
 pub async fn list_dhcp_states_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceDhcpState> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<alloc::vec::Vec<InterfaceDhcpState>>();
@@ -389,10 +358,6 @@ pub async fn list_dhcp_states_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<I
         crate::net::l4::endpoint::event::NetworkEvent::ListDhcpStates { result_slot, waker };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
-}
-
-pub async fn dhcp_state() -> DhcpRuntimeState {
-    dhcp_state_in(default_runtime()).await
 }
 
 pub async fn dhcp_state_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
@@ -453,16 +418,6 @@ impl Future for DhcpRenewFuture {
     }
 }
 
-/// 非同期DHCPリニュー（推奨API）
-///
-/// # 使用例
-/// ```ignore
-/// let result = dhcp_renew().await;
-/// ```
-pub fn dhcp_renew() -> DhcpRenewFuture {
-    dhcp_renew_in(default_runtime())
-}
-
 pub fn dhcp_renew_in(runtime: NetRuntimeHandle) -> DhcpRenewFuture {
     DhcpRenewFuture::new(runtime)
 }
@@ -509,16 +464,6 @@ impl Future for DhcpReleaseFuture {
 
         stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
-}
-
-/// 非同期DHCPリリース（推奨API）
-///
-/// # 使用例
-/// ```ignore
-/// let released = dhcp_release().await;
-/// ```
-pub fn dhcp_release() -> DhcpReleaseFuture {
-    dhcp_release_in(default_runtime())
 }
 
 pub fn dhcp_release_in(runtime: NetRuntimeHandle) -> DhcpReleaseFuture {
@@ -569,16 +514,6 @@ impl Future for DhcpDiscoverFuture {
     }
 }
 
-/// 非同期DHCPディスカバー（推奨API）
-///
-/// # 使用例
-/// ```ignore
-/// let offer = dhcp_discover().await;
-/// ```
-pub fn dhcp_discover() -> DhcpDiscoverFuture {
-    dhcp_discover_in(default_runtime())
-}
-
 pub fn dhcp_discover_in(runtime: NetRuntimeHandle) -> DhcpDiscoverFuture {
     DhcpDiscoverFuture::new(runtime)
 }
@@ -627,11 +562,6 @@ impl Future for DhcpLastDeclinedFuture {
     }
 }
 
-/// 非同期DHCP最終拒否IP取得（推奨API）
-pub fn dhcp_last_declined() -> DhcpLastDeclinedFuture {
-    dhcp_last_declined_in(default_runtime())
-}
-
 pub fn dhcp_last_declined_in(runtime: NetRuntimeHandle) -> DhcpLastDeclinedFuture {
     DhcpLastDeclinedFuture::new(runtime)
 }
@@ -678,11 +608,6 @@ impl Future for DhcpLastReleasedFuture {
 
         stack::poll_command_result(&this.result_slot, &this.waker, cx)
     }
-}
-
-/// 非同期DHCP最終解放IP取得（推奨API）
-pub fn dhcp_last_released() -> DhcpLastReleasedFuture {
-    dhcp_last_released_in(default_runtime())
 }
 
 pub fn dhcp_last_released_in(runtime: NetRuntimeHandle) -> DhcpLastReleasedFuture {
@@ -744,7 +669,7 @@ mod tests {
             let result_slot_clone = result_slot.clone();
             let completed_clone = completed.clone();
             executor.spawn(crate::task::Task::new(async move {
-                let output = super::dhcp_state().await;
+                let output = super::dhcp_state_in(default_runtime()).await;
                 let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
                 *slot = Some(output);
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);

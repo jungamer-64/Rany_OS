@@ -587,7 +587,9 @@ async fn network_bootstrap_task() {
         // 100ms × 100 = 最大10秒
         task::sleep_ms(100).await;
 
-        let states = crate::net::api::dhcp::list_dhcp_states().await;
+        let states =
+            crate::net::api::dhcp::list_dhcp_states_in(crate::net::runtime::default_runtime())
+                .await;
         if states.iter().any(|state| state.state.v4_state == "Bound") {
             for state in states
                 .into_iter()
@@ -611,7 +613,7 @@ async fn network_bootstrap_task() {
 
     // 非同期ping: ゲートウェイへの接続性確認
     let ping_targets: alloc::vec::Vec<_> = if dhcp_bound {
-        crate::net::api::config::list_interface_configs()
+        crate::net::api::config::list_interface_configs_in(crate::net::runtime::default_runtime())
             .await
             .into_iter()
             .filter_map(|cfg| {
@@ -644,7 +646,9 @@ async fn network_bootstrap_task() {
 
     for (if_id, ping_target) in ping_targets {
         info!(target: "net_boot", "Async connectivity check if{} -> {:?}", if_id, ping_target);
-        match crate::net::api::icmp::ping(ping_target, 1).await {
+        match crate::net::api::icmp::ping_in(crate::net::runtime::default_runtime(), ping_target, 1)
+            .await
+        {
             Ok(echo) => info!(
                 target: "net_boot",
                 "Async ping success if{} rtt={} us",
@@ -844,7 +848,8 @@ pub(crate) fn spawn_demo_runtime_tasks() {
         info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
 
         // DHCP/スタックからゲートウェイを取得
-        let gw_opt = crate::net::api::config::list_interface_configs()
+        let gw_opt =
+            crate::net::api::config::list_interface_configs_in(crate::net::runtime::default_runtime())
             .await
             .into_iter()
             .map(|cfg| cfg.gateway)
@@ -855,7 +860,7 @@ pub(crate) fn spawn_demo_runtime_tasks() {
         };
         info!(target: "net_test", "Sending ICMP echo to {}.{}.{}.{} seq=1", gw[0], gw[1], gw[2], gw[3]);
         // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
-        match crate::net::api::icmp::ping(gw, 1).await {
+        match crate::net::api::icmp::ping_in(crate::net::runtime::default_runtime(), gw, 1).await {
             Ok(echo) => info!(target: "net_test", "Ping success rtt={} us", echo.rtt_us),
             Err(e) => warn!(target: "net_test", "Ping failed: {:?}", e),
         }

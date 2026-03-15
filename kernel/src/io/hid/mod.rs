@@ -36,10 +36,7 @@ pub use keyboard::{
     CharFutureArc,
     // Core types
     KeyCode,
-    // Extension traits
-    KeyCodeExt,
     KeyEvent,
-    KeyEventExt,
     // Async futures
     KeyEventFuture,
     KeyState,
@@ -48,7 +45,6 @@ pub use keyboard::{
     KeyboardStream,
     KeyboardStreamArc,
     Modifiers,
-    StreamAlreadyTaken,
     handle_key_event,
     has_event,
     // Functions (init removed - use Ps2KeyboardDriver via DriverRegistry)
@@ -69,11 +65,11 @@ pub use ps2::{
     // Types
     Ps2Controller,
     // Note: Top-level PS/2 convenience re-exports (e.g., `ps2_init`, `ps2_ports`, `ps2_status`, `ps2_commands`) were removed.
-    // Access the raw PS/2 module directly: `crate::io::hid::ps2::init()` or use `Ps2Controller` APIs.
+    // Access the raw PS/2 module directly: `crate::io::hid::ps2::init()`, `crate::io::hid::ps2::set_leds()`,
+    // or use `Ps2Controller` APIs.
     // Functions
     keyboard_interrupt_handler,
     // Constants (use `crate::io::hid::ps2::ports` / `crate::io::hid::ps2::status` directly)
-    set_leds,
 };
 
 // ============================================================================

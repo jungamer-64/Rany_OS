@@ -49,8 +49,11 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use generic `KeyCode`, `KeyEvent`, `DeviceType`, `Modifiers` or `hid_driver` types directly.
   - Mouse polling helpers (`has_mouse_event`, `poll_mouse_event`) ❌ **removed**
     - Migration: Use event-driven `MouseEvent` streams or query the global `MOUSE` under an interrupts-disabled section, e.g. `x86_64::instructions::interrupts::without_interrupts(|| crate::io::hid::mouse::MOUSE.lock().poll_event())`.
-  - HID extension traits (`KeyCodeExt`, `KeyEventExt`) ✅ **deprecated**
-    - Migration: Bring traits into scope from `hid_driver` directly (e.g., `use hid_driver::KeyEventExt`).  - `ModifierState` re-export ✅ **deprecated**
+  - HID extension traits (`KeyCodeExt`, `KeyEventExt`) and `StreamAlreadyTaken` re-export ❌ **removed**
+    - Migration: Bring traits into scope from `hid_driver::keyboard` directly (e.g., `use hid_driver::keyboard::KeyEventExt`) and use `hid_driver::StreamAlreadyTaken` for stream-acquisition errors.
+  - `set_leds` top-level re-export ❌ **removed**
+    - Migration: Use `crate::io::hid::ps2::set_leds(scroll, num, caps)` directly or call `Ps2Controller::set_keyboard_leds(...)`.
+  - `ModifierState` re-export ✅ **deprecated**
     - Migration: Use `hid_driver::ModifierState` directly.
   - `IsrSafeWaker` re-export ✅ **deprecated**
     - Migration: Use `hid_driver::IsrSafeWaker` directly.
@@ -84,20 +87,20 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `crate::io::hid::ps2::ports` or `Ps2Controller` APIs directly.
   - `io::ps2_status` ❌ **removed**
     - Migration: Use `crate::io::hid::ps2::status` or `ps2::status` directly.
-  - `io::set_leds` ✅ **deprecated**
-    - Migration: Use `crate::io::hid::ps2::set_leds` or `Ps2Controller::set_leds` instead.
+  - `io::set_leds` ❌ **removed**
+    - Migration: Use `crate::io::hid::ps2::set_leds` or `Ps2Controller::set_keyboard_leds` instead.
   - `ps2_commands` (hid top-level re-export) ❌ **removed**
     - Migration: Use `crate::io::hid::ps2::commands` directly or prefer `Ps2Controller` APIs instead of top-level re-exports.
   - `io::ps2_commands` ❌ **removed**
     - Migration: Use `crate::io::hid::ps2::commands` or `Ps2Controller` APIs instead.
-  - `ps2::kbd_commands` ✅ **deprecated**
-    - Migration: Use `crate::io::hid::ps2::kbd_commands` or `Ps2Controller` helpers instead.
-  - `io::ps2::kbd_commands` ✅ **deprecated**
-    - Migration: Use `crate::io::hid::ps2::kbd_commands` or `Ps2Controller` helpers instead.
-  - `ps2_mouse_commands` ✅ **deprecated**
-    - Migration: Use `crate::io::hid::ps2::mouse_commands` or `Ps2Controller` helpers instead.
-  - `io::ps2_mouse_commands` ✅ **deprecated**
-    - Migration: Use `crate::io::hid::ps2::mouse_commands` or `Ps2Controller` helpers instead.
+  - `ps2::kbd_commands` ❌ **removed**
+    - Migration: Prefer `Ps2Controller` helper methods instead of raw keyboard command constants.
+  - `io::ps2::kbd_commands` ❌ **removed**
+    - Migration: Prefer `Ps2Controller` helper methods instead of raw keyboard command constants.
+  - `ps2_mouse_commands` ❌ **removed**
+    - Migration: Prefer `Ps2Controller` helper methods instead of raw mouse command constants.
+  - `io::ps2_mouse_commands` ❌ **removed**
+    - Migration: Prefer `Ps2Controller` helper methods instead of raw mouse command constants.
 
 ## Notes
 
@@ -124,6 +127,36 @@ This document lists symbols that have been marked deprecated and recommended mig
   - UDP legacy bind wrappers (`UdpSocketTable::bind`, `UdpProcessor::bind`) ❌ **removed**
     - Migration: Use the token-aware API: `UdpSocketTable::bind_with_token(port, Some(token))`. For the no-token case use `UdpSocketTable::bind_with_token(port, None)` or the stack helper `bind_udp(port)`/`bind_udp_with_token(port, token)` as appropriate.
 
+- `kernel/src/net/services/dhcp`
+  - Default-runtime wrappers (`init()`, `init_v6()`, `legacy_v4_client_lock()`, `legacy_v6_client_lock()`) ❌ **removed**
+    - Migration: Use the runtime-aware variants `init_in(runtime, mac)`, `init_v6_in(runtime, mac)`, `legacy_v4_client_lock_in(runtime)`, `legacy_v6_client_lock_in(runtime)`. Default-runtime callers should pass `crate::net::runtime::default_runtime()` explicitly.
+
+- `kernel/src/net/api/dhcp.rs`
+  - Default-runtime wrappers (`get_dhcp_state()`, `list_dhcp_states()`, `dhcp_state()`, `dhcp_renew()`, `dhcp_release()`, `dhcp_discover()`, `dhcp_last_declined()`, `dhcp_last_released()`) ❌ **removed**
+    - Migration: Use the runtime-aware variants `get_dhcp_state_in(runtime, if_id)`, `list_dhcp_states_in(runtime)`, `dhcp_state_in(runtime)`, `dhcp_renew_in(runtime)`, `dhcp_release_in(runtime)`, `dhcp_discover_in(runtime)`, `dhcp_last_declined_in(runtime)`, `dhcp_last_released_in(runtime)`. Default-runtime callers should pass `crate::net::runtime::default_runtime()` explicitly.
+
+- `kernel/src/net/api/connections.rs`
+  - Default-runtime wrappers (`get_arp_cache()`, `enqueue_arp_cache_insert()`, `get_udp_endpoints()`, `get_tcp_connections()`) ❌ **removed**
+    - Migration: Use `get_arp_cache_in(runtime)`, `enqueue_arp_cache_insert_in(runtime, ip, mac)`, `get_udp_endpoints_in(runtime)`, `get_tcp_connections_in(runtime)`. Default-runtime callers should pass `crate::net::runtime::default_runtime()` explicitly.
+
+- `kernel/src/net/api/diagnostics.rs`
+  - Default-runtime wrappers (`network_snapshot()`, `network_recent_events(limit)`) ❌ **removed**
+    - Migration: Use `network_snapshot_in(runtime)` and `network_recent_events_in(runtime, limit)`. Default-runtime callers should pass `crate::net::runtime::default_runtime()` explicitly.
+
+- `kernel/src/net/api/firewall.rs`
+  - Default-runtime wrappers (`firewall_enable()`, `firewall_disable()`, `firewall_status()`, `firewall_list_rules()`, `firewall_stats()`, `firewall_add_rule(...)`, `firewall_remove_rule(id)`, `firewall_clear_rules()`, `firewall_set_default_policy(direction, action)`) ❌ **removed**
+    - Migration: Use the runtime-aware `*_in(runtime, ...)` variants and pass `crate::net::runtime::default_runtime()` explicitly for default-runtime callers.
+
+- `kernel/src/net/api/icmp.rs`
+  - Default-runtime wrappers (`enqueue_icmp_echo()`, `ping()`, `ping_with_timeout()`) ❌ **removed**
+    - Migration: Use `enqueue_icmp_echo_in(runtime, target, seq)`, `ping_in(runtime, target, seq)`, and `ping_with_timeout_in(runtime, target, seq, timeout_us)`. Default-runtime callers should pass `crate::net::runtime::default_runtime()` explicitly.
+
+- `kernel/src/net/api/config.rs`
+  - Default-runtime wrappers (`primary_interface_config_snapshot()`, `aggregate_network_stats_snapshot()`, `get_interface_config(if_id)`, `list_interface_configs()`, `get_interface_stats(if_id)`, `list_interface_stats()`, `list_interfaces()`) ❌ **removed**
+    - Migration: Use the runtime-aware `*_in(runtime, ...)` variants and pass `crate::net::runtime::default_runtime()` explicitly for default-runtime callers.
+  - Internal default-runtime helpers (`primary_interface_id()`, `get_interface_config_from_runtime()`, `list_interface_configs_from_runtime()`, `get_interface_stats_without_stack()`, `list_interface_stats_with_stack()`, `list_interfaces_from_runtime()`, `primary_interface_config_snapshot_sync()`, `aggregate_network_stats_snapshot_sync()`, `list_interface_stats_sync()`) ❌ **removed**
+    - Migration: Use the corresponding `*_in(runtime, ...)` helper or sync variant and thread the runtime handle through internal callers.
+
 - `kernel/src/io/mod.rs`
   - `parse_dmar_table()` ❌ **removed**
     - Migration: Call `acpi::dmar::parse_dmar` directly.
@@ -138,7 +171,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 
 - `kernel/src/net/api/icmp.rs`
   - `send_icmp_echo()` ❌ **removed** (was deprecated)
-    - Migration: Use `enqueue_icmp_echo()` or `ping()` instead.
+    - Migration: Use `enqueue_icmp_echo_in(runtime, target, seq)` or `ping_in(runtime, target, seq)` instead. Default-runtime callers should pass `crate::net::runtime::default_runtime()` explicitly.
 
 - `kernel/src/net/api/diagnostics.rs`
   - `dns_resolve()` ❌ **removed** (was deprecated)
@@ -198,6 +231,10 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `KeyEvent::{modifiers, shift, ctrl, alt, caps_lock}` ❌ **removed**
     - Migration: Read the public fields directly (`event.modifiers`, `event.modifiers.shift`, など) instead of compatibility getters.
 
+- `drivers/hid` (`drivers/hid/src/ps2/mod.rs`)
+  - `ps2::{kbd_commands, mouse_commands}` re-exports ❌ **removed**
+    - Migration: Prefer `Ps2Controller` helper methods over raw PS/2 keyboard/mouse command constants.
+
 - `drivers/nvme` (`drivers/nvme/src/driver.rs`)
   - `nvme_driver::driver` compatibility module ❌ **removed**
     - Migration: Import concrete modules directly (`nvme_driver::queue`, `nvme_driver::polling_driver`, `nvme_driver::async_io`, `nvme_driver::global`, `nvme_driver::commands`).
@@ -219,11 +256,22 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `KernelServices::fs_open()` — `fs_open_with_token(path, mode, None)` に移行
 - `KernelServices::nvme_open_direct()` — `nvme_open_direct_with_token(device_id, start_block, block_count, None)` に移行
 - `drivers::hid::KeyEvent` compatibility getters — public fields / `Modifiers` fields に移行
+- `io::hid::{KeyCodeExt, KeyEventExt, StreamAlreadyTaken}` compatibility re-exports — canonical `hid_driver` paths に移行
+- `io::hid::set_leds` top-level re-export — `io::hid::ps2::set_leds(...)` / `Ps2Controller::set_keyboard_leds(...)` に移行
 - `fat32::AsyncMutex::lock()` — `blocking_lock()` / `lock_async()` に移行
 - `nvme_driver::driver` compatibility module — concrete NVMe submodules に移行
 - `memory::oom_killer::{DomainMemoryInfo, list_domains}` — `domain_system` + `quota_manager()` に移行
 - `net::services::dns::client()` — high-level DNS helpers / shared Arc-backed runtime access に移行
 - `iommu::runtime::command::CommandQueue::submit_sync()` — `submit(...).wait_blocking()` / `submit_sync_with_worker()` に移行
+- `io::virtio::net::VirtioNetDevice::submit_tx()` — `send_async()` / `enqueue_send_zero_copy()` / `NetDevicePort::submit_tx()` に移行
+- `net::services::dhcp::{init, init_v6, legacy_v4_client_lock, legacy_v6_client_lock}` — runtime-aware `*_in(...)` APIs に移行
+- `net::api::dhcp::{get_dhcp_state, list_dhcp_states, dhcp_state, dhcp_renew, dhcp_release, dhcp_discover, dhcp_last_declined, dhcp_last_released}` — runtime-aware `*_in(...)` APIs に移行
+- `net::api::connections::{get_arp_cache, enqueue_arp_cache_insert, get_udp_endpoints, get_tcp_connections}` — runtime-aware `*_in(...)` APIs に移行
+- `net::api::diagnostics::{network_snapshot, network_recent_events}` — runtime-aware `*_in(...)` APIs に移行
+- `net::api::firewall::{firewall_enable, firewall_disable, firewall_status, firewall_list_rules, firewall_stats, firewall_add_rule, firewall_remove_rule, firewall_clear_rules, firewall_set_default_policy}` — runtime-aware `*_in(...)` APIs に移行
+- `net::api::icmp::{enqueue_icmp_echo, ping, ping_with_timeout}` — runtime-aware `*_in(...)` APIs に移行
+- `net::api::config::{primary_interface_config_snapshot, aggregate_network_stats_snapshot, get_interface_config, list_interface_configs, get_interface_stats, list_interface_stats, list_interfaces}` — runtime-aware `*_in(...)` APIs に移行
+- `hid_driver::ps2::{kbd_commands, mouse_commands}` re-exports — `Ps2Controller` helper methods に移行
 
 ## 2026-03-04 更新サマリー
 
@@ -245,7 +293,6 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `executor.rs` の旧 `TASK_STORE` 参照コメントを per-core ストアの表記に更新
 
 ### 残存する deprecated 項目（呼び出し元あり、要段階的移行）
-- `submit_tx()` — ブートストラップ用フォールバック。呼び出し元なしだが意図的に保持
 - `Ipv4Header::compute_checksum()`, `update_checksum()`, `verify_checksum()` ❌ **removed**
 - `notify_addr` フィールド — virtio transport で現役使用中
 - IO scheduler の `#[allow(deprecated)]` — 内部パターン互換性のため保持

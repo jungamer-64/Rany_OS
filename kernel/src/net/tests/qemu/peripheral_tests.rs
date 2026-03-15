@@ -111,9 +111,9 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
         .unwrap_or(true)
 }
 
-// smoke test exercising DHCP last_declined/last_released via dhcp_state()
+// smoke test exercising DHCP last_declined/last_released via dhcp_state_in(default_runtime())
 // 旧同期API (dhcp_last_declined, dhcp_last_released, dhcp_release) は削除済み。
-// dhcp_state() のスナップショットで同等のフィールドを検証する。
+// dhcp_state_in(default_runtime()) のスナップショットで同等のフィールドを検証する。
 pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     use crate::net::runtime::stack;
 
@@ -131,7 +131,8 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
         executor.spawn(crate::task::Task::new(async move {
-            let output = crate::net::api::dhcp::dhcp_state().await;
+            let output =
+                crate::net::api::dhcp::dhcp_state_in(crate::net::runtime::default_runtime()).await;
             let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(output);
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
@@ -157,7 +158,10 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     }
 
     // manipulate global client directly to produce values
-    if let Ok(guard) = crate::net::services::dhcp::legacy_v4_client_lock().lock() {
+    if let Ok(guard) =
+        crate::net::services::dhcp::legacy_v4_client_lock_in(crate::net::runtime::default_runtime())
+            .lock()
+    {
         if let Some(ref client) = *guard {
             // simulate lease and then release via internal API
             let lease = crate::net::services::dhcp::DhcpLease {
@@ -189,7 +193,8 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
         executor.spawn(crate::task::Task::new(async move {
-            let output = crate::net::api::dhcp::dhcp_state().await;
+            let output =
+                crate::net::api::dhcp::dhcp_state_in(crate::net::runtime::default_runtime()).await;
             let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(output);
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
@@ -215,7 +220,10 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     }
 
     // simulate a decline
-    if let Ok(guard) = crate::net::services::dhcp::legacy_v4_client_lock().lock() {
+    if let Ok(guard) =
+        crate::net::services::dhcp::legacy_v4_client_lock_in(crate::net::runtime::default_runtime())
+            .lock()
+    {
         if let Some(ref client) = *guard {
             let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5, 6, 7, 8]), None);
         }
@@ -230,7 +238,8 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
         executor.spawn(crate::task::Task::new(async move {
-            let output = crate::net::api::dhcp::dhcp_state().await;
+            let output =
+                crate::net::api::dhcp::dhcp_state_in(crate::net::runtime::default_runtime()).await;
             let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(output);
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
