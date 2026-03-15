@@ -6,13 +6,13 @@ global_asm!(
 .balign 16
 .global __ap_trampoline_start
 .global __ap_trampoline_end
+.global __ap_long_mode_entry
 .global __ap_patch_long_mode_far_ptr
-.global __ap_patch_gdt_descriptor_base
-.global __ap_patch_gdt_code_base
-.global __ap_patch_gdt_data_base
-.set AP_GDT_DESCRIPTOR_OFFSET, ap_gdt_descriptor - __ap_trampoline_start
-.set AP_MAILBOX_PAGE_TABLE_OFFSET, ap_mailbox - __ap_trampoline_start + 8
-.set AP_LONG_MODE_FAR_PTR_OFFSET, ap_long_mode_far_ptr - __ap_trampoline_start
+.global __ap_patch_gdt_descriptor
+.global __ap_patch_gdt
+.global __ap_mailbox
+.set AP_GDT_DESCRIPTOR_OFFSET, __ap_patch_gdt_descriptor - __ap_trampoline_start
+.set AP_LONG_MODE_FAR_PTR_OFFSET, __ap_patch_long_mode_far_ptr - __ap_trampoline_start
 .code16
 __ap_trampoline_start:
     cli
@@ -29,19 +29,17 @@ __ap_trampoline_start:
     mov cr0, eax
     .byte 0xea
     .word protected_mode_entry - __ap_trampoline_start
-    .word 0x08
+    .word {gdt_code32_selector}
 .code32
 protected_mode_entry:
-    mov ax, 0x10
+    mov ax, {gdt_data32_selector}
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov fs, ax
-    mov gs, ax
     mov eax, cr4
     or eax, 0x20
     mov cr4, eax
-    mov eax, DWORD PTR [AP_MAILBOX_PAGE_TABLE_OFFSET]
+    mov eax, DWORD PTR [{mailbox_page_table_offset}]
     mov cr3, eax
     mov ecx, 0xc0000080
     rdmsr
@@ -52,14 +50,11 @@ protected_mode_entry:
     mov cr0, eax
     .byte 0xff, 0x2d
     .long AP_LONG_MODE_FAR_PTR_OFFSET
-.balign 8
-ap_long_mode_far_ptr:
 __ap_patch_long_mode_far_ptr:
-    .long 0
-    .word 0x18
+    .zero 6
 .code64
-long_mode_entry:
-    mov ax, 0x10
+__ap_long_mode_entry:
+    mov ax, {gdt_data32_selector}
     mov ds, ax
     mov es, ax
     mov ss, ax
@@ -67,52 +62,37 @@ long_mode_entry:
     mov fs, ax
     mov gs, ax
     mov rax, cr0
-    and rax, 0xfffffffffffffffb
-    and rax, 0xfffffffffffffff7
+    and rax, -13
     mov cr0, rax
     mov rax, cr4
     or rax, 0x600
     mov cr4, rax
-    mov rsp, QWORD PTR [rip + ap_mailbox + 16]
-    lea rdi, [rip + ap_mailbox]
-    mov rax, QWORD PTR [rip + ap_mailbox + 24]
+    mov rsp, QWORD PTR [rip + __ap_mailbox + {mailbox_stack_ptr_offset}]
+    lea rdi, [rip + __ap_mailbox]
+    mov rax, QWORD PTR [rip + __ap_mailbox + {mailbox_entry_point_offset}]
     call rax
 .hang:
     cli
     hlt
     jmp .hang
-.balign 8
-ap_gdt_descriptor:
-    .word ap_gdt_end - ap_gdt - 1
-__ap_patch_gdt_descriptor_base:
-    .long 0
-.balign 8
-ap_gdt:
-    .quad 0
-    .word 0xffff
-__ap_patch_gdt_code_base:
-    .word 0
-    .byte 0
-    .byte 0x9a
-    .byte 0xcf
-    .byte 0
-    .word 0xffff
-__ap_patch_gdt_data_base:
-    .word 0
-    .byte 0
-    .byte 0x92
-    .byte 0xcf
-    .byte 0
-    .quad 0x00af9a000000ffff
-ap_gdt_end:
-    .zero 0x200 - (. - __ap_trampoline_start)
-ap_mailbox:
-    .long 0
-    .long 0
-    .quad 0
-    .quad 0
-    .quad 0
-    .quad 0
+__ap_patch_gdt_descriptor:
+    .zero 6
+__ap_patch_gdt:
+    .zero {gdt_size}
+.zero {mailbox_offset} - (. - __ap_trampoline_start)
+__ap_mailbox:
+    .zero {mailbox_size}
 __ap_trampoline_end:
-"#
+"#,
+    gdt_code32_selector = const crate::GDT32_CODE_SELECTOR,
+    gdt_data32_selector = const crate::GDT32_DATA_SELECTOR,
+    mailbox_offset = const crate::MAILBOX_OFFSET,
+    mailbox_size = const core::mem::size_of::<crate::ApTrampolineMailbox>(),
+    mailbox_page_table_offset =
+        const crate::MAILBOX_OFFSET + core::mem::offset_of!(crate::ApTrampolineMailbox, page_table),
+    mailbox_stack_ptr_offset =
+        const core::mem::offset_of!(crate::ApTrampolineMailbox, stack_ptr),
+    mailbox_entry_point_offset =
+        const core::mem::offset_of!(crate::ApTrampolineMailbox, entry_point),
+    gdt_size = const crate::GDT_SIZE,
 );

@@ -6,8 +6,8 @@
 //! - AP boot information structure
 
 use ap_trampoline::{
-    ApBootFlags, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE, patch_trampoline,
-    trampoline_bytes,
+    ApBootFlags, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE, TrampolinePageMut,
+    TrampolinePhysAddr,
 };
 use boot_proto::ApBootInfo;
 use log::info;
@@ -57,11 +57,10 @@ pub fn prepare_ap_boot(cpu_count: u32) -> ApBootInfo {
     info!("AP Boot: Preparing resources for {} AP(s)", ap_count);
 
     // Allocate trampoline region below 1MB
-    let trampoline_addr = allocate_trampoline();
-    if trampoline_addr == 0 {
+    let Some(trampoline_addr) = allocate_trampoline() else {
         info!("AP Boot: WARNING - Failed to allocate trampoline region");
         return ApBootInfo::default();
-    }
+    };
     if !install_trampoline(trampoline_addr) {
         info!("AP Boot: WARNING - Failed to populate trampoline region");
         return ApBootInfo::default();
@@ -70,11 +69,19 @@ pub fn prepare_ap_boot(cpu_count: u32) -> ApBootInfo {
     // Allocate stacks for APs
     let (stack_base, stack_count) = allocate_ap_stacks(ap_count as usize);
 
-    let ap_boot_info = build_ap_boot_info(ap_count, trampoline_addr, stack_base, stack_count, true);
+    let ap_boot_info = build_ap_boot_info(
+        ap_count,
+        Some(trampoline_addr),
+        stack_base,
+        stack_count,
+        true,
+    );
 
     info!(
         "AP Boot: Trampoline at 0x{:x}, {} stacks at 0x{:x}",
-        trampoline_addr, stack_count, stack_base
+        trampoline_addr.as_u64(),
+        stack_count,
+        stack_base
     );
 
     ap_boot_info
@@ -116,12 +123,21 @@ fn detect_cpu_count() -> u32 {
 
 fn build_ap_boot_info(
     ap_count: u32,
-    trampoline_addr: u64,
+    trampoline_addr: Option<TrampolinePhysAddr>,
     stack_base: u64,
     stack_count: usize,
     trampoline_ready: bool,
 ) -> ApBootInfo {
-    if ap_count == 0 || trampoline_addr == 0 || !trampoline_ready {
+    let Some(trampoline_addr) = trampoline_addr else {
+        return ApBootInfo::default();
+    };
+
+    if ap_count == 0
+        || stack_base == 0
+        || stack_count == 0
+        || stack_count < ap_count as usize
+        || !trampoline_ready
+    {
         return ApBootInfo::default();
     }
 
@@ -133,26 +149,18 @@ fn build_ap_boot_info(
         trampoline_layout_version: LAYOUT_VERSION,
         trampoline_mailbox_offset: MAILBOX_OFFSET as u32,
         _reserved2: [0; 4],
-        trampoline_addr,
+        trampoline_addr: trampoline_addr.as_u64(),
         trampoline_size: AP_TRAMPOLINE_SIZE as u64,
         stack_base,
         stack_size: AP_STACK_SIZE as u64,
     }
 }
 
-fn install_trampoline(trampoline_addr: u64) -> bool {
-    let trampoline_bytes = trampoline_bytes();
-    if trampoline_addr == 0 || trampoline_bytes.len() > AP_TRAMPOLINE_SIZE {
-        return false;
-    }
-
+fn install_trampoline(trampoline_addr: TrampolinePhysAddr) -> bool {
     let install_result = unsafe {
-        let trampoline_ptr = trampoline_addr as *mut u8;
-        core::ptr::write_bytes(trampoline_ptr, 0, AP_TRAMPOLINE_SIZE);
-        let trampoline_image =
-            core::slice::from_raw_parts_mut(trampoline_ptr, trampoline_bytes.len());
-        trampoline_image.copy_from_slice(trampoline_bytes);
-        patch_trampoline(trampoline_image, trampoline_addr)
+        let trampoline_ptr = trampoline_addr.as_u64() as *mut u8;
+        TrampolinePageMut::from_raw_ptr(trampoline_ptr)
+            .and_then(|mut trampoline_page| trampoline_page.install(trampoline_addr))
     };
 
     if let Err(error) = install_result {
@@ -164,7 +172,7 @@ fn install_trampoline(trampoline_addr: u64) -> bool {
 }
 
 /// Allocate real-mode trampoline region below 1MB
-fn allocate_trampoline() -> u64 {
+fn allocate_trampoline() -> Option<TrampolinePhysAddr> {
     // Try to allocate at preferred address first
     match boot::allocate_pages(
         AllocateType::Address(TRAMPOLINE_PREFERRED_ADDR),
@@ -173,11 +181,21 @@ fn allocate_trampoline() -> u64 {
     ) {
         Ok(ptr) => {
             let addr = ptr.as_ptr() as u64;
-            info!(
-                "AP Boot: Trampoline allocated at preferred address 0x{:x}",
-                addr
-            );
-            return addr;
+            match TrampolinePhysAddr::new(addr) {
+                Ok(addr) => {
+                    info!(
+                        "AP Boot: Trampoline allocated at preferred address 0x{:x}",
+                        addr.as_u64()
+                    );
+                    return Some(addr);
+                }
+                Err(error) => {
+                    info!(
+                        "AP Boot: Preferred trampoline allocation at 0x{:x} is invalid: {}",
+                        addr, error
+                    );
+                }
+            }
         }
         Err(_) => {
             // Preferred address not available, try MaxAddress allocation
@@ -192,15 +210,26 @@ fn allocate_trampoline() -> u64 {
     ) {
         Ok(ptr) => {
             let addr = ptr.as_ptr() as u64;
-            info!(
-                "AP Boot: Trampoline allocated at fallback address 0x{:x}",
-                addr
-            );
-            addr
+            match TrampolinePhysAddr::new(addr) {
+                Ok(addr) => {
+                    info!(
+                        "AP Boot: Trampoline allocated at fallback address 0x{:x}",
+                        addr.as_u64()
+                    );
+                    Some(addr)
+                }
+                Err(error) => {
+                    info!(
+                        "AP Boot: Fallback trampoline allocation at 0x{:x} is invalid: {}",
+                        addr, error
+                    );
+                    None
+                }
+            }
         }
         Err(e) => {
             info!("AP Boot: Failed to allocate trampoline: {:?}", e);
-            0
+            None
         }
     }
 }
@@ -257,10 +286,16 @@ mod tests {
 
     #[test]
     fn build_ap_boot_info_sets_shared_trampoline_metadata() {
-        let info = build_ap_boot_info(4, 0x8000, 0x20_0000, 3, true);
+        let info = build_ap_boot_info(
+            4,
+            Some(TrampolinePhysAddr::new(0x8000).unwrap()),
+            0x20_0000,
+            4,
+            true,
+        );
 
         assert_eq!(info.ap_count, 4);
-        assert_eq!(info.stack_count, 3);
+        assert_eq!(info.stack_count, 4);
         assert_eq!(info.flags, ApBootFlags::TRAMPOLINE_READY);
         assert_eq!(info.trampoline_layout_version, LAYOUT_VERSION);
         assert_eq!(info.trampoline_mailbox_offset, MAILBOX_OFFSET as u32);
@@ -272,7 +307,26 @@ mod tests {
 
     #[test]
     fn build_ap_boot_info_falls_back_to_default_when_trampoline_is_not_ready() {
-        let info = build_ap_boot_info(2, 0x8000, 0x20_0000, 2, false);
+        let info = build_ap_boot_info(
+            2,
+            Some(TrampolinePhysAddr::new(0x8000).unwrap()),
+            0x20_0000,
+            2,
+            false,
+        );
+
+        assert_eq!(info, ApBootInfo::default());
+    }
+
+    #[test]
+    fn build_ap_boot_info_falls_back_to_default_when_stack_count_is_short() {
+        let info = build_ap_boot_info(
+            4,
+            Some(TrampolinePhysAddr::new(0x8000).unwrap()),
+            0x20_0000,
+            3,
+            true,
+        );
 
         assert_eq!(info, ApBootInfo::default());
     }

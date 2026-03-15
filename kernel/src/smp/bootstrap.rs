@@ -13,9 +13,12 @@ use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use ap_trampoline::{
-    ApBootFlags, ApTrampolineMailbox, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE,
+    ApBootFlags, ApTrampolineLaunchInfo, ApTrampolineMailbox, LAYOUT_VERSION, MAILBOX_OFFSET,
+    PageTable32Addr, TRAMPOLINE_SIZE, TrampolineMailboxHandle, TrampolinePhysAddr,
+    TrampolineVirtAddr,
 };
 use boot_proto::ExoBootInfo;
+use core::num::{NonZeroU32, NonZeroU64};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 
 use crate::drivers::apic::LocklessLocalApic;
@@ -135,7 +138,11 @@ pub struct ApBootstrap {
     /// Long-lived runtime stacks for AP workers after bootstrap handoff
     runtime_stacks: Vec<ApRuntimeStack>,
     /// Physical address of the low-memory trampoline area provided by the bootloader
-    trampoline_base: u64,
+    trampoline_base: TrampolinePhysAddr,
+    /// Shared mailbox view into the trampoline page.
+    mailbox: TrampolineMailboxHandle,
+    /// Serialize launches because all APs share one trampoline mailbox page.
+    launch_lock: PoisonLock<()>,
     /// Number of APs started
     aps_started: AtomicU32,
     /// Expected number of APs
@@ -149,6 +156,12 @@ impl ApBootstrap {
         boot_info: &ExoBootInfo,
         num_aps: u32,
     ) -> Result<Self, &'static str> {
+        let trampoline_base = TrampolinePhysAddr::new(boot_info.ap_boot.trampoline_addr)?;
+        let trampoline_virt = TrampolineVirtAddr::new(
+            crate::memory::phys_to_virt(x86_64::PhysAddr::new(trampoline_base.as_u64())).as_u64()
+                as usize,
+        )?;
+        let mailbox = unsafe { mailbox_handle_from_trampoline_base(trampoline_virt) }?;
         let current_page_table = crate::mm::virt::higher_half::get_cr3().as_u64();
         if current_page_table != boot_info.page_table_base {
             log::info!(
@@ -182,7 +195,9 @@ impl ApBootstrap {
             lapic: LocklessLocalApic::new(lapic_base),
             ap_info,
             runtime_stacks,
-            trampoline_base: boot_info.ap_boot.trampoline_addr,
+            trampoline_base,
+            mailbox,
+            launch_lock: PoisonLock::new(()),
             aps_started: AtomicU32::new(0),
             expected_aps: num_aps,
         })
@@ -197,43 +212,35 @@ impl ApBootstrap {
         self.runtime_stacks.get(index).map(|stack| stack.top)
     }
 
-    unsafe fn mailbox_ptr(&self) -> *mut ApTrampolineMailbox {
-        let trampoline_virt =
-            crate::memory::phys_to_virt(x86_64::PhysAddr::new(self.trampoline_base)).as_u64();
-        (trampoline_virt as *mut u8).add(MAILBOX_OFFSET) as *mut ApTrampolineMailbox
-    }
-
     /// Start a single AP
     pub fn start_ap(&self, ap_index: usize, apic_id: u32) -> Result<(), &'static str> {
         let info = self.ap_info.get(ap_index).ok_or("Invalid AP index")?;
-        let cpu_id = u32::try_from(ap_index)
-            .ok()
-            .and_then(|id| id.checked_add(1))
-            .ok_or("AP logical CPU ID overflow")?;
-
-        if info.stack_ptr == 0 {
-            return Err("missing AP stack allocation");
-        }
-        if info.page_table >> 32 != 0 {
-            return Err("AP bootstrap requires CR3 below 4GiB");
-        }
+        let cpu_id = NonZeroU32::new(
+            u32::try_from(ap_index)
+                .ok()
+                .and_then(|id| id.checked_add(1))
+                .ok_or("AP logical CPU ID overflow")?,
+        )
+        .ok_or("AP logical CPU ID overflow")?;
+        let page_table = PageTable32Addr::new(info.page_table)?;
+        let stack_ptr = NonZeroU64::new(info.stack_ptr).ok_or("missing AP stack allocation")?;
+        let entry_point =
+            NonZeroU64::new(info.entry_point).ok_or("missing AP trampoline entry point")?;
+        let launch_info = ApTrampolineLaunchInfo::new(
+            ap_index as u32,
+            cpu_id,
+            page_table,
+            stack_ptr,
+            entry_point,
+            NonZeroU64::new(core::ptr::addr_of!(AP_BOOT_PROBE) as u64),
+        );
+        let _launch_guard = self.launch_lock.lock_for_init("SMP AP trampoline launch");
 
         log::info!("[SMP] Starting AP {} (APIC ID: {})\n", ap_index, apic_id);
-        crate::smp::mark_launching(cpu_id as usize);
+        crate::smp::mark_launching(cpu_id.get() as usize);
 
-        unsafe {
-            core::ptr::write_volatile(
-                self.mailbox_ptr(),
-                ApTrampolineMailbox {
-                    ap_slot: ap_index as u32,
-                    cpu_id,
-                    page_table: info.page_table,
-                    stack_ptr: info.stack_ptr,
-                    entry_point: info.entry_point,
-                    probe_addr: core::ptr::addr_of!(AP_BOOT_PROBE) as u64,
-                },
-            );
-        }
+        info.started.store(false, Ordering::Release);
+        self.mailbox.write_launch(launch_info)?;
         fence(Ordering::SeqCst);
 
         self.lapic.enable();
@@ -242,7 +249,7 @@ impl ApBootstrap {
         self.delay_ms(10);
 
         info.set_state(ApState::SipiSent);
-        let vector = (self.trampoline_base / 0x1000) as u8;
+        let vector = self.trampoline_base.sipi_vector();
         self.lapic.send_sipi(apic_id, vector);
         self.delay_us(200);
         self.lapic.send_sipi(apic_id, vector);
@@ -305,6 +312,18 @@ static AP_BOOTSTRAP: PoisonLock<Option<&'static ApBootstrap>> = PoisonLock::new(
 
 fn bootstrap_ref() -> Option<&'static ApBootstrap> {
     *AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+unsafe fn mailbox_handle_from_trampoline_base(
+    trampoline_virt: TrampolineVirtAddr,
+) -> Result<TrampolineMailboxHandle, &'static str> {
+    unsafe { TrampolineMailboxHandle::from_trampoline_virt(trampoline_virt) }
+}
+
+unsafe fn mailbox_handle_from_ffi_ptr(
+    mailbox_ptr: *const ApTrampolineMailbox,
+) -> Result<TrampolineMailboxHandle, &'static str> {
+    unsafe { TrampolineMailboxHandle::from_raw_ptr(mailbox_ptr.cast_mut()) }
 }
 
 /// Initialize SMP bootstrap
@@ -452,22 +471,40 @@ fn ap_enter_executor(cpu_id: usize) -> ! {
 
 /// Rust-side AP trampoline handoff called after long mode is active.
 #[inline(never)]
-pub extern "C" fn ap_trampoline_entry(mailbox_ptr: *const ApTrampolineMailbox) -> ! {
+pub unsafe extern "C" fn ap_trampoline_entry(mailbox_ptr: *const ApTrampolineMailbox) -> ! {
     ap_serial_mark(b'B');
 
-    if mailbox_ptr.is_null() {
-        ap_serial_mark(b'X');
-        // LOOP_PROOF: mode=halt; reason=The trampoline contract guarantees a valid mailbox pointer, so a null pointer indicates unrecoverable bootstrap corruption and the AP must stop in place.
-        loop {
-            core::hint::spin_loop();
+    let mailbox = match unsafe { mailbox_handle_from_ffi_ptr(mailbox_ptr) } {
+        Ok(mailbox) => mailbox,
+        Err(_) => {
+            ap_serial_mark(b'X');
+            // LOOP_PROOF: mode=halt; reason=The trampoline contract guarantees a valid verified mailbox, so any verification failure indicates unrecoverable bootstrap corruption and the AP must stop in place.
+            loop {
+                core::hint::spin_loop();
+            }
         }
-    }
+    };
 
-    let mailbox = unsafe { &*mailbox_ptr };
-    let ap_probe = if mailbox.probe_addr == 0 {
+    ap_trampoline_entry_inner(mailbox)
+}
+
+#[inline(never)]
+fn ap_trampoline_entry_inner(mailbox: TrampolineMailboxHandle) -> ! {
+    let mailbox = match mailbox.read_verified() {
+        Ok(mailbox) => mailbox,
+        Err(_) => {
+            ap_serial_mark(b'X');
+            // LOOP_PROOF: mode=halt; reason=The trampoline contract guarantees a valid verified mailbox, so any verification failure indicates unrecoverable bootstrap corruption and the AP must stop in place.
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+
+    let ap_probe = if mailbox.probe_addr() == 0 {
         0
     } else {
-        unsafe { core::ptr::read_volatile(mailbox.probe_addr as *const u8) }
+        unsafe { core::ptr::read_volatile(mailbox.probe_addr() as *const u8) }
     };
     if ap_probe == AP_BOOT_PROBE {
         ap_serial_mark(b'P');
@@ -475,15 +512,15 @@ pub extern "C" fn ap_trampoline_entry(mailbox_ptr: *const ApTrampolineMailbox) -
         ap_serial_mark(b'p');
     }
 
-    if let Some(runtime_stack_top) =
-        bootstrap_ref().and_then(|bootstrap| bootstrap.runtime_stack_top(mailbox.ap_slot as usize))
+    if let Some(runtime_stack_top) = bootstrap_ref()
+        .and_then(|bootstrap| bootstrap.runtime_stack_top(mailbox.ap_slot() as usize))
     {
         unsafe {
-            switch_to_ap_runtime_stack(runtime_stack_top, mailbox.ap_slot, mailbox.cpu_id);
+            switch_to_ap_runtime_stack(runtime_stack_top, mailbox.ap_slot(), mailbox.cpu_id());
         }
     }
 
-    ap_entry_runtime(mailbox.ap_slot, mailbox.cpu_id)
+    ap_entry_runtime(mailbox.ap_slot(), mailbox.cpu_id())
 }
 
 #[inline(never)]
@@ -614,6 +651,7 @@ fn validate_trampoline_handoff(ap_boot: &boot_proto::ApBootInfo) -> Result<(), &
     if ap_boot.trampoline_addr == 0 {
         return Err("missing AP trampoline allocation");
     }
+    TrampolinePhysAddr::new(ap_boot.trampoline_addr)?;
     if (ap_boot.flags & ApBootFlags::TRAMPOLINE_READY) == 0 {
         return Err("shared AP trampoline is not marked ready");
     }
@@ -626,6 +664,15 @@ fn validate_trampoline_handoff(ap_boot: &boot_proto::ApBootInfo) -> Result<(), &
     if ap_boot.trampoline_mailbox_offset != MAILBOX_OFFSET as u32 {
         return Err("shared AP trampoline mailbox offset mismatch");
     }
+    if ap_boot.stack_count < ap_boot.ap_count {
+        return Err("shared AP stack allocation count is smaller than AP count");
+    }
+    if ap_boot.stack_base == 0 {
+        return Err("missing AP stack allocation");
+    }
+    if ap_boot.stack_base % PAGE_SIZE != 0 {
+        return Err("AP stack base must be page aligned");
+    }
 
     Ok(())
 }
@@ -633,6 +680,24 @@ fn validate_trampoline_handoff(ap_boot: &boot_proto::ApBootInfo) -> Result<(), &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_mailbox_handle() -> TrampolineMailboxHandle {
+        let trampoline_virt = TrampolineVirtAddr::new(0x1000_0000).unwrap();
+        unsafe { TrampolineMailboxHandle::from_trampoline_virt(trampoline_virt).unwrap() }
+    }
+
+    fn test_bootstrap_with_ap_info(ap_info: ApBootInfo) -> ApBootstrap {
+        ApBootstrap {
+            lapic: LocklessLocalApic::new(0),
+            ap_info: Vec::from([ap_info]),
+            runtime_stacks: Vec::new(),
+            trampoline_base: TrampolinePhysAddr::new(0x8000).unwrap(),
+            mailbox: test_mailbox_handle(),
+            launch_lock: PoisonLock::new(()),
+            aps_started: AtomicU32::new(0),
+            expected_aps: 1,
+        }
+    }
 
     fn valid_ap_boot_info() -> boot_proto::ApBootInfo {
         boot_proto::ApBootInfo {
@@ -680,6 +745,28 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn validate_trampoline_handoff_rejects_high_trampoline_address() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.trampoline_addr = 0x10_0000;
+        assert_eq!(
+            validate_trampoline_handoff(&ap_boot),
+            Err("AP trampoline must reside below 1 MiB")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn validate_trampoline_handoff_rejects_unaligned_trampoline_address() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.trampoline_addr = 0x8100;
+        assert_eq!(
+            validate_trampoline_handoff(&ap_boot),
+            Err("AP trampoline must be 4 KiB aligned")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_trampoline_handoff_rejects_layout_version_mismatch() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_layout_version = LAYOUT_VERSION + 1;
@@ -697,6 +784,47 @@ mod tests {
         assert_eq!(
             validate_trampoline_handoff(&ap_boot),
             Err("shared AP trampoline mailbox offset mismatch")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn validate_trampoline_handoff_rejects_short_stack_count() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.stack_count = 1;
+        assert_eq!(
+            validate_trampoline_handoff(&ap_boot),
+            Err("shared AP stack allocation count is smaller than AP count")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn validate_trampoline_handoff_rejects_unaligned_stack_base() {
+        let mut ap_boot = valid_ap_boot_info();
+        ap_boot.stack_base += 1;
+        assert_eq!(
+            validate_trampoline_handoff(&ap_boot),
+            Err("AP stack base must be page aligned")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn mailbox_handle_from_ffi_ptr_rejects_invalid_addresses() {
+        assert_eq!(
+            unsafe { mailbox_handle_from_ffi_ptr(core::ptr::null()) },
+            Err("AP trampoline mailbox address is null")
+        );
+
+        #[repr(align(8))]
+        struct Aligned([u8; core::mem::size_of::<ApTrampolineMailbox>() + 1]);
+
+        let mut storage = Aligned([0u8; core::mem::size_of::<ApTrampolineMailbox>() + 1]);
+        let misaligned = unsafe { storage.0.as_mut_ptr().add(1) } as *const ApTrampolineMailbox;
+        assert_eq!(
+            unsafe { mailbox_handle_from_ffi_ptr(misaligned) },
+            Err("AP trampoline mailbox address is misaligned")
         );
     }
 
@@ -732,5 +860,43 @@ mod tests {
             ap_stack_window_size(&ap_boot),
             Err("AP stack size must include one mapped page above the guard")
         );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn start_ap_rejects_invalid_page_table_before_touching_hardware() {
+        let mut ap_info = ApBootInfo::new();
+        ap_info.stack_ptr = 0x9000;
+        ap_info.page_table = 0x2100;
+        ap_info.entry_point = 0x2000;
+        let bootstrap = test_bootstrap_with_ap_info(ap_info);
+
+        assert_eq!(
+            bootstrap.start_ap(0, 1),
+            Err("AP page table base must be 4 KiB aligned")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn start_ap_rejects_zero_entry_point_before_touching_hardware() {
+        let mut ap_info = ApBootInfo::new();
+        ap_info.stack_ptr = 0x9000;
+        ap_info.page_table = 0x2000;
+        let bootstrap = test_bootstrap_with_ap_info(ap_info);
+
+        assert_eq!(
+            bootstrap.start_ap(0, 1),
+            Err("missing AP trampoline entry point")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn launch_lock_serializes_shared_mailbox_access() {
+        let bootstrap = test_bootstrap_with_ap_info(ApBootInfo::new());
+        let _guard = bootstrap.launch_lock.lock().unwrap();
+
+        assert!(bootstrap.launch_lock.try_lock().is_err());
     }
 }
