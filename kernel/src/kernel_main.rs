@@ -311,6 +311,10 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     // Enable AVX/AVX2 if available
     init_avx();
 
+    // Seed the monotonic clock before the logger comes up so structured logs
+    // can carry timestamps even while IRQ delivery is still deferred.
+    crate::time::init_early_clock();
+
     // Get physical memory offset from ExoBootInfo
     io::log::early_print("[BOOT] Getting HHDM offset...\n");
     io::log::early_print("[BOOT] HHDM offset obtained\n");
@@ -379,8 +383,8 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
     info!(target: "init", "Interrupt system initialized");
 
     // 0.1. PIT (Programmable Interval Timer) を 1000 Hz に設定
-    // コード全体が 1 tick = 1ms を想定しているため、明示的に初期化する。
-    // BIOS/UEFI デフォルト（~18.2 Hz）のままだとタイマータイムアウトが極端に遅くなる。
+    // 早期 clock 基盤 (RTC/TSC) は Phase 2 で初期化済み。ここでは IRQ 駆動の
+    // 周期 tick だけを有効化して 1 tick = 1ms の前提を整える。
     crate::time::init(1000);
     info!(target: "init", "PIT initialized at 1000 Hz");
 

@@ -405,7 +405,10 @@ mod tests {
     fn type_id_section_builder_encodes_dependency_count_and_name() {
         let section = __type_id::build_section([__type_id::IPC_INTERFACE]);
         assert_eq!(&section.header[0..4], b"RTID");
-        assert_eq!(u32::from_le_bytes(section.header[8..12].try_into().unwrap()), 1);
+        assert_eq!(
+            u32::from_le_bytes(section.header[8..12].try_into().unwrap()),
+            1
+        );
         assert_eq!(&section.entries[0][..12], b"IpcInterface");
     }
 }

@@ -3,13 +3,13 @@ use super::*;
 impl KernelLogger {
     fn write_header_prefix<W: Write>(
         w: &mut W,
-        uptime_ms: u64,
+        uptime_nanos: u64,
         core_id: Option<usize>,
         level: Level,
         target: &str,
     ) {
-        let secs = uptime_ms / 1000;
-        let millis = uptime_ms % 1000;
+        let secs = uptime_nanos / crate::time::NANOS_PER_SEC;
+        let micros = (uptime_nanos / crate::time::NANOS_PER_MICRO) % 1_000_000;
 
         let _ = write!(w, "[");
         // Pad seconds to 5 spaces for alignment
@@ -25,7 +25,7 @@ impl KernelLogger {
         if secs < 10 {
             let _ = write!(w, " ");
         }
-        let _ = write!(w, "{}.{:03}] ", secs, millis);
+        let _ = write!(w, "{}.{:06}] ", secs, micros);
 
         if let Some(core_id) = core_id {
             let _ = write!(w, "[C{}] ", core_id);
@@ -197,10 +197,11 @@ impl KernelLogger {
     }
 
     pub(super) fn print_header<W: Write>(&self, w: &mut W, record: &Record) {
-        // Always use the unified kernel timebase so log timestamps advance with PIT IRQs.
-        let uptime_ms = crate::time::get_uptime_ms();
+        // Early boot runs with interrupts masked for a while, so prefer the
+        // calibrated TSC clock when available and fall back to PIT-backed uptime.
+        let uptime_nanos = crate::time::best_effort_time_nanos();
         let core_id = current_log_cpu_id();
-        Self::write_header_prefix(w, uptime_ms, core_id, record.level(), record.target());
+        Self::write_header_prefix(w, uptime_nanos, core_id, record.level(), record.target());
     }
 }
 
@@ -213,15 +214,15 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn header_omits_cpu_field_before_per_cpu_is_ready() {
         let mut out = String::new();
-        KernelLogger::write_header_prefix(&mut out, 1234, None, Level::Info, "boot");
-        assert_eq!(out, "[    1.234] [INFO]  [boot] ");
+        KernelLogger::write_header_prefix(&mut out, 1_234_000_000, None, Level::Info, "boot");
+        assert_eq!(out, "[    1.234000] [INFO]  [boot] ");
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn header_keeps_cpu_field_after_per_cpu_is_ready() {
         let mut out = String::new();
-        KernelLogger::write_header_prefix(&mut out, 1234, Some(2), Level::Info, "boot");
-        assert_eq!(out, "[    1.234] [C2] [INFO]  [boot] ");
+        KernelLogger::write_header_prefix(&mut out, 1_234_000_000, Some(2), Level::Info, "boot");
+        assert_eq!(out, "[    1.234000] [C2] [INFO]  [boot] ");
     }
 }

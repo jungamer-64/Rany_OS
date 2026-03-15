@@ -1104,12 +1104,20 @@ extern "C" fn kapi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
 }
 
 extern "C" fn kapi_current_domain_id() -> u64 {
-    #[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "qemu-test-export")))]
+    #[cfg(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ))]
     {
         crate::domain_system::DomainId::KERNEL.as_u64()
     }
 
-    #[cfg(not(all(test, not(feature = "full_mm_tests"), not(feature = "qemu-test-export"))))]
+    #[cfg(not(all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    )))]
     {
         crate::task::context::current_subject().domain.as_u64()
     }

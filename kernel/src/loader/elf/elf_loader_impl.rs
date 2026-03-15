@@ -197,7 +197,6 @@ impl<'a> ElfLoader<'a> {
         exports: &mut Vec<(&'a str, u64)>,
         imports: &mut Vec<&'a str>,
     ) -> Result<(), LoadError> {
-        crate::io::log::early_print("[LDBG] symtab enter\n");
         let raw_count = sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
         // Clamp to a reasonable maximum to avoid integer overflow or DoS loops.
         let sym_count = core::cmp::min(raw_count, MAX_SYMBOLS);
@@ -206,15 +205,12 @@ impl<'a> ElfLoader<'a> {
         // ある程度の容量を予約して再割り当てを減らす。
         // fallible reserve avoids heap-alloc panic; convert failures into errors.
         let reserve_amount = sym_count;
-        crate::io::log::early_print("[LDBG] symtab reserve e\n");
         if exports.try_reserve(reserve_amount).is_err() {
             return Err(LoadError::OutOfMemory);
         }
-        crate::io::log::early_print("[LDBG] symtab reserve i\n");
         if imports.try_reserve(reserve_amount).is_err() {
             return Err(LoadError::OutOfMemory);
         }
-        crate::io::log::early_print("[LDBG] symtab loop\n");
 
         for j in 0..sym_count {
             // debug tracing: iteration number
@@ -252,14 +248,12 @@ impl<'a> ElfLoader<'a> {
                         // avoid duplicate exports of same name/value
                         if !exports.iter().any(|&(n, v)| n == name && v == sym.st_value) {
                             exports.push((name, sym.st_value));
-                            crate::io::log::early_print("[LDBG] export pushed into vector\n");
                         }
                     }
                 }
             }
         }
 
-        crate::io::log::early_print("[LDBG] symtab done\n");
         Ok(())
     }
 

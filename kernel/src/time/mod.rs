@@ -367,6 +367,7 @@ impl Rtc {
 pub struct SystemClock {
     uptime_nanos: AtomicU64,
     timer_tick_nanos: AtomicU64,
+    timer_tick_observed: AtomicBool,
     tsc_epoch_nanos: AtomicU64,
     tsc_epoch_tsc: AtomicU64,
     tsc_freq_hz: AtomicU64,
@@ -380,6 +381,7 @@ impl SystemClock {
         Self {
             uptime_nanos: AtomicU64::new(0),
             timer_tick_nanos: AtomicU64::new(0),
+            timer_tick_observed: AtomicBool::new(false),
             tsc_epoch_nanos: AtomicU64::new(0),
             tsc_epoch_tsc: AtomicU64::new(0),
             tsc_freq_hz: AtomicU64::new(0),
@@ -410,27 +412,68 @@ impl SystemClock {
     }
 
     pub fn tick(&self, delta_nanos: u64) {
+        if !self.timer_tick_observed.load(Ordering::Acquire) {
+            // The first delivered timer IRQ can arrive long after PIT/APIC
+            // programming if interrupts stayed masked during boot. Seed the
+            // coarse uptime from the early-clock source so the handoff does
+            // not make diagnostics/logging timestamps move backwards.
+            let handoff_base = self.best_effort_time_nanos().saturating_sub(delta_nanos);
+            self.seed_uptime_nanos(handoff_base);
+            self.timer_tick_observed.store(true, Ordering::Release);
+        }
         self.uptime_nanos.fetch_add(delta_nanos, Ordering::Relaxed);
+    }
+
+    pub fn seed_uptime_nanos(&self, nanos: u64) {
+        let mut current = self.uptime_nanos.load(Ordering::Acquire);
+        while nanos > current {
+            match self.uptime_nanos.compare_exchange(
+                current,
+                nanos,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
     }
 
     pub fn read_tsc(&self) -> u64 {
         rdtsc()
     }
 
-    pub fn set_tsc_info(&self, info: TscInfo) {
-        let (epoch_ns, epoch_tsc) = x86_64::instructions::interrupts::without_interrupts(|| {
-            (self.uptime_nanos.load(Ordering::Relaxed), rdtsc())
-        });
+    fn store_tsc_info(&self, info: TscInfo, epoch_ns: u64, epoch_tsc: u64) {
         self.tsc_epoch_nanos.store(epoch_ns, Ordering::Release);
         self.tsc_epoch_tsc.store(epoch_tsc, Ordering::Release);
-        self.tsc_freq_hz.store(info.frequency, Ordering::Release);
         self.tsc_mult
             .store(info.tsc_to_nanos_mult, Ordering::Release);
         self.tsc_shift
             .store(info.tsc_to_nanos_shift, Ordering::Release);
-        if info.invariant {
-            self.tsc_available.store(true, Ordering::Release);
-        }
+        self.tsc_available.store(info.invariant, Ordering::Release);
+        self.tsc_freq_hz.store(info.frequency, Ordering::Release);
+    }
+
+    pub fn set_tsc_info(&self, info: TscInfo) {
+        let (epoch_ns, epoch_tsc) = x86_64::instructions::interrupts::without_interrupts(|| {
+            (self.best_effort_time_nanos(), rdtsc())
+        });
+        self.store_tsc_info(info, epoch_ns, epoch_tsc);
+    }
+
+    pub fn bootstrap_tsc_info(&self, info: TscInfo, bootstrap_start_tsc: u64) {
+        let (epoch_ns, epoch_tsc) = x86_64::instructions::interrupts::without_interrupts(|| {
+            let now_tsc = rdtsc();
+            let elapsed_cycles = now_tsc.wrapping_sub(bootstrap_start_tsc);
+            let elapsed_ns = info.tsc_to_nanos(elapsed_cycles);
+            (
+                self.uptime_nanos
+                    .load(Ordering::Relaxed)
+                    .saturating_add(elapsed_ns),
+                now_tsc,
+            )
+        });
+        self.store_tsc_info(info, epoch_ns, epoch_tsc);
     }
 
     pub fn tsc_frequency(&self) -> Option<u64> {
@@ -441,18 +484,43 @@ impl SystemClock {
         }
     }
 
-    pub fn precise_time_nanos(&self) -> u64 {
-        if self.tsc_available.load(Ordering::Acquire) {
-            let base_ns = self.tsc_epoch_nanos.load(Ordering::Relaxed);
-            let base_tsc = self.tsc_epoch_tsc.load(Ordering::Relaxed);
-            let mult = self.tsc_mult.load(Ordering::Relaxed);
-            let shift = self.tsc_shift.load(Ordering::Relaxed);
-            let now_tsc = rdtsc_unserialized();
-            let delta = now_tsc.wrapping_sub(base_tsc);
-            let ns_delta = ((delta as u128 * mult as u128) >> shift) as u64;
-            return base_ns + ns_delta;
+    fn calibrated_tsc_time_nanos(&self, require_invariant: bool) -> Option<u64> {
+        if require_invariant && !self.tsc_available.load(Ordering::Acquire) {
+            return None;
         }
+        if self.tsc_freq_hz.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+
+        let base_ns = self.tsc_epoch_nanos.load(Ordering::Relaxed);
+        let base_tsc = self.tsc_epoch_tsc.load(Ordering::Relaxed);
+        let mult = self.tsc_mult.load(Ordering::Relaxed);
+        let shift = self.tsc_shift.load(Ordering::Relaxed);
+        let now_tsc = rdtsc_unserialized();
+        let delta = now_tsc.wrapping_sub(base_tsc);
+        let ns_delta = ((delta as u128 * mult as u128) >> shift) as u64;
+        Some(base_ns + ns_delta)
+    }
+
+    pub fn best_effort_time_nanos(&self) -> u64 {
+        if self.tsc_available.load(Ordering::Acquire) {
+            return self
+                .calibrated_tsc_time_nanos(true)
+                .unwrap_or_else(|| self.uptime_nanos());
+        }
+
+        if self.timer_tick_nanos() == 0 || !self.timer_tick_observed.load(Ordering::Acquire) {
+            return self
+                .calibrated_tsc_time_nanos(false)
+                .unwrap_or_else(|| self.uptime_nanos());
+        }
+
         self.uptime_nanos()
+    }
+
+    pub fn precise_time_nanos(&self) -> u64 {
+        self.calibrated_tsc_time_nanos(true)
+            .unwrap_or_else(|| self.uptime_nanos())
     }
 
     pub fn timer_source(&self) -> TimerSource {

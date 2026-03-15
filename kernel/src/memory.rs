@@ -94,6 +94,14 @@ impl AllocHeader {
             raw_align,
         }
     }
+
+    fn matches_allocation(&self, header_addr: usize, min_user_offset: usize) -> bool {
+        self.magic == ALLOC_HEADER_MAGIC
+            && self.raw_ptr == header_addr
+            && self.raw_size >= min_user_offset
+            && self.raw_align != 0
+            && self.raw_align.is_power_of_two()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -625,11 +633,11 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
         };
 
         if user_offset <= ptr as usize {
-            let header_addr = (ptr as usize).saturating_sub(user_offset);
-            let header_ptr = header_addr as *const AllocHeader;
-            let header = core::ptr::read(header_ptr);
+            let header_ptr = ptr.wrapping_sub(user_offset) as *const AllocHeader;
+            let header_addr = header_ptr as usize;
+            let header = core::ptr::read_unaligned(header_ptr);
 
-            if header.magic == ALLOC_HEADER_MAGIC {
+            if header.matches_allocation(header_addr, user_offset) {
                 if header.charged_bytes > 0 {
                     quota_uncharge(
                         crate::domain_system::DomainId::new(header.owner_domain),

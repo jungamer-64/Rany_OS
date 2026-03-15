@@ -23,6 +23,7 @@
 #![allow(dead_code)]
 
 use crate::sync::PoisonLock;
+use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -67,7 +68,7 @@ impl core::fmt::Display for SemVer {
 #[derive(Debug, Clone)]
 pub struct TypeIdInfo {
     /// 型の完全修飾名
-    pub name: String,
+    pub name: Cow<'static, str>,
     /// 型定義のハッシュ値
     pub hash: TypeHash,
     /// バージョン情報
@@ -96,7 +97,7 @@ pub trait TypeIdHash {
     /// TypeIdInfoを構築
     fn type_id_info() -> TypeIdInfo {
         TypeIdInfo {
-            name: String::from(Self::type_name()),
+            name: Cow::Borrowed(Self::type_name()),
             hash: Self::type_id_hash(),
             version: Self::type_version(),
         }
@@ -110,6 +111,25 @@ pub trait TypeIdHash {
 #[inline]
 pub const fn const_hash(bytes: &[u8]) -> TypeHash {
     crate::util::fnv1a_hash(bytes)
+}
+
+#[inline(never)]
+fn str_eq_bytewise(lhs: &str, rhs: &str) -> bool {
+    let lhs_bytes = lhs.as_bytes();
+    let rhs_bytes = rhs.as_bytes();
+    if lhs_bytes.len() != rhs_bytes.len() {
+        return false;
+    }
+
+    let mut index = 0usize;
+    while index < lhs_bytes.len() {
+        if lhs_bytes[index] != rhs_bytes[index] {
+            return false;
+        }
+        index += 1;
+    }
+
+    true
 }
 
 /// インターフェース定義のレジストリ
@@ -134,11 +154,14 @@ impl InterfaceRegistry {
     }
 
     /// インターフェースを手動登録（名前とハッシュを指定）
-    pub fn register_manual(&mut self, name: String, hash: TypeHash, version: SemVer) {
-        if let Some(existing) = self.interfaces.iter_mut().find(|i| i.name == name) {
-            existing.hash = hash;
-            existing.version = version;
-            return;
+    pub fn register_manual(&mut self, name: Cow<'static, str>, hash: TypeHash, version: SemVer) {
+        for index in 0..self.interfaces.len() {
+            if str_eq_bytewise(self.interfaces[index].name.as_ref(), name.as_ref()) {
+                let existing = &mut self.interfaces[index];
+                existing.hash = hash;
+                existing.version = version;
+                return;
+            }
         }
         self.interfaces.push(TypeIdInfo {
             name,
@@ -147,13 +170,22 @@ impl InterfaceRegistry {
         });
     }
 
+    /// 初期ブート時の再配置を避けるために、必要容量を先に確保する。
+    pub fn reserve(&mut self, additional: usize) {
+        self.interfaces.reserve(additional);
+    }
+
     /// インターフェースのハッシュを検証
     ///
     /// # Returns
     /// - `Ok(())`: ハッシュが一致
     /// - `Err(TypeIdError)`: ハッシュ不一致または未登録
     pub fn verify(&self, name: &str, expected_hash: TypeHash) -> Result<(), TypeIdError> {
-        match self.interfaces.iter().find(|i| i.name == name) {
+        match self
+            .interfaces
+            .iter()
+            .find(|i| str_eq_bytewise(i.name.as_ref(), name))
+        {
             Some(info) => {
                 if info.hash == expected_hash {
                     Ok(())
@@ -179,7 +211,11 @@ impl InterfaceRegistry {
         expected_hash: TypeHash,
         required_version: SemVer,
     ) -> Result<(), TypeIdError> {
-        match self.interfaces.iter().find(|i| i.name == name) {
+        match self
+            .interfaces
+            .iter()
+            .find(|i| str_eq_bytewise(i.name.as_ref(), name))
+        {
             Some(info) => {
                 if info.hash != expected_hash {
                     return Err(TypeIdError::HashMismatch {
@@ -503,7 +539,7 @@ pub fn register_kernel_interface_manual(name: &str, hash: TypeHash, version: Sem
     INTERFACE_REGISTRY
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .register_manual(String::from(name), hash, version);
+        .register_manual(Cow::Owned(String::from(name)), hash, version);
 }
 
 /// 登録済みカーネルインターフェースを取得（シェル観測用）
@@ -513,7 +549,7 @@ pub fn get_kernel_interface(name: &str) -> Option<TypeIdInfo> {
         .unwrap_or_else(|e| e.into_inner())
         .interfaces
         .iter()
-        .find(|i| i.name == name)
+        .find(|i| str_eq_bytewise(i.name.as_ref(), name))
         .cloned()
 }
 
@@ -626,22 +662,15 @@ impl TypeIdHash for DriverExportsInterface {
 
 /// カーネルインターフェースの初期化
 pub fn init_kernel_interfaces() {
-    crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: enter\n");
     let mut registry = INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: locked\n");
+    registry.reserve(5);
 
     // 標準カーネルインターフェースを登録
-    crate::io::log::early_print("[LDBG] type_id: register MemoryAllocatorInterface\n");
     registry.register::<MemoryAllocatorInterface>();
-    crate::io::log::early_print("[LDBG] type_id: register TaskSchedulerInterface\n");
     registry.register::<TaskSchedulerInterface>();
-    crate::io::log::early_print("[LDBG] type_id: register IpcInterface\n");
     registry.register::<IpcInterface>();
-    crate::io::log::early_print("[LDBG] type_id: register KernelApiInterface\n");
     registry.register::<KernelApiInterface>();
-    crate::io::log::early_print("[LDBG] type_id: register DriverExportsInterface\n");
     registry.register::<DriverExportsInterface>();
-    crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: done\n");
 
     log::info!("[TypeID] Registered {} kernel interfaces\n", registry.len());
 }

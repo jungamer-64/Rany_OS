@@ -128,3 +128,117 @@ fn test_system_clock_timer_tick_nanos_round_trip() {
     clock.tick(clock.timer_tick_nanos());
     assert_eq!(clock.uptime_millis(), 1);
 }
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_best_effort_time_nanos_uses_calibrated_tsc_without_invariant_flag_before_tick_start() {
+    let clock = SystemClock::new();
+    let info = TscInfo::new(1_000_000_000, false);
+    let now_tsc = rdtsc_unserialized();
+
+    clock.tsc_epoch_nanos.store(1_000_000, Ordering::Relaxed);
+    clock
+        .tsc_epoch_tsc
+        .store(now_tsc.saturating_sub(2_000_000), Ordering::Relaxed);
+    clock.tsc_freq_hz.store(info.frequency, Ordering::Relaxed);
+    clock
+        .tsc_mult
+        .store(info.tsc_to_nanos_mult, Ordering::Relaxed);
+    clock
+        .tsc_shift
+        .store(info.tsc_to_nanos_shift, Ordering::Relaxed);
+
+    assert_eq!(clock.precise_time_nanos(), 0);
+    assert!(clock.best_effort_time_nanos() >= 3_000_000);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_best_effort_time_nanos_keeps_using_tsc_until_first_tick_without_invariant_tsc() {
+    let clock = SystemClock::new();
+    let info = TscInfo::new(1_000_000_000, false);
+    let now_tsc = rdtsc_unserialized();
+    clock.uptime_nanos.store(7_000_000, Ordering::Relaxed);
+    clock.tsc_epoch_nanos.store(7_000_000, Ordering::Relaxed);
+    clock
+        .tsc_epoch_tsc
+        .store(now_tsc.saturating_sub(2_000_000), Ordering::Relaxed);
+    clock.tsc_freq_hz.store(info.frequency, Ordering::Relaxed);
+    clock
+        .tsc_mult
+        .store(info.tsc_to_nanos_mult, Ordering::Relaxed);
+    clock
+        .tsc_shift
+        .store(info.tsc_to_nanos_shift, Ordering::Relaxed);
+    clock.set_timer_tick_nanos(NANOS_PER_MILLI);
+
+    assert!(clock.best_effort_time_nanos() > 7_000_000);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_best_effort_time_nanos_uses_seeded_uptime_after_first_tick_without_invariant_tsc() {
+    let clock = SystemClock::new();
+    let info = TscInfo::new(1_000_000_000, false);
+    let now_tsc = rdtsc_unserialized();
+    clock.uptime_nanos.store(7_000_000, Ordering::Relaxed);
+    clock.tsc_epoch_nanos.store(7_000_000, Ordering::Relaxed);
+    clock
+        .tsc_epoch_tsc
+        .store(now_tsc.saturating_sub(2_000_000), Ordering::Relaxed);
+    clock.tsc_freq_hz.store(info.frequency, Ordering::Relaxed);
+    clock
+        .tsc_mult
+        .store(info.tsc_to_nanos_mult, Ordering::Relaxed);
+    clock
+        .tsc_shift
+        .store(info.tsc_to_nanos_shift, Ordering::Relaxed);
+    clock.set_timer_tick_nanos(NANOS_PER_MILLI);
+    let before_tick = clock.best_effort_time_nanos();
+    clock.tick(NANOS_PER_MILLI);
+    let after_tick = clock.best_effort_time_nanos();
+
+    assert!(before_tick >= 7_000_000);
+    assert!(after_tick >= before_tick);
+    assert!(after_tick >= 8_000_000);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_first_tick_handoff_keeps_best_effort_time_monotonic_without_invariant_tsc() {
+    let clock = SystemClock::new();
+    let info = TscInfo::new(1_000_000_000, false);
+    let now_tsc = rdtsc_unserialized();
+
+    // Simulate the early-clock seed performed when PIT/APIC gets programmed,
+    // then delay the first delivered IRQ so TSC time has advanced far ahead.
+    clock.uptime_nanos.store(1_000_000, Ordering::Relaxed);
+    clock.tsc_epoch_nanos.store(1_000_000, Ordering::Relaxed);
+    clock
+        .tsc_epoch_tsc
+        .store(now_tsc.saturating_sub(50_000_000), Ordering::Relaxed);
+    clock.tsc_freq_hz.store(info.frequency, Ordering::Relaxed);
+    clock
+        .tsc_mult
+        .store(info.tsc_to_nanos_mult, Ordering::Relaxed);
+    clock
+        .tsc_shift
+        .store(info.tsc_to_nanos_shift, Ordering::Relaxed);
+    clock.set_timer_tick_nanos(NANOS_PER_MILLI);
+
+    let before_tick = clock.best_effort_time_nanos();
+    clock.tick(NANOS_PER_MILLI);
+    let after_tick = clock.best_effort_time_nanos();
+
+    assert!(before_tick >= 45_000_000);
+    assert!(after_tick >= before_tick);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_best_effort_time_nanos_falls_back_to_uptime_without_frequency() {
+    let clock = SystemClock::new();
+    clock.uptime_nanos.store(42_000_000, Ordering::Relaxed);
+
+    assert_eq!(clock.best_effort_time_nanos(), 42_000_000);
+}

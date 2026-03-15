@@ -203,27 +203,14 @@ impl CellRegistry {
 
     /// セルを登録
     pub fn register(&mut self, entry: CellEntry) {
-        crate::io::log::early_print("[LDBG] registry.register: begin\n");
         let is_shadow_staging = entry.name.starts_with("update-")
             || self.cells.values().any(|cell| cell.name == entry.name);
-        if is_shadow_staging {
-            crate::io::log::early_print(
-                "[LDBG] registry.register: staging duplicate-name, skip symtab\n",
-            );
-        }
         if !is_shadow_staging {
-            for (_idx, (symbol, addr)) in entry.exports.iter().enumerate() {
-                if (_idx & 0x3f) == 0 {
-                    crate::io::log::early_print("[LDBG] registry.register: export idx=");
-                    crate::io::log::early_print_hex(_idx as u64);
-                    crate::io::log::early_print("\n");
-                }
+            for (symbol, addr) in entry.exports.iter() {
                 self.register_symbol(symbol.clone(), *addr);
             }
         }
-        crate::io::log::early_print("[LDBG] registry.register: exports done\n");
         self.cells.insert(entry.id, entry);
-        crate::io::log::early_print("[LDBG] registry.register: cells.insert done\n");
     }
 
     /// セルを取得
@@ -257,11 +244,7 @@ impl CellRegistry {
                     .cells
                     .values()
                     .any(|cell| cell.name.starts_with("update-"));
-            if live_update_shadow_involved {
-                crate::io::log::early_print(
-                    "[LDBG] registry.unload: live-update shadow involved, skip symtab remove\n",
-                );
-            } else {
+            if !live_update_shadow_involved {
                 for (symbol, _) in &entry.exports {
                     self.unregister_symbol(symbol);
                 }
@@ -479,9 +462,7 @@ fn validate_cell_requirements(
     if !allow_unsafe && contains_unsafe {
         return Err(LoadError::UnsafeNotAllowed);
     }
-    crate::io::log::early_print("[LDBG] validate deps extract\n");
     if let Some(deps) = type_id::extract_type_ids(elf_data) {
-        crate::io::log::early_print("[LDBG] validate deps verify\n");
         if let Err(e) = type_id::verify_cell_dependencies(&deps) {
             log::info!(
                 "[Loader] Type ID verification failed for '{}': {}\n",
@@ -490,30 +471,23 @@ fn validate_cell_requirements(
             );
             return Err(LoadError::AbiIncompatible(alloc::format!("{}", e)));
         }
-        crate::io::log::early_print("[LDBG] validate deps ok\n");
-        crate::io::log::early_print("[LDBG] type_id log begin\n");
         log::info!(
             "[Loader] Type ID verified for '{}' ({})\n",
             name,
             deps.cell_version
         );
-        crate::io::log::early_print("[LDBG] type_id log end\n");
     }
 
-    crate::io::log::early_print("[LDBG] loop proof begin\n");
     match loop_proof::verify_loop_proof_metadata(elf_data) {
         Ok(meta) => {
-            crate::io::log::early_print("[LDBG] loop proof ok\n");
             log::info!(
                 "[Loader] Loop proof verified for '{}' (version={}, flags={})\n",
                 name,
                 meta.version,
                 meta.policy_flags
             );
-            crate::io::log::early_print("[LDBG] loop proof ok logged\n");
         }
         Err(loop_proof::LoopProofError::MissingSection) => {
-            crate::io::log::early_print("[LDBG] loop proof missing\n");
             log::warn!(
                 "[Loader] Missing loop proof metadata for '{}': {}\n",
                 name,
@@ -522,7 +496,6 @@ fn validate_cell_requirements(
             return Err(LoadError::LoopProofMissing);
         }
         Err(e) => {
-            crate::io::log::early_print("[LDBG] loop proof invalid\n");
             log::warn!(
                 "[Loader] Invalid loop proof metadata for '{}': {}\n",
                 name,
@@ -531,7 +504,6 @@ fn validate_cell_requirements(
             return Err(LoadError::LoopProofInvalid(alloc::format!("{}", e)));
         }
     }
-    crate::io::log::early_print("[LDBG] loop proof end\n");
     Ok(())
 }
 
@@ -545,11 +517,8 @@ fn load_cell_with_flags(
 ) -> Result<CellId, LoadError> {
     validate_cell_requirements(name, elf_data, allow_unsafe, contains_unsafe)?;
 
-    crate::io::log::early_print("[LDBG] new\n");
     let loader = elf::ElfLoader::new(elf_data)?;
-    crate::io::log::early_print("[LDBG] parse\n");
     let cell_info = loader.parse()?;
-    crate::io::log::early_print("[LDBG] parsed\n");
 
     for import in &cell_info.imports {
         if with_registry(|r| r.resolve_symbol(*import)).is_none() {
@@ -557,28 +526,19 @@ fn load_cell_with_flags(
         }
     }
 
-    crate::io::log::early_print("[LDBG] load\n");
     let loaded = loader.load(&cell_info)?;
 
     let resolver = |s: &str| with_registry(|r| r.resolve_symbol(s));
-    crate::io::log::early_print("[LDBG] relocate\n");
     loader.relocate(&loaded, resolver)?;
 
-    crate::io::log::early_print("[LDBG] register\n");
     let id = with_registry_mut(|r| {
-        crate::io::log::early_print("[LDBG] register: alloc_id\n");
         let id = r.allocate_id();
-        crate::io::log::early_print("[LDBG] register: exports collect begin\n");
         let exports = cell_info
             .exports
             .iter()
             .map(|(n, v)| (n.to_string(), loaded.base_address + *v as usize))
             .collect();
-        crate::io::log::early_print("[LDBG] register: exports collect done\n");
-        crate::io::log::early_print("[LDBG] register: imports collect begin\n");
         let imports = cell_info.imports.iter().map(|s| s.to_string()).collect();
-        crate::io::log::early_print("[LDBG] register: imports collect done\n");
-        crate::io::log::early_print("[LDBG] register: entry build begin\n");
         let entry = CellEntry {
             id,
             name: name.into(),
@@ -603,10 +563,7 @@ fn load_cell_with_flags(
                 ..Default::default()
             },
         };
-        crate::io::log::early_print("[LDBG] register: entry build done\n");
-        crate::io::log::early_print("[LDBG] register: registry insert begin\n");
         r.register(entry);
-        crate::io::log::early_print("[LDBG] register: registry insert done\n");
         id
     });
 

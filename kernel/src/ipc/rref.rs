@@ -10,9 +10,7 @@ use core::alloc::Layout;
 use core::mem::{self, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
-pub use kernel_api::ipc::{
-    TypeHash, TypeIdHash, compute_simple_type_hash,
-};
+pub use kernel_api::ipc::{TypeHash, TypeIdHash, compute_simple_type_hash};
 
 // DomainIdはdomain_system.rsから使用
 pub use crate::domain_system::DomainId;
