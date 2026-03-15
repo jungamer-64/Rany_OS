@@ -588,6 +588,7 @@ pub async fn timeout_task() {
 
 pub async fn timeout_task_in(runtime: NetRuntimeHandle) {
     log::info!("[NET] timeout_task started (event-queue mode)");
+    // LOOP_PROOF: mode=event; reason=Timeout task intentionally runs for system lifetime and sleeps between finite timeout-processing passes.;
     loop {
         // 100msごとにタイムアウトを処理
         crate::task::sleep_ms(100).await;

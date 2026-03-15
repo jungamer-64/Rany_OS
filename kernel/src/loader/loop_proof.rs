@@ -54,6 +54,7 @@ fn bytes_equal(lhs: &[u8], rhs: &[u8]) -> bool {
         return false;
     }
     let mut i = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < lhs.len() {
         if lhs[i] != rhs[i] {
             return false;
@@ -198,6 +199,7 @@ fn find_loop_proof_section(elf_data: &[u8]) -> Result<&[u8], LoopProofError> {
 
         let name_start = shstr_start + name_offset;
         let mut name_end = name_start;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while name_end < shstr_end && elf_data[name_end] != 0 {
             name_end += 1;
         }

@@ -172,8 +172,8 @@ impl SerialPort {
     pub fn can_receive(&self) -> bool {
         self.line_status().is_data_ready()
     }
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     pub fn send(&self, byte: u8) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !self.can_transmit() {
             core::hint::spin_loop();
         }

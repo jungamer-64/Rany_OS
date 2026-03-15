@@ -434,6 +434,7 @@ pub fn recompute_ipv4_transport_checksum(
 
                 let mut sum = partial as u32;
                 let mut i = 0;
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while i + 1 < payload.len() {
                     let word = u16::from_be_bytes([payload[i], payload[i + 1]]);
                     sum += word as u32;
@@ -442,6 +443,7 @@ pub fn recompute_ipv4_transport_checksum(
                 if i < payload.len() {
                     sum += (payload[i] as u32) << 8;
                 }
+                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while sum >> 16 != 0 {
                     sum = (sum & 0xFFFF) + (sum >> 16);
                 }
@@ -468,6 +470,7 @@ pub fn recompute_ipv4_transport_checksum(
 
                     let mut sum = partial as u32;
                     let mut i = 0;
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while i + 1 < payload.len() {
                         let word = u16::from_be_bytes([payload[i], payload[i + 1]]);
                         sum += word as u32;
@@ -476,6 +479,7 @@ pub fn recompute_ipv4_transport_checksum(
                     if i < payload.len() {
                         sum += (payload[i] as u32) << 8;
                     }
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while sum >> 16 != 0 {
                         sum = (sum & 0xFFFF) + (sum >> 16);
                     }

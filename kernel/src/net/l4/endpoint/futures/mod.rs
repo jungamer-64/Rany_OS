@@ -104,6 +104,7 @@ impl Future for SendFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
 
+        // LOOP_PROOF: mode=event; reason=Endpoint poll loop returns once readiness state stabilizes and otherwise re-evaluates after state transitions.;
         loop {
             if this.pending_notify {
                 match this

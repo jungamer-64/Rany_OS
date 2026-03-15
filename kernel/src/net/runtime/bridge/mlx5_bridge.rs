@@ -1260,7 +1260,7 @@ unsafe fn log_mlx5_rx_debug_snapshot(state: &Arc<Mlx5BridgeState>, idle_polls: u
 ///
 /// # Safety
 /// - CQ/RQ バッファが有効であること
-pub unsafe fn mlx5_poll_rx(state: &Arc<Mlx5BridgeState>) -> u32 {
+unsafe fn mlx5_poll_rx(state: &Arc<Mlx5BridgeState>) -> u32 {
     let mut rx_bufs_guard = match state.rx_bufs.lock() {
         Ok(guard) => guard,
         Err(_) => return 0,

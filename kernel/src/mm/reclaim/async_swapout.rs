@@ -389,6 +389,7 @@ impl SwapHandle {
     pub fn wait(&self) {
         let (lock, cvar) = &*self.done;
         let mut done = lock.lock().unwrap();
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while !*done {
             done = cvar.wait(done).unwrap();
         }
@@ -408,6 +409,7 @@ pub struct SwapEntry {
 
 fn atomic_saturating_decrement(counter: &AtomicUsize) {
     let mut current = counter.load(AtomicOrdering::Acquire);
+    // LOOP_PROOF: mode=event; reason=Saturating decrement retry loop exits once compare_exchange succeeds or the counter is already zero.;
     loop {
         if current == 0 {
             return;

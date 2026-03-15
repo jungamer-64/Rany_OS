@@ -656,6 +656,7 @@ impl NetworkEventQueue {
 
     #[cfg(any(test, feature = "qemu-test-export"))]
     pub fn reset_for_tests(&self) {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.recv().is_some() {}
         self.waker.clear();
         self.space_waiters.clear();

@@ -627,6 +627,7 @@ impl Mlx5AsyncDriver {
         let mut fw_page_chunks = Vec::with_capacity(fw_boot_pages.div_ceil(FW_PAGES_PER_CHUNK));
         let mut fw_pages = Vec::with_capacity(fw_boot_pages);
         let mut remaining_fw_pages = fw_boot_pages;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while remaining_fw_pages > 0 {
             let pages_in_chunk = remaining_fw_pages.min(FW_PAGES_PER_CHUNK);
             let chunk_size = fw_page_size * pages_in_chunk;

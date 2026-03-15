@@ -291,7 +291,7 @@ pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
 // ============================================================================
 
 pub fn process_received_packet_zero_copy(
-    mut packet: crate::net::datapath::mempool::PacketRef,
+    packet: crate::net::datapath::mempool::PacketRef,
     header_size: usize,
     payload_len: usize,
 ) {
@@ -348,7 +348,7 @@ pub fn process_received_packet_zero_copy_in(
 
 pub fn process_received_packet_zero_copy_for_interface(
     if_id: NetIfId,
-    mut packet: crate::net::datapath::mempool::PacketRef,
+    packet: crate::net::datapath::mempool::PacketRef,
     header_size: usize,
     payload_len: usize,
 ) {

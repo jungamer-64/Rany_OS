@@ -133,6 +133,7 @@ pub fn enter_quiescent_state() {
 ///
 /// 指定されたエポック以降に全コアが安全な状態に移行するまでブロック。
 pub fn wait_for_quiescent_state(old_epoch: u64) {
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while !all_cores_past_epoch(old_epoch) {
         core::hint::spin_loop();
     }

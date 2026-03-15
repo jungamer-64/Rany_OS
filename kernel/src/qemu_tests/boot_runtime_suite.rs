@@ -106,6 +106,7 @@ fn str_eq(a: &str, b: &str) -> bool {
     }
 
     let mut i = 0usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while i < a_bytes.len() {
         if a_bytes[i] != b_bytes[i] {
             return false;
@@ -272,11 +273,13 @@ fn case_pit_irq0_masked_after_handoff() -> Result<(), BootCaseError> {
 fn case_apic_timers_armed_on_all_online_cpus() -> Result<(), BootCaseError> {
     let deadline_ns = crate::time::precise_time_nanos().saturating_add(250 * 1_000_000);
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while crate::time::precise_time_nanos() < deadline_ns {
         let snapshot = crate::interrupts::runtime_timer_snapshot();
         if snapshot.enabled {
             let mut all_armed = true;
             let mut cpu_id = 0usize;
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while cpu_id < snapshot.cpu_count {
                 if !snapshot.armed[cpu_id] {
                     all_armed = false;
@@ -305,10 +308,12 @@ fn case_per_cpu_local_ticks_progress() -> Result<(), BootCaseError> {
     let before = task::per_cpu_preemption_snapshot();
     let deadline_ns = crate::time::precise_time_nanos().saturating_add(250 * 1_000_000);
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while crate::time::precise_time_nanos() < deadline_ns {
         let after = task::per_cpu_preemption_snapshot();
         let mut all_progressed = true;
         let mut cpu_id = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while cpu_id < after.cpu_count {
             if after.local_ticks[cpu_id] <= before.local_ticks[cpu_id] {
                 all_progressed = false;
@@ -354,6 +359,7 @@ fn case_cross_core_preemption_isolated() -> Result<(), BootCaseError> {
         let heartbeat = heartbeat.clone();
         let keep_running = keep_running.clone();
         async move {
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while keep_running.load(Ordering::SeqCst) {
                 heartbeat.fetch_add(1, Ordering::SeqCst);
                 task::yield_now().await;
@@ -363,8 +369,10 @@ fn case_cross_core_preemption_isolated() -> Result<(), BootCaseError> {
 
     task::spawn_on_cpu_for_test(1, async move {
         let deadline_ns = crate::time::precise_time_nanos().saturating_add(150 * 1_000_000);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while crate::time::precise_time_nanos() < deadline_ns {
             let chunk_deadline = crate::time::precise_time_nanos().saturating_add(15 * 1_000_000);
+            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while crate::time::precise_time_nanos() < chunk_deadline {
                 task::yield_point_with_quota_check();
                 core::hint::spin_loop();
@@ -379,6 +387,7 @@ fn case_cross_core_preemption_isolated() -> Result<(), BootCaseError> {
     let mut heartbeat_after_forced_start = None;
     let mut heartbeat_progress_after_forced = false;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while crate::time::precise_time_nanos() < deadline_ns {
         let snapshot = task::per_cpu_preemption_snapshot();
         forced_seen |= snapshot.forced_preemptions[1] > before.forced_preemptions[1];
@@ -429,6 +438,7 @@ fn case_uptime_ms_progresses() -> Result<(), BootCaseError> {
     let deadline_ns = crate::time::precise_time_nanos().saturating_add(250 * 1_000_000);
     let mut saw_raw_tick = false;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while crate::time::precise_time_nanos() < deadline_ns {
         let uptime_after = crate::time::get_uptime_ms();
         if uptime_after > uptime_before {
@@ -704,6 +714,7 @@ fn drive_executor_until(
     let deadline_ns = crate::time::precise_time_nanos().saturating_add(timeout_ms * 1_000_000);
     let mut saw_raw_tick = false;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while crate::time::precise_time_nanos() < deadline_ns {
         if completed.load(Ordering::SeqCst) {
             return PumpResult::Completed;
@@ -729,6 +740,7 @@ fn drive_executor_until(
 fn wait_for_raw_tick_advance(start_tick: u64, timeout_ms: u64) -> bool {
     let deadline_ns = crate::time::precise_time_nanos().saturating_add(timeout_ms * 1_000_000);
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while crate::time::precise_time_nanos() < deadline_ns {
         if crate::interrupts::get_timer_ticks() > start_tick {
             return true;

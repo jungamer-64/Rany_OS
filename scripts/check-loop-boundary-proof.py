@@ -154,7 +154,8 @@ def mask_non_code(text: str) -> str:
         if state == "string":
             if ch == "\\" and i + 1 < n:
                 chars[i] = " "
-                chars[i + 1] = " "
+                if chars[i + 1] != "\n":
+                    chars[i + 1] = " "
                 i += 2
                 continue
             if ch == '"':
@@ -170,7 +171,8 @@ def mask_non_code(text: str) -> str:
         if state == "char":
             if ch == "\\" and i + 1 < n:
                 chars[i] = " "
-                chars[i + 1] = " "
+                if chars[i + 1] != "\n":
+                    chars[i + 1] = " "
                 i += 2
                 continue
             if ch == "'":
@@ -349,6 +351,11 @@ class LoopProofCheckerTests(unittest.TestCase):
     def test_fuel_with_gate_fixture(self) -> None:
         errors = self.run_fixture("fuel_ok.rs")
         self.assertEqual(errors, [])
+
+    def test_mask_non_code_preserves_escaped_newline_count(self) -> None:
+        text = 'let _ = "hello\\\\\\nworld";\\nloop { break; }\\n'
+        masked = mask_non_code(text)
+        self.assertEqual(text.count("\n"), masked.count("\n"))
 
 
 def main() -> int:

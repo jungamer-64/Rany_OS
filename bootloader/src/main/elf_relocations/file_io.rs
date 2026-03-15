@@ -145,6 +145,7 @@ fn discover_boot_artifacts_in_dir(
         .reset_entry_readout()
         .map_err(|_| Status::ABORTED)?;
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while let Some(info) = directory.read_entry_boxed().map_err(|_| Status::ABORTED)? {
         if !info.is_regular_file() {
             continue;

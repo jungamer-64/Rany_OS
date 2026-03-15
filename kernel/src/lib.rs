@@ -20,12 +20,7 @@
     any(not(test), feature = "full_mm_tests"),
     allow(unsafe_op_in_unsafe_fn)
 )]
-#![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(const_heap))]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
-#![cfg_attr(
-    any(not(test), feature = "full_mm_tests"),
-    feature(alloc_error_handler)
-)]
 #![feature(format_args_nl)]
 #![feature(ptr_metadata)]
 
@@ -1781,10 +1776,12 @@ pub mod task {
         // Pin the future on the heap and poll a Pin<&mut F>
         let mut boxed = Box::pin(future);
 
+        // LOOP_PROOF: mode=event; reason=Polling loop returns once the future resolves and otherwise waits for the wake flag before polling again.;
         loop {
             match core::pin::Pin::new(&mut boxed).poll(&mut cx) {
                 Poll::Ready(v) => return v,
                 Poll::Pending => {
+                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                     while !flag.load(Ordering::SeqCst) {
                         core::hint::spin_loop();
                     }
@@ -1815,6 +1812,7 @@ pub mod task {
                 }
 
                 let mut current = CURRENT_FUEL.load(Ordering::Relaxed);
+                // LOOP_PROOF: mode=event; reason=CAS retry loop exits once fuel is successfully decremented or when the available budget is insufficient.;
                 loop {
                     if let Some(remaining) = current.checked_sub(amount) {
                         match CURRENT_FUEL.compare_exchange_weak(
@@ -2573,12 +2571,14 @@ mod async_swapout_sim_lib {
             let shutdown = shutdown.clone();
 
             thread::spawn(move || {
+                // LOOP_PROOF: mode=event; reason=Worker thread loop exits on shutdown and otherwise blocks until new queue work arrives.;
                 loop {
                     // Wait for work or shutdown
                     let mut batch = Vec::new();
                     {
                         let (lock, cvar) = &*queue;
                         let mut q = lock.lock().unwrap();
+                        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                         while q.is_empty() && !shutdown.load(Ordering::Acquire) {
                             q = cvar.wait(q).unwrap();
                         }
@@ -2597,6 +2597,7 @@ mod async_swapout_sim_lib {
 
                         // update observed queue length
                         let cur = q.len();
+                        // LOOP_PROOF: mode=event; reason=Observed queue watermark loop exits once compare_exchange publishes the new maximum or a larger value is already visible.;
                         loop {
                             let old = queue_len_max.load(Ordering::Acquire);
                             if cur <= old
@@ -2633,6 +2634,7 @@ mod async_swapout_sim_lib {
                     }
 
                     // refill tokens after processing batch
+                    // LOOP_PROOF: mode=event; reason=Token refill loop exits once the bucket is full or compare_exchange successfully publishes the refilled value.;
                     loop {
                         let cur = tokens.load(Ordering::Acquire);
                         if cur >= token_bucket_capacity {
@@ -2695,6 +2697,7 @@ mod async_swapout_sim_lib {
 
                         // token consumption for anon
                         if !is_file {
+                            // LOOP_PROOF: mode=event; reason=Token consumption retry loop exits with success or failure once a stable bucket state is observed.;
                             let ok = loop {
                                 let cur = tokens.load(Ordering::Acquire);
                                 if cur == 0 {
@@ -2744,6 +2747,7 @@ mod async_swapout_sim_lib {
         }
 
         // Give worker time to finish processing
+        // LOOP_PROOF: mode=event; reason=Drain wait loop exits once the pending queue becomes empty or the timeout budget expires.;
         loop {
             let (lock, _) = &*queue;
             let q = lock.lock().unwrap();
@@ -2763,6 +2767,7 @@ mod async_swapout_sim_lib {
         }
         // Wait for workers to finish processing enqueued items (respect proc_delay_ms)
         let wait_deadline = Instant::now() + Duration::from_secs(5);
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while processed.load(Ordering::Acquire) < enqueue_success.load(Ordering::Acquire)
             && Instant::now() < wait_deadline
         {

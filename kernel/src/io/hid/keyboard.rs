@@ -40,8 +40,8 @@
 // ============================================================================
 
 // Core types
-pub use hid_driver::{KeyCode, KeyEvent, KeyState, Modifiers};
 pub use hid_driver::keyboard::KeyEventExt;
+pub use hid_driver::{KeyCode, KeyEvent, KeyState, Modifiers};
 
 // Driver
 pub use hid_driver::KeyboardDriver;

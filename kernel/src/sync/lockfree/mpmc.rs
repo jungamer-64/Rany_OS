@@ -70,6 +70,7 @@ impl<T, const N: usize> MpmcRingBuffer<T, N> {
     const fn init_slots() -> [MpmcSlot<T>; N] {
         let mut slots: [MaybeUninit<MpmcSlot<T>>; N] = [const { MaybeUninit::uninit() }; N];
         let mut i = 0;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while i < N {
             slots[i] = MaybeUninit::new(MpmcSlot::new(i));
             i += 1;

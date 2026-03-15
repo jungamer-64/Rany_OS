@@ -149,6 +149,7 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
     crate::task::spawn_detached_in_domain(
         async move {
             let source = crate::task::interrupt_waker::InterruptSource::Irq(vector);
+            // LOOP_PROOF: mode=event; reason=Interrupt forwarder loop exits once the stop flag is observed and otherwise waits for the next IRQ event.;
             loop {
                 if stop.load(core::sync::atomic::Ordering::Acquire) {
                     break;

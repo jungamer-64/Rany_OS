@@ -814,7 +814,7 @@ fn flush_range_tlb(virt: VirtAddr, size: u64) {
     } else {
         let mut addr = virt.as_u64();
         let end = addr + size;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while addr < end {
             invalidate_page(VirtAddr::new(addr));
             addr += 4096;

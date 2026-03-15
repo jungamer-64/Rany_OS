@@ -486,6 +486,7 @@ impl TimeService for TimeManagement {
 
     fn process_pending_wakers(&self) {
         let current_tick = self.ticks.load(Ordering::SeqCst);
+        // LOOP_PROOF: mode=event; reason=Pending-waker drain loop exits once no expired wake source remains for the current tick.;
         loop {
             match self.next_expired_kind(current_tick) {
                 Some(ExpiredKind::Sleep) => {

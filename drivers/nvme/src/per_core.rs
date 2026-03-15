@@ -666,6 +666,7 @@ impl PerCoreNvmeQueue {
     pub fn process_deferred_completions(&self) -> usize {
         let mut count = 0usize;
 
+        // LOOP_PROOF: mode=event; reason=Deferred completion drain exits when the queue becomes empty for this processing pass.;
         loop {
             let completion = {
                 let mut deferred = self.deferred_completions.lock();

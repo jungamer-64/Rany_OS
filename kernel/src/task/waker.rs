@@ -153,6 +153,7 @@ pub fn wake_queue_stats() -> WakeQueueStats {
 
 #[cfg(test)]
 fn reset_wake_queue_for_tests() {
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while WAKE_QUEUE.pop().is_some() {}
     WAKE_QUEUE.enqueued.store(0, Ordering::Release);
     WAKE_QUEUE.dropped.store(0, Ordering::Release);

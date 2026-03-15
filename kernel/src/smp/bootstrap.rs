@@ -499,6 +499,7 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
     ap_serial_mark(b'Q');
     if crate::interrupts::load_for_cpu(cpu_id as usize).is_err() {
         ap_serial_mark(b'X');
+        // LOOP_PROOF: mode=halt; reason=Fatal AP bootstrap failure path intentionally halts in place after logging the unrecoverable error state.;
         loop {
             core::hint::spin_loop();
         }
@@ -555,6 +556,7 @@ pub extern "C" fn ap_entry_runtime(ap_slot: u32, cpu_id: u32) -> ! {
     crate::cpu::set_stage(cpu_id as usize, crate::cpu::CpuStage::Parked);
     // Keep the parked wait loop in this frame so the AP does not leave a
     // long-lived return address on the boot stack while it is sleeping.
+    // LOOP_PROOF: mode=event; reason=Parked AP loop exits only when workers are released and otherwise remains in the low-power wait path.;
     loop {
         if crate::cpu::workers_released() {
             crate::interrupts::disable_interrupts();

@@ -73,6 +73,7 @@ impl Mlx5Device {
         while let Some(rq) = self.rqs.pop() {
             let _ = self.destroy_rq_hw(rq.rqn);
         }
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(rmpn) = self.rmp_list.pop() {
             let _ = self.destroy_rmp_hw(rmpn);
         }

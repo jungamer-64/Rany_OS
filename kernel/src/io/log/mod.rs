@@ -405,6 +405,7 @@ impl<const N: usize> RingBuffer<N> {
         let to_scan = core::cmp::min(available, dst.len());
         let mut idx = head;
         let mut copied = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while copied < to_scan {
             let byte = self.buf[idx];
             dst[copied] = byte;
@@ -739,6 +740,7 @@ pub fn early_print_dec(n: u64) {
         start -= 1;
         buf[start] = b'0';
     } else {
+        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while value > 0 {
             start -= 1;
             buf[start] = b'0' + (value % 10) as u8;
@@ -768,6 +770,7 @@ pub fn early_print_hex(n: u64) {
 
     let mut shift = 60u32;
     let mut idx = 2usize;
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while idx < buf.len() {
         let digit = ((n >> shift) & 0xF) as u8;
         buf[idx] = match digit {

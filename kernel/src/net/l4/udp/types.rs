@@ -226,7 +226,7 @@ impl UdpProcessor {
         data: &[u8],
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        mut packet: PacketRef,
+        packet: PacketRef,
         ttl: u8,
     ) -> UdpResult {
         self.process_with_packet_on(None, data, src_ip, dst_ip, packet, ttl)
@@ -294,7 +294,7 @@ impl UdpProcessor {
         data: &[u8],
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
-        mut packet: PacketRef,
+        packet: PacketRef,
         ttl: u8,
     ) -> UdpResult {
         self.process_with_packet_v6_on(None, data, src_ip, dst_ip, packet, ttl)

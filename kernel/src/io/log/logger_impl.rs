@@ -397,6 +397,7 @@ pub fn kick_serial_tx() {
         let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE);
         let mut lsr: PortU8 = IoPort::new(SERIAL_PORT_BASE + 5);
         let mut total = 0usize;
+        // LOOP_PROOF: mode=event; reason=Drain loop stops once no more bytes are pending in the global TX buffer for this flush pass.;
         loop {
             let n = drain_global_tx_buffer(&mut data_port, &mut lsr);
             if n == 0 {

@@ -63,6 +63,7 @@ pub use interrupt_waker::{
 pub use per_core_executor::TestExecutor;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub use per_core_executor::spawn_on_cpu_for_test;
+#[allow(unused_imports)]
 pub(crate) use per_core_executor::spawn_on_cpu_with_priority;
 #[allow(unused_imports)]
 pub use per_core_executor::{

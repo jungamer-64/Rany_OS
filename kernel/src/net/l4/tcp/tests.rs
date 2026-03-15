@@ -10,6 +10,7 @@ use alloc::sync::Arc;
 use alloc::{format, vec};
 
 fn idle_entry(_: u64) -> ! {
+    // LOOP_PROOF: mode=halt; reason=Idle test entry intentionally spins forever because the harness never returns from the parked CPU stub.;
     loop {
         core::hint::spin_loop();
     }

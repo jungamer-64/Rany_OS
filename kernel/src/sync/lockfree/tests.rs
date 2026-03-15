@@ -110,6 +110,7 @@ fn test_mpmc_try_operations() {
 fn test_mpmc_static_initialization() {
     static RB: MpmcRingBuffer<u64, 8> = MpmcRingBuffer::new();
 
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while RB.pop().is_some() {}
 
     assert!(RB.push(11).is_ok());

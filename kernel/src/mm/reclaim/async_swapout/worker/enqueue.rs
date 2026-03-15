@@ -1,4 +1,8 @@
 use super::*;
+#[cfg(any(
+    feature = "qemu-test-export",
+    all(test, not(feature = "full_mm_tests"))
+))]
 use core::sync::atomic::Ordering as AtomicOrdering;
 
 // 公開API: try_enqueue_swapout

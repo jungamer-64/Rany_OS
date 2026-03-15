@@ -3,6 +3,7 @@ use super::{
     buffer_pool_put_4k, release_frame_and_untrack, try_zswap_store_and_dealloc_any,
 };
 use crate::mm::types::FrameIndex;
+#[cfg(any(test, feature = "qemu-test-export"))]
 use core::sync::atomic::AtomicUsize;
 
 mod enqueue;
