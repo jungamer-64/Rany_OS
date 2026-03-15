@@ -394,6 +394,29 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
         "Initializing Interrupt Waker Registry (Pre-allocation)"
     );
     let _ = task::interrupt_waker::interrupt_waker_registry().stats();
+
+    bootstrap_smp_early(context);
+}
+
+fn bootstrap_smp_early(context: &KernelBootContext) {
+    info!(
+        target: "init",
+        "Bootstrapping SMP before ACPI/IOMMU platform bring-up"
+    );
+
+    match crate::cpu::initialize(context.boot_info) {
+        Ok(report) => {
+            info!(
+                target: "init",
+                "SMP bootstrap report: detected={} started={}",
+                report.detected,
+                report.started
+            );
+        }
+        Err(err) => {
+            warn!(target: "init", "SMP bootstrap failed: {}", err);
+        }
+    }
 }
 
 // Helper used during early boot to report how much of the BSP
@@ -586,25 +609,13 @@ fn init_graphics_console(context: &KernelBootContext) -> bool {
 
 fn phase_platform_and_security_base(context: &mut KernelBootContext) {
     // 1.5. ACPI & IOMMU Initialization
-    // Requires memory management for allocation
+    // SMP bring-up is already complete at this point so APs can park while the
+    // BSP handles the heavier platform discovery and security setup.
     info!(target: "init", "Initializing ACPI...");
 
     // Configure ACPI driver with HHDM offset for physical-to-virtual translation
     io::acpi::set_hhdm_offset(context.phys_mem_offset);
     init_acpi_and_iommu(context.boot_info);
-    match crate::cpu::initialize(context.boot_info) {
-        Ok(report) => {
-            info!(
-                target: "init",
-                "SMP bootstrap report: detected={} started={}",
-                report.detected,
-                report.started
-            );
-        }
-        Err(err) => {
-            warn!(target: "init", "SMP bootstrap failed: {}", err);
-        }
-    }
 
     crate::mm::numa::topology::configure_from_boot_info(&context.boot_info.numa_info);
     crate::mm::numa::topology::apply_current_cpu_locality();
