@@ -996,7 +996,7 @@ fn exit_with_runtime_summary(summary: crate::test::runtime_dispatch::RuntimeRunS
     } else {
         port.write(0x11u32);
     }
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
+    // LOOP_PROOF: mode=halt; reason=Runtime summary path intentionally halts forever after publishing the terminal QEMU exit code.;
     loop {
         x86_64::instructions::hlt();
     }

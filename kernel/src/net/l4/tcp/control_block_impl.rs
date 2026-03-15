@@ -227,7 +227,7 @@ impl TcpControlBlock {
         let mut current_rcv_nxt = self.seq.rcv_nxt;
         let mut fin_encountered = false;
 
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by finding a matching segment.;
+        // LOOP_PROOF: mode=event; reason=Drain loop exits when no contiguous segment remains or a FIN/buffer-limit stop condition is reached.;
         loop {
             // Find if there's a segment starting at current_rcv_nxt
             let pos = self

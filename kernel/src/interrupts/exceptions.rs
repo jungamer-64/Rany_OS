@@ -422,7 +422,7 @@ define_interrupt!(
         early_print("\n[FATAL] System halted.\n");
 
         // 回復不能 - ハルト
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
+        // LOOP_PROOF: mode=halt; reason=Fatal exception path intentionally halts forever after dumping unrecoverable processor state.;
         loop {
             x86_64::instructions::hlt();
         }
@@ -562,7 +562,7 @@ define_interrupt!(
         dump_stack_frame(&stack_frame);
 
         // ハードウェアエラーは回復不能
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
+        // LOOP_PROOF: mode=halt; reason=Machine check handler intentionally halts forever because hardware state is no longer trustworthy.;
         loop {
             x86_64::instructions::hlt();
         }

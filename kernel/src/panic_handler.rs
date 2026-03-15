@@ -261,7 +261,7 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     if PANIC_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         crate::io::log::early_print("\n!!! DOUBLE PANIC DETECTED !!!\n");
         crate::io::log::early_print("Aborting without further processing.\n");
-        // LOOP_PROOF: mode=event; reason=Double panic path intentionally halts forever to prevent reentrant panic recovery attempts.;
+        // LOOP_PROOF: mode=halt; reason=Double panic path intentionally halts forever to prevent reentrant panic recovery attempts.;
         loop {
             x86_64::instructions::hlt();
         }
@@ -288,7 +288,7 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     display_bsod_on_panic(&bsod_info);
 
     // システム停止
-    // LOOP_PROOF: mode=event; reason=Primary panic path intentionally halts forever after logging to preserve crash state.;
+    // LOOP_PROOF: mode=halt; reason=Primary panic path intentionally halts forever after logging to preserve crash state.;
     loop {
         x86_64::instructions::hlt();
     }
@@ -384,7 +384,7 @@ pub fn handle_double_fault(
         crate::graphics::bsod::show_double_fault_bsod(stack_frame, error_code);
     }
 
-    // LOOP_PROOF: mode=event; reason=Double fault handler intentionally halts forever because continuing execution is unsafe.;
+    // LOOP_PROOF: mode=halt; reason=Double fault handler intentionally halts forever because continuing execution is unsafe.;
     loop {
         x86_64::instructions::hlt();
     }
@@ -494,7 +494,7 @@ pub fn abort(message: &str) -> ! {
     crate::io::log::early_print("\n!!! ABORT: ");
     crate::io::log::early_print(message);
     crate::io::log::early_print(" !!!\n");
-    // LOOP_PROOF: mode=event; reason=Abort path intentionally halts forever after reporting because no safe rollback exists.;
+    // LOOP_PROOF: mode=halt; reason=Abort path intentionally halts forever after reporting because no safe rollback exists.;
     loop {
         x86_64::instructions::hlt();
     }
@@ -544,7 +544,7 @@ pub fn panic(_info: &PanicInfo) -> ! {
     // Simplistic printing if possible (depends on logger state)
     // We avoid complex formatting to prevent double panic
 
-    // LOOP_PROOF: mode=event; reason=Fallback panic stub intentionally spins forever when panic infrastructure is unavailable.;
+    // LOOP_PROOF: mode=halt; reason=Fallback panic stub intentionally spins forever when panic infrastructure is unavailable.;
     loop {
         core::hint::spin_loop();
     }

@@ -10,7 +10,7 @@ mod fs_tests {
     use alloc::sync::Arc;
 
     pub(super) fn idle_entry(_: u64) -> ! {
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
+        // LOOP_PROOF: mode=halt; reason=Test idle stub intentionally spins forever because the parked task never resumes normal execution.;
         loop {
             core::hint::spin_loop();
         }

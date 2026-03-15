@@ -37,7 +37,42 @@ ANNOTATION_RE = re.compile(
 )
 BAD_REASON_RE = re.compile(r"\b(?:TODO|TBD|XXX)\b|\?\?\?", re.IGNORECASE)
 FUEL_PROOF_RE = re.compile(r"check_fuel!|require_fuel\s*\(|Fuel::consume\s*\(")
+EVENT_GATE_RE = re.compile(
+    r"\bbreak\b|\breturn\b|\.await\b|\bsleep\s*\(|yield[_A-Za-z0-9]*\s*\("
+)
+HALT_PROOF_RE = re.compile(r"spin_loop\s*\(|\bhlt\s*\(")
+BOUNDED_COMPARISON_RE = re.compile(r"(<=|>=|<|>|!=)")
+IDENT_RE = re.compile(r"\b[_A-Za-z][_A-Za-z0-9]*\b")
 LOOP_TOKEN_RE = re.compile(r"\b(?:while|loop)\b")
+RESERVED_IDENTIFIERS = {
+    "Self",
+    "Ok",
+    "Err",
+    "None",
+    "Some",
+    "alloc",
+    "as",
+    "break",
+    "const",
+    "continue",
+    "core",
+    "crate",
+    "else",
+    "false",
+    "for",
+    "if",
+    "let",
+    "loop",
+    "match",
+    "mut",
+    "return",
+    "self",
+    "static",
+    "super",
+    "true",
+    "unsafe",
+    "while",
+}
 
 
 @dataclass
@@ -45,6 +80,7 @@ class LoopToken:
     kind: str
     offset: int
     line: int
+    column: int
 
 
 @dataclass
@@ -211,7 +247,15 @@ def find_tokens(masked: str) -> list[LoopToken]:
     starts = line_starts(masked)
     tokens: list[LoopToken] = []
     for m in LOOP_TOKEN_RE.finditer(masked):
-        tokens.append(LoopToken(kind=m.group(0), offset=m.start(), line=offset_to_line(m.start(), starts)))
+        line = offset_to_line(m.start(), starts)
+        tokens.append(
+            LoopToken(
+                kind=m.group(0),
+                offset=m.start(),
+                line=line,
+                column=m.start() - starts[line - 1],
+            )
+        )
     return tokens
 
 
@@ -252,6 +296,39 @@ def find_loop_block(masked: str, token_offset: int) -> tuple[int, int] | None:
     return None
 
 
+def loop_header(text: str, masked: str, token_offset: int) -> str | None:
+    open_brace = masked.find("{", token_offset)
+    if open_brace < 0:
+        return None
+    return text[token_offset:open_brace]
+
+
+def bounded_progress_identifier(header: str) -> str | None:
+    match = BOUNDED_COMPARISON_RE.search(header)
+    if match is None:
+        return None
+
+    lhs = header[: match.start()]
+    identifiers = [
+        ident
+        for ident in IDENT_RE.findall(lhs)
+        if ident not in RESERVED_IDENTIFIERS and not ident.isupper()
+    ]
+    if not identifiers:
+        return None
+    return identifiers[-1]
+
+
+def has_monotonic_update(body: str, ident: str) -> bool:
+    escaped = re.escape(ident)
+    patterns = [
+        rf"\b{escaped}\b\s*(?:\+=|-=)\s*",
+        rf"\b{escaped}\b\s*=\s*\b{escaped}\b\s*[+\-]",
+        rf"\b{escaped}\b\s*=\s*\b{escaped}\b\s*\.(?:wrapping_add|wrapping_sub|saturating_add|saturating_sub|checked_add|checked_sub)\s*\(",
+    ]
+    return any(re.search(pattern, body) for pattern in patterns)
+
+
 def check_file(path: Path, root: Path) -> list[CheckError]:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -260,6 +337,10 @@ def check_file(path: Path, root: Path) -> list[CheckError]:
     errors: list[CheckError] = []
 
     for token in tokens:
+        line_prefix = lines[token.line - 1][: token.column]
+        if "//" in line_prefix:
+            continue
+
         annotation = parse_annotation(lines, token.line)
         if annotation is None:
             errors.append(
@@ -272,29 +353,150 @@ def check_file(path: Path, root: Path) -> list[CheckError]:
             continue
 
         mode, _reason = annotation
-        if mode != "fuel":
-            continue
-
         block = find_loop_block(masked, token.offset)
-        if block is None:
-            errors.append(
-                CheckError(
-                    path=path,
-                    line=token.line,
-                    message="mode=fuel requires a braced loop body",
+        header = loop_header(text, masked, token.offset)
+
+        if mode == "condition":
+            if token.kind != "while":
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=condition requires a while loop",
+                    )
                 )
-            )
             continue
 
-        body = text[block[0] : block[1] + 1]
-        if FUEL_PROOF_RE.search(body) is None:
-            errors.append(
-                CheckError(
-                    path=path,
-                    line=token.line,
-                    message="mode=fuel requires check_fuel!/require_fuel()/Fuel::consume() in loop body",
+        if mode == "event":
+            if token.kind != "loop":
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=event requires a loop with explicit event-driven exits or yields",
+                    )
                 )
-            )
+                continue
+            if block is None:
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=event requires a braced loop body",
+                    )
+                )
+                continue
+            body = text[block[0] : block[1] + 1]
+            if EVENT_GATE_RE.search(body) is None:
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=event requires break/return/.await/sleep()/yield in loop body",
+                    )
+                )
+            continue
+
+        if mode == "halt":
+            if token.kind != "loop":
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=halt requires a loop that never returns",
+                    )
+                )
+                continue
+            if block is None:
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=halt requires a braced loop body",
+                    )
+                )
+                continue
+            body = text[block[0] : block[1] + 1]
+            if HALT_PROOF_RE.search(body) is None:
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=halt requires hlt()/spin_loop() in loop body",
+                    )
+                )
+            if re.search(r"\bbreak\b|\breturn\b", body):
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=halt cannot contain break/return in loop body",
+                    )
+                )
+            continue
+
+        if mode == "bounded":
+            if token.kind != "while":
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=bounded currently requires a while loop with an explicit bound",
+                    )
+                )
+                continue
+            if block is None or header is None:
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=bounded requires a braced loop body",
+                    )
+                )
+                continue
+
+            progress_ident = bounded_progress_identifier(header)
+            if progress_ident is None:
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=bounded requires an explicit comparison in the while condition",
+                    )
+                )
+                continue
+
+            body = text[block[0] : block[1] + 1]
+            if not has_monotonic_update(body, progress_ident):
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message=f"mode=bounded requires monotonic updates to controlling variable '{progress_ident}'",
+                    )
+                )
+            continue
+
+        if mode == "fuel":
+            if block is None:
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=fuel requires a braced loop body",
+                    )
+                )
+                continue
+
+            body = text[block[0] : block[1] + 1]
+            if FUEL_PROOF_RE.search(body) is None:
+                errors.append(
+                    CheckError(
+                        path=path,
+                        line=token.line,
+                        message="mode=fuel requires check_fuel!/require_fuel()/Fuel::consume() in loop body",
+                    )
+                )
 
     return errors
 
@@ -352,10 +554,49 @@ class LoopProofCheckerTests(unittest.TestCase):
         errors = self.run_fixture("fuel_ok.rs")
         self.assertEqual(errors, [])
 
+    def test_event_fixture_requires_gate(self) -> None:
+        errors = self.run_fixture("bad_event.rs")
+        self.assertTrue(errors)
+
+    def test_halt_fixture_accepts_spin(self) -> None:
+        errors = self.run_fixture("ok_halt.rs")
+        self.assertEqual(errors, [])
+
+    def test_halt_fixture_rejects_escape_path(self) -> None:
+        errors = self.run_fixture("bad_halt.rs")
+        self.assertTrue(errors)
+
+    def test_condition_fixture_rejects_unconditional_loop(self) -> None:
+        errors = self.run_fixture("bad_condition_loop.rs")
+        self.assertTrue(errors)
+
+    def test_bounded_fixture_accepts_monotonic_progress(self) -> None:
+        errors = self.run_fixture("bounded_ok.rs")
+        self.assertEqual(errors, [])
+
+    def test_bounded_fixture_rejects_missing_progress(self) -> None:
+        errors = self.run_fixture("bounded_missing_update.rs")
+        self.assertTrue(errors)
+
     def test_mask_non_code_preserves_escaped_newline_count(self) -> None:
         text = 'let _ = "hello\\\\\\nworld";\\nloop { break; }\\n'
         masked = mask_non_code(text)
         self.assertEqual(text.count("\n"), masked.count("\n"))
+
+    def test_comment_token_is_not_reported(self) -> None:
+        text = (
+            "/// executor's polling loop is documented here\\n"
+            "fn demo() {\\n"
+            "    // LOOP_PROOF: mode=event; reason=Loop exits via explicit break once work completes.;\\n"
+            "    loop {\\n"
+            "        break;\\n"
+            "    }\\n"
+            "}\\n"
+        )
+        path = self.fixture_root / "comment_guard.rs"
+        path.write_text(text, encoding="utf-8")
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        self.assertEqual(check_file(path, self.root), [])
 
 
 def main() -> int:
