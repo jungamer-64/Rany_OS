@@ -1994,6 +1994,10 @@ pub mod task {
 
     // Minimal interrupts shim
     pub mod interrupts {
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        static INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
+
         pub fn get_timer_ticks() -> u64 {
             0
         }
@@ -2006,6 +2010,18 @@ pub mod task {
 
         pub fn transition_to_runtime_local_timers() -> bool {
             false
+        }
+
+        pub fn enable_interrupts() {
+            INTERRUPTS_ENABLED.store(true, Ordering::Release);
+        }
+
+        pub fn disable_interrupts() {
+            INTERRUPTS_ENABLED.store(false, Ordering::Release);
+        }
+
+        pub fn are_interrupts_enabled() -> bool {
+            INTERRUPTS_ENABLED.load(Ordering::Acquire)
         }
     }
 

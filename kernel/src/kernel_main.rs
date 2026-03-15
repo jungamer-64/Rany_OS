@@ -236,30 +236,32 @@ fn parse_cmdline_u64(v: &str) -> Option<u64> {
     }
 }
 
+#[derive(Clone, Copy)]
 struct KernelBootContext {
-    boot_info: &'static ExoBootInfo,
+    boot_info_addr: usize,
     phys_mem_offset: u64,
     cmdline: Option<&'static str>,
-    graphics_console_ready: bool,
-    integration_ready: bool,
-    shell_mode: crate::shell::session::ShellLaunchMode,
 }
 
 impl KernelBootContext {
     fn new(boot_info: &'static ExoBootInfo) -> Self {
         let phys_mem_offset = boot_info.phys_mem_offset;
         Self {
-            boot_info,
+            boot_info_addr: boot_info as *const ExoBootInfo as usize,
             phys_mem_offset,
             cmdline: kernel_cmdline(boot_info, phys_mem_offset),
-            graphics_console_ready: false,
-            integration_ready: false,
-            shell_mode: crate::shell::session::ShellLaunchMode::default(),
         }
     }
 
+    fn boot_info(&self) -> &'static ExoBootInfo {
+        // SAFETY: the bootloader handoff is immutable and lives for the full
+        // kernel lifetime; the context only stores its stable address.
+        unsafe { &*(self.boot_info_addr as *const ExoBootInfo) }
+    }
+
     fn numa_info(&self) -> Option<&boot_proto::NumaInfo> {
-        (self.boot_info.numa_info.node_count > 0).then_some(&self.boot_info.numa_info)
+        let boot_info = self.boot_info();
+        (boot_info.numa_info.node_count > 0).then_some(&boot_info.numa_info)
     }
 
     fn should_skip_text_console_init(&self) -> bool {
@@ -297,10 +299,11 @@ fn verify_boot_protocol_version(boot_info: &ExoBootInfo) {
 }
 
 fn phase_entry_and_early_cpu(context: &KernelBootContext) {
+    let boot_info = context.boot_info();
     init_early_serial();
     phase_bootloader_handoff(context);
-    verify_boot_protocol_version(context.boot_info);
-    crate::platform::acpi::install_boot_snapshot(&context.boot_info.acpi_snapshot);
+    verify_boot_protocol_version(boot_info);
+    crate::platform::acpi::install_boot_snapshot(&boot_info.acpi_snapshot);
 
     // SSE/SSE2を有効化（x86_64ではABIで必須）
     init_sse();
@@ -383,7 +386,7 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
 
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    memory::init(context.numa_info(), Some(context.boot_info));
+    memory::init(context.numa_info(), Some(context.boot_info()));
     memory::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
@@ -416,7 +419,7 @@ fn bootstrap_smp_early(context: &KernelBootContext) {
         "Bootstrapping SMP before ACPI/IOMMU platform bring-up"
     );
 
-    match crate::cpu::initialize(context.boot_info) {
+    match crate::cpu::initialize(context.boot_info()) {
         Ok(report) => {
             info!(
                 target: "init",
@@ -465,18 +468,50 @@ fn for_each_runtime_registration_step(mut visit: impl FnMut(RuntimeRegistrationS
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuntimeHandoffMilestone {
-    ResolveShellMode,
-    SpawnKernelTasks,
-    BootComplete,
+enum ExecutorOnlineMilestone {
+    ConfigureBootRunMode,
+    ReleaseWorkers,
     StartExecutorRun,
 }
 
-fn for_each_runtime_handoff_milestone(mut visit: impl FnMut(RuntimeHandoffMilestone)) {
-    visit(RuntimeHandoffMilestone::ResolveShellMode);
-    visit(RuntimeHandoffMilestone::SpawnKernelTasks);
-    visit(RuntimeHandoffMilestone::BootComplete);
-    visit(RuntimeHandoffMilestone::StartExecutorRun);
+fn for_each_executor_online_milestone(mut visit: impl FnMut(ExecutorOnlineMilestone)) {
+    visit(ExecutorOnlineMilestone::ConfigureBootRunMode);
+    visit(ExecutorOnlineMilestone::ReleaseWorkers);
+    visit(ExecutorOnlineMilestone::StartExecutorRun);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AsyncBootCompletionMilestone {
+    ResolveShellMode,
+    SpawnKernelTasks,
+    BootComplete,
+}
+
+fn for_each_async_boot_completion_milestone(mut visit: impl FnMut(AsyncBootCompletionMilestone)) {
+    visit(AsyncBootCompletionMilestone::ResolveShellMode);
+    visit(AsyncBootCompletionMilestone::SpawnKernelTasks);
+    visit(AsyncBootCompletionMilestone::BootComplete);
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootLifecycleMilestone {
+    ConfigureBootRunMode,
+    ReleaseWorkers,
+    StartExecutorRun,
+    ResolveShellMode,
+    SpawnKernelTasks,
+    BootComplete,
+}
+
+#[cfg(test)]
+fn for_each_boot_lifecycle_milestone(mut visit: impl FnMut(BootLifecycleMilestone)) {
+    visit(BootLifecycleMilestone::ConfigureBootRunMode);
+    visit(BootLifecycleMilestone::ReleaseWorkers);
+    visit(BootLifecycleMilestone::StartExecutorRun);
+    visit(BootLifecycleMilestone::ResolveShellMode);
+    visit(BootLifecycleMilestone::SpawnKernelTasks);
+    visit(BootLifecycleMilestone::BootComplete);
 }
 
 #[cfg(test)]
@@ -507,11 +542,11 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn runtime_handoff_milestone_order_places_boot_complete_before_executor_run() {
-        let mut seen = [RuntimeHandoffMilestone::ResolveShellMode; 4];
+    fn executor_online_milestone_order_is_canonical() {
+        let mut seen = [ExecutorOnlineMilestone::ConfigureBootRunMode; 3];
         let mut idx = 0usize;
 
-        for_each_runtime_handoff_milestone(|step| {
+        for_each_executor_online_milestone(|step| {
             seen[idx] = step;
             idx += 1;
         });
@@ -520,12 +555,75 @@ mod tests {
         assert_eq!(
             seen,
             [
-                RuntimeHandoffMilestone::ResolveShellMode,
-                RuntimeHandoffMilestone::SpawnKernelTasks,
-                RuntimeHandoffMilestone::BootComplete,
-                RuntimeHandoffMilestone::StartExecutorRun,
+                ExecutorOnlineMilestone::ConfigureBootRunMode,
+                ExecutorOnlineMilestone::ReleaseWorkers,
+                ExecutorOnlineMilestone::StartExecutorRun,
             ]
         );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn async_boot_completion_milestone_order_places_boot_complete_last() {
+        let mut seen = [AsyncBootCompletionMilestone::ResolveShellMode; 3];
+        let mut idx = 0usize;
+
+        for_each_async_boot_completion_milestone(|step| {
+            seen[idx] = step;
+            idx += 1;
+        });
+
+        assert_eq!(idx, seen.len());
+        assert_eq!(
+            seen,
+            [
+                AsyncBootCompletionMilestone::ResolveShellMode,
+                AsyncBootCompletionMilestone::SpawnKernelTasks,
+                AsyncBootCompletionMilestone::BootComplete,
+            ]
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn boot_lifecycle_starts_executor_before_boot_complete() {
+        let mut seen = [BootLifecycleMilestone::ConfigureBootRunMode; 6];
+        let mut idx = 0usize;
+
+        for_each_boot_lifecycle_milestone(|step| {
+            seen[idx] = step;
+            idx += 1;
+        });
+
+        assert_eq!(idx, seen.len());
+        assert_eq!(
+            seen,
+            [
+                BootLifecycleMilestone::ConfigureBootRunMode,
+                BootLifecycleMilestone::ReleaseWorkers,
+                BootLifecycleMilestone::StartExecutorRun,
+                BootLifecycleMilestone::ResolveShellMode,
+                BootLifecycleMilestone::SpawnKernelTasks,
+                BootLifecycleMilestone::BootComplete,
+            ]
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn boot_cmdline_interrupt_policy_defaults_to_enabled_without_override() {
+        assert!(boot_cmdline_allows_interrupts(None));
+        assert!(boot_cmdline_allows_interrupts(Some("run_integration=boot")));
+    }
+
+    #[cfg(feature = "qemu-test-export")]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn boot_cmdline_interrupt_policy_honors_qemu_no_if_override() {
+        assert!(!boot_cmdline_allows_interrupts(Some("qemu_no_if=1")));
+        assert!(!boot_cmdline_allows_interrupts(Some("qemu_no_if=true")));
+        assert!(!boot_cmdline_allows_interrupts(Some("qemu_no_if=yes")));
+        assert!(boot_cmdline_allows_interrupts(Some("qemu_no_if=0")));
     }
 }
 
@@ -585,12 +683,28 @@ fn enable_async_logging_for_boot() {
     {}
 }
 
+fn boot_cmdline_allows_interrupts(cmdline: Option<&str>) -> bool {
+    #[cfg(not(feature = "qemu-test-export"))]
+    {
+        let _ = cmdline;
+        true
+    }
+    #[cfg(feature = "qemu-test-export")]
+    {
+        !cmdline
+            .and_then(|cmdline| util::get_cmdline_option(cmdline, "qemu_no_if"))
+            .map(|v| v == "1" || v == "true" || v == "yes")
+            .unwrap_or(false)
+    }
+}
+
 fn init_graphics_console(context: &KernelBootContext) -> bool {
     info!(target: "init", "Initializing graphics framebuffer...");
 
     #[cfg(not(any(test, feature = "bench")))]
     {
-        if graphics::init_from_boot_info(&context.boot_info.framebuffer, context.phys_mem_offset) {
+        if graphics::init_from_boot_info(&context.boot_info().framebuffer, context.phys_mem_offset)
+        {
             info!(target: "init", "Graphics framebuffer initialized");
 
             if context.should_skip_text_console_init() {
@@ -619,7 +733,7 @@ fn init_graphics_console(context: &KernelBootContext) -> bool {
     }
 }
 
-fn phase_platform_and_security_base(context: &mut KernelBootContext) {
+fn phase_platform_and_security_base(context: &KernelBootContext) {
     // 1.5. ACPI & IOMMU Initialization
     // SMP bring-up is already complete at this point so APs can park while the
     // BSP handles the heavier platform discovery and security setup.
@@ -627,9 +741,9 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
 
     // Configure ACPI driver with HHDM offset for physical-to-virtual translation
     io::acpi::set_hhdm_offset(context.phys_mem_offset);
-    init_acpi_and_iommu(context.boot_info);
+    init_acpi_and_iommu(context.boot_info());
 
-    crate::mm::numa::topology::configure_from_boot_info(&context.boot_info.numa_info);
+    crate::mm::numa::topology::configure_from_boot_info(&context.boot_info().numa_info);
     crate::mm::numa::topology::apply_current_cpu_locality();
 
     // ヒープが使用可能になったことを通知
@@ -637,7 +751,10 @@ fn phase_platform_and_security_base(context: &mut KernelBootContext) {
 
     register_runtime_service_boundary();
     enable_async_logging_for_boot();
-    context.graphics_console_ready = init_graphics_console(context);
+}
+
+fn phase_graphics_console(context: &KernelBootContext) -> bool {
+    init_graphics_console(context)
 }
 
 fn log_driver_registry_summary() {
@@ -663,31 +780,33 @@ fn log_driver_registry_summary() {
     info!(target: "init", "==============================");
 }
 
-fn initialize_system_integration(context: &mut KernelBootContext) {
+fn initialize_system_integration() -> bool {
     info!(target: "init", "Initializing system integration");
     if let Err(e) = integration::init() {
         warn!(target: "init", "System integration failed: {:?}", e);
+        false
     } else {
-        context.integration_ready = true;
         info!(target: "init", "System integration initialized");
+        true
     }
 }
 
-fn retry_system_integration_if_needed(context: &mut KernelBootContext) {
-    if context.integration_ready {
+fn retry_system_integration_if_needed(integration_ready: bool) -> bool {
+    if integration_ready {
         debug!(
             target: "init",
             "(late) Skipping system integration: already initialized"
         );
-        return;
+        return true;
     }
 
     info!(target: "init", "(late) Initializing system integration");
     if let Err(e) = integration::init() {
         warn!(target: "init", "(late) System integration failed: {:?}", e);
+        false
     } else {
-        context.integration_ready = true;
         info!(target: "init", "(late) System integration initialized");
+        true
     }
 }
 
@@ -782,7 +901,7 @@ fn init_durability_and_kgdb(context: &KernelBootContext) {
     info!(target: "init", "Durability + kgdb subsystems initialized");
 }
 
-fn phase_core_services_and_drivers(context: &mut KernelBootContext) {
+fn phase_core_services_base(context: &KernelBootContext) {
     // 2. ドメイン管理システムの初期化
     info!(target: "init", "Initializing domain system");
     domain_system::init();
@@ -821,7 +940,7 @@ fn phase_core_services_and_drivers(context: &mut KernelBootContext) {
     // 2.9. Boot artifact handoff からドライバ Cells をロード
     info!(target: "init", "Loading driver Cells from boot artifacts...");
     let loaded_cells =
-        loader::boot_artifacts::load_cells_from_boot_artifacts(&context.boot_info.boot_artifacts);
+        loader::boot_artifacts::load_cells_from_boot_artifacts(&context.boot_info().boot_artifacts);
     if loaded_cells > 0 {
         info!(
             target: "init",
@@ -831,7 +950,9 @@ fn phase_core_services_and_drivers(context: &mut KernelBootContext) {
     } else {
         debug!(target: "init", "No boot artifacts or no Cells found");
     }
+}
 
+fn phase_driver_bringup() -> bool {
     init_hid_and_serial_drivers();
 
     // 3.5.5 - 3.5.7. Storage and USB controller scanning
@@ -841,8 +962,10 @@ fn phase_core_services_and_drivers(context: &mut KernelBootContext) {
     log_driver_registry_summary();
 
     // 3.6. システム統合 (PCI掃描/デバイス初期化) をネットワークより先に行う
-    initialize_system_integration(context);
+    initialize_system_integration()
+}
 
+fn phase_post_driver_services(context: &KernelBootContext) {
     init_network_infra();
 
     // 3.7. ファイルシステム（memfs）の初期化
@@ -854,30 +977,8 @@ fn phase_core_services_and_drivers(context: &mut KernelBootContext) {
     init_durability_and_kgdb(context);
 }
 
-fn enable_interrupts_for_runtime(_context: &KernelBootContext) {
-    #[cfg(not(feature = "qemu-test-export"))]
-    {
-        interrupts::enable_interrupts();
-        info!(target: "init", "Interrupts enabled");
-    }
-    #[cfg(feature = "qemu-test-export")]
-    {
-        let skip_interrupt_enable = _context
-            .cmdline
-            .and_then(|cmdline| util::get_cmdline_option(cmdline, "qemu_no_if"))
-            .map(|v| v == "1" || v == "true" || v == "yes")
-            .unwrap_or(false);
-
-        if skip_interrupt_enable {
-            info!(
-                target: "init",
-                "Interrupt enable skipped by cmdline option qemu_no_if=1"
-            );
-        } else {
-            interrupts::enable_interrupts();
-            info!(target: "init", "Interrupts enabled (qemu-test-export mode)");
-        }
-    }
+fn runtime_interrupts_enabled(_context: &KernelBootContext) -> bool {
+    boot_cmdline_allows_interrupts(_context.cmdline)
 }
 
 #[derive(Clone, Copy)]
@@ -959,12 +1060,15 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
     });
 }
 
-fn resolve_shell_mode(context: &mut KernelBootContext) {
+fn resolve_shell_mode(
+    context: &KernelBootContext,
+    graphics_console_ready: bool,
+) -> crate::shell::session::ShellLaunchMode {
     let mode =
-        crate::shell::session::shell_launch_mode_from_boot_policy(&context.boot_info.boot_policy);
+        crate::shell::session::shell_launch_mode_from_boot_policy(&context.boot_info().boot_policy);
     let adjusted_mode = crate::shell::session::adjust_shell_launch_mode_for_console_availability(
         mode,
-        context.graphics_console_ready,
+        graphics_console_ready,
     );
     if adjusted_mode != mode {
         warn!(
@@ -976,101 +1080,7 @@ fn resolve_shell_mode(context: &mut KernelBootContext) {
     }
 
     info!(target: "init", "Shell launch mode: {:?}", adjusted_mode);
-    context.shell_mode = adjusted_mode;
-}
-
-fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
-    info!(
-        target: "init",
-        "Phase-2 runtime handoff entering the per-core executor path"
-    );
-
-    // 4.6. I/Oスケジューラの初期化
-    io::io_scheduler::init_io_scheduler();
-
-    // Aggregation is performed in the executor idle loop; explicit aggregator
-    // spawn is not required in the normal runtime path.
-    debug!(target: "init", "Log aggregation will run on executor idle");
-
-    // 5. ローダー/ライブアップデートは boot artifact load より前に初期化済み
-    debug!(
-        target: "init",
-        "Cell loader/live update already initialized (early path)"
-    );
-
-    // 5.5. シンボルテーブルの初期化（バックトレース用）
-    info!(target: "init", "Initializing symbol table");
-    unwind::init_symbol_table();
-    info!(target: "init", "Symbol table initialized");
-
-    // 5.6. テストフレームワークの初期化
-    info!(target: "init", "Initializing test framework");
-    test::init();
-    info!(target: "init", "Test framework initialized");
-
-    // 5.7. システム統合の初期化 (本来はこちら側には来ないが念のため)
-    retry_system_integration_if_needed(context);
-
-    // NOTE: 同期DHCP/pingは廃止。ネットワーク初期化は network_bootstrap_task() で
-    // Executor起動後に完全非同期で実行される。
-    match crate::io::iommu::vendors::intel::controller::init_global::start_runtime_services() {
-        Ok(0) => {}
-        Ok(count) => info!(
-            target: "init",
-            "Intel VT-d runtime services activated for {} controller(s)",
-            count
-        ),
-        Err(err) => warn!(
-            target: "init",
-            "Intel VT-d runtime services activation failed: {:?}",
-            err
-        ),
-    }
-    enable_interrupts_for_runtime(context);
-
-    // 6.5. runtime test request is executed after executor handoff so the
-    // checks observe the final per-core runtime state.
-
-    // 7. システム統計を表示
-    print_system_stats();
-
-    // 8. per-core executor へタスクを投入
-    info!(target: "init", "Scheduling runtime tasks onto per-core executors");
-
-    for_each_runtime_handoff_milestone(|step| match step {
-        RuntimeHandoffMilestone::ResolveShellMode => resolve_shell_mode(context),
-        RuntimeHandoffMilestone::SpawnKernelTasks => {
-            spawn_kernel_tasks(context);
-            info!(target: "init", "Kernel tasks spawned");
-        }
-        RuntimeHandoffMilestone::BootComplete => {
-            info!(target: "boot", "BOOT COMPLETE!");
-        }
-        RuntimeHandoffMilestone::StartExecutorRun => {
-            let apic_timer_runtime = crate::interrupts::transition_to_runtime_local_timers();
-            crate::cpu::release_workers();
-            if apic_timer_runtime {
-                info!(target: "run", "Runtime handoff switched to per-core APIC timers");
-            }
-            info!(target: "run", "Starting per-core executor main loop");
-        }
-    });
-
-    schedule_runtime_tests_if_requested(context);
-
-    // =========================================================================
-    // STACK OVERFLOW TEST (Double Fault Verification)
-    // このブロックを有効化して、GDT/TSS/IST修正が機能しているか確認してください。
-    // 成功すれば、再起動せず "!!! DOUBLE FAULT !!!" ログが出力されて停止します。
-    // =========================================================================
-    // warn!("!!! INITIATING STACK OVERFLOW TEST !!!");
-    // fn stack_overflow() { stack_overflow(); } // 無限再帰
-    // stack_overflow();
-    // =========================================================================
-
-    // メインループ開始（戻ってこない）
-    crate::cpu::set_stage(0, crate::cpu::CpuStage::ExecutorRunning);
-    task::run_forever(0);
+    adjusted_mode
 }
 
 /// Scan PCI bus for USB xHCI controllers and initialize them.
@@ -1144,11 +1154,9 @@ pub(crate) fn init_usb_controllers() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
-    let mut context = KernelBootContext::new(boot_info);
+    let context = KernelBootContext::new(boot_info);
 
     phase_entry_and_early_cpu(&context);
     phase_early_kernel_substrate(&context);
-    phase_platform_and_security_base(&mut context);
-    phase_core_services_and_drivers(&mut context);
-    phase_runtime_handoff(&mut context);
+    start_async_boot_runtime(context);
 }

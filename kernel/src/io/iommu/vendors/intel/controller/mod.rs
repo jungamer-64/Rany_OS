@@ -289,7 +289,8 @@ impl IommuController {
     }
 
     pub(crate) fn ensure_command_queue(&self) -> &CommandQueue {
-        self.command_queue.call_once(|| CommandQueue::new_with_numa(None))
+        self.command_queue
+            .call_once(|| CommandQueue::new_with_numa(None))
     }
 
     pub(crate) fn runtime_services_started(&self) -> bool {
@@ -309,7 +310,8 @@ impl IommuController {
     }
 
     pub(crate) fn qi_completion_interrupts_enabled(&self) -> bool {
-        self.qi_completion_interrupts_enabled.load(Ordering::Acquire)
+        self.qi_completion_interrupts_enabled
+            .load(Ordering::Acquire)
     }
 
     pub(crate) fn mark_qi_completion_interrupts_enabled(&self) {

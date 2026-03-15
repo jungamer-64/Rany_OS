@@ -34,37 +34,39 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
   - Phase 2 で `physical_memory_offset` が設定済みであること
   - ISR 側の lazy init を避けるため、waker registry は割り込み有効化前に確保すること
 
-## Phase 4: Platform / Security Base
+## Phase 4: Early Executor Handoff
 
-- 実装関数: `phase_platform_and_security_base()`
-- ACPI/IOMMU、heap available 通知、kernel services 登録、async logging 切替、framebuffer/text console 初期化を行う。
-- early ACPI consumer は `platform::acpi` 経由で bootloader の `acpi_snapshot` を優先し、full ACPI parser は DMAR/IVRS/NFIT などの後続用途のために引き続き初期化される。
-- IOMMU は DMA 保護の基盤であり、以後のドライバ起動前に済ませる。
-- IOMMU と shell の boot-critical policy は kernel cmdline を再解釈せず、bootloader が handoff した `boot_policy` を使う。
-- `graphics_console_ready` はこのフェーズで確定し、後段の shell mode 調整に使う。
+- 実装関数: `start_async_boot_runtime()`
+- Phase 3 の直後に、per-core executor の run loop を開始し、runtime worker を先行解放する。
+- この段階では executor は `Boot` run mode で入り、interrupt policy は boot policy / `qemu_no_if=1` に従って明示的に設定される。
+- APIC runtime local timer への切替はまだ行わず、finalizer 側に残す。
 - 依存:
-  - Phase 3 のメモリ初期化完了
-  - `qemu-test-export` のときは async logging と text console の扱いが条件付きになる
+  - Phase 3 のメモリ初期化と early SMP bootstrap が完了していること
+  - BSP/AP とも executor slot は provision 済みであること
 
-## Phase 5: Core Services / Drivers
+## Phase 5: Async Boot Orchestration
 
-- 実装関数: `phase_core_services_and_drivers()`
-- domain/SAS/security/MPK、loader/live update/driver domain、boot artifact cell load、HID/serial/NVMe/AHCI/USB、system integration、pre-executor network infra、memfs、durability/kgdb を初期化する。
-- `integration::init()` は driver bring-up 後、network infra 前が正位置である。
-- `init_network_infra()` は同期の stack/endpoint/timer wheel 準備だけを担当し、VirtIO-Net 登録、DHCP、ping は post-executor に残す。
+- 実装単位: `AsyncBootCoordinator` と stage task 群
+- Phase 4 で動き始めた executor 上に、残りの boot を高優先度 task 群として展開する。
+- stage 構成:
+  - `platform_task`: ACPI/IOMMU、NUMA apply、heap available 通知、kernel services 登録、async logging 切替
+  - `graphics_task`: framebuffer/text console 初期化
+  - `core_services_task`: domain/SAS/security/MPK、loader/live update/driver domain、boot artifact cell load
+  - `driver_task`: HID/serial/NVMe/AHCI/USB、system integration
+  - `post_driver_task`: pre-executor network infra、memfs、durability/kgdb
+- `graphics_task` は `platform_task` と並行に走り、それ以外は dependency latch に従って段階実行される。
+- `integration::init()` は引き続き driver bring-up 後、network infra 前が正位置である。
+- `init_network_infra()` は同期の stack/endpoint/timer wheel 準備だけを担当し、VirtIO-Net 登録、DHCP、ping は runtime task に残す。
+
+## Phase 6: Async Boot Finalization
+
+- 実装単位: `finalizer_task` / `finalize_runtime_boot()`
+- `graphics_task` と `post_driver_task` の完了を待って、shell mode 決定、symbol table、test framework、late integration retry、IOMMU runtime services、runtime local timer 切替、stats 出力、runtime task spawn、runtime test dispatchを行う。
+- `BOOT COMPLETE!` はこの finalization 完了時点でのみ出力される。
+- `Starting per-core executor main loop` は Phase 4 に前倒しされるため、`BOOT COMPLETE!` より先に現れる。
 - 依存:
-  - IOMMU と PCI 初期化が完了していること
-- driver domain 基盤は boot artifact cell load より先であること
-
-## Phase 6: Runtime Handoff
-
-- 実装関数: `phase_runtime_handoff()`
-- `smp::topology::CpuTopology` / `smp::lifecycle::CpuLifecycle` / `smp::runtime_handoff::RuntimeHandoffCoordinator` を前提に、Phase 3 で provision 済みの per-core executor 群を用いて、I/O scheduler、symbol table、test framework、late integration retry、interrupt enable、runtime integration dispatch、stats 出力、runtime worker release、runtime task spawn、`task::run_forever(cpu_id)` を行う。
-- `shell_mode` はこの時点で `graphics_console_ready` と cmdline から確定する。
-- 割り込み有効化後も、ネットワークの本格 bring-up は `network_bootstrap_task()` による非同期処理に委譲される。
-- 依存:
-  - Phase 5 までの同期初期化が完了していること
-  - `qemu_no_if=1` / `run_integration=*` の分岐はここで評価すること
+  - async boot stage が完了していること
+  - `qemu_no_if=1` / `run_integration=*` の分岐は finalizer で評価されること
 
 ## Runtime Task Split
 
@@ -77,7 +79,7 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 - `spawn_demo_runtime_tasks()`
   - user_app_1、ipc_demo、preemption demo、memory monitor、waker test、ping demo
 
-これにより、同期初期化の終点と Executor 起動後の責務がコード上で分離される。
+これにより、early executor handoff 後の async boot 完了点と、通常 runtime task の責務がコード上で分離される。
 
 ## Phase 1 Closure Validation
 

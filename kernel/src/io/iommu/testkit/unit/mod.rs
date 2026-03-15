@@ -885,7 +885,8 @@ fn test_domain_iova_alloc_non_identity() {
 fn test_cmdqueue_map_unmap_with_domain() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
     let ctrl_local = IommuController::new(0x0, 0);
-    ctrl_local.install_command_queue(crate::io::iommu::runtime::command::queue::CommandQueue::new());
+    ctrl_local
+        .install_command_queue(crate::io::iommu::runtime::command::queue::CommandQueue::new());
 
     // Leak so we can reference it from threads in test
     let ctrl: &'static IommuController = Box::leak(Box::new(ctrl_local));
@@ -988,7 +989,8 @@ fn test_cmdqueue_map_unmap_with_domain() {
 fn test_map_for_device_async_and_unmap() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
     let ctrl_local = IommuController::new(0x0, 0);
-    ctrl_local.install_command_queue(crate::io::iommu::runtime::command::queue::CommandQueue::new());
+    ctrl_local
+        .install_command_queue(crate::io::iommu::runtime::command::queue::CommandQueue::new());
 
     // Instead of leaking, wrap the controller in an Arc and register it in the global registry
     use alloc::sync::Arc as AllocArc;

@@ -186,3 +186,12 @@ fn test_quota_suspend_auto_resume_after_window() {
     let snapshot = get_domain_snapshot(id).expect("domain snapshot missing");
     assert_eq!(snapshot.state, DomainState::Running);
 }
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_kernel_domain_is_runnable_before_registry_lookup() {
+    assert!(
+        is_domain_runnable_now(DomainId::KERNEL, 0),
+        "kernel boot tasks must stay runnable during early executor handoff"
+    );
+}

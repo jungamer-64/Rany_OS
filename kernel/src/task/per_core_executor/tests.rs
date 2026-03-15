@@ -213,3 +213,32 @@ fn steal_from_skips_tasks_that_cannot_run_on_thief_cpu() {
     assert_eq!(victim.queue_length(), 1);
     assert_eq!(thief.queue_length(), 0);
 }
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn executor_run_mode_transitions_from_boot_to_runtime() {
+    configure_boot_run_mode(false);
+    assert_eq!(current_run_mode(), ExecutorRunMode::Boot);
+    assert!(!interrupts_allowed_for_executor());
+
+    configure_runtime_interrupts(true);
+    transition_to_runtime_run_mode();
+
+    assert_eq!(current_run_mode(), ExecutorRunMode::Runtime);
+    assert!(interrupts_allowed_for_executor());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn spawn_on_cpu_with_priority_enqueues_work_on_requested_executor() {
+    init_executors(4);
+
+    let executor = executor_manager()
+        .get_executor(3)
+        .expect("missing executor for cpu3");
+    assert_eq!(executor.queue_length(), 0);
+
+    let _ = spawn_on_cpu_with_priority(3, Priority::High, async {});
+
+    assert_eq!(executor.queue_length(), 1);
+}

@@ -63,12 +63,15 @@ pub use interrupt_waker::{
 pub use per_core_executor::TestExecutor;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub use per_core_executor::spawn_on_cpu_for_test;
+pub(crate) use per_core_executor::spawn_on_cpu_with_priority;
 #[allow(unused_imports)]
 pub use per_core_executor::{
-    ExecutorManager, ExecutorStats, GlobalQueueStats, PerCoreExecutor, PolledTaskContext, Priority,
-    WakeQueueStats, current_executor_phase, current_polled_task_context, executor_manager,
-    executor_slot_count, global_queue_stats, init_executors, provision_executors, run_forever,
-    spawn, spawn_task, spawn_with_priority, wake_queue_stats,
+    ExecutorManager, ExecutorRunMode, ExecutorStats, GlobalQueueStats, PerCoreExecutor,
+    PolledTaskContext, Priority, WakeQueueStats, configure_boot_run_mode,
+    configure_runtime_interrupts, current_executor_phase, current_polled_task_context,
+    current_run_mode, executor_manager, executor_slot_count, global_queue_stats, init_executors,
+    provision_executors, run_forever, spawn, spawn_task, spawn_with_priority,
+    transition_to_runtime_run_mode, wake_queue_stats,
 };
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub use preemption::PerCpuPreemptionSnapshot;

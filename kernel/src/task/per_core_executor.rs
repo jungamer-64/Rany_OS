@@ -30,6 +30,15 @@ const EXECUTOR_PHASE_FETCH_GLOBAL: u8 = 6;
 const EXECUTOR_PHASE_WORK_STEAL: u8 = 7;
 const EXECUTOR_PHASE_QUIESCENT: u8 = 8;
 const EXECUTOR_PHASE_WAITING: u8 = 9;
+const EXECUTOR_RUN_MODE_BOOT: u8 = 0;
+const EXECUTOR_RUN_MODE_RUNTIME: u8 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ExecutorRunMode {
+    Boot = EXECUTOR_RUN_MODE_BOOT,
+    Runtime = EXECUTOR_RUN_MODE_RUNTIME,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -434,32 +443,42 @@ impl PerCoreExecutor {
         self.core_id == 0
     }
 
-    fn run_local_runtime_maintenance(&self) {
-        crate::interrupts::poll_timer_events();
-        crate::io::hid::keyboard::process_pending_wakes();
-        crate::task::process_pending_timer_wakers();
+    fn run_local_runtime_maintenance(&self, run_mode: ExecutorRunMode) {
         crate::task::interrupt_waker::process_interrupt_events();
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();
+        crate::task::process_pending_timer_wakers();
+
+        if run_mode == ExecutorRunMode::Boot {
+            return;
+        }
+
+        crate::interrupts::poll_timer_events();
+        crate::io::hid::keyboard::process_pending_wakes();
         crate::io::nvme::per_core::process_deferred_completions_for_core(self.core_id);
         crate::io::io_scheduler::hybrid_coordinator().tick(|| {
             crate::task::interrupt_waker::process_interrupt_events();
         });
     }
 
-    fn run_global_runtime_maintenance(&self) {
-        if !self.runs_global_runtime_maintenance() {
+    fn run_global_runtime_maintenance(&self, run_mode: ExecutorRunMode) {
+        if run_mode == ExecutorRunMode::Boot || !self.runs_global_runtime_maintenance() {
             return;
         }
 
         crate::io::iommu::api::process_pending_command_queues();
     }
 
-    fn complete_global_runtime_maintenance(&self) {
-        crate::loader::live_update::enter_quiescent_state();
+    fn complete_global_runtime_maintenance(&self, run_mode: ExecutorRunMode) {
+        if run_mode == ExecutorRunMode::Runtime {
+            crate::loader::live_update::enter_quiescent_state();
+        }
+
         if self.runs_global_runtime_maintenance() {
-            crate::loader::live_update::poll_pending_updates();
-            crate::driver_domain::hot_swap::poll_validation_windows();
+            if run_mode == ExecutorRunMode::Runtime {
+                crate::loader::live_update::poll_pending_updates();
+                crate::driver_domain::hot_swap::poll_validation_windows();
+            }
             crate::io::log::kick_serial_tx();
         }
     }
@@ -689,9 +708,10 @@ impl PerCoreExecutor {
     }
 
     fn run_single_iteration(&self, allow_idle_wait: bool) {
+        let run_mode = current_run_mode();
         set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_LOOP);
-        self.run_local_runtime_maintenance();
-        self.run_global_runtime_maintenance();
+        self.run_local_runtime_maintenance(run_mode);
+        self.run_global_runtime_maintenance(run_mode);
 
         set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_SUSPENDED);
         self.process_suspended_tasks();
@@ -712,7 +732,7 @@ impl PerCoreExecutor {
         }
 
         set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_QUIESCENT);
-        self.complete_global_runtime_maintenance();
+        self.complete_global_runtime_maintenance(run_mode);
 
         if allow_idle_wait && self.queue_length() == 0 {
             set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_WAITING);
@@ -724,17 +744,32 @@ impl PerCoreExecutor {
             }
 
             #[cfg(not(feature = "qemu-test-export"))]
-            interrupts::enable_and_hlt();
+            if interrupts_allowed_for_executor() {
+                interrupts::enable_and_hlt();
+            } else {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    fn apply_run_mode(&self) {
+        if current_run_mode() == ExecutorRunMode::Runtime {
+            crate::interrupts::ensure_runtime_local_timer_started();
+        }
+
+        if interrupts_allowed_for_executor() {
+            if !crate::interrupts::are_interrupts_enabled() {
+                crate::interrupts::enable_interrupts();
+            }
+        } else if crate::interrupts::are_interrupts_enabled() {
+            crate::interrupts::disable_interrupts();
         }
     }
 
     fn run_forever(&self) -> ! {
-        crate::interrupts::ensure_runtime_local_timer_started();
-        if !crate::interrupts::are_interrupts_enabled() {
-            crate::interrupts::enable_interrupts();
-        }
-
         loop {
+            self.apply_run_mode();
+
             if self.shutdown.load(Ordering::Acquire) {
                 set_current_executor_phase(self.core_id as usize, EXECUTOR_PHASE_IDLE);
                 core::hint::spin_loop();
@@ -976,14 +1011,13 @@ impl ExecutorManager {
         let Ok(executors) = self.executors.lock() else {
             return 0;
         };
-        let preferred_cpu = task
-            .preferred_cpu()
-            .min(self.active_cpu_count().saturating_sub(1));
+        let active_cpu_count = executors.len().clamp(1, MAX_CPUS);
+        let preferred_cpu = task.preferred_cpu().min(active_cpu_count.saturating_sub(1));
         let preferred_node = task.preferred_numa_node();
 
         executors
             .iter()
-            .take(self.active_cpu_count())
+            .take(active_cpu_count)
             .filter(|executor| task.can_run_on(executor.core_id as usize))
             .min_by_key(|executor| {
                 let cpu_id = executor.core_id as usize;
@@ -999,7 +1033,7 @@ impl ExecutorManager {
             })
             .map(|executor| executor.core_id as usize)
             .unwrap_or_else(|| {
-                (0..self.active_cpu_count())
+                (0..active_cpu_count)
                     .find(|&cpu_id| task.can_run_on(cpu_id))
                     .unwrap_or(preferred_cpu)
             })
@@ -1039,7 +1073,8 @@ impl ExecutorManager {
         let mut capacity = 0usize;
 
         if let Ok(executors) = self.executors.lock() {
-            for executor in executors.iter().take(self.active_cpu_count()) {
+            let active_cpu_count = executors.len().clamp(1, MAX_CPUS);
+            for executor in executors.iter().take(active_cpu_count) {
                 len = len.saturating_add(executor.pending_wakes.len());
                 enqueued = enqueued.saturating_add(executor.wake_enqueued.load(Ordering::Relaxed));
                 dropped = dropped.saturating_add(executor.wake_dropped.load(Ordering::Relaxed));
@@ -1060,6 +1095,8 @@ static EXECUTOR_MANAGER: ExecutorManager = ExecutorManager::new();
 static CURRENT_POLLED_TASK_ID: AtomicU64 = AtomicU64::new(NO_POLLED_TASK_ID);
 static CURRENT_POLLED_TASK_DOMAIN: AtomicU64 = AtomicU64::new(0);
 static CURRENT_POLLED_TASK_CPU: AtomicUsize = AtomicUsize::new(NO_POLLED_TASK_CPU);
+static EXECUTOR_RUN_MODE: AtomicU8 = AtomicU8::new(EXECUTOR_RUN_MODE_RUNTIME);
+static EXECUTOR_INTERRUPTS_ALLOWED: AtomicBool = AtomicBool::new(true);
 static CURRENT_EXECUTOR_PHASE: [AtomicU8; MAX_CPUS] = {
     const INIT: AtomicU8 = AtomicU8::new(EXECUTOR_PHASE_IDLE);
     [INIT; MAX_CPUS]
@@ -1132,6 +1169,26 @@ pub fn wake_queue_stats() -> WakeQueueStats {
     EXECUTOR_MANAGER.wake_queue_stats()
 }
 
+pub fn current_run_mode() -> ExecutorRunMode {
+    match EXECUTOR_RUN_MODE.load(Ordering::Acquire) {
+        EXECUTOR_RUN_MODE_BOOT => ExecutorRunMode::Boot,
+        _ => ExecutorRunMode::Runtime,
+    }
+}
+
+pub fn configure_boot_run_mode(allow_interrupts: bool) {
+    EXECUTOR_RUN_MODE.store(ExecutorRunMode::Boot as u8, Ordering::Release);
+    EXECUTOR_INTERRUPTS_ALLOWED.store(allow_interrupts, Ordering::Release);
+}
+
+pub fn transition_to_runtime_run_mode() {
+    EXECUTOR_RUN_MODE.store(ExecutorRunMode::Runtime as u8, Ordering::Release);
+}
+
+pub fn configure_runtime_interrupts(allow_interrupts: bool) {
+    EXECUTOR_INTERRUPTS_ALLOWED.store(allow_interrupts, Ordering::Release);
+}
+
 pub fn spawn<F>(future: F) -> super::TaskId
 where
     F: Future<Output = ()> + Send + 'static,
@@ -1160,8 +1217,11 @@ pub fn spawn_task(task: super::Task) -> super::TaskId {
     EXECUTOR_MANAGER.spawn_task(task, Priority::Normal)
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub fn spawn_on_cpu_for_test<F>(cpu_id: usize, future: F) -> super::TaskId
+pub(crate) fn spawn_on_cpu_with_priority<F>(
+    cpu_id: usize,
+    priority: Priority,
+    future: F,
+) -> super::TaskId
 where
     F: Future<Output = ()> + Send + 'static,
 {
@@ -1179,11 +1239,19 @@ where
 
     EXECUTOR_MANAGER.spawn_task_with_policy(
         task,
-        Priority::Normal,
+        priority,
         affinity_mask,
         target_cpu,
         Some(preferred_numa_node),
     )
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub fn spawn_on_cpu_for_test<F>(cpu_id: usize, future: F) -> super::TaskId
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    spawn_on_cpu_with_priority(cpu_id, Priority::Normal, future)
 }
 
 pub fn run_forever(cpu_id: usize) -> ! {
@@ -1229,6 +1297,10 @@ fn set_current_executor_phase(cpu_id: usize, phase: u8) {
     if cpu_id < MAX_CPUS {
         CURRENT_EXECUTOR_PHASE[cpu_id].store(phase, Ordering::Release);
     }
+}
+
+fn interrupts_allowed_for_executor() -> bool {
+    EXECUTOR_INTERRUPTS_ALLOWED.load(Ordering::Acquire)
 }
 
 #[cfg(not(test))]

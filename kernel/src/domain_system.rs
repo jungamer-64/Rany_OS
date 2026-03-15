@@ -776,6 +776,10 @@ pub fn quota_suspend_deadline_ns(id: DomainId) -> Option<u64> {
 }
 
 pub fn is_domain_runnable_now(id: DomainId, now_ns: u64) -> bool {
+    if id == DomainId::KERNEL {
+        return true;
+    }
+
     match REGISTRY.lock() {
         Ok(mut guard) => {
             let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) else {

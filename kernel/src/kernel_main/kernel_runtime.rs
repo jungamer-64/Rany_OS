@@ -4,7 +4,410 @@
 //! カーネルのランタイム機能（タスクスポーン、統計表示、シンボル登録など）
 //!! カーネルの初期化後、Executor上で動作するタスクをスポーンする関数や、システム統計を表示する関数などを定義する。
 use super::*;
+use alloc::sync::Arc;
+use core::future::poll_fn;
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::task::Poll;
 use log::debug;
+
+const ASYNC_BOOT_STAGE_COUNT: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum AsyncBootStage {
+    Platform = 0,
+    Graphics = 1,
+    CoreServices = 2,
+    Driver = 3,
+    PostDriver = 4,
+    Finalizer = 5,
+}
+
+impl AsyncBootStage {
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum AsyncBootStageStatus {
+    Pending = 0,
+    Running = 1,
+    Complete = 2,
+}
+
+struct BootStageLatch {
+    complete: AtomicBool,
+    waker: crate::sync::AtomicWaker,
+}
+
+impl BootStageLatch {
+    const fn new() -> Self {
+        Self {
+            complete: AtomicBool::new(false),
+            waker: crate::sync::AtomicWaker::new(),
+        }
+    }
+
+    fn complete(&self) {
+        self.complete.store(true, Ordering::Release);
+        self.waker.wake();
+    }
+
+    fn is_complete(&self) -> bool {
+        self.complete.load(Ordering::Acquire)
+    }
+
+    async fn wait(&self) {
+        poll_fn(|cx| {
+            if self.is_complete() {
+                return Poll::Ready(());
+            }
+
+            self.waker.register(cx.waker());
+            if self.is_complete() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
+struct AsyncBootStageState {
+    status: AtomicU8,
+    latch: BootStageLatch,
+}
+
+impl AsyncBootStageState {
+    const fn new() -> Self {
+        Self {
+            status: AtomicU8::new(AsyncBootStageStatus::Pending as u8),
+            latch: BootStageLatch::new(),
+        }
+    }
+
+    fn mark_running(&self) {
+        self.status
+            .store(AsyncBootStageStatus::Running as u8, Ordering::Release);
+    }
+
+    fn mark_complete(&self) {
+        self.status
+            .store(AsyncBootStageStatus::Complete as u8, Ordering::Release);
+        self.latch.complete();
+    }
+
+    fn status(&self) -> AsyncBootStageStatus {
+        match self.status.load(Ordering::Acquire) {
+            x if x == AsyncBootStageStatus::Pending as u8 => AsyncBootStageStatus::Pending,
+            x if x == AsyncBootStageStatus::Running as u8 => AsyncBootStageStatus::Running,
+            _ => AsyncBootStageStatus::Complete,
+        }
+    }
+}
+
+struct AsyncBootCoordinator {
+    graphics_console_ready: AtomicBool,
+    integration_ready: AtomicBool,
+    stages: [AsyncBootStageState; ASYNC_BOOT_STAGE_COUNT],
+}
+
+impl AsyncBootCoordinator {
+    fn new() -> Self {
+        Self {
+            graphics_console_ready: AtomicBool::new(false),
+            integration_ready: AtomicBool::new(false),
+            stages: [const { AsyncBootStageState::new() }; ASYNC_BOOT_STAGE_COUNT],
+        }
+    }
+
+    fn stage(&self, stage: AsyncBootStage) -> &AsyncBootStageState {
+        &self.stages[stage.index()]
+    }
+
+    fn mark_stage_running(&self, stage: AsyncBootStage) {
+        self.stage(stage).mark_running();
+    }
+
+    fn mark_stage_complete(&self, stage: AsyncBootStage) {
+        self.stage(stage).mark_complete();
+    }
+
+    async fn wait_for_stage(&self, stage: AsyncBootStage) {
+        self.stage(stage).latch.wait().await;
+    }
+
+    fn set_graphics_console_ready(&self, ready: bool) {
+        self.graphics_console_ready.store(ready, Ordering::Release);
+    }
+
+    fn graphics_console_ready(&self) -> bool {
+        self.graphics_console_ready.load(Ordering::Acquire)
+    }
+
+    fn set_integration_ready(&self, ready: bool) {
+        self.integration_ready.store(ready, Ordering::Release);
+    }
+
+    fn integration_ready(&self) -> bool {
+        self.integration_ready.load(Ordering::Acquire)
+    }
+}
+
+fn async_boot_stage_target_cpu(stage: AsyncBootStage, active_cpus: usize) -> usize {
+    let max_cpu = active_cpus.saturating_sub(1);
+    let preferred = match stage {
+        AsyncBootStage::Platform => 0,
+        AsyncBootStage::Graphics => 1,
+        AsyncBootStage::CoreServices => 2,
+        AsyncBootStage::Driver => 3,
+        AsyncBootStage::PostDriver => 3,
+        AsyncBootStage::Finalizer => 0,
+    };
+    preferred.min(max_cpu)
+}
+
+fn log_executor_interrupt_policy(allow_interrupts: bool) {
+    if allow_interrupts {
+        #[cfg(feature = "qemu-test-export")]
+        info!(
+            target: "init",
+            "Executor interrupt policy: enabled (qemu-test-export mode)"
+        );
+        #[cfg(not(feature = "qemu-test-export"))]
+        info!(
+            target: "init",
+            "Executor interrupt policy: enabled"
+        );
+    } else {
+        info!(
+            target: "init",
+            "Executor interrupt policy: disabled by cmdline option qemu_no_if=1"
+        );
+    }
+}
+
+async fn run_platform_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+    coordinator.mark_stage_running(AsyncBootStage::Platform);
+    phase_platform_and_security_base(&context);
+    coordinator.mark_stage_complete(AsyncBootStage::Platform);
+}
+
+async fn run_graphics_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+    coordinator.mark_stage_running(AsyncBootStage::Graphics);
+    coordinator.set_graphics_console_ready(phase_graphics_console(&context));
+    coordinator.mark_stage_complete(AsyncBootStage::Graphics);
+}
+
+async fn run_core_services_stage(
+    context: KernelBootContext,
+    coordinator: Arc<AsyncBootCoordinator>,
+) {
+    coordinator.mark_stage_running(AsyncBootStage::CoreServices);
+    coordinator.wait_for_stage(AsyncBootStage::Platform).await;
+    phase_core_services_base(&context);
+    coordinator.mark_stage_complete(AsyncBootStage::CoreServices);
+}
+
+async fn run_driver_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+    coordinator.mark_stage_running(AsyncBootStage::Driver);
+    coordinator
+        .wait_for_stage(AsyncBootStage::CoreServices)
+        .await;
+    coordinator.set_integration_ready(phase_driver_bringup());
+    coordinator.mark_stage_complete(AsyncBootStage::Driver);
+    let _ = context;
+}
+
+async fn run_post_driver_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+    coordinator.mark_stage_running(AsyncBootStage::PostDriver);
+    coordinator.wait_for_stage(AsyncBootStage::Driver).await;
+    phase_post_driver_services(&context);
+    coordinator.mark_stage_complete(AsyncBootStage::PostDriver);
+}
+
+fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoordinator) {
+    debug!(
+        target: "init",
+        "Finalizing async boot after early executor handoff"
+    );
+
+    io::io_scheduler::init_io_scheduler();
+
+    // Aggregation is performed in the executor idle loop; explicit aggregator
+    // spawn is not required in the normal runtime path.
+    debug!(target: "init", "Log aggregation will run on executor idle");
+    debug!(
+        target: "init",
+        "Cell loader/live update already initialized (early path)"
+    );
+
+    info!(target: "init", "Initializing symbol table");
+    unwind::init_symbol_table();
+    info!(target: "init", "Symbol table initialized");
+
+    info!(target: "init", "Initializing test framework");
+    test::init();
+    info!(target: "init", "Test framework initialized");
+
+    coordinator.set_integration_ready(retry_system_integration_if_needed(
+        coordinator.integration_ready(),
+    ));
+
+    match crate::io::iommu::vendors::intel::controller::init_global::start_runtime_services() {
+        Ok(0) => {}
+        Ok(count) => info!(
+            target: "init",
+            "Intel VT-d runtime services activated for {} controller(s)",
+            count
+        ),
+        Err(err) => warn!(
+            target: "init",
+            "Intel VT-d runtime services activation failed: {:?}",
+            err
+        ),
+    }
+
+    let allow_interrupts = runtime_interrupts_enabled(&context);
+    crate::task::configure_runtime_interrupts(allow_interrupts);
+    if allow_interrupts {
+        if !crate::interrupts::are_interrupts_enabled() {
+            crate::interrupts::enable_interrupts();
+        }
+    } else if crate::interrupts::are_interrupts_enabled() {
+        crate::interrupts::disable_interrupts();
+    }
+
+    let apic_timer_runtime = crate::interrupts::transition_to_runtime_local_timers();
+    crate::task::transition_to_runtime_run_mode();
+    if allow_interrupts && crate::cpu::count() > 1 {
+        crate::cpu::broadcast_ipi(crate::cpu::IpiKind::ExecutorWake);
+    }
+    if apic_timer_runtime {
+        info!(target: "run", "Runtime handoff switched to per-core APIC timers");
+    }
+
+    print_system_stats();
+    info!(target: "init", "Scheduling runtime tasks onto per-core executors");
+
+    let mut shell_mode = None;
+    for_each_async_boot_completion_milestone(|step| match step {
+        AsyncBootCompletionMilestone::ResolveShellMode => {
+            shell_mode = Some(resolve_shell_mode(
+                &context,
+                coordinator.graphics_console_ready(),
+            ));
+        }
+        AsyncBootCompletionMilestone::SpawnKernelTasks => {
+            let shell_mode = shell_mode.expect("shell mode must be resolved before spawn");
+            spawn_kernel_tasks(shell_mode);
+            info!(target: "init", "Kernel tasks spawned");
+        }
+        AsyncBootCompletionMilestone::BootComplete => {
+            info!(target: "boot", "BOOT COMPLETE!");
+        }
+    });
+
+    schedule_runtime_tests_if_requested(&context);
+}
+
+async fn run_finalizer_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+    coordinator.mark_stage_running(AsyncBootStage::Finalizer);
+    coordinator.wait_for_stage(AsyncBootStage::Graphics).await;
+    coordinator.wait_for_stage(AsyncBootStage::PostDriver).await;
+    finalize_runtime_boot(context, &coordinator);
+    coordinator.mark_stage_complete(AsyncBootStage::Finalizer);
+}
+
+fn spawn_async_boot_orchestrator(
+    context: KernelBootContext,
+    coordinator: Arc<AsyncBootCoordinator>,
+) {
+    let active_cpus = crate::task::executor_slot_count().max(1);
+
+    let platform = coordinator.clone();
+    crate::task::spawn_on_cpu_with_priority(
+        async_boot_stage_target_cpu(AsyncBootStage::Platform, active_cpus),
+        crate::task::Priority::High,
+        async move {
+            run_platform_stage(context, platform).await;
+        },
+    );
+
+    let graphics = coordinator.clone();
+    crate::task::spawn_on_cpu_with_priority(
+        async_boot_stage_target_cpu(AsyncBootStage::Graphics, active_cpus),
+        crate::task::Priority::High,
+        async move {
+            run_graphics_stage(context, graphics).await;
+        },
+    );
+
+    let core = coordinator.clone();
+    crate::task::spawn_on_cpu_with_priority(
+        async_boot_stage_target_cpu(AsyncBootStage::CoreServices, active_cpus),
+        crate::task::Priority::High,
+        async move {
+            run_core_services_stage(context, core).await;
+        },
+    );
+
+    let driver = coordinator.clone();
+    crate::task::spawn_on_cpu_with_priority(
+        async_boot_stage_target_cpu(AsyncBootStage::Driver, active_cpus),
+        crate::task::Priority::High,
+        async move {
+            run_driver_stage(context, driver).await;
+        },
+    );
+
+    let post_driver = coordinator.clone();
+    crate::task::spawn_on_cpu_with_priority(
+        async_boot_stage_target_cpu(AsyncBootStage::PostDriver, active_cpus),
+        crate::task::Priority::High,
+        async move {
+            run_post_driver_stage(context, post_driver).await;
+        },
+    );
+
+    crate::task::spawn_on_cpu_with_priority(
+        async_boot_stage_target_cpu(AsyncBootStage::Finalizer, active_cpus),
+        crate::task::Priority::High,
+        async move {
+            run_finalizer_stage(context, coordinator).await;
+        },
+    );
+}
+
+pub(crate) fn start_async_boot_runtime(context: KernelBootContext) -> ! {
+    info!(
+        target: "init",
+        "Phase-4 early executor handoff entering the per-core executor path"
+    );
+
+    let allow_interrupts = runtime_interrupts_enabled(&context);
+    for_each_executor_online_milestone(|step| match step {
+        ExecutorOnlineMilestone::ConfigureBootRunMode => {
+            crate::task::configure_boot_run_mode(allow_interrupts);
+            log_executor_interrupt_policy(allow_interrupts);
+        }
+        ExecutorOnlineMilestone::ReleaseWorkers => {
+            crate::cpu::release_workers();
+        }
+        ExecutorOnlineMilestone::StartExecutorRun => {
+            info!(target: "run", "Starting per-core executor main loop");
+        }
+    });
+
+    let coordinator = Arc::new(AsyncBootCoordinator::new());
+    spawn_async_boot_orchestrator(context, coordinator);
+
+    crate::cpu::set_stage(0, crate::cpu::CpuStage::ExecutorRunning);
+    task::run_forever(0);
+}
 
 /// ネットワークブートストラップ（完全非同期）
 ///
@@ -512,8 +915,8 @@ pub(crate) fn spawn_demo_runtime_tasks() {
 }
 
 /// カーネルタスクをスポーン
-pub(crate) fn spawn_kernel_tasks(context: &KernelBootContext) {
-    spawn_shell_tasks(context.shell_mode);
+pub(crate) fn spawn_kernel_tasks(shell_mode: crate::shell::session::ShellLaunchMode) {
+    spawn_shell_tasks(shell_mode);
     spawn_core_runtime_tasks();
     spawn_demo_runtime_tasks();
 }
@@ -592,8 +995,105 @@ pub(crate) fn print_logo() {
     info!(" ------------------------------------------------------------");
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn async_boot_stage_target_cpu_falls_back_to_bsp_on_low_core_counts() {
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Platform, 1), 0);
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Graphics, 1), 0);
+        assert_eq!(
+            async_boot_stage_target_cpu(AsyncBootStage::CoreServices, 2),
+            1
+        );
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Driver, 3), 2);
+        assert_eq!(
+            async_boot_stage_target_cpu(AsyncBootStage::PostDriver, 2),
+            1
+        );
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Finalizer, 4), 0);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn async_boot_stage_status_transitions_to_complete() {
+        let coordinator = AsyncBootCoordinator::new();
+        assert_eq!(
+            coordinator.stage(AsyncBootStage::Platform).status(),
+            AsyncBootStageStatus::Pending
+        );
+        coordinator.mark_stage_running(AsyncBootStage::Platform);
+        assert_eq!(
+            coordinator.stage(AsyncBootStage::Platform).status(),
+            AsyncBootStageStatus::Running
+        );
+        coordinator.mark_stage_complete(AsyncBootStage::Platform);
+        assert_eq!(
+            coordinator.stage(AsyncBootStage::Platform).status(),
+            AsyncBootStageStatus::Complete
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn async_boot_waiter_releases_after_stage_completion() {
+        let coordinator = Arc::new(AsyncBootCoordinator::new());
+        let completed = Arc::new(AtomicBool::new(false));
+        let mut executor = crate::task::TestExecutor::new();
+
+        let wait_coordinator = coordinator.clone();
+        let wait_completed = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            wait_coordinator
+                .wait_for_stage(AsyncBootStage::Graphics)
+                .await;
+            wait_completed.store(true, Ordering::Release);
+        }));
+
+        executor.drive_once_for_test();
+        assert!(!completed.load(Ordering::Acquire));
+
+        coordinator.mark_stage_complete(AsyncBootStage::Graphics);
+        executor.drive_once_for_test();
+        assert!(completed.load(Ordering::Acquire));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn finalizer_waits_for_graphics_and_post_driver_completion() {
+        let coordinator = Arc::new(AsyncBootCoordinator::new());
+        let completed = Arc::new(AtomicBool::new(false));
+        let mut executor = crate::task::TestExecutor::new();
+
+        let wait_coordinator = coordinator.clone();
+        let wait_completed = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            wait_coordinator
+                .wait_for_stage(AsyncBootStage::Graphics)
+                .await;
+            wait_coordinator
+                .wait_for_stage(AsyncBootStage::PostDriver)
+                .await;
+            wait_completed.store(true, Ordering::Release);
+        }));
+
+        executor.drive_once_for_test();
+        coordinator.mark_stage_complete(AsyncBootStage::Graphics);
+        executor.drive_once_for_test();
+        assert!(!completed.load(Ordering::Acquire));
+
+        coordinator.mark_stage_complete(AsyncBootStage::PostDriver);
+        executor.drive_once_for_test();
+        assert!(completed.load(Ordering::Acquire));
+    }
+}
+
 /// Panicハンドラ
-#[cfg(all(not(test), not(feature = "std")))]
+#[cfg(all(not(test), target_os = "none"))]
 #[panic_handler]
 pub(crate) fn panic(info: &core::panic::PanicInfo) -> ! {
     panic_handler::handle_panic(info)
@@ -621,7 +1121,7 @@ unsafe impl core::alloc::GlobalAlloc for GlobalAllocatorWrapper {
 #[global_allocator]
 pub(crate) static GLOBAL_ALLOCATOR: GlobalAllocatorWrapper = GlobalAllocatorWrapper;
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 #[alloc_error_handler]
 pub(crate) fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
     crate::io::log::early_print("\n!!! ALLOCATION FAILED !!!\n");
