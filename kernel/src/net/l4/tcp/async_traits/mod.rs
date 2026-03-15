@@ -527,26 +527,31 @@ pub struct TcpListener {
 impl TcpListener {
     /// 指定アドレスで新しいリスナーを作成（推奨API）
     ///
-    /// 【設計書】POSIXのbind()と同様の動作
-    /// イベントキュー経由で非同期にbindを実行し、ロック競合を回避する。
-    pub async fn bind(addr: EndpointAddr) -> Result<Self, TcpError> {
-        Self::bind_in(default_runtime(), addr).await
+    /// 【設計書】POSIX由来の `bind()` ではなく `listen_on()` を公開する。
+    pub async fn listen_on(addr: EndpointAddr) -> Result<Self, TcpError> {
+        Self::listen_on_in(default_runtime(), addr).await
     }
 
     /// 指定runtimeで新しいリスナーを作成
-    pub async fn bind_in(runtime: NetRuntimeHandle, addr: EndpointAddr) -> Result<Self, TcpError> {
+    pub async fn listen_on_in(
+        runtime: NetRuntimeHandle,
+        addr: EndpointAddr,
+    ) -> Result<Self, TcpError> {
         crate::net::runtime::stack::bind_tcp_listener_in(runtime, addr).await
     }
 
     /// 指定アドレスとトークンで新しいリスナーを作成
     ///
     /// イベントキュー経由で非同期にbindを実行する。
-    pub async fn bind_with_token(addr: EndpointAddr, token: Option<u64>) -> Result<Self, TcpError> {
-        Self::bind_with_token_in(default_runtime(), addr, token).await
+    pub async fn listen_on_with_token(
+        addr: EndpointAddr,
+        token: Option<u64>,
+    ) -> Result<Self, TcpError> {
+        Self::listen_on_with_token_in(default_runtime(), addr, token).await
     }
 
     /// 指定runtimeでトークン付きリスナーを作成
-    pub async fn bind_with_token_in(
+    pub async fn listen_on_with_token_in(
         runtime: NetRuntimeHandle,
         addr: EndpointAddr,
         token: Option<u64>,
@@ -554,7 +559,7 @@ impl TcpListener {
         crate::net::runtime::stack::bind_tcp_listener_with_token_in(runtime, addr, token).await
     }
 
-    // Legacy constructor `TcpListener::new` removed; use `TcpListener::bind(addr)` instead.
+    // Legacy constructor `TcpListener::new` removed; use `TcpListener::listen_on(addr)` instead.
 
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> EndpointAddr {

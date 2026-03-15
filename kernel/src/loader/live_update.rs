@@ -309,7 +309,8 @@ struct PendingUpdateContext {
     old_cell_id: crate::loader::CellId,
     new_cell_id: crate::loader::CellId,
     updated_handles: Vec<crate::driver_registry::DriverHandle>,
-    old_entry: Option<(DriverEntryFn, Option<extern "C" fn() -> i32>)>,
+    rollback_states: Vec<DriverRollbackState>,
+    old_entry: Option<crate::driver_registry::PreparedDriverExports>,
     old_epoch: u64,
     started_at_tick: u64,
     deadline_tick: u64,
@@ -358,7 +359,14 @@ impl CompletedUpdateOutcome {
 #[derive(Debug)]
 struct SwapDriversResult {
     updated_handles: Vec<crate::driver_registry::DriverHandle>,
-    old_entry: Option<(DriverEntryFn, Option<extern "C" fn() -> i32>)>,
+    rollback_states: Vec<DriverRollbackState>,
+    old_entry: Option<crate::driver_registry::PreparedDriverExports>,
+}
+
+#[derive(Debug, Clone)]
+struct DriverRollbackState {
+    handle: crate::driver_registry::DriverHandle,
+    state: Option<kernel_api::driver::DriverStateBlob>,
 }
 
 /// ライブアップデートマネージャ
@@ -487,30 +495,42 @@ impl LiveUpdateManager {
         old_drivers: &[crate::driver_registry::DriverHandle],
     ) -> Result<SwapDriversResult, LiveUpdateError> {
         // Resolve entry symbol in NEW cell
-        let (entry_fn, entry_fini) = resolve_cell_entry(new_cell_id, true)?;
+        let new_entry = resolve_cell_entry(new_cell_id, true)?;
 
         // Resolve entry symbol in OLD cell (for rollback)
         let old_entry = resolve_cell_entry(old_cell_id, false).ok();
 
         // Update all drivers registered to the old cell
         let mut updated_handles = Vec::new();
+        let mut rollback_states = Vec::new();
 
         for handle in old_drivers {
-            match crate::driver_registry::update_abi_driver_with_fini(*handle, entry_fn, entry_fini)
-            {
+            let exported_state = crate::driver_registry::driver_registry()
+                .export_live_state(*handle)
+                .map_err(|_| LiveUpdateError::StateMigrationFailed)?;
+            match crate::driver_registry::update_prepared_abi_driver(
+                *handle,
+                new_entry.clone(),
+                exported_state.clone(),
+            ) {
                 Ok(_) => updated_handles.push(*handle),
                 Err(_) => {
                     log::error!(
                         "[LIVE_UPDATE] Update failed, rolling back {} drivers...\n",
                         updated_handles.len()
                     );
-                    rollback_drivers(&updated_handles, old_entry);
+                    rollback_drivers(&rollback_states, old_entry.clone());
                     return Err(LiveUpdateError::StateMigrationFailed);
                 }
             }
+            rollback_states.push(DriverRollbackState {
+                handle: *handle,
+                state: exported_state,
+            });
         }
         Ok(SwapDriversResult {
             updated_handles,
+            rollback_states,
             old_entry,
         })
     }
@@ -555,6 +575,7 @@ impl LiveUpdateManager {
                 old_cell_id,
                 new_cell_id,
                 updated_handles: swap_result.updated_handles,
+                rollback_states: swap_result.rollback_states,
                 old_entry: swap_result.old_entry,
                 old_epoch,
                 started_at_tick: now,
@@ -742,7 +763,7 @@ impl LiveUpdateManager {
             ctx.new_cell_id.as_u64()
         );
 
-        rollback_drivers(&ctx.updated_handles, ctx.old_entry);
+        rollback_drivers(&ctx.rollback_states, ctx.old_entry.clone());
         Self::migrate_driver_ownership(ctx.new_cell_id, ctx.old_cell_id, &ctx.updated_handles);
 
         if crate::loader::unload_cell(ctx.new_cell_id).is_err() {
@@ -794,7 +815,7 @@ impl Default for LiveUpdateManager {
 fn resolve_cell_entry(
     cell_id: crate::loader::CellId,
     call_init: bool,
-) -> Result<(DriverEntryFn, Option<extern "C" fn() -> i32>), LiveUpdateError> {
+) -> Result<crate::driver_registry::PreparedDriverExports, LiveUpdateError> {
     let exports_addr = crate::loader::with_registry(|r| {
         let cell = r.get(cell_id)?;
         cell.exports
@@ -805,9 +826,10 @@ fn resolve_cell_entry(
 
     if let Some(addr) = exports_addr {
         let exports_ptr = addr as *const DriverExportsV1;
-        let prepared = crate::driver_registry::prepare_driver_exports(exports_ptr, call_init)
-            .map_err(|_| LiveUpdateError::LoadFailed)?;
-        return Ok((prepared.entry, prepared.fini));
+        return Ok(
+            crate::driver_registry::prepare_driver_exports(exports_ptr, call_init)
+                .map_err(|_| LiveUpdateError::LoadFailed)?,
+        );
     }
 
     let entry_addr = crate::loader::with_registry(|r| {
@@ -824,24 +846,35 @@ fn resolve_cell_entry(
     };
 
     let entry_fn: DriverEntryFn = unsafe { core::mem::transmute(entry_addr) };
-    Ok((entry_fn, None))
+    let vtable_ptr = entry_fn();
+    if vtable_ptr.is_null() {
+        return Err(LiveUpdateError::LoadFailed);
+    }
+    let providers =
+        crate::driver_registry::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
+    Ok(crate::driver_registry::PreparedDriverExports {
+        entry: entry_fn,
+        fini: None,
+        providers,
+        state_hooks: crate::driver_registry::AbiDriverStateHooks::default(),
+    })
 }
 
 /// 更新済みドライバをロールバック
 fn rollback_drivers(
-    handles: &[crate::driver_registry::DriverHandle],
-    old_entry: Option<(DriverEntryFn, Option<extern "C" fn() -> i32>)>,
+    rollback_states: &[DriverRollbackState],
+    old_entry: Option<crate::driver_registry::PreparedDriverExports>,
 ) {
-    if let Some((old_entry_fn, old_entry_fini)) = old_entry {
-        for handle in handles {
-            if let Err(e) = crate::driver_registry::update_abi_driver_with_fini(
-                *handle,
-                old_entry_fn,
-                old_entry_fini,
+    if let Some(old_entry) = old_entry {
+        for rollback in rollback_states {
+            if let Err(e) = crate::driver_registry::update_prepared_abi_driver(
+                rollback.handle,
+                old_entry.clone(),
+                rollback.state.clone(),
             ) {
                 log::error!(
                     "[LIVE_UPDATE] CRITICAL: Rollback failed for driver {:?}: {:?}\n",
-                    handle,
+                    rollback.handle,
                     e
                 );
             }

@@ -9,8 +9,15 @@ macro_rules! export_async_driver {
         driver_type: $dtype:expr,
         version: $version:expr
         $(, providers: $providers:expr)?
+        $(, dependencies: [$($dep:expr),* $(,)?])?
         $(, irq: $irq:path)?
     ) => {
+        $crate::declare_rany_type_id_section!(
+            $crate::__type_id::IPC_INTERFACE,
+            $crate::__type_id::KERNEL_API_INTERFACE,
+            $crate::__type_id::DRIVER_EXPORTS_INTERFACE
+            $(, $($dep),*)?
+        );
         $crate::export_async_driver!(@impl
             type = $driver_type,
             constructor = $constructor,
@@ -32,7 +39,6 @@ macro_rules! export_async_driver {
         version = $version:expr,
         irq = $irq:path
     ) => {
-        $crate::declare_rany_type_id_section!();
         pub fn standalone_driver_vtable() -> *const $crate::abi::driver::DriverVTable {
             $crate::export_async_driver!(@common_adapters
                 type = $driver_type,
@@ -93,7 +99,6 @@ macro_rules! export_async_driver {
         providers = $providers:expr,
         version = $version:expr
     ) => {
-        $crate::declare_rany_type_id_section!();
         pub fn standalone_driver_vtable() -> *const $crate::abi::driver::DriverVTable {
             $crate::export_async_driver!(@common_adapters
                 type = $driver_type,

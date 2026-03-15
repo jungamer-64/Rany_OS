@@ -34,13 +34,15 @@ use core::sync::atomic::AtomicBool;
 use kernel_api::abi::driver::{
     AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType,
     AbiError as AbiErrorCode, AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistration,
-    AbiNvmeNamespaceRegistration, DRIVER_EXPORTS_ABI_VERSION,
+    AbiNvmeNamespaceRegistration, AbiRRefRaw, DRIVER_EXPORTS_ABI_VERSION,
     DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
     DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
     KERNEL_API_ABI_VERSION, KernelApiV3, PackedPciLocation,
 };
+use kernel_api::driver::DriverStateBlob;
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
 use kernel_api::error::{KapiError, KapiResult};
+use kernel_api::ipc::ChannelHandle;
 use kernel_api::provider::ProviderDescriptorV1;
 mod registration_api;
 pub use registration_api::*;
@@ -649,6 +651,27 @@ impl DriverRegistry {
         }
     }
 
+    pub(crate) fn driver_abi_context(&self, handle: DriverHandle) -> Option<AbiDriverContext> {
+        match self.drivers.lock() {
+            Ok(drivers) => drivers
+                .get(handle.0)
+                .and_then(|entry| entry.driver.abi_context()),
+            Err(_) => None,
+        }
+    }
+
+    pub(crate) fn export_live_state(
+        &self,
+        handle: DriverHandle,
+    ) -> Result<Option<DriverStateBlob>, DriverError> {
+        let drivers = self.drivers.lock().map_err(|_| DriverError::Poisoned)?;
+        let entry = drivers.get(handle.0).ok_or(DriverError::NotFound)?;
+        entry
+            .driver
+            .export_live_state()
+            .map_err(|_| DriverError::InvalidState)
+    }
+
     /// Replace a driver implementation with a new one (Hot Swap)
     ///
     /// # Safety
@@ -1080,6 +1103,122 @@ extern "C" fn kapi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
     panic!("Cell panic - aborting");
 }
 
+extern "C" fn kapi_current_domain_id() -> u64 {
+    #[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "qemu-test-export")))]
+    {
+        crate::domain_system::DomainId::KERNEL.as_u64()
+    }
+
+    #[cfg(not(all(test, not(feature = "full_mm_tests"), not(feature = "qemu-test-export"))))]
+    {
+        crate::task::context::current_subject().domain.as_u64()
+    }
+}
+
+extern "C" fn kapi_exchange_alloc_raw(
+    size: usize,
+    align: usize,
+    out_ptr: *mut *mut u8,
+    out_owner: *mut u64,
+) -> i32 {
+    if out_ptr.is_null() || out_owner.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    match kernel_api::service::kernel::instance().exchange_alloc_raw(size, align) {
+        Ok((ptr, owner)) => {
+            unsafe {
+                *out_ptr = ptr.as_ptr();
+                *out_owner = owner.as_u64();
+            }
+            AbiErrorCode::Success as i32
+        }
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_exchange_dealloc_raw(
+    ptr: *mut u8,
+    owner: u64,
+    size: usize,
+    align: usize,
+) -> i32 {
+    let Some(ptr) = core::ptr::NonNull::new(ptr) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    match kernel_api::service::kernel::instance().exchange_dealloc_raw(
+        ptr,
+        kernel_api::ipc::DomainId::new(owner),
+        size,
+        align,
+    ) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_exchange_transfer_raw(ptr: *mut u8, from_owner: u64, to_owner: u64) -> i32 {
+    let Some(ptr) = core::ptr::NonNull::new(ptr) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    match kernel_api::service::kernel::instance().exchange_transfer_raw(
+        ptr,
+        kernel_api::ipc::DomainId::new(from_owner),
+        kernel_api::ipc::DomainId::new(to_owner),
+    ) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_ipc_create_channel_raw(out_sender: *mut u64, out_receiver: *mut u64) -> i32 {
+    if out_sender.is_null() || out_receiver.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    match kernel_api::service::kernel::instance().ipc_create_channel() {
+        Ok((sender, receiver)) => {
+            unsafe {
+                *out_sender = sender.id();
+                *out_receiver = receiver.id();
+            }
+            AbiErrorCode::Success as i32
+        }
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_ipc_close_raw(handle: u64) -> i32 {
+    match kernel_api::service::kernel::instance().ipc_close(ChannelHandle::new(handle)) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_ipc_send_raw(handle: u64, raw: *const AbiRRefRaw) -> i32 {
+    if raw.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    let raw = unsafe { *raw };
+    match kernel_api::service::kernel::instance().ipc_send_raw(ChannelHandle::new(handle), raw) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
+extern "C" fn kapi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> i32 {
+    if out_raw.is_null() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+    match kernel_api::service::kernel::instance().ipc_recv_raw(ChannelHandle::new(handle)) {
+        Ok(raw) => {
+            unsafe {
+                *out_raw = raw;
+            }
+            AbiErrorCode::Success as i32
+        }
+        Err(err) => map_kapi_error_to_abi(err),
+    }
+}
+
 #[unsafe(no_mangle)]
 pub static __exorust_kernel_api_v3: KernelApiV3 = KernelApiV3 {
     abi_version: KERNEL_API_ABI_VERSION,
@@ -1096,6 +1235,14 @@ pub static __exorust_kernel_api_v3: KernelApiV3 = KernelApiV3 {
     heap_alloc: Some(kapi_heap_alloc),
     heap_dealloc: Some(kapi_heap_dealloc),
     panic_abort: Some(kapi_panic_abort),
+    current_domain_id: kapi_current_domain_id,
+    exchange_alloc_raw: kapi_exchange_alloc_raw,
+    exchange_dealloc_raw: kapi_exchange_dealloc_raw,
+    exchange_transfer_raw: kapi_exchange_transfer_raw,
+    ipc_create_channel_raw: kapi_ipc_create_channel_raw,
+    ipc_close_raw: kapi_ipc_close_raw,
+    ipc_send_raw: kapi_ipc_send_raw,
+    ipc_recv_raw: kapi_ipc_recv_raw,
     register_block_device: kapi_register_block_device,
     unregister_block_device: kapi_unregister_block_device,
     register_nvme_namespace: kapi_register_nvme_namespace,
@@ -1200,6 +1347,7 @@ fn build_abi_driver(
     entry: AbiEntryFn,
     exports_fini: Option<extern "C" fn() -> i32>,
     provider_descriptors: Vec<ProviderDescriptorV1>,
+    state_hooks: AbiDriverStateHooks,
     ctx: AbiDriverContext,
 ) -> Result<Box<dyn Driver>, DriverError> {
     // Call the entry to get vtable pointer
@@ -1251,15 +1399,18 @@ fn build_abi_driver(
         ctx,
         exports_fini,
         provider_descriptors,
+        state_hooks,
     });
 
     Ok(abi_driver)
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct PreparedDriverExports {
     pub entry: AbiEntryFn,
     pub fini: Option<extern "C" fn() -> i32>,
     pub providers: Vec<ProviderDescriptorV1>,
+    pub state_hooks: AbiDriverStateHooks,
 }
 
 pub(crate) fn prepare_driver_exports(
@@ -1374,5 +1525,9 @@ pub(crate) fn prepare_driver_exports(
         entry: exports_ref.entry,
         fini: exports_ref.fini,
         providers,
+        state_hooks: AbiDriverStateHooks {
+            export_state: exports_ref.export_state,
+            import_state: exports_ref.import_state,
+        },
     })
 }

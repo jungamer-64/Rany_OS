@@ -592,6 +592,38 @@ impl TypeIdHash for IpcInterface {
     }
 }
 
+pub struct KernelApiInterface;
+
+impl TypeIdHash for KernelApiInterface {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"KernelApiInterface:v6:KernelApiV3+exchange_heap+ipc_raw+domain_id")
+    }
+
+    fn type_name() -> &'static str {
+        "KernelApiInterface"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
+    }
+}
+
+pub struct DriverExportsInterface;
+
+impl TypeIdHash for DriverExportsInterface {
+    fn type_id_hash() -> TypeHash {
+        const_hash(b"DriverExportsInterface:v2:DriverExportsV1+state_hooks")
+    }
+
+    fn type_name() -> &'static str {
+        "DriverExportsInterface"
+    }
+
+    fn type_version() -> SemVer {
+        SemVer::new(1, 0, 0)
+    }
+}
+
 /// カーネルインターフェースの初期化
 pub fn init_kernel_interfaces() {
     crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: enter\n");
@@ -605,6 +637,10 @@ pub fn init_kernel_interfaces() {
     registry.register::<TaskSchedulerInterface>();
     crate::io::log::early_print("[LDBG] type_id: register IpcInterface\n");
     registry.register::<IpcInterface>();
+    crate::io::log::early_print("[LDBG] type_id: register KernelApiInterface\n");
+    registry.register::<KernelApiInterface>();
+    crate::io::log::early_print("[LDBG] type_id: register DriverExportsInterface\n");
+    registry.register::<DriverExportsInterface>();
     crate::io::log::early_print("[LDBG] type_id.init_kernel_interfaces: done\n");
 
     log::info!("[TypeID] Registered {} kernel interfaces\n", registry.len());

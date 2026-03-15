@@ -214,8 +214,18 @@ unsafe impl GlobalAlloc for KernelAllocator {
 #[cfg(feature = "cell_runtime")]
 macro_rules! register_cell_runtime {
     () => {
+        $crate::register_cell_runtime!(dependencies: []);
+    };
+
+    (dependencies: [$($dep:expr),* $(,)?] $(,)?) => {
         #[cfg(target_os = "none")]
-        $crate::declare_rany_type_id_section!();
+        $crate::declare_rany_type_id_section!(
+            $crate::__type_id::MEMORY_ALLOCATOR_INTERFACE,
+            $crate::__type_id::TASK_SCHEDULER_INTERFACE,
+            $crate::__type_id::IPC_INTERFACE,
+            $crate::__type_id::KERNEL_API_INTERFACE
+            $(, $dep)*
+        );
 
         #[cfg(target_os = "none")]
         #[global_allocator]

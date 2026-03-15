@@ -38,7 +38,6 @@ mod control_block_impl;
 /// `crate::net::l4::endpoint::types::EndpointAddr` を正規定義とする。
 pub use crate::net::l4::endpoint::types::EndpointAddr;
 pub use crate::net::types::Ipv4Addr;
-pub type SocketAddr = EndpointAddr;
 
 // ============================================================================
 // TCP接続状態

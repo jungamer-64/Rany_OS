@@ -123,7 +123,7 @@ This document lists symbols that have been marked deprecated and recommended mig
   - POSIX-style socket compatibility methods (e.g., `Socket::bind`, `Socket::connect`, `Socket::listen`, `Socket::accept`, `TcpStream::connect`, `TcpListener::bind`/`accept`) ❌ **removed**
     - Removal: These compatibility wrappers have been removed; migrate to the async-first APIs: `set_local_addr()`, `open_connection()`, `start_listening()`/`next_connection()`, and `dial()`/`TcpStream::dial()`.
   - `TcpListener::new` ❌ **removed** (was deprecated)
-    - Migration: Use `TcpListener::bind(addr)`.
+    - Migration: Use `TcpListener::listen_on(addr)`.
   - UDP legacy bind wrappers (`UdpSocketTable::bind`, `UdpProcessor::bind`) ❌ **removed**
     - Migration: Use the token-aware API: `UdpSocketTable::bind_with_token(port, Some(token))`. For the no-token case use `UdpSocketTable::bind_with_token(port, None)` or the stack helper `bind_udp(port)`/`bind_udp_with_token(port, token)` as appropriate.
 

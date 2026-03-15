@@ -19,11 +19,25 @@ use crate::abi::driver::DriverContext;
 use crate::error::KapiResult;
 use crate::provider::ProviderDescriptorV1;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
 /// Future type returned by AsyncDriver methods
 pub type DriverFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Serialized driver state carried across live updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverStateBlob {
+    pub version: u32,
+    pub bytes: Vec<u8>,
+}
+
+impl DriverStateBlob {
+    pub fn new(version: u32, bytes: Vec<u8>) -> Self {
+        Self { version, bytes }
+    }
+}
 
 // ============================================================================
 // Driver Trait
@@ -129,6 +143,22 @@ pub trait Driver: Send + Sync {
     /// Driver-provided runtime capability descriptors exposed after start.
     fn provider_descriptors(&self) -> &[ProviderDescriptorV1] {
         &[]
+    }
+
+    /// Return the live ABI driver context when this driver is backed by the
+    /// stable `DriverContext` ABI.
+    fn abi_context(&self) -> Option<DriverContext> {
+        None
+    }
+
+    /// Export driver-managed state for live update.
+    fn export_live_state(&self) -> KapiResult<Option<DriverStateBlob>> {
+        Ok(None)
+    }
+
+    /// Import previously exported state into a freshly loaded driver.
+    fn import_live_state(&mut self, _state: DriverStateBlob) -> KapiResult<()> {
+        Ok(())
     }
 }
 

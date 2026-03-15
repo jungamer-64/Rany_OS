@@ -12,10 +12,10 @@ extern crate alloc;
 use crate::KapiResult;
 use crate::abi::driver::{
     AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistration,
-    AbiNvmeNamespaceRegistration, KernelApiV3, PackedPciLocation,
+    AbiNvmeNamespaceRegistration, AbiRRefRaw, KernelApiV3, PackedPciLocation,
 };
 use crate::dma::{CpuOwned, DmaSlice};
-use crate::ipc::ChannelHandle;
+use crate::ipc::{ChannelHandle, DomainId};
 use crate::msix::MsixVectorInfo;
 use crate::resource::fs::{FileHandle, OpenMode};
 use crate::resource::net::{InterfaceScope, Packet, RawEndpointHandle, TcpEndpoint};
@@ -38,6 +38,7 @@ use crate::service::{
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
+use core::ptr::NonNull;
 
 /// Kernel services trait - the contract between kernel and all other components
 ///
@@ -329,6 +330,35 @@ pub trait KernelServices: Send + Sync {
     /// - `KapiError::InvalidHandle` if the channel handle is invalid
     fn ipc_close(&self, channel: ChannelHandle) -> KapiResult<()>;
 
+    /// Return the caller's current domain identifier.
+    fn ipc_current_domain(&self) -> DomainId;
+
+    /// Allocate a raw Exchange Heap region owned by the current domain.
+    fn exchange_alloc_raw(&self, size: usize, align: usize) -> KapiResult<(NonNull<u8>, DomainId)>;
+
+    /// Deallocate a raw Exchange Heap region on behalf of `owner`.
+    fn exchange_dealloc_raw(
+        &self,
+        ptr: NonNull<u8>,
+        owner: DomainId,
+        size: usize,
+        align: usize,
+    ) -> KapiResult<()>;
+
+    /// Transfer Exchange Heap ownership between domains.
+    fn exchange_transfer_raw(
+        &self,
+        ptr: NonNull<u8>,
+        from: DomainId,
+        to: DomainId,
+    ) -> KapiResult<()>;
+
+    /// Send a raw zero-copy payload through an IPC channel.
+    fn ipc_send_raw(&self, channel: ChannelHandle, raw: AbiRRefRaw) -> KapiResult<()>;
+
+    /// Receive a raw zero-copy payload from an IPC channel.
+    fn ipc_recv_raw(&self, channel: ChannelHandle) -> KapiResult<AbiRRefRaw>;
+
     // ========================================================================
     // GUI Services (Optional)
     // ========================================================================
@@ -583,6 +613,103 @@ mod standalone {
         let status = disable(device_id.raw());
         if AbiError::from_raw(status).is_success() {
             Ok(())
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    fn require_full_kernel_api() -> KapiResult<&'static KernelApiV3> {
+        let api = super::abi();
+        if (api.abi_size as usize) < core::mem::size_of::<KernelApiV3>() {
+            Err(KapiError::NotSupported)
+        } else {
+            Ok(api)
+        }
+    }
+
+    fn current_domain() -> DomainId {
+        match require_full_kernel_api() {
+            Ok(api) => DomainId::new((api.current_domain_id)()),
+            Err(_) => DomainId::KERNEL,
+        }
+    }
+
+    fn exchange_alloc_raw(size: usize, align: usize) -> KapiResult<(NonNull<u8>, DomainId)> {
+        let api = require_full_kernel_api()?;
+        let mut ptr = core::ptr::null_mut();
+        let mut owner = 0u64;
+        let status = (api.exchange_alloc_raw)(size, align, &mut ptr, &mut owner);
+        if AbiError::from_raw(status).is_success() {
+            let ptr = NonNull::new(ptr).ok_or(KapiError::IoError)?;
+            Ok((ptr, DomainId::new(owner)))
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    fn exchange_dealloc_raw(
+        ptr: NonNull<u8>,
+        owner: DomainId,
+        size: usize,
+        align: usize,
+    ) -> KapiResult<()> {
+        let api = require_full_kernel_api()?;
+        let status = (api.exchange_dealloc_raw)(ptr.as_ptr(), owner.as_u64(), size, align);
+        if AbiError::from_raw(status).is_success() {
+            Ok(())
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    fn exchange_transfer_raw(ptr: NonNull<u8>, from: DomainId, to: DomainId) -> KapiResult<()> {
+        let api = require_full_kernel_api()?;
+        let status = (api.exchange_transfer_raw)(ptr.as_ptr(), from.as_u64(), to.as_u64());
+        if AbiError::from_raw(status).is_success() {
+            Ok(())
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    fn ipc_create_channel() -> KapiResult<(ChannelHandle, ChannelHandle)> {
+        let api = require_full_kernel_api()?;
+        let mut sender = 0u64;
+        let mut receiver = 0u64;
+        let status = (api.ipc_create_channel_raw)(&mut sender, &mut receiver);
+        if AbiError::from_raw(status).is_success() {
+            Ok((ChannelHandle::new(sender), ChannelHandle::new(receiver)))
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    fn ipc_close(channel: ChannelHandle) -> KapiResult<()> {
+        let api = require_full_kernel_api()?;
+        let status = (api.ipc_close_raw)(channel.id());
+        if AbiError::from_raw(status).is_success() {
+            Ok(())
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    fn ipc_send_raw(channel: ChannelHandle, raw: AbiRRefRaw) -> KapiResult<()> {
+        let api = require_full_kernel_api()?;
+        let status = (api.ipc_send_raw)(channel.id(), &raw);
+        if AbiError::from_raw(status).is_success() {
+            Ok(())
+        } else {
+            Err(map_abi_error(status))
+        }
+    }
+
+    fn ipc_recv_raw(channel: ChannelHandle) -> KapiResult<AbiRRefRaw> {
+        let api = require_full_kernel_api()?;
+        let mut raw = AbiRRefRaw::default();
+        let status = (api.ipc_recv_raw)(channel.id(), &mut raw);
+        if AbiError::from_raw(status).is_success() {
+            Ok(raw)
         } else {
             Err(map_abi_error(status))
         }
@@ -887,12 +1014,50 @@ mod standalone {
         }
 
         fn ipc_create_channel(&self) -> KapiResult<(ChannelHandle, ChannelHandle)> {
-            Err(KapiError::NotSupported)
+            ipc_create_channel()
         }
 
         fn ipc_close(&self, channel: ChannelHandle) -> KapiResult<()> {
-            let _ = channel;
-            Err(KapiError::NotSupported)
+            ipc_close(channel)
+        }
+
+        fn ipc_current_domain(&self) -> DomainId {
+            current_domain()
+        }
+
+        fn exchange_alloc_raw(
+            &self,
+            size: usize,
+            align: usize,
+        ) -> KapiResult<(NonNull<u8>, DomainId)> {
+            exchange_alloc_raw(size, align)
+        }
+
+        fn exchange_dealloc_raw(
+            &self,
+            ptr: NonNull<u8>,
+            owner: DomainId,
+            size: usize,
+            align: usize,
+        ) -> KapiResult<()> {
+            exchange_dealloc_raw(ptr, owner, size, align)
+        }
+
+        fn exchange_transfer_raw(
+            &self,
+            ptr: NonNull<u8>,
+            from: DomainId,
+            to: DomainId,
+        ) -> KapiResult<()> {
+            exchange_transfer_raw(ptr, from, to)
+        }
+
+        fn ipc_send_raw(&self, channel: ChannelHandle, raw: AbiRRefRaw) -> KapiResult<()> {
+            ipc_send_raw(channel, raw)
+        }
+
+        fn ipc_recv_raw(&self, channel: ChannelHandle) -> KapiResult<AbiRRefRaw> {
+            ipc_recv_raw(channel)
         }
 
         fn time_service(&self) -> Option<&dyn TimeService> {

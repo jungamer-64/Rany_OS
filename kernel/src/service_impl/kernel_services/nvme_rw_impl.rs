@@ -118,19 +118,8 @@ impl KernelServices for ExoKernel {
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {
-        let channel_id = CHANNEL_REGISTRY.allocate_channel_id();
-        let writer_id = CHANNEL_REGISTRY.register(ChannelEntry {
-            channel_id,
-            role: ChannelRole::Sender,
-        });
-        let reader_id = CHANNEL_REGISTRY.register(ChannelEntry {
-            channel_id,
-            role: ChannelRole::Receiver,
-        });
-
-        // info!(target: "ipc", "Created channel: reader={}, writer={}", reader_id, writer_id);
-
-        Ok((ChannelHandle::new(writer_id), ChannelHandle::new(reader_id))) // Return (Sender, Receiver)
+        let (writer_id, reader_id) = CHANNEL_REGISTRY.create_channel();
+        Ok((ChannelHandle::new(writer_id), ChannelHandle::new(reader_id)))
     }
 
     fn ipc_close(&self, channel: ChannelHandle) -> Result<(), KapiError> {
@@ -140,6 +129,117 @@ impl KernelServices for ExoKernel {
         } else {
             Err(KapiError::InvalidHandle)
         }
+    }
+
+    fn ipc_current_domain(&self) -> kernel_api::ipc::DomainId {
+        kernel_api::ipc::DomainId::new(context::current_subject().domain.as_u64())
+    }
+
+    fn exchange_alloc_raw(
+        &self,
+        size: usize,
+        align: usize,
+    ) -> Result<(NonNull<u8>, kernel_api::ipc::DomainId), KapiError> {
+        let layout = core::alloc::Layout::from_size_align(size.max(1), align.max(1))
+            .map_err(|_| KapiError::InvalidHandle)?;
+        let owner = context::current_subject().domain;
+        let ptr = crate::mm::cache::exchange_heap::allocate_raw(layout).ok_or(KapiError::OutOfMemory)?;
+        crate::sas::register_object(ptr.as_ptr() as usize, layout.size(), owner);
+        Ok((ptr, kernel_api::ipc::DomainId::new(owner.as_u64())))
+    }
+
+    fn exchange_dealloc_raw(
+        &self,
+        ptr: NonNull<u8>,
+        owner: kernel_api::ipc::DomainId,
+        size: usize,
+        align: usize,
+    ) -> Result<(), KapiError> {
+        let caller = context::current_subject().domain.as_u64();
+        if owner != kernel_api::ipc::DomainId::KERNEL && caller != owner.as_u64() {
+            return Err(KapiError::PermissionDenied);
+        }
+        if owner != kernel_api::ipc::DomainId::KERNEL
+            && crate::sas::get_owner(ptr.as_ptr() as usize)
+                != Some(crate::domain_system::DomainId::new(owner.as_u64()))
+        {
+            return Err(KapiError::PermissionDenied);
+        }
+
+        let layout = core::alloc::Layout::from_size_align(size.max(1), align.max(1))
+            .map_err(|_| KapiError::InvalidHandle)?;
+        crate::sas::unregister_any(ptr.as_ptr() as usize);
+        unsafe {
+            crate::mm::cache::exchange_heap::deallocate_raw(ptr, layout);
+        }
+        Ok(())
+    }
+
+    fn exchange_transfer_raw(
+        &self,
+        ptr: NonNull<u8>,
+        from: kernel_api::ipc::DomainId,
+        to: kernel_api::ipc::DomainId,
+    ) -> Result<(), KapiError> {
+        let caller = context::current_subject().domain.as_u64();
+        if from != kernel_api::ipc::DomainId::KERNEL && caller != from.as_u64() {
+            return Err(KapiError::PermissionDenied);
+        }
+        crate::sas::transfer_ownership(
+            ptr.as_ptr() as usize,
+            crate::domain_system::DomainId::new(from.as_u64()),
+            crate::domain_system::DomainId::new(to.as_u64()),
+        )
+        .map_err(|_| KapiError::PermissionDenied)
+    }
+
+    fn ipc_send_raw(
+        &self,
+        channel: ChannelHandle,
+        mut raw: kernel_api::abi::driver::AbiRRefRaw,
+    ) -> Result<(), KapiError> {
+        let caller = context::current_subject().domain;
+        let ptr = NonNull::new(raw.ptr).ok_or(KapiError::InvalidHandle)?;
+        if let Err(err) = self.exchange_transfer_raw(
+            ptr,
+            kernel_api::ipc::DomainId::new(caller.as_u64()),
+            kernel_api::ipc::DomainId::KERNEL,
+        ) {
+            drop_abi_rref_raw(raw);
+            return Err(err);
+        }
+
+        raw.owner = kernel_api::ipc::DomainId::KERNEL.as_u64();
+        if let Err(err) = CHANNEL_REGISTRY.send_raw(channel, caller.as_u64(), raw) {
+            if crate::sas::transfer_ownership(
+                ptr.as_ptr() as usize,
+                crate::domain_system::DomainId::KERNEL,
+                caller,
+            )
+            .is_ok()
+            {
+                raw.owner = caller.as_u64();
+            }
+            drop_abi_rref_raw(raw);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    fn ipc_recv_raw(
+        &self,
+        channel: ChannelHandle,
+    ) -> Result<kernel_api::abi::driver::AbiRRefRaw, KapiError> {
+        let caller = context::current_subject().domain;
+        let mut raw = CHANNEL_REGISTRY.recv_raw(channel, caller.as_u64())?;
+        let ptr = NonNull::new(raw.ptr).ok_or(KapiError::InvalidHandle)?;
+        self.exchange_transfer_raw(
+            ptr,
+            kernel_api::ipc::DomainId::KERNEL,
+            kernel_api::ipc::DomainId::new(caller.as_u64()),
+        )?;
+        raw.owner = caller.as_u64();
+        Ok(raw)
     }
 
     fn time_service(&self) -> Option<&dyn kernel_api::service::time::TimeService> {

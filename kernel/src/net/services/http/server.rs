@@ -64,13 +64,13 @@ async fn run_net_poller() {
 /// 各接続をspawn_globalで独立タスクとして起動し、
 /// acceptループがブロックされないようにする。
 async fn run_service() {
-    let listener = match TcpListener::bind(EndpointAddr::new([0, 0, 0, 0], 80)).await {
+    let listener = match TcpListener::listen_on(EndpointAddr::new([0, 0, 0, 0], 80)).await {
         Ok(listener) => {
             log::info!("[HOST-HTTP] listening on 0.0.0.0:80");
             listener
         }
         Err(err) => {
-            log::warn!("[HOST-HTTP] bind/listen failed on port 80: {:?}", err);
+            log::warn!("[HOST-HTTP] listen_on failed on port 80: {:?}", err);
             return;
         }
     };

@@ -66,15 +66,21 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v3";
 /// ABI version for the KernelApiV3 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 5;
+pub const KERNEL_API_ABI_VERSION: u32 = 6;
 /// ABI version for the DriverExportsV1 header.
-pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 1;
+pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 2;
 
 /// Exporter for a driver's provider descriptor slice.
 ///
 /// The function writes the descriptor count into `count_out` when non-null and
 /// returns a raw pointer to the first `ProviderDescriptorV1` entry.
 pub type ProviderDescriptorsFn = extern "C" fn(count_out: *mut usize) -> *const ();
+pub type AbiRRefDropFn =
+    unsafe extern "C" fn(ptr: *mut u8, owner: u64, meta: usize, size: usize, align: usize);
+pub type DriverExportStateFn =
+    extern "C" fn(ctx: *mut DriverContext, out: *mut AbiExportedState) -> i32;
+pub type DriverImportStateFn =
+    extern "C" fn(ctx: *mut DriverContext, state: *mut AbiExportedState) -> i32;
 
 // ============================================================================
 // Error Codes
@@ -840,6 +846,33 @@ pub struct AbiInterfaceScope {
     pub reserved: u16,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiRRefRaw {
+    pub ptr: *mut u8,
+    pub owner: u64,
+    pub meta: usize,
+    pub size: usize,
+    pub align: usize,
+    pub type_hash: u64,
+    pub drop_fn: Option<AbiRRefDropFn>,
+    pub reserved: [u64; 2],
+}
+
+unsafe impl Send for AbiRRefRaw {}
+unsafe impl Sync for AbiRRefRaw {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiExportedState {
+    pub version: u32,
+    pub reserved0: u32,
+    pub data_ptr: *mut u8,
+    pub data_len: usize,
+    pub data_cap: usize,
+    pub reserved: [u64; 4],
+}
+
 /// Kernel API function table for drivers.
 ///
 /// Drivers must validate `abi_version` and `abi_size` before using optional
@@ -872,6 +905,16 @@ pub struct KernelApiV3 {
     pub heap_dealloc: Option<extern "C" fn(ptr: *mut u8, size: usize)>,
     /// Optional panic abort hook for standalone cell runtime.
     pub panic_abort: Option<extern "C" fn(msg_ptr: *const u8, msg_len: usize) -> !>,
+    pub current_domain_id: extern "C" fn() -> u64,
+    pub exchange_alloc_raw:
+        extern "C" fn(size: usize, align: usize, out_ptr: *mut *mut u8, out_owner: *mut u64) -> i32,
+    pub exchange_dealloc_raw:
+        extern "C" fn(ptr: *mut u8, owner: u64, size: usize, align: usize) -> i32,
+    pub exchange_transfer_raw: extern "C" fn(ptr: *mut u8, from_owner: u64, to_owner: u64) -> i32,
+    pub ipc_create_channel_raw: extern "C" fn(out_sender: *mut u64, out_receiver: *mut u64) -> i32,
+    pub ipc_close_raw: extern "C" fn(handle: u64) -> i32,
+    pub ipc_send_raw: extern "C" fn(handle: u64, raw: *const AbiRRefRaw) -> i32,
+    pub ipc_recv_raw: extern "C" fn(handle: u64, out_raw: *mut AbiRRefRaw) -> i32,
 
     pub register_block_device:
         extern "C" fn(registration: *const AbiBlockDeviceRegistration, out_handle: *mut u64) -> i32,
@@ -919,8 +962,10 @@ pub struct DriverExportsV1 {
     pub init: Option<extern "C" fn(api: *const KernelApiV3) -> i32>,
     pub fini: Option<extern "C" fn() -> i32>,
     pub providers: Option<ProviderDescriptorsFn>,
+    pub export_state: Option<DriverExportStateFn>,
+    pub import_state: Option<DriverImportStateFn>,
 
-    pub reserved: [u64; 7],
+    pub reserved: [u64; 5],
 }
 
 // SAFETY: `DriverExportsV1` is an immutable table of function pointers and raw
@@ -1011,7 +1056,6 @@ macro_rules! export_driver {
         $(, stop = $stop:path)?
         , irq = $irq:path
     ) => {
-            $crate::declare_rany_type_id_section!();
         pub fn standalone_driver_vtable() -> *const $crate::abi::driver::DriverVTable {
             // --- Mandatory Adapters ---
             extern "C" fn probe_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
@@ -1111,7 +1155,6 @@ macro_rules! export_driver {
         $(, start = $start:path)?
         $(, stop = $stop:path)?
     ) => {
-        $crate::declare_rany_type_id_section!();
         pub fn standalone_driver_vtable() -> *const $crate::abi::driver::DriverVTable {
             // --- Mandatory Adapters ---
 
@@ -1200,11 +1243,18 @@ macro_rules! export_driver {
         driver_type: $driver_type:expr,
         version: $version:expr
         $(, providers: $providers:expr)?
+        $(, dependencies: [$($dep:expr),* $(,)?])?
         $(, start: $start:path)? // Optional start
         $(, stop: $stop:path)?   // Optional stop
         $(, irq: $irq:path)?     // Optional irq
         $(,)? // allow optional trailing comma so doc examples can use a trailing comma
     ) => {
+        $crate::declare_rany_type_id_section!(
+            $crate::__type_id::IPC_INTERFACE,
+            $crate::__type_id::KERNEL_API_INTERFACE,
+            $crate::__type_id::DRIVER_EXPORTS_INTERFACE
+            $(, $($dep),*)?
+        );
         $crate::export_driver!(@impl
             probe = $probe,
             remove = $remove,

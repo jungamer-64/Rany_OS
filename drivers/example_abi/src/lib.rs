@@ -75,5 +75,7 @@ pub static DRIVER_EXPORTS: DriverExportsV1 = DriverExportsV1 {
     init: Some(driver_init),
     fini: Some(driver_fini),
     providers: None,
-    reserved: [0; 7],
+    export_state: None,
+    import_state: None,
+    reserved: [0; 5],
 };
