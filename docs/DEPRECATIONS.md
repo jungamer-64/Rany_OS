@@ -152,6 +152,12 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `register_domain()`, `unregister_domain()`, `update_memory_usage()`, `register_simple()` ❌ **removed** (were deprecated stubs)
     - Migration: Use `crate::domain::quota::quota_manager()` directly. The quota manager is the authoritative source for domain memory tracking.
 
+- `interfaces/kernel_api/src/services.rs`
+  - `KernelServices::fs_open()` ❌ **removed**
+    - Migration: Use `KernelServices::fs_open_with_token(path, mode, None)` or pass a validated grant token when tracking delegated ownership is required.
+  - `KernelServices::nvme_open_direct()` ❌ **removed**
+    - Migration: Use `KernelServices::nvme_open_direct_with_token(device_id, start_block, block_count, None)` or pass a validated DMA grant token for delegated opens.
+
 - `kernel/src/task/executor.rs`
   - `TASK_STORE` (legacy global task store) ❌ **removed**
     - Migration: Per-core task stores (`PER_CORE_STORES`) are used exclusively; all legacy TASK_STORE references have been cleaned up.
@@ -178,14 +184,30 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `handle_interrupt()` ❌ **removed**
     - Replacement: Prefer driver-registered interrupt handling via the DriverRegistry or the driver's interrupt methods; use `serial::dispatch_interrupt()` for direct dispatch in low-level code.
 
+- `drivers/hid` (`drivers/hid/src/lib.rs`)
+  - `KeyEvent::{modifiers, shift, ctrl, alt, caps_lock}` ❌ **removed**
+    - Migration: Read the public fields directly (`event.modifiers`, `event.modifiers.shift`, など) instead of compatibility getters.
+
 - `drivers/nvme` (`drivers/nvme/src/driver.rs`)
   - Re-exported convenience APIs (e.g., `queue::CompletionQueue`, `QueuePair`, `SubmissionQueue`, `per_core::NvmeQueueStats`, `per_core::PerCoreNvmeQueue`, `polling_driver::NvmeDriverStats`, `NvmePollingDriver`, `async_io::{async_read, async_write, ReadFuture, WriteFuture}`, `error::NvmeError`, `global::{get_stats, init, poll, poll_batch}`, `scheduler::{register_with_io_scheduler, NvmePollHandler}`, `commands::{NvmeCommand, NvmeCompletion}`) ❌ **removed**
     - Migration: Import the specific types from `nvme_driver` module paths directly (for example, `nvme_driver::queue::CompletionQueue`, `nvme_driver::async_io::ReadFuture`, `nvme_driver::global::init`). These re-exports are removed as of 2026-01-17; update any usage to import from `nvme_driver` directly.
+
+- `filesystems/fat32` (`filesystems/fat32/src/async_mutex.rs`)
+  - `AsyncMutex::lock()` ❌ **removed**
+    - Migration: Use `blocking_lock()` for synchronous critical sections or `lock_async()` in async contexts.
 
 ## Notes（全般）
 
 - These deprecations are intentionally incremental and conservative — each change adds a `#[deprecated]` attribute and helpful migration notes. The aim is to show compile-time warnings and give downstream code time to migrate.
 - Workspace-level full builds may still fail due to unrelated driver compile issues (e.g. `drivers/nvme`). Deprecation commits are small and intended to be low-risk.
+
+## 2026-03-15 更新サマリー
+
+### 削除済み（呼び出し元なしのため完全削除）
+- `KernelServices::fs_open()` — `fs_open_with_token(path, mode, None)` に移行
+- `KernelServices::nvme_open_direct()` — `nvme_open_direct_with_token(device_id, start_block, block_count, None)` に移行
+- `drivers::hid::KeyEvent` compatibility getters — public fields / `Modifiers` fields に移行
+- `fat32::AsyncMutex::lock()` — `blocking_lock()` / `lock_async()` に移行
 
 ## 2026-03-04 更新サマリー
 

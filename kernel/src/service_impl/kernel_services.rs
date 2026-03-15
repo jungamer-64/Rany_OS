@@ -491,11 +491,6 @@ impl KernelServices for ExoKernel {
     // Filesystem (Connected to memfs)
     // ========================================================================
 
-    fn fs_open(&self, path: &str, mode: OpenMode) -> Result<FileHandle, KapiError> {
-        // Backward-compatible: open without token
-        self.fs_open_with_token(path, mode, None)
-    }
-
     fn fs_open_with_token(
         &self,
         path: &str,
@@ -563,16 +558,6 @@ impl KernelServices for ExoKernel {
         } else {
             Err(KapiError::InvalidHandle)
         }
-    }
-
-    fn nvme_open_direct(
-        &self,
-        device_id: u64,
-        start_block: u64,
-        block_count: u64,
-    ) -> Result<DirectBlockHandle, KapiError> {
-        // Backward-compatible: open without token
-        self.nvme_open_direct_with_token(device_id, start_block, block_count, None)
     }
 
     fn nvme_open_direct_with_token(

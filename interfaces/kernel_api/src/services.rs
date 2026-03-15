@@ -209,15 +209,6 @@ pub trait KernelServices: Send + Sync {
     // Filesystem
     // ========================================================================
 
-    /// Open a file
-    ///
-    /// Returns a typed `FileHandle` on success.
-    ///
-    /// # Errors
-    /// - `KapiError::NotFound` if the file does not exist and `Create` is not specified
-    /// - `KapiError::PermissionDenied` if permissions prevent opening
-    fn fs_open(&self, path: &str, mode: OpenMode) -> KapiResult<FileHandle>;
-
     /// Open a file and associate with an optional token.
     /// If `token` is Some(id) then the token must validate for `CAP_FOWNER`
     /// and the manager's in-flight counter will be incremented until `fs_close`.
@@ -237,14 +228,6 @@ pub trait KernelServices: Send + Sync {
     // ========================================================================
     // Direct NVMe Block I/O
     // ========================================================================
-
-    /// Open a direct NVMe block handle (namespace + range)
-    fn nvme_open_direct(
-        &self,
-        device_id: u64,
-        start_block: u64,
-        block_count: u64,
-    ) -> KapiResult<DirectBlockHandle>;
 
     /// Open a direct NVMe block handle and associate it with an optional token.
     /// If `token` is Some(id) the token must validate for `CAP_DMA` and the manager's
@@ -799,11 +782,6 @@ mod standalone {
             unsupported_future()
         }
 
-        fn fs_open(&self, path: &str, mode: OpenMode) -> KapiResult<FileHandle> {
-            let _ = (path, mode);
-            Err(KapiError::NotSupported)
-        }
-
         fn fs_open_with_token(
             &self,
             path: &str,
@@ -816,16 +794,6 @@ mod standalone {
 
         fn fs_close(&self, handle: FileHandle) -> KapiResult<()> {
             let _ = handle;
-            Err(KapiError::NotSupported)
-        }
-
-        fn nvme_open_direct(
-            &self,
-            device_id: u64,
-            start_block: u64,
-            block_count: u64,
-        ) -> KapiResult<DirectBlockHandle> {
-            let _ = (device_id, start_block, block_count);
             Err(KapiError::NotSupported)
         }
 

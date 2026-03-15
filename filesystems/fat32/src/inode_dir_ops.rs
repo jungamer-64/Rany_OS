@@ -622,7 +622,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         moved_cluster: Cluster,
         dest_inode: &Fat32Inode<B>,
     ) -> FsResult<()> {
-        let mut curr_cluster = dest_inode.inner.lock().first_cluster;
+        let mut curr_cluster = dest_inode.inner.blocking_lock().first_cluster;
         let cluster_size = self.fs.cluster_size();
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while curr_cluster.0 != 0 && curr_cluster != self.fs.root_cluster {
@@ -650,7 +650,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         moved_cluster: Cluster,
         dest_inode: &Fat32Inode<B>,
     ) -> FsResult<()> {
-        let mut curr_cluster = dest_inode.inner.lock().first_cluster;
+        let mut curr_cluster = dest_inode.inner.blocking_lock().first_cluster;
         let mut chain_count = 0usize;
         let cluster_size = self.fs.cluster_size();
         let mut buffer =
@@ -756,7 +756,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         self.remove_dir_entry(old_name)?;
 
         if is_dir && cluster.is_valid() {
-            let new_parent = other_inode.inner.lock().first_cluster;
+            let new_parent = other_inode.inner.blocking_lock().first_cluster;
             self.update_dotdot_entry(cluster, new_parent)?;
         }
 
@@ -796,7 +796,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         self.remove_dir_entry_async(old_name).await?;
 
         if attr.is_directory() && cluster.is_valid() {
-            let new_parent = other_inode.inner.lock().first_cluster;
+            let new_parent = other_inode.inner.blocking_lock().first_cluster;
             self.update_dotdot_entry_async(cluster, new_parent).await?;
         }
 

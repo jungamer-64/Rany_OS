@@ -493,7 +493,7 @@ impl DirectBlockHandle {
         self.block_size
     }
 
-    /// Kernel-assigned open id (0 if not from `nvme_open_direct_with_token`/`nvme_open_direct`)
+    /// Kernel-assigned open id (0 if not from `nvme_open_direct_with_token`)
     pub fn open_id(&self) -> u64 {
         self.open_id
     }

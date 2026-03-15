@@ -79,15 +79,6 @@ impl<T> AsyncMutex<T> {
     pub fn lock_async(&self) -> LockFuture<'_, T> {
         LockFuture { lock: self }
     }
-
-    /// Alias for `blocking_lock()` for compatibility with std Mutex API.
-    ///
-    /// Prefer using `blocking_lock()` explicitly for clarity in async code,
-    /// or `lock_async()` for async contexts.
-    #[inline]
-    pub fn lock(&self) -> BlockingGuard<'_, T> {
-        self.blocking_lock()
-    }
 }
 
 // Methods that work with T: ?Sized (for guards that may hold unsized types)

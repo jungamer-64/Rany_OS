@@ -230,27 +230,6 @@ pub struct KeyEvent {
     pub raw_scancode: u16,
 }
 
-impl KeyEvent {
-    /// 修飾キーの状態を取得（後方互換性のためのアクセサ）
-    pub fn modifiers(&self) -> Modifiers {
-        self.modifiers
-    }
-
-    /// 後方互換性のためのアクセサ
-    pub fn shift(&self) -> bool {
-        self.modifiers.shift
-    }
-    pub fn ctrl(&self) -> bool {
-        self.modifiers.ctrl
-    }
-    pub fn alt(&self) -> bool {
-        self.modifiers.alt
-    }
-    pub fn caps_lock(&self) -> bool {
-        self.modifiers.caps_lock
-    }
-}
-
 // ============================================================================
 // Mouse Types
 // ============================================================================
