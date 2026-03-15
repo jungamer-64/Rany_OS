@@ -201,6 +201,7 @@ impl QIManager for IommuController {
         // Clear IM bit (31) to unmask
         let iectl = self.read32(regs::IECTL);
         self.write32(regs::IECTL, iectl & !0x8000_0000);
+        self.mark_qi_completion_interrupts_enabled();
 
         log::info!(
             "[IOMMU] Invalidation Completion Interrupts enabled (Vector: {:#x})",

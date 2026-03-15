@@ -1,4 +1,5 @@
 use super::*;
+use alloc::sync::Arc;
 
 fn install_cpu_topology(apics: &[u8]) {
     let mut snapshot = boot_proto::AcpiBootSnapshot::default();
@@ -89,6 +90,33 @@ fn manager_spawn_and_steal_operate_on_canonical_tasks() {
     assert!(thief.queue_length() >= 1);
     assert!(thief.stats().tasks_stolen >= 1);
     assert!(victim.stats().tasks_stolen_from >= 1);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn manager_provision_expands_without_resetting_existing_executor_state() {
+    let manager = ExecutorManager::new();
+    manager.provision(1);
+
+    let bsp = manager.get_executor(0).expect("missing bootstrap executor");
+    let task = ScheduledTask::new(
+        crate::task::Task::new(async {}),
+        Priority::Normal,
+        u64::MAX,
+        0,
+        None,
+    );
+    assert!(bsp.enqueue_spawned_task(task));
+
+    manager.provision(4);
+
+    let bsp_after = manager
+        .get_executor(0)
+        .expect("bootstrap executor must remain installed");
+    assert!(Arc::ptr_eq(&bsp, &bsp_after));
+    assert_eq!(manager.active_cpu_count(), 4);
+    assert_eq!(bsp_after.queue_length(), 1);
+    assert!(manager.get_executor(3).is_some());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

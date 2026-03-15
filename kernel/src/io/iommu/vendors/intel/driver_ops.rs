@@ -9,7 +9,7 @@ mod invalidation;
 
 #[inline]
 fn controller_cq_submit_error(controller: &controller::IommuController) -> IommuError {
-    match controller.command_queue.as_ref() {
+    match controller.command_queue_ref() {
         Some(cq) if cq.is_poisoned() => IommuError::Poisoned,
         _ => IommuError::HardwareError,
     }
@@ -309,7 +309,7 @@ impl IntelIommuDriver {
             .map(|p| p.len())
             .unwrap_or(0);
 
-        if let Some(ref _cq) = controller.command_queue {
+        if controller.command_queue_ref().is_some() {
             let cmd = IommuCommandKind::UnmapRegionDevice {
                 device: *device,
                 iova,
@@ -436,7 +436,7 @@ impl IntelIommuDriver {
         if pt_removed {
             // Domain-level invalidation needed to clear paging-structure caches.
             // Use CQ path if available for async benefits.
-            if let Some(ref cq) = controller.command_queue {
+            if let Some(cq) = controller.command_queue_ref() {
                 let kind = IommuCommandKind::InvalidateIotlbDomain { domain: domain_id };
                 let comp = cq
                     .submit_async(kind)
@@ -494,7 +494,7 @@ impl IntelIommuDriver {
                 Some(d) => d,
                 None => continue,
             };
-            if let Some(ref cq) = controller.command_queue {
+            if let Some(cq) = controller.command_queue_ref() {
                 return Self::try_cq_unmap_device_async(
                     cq,
                     &domain_arc,

@@ -23,7 +23,7 @@ pub fn process_pending_command_queues() {
     // 1. Process Intel-specific controllers if registry is present
     if let Some(reg) = crate::io::iommu::vendors::intel::registry::get_iommu_registry() {
         for ctrl in &reg.controllers {
-            if let Some(ref cq) = ctrl.command_queue {
+            if let Some(cq) = ctrl.command_queue_ref() {
                 for _ in 0..4 {
                     let processed = cq.process_once(|kind| dispatch_iommu_command(ctrl, kind));
                     if processed == 0 {

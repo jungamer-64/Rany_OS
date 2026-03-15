@@ -27,6 +27,7 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 
 - 実装関数: `phase_early_kernel_substrate()`
 - 例外/割り込み基盤、PIT、メモリ管理、BSP スタックガード、interrupt waker の事前確保を行う。
+- `memory::init()` 完了直後に BSP 用の per-core executor slot を先行確保し、その後の `bootstrap_smp_early()` で online CPU 数まで拡張する。これにより、以後の同期初期化中に発生する async task 登録を bootstrap queue ではなく実 executor に受けられるようにする。
 - `memory::init()` は `usable_memory` handoff を優先して allocator を起動し、handoff が無効な場合のみ raw `memory_map` を使う。
 - `memory::init()` が完了して初めて、ページテーブル操作や後続の割り当て依存サブシステムを安全に呼べる。
 - 依存:
@@ -58,7 +59,7 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 ## Phase 6: Runtime Handoff
 
 - 実装関数: `phase_runtime_handoff()`
-- `smp::topology::CpuTopology` / `smp::lifecycle::CpuLifecycle` / `smp::runtime_handoff::RuntimeHandoffCoordinator` を前提に、per-core executor manager、I/O scheduler、symbol table、test framework、late integration retry、interrupt enable、runtime integration dispatch、stats 出力、runtime worker release、runtime task spawn、`task::run_forever(cpu_id)` を行う。
+- `smp::topology::CpuTopology` / `smp::lifecycle::CpuLifecycle` / `smp::runtime_handoff::RuntimeHandoffCoordinator` を前提に、Phase 3 で provision 済みの per-core executor 群を用いて、I/O scheduler、symbol table、test framework、late integration retry、interrupt enable、runtime integration dispatch、stats 出力、runtime worker release、runtime task spawn、`task::run_forever(cpu_id)` を行う。
 - `shell_mode` はこの時点で `graphics_console_ready` と cmdline から確定する。
 - 割り込み有効化後も、ネットワークの本格 bring-up は `network_bootstrap_task()` による非同期処理に委譲される。
 - 依存:

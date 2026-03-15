@@ -884,12 +884,12 @@ fn test_domain_iova_alloc_non_identity() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cmdqueue_map_unmap_with_domain() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
-    let mut ctrl_local = IommuController::new(0x0, 0);
-    ctrl_local.command_queue = Some(crate::io::iommu::runtime::command::queue::CommandQueue::new());
+    let ctrl_local = IommuController::new(0x0, 0);
+    ctrl_local.install_command_queue(crate::io::iommu::runtime::command::queue::CommandQueue::new());
 
     // Leak so we can reference it from threads in test
     let ctrl: &'static IommuController = Box::leak(Box::new(ctrl_local));
-    let cq = ctrl.command_queue.as_ref().expect("cq present");
+    let cq = ctrl.command_queue_ref().expect("cq present");
 
     // Create domain
     let domain_id = ctrl
@@ -987,8 +987,8 @@ fn test_cmdqueue_map_unmap_with_domain() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_for_device_async_and_unmap() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
-    let mut ctrl_local = IommuController::new(0x0, 0);
-    ctrl_local.command_queue = Some(crate::io::iommu::runtime::command::queue::CommandQueue::new());
+    let ctrl_local = IommuController::new(0x0, 0);
+    ctrl_local.install_command_queue(crate::io::iommu::runtime::command::queue::CommandQueue::new());
 
     // Instead of leaking, wrap the controller in an Arc and register it in the global registry
     use alloc::sync::Arc as AllocArc;
@@ -1035,8 +1035,7 @@ fn test_map_for_device_async_and_unmap() {
         while !(map_done && unmap_done) {
             let processed =
                     worker_ctrl
-                        .command_queue
-                        .as_ref()
+                        .command_queue_ref()
                         .expect("cq present")
                         .process_once(|k| {
                             match k {

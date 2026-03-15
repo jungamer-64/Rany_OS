@@ -387,6 +387,14 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
     memory::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
+    // Heap-backed task runtime primitives are available at this point, so
+    // provision the BSP executor before later boot stages enqueue async work.
+    task::provision_executors(1);
+    info!(
+        target: "init",
+        "Bootstrap per-core executor provisioned for early async services"
+    );
+
     // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
     // メモリ管理が初期化されたので、ページテーブル操作が可能になった。
     install_bsp_stack_guard();
@@ -1005,6 +1013,19 @@ fn phase_runtime_handoff(context: &mut KernelBootContext) -> ! {
 
     // NOTE: 同期DHCP/pingは廃止。ネットワーク初期化は network_bootstrap_task() で
     // Executor起動後に完全非同期で実行される。
+    match crate::io::iommu::vendors::intel::controller::init_global::start_runtime_services() {
+        Ok(0) => {}
+        Ok(count) => info!(
+            target: "init",
+            "Intel VT-d runtime services activated for {} controller(s)",
+            count
+        ),
+        Err(err) => warn!(
+            target: "init",
+            "Intel VT-d runtime services activation failed: {:?}",
+            err
+        ),
+    }
     enable_interrupts_for_runtime(context);
 
     // 6.5. runtime test request is executed after executor handoff so the

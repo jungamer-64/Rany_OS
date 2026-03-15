@@ -87,7 +87,7 @@ fn validate_dma_params(phys_addr: PhysAddr, size: u64) -> Result<(), IommuError>
 
 #[inline]
 fn controller_cq_submit_error(controller: &controller::IommuController) -> IommuError {
-    match controller.command_queue.as_ref() {
+    match controller.command_queue_ref() {
         Some(cq) if cq.is_poisoned() => IommuError::Poisoned,
         _ => IommuError::HardwareError,
     }
@@ -129,7 +129,7 @@ unsafe fn apply_mapping_sync(
     write: bool,
 ) -> Result<u64, IommuError> {
     let domain_id = domain_arc.id();
-    if let Some(ref _cq) = controller.command_queue {
+    if controller.command_queue_ref().is_some() {
         let cmd = IommuCommandKind::MapRegion {
             domain: domain_id,
             iova,
@@ -178,7 +178,7 @@ async unsafe fn apply_mapping_async(
     size: u64,
 ) -> Result<u64, IommuError> {
     let domain_id = domain_arc.id();
-    if let Some(ref cq) = controller.command_queue {
+    if let Some(cq) = controller.command_queue_ref() {
         let cmd = IommuCommandKind::MapRegion {
             domain: domain_id,
             iova,

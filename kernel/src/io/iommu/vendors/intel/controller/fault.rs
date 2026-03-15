@@ -24,6 +24,7 @@ use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntr
 use crate::sync::MpscRingBuffer;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use spin::Once;
 
 // ============================================================================
 // ISR-Safe Deferred Fault Queue (ExoRust Compliance)
@@ -522,13 +523,21 @@ pub async fn fault_handler_task() {
     }
 }
 
+static FAULT_HANDLER_TASK_STARTED: Once<()> = Once::new();
+
 /// Spawn the fault handler task
 ///
 /// Call this during kernel initialization after the scheduler is ready.
 /// The task will run in the background, draining ISR-queued faults.
 pub fn spawn_fault_handler_task() {
-    let _ = crate::task::spawn_detached(fault_handler_task());
-    log::info!("[IOMMU] Fault handler task spawned");
+    let mut spawned = false;
+    FAULT_HANDLER_TASK_STARTED.call_once(|| {
+        let _ = crate::task::spawn_detached(fault_handler_task());
+        spawned = true;
+    });
+    if spawned {
+        log::info!("[IOMMU] Fault handler task spawned");
+    }
 }
 
 // Constants
@@ -548,7 +557,7 @@ pub trait FaultHandler {
     fn total_fault_count(&self) -> u64;
 
     /// Enable fault interrupts with a specific vector
-    fn enable_fault_interrupt(&mut self, vector: u8);
+    fn enable_fault_interrupt(&self, vector: u8);
 
     /// Isolate a faulting device
     fn isolate_faulting_device(&self, fault: FaultRecord) -> Result<(), IommuError>;
@@ -653,7 +662,7 @@ impl FaultHandler for IommuController {
     ///
     /// # Arguments
     /// * `vector` - IDT vector to use for fault interrupts
-    fn enable_fault_interrupt(&mut self, vector: u8) {
+    fn enable_fault_interrupt(&self, vector: u8) {
         // 1. Clear any pending faults first
         self.process_faults();
 
@@ -671,6 +680,7 @@ impl FaultHandler for IommuController {
         // 5. Unmask Fault Interrupts in FECTL
         let fectl = self.read32(regs::FECTL);
         self.write32(regs::FECTL, fectl & !0x8000_0000); // Clear IM bit (31)
+        self.mark_fault_interrupts_enabled();
 
         log::info!("[IOMMU] Fault Interrupts enabled (Vector: {:#x})", vector);
     }

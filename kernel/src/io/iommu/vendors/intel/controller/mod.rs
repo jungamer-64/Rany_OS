@@ -40,6 +40,7 @@ use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::tables::HardwareTable;
+use crate::io::iommu::runtime::command::queue::CommandQueue;
 use crate::io::iommu::runtime::fault_log::FaultLog;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDeviceScope, IommuError};
@@ -164,7 +165,13 @@ pub struct IommuController {
     /// Pending wakers for async invalidation completion
     pub(crate) pending_waiters: WakerQueue,
     /// Command Queue
-    pub command_queue: Option<crate::io::iommu::runtime::command::queue::CommandQueue>,
+    pub(crate) command_queue: spin::Once<CommandQueue>,
+    /// Runtime services activated for this controller
+    runtime_services_started: AtomicBool,
+    /// Fault interrupts enabled
+    fault_interrupts_enabled: AtomicBool,
+    /// Queued invalidation completion interrupts enabled
+    qi_completion_interrupts_enabled: AtomicBool,
     /// Phase 6: Page Table Recycling Pool
     pub page_table_pool: Arc<PageTablePool>,
     /// Phase 7: Security event notifier
@@ -208,7 +215,10 @@ impl IommuController {
             device_scopes: Vec::new(),
             include_all: false,
             pending_waiters: WakerQueue::new(),
-            command_queue: None,
+            command_queue: spin::Once::new(),
+            runtime_services_started: AtomicBool::new(false),
+            fault_interrupts_enabled: AtomicBool::new(false),
+            qi_completion_interrupts_enabled: AtomicBool::new(false),
             page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
             security_notifier: spin::Once::new(),
             dropped_security_events: AtomicU64::new(0),
@@ -251,7 +261,10 @@ impl IommuController {
             device_scopes: scopes,
             include_all,
             pending_waiters: WakerQueue::new(),
-            command_queue: None,
+            command_queue: spin::Once::new(),
+            runtime_services_started: AtomicBool::new(false),
+            fault_interrupts_enabled: AtomicBool::new(false),
+            qi_completion_interrupts_enabled: AtomicBool::new(false),
             page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
             security_notifier: spin::Once::new(),
             dropped_security_events: AtomicU64::new(0),
@@ -265,6 +278,43 @@ impl IommuController {
     pub(crate) fn controller_idx(&self) -> Option<usize> {
         let idx = self.controller_idx.load(Ordering::Relaxed);
         if idx == usize::MAX { None } else { Some(idx) }
+    }
+
+    pub(crate) fn command_queue_ref(&self) -> Option<&CommandQueue> {
+        self.command_queue.get()
+    }
+
+    pub(crate) fn install_command_queue(&self, queue: CommandQueue) {
+        self.command_queue.call_once(|| queue);
+    }
+
+    pub(crate) fn ensure_command_queue(&self) -> &CommandQueue {
+        self.command_queue.call_once(|| CommandQueue::new_with_numa(None))
+    }
+
+    pub(crate) fn runtime_services_started(&self) -> bool {
+        self.runtime_services_started.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_runtime_services_started(&self) {
+        self.runtime_services_started.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn fault_interrupts_enabled(&self) -> bool {
+        self.fault_interrupts_enabled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_fault_interrupts_enabled(&self) {
+        self.fault_interrupts_enabled.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn qi_completion_interrupts_enabled(&self) -> bool {
+        self.qi_completion_interrupts_enabled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_qi_completion_interrupts_enabled(&self) {
+        self.qi_completion_interrupts_enabled
+            .store(true, Ordering::Release);
     }
 
     pub(crate) fn is_scalable_mode_enabled(&self) -> bool {

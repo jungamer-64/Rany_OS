@@ -18,7 +18,7 @@ impl IommuController {
         &self,
         kind: crate::io::iommu::runtime::command::queue::IommuCommandKind,
     ) -> Result<(), ()> {
-        if let Some(ref cq) = self.command_queue {
+        if let Some(cq) = self.command_queue_ref() {
             return cq.submit_sync_with_worker(kind, |k| {
                 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
                 self.handle_command_queue_entry(k)
@@ -29,7 +29,7 @@ impl IommuController {
 
     /// Process one entry from the command queue (used during initialization)
     pub(crate) fn process_command_queue_once(&self) {
-        if let Some(ref cq) = self.command_queue {
+        if let Some(cq) = self.command_queue_ref() {
             let _ = cq.process_once(|_k| Ok(0));
         }
     }

@@ -777,6 +777,25 @@ impl ExecutorManager {
         self.redistribute_bootstrap_queue();
     }
 
+    fn provision(&self, core_count: usize) {
+        let count = core_count.max(1).min(MAX_CPUS);
+        let mut executors = self.executors.lock_for_init("[EXECUTOR] provision");
+        let current = executors.len();
+        if current >= count {
+            return;
+        }
+
+        // Boot can provision the BSP executor before SMP discovery has settled;
+        // later calls only append missing per-core slots so queued work survives.
+        executors.reserve(count - current);
+        for cpu_id in current..count {
+            executors.push(Arc::new(PerCoreExecutor::new(cpu_id as u32)));
+        }
+        drop(executors);
+
+        self.redistribute_bootstrap_queue();
+    }
+
     pub fn active_cpu_count(&self) -> usize {
         match self.executors.lock() {
             Ok(executors) => executors.len().clamp(1, MAX_CPUS),
@@ -1060,7 +1079,7 @@ pub fn init_executors(core_count: usize) {
 }
 
 pub fn provision_executors(core_count: usize) {
-    init_executors(core_count);
+    EXECUTOR_MANAGER.provision(core_count);
 }
 
 pub fn executor_slot_count() -> usize {
@@ -1171,10 +1190,10 @@ pub fn run_forever(cpu_id: usize) -> ! {
     let executor = EXECUTOR_MANAGER
         .get_executor(cpu_id as u32)
         .unwrap_or_else(|| {
-            init_executors(cpu_id.saturating_add(1));
+            provision_executors(cpu_id.saturating_add(1));
             EXECUTOR_MANAGER
                 .get_executor(cpu_id as u32)
-                .expect("executor must exist after init")
+                .expect("executor must exist after provision")
         });
 
     executor.run_forever()

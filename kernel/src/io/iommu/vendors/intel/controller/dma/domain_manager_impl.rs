@@ -51,7 +51,7 @@ impl DomainManager for IommuController {
         let max_addr_bits = self.selected_addr_bits();
         let pt_levels = self.selected_levels();
 
-        let domain = IommuDomain::new(
+        let domain = IommuDomain::try_new(
             id,
             numa_node,
             supports_2mb,
@@ -61,7 +61,7 @@ impl DomainManager for IommuController {
             domain_type,
             self.page_table_pool.clone(),
             PteFormat::Intel,
-        );
+        )?;
         let domain_arc = Arc::new(domain);
         if let Some(notifier) = self.security_notifier.get() {
             let _ = domain_arc.set_security_notifier(Arc::clone(notifier));

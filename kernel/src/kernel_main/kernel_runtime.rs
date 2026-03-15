@@ -288,12 +288,6 @@ pub(crate) fn spawn_core_runtime_tasks() {
     task::spawn_task(Task::new(network_bootstrap_task()));
     info!(target: "init", "Network bootstrap task spawned (async)");
 
-    // IOMMU フォルトハンドラタスク: ISRがキューに積んだフォルトイベントを定期的にdrainする
-    task::spawn_task(Task::new(
-        crate::io::iommu::vendors::intel::controller::fault::fault_handler_task(),
-    ));
-    info!(target: "init", "IOMMU fault handler task spawned");
-
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
     crate::net::services::http::server::start_once();
 

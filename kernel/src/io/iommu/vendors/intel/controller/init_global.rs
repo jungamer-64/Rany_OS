@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::iommu::runtime::config::{IommuConfig, ReservedMemoryRegion};
-use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
+use crate::io::iommu::types::{DeviceId, IommuError};
 // Intel-specific imports
 use super::super::registry::{IommuRegistry, init_registry};
 use super::IommuController;
@@ -23,6 +23,7 @@ use super::fault::FaultHandler;
 use super::init::CapabilityManager;
 use super::iova::IovaManager;
 use super::qi_init::QIManager;
+use super::qi_ops::InvalidationOps;
 // use crate::io::acpi::dmar; // For parse_dmar - verified this path exists in kernel/src/io/acpi/dmar.rs
 
 fn align_down(value: u64, align: usize) -> u64 {
@@ -36,11 +37,29 @@ fn align_up(value: u64, align: usize) -> u64 {
 #[cfg(not(test))]
 const COMMAND_QUEUE_BATCH: usize = 64;
 
+const RUNTIME_INTERRUPT_VECTOR: u8 = 0x50;
+
+#[cfg(not(test))]
+fn early_stage_marker(stage: &str) {
+    crate::io::log::early_print("[IOMMU][BOOT] ");
+    crate::io::log::early_print(stage);
+    crate::io::log::early_print("\n");
+}
+
+#[cfg(not(test))]
+fn early_stage_marker_controller(stage: &str, idx: usize) {
+    crate::io::log::early_print("[IOMMU][BOOT] ");
+    crate::io::log::early_print(stage);
+    crate::io::log::early_print(" controller ");
+    crate::io::log::early_print_dec(idx as u64);
+    crate::io::log::early_print("\n");
+}
+
 #[cfg(not(test))]
 async fn command_queue_worker(controller: Arc<IommuController>) {
     // LOOP_PROOF: mode=event; reason=Command worker exits when queue is unavailable and otherwise awaits new work after finite processing.;
     loop {
-        let cq = match controller.command_queue.as_ref() {
+        let cq = match controller.command_queue_ref() {
             Some(cq) => cq,
             None => break,
         };
@@ -61,6 +80,46 @@ async fn command_queue_worker(controller: Arc<IommuController>) {
 fn spawn_command_queue_worker(controller: Arc<IommuController>) {
     let future = command_queue_worker(controller);
     let _ = crate::task::spawn_detached(future);
+}
+
+fn activate_runtime_services_for_controller(
+    controller: &Arc<IommuController>,
+) -> Result<bool, IommuError> {
+    if controller.runtime_services_started() {
+        return Ok(false);
+    }
+
+    controller.ensure_command_queue();
+
+    #[cfg(not(test))]
+    spawn_command_queue_worker(Arc::clone(controller));
+
+    controller.enable_fault_interrupt(RUNTIME_INTERRUPT_VECTOR);
+
+    if controller.is_queued_invalidation_enabled() {
+        controller.enable_queued_invalidation_interrupt(RUNTIME_INTERRUPT_VECTOR);
+    }
+
+    controller.mark_runtime_services_started();
+    Ok(true)
+}
+
+#[cfg(not(test))]
+pub(crate) fn start_runtime_services() -> Result<usize, IommuError> {
+    let Some(registry) = super::super::registry::get_iommu_registry() else {
+        return Ok(0);
+    };
+
+    super::fault::spawn_fault_handler_task();
+
+    let mut started = 0;
+    for controller in &registry.controllers {
+        if activate_runtime_services_for_controller(controller)? {
+            started += 1;
+        }
+    }
+
+    Ok(started)
 }
 
 /// Initialize IOMMU using ACPI DMAR table at `dmar_addr`
@@ -95,22 +154,15 @@ pub unsafe fn init_iommu_from_acpi(
         config,
     };
 
-    #[cfg(not(test))]
-    {
-        for (_i, controller) in registry.controllers.iter().enumerate() {
-            if controller.command_queue.is_some() {
-                spawn_command_queue_worker(Arc::clone(controller));
-            }
-        }
-    }
-
     // Apply Reserved Regions (RMRR) before publishing registry
     apply_rmrr_reservations(&registry);
 
+    #[cfg(not(test))]
+    early_stage_marker("publishing registry");
     init_registry(registry);
 
     #[cfg(not(test))]
-    finalize_iommu_setup(&config);
+    finalize_iommu_setup();
 
     Ok(())
 }
@@ -154,12 +206,8 @@ unsafe fn init_controllers_from_drhd(
             }
 
             init_controller_iova(&mut controller);
-            controller.enable_fault_interrupt(0x50);
             init_controller_qi(&mut controller);
         }
-
-        controller.command_queue =
-            Some(crate::io::iommu::runtime::command::queue::CommandQueue::new_with_numa(None));
 
         controllers.push(Arc::new(controller));
         if unit.include_all {
@@ -199,9 +247,6 @@ unsafe fn init_controller_qi(controller: &mut IommuController) {
         } else if let Err(e) = controller.enable_queued_invalidation() {
             log::warn!("Failed to enable Queued Invalidation: {:?}", e);
         } else {
-            // Security: Enable completion interrupts for async invalidation support.
-            // Using vector 0x50 to match the fault handler's expected vector.
-            controller.enable_queued_invalidation_interrupt(0x50);
             log::info!("Queued Invalidation enabled for controller");
         }
     }
@@ -311,29 +356,21 @@ fn reserve_rmrr_on_controller(
     }
 }
 
-/// Final setup: register driver, create default domain, initialize group manager.
+/// Final setup: register driver and synchronously enable translation.
 #[cfg(not(test))]
-fn finalize_iommu_setup(_config: &IommuConfig) {
+fn finalize_iommu_setup() {
     super::super::IntelIommuDriver::register_driver();
-
-    if let Some(driver) = crate::io::iommu::runtime::registry::get_iommu_driver() {
-        match driver.create_domain(None, IommuDomainType::Translated) {
-            Ok(id) => {
-                log::info!("IOMMU default domain created: ID={}", id);
-            }
-            Err(e) => {
-                log::warn!("Failed to create default IOMMU domain: {:?}", e);
-            }
-        }
-    }
 
     // Enable IOMMU translation directly via the Intel registry.
     // This avoids reliance on the global driver pointer (IOMMU_DRIVER)
     // which may not be accessible from enable_iommu() in some configurations.
     if let Some(registry) = super::super::registry::get_iommu_registry() {
         for (idx, controller) in registry.controllers.iter().enumerate() {
+            early_stage_marker_controller("translation enable start", idx);
             match unsafe { controller.enable() } {
-                Ok(()) => {}
+                Ok(()) => {
+                    early_stage_marker_controller("translation enable done", idx);
+                }
                 Err(_e) => {
                     crate::io::log::early_print("[IOMMU] Controller ");
                     crate::io::log::early_print_dec(idx as u64);
@@ -341,5 +378,49 @@ fn finalize_iommu_setup(_config: &IommuConfig) {
                 }
             }
         }
+        early_stage_marker("runtime services deferred");
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+    use crate::io::iommu::vendors::intel::registers::ecap_bits;
+    use core::sync::atomic::Ordering;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn controller_boot_phase_keeps_runtime_services_deferred() {
+        let controller = IommuController::new(0x1000, 0);
+
+        assert!(controller.command_queue_ref().is_none());
+        assert!(!controller.runtime_services_started());
+        assert!(!controller.fault_interrupts_enabled());
+        assert!(!controller.qi_completion_interrupts_enabled());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn runtime_activation_is_idempotent() {
+        let mut controller = IommuController::new(0x1000, 0);
+        controller.ecap = ecap_bits::ECAP_QI;
+        controller.qi_enabled.store(true, Ordering::Release);
+        let controller = Arc::new(controller);
+
+        assert!(activate_runtime_services_for_controller(&controller).unwrap());
+        let first_queue = controller
+            .command_queue_ref()
+            .map(|cq| cq as *const _)
+            .expect("command queue should be installed");
+        assert!(controller.runtime_services_started());
+        assert!(controller.fault_interrupts_enabled());
+        assert!(controller.qi_completion_interrupts_enabled());
+
+        assert!(!activate_runtime_services_for_controller(&controller).unwrap());
+        let second_queue = controller
+            .command_queue_ref()
+            .map(|cq| cq as *const _)
+            .expect("command queue should stay installed");
+        assert_eq!(first_queue, second_queue);
     }
 }

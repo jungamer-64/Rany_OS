@@ -4,6 +4,39 @@
 
 use super::*;
 
+#[cfg(test)]
+use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+
+#[cfg(test)]
+const TRY_NEW_FAIL_NONE: u8 = 0;
+#[cfg(test)]
+const TRY_NEW_FAIL_ALLOC: u8 = 1;
+#[cfg(test)]
+const TRY_NEW_FAIL_PHYS: u8 = 2;
+#[cfg(test)]
+static TRY_NEW_FAIL_MODE: AtomicU8 = AtomicU8::new(TRY_NEW_FAIL_NONE);
+
+#[cfg(test)]
+struct TryNewFailGuard {
+    previous: u8,
+}
+
+#[cfg(test)]
+impl TryNewFailGuard {
+    fn set(mode: u8) -> Self {
+        Self {
+            previous: TRY_NEW_FAIL_MODE.swap(mode, AtomicOrdering::SeqCst),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TryNewFailGuard {
+    fn drop(&mut self) {
+        TRY_NEW_FAIL_MODE.store(self.previous, AtomicOrdering::SeqCst);
+    }
+}
+
 unsafe impl Send for IommuDomain {}
 unsafe impl Sync for IommuDomain {}
 
@@ -19,7 +52,7 @@ impl IommuDomain {
     /// * `pt_levels` - Second-level page table depth (2..=5)
     /// * `domain_type` - Domain type (Strict, Passthrough, etc.)
     /// * `page_table_pool` - Shared page table pool for recycling
-    pub fn new(
+    pub fn try_new(
         id: u16,
         numa_node: Option<usize>,
         supports_2mb: bool,
@@ -29,25 +62,29 @@ impl IommuDomain {
         domain_type: IommuDomainType,
         page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
-    ) -> Self {
+    ) -> Result<Self, IommuError> {
         let pt_levels = pt_levels.clamp(MIN_PT_LEVELS, MAX_PT_LEVELS);
-        // Allocate page table on the preferred NUMA node when possible.
-        // For Passthrough, we still allocate it to simplify logic (or we could skip it)
-        // But the hardware won't use it if we set TT=Passthrough.
-        // Let's allocate it to avoid null pointer checks elsewhere, or make it Option.
-        // For now: Allocate it.
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .expect("Invalid layout for page table");
+                .map_err(|_| IommuError::HardwareError)?;
+
+        #[cfg(test)]
+        if TRY_NEW_FAIL_MODE.load(AtomicOrdering::SeqCst) == TRY_NEW_FAIL_ALLOC {
+            return Err(IommuError::OutOfMemory);
+        }
 
         let page_table = crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_node)
-            .expect("Failed to allocate IOMMU page table")
+            .ok_or(IommuError::OutOfMemory)?
             .as_ptr() as *mut SlPte;
 
-        let root_phys = virt_ptr_to_phys(page_table as *const u8)
-            .expect("Failed to get root page table physical address");
+        #[cfg(test)]
+        if TRY_NEW_FAIL_MODE.load(AtomicOrdering::SeqCst) == TRY_NEW_FAIL_PHYS {
+            return Err(IommuError::HardwareError);
+        }
 
-        // Security: Register and protect the root page table IMMEDIATELY after allocation.
+        let root_phys =
+            virt_ptr_to_phys(page_table as *const u8).map_err(|_| IommuError::HardwareError)?;
+
         register_page_table(root_phys, page_table as usize, numa_node.unwrap_or(0));
 
         debug_assert_eq!(PT_ENTRIES % DOMAIN_SHARD_COUNT, 0);
@@ -58,17 +95,16 @@ impl IommuDomain {
         }
 
         let (default_iova_base, default_iova_size) = if cfg!(feature = "qemu-test-export") {
-            // Keep qemu migration suites deterministic under their fixed bump allocator.
-            (0x1_0000_0000, 0x1000_0000) // 4GB base, 256MB window
+            (0x1_0000_0000, 0x1000_0000)
         } else {
-            (0x1_0000_0000, 0x8_0000_0000) // 4GB base, 32GB window
+            (0x1_0000_0000, 0x8_0000_0000)
         };
         let per_domain_iova = crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(
             default_iova_base,
             default_iova_size,
         );
 
-        let new_domain = Self {
+        Ok(Self {
             id,
             domain_type,
             page_table,
@@ -81,9 +117,6 @@ impl IommuDomain {
             max_addr_bits: max_addr_bits.clamp(1, 64),
             pt_levels,
             quarantine: QuarantineQueue::new(),
-            // Pre-allocated contexts for zero-allocation flush (Phase 5)
-            // CRITICAL: This capacity must never be exceeded. The quarantine's
-            // drain_pending_invalidations() asserts this in debug builds.
             flush_context: PoisonLock::new(
                 crate::io::iommu::runtime::quarantine::FlushContext::new(),
             ),
@@ -91,16 +124,36 @@ impl IommuDomain {
             pte_format,
             security_notifier: Once::new(),
             poisoned: AtomicBool::new(false),
-            // Per-domain IOVA allocator: Default 256GB space starting at 4GB
-            // Avoids low addresses (reserved for 32-bit legacy devices) and
-            // provides ample space for typical workloads.
-            // Uses the bitmap-based IovaAllocator with O(1) magazine allocation.
             per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),
             pending_pt_release: PoisonLock::new(Vec::new()),
             paging_lock: IrqMutex::new(()),
-        };
-        new_domain
+        })
+    }
+
+    pub fn new(
+        id: u16,
+        numa_node: Option<usize>,
+        supports_2mb: bool,
+        supports_1gb: bool,
+        max_addr_bits: u8,
+        pt_levels: u8,
+        domain_type: IommuDomainType,
+        page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
+        pte_format: PteFormat,
+    ) -> Self {
+        Self::try_new(
+            id,
+            numa_node,
+            supports_2mb,
+            supports_1gb,
+            max_addr_bits,
+            pt_levels,
+            domain_type,
+            page_table_pool,
+            pte_format,
+        )
+        .expect("Failed to create IOMMU domain")
     }
 
     /// Create a new domain with per-domain IOVA allocator
@@ -294,6 +347,39 @@ impl IommuDomain {
     /// Set domain NUMA affinity hint
     pub fn set_numa_node(&self, numa_node: Option<usize>) {
         *self.numa_node.write() = numa_node;
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+    use crate::io::iommu::vendors::intel::controller::IommuController;
+    use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn intel_create_domain_propagates_out_of_memory() {
+        let controller = IommuController::new(0x1000, 0);
+        let _guard = TryNewFailGuard::set(TRY_NEW_FAIL_ALLOC);
+
+        let err = controller
+            .create_domain(None, IommuDomainType::Translated)
+            .expect_err("create_domain should propagate allocation failure");
+
+        assert_eq!(err, IommuError::OutOfMemory);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn intel_create_domain_propagates_phys_translation_failure() {
+        let controller = IommuController::new(0x1000, 0);
+        let _guard = TryNewFailGuard::set(TRY_NEW_FAIL_PHYS);
+
+        let err = controller
+            .create_domain(None, IommuDomainType::Translated)
+            .expect_err("create_domain should propagate root table phys translation failure");
+
+        assert_eq!(err, IommuError::HardwareError);
     }
 }
 
