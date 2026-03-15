@@ -88,10 +88,9 @@ pub fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u
 /// この関数は一度だけ呼ばれるブートストラップ処理であり、
 /// 同期ロック取得は許容される。
 pub fn init_dhcp_runtime() -> Result<(), String> {
-    let bootstrap_config = manager::list_interfaces()
-        .ok()
-        .unwrap_or_default()
-        .into_iter()
+    let interfaces = manager::list_interfaces().ok().unwrap_or_default();
+    let bootstrap_config = interfaces
+        .iter()
         .find_map(|iface| iface.config)
         .or_else(|| match stack::stack().lock() {
             Ok(guard) => guard.as_ref().map(|stack_guard| stack_guard.config()),
@@ -102,7 +101,19 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     let mac = bootstrap_config.mac;
     let ipv6_enabled = bootstrap_config.ipv6.is_some();
 
-    dhcp::init_in(default_runtime(), mac);
+    for iface in interfaces {
+        let Some(config) = iface.config else {
+            continue;
+        };
+        if let Err(err) = dhcp::ensure_interface_runtime(iface.if_id, config) {
+            log::warn!(
+                "[NET] DHCPv4 interface runtime init failed: if{} err={}",
+                iface.if_id.0,
+                err
+            );
+        }
+    }
+
     if ipv6_enabled {
         dhcp::init_v6_in(default_runtime(), mac);
     } else {
@@ -124,16 +135,14 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         crate::net::services::dns::set_ipv4_servers(dns_servers);
     }
 
-    // DHCPv4 itself is now driven by the per-interface runtime registry.
-    // Keep the legacy singleton initialized as a compatibility view, but do not
-    // spawn its dedicated socket task here because the shared dispatcher owns
-    // UDP port 68.
+    // DHCPv4 is driven by the per-interface runtime registry; bootstrap only
+    // ensures interface runtimes exist for already-registered interfaces.
 
     if ipv6_enabled {
         // Spawn DHCPv6 client task only when IPv6 is configured for the active stack.
         crate::task::spawn_task(crate::task::Task::new(async move {
             let client_ref: Option<&'static dhcp::DhcpV6Client> = {
-                let guard = match dhcp::legacy_v6_client_lock_in(default_runtime()).lock() {
+                let guard = match dhcp::primary_v6_client_lock_in(default_runtime()).lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };
@@ -211,7 +220,7 @@ fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpR
     }
 
     if crate::net::runtime::device::primary_if_in(runtime) == Some(if_id) {
-        match dhcp::legacy_v6_client_lock_in(runtime).lock() {
+        match dhcp::primary_v6_client_lock_in(runtime).lock() {
             Ok(guard6) => {
                 if let Some(ref client6) = *guard6 {
                     out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
@@ -288,29 +297,9 @@ pub(crate) fn dhcp_state_sync_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState 
         }
         out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
         out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
-    } else {
-        match dhcp::legacy_v4_client_lock_in(runtime).lock() {
-            Ok(guard) => {
-                if let Some(ref client) = *guard {
-                    out.v4_state = String::from(dhcp_v4_state_name(client.state()));
-                    if let Some(lease) = client.lease() {
-                        out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
-                        out.v4_lease_remaining = Some(lease_remaining_secs(
-                            lease.lease_time,
-                            lease.obtained_at,
-                            now,
-                            tick_rate,
-                        ));
-                    }
-                    out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
-                    out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
-                }
-            }
-            Err(_) => out.v4_state = String::from("Poisoned"),
-        }
     }
 
-    match dhcp::legacy_v6_client_lock_in(runtime).lock() {
+    match dhcp::primary_v6_client_lock_in(runtime).lock() {
         Ok(guard6) => {
             if let Some(ref client6) = *guard6 {
                 out.v6_state = String::from(dhcp_v6_state_name(client6.state()));

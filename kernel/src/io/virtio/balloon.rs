@@ -311,7 +311,7 @@ impl VirtioBalloonDevice {
 // Global Device Instance
 // ============================================================================
 
-/// Primary (legacy) VirtIO balloon device slot kept for compatibility (`index=0`).
+/// Primary VirtIO balloon device slot (`index=0`).
 pub(crate) static VIRTIO_BALLOON_DEVICE: PoisonLock<Option<Arc<VirtioBalloonDevice>>> =
     PoisonLock::new(None);
 
@@ -375,11 +375,6 @@ pub unsafe fn init_virtio_balloon_at_index(index: u8, mmio_base: u64) -> Result<
     Ok(())
 }
 
-#[cfg(test)]
-pub unsafe fn init_virtio_balloon(mmio_base: u64) -> Result<(), BalloonError> {
-    init_virtio_balloon_at_index(0, mmio_base)
-}
-
 pub unsafe fn init_virtio_balloon_for_device_at_index(
     index: u8,
     mmio_base: u64,
@@ -403,13 +398,6 @@ pub unsafe fn init_virtio_balloon_for_device_at_index(
     Ok(())
 }
 
-pub unsafe fn init_virtio_balloon_for_device(
-    mmio_base: u64,
-    device: IommuDeviceId,
-) -> Result<(), BalloonError> {
-    init_virtio_balloon_for_device_at_index(0, mmio_base, device)
-}
-
 pub unsafe fn init_virtio_balloon_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,
@@ -430,27 +418,12 @@ pub unsafe fn init_virtio_balloon_with_transport_at_index(
     Ok(())
 }
 
-pub unsafe fn init_virtio_balloon_with_transport(
-    transport: Box<dyn VirtioTransport>,
-    iommu_device_id: IommuDeviceId,
-) -> Result<(), BalloonError> {
-    init_virtio_balloon_with_transport_at_index(0, transport, iommu_device_id)
-}
-
 pub fn handle_virtio_balloon_interrupt_for_index(index: u8) {
     if let Some(device) = get_virtio_balloon_device_at_index(index) {
         let status = device.transport.get_interrupt_status();
         device.transport.ack_interrupt(status);
         device.handle_interrupt();
     }
-}
-
-pub fn handle_virtio_balloon_interrupt() {
-    handle_virtio_balloon_interrupt_for_index(0);
-}
-
-pub fn get_virtio_balloon_device() -> Option<Arc<VirtioBalloonDevice>> {
-    get_virtio_balloon_device_at_index(0)
 }
 
 #[cfg(all(test, not(feature = "qemu-test-export")))]

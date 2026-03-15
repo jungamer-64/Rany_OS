@@ -11,7 +11,7 @@ use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::virtio::{VirtioBlkDevice, init_virtio_blk_for_device};
+use crate::io::virtio::{VirtioBlkDevice, init_virtio_blk_for_device_at_index};
 
 /// VirtIO Block Driver
 pub struct VirtioBlkDriver {
@@ -52,7 +52,7 @@ impl Driver for VirtioBlkDriver {
         // Initialize the device
         // Note: This relies on the unsafe init function from blk.rs for now.
         // In the future, we should move the initialization logic here or make it safer.
-        let res = unsafe { init_virtio_blk_for_device(self.mmio_base, self.iommu_id) };
+        let res = unsafe { init_virtio_blk_for_device_at_index(0, self.mmio_base, self.iommu_id) };
 
         match res {
             Ok(_) => {

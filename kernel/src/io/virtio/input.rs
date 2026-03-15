@@ -357,7 +357,7 @@ impl VirtioInputDevice {
 // Global Device Instance
 // ============================================================================
 
-/// Primary (legacy) VirtIO input device slot kept for compatibility (`index=0`).
+/// Primary VirtIO input device slot (`index=0`).
 pub(crate) static VIRTIO_INPUT_DEVICE: PoisonLock<Option<Arc<VirtioInputDevice>>> =
     PoisonLock::new(None);
 
@@ -428,11 +428,6 @@ pub unsafe fn init_virtio_input_at_index(index: u8, mmio_base: u64) -> Result<()
     Ok(())
 }
 
-#[cfg(test)]
-pub unsafe fn init_virtio_input(mmio_base: u64) -> Result<(), InputError> {
-    init_virtio_input_at_index(0, mmio_base)
-}
-
 pub unsafe fn init_virtio_input_for_device_at_index(
     index: u8,
     mmio_base: u64,
@@ -466,11 +461,4 @@ pub unsafe fn init_virtio_input_for_device_at_index(
 
     install_virtio_input_device(index, device_arc);
     Ok(())
-}
-
-pub unsafe fn init_virtio_input_for_device(
-    mmio_base: u64,
-    device: IommuDeviceId,
-) -> Result<(), InputError> {
-    init_virtio_input_for_device_at_index(0, mmio_base, device)
 }

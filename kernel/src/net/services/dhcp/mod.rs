@@ -64,8 +64,7 @@ pub(crate) struct DhcpRuntimeState {
     interface_runtimes: PoisonLock<BTreeMap<NetIfId, Arc<DhcpInterfaceRuntime>>>,
     v4_dispatcher_started: AtomicBool,
     primary_if_id: AtomicU16,
-    legacy_v4_client: PoisonLock<Option<DhcpClient>>,
-    legacy_v6_client: PoisonLock<Option<DhcpV6Client>>,
+    primary_v6_client: PoisonLock<Option<DhcpV6Client>>,
 }
 
 impl DhcpRuntimeState {
@@ -74,8 +73,7 @@ impl DhcpRuntimeState {
             interface_runtimes: PoisonLock::new(BTreeMap::new()),
             v4_dispatcher_started: AtomicBool::new(false),
             primary_if_id: AtomicU16::new(INVALID_IF_ID),
-            legacy_v4_client: PoisonLock::new(None),
-            legacy_v6_client: PoisonLock::new(None),
+            primary_v6_client: PoisonLock::new(None),
         }
     }
 }
@@ -88,16 +86,10 @@ pub(crate) fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static DhcpRunti
     &runtime.context().dhcp
 }
 
-pub(crate) fn legacy_v4_client_lock_in(
-    runtime: NetRuntimeHandle,
-) -> &'static PoisonLock<Option<DhcpClient>> {
-    &runtime_state_for(runtime).legacy_v4_client
-}
-
-pub(crate) fn legacy_v6_client_lock_in(
+pub(crate) fn primary_v6_client_lock_in(
     runtime: NetRuntimeHandle,
 ) -> &'static PoisonLock<Option<DhcpV6Client>> {
-    &runtime_state_for(runtime).legacy_v6_client
+    &runtime_state_for(runtime).primary_v6_client
 }
 
 pub(crate) fn ensure_interface_runtime(
@@ -445,7 +437,6 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
 }
 
 pub fn update_runtime_mac(mac_address: MacAddress) {
-    client_impl::update_client_mac(mac_address);
     v6::update_client_v6_mac(mac_address);
 }
 

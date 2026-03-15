@@ -433,7 +433,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
 // Global Device Instance
 // ============================================================================
 
-/// Primary (legacy) VirtIO block device slot kept for compatibility (`index=0`).
+/// Primary VirtIO block device slot (`index=0`).
 pub(crate) static VIRTIO_BLK_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioBlkDevice>>> =
     crate::sync::PoisonLock::new(None);
 
@@ -490,12 +490,6 @@ pub unsafe fn init_virtio_blk_at_index(index: u8, mmio_base: u64) -> Result<(), 
     Ok(())
 }
 
-/// Initialize the global VirtIO block device (legacy `index=0`).
-#[cfg(test)]
-pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
-    init_virtio_blk_at_index(0, mmio_base)
-}
-
 /// Initialize the global VirtIO block device with an IOMMU device ID at a specific index.
 pub unsafe fn init_virtio_blk_for_device_at_index(
     index: u8,
@@ -520,14 +514,6 @@ pub unsafe fn init_virtio_blk_for_device_at_index(
     Ok(())
 }
 
-/// Initialize the global VirtIO block device with an IOMMU device ID (legacy `index=0`).
-pub unsafe fn init_virtio_blk_for_device(
-    mmio_base: u64,
-    device: IommuDeviceId,
-) -> Result<(), BlockError> {
-    init_virtio_blk_for_device_at_index(0, mmio_base, device)
-}
-
 /// Initialize the global VirtIO block device from an existing VirtioTransport at a specific index.
 pub unsafe fn init_virtio_blk_with_transport_at_index(
     index: u8,
@@ -548,17 +534,4 @@ pub unsafe fn init_virtio_blk_with_transport_at_index(
 
     install_virtio_blk_device(index, device_arc);
     Ok(())
-}
-
-/// Initialize the global VirtIO block device from an existing VirtioTransport (MMIO or PCI).
-pub unsafe fn init_virtio_blk_with_transport(
-    transport: Box<dyn VirtioTransport>,
-    iommu_device_id: IommuDeviceId,
-) -> Result<(), BlockError> {
-    init_virtio_blk_with_transport_at_index(0, transport, iommu_device_id)
-}
-
-/// Get a clone of the global VirtioBlk device Arc if initialized
-pub fn get_virtio_blk_device() -> Option<Arc<VirtioBlkDevice>> {
-    get_virtio_blk_device_at_index(0)
 }

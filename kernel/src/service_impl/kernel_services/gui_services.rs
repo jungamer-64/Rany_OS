@@ -113,7 +113,7 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
         }
     }
 
-    if let Some(device) = crate::drivers::virtio::blk::get_virtio_blk_device() {
+    if let Some(device) = crate::drivers::virtio::blk::get_virtio_blk_device_at_index(0) {
         let config = device.config();
         let mut flags = 0;
         if device.is_ready() {

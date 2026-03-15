@@ -357,7 +357,7 @@ pub fn test_storage() -> IntegrationTestSuite {
         // disabled to avoid unrelated flakes. In that mode, async mount futures can
         // stall forever because completion wakeups are interrupt-driven.
         if !crate::interrupts::are_interrupts_enabled() {
-            return if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device() {
+            return if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device_at_index(0) {
                 let info = dev.info();
                 if info.block_size > 0 && info.total_blocks > 0 {
                     Ok(alloc::format!(
@@ -376,7 +376,7 @@ pub fn test_storage() -> IntegrationTestSuite {
             };
         }
 
-        if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device() {
+        if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device_at_index(0) {
             // Wrap the global virtio device with a Page-backed adapter and mount
             let adapter = StdArc::new(VirtioPageAdapter::new(StdArc::clone(&dev)));
             let alloc = StdArc::new(PageClusterBufferAllocator::new());

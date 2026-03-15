@@ -8,7 +8,7 @@
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
-use super::balloon::init_virtio_balloon_for_device;
+use super::balloon::init_virtio_balloon_for_device_at_index;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 
 /// VirtIO Balloon Driver
@@ -45,7 +45,8 @@ impl Driver for VirtioBalloonDriver {
     fn probe(&mut self) -> KapiResult<()> {
         log::info!(target: "virtio_balloon", "Probing VirtIO-Balloon at {:#x}", self.mmio_base);
 
-        let res = unsafe { init_virtio_balloon_for_device(self.mmio_base, self.iommu_id) };
+        let res =
+            unsafe { init_virtio_balloon_for_device_at_index(0, self.mmio_base, self.iommu_id) };
 
         match res {
             Ok(_) => {

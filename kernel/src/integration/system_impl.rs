@@ -396,7 +396,8 @@ impl SystemIntegration {
                 try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Block)
             {
                 match unsafe {
-                    crate::drivers::virtio::init_virtio_blk_with_transport(
+                    crate::drivers::virtio::init_virtio_blk_with_transport_at_index(
+                        0,
                         alloc::boxed::Box::new(transport),
                         iommu_device,
                     )
@@ -571,7 +572,8 @@ impl SystemIntegration {
                 try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Console)
             {
                 match unsafe {
-                    crate::drivers::virtio::init_virtio_console_with_transport(
+                    crate::drivers::virtio::init_virtio_console_with_transport_at_index(
+                        0,
                         alloc::boxed::Box::new(transport),
                         iommu_device,
                     )
@@ -645,7 +647,8 @@ impl SystemIntegration {
                 try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Input)
             {
                 match unsafe {
-                    crate::drivers::virtio::init_virtio_input_with_transport(
+                    crate::drivers::virtio::init_virtio_input_with_transport_at_index(
+                        0,
                         alloc::boxed::Box::new(transport),
                         iommu_device,
                     )
@@ -719,7 +722,8 @@ impl SystemIntegration {
                 try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Balloon)
             {
                 match unsafe {
-                    crate::drivers::virtio::init_virtio_balloon_with_transport(
+                    crate::drivers::virtio::init_virtio_balloon_with_transport_at_index(
+                        0,
                         alloc::boxed::Box::new(transport),
                         iommu_device,
                     )

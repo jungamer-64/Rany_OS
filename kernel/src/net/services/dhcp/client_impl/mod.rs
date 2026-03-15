@@ -785,22 +785,3 @@ pub enum DhcpResponseResult {
     /// NAKを受信 (リース取得失敗)
     Nak,
 }
-
-pub fn init_in(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacAddress) {
-    let client = DhcpClient::new_in(runtime, mac_address);
-    match super::legacy_v4_client_lock_in(runtime).lock() {
-        Ok(mut g) => *g = Some(client),
-        Err(_) => log::error!("[NET] DHCP Global lock poisoned (init) - initialization skipped"),
-    }
-}
-
-pub(crate) fn update_client_mac(mac_address: MacAddress) {
-    match super::legacy_v4_client_lock_in(crate::net::runtime::default_runtime()).lock() {
-        Ok(mut guard) => {
-            if let Some(client) = guard.as_mut() {
-                client.mac_address = mac_address;
-            }
-        }
-        Err(_) => log::error!("[NET] DHCP Global lock poisoned (update_client_mac)"),
-    }
-}

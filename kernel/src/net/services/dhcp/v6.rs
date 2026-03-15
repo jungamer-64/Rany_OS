@@ -1253,14 +1253,14 @@ pub fn init_v6_in(
     mac_address: crate::net::l2::ethernet::MacAddress,
 ) {
     let client = DhcpV6Client::new_in(runtime, mac_address);
-    match super::legacy_v6_client_lock_in(runtime).lock() {
+    match super::primary_v6_client_lock_in(runtime).lock() {
         Ok(mut g) => *g = Some(client),
         Err(_) => log::error!("[NET] DHCPv6 Global lock poisoned (init) - initialization skipped"),
     }
 }
 
 pub(crate) fn update_client_v6_mac(mac_address: crate::net::l2::ethernet::MacAddress) {
-    match super::legacy_v6_client_lock_in(crate::net::runtime::default_runtime()).lock() {
+    match super::primary_v6_client_lock_in(crate::net::runtime::default_runtime()).lock() {
         Ok(mut guard) => {
             if let Some(client) = guard.as_mut() {
                 client.mac = mac_address;

@@ -5,7 +5,7 @@ use crate::sync::PoisonRwLock;
 // Global Device Instance
 // ============================================================================
 
-/// Primary (legacy) VirtIO console device slot kept for compatibility (`index=0`).
+/// Primary VirtIO console device slot (`index=0`).
 pub(crate) static VIRTIO_CONSOLE_DEVICE: crate::sync::PoisonLock<Option<Arc<VirtioConsoleDevice>>> =
     crate::sync::PoisonLock::new(None);
 
@@ -72,12 +72,6 @@ pub unsafe fn init_virtio_console_at_index(index: u8, mmio_base: u64) -> Result<
     Ok(())
 }
 
-#[cfg(test)]
-/// Initialize the global VirtIO console device (legacy `index=0`).
-pub unsafe fn init_virtio_console(mmio_base: u64) -> Result<(), ConsoleError> {
-    init_virtio_console_at_index(0, mmio_base)
-}
-
 /// Initialize the global VirtIO console device with an IOMMU device ID at a specific index.
 pub unsafe fn init_virtio_console_for_device_at_index(
     index: u8,
@@ -103,14 +97,6 @@ pub unsafe fn init_virtio_console_for_device_at_index(
     Ok(())
 }
 
-/// Initialize the global VirtIO console device with an IOMMU device ID (legacy `index=0`).
-pub unsafe fn init_virtio_console_for_device(
-    mmio_base: u64,
-    device: IommuDeviceId,
-) -> Result<(), ConsoleError> {
-    init_virtio_console_for_device_at_index(0, mmio_base, device)
-}
-
 /// Initialize the global VirtIO console device from an existing VirtioTransport (MMIO or PCI) at a specific index.
 pub unsafe fn init_virtio_console_with_transport_at_index(
     index: u8,
@@ -133,14 +119,6 @@ pub unsafe fn init_virtio_console_with_transport_at_index(
     Ok(())
 }
 
-/// Initialize the global VirtIO console device from an existing VirtioTransport (MMIO or PCI).
-pub unsafe fn init_virtio_console_with_transport(
-    transport: Box<dyn VirtioTransport>,
-    iommu_device_id: IommuDeviceId,
-) -> Result<(), ConsoleError> {
-    init_virtio_console_with_transport_at_index(0, transport, iommu_device_id)
-}
-
 /// Handle VirtIO console device interrupt for a specific index.
 pub fn handle_virtio_console_interrupt_for_index(index: u8) {
     if let Some(device) = get_virtio_console_device_at_index(index) {
@@ -149,16 +127,6 @@ pub fn handle_virtio_console_interrupt_for_index(index: u8) {
         device.transport.ack_interrupt(status);
         device.handle_interrupt();
     }
-}
-
-/// Handle VirtIO console device interrupt for index 0 (legacy compatibility).
-pub fn handle_virtio_console_interrupt() {
-    handle_virtio_console_interrupt_for_index(0);
-}
-
-/// Get a clone of the global VirtIO console device Arc if initialized (legacy `index=0`).
-pub fn get_virtio_console_device() -> Option<Arc<VirtioConsoleDevice>> {
-    get_virtio_console_device_at_index(0)
 }
 
 // ============================================================================

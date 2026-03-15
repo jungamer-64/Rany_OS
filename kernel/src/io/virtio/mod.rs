@@ -73,10 +73,11 @@ pub use virtqueue::{VringAvail, VringDesc, VringUsed};
 
 // Re-exports for VirtIO-Blk
 #[cfg(test)]
-pub use blk::init_virtio_blk;
+pub use blk::init_virtio_blk_at_index;
 pub use blk::{
     AsyncBlockDevice, BlockError, VirtioBlkConfig, VirtioBlkDevice, features as blk_features,
-    handle_virtio_blk_interrupt, init_virtio_blk_for_device, init_virtio_blk_with_transport,
+    get_virtio_blk_device_at_index, handle_virtio_blk_interrupt,
+    init_virtio_blk_for_device_at_index, init_virtio_blk_with_transport_at_index,
 };
 pub use blk_driver::VirtioBlkDriver;
 
@@ -87,29 +88,30 @@ pub use blk_scheduler::{
 
 // Re-exports for VirtIO-Console
 #[cfg(test)]
-pub use console::init_virtio_console;
+pub use console::init_virtio_console_at_index;
 pub use console::{
-    VirtioConsoleDevice, features as console_features, get_virtio_console_device,
-    handle_virtio_console_interrupt, init_virtio_console_for_device,
-    init_virtio_console_with_transport,
+    VirtioConsoleDevice, features as console_features, get_virtio_console_device_at_index,
+    handle_virtio_console_interrupt_for_index, init_virtio_console_for_device_at_index,
+    init_virtio_console_with_transport_at_index,
 };
 pub use console_driver::VirtioConsoleDriver;
 
 // Re-exports for VirtIO-Input
 #[cfg(test)]
-pub use input::init_virtio_input;
+pub use input::init_virtio_input_at_index;
 pub use input::{
-    VirtioInputDevice, VirtioInputEvent, get_virtio_input_device, handle_virtio_input_interrupt,
-    init_virtio_input_for_device, init_virtio_input_with_transport,
+    VirtioInputDevice, VirtioInputEvent, get_virtio_input_device_at_index,
+    handle_virtio_input_interrupt_for_index, init_virtio_input_for_device_at_index,
+    init_virtio_input_with_transport_at_index,
 };
 pub use input_driver::VirtioInputDriver;
 
 // Re-exports for VirtIO-Balloon
 #[cfg(test)]
-pub use balloon::init_virtio_balloon;
+pub use balloon::init_virtio_balloon_at_index;
 pub use balloon::{
-    VirtioBalloonDevice, features as balloon_features, get_virtio_balloon_device,
-    handle_virtio_balloon_interrupt, init_virtio_balloon_for_device,
-    init_virtio_balloon_with_transport,
+    VirtioBalloonDevice, features as balloon_features, get_virtio_balloon_device_at_index,
+    handle_virtio_balloon_interrupt_for_index, init_virtio_balloon_for_device_at_index,
+    init_virtio_balloon_with_transport_at_index,
 };
 pub use balloon_driver::VirtioBalloonDriver;

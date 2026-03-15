@@ -129,7 +129,15 @@ This document lists symbols that have been marked deprecated and recommended mig
 
 - `kernel/src/net/services/dhcp`
   - Default-runtime wrappers (`init()`, `init_v6()`, `legacy_v4_client_lock()`, `legacy_v6_client_lock()`) ❌ **removed**
-    - Migration: Use the runtime-aware variants `init_in(runtime, mac)`, `init_v6_in(runtime, mac)`, `legacy_v4_client_lock_in(runtime)`, `legacy_v6_client_lock_in(runtime)`. Default-runtime callers should pass `crate::net::runtime::default_runtime()` explicitly.
+    - Migration: Use runtime-aware APIs. DHCPv4 no longer exposes a singleton client lock; register/configure an interface and call `ensure_interface_runtime(if_id, config)`, then use `primary_v4_client_in(runtime)` or `interface_v4_client_in(runtime, if_id)`. DHCPv6 callers should use `init_v6_in(runtime, mac)` and `primary_v6_client_lock_in(runtime)`. Default-runtime callers should pass `crate::net::runtime::default_runtime()` explicitly.
+  - DHCPv4 compatibility singleton (`init_in(runtime, mac)`, `legacy_v4_client_lock_in(runtime)`) ❌ **removed**
+    - Migration: Seed DHCP state through the per-interface runtime registry with `ensure_interface_runtime(if_id, config)` and read state via `primary_v4_client_in(runtime)` / `interface_v4_client_in(runtime, if_id)`.
+  - DHCPv6 accessor `legacy_v6_client_lock_in(runtime)` ❌ **renamed**
+    - Migration: Use `primary_v6_client_lock_in(runtime)`.
+
+- `kernel/src/io/virtio/{blk,console,input,balloon}`
+  - Zero-index compatibility wrappers (`init_virtio_*()`, `init_virtio_*_for_device()`, `init_virtio_*_with_transport()`, `get_virtio_*_device()`, `handle_virtio_*_interrupt()`) ❌ **removed**
+    - Migration: Use the explicit multi-device variants `*_at_index(index)` / `*_for_device_at_index(index, ...)` / `*_with_transport_at_index(index, ...)` / `get_virtio_*_device_at_index(index)` / `handle_virtio_*_interrupt_for_index(index)`. For the former default behavior, pass `0`.
 
 - `kernel/src/net/api/dhcp.rs`
   - Default-runtime wrappers (`get_dhcp_state()`, `list_dhcp_states()`, `dhcp_state()`, `dhcp_renew()`, `dhcp_release()`, `dhcp_discover()`, `dhcp_last_declined()`, `dhcp_last_released()`) ❌ **removed**

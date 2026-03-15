@@ -15,6 +15,24 @@ macro_rules! run_case {
     }};
 }
 
+fn install_default_runtime_dhcp_v4_client(
+    mac: crate::net::l2::ethernet::MacAddress,
+) -> alloc::sync::Arc<crate::net::services::dhcp::DhcpClient> {
+    crate::net::runtime::manager::init_network_manager();
+
+    let if_id = crate::net::runtime::manager::register_interface("dhcp-qemu-test0")
+        .expect("register dhcp qemu test interface");
+    let mut config = crate::net::runtime::stack::NetworkConfig::default();
+    config.mac = mac;
+    crate::net::runtime::manager::set_interface_config(if_id, config)
+        .expect("set dhcp qemu test config");
+    crate::net::services::dhcp::ensure_interface_runtime(if_id, config)
+        .expect("init dhcp qemu interface runtime");
+    crate::net::services::dhcp::mark_primary_interface(if_id);
+    crate::net::services::dhcp::primary_v4_client_in(crate::net::runtime::default_runtime())
+        .expect("dhcp client")
+}
+
 pub fn dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke() -> bool {
     run_case!(dhcp::qemu_v4_tests::test_check_timeout_poisoned_state_reset_skips)
 }
@@ -117,8 +135,12 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
 pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     use crate::net::runtime::stack;
 
+    crate::net::runtime::context::reset_runtime_registry_for_tests();
     stack::init_default();
     let _ = crate::net::api::dhcp::init_dhcp_runtime();
+    let client = install_default_runtime_dhcp_v4_client(
+        crate::net::runtime::stack::NetworkConfig::default().mac,
+    );
 
     // initially None
     let st = {
@@ -157,31 +179,21 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
         return false;
     }
 
-    // manipulate global client directly to produce values
-    if let Ok(guard) =
-        crate::net::services::dhcp::legacy_v4_client_lock_in(crate::net::runtime::default_runtime())
-            .lock()
-    {
-        if let Some(ref client) = *guard {
-            // simulate lease and then release via internal API
-            let lease = crate::net::services::dhcp::DhcpLease {
-                ip_address: crate::net::l3::ipv4::Ipv4Address::new([1, 2, 3, 4]),
-                subnet_mask: crate::net::l3::ipv4::Ipv4Address::new([255, 255, 255, 0]),
-                gateway: None,
-                dns_servers: alloc::vec![],
-                server_ip: crate::net::l3::ipv4::Ipv4Address::new([1, 2, 3, 1]),
-                lease_time: 0,
-                t1: 0,
-                t2: 0,
-                obtained_at: 0,
-                hostname: None,
-                domain_name: None,
-            };
-            client.set_lease_for_test(lease.clone());
-            // release via internal client method
-            client.release();
-        }
-    }
+    let lease = crate::net::services::dhcp::DhcpLease {
+        ip_address: crate::net::l3::ipv4::Ipv4Address::new([1, 2, 3, 4]),
+        subnet_mask: crate::net::l3::ipv4::Ipv4Address::new([255, 255, 255, 0]),
+        gateway: None,
+        dns_servers: alloc::vec![],
+        server_ip: crate::net::l3::ipv4::Ipv4Address::new([1, 2, 3, 1]),
+        lease_time: 0,
+        t1: 0,
+        t2: 0,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+    client.set_lease_for_test(lease);
+    client.release();
 
     let st2 = {
         crate::net::l4::endpoint::event::reset_event_system_for_tests();
@@ -219,15 +231,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
         return false;
     }
 
-    // simulate a decline
-    if let Ok(guard) =
-        crate::net::services::dhcp::legacy_v4_client_lock_in(crate::net::runtime::default_runtime())
-            .lock()
-    {
-        if let Some(ref client) = *guard {
-            let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5, 6, 7, 8]), None);
-        }
-    }
+    let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5, 6, 7, 8]), None);
     let st3 = {
         crate::net::l4::endpoint::event::reset_event_system_for_tests();
 

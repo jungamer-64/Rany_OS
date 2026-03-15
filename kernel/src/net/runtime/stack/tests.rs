@@ -40,6 +40,22 @@ impl Drop for ManagerStateGuard {
     }
 }
 
+fn install_primary_dhcp_v4_client(
+    mac: MacAddress,
+) -> alloc::sync::Arc<crate::net::services::dhcp::DhcpClient> {
+    manager::init_network_manager();
+
+    let if_id = manager::register_interface("dhcp-test0").expect("register dhcp test interface");
+    let mut config = NetworkConfig::default();
+    config.mac = mac;
+    manager::set_interface_config(if_id, config).expect("set dhcp test config");
+    crate::net::services::dhcp::ensure_interface_runtime(if_id, config)
+        .expect("init dhcp interface runtime");
+    crate::net::services::dhcp::mark_primary_interface(if_id);
+    crate::net::services::dhcp::primary_v4_client_in(crate::net::runtime::default_runtime())
+        .expect("dhcp client")
+}
+
 fn run_with_event_task<F>(future: F) -> F::Output
 where
     F: Future + Send + 'static,
@@ -306,22 +322,14 @@ pub fn test_runtime_scoped_event_task_reads_runtime_local_stack() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
+    crate::net::runtime::context::reset_runtime_registry_for_tests();
     init_default();
 
     let client_mac = MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
-    crate::net::services::dhcp::init_in(crate::net::runtime::default_runtime(), client_mac);
+    let client = install_primary_dhcp_v4_client(client_mac);
 
     let xid = {
         let mut discover = [0u8; crate::net::services::dhcp::DHCP_MAX_MESSAGE_SIZE];
-        let guard = match crate::net::services::dhcp::legacy_v4_client_lock_in(
-            crate::net::runtime::default_runtime(),
-        )
-        .lock()
-        {
-            Ok(g) => g,
-            Err(_) => panic!("dhcp lock"),
-        };
-        let client = guard.as_ref().expect("dhcp client");
         let _ = client
             .build_discover(&mut discover, 10)
             .expect("build discover");
@@ -425,7 +433,9 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_dhcp_runtime_public_apis_smoke() {
+    crate::net::runtime::context::reset_runtime_registry_for_tests();
     init_default();
+    let client = install_primary_dhcp_v4_client(NetworkConfig::default().mac);
 
     assert!(crate::net::api::dhcp::init_dhcp_runtime().is_ok());
 
@@ -472,17 +482,10 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     // simulate a conflict/decline via internal client API to verify state snapshot
     let test_ip = [192, 168, 123, 45];
     let server_ip = [192, 168, 123, 1];
-    if let Ok(guard) =
-        crate::net::services::dhcp::legacy_v4_client_lock_in(crate::net::runtime::default_runtime())
-            .lock()
-    {
-        if let Some(ref client) = *guard {
-            let _ = client.send_decline(
-                crate::net::l3::ipv4::Ipv4Address::new(test_ip),
-                Some(crate::net::l3::ipv4::Ipv4Address::new(server_ip)),
-            );
-        }
-    }
+    let _ = client.send_decline(
+        crate::net::l3::ipv4::Ipv4Address::new(test_ip),
+        Some(crate::net::l3::ipv4::Ipv4Address::new(server_ip)),
+    );
 
     // verify dhcp_state snapshot reflects the decline
     let snap = {

@@ -34,17 +34,6 @@ pub unsafe fn init_virtio_input_with_transport_at_index(
     Ok(())
 }
 
-/// Initialize the global VirtIO input device from an existing VirtioTransport (MMIO or PCI).
-///
-/// # Safety
-/// Caller must ensure the transport is properly initialized and points to a valid device.
-pub unsafe fn init_virtio_input_with_transport(
-    transport: Box<dyn VirtioTransport>,
-    iommu_device_id: IommuDeviceId,
-) -> Result<(), InputError> {
-    init_virtio_input_with_transport_at_index(0, transport, iommu_device_id)
-}
-
 /// Handle VirtIO input device interrupt for a specific index.
 pub fn handle_virtio_input_interrupt_for_index(index: u8) {
     if let Some(device) = get_virtio_input_device_at_index(index) {
@@ -53,16 +42,6 @@ pub fn handle_virtio_input_interrupt_for_index(index: u8) {
         device.transport.ack_interrupt(status);
         device.handle_interrupt();
     }
-}
-
-/// Handle VirtIO input device interrupt (legacy `index=0`).
-pub fn handle_virtio_input_interrupt() {
-    handle_virtio_input_interrupt_for_index(0);
-}
-
-/// Get a clone of the global VirtIO input device Arc if initialized (legacy `index=0`).
-pub fn get_virtio_input_device() -> Option<Arc<VirtioInputDevice>> {
-    get_virtio_input_device_at_index(0)
 }
 
 // ============================================================================

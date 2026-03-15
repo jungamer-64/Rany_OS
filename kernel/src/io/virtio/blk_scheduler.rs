@@ -151,7 +151,7 @@ impl VirtioBlkPollHandler {
 
 impl PollHandler for VirtioBlkPollHandler {
     fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
-        let device = match get_virtio_blk_device() {
+        let device = match get_virtio_blk_device_at_index(0) {
             Some(dev) => dev,
             None => return Vec::new(),
         };
@@ -174,7 +174,7 @@ impl PollHandler for VirtioBlkPollHandler {
     }
 
     fn is_ready(&self) -> bool {
-        get_virtio_blk_device()
+        get_virtio_blk_device_at_index(0)
             .map(|dev| dev.is_ready())
             .unwrap_or(false)
     }
@@ -237,7 +237,7 @@ impl DeviceOps for VirtioBlkOps {
     fn submit(&self, req: &IoRequest, cpu_idx: usize) -> Result<(), IoError> {
         let cmd = req.command.as_ref().ok_or(IoError::NotSupported)?;
 
-        let device = get_virtio_blk_device().ok_or(IoError::NoResources)?;
+        let device = get_virtio_blk_device_at_index(0).ok_or(IoError::NoResources)?;
         let queue_idx = Self::select_queue(device.queue_count(), cpu_idx);
 
         match cmd {
@@ -280,7 +280,7 @@ impl DeviceOps for VirtioBlkOps {
     }
 
     fn is_ready(&self) -> bool {
-        get_virtio_blk_device()
+        get_virtio_blk_device_at_index(0)
             .map(|dev| dev.is_ready())
             .unwrap_or(false)
     }
@@ -333,8 +333,8 @@ pub fn register_virtio_blk_with(
     };
 
     // 1. 共有 PollHandler を作成
-    let device =
-        get_virtio_blk_device().expect("VirtIO-blk device must be initialized before registration");
+    let device = get_virtio_blk_device_at_index(0)
+        .expect("VirtIO-blk device must be initialized before registration");
     let queue_count = device.queue_count();
     let handler = Arc::new(VirtioBlkPollHandler::new(device_index, queue_count));
 

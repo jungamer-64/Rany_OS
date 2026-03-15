@@ -405,7 +405,7 @@ impl GdbTransport for VirtioConsoleTransport {
             }
         }
 
-        let dev = crate::io::virtio::console::get_virtio_console_device()?;
+        let dev = crate::io::virtio::console::get_virtio_console_device_at_index(0)?;
         let bytes = dev.read_bytes()?;
         if bytes.is_empty() {
             return None;
@@ -419,7 +419,7 @@ impl GdbTransport for VirtioConsoleTransport {
     }
 
     fn write_bytes(&self, bytes: &[u8]) {
-        if let Some(dev) = crate::io::virtio::console::get_virtio_console_device() {
+        if let Some(dev) = crate::io::virtio::console::get_virtio_console_device_at_index(0) {
             let _ = dev.write_bytes(bytes);
         }
     }

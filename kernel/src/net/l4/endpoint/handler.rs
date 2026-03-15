@@ -2043,24 +2043,10 @@ impl NetworkEventHandler {
                 if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     client.force_renew_or_restart(now);
                     touched = true;
-                } else {
-                    match dhcp::legacy_v4_client_lock_in(runtime).lock() {
-                        Ok(guard) => {
-                            if let Some(ref client) = *guard {
-                                client.force_renew_or_restart(now);
-                                touched = true;
-                            }
-                        }
-                        Err(_) => {
-                            err_msg = Some(alloc::string::String::from(
-                                "DHCPv4 global client lock poisoned",
-                            ))
-                        }
-                    }
                 }
 
                 if err_msg.is_none() {
-                    match dhcp::legacy_v6_client_lock_in(runtime).lock() {
+                    match dhcp::primary_v6_client_lock_in(runtime).lock() {
                         Ok(guard6) => {
                             if let Some(ref client6) = *guard6 {
                                 if let Err(e) = client6.force_renew_or_restart(now) {
@@ -2102,14 +2088,9 @@ impl NetworkEventHandler {
                 if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     client.release();
                     released = true;
-                } else if let Ok(guard) = dhcp::legacy_v4_client_lock_in(runtime).lock() {
-                    if let Some(ref client) = *guard {
-                        client.release();
-                        released = true;
-                    }
                 }
                 // DHCPv6 Release (RFC 8415 Section 18.2.6)
-                if let Ok(guard) = dhcp::legacy_v6_client_lock_in(runtime).lock() {
+                if let Ok(guard) = dhcp::primary_v6_client_lock_in(runtime).lock() {
                     if let Some(ref client) = *guard {
                         client.release();
                         released = true;
@@ -2136,16 +2117,6 @@ impl NetworkEventHandler {
                             offered_ip: *o.ip_address.as_bytes(),
                         });
                     }
-                } else if let Ok(guard) = dhcp::legacy_v4_client_lock_in(runtime).lock() {
-                    if let Some(ref client) = *guard {
-                        let _ = client.drive(now, 1000);
-                        if let Some(o) = client.offered_lease() {
-                            offer = Some(crate::net::api::dhcp::DhcpOfferInfo {
-                                server_ip: *o.server_ip.as_bytes(),
-                                offered_ip: *o.ip_address.as_bytes(),
-                            });
-                        }
-                    }
                 }
 
                 if let Ok(mut slot) = result_slot.lock() {
@@ -2160,10 +2131,6 @@ impl NetworkEventHandler {
                 let mut ip = None;
                 if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     ip = client.last_declined_ip().map(|a| *a.as_bytes());
-                } else if let Ok(guard) = dhcp::legacy_v4_client_lock_in(runtime).lock() {
-                    if let Some(ref client) = *guard {
-                        ip = client.last_declined_ip().map(|a| *a.as_bytes());
-                    }
                 }
 
                 if let Ok(mut slot) = result_slot.lock() {
@@ -2178,10 +2145,6 @@ impl NetworkEventHandler {
                 let mut ip = None;
                 if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     ip = client.last_released_ip().map(|a| *a.as_bytes());
-                } else if let Ok(guard) = dhcp::legacy_v4_client_lock_in(runtime).lock() {
-                    if let Some(ref client) = *guard {
-                        ip = client.last_released_ip().map(|a| *a.as_bytes());
-                    }
                 }
 
                 if let Ok(mut slot) = result_slot.lock() {

@@ -11,7 +11,7 @@ use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::virtio::input::{VirtioInputDevice, init_virtio_input_for_device};
+use crate::io::virtio::input::{VirtioInputDevice, init_virtio_input_for_device_at_index};
 
 /// VirtIO Input Driver
 pub struct VirtioInputDriver {
@@ -49,7 +49,8 @@ impl Driver for VirtioInputDriver {
     fn probe(&mut self) -> KapiResult<()> {
         log::info!(target: "virtio_input", "Probing VirtIO-Input at {:#x}", self.mmio_base);
 
-        let res = unsafe { init_virtio_input_for_device(self.mmio_base, self.iommu_id) };
+        let res =
+            unsafe { init_virtio_input_for_device_at_index(0, self.mmio_base, self.iommu_id) };
 
         match res {
             Ok(_) => {
