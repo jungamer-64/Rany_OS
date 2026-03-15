@@ -9,6 +9,3 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Shared AP trampoline artifact and mailbox layout for RanyOS"
-
-[build-dependencies]
-

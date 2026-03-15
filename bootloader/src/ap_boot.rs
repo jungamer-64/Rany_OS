@@ -6,7 +6,8 @@
 //! - AP boot information structure
 
 use ap_trampoline::{
-    ApBootFlags, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_BYTES, TRAMPOLINE_SIZE,
+    ApBootFlags, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE, patch_trampoline,
+    trampoline_bytes,
 };
 use boot_proto::ApBootInfo;
 use log::info;
@@ -140,18 +141,23 @@ fn build_ap_boot_info(
 }
 
 fn install_trampoline(trampoline_addr: u64) -> bool {
-    if trampoline_addr == 0 || TRAMPOLINE_BYTES.len() > AP_TRAMPOLINE_SIZE {
+    let trampoline_bytes = trampoline_bytes();
+    if trampoline_addr == 0 || trampoline_bytes.len() > AP_TRAMPOLINE_SIZE {
         return false;
     }
 
-    unsafe {
+    let install_result = unsafe {
         let trampoline_ptr = trampoline_addr as *mut u8;
         core::ptr::write_bytes(trampoline_ptr, 0, AP_TRAMPOLINE_SIZE);
-        core::ptr::copy_nonoverlapping(
-            TRAMPOLINE_BYTES.as_ptr(),
-            trampoline_ptr,
-            TRAMPOLINE_BYTES.len(),
-        );
+        let trampoline_image =
+            core::slice::from_raw_parts_mut(trampoline_ptr, trampoline_bytes.len());
+        trampoline_image.copy_from_slice(trampoline_bytes);
+        patch_trampoline(trampoline_image, trampoline_addr)
+    };
+
+    if let Err(error) = install_result {
+        info!("AP Boot: Failed to patch trampoline image: {}", error);
+        return false;
     }
 
     true

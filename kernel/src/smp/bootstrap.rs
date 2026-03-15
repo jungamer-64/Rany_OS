@@ -157,7 +157,10 @@ impl ApBootstrap {
                 boot_info.page_table_base
             );
         }
-        log_ap_mapping_probe("ap_entry_stub", ap_entry_stub as *const () as usize as u64);
+        log_ap_mapping_probe(
+            "ap_trampoline_entry",
+            ap_trampoline_entry as *const () as usize as u64,
+        );
         log_ap_mapping_probe("ap_boot_probe", core::ptr::addr_of!(AP_BOOT_PROBE) as u64);
         log_ap_mapping_probe("ap_bootstrap", core::ptr::addr_of!(AP_BOOTSTRAP) as u64);
 
@@ -171,7 +174,7 @@ impl ApBootstrap {
             let mut info = ApBootInfo::new();
             info.stack_ptr = map_ap_stack_window(&boot_info.ap_boot, ap_index)?;
             info.page_table = current_page_table;
-            info.entry_point = ap_entry_stub as *const () as usize as u64;
+            info.entry_point = ap_trampoline_entry as *const () as usize as u64;
             ap_info.push(info);
         }
 
@@ -447,20 +450,25 @@ fn ap_enter_executor(cpu_id: usize) -> ! {
     crate::task::run_forever(cpu_id);
 }
 
-/// AP entry point (called from trampoline)
-#[unsafe(no_mangle)]
-#[unsafe(naked)]
-pub unsafe extern "C" fn ap_entry_stub(_ap_slot: u32, _cpu_id: u32) -> ! {
-    core::arch::naked_asm!(
-        "jmp {inner}",
-        inner = sym ap_entry_inner,
-    )
-}
-
-pub extern "C" fn ap_entry_inner(ap_slot: u32, cpu_id: u32) -> ! {
+/// Rust-side AP trampoline handoff called after long mode is active.
+#[inline(never)]
+pub extern "C" fn ap_trampoline_entry(mailbox_ptr: *const ApTrampolineMailbox) -> ! {
     ap_serial_mark(b'B');
 
-    let ap_probe = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(AP_BOOT_PROBE)) };
+    if mailbox_ptr.is_null() {
+        ap_serial_mark(b'X');
+        // LOOP_PROOF: mode=halt; reason=The trampoline contract guarantees a valid mailbox pointer, so a null pointer indicates unrecoverable bootstrap corruption and the AP must stop in place.
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    let mailbox = unsafe { &*mailbox_ptr };
+    let ap_probe = if mailbox.probe_addr == 0 {
+        0
+    } else {
+        unsafe { core::ptr::read_volatile(mailbox.probe_addr as *const u8) }
+    };
     if ap_probe == AP_BOOT_PROBE {
         ap_serial_mark(b'P');
     } else {
@@ -468,14 +476,14 @@ pub extern "C" fn ap_entry_inner(ap_slot: u32, cpu_id: u32) -> ! {
     }
 
     if let Some(runtime_stack_top) =
-        bootstrap_ref().and_then(|bootstrap| bootstrap.runtime_stack_top(ap_slot as usize))
+        bootstrap_ref().and_then(|bootstrap| bootstrap.runtime_stack_top(mailbox.ap_slot as usize))
     {
         unsafe {
-            switch_to_ap_runtime_stack(runtime_stack_top, ap_slot, cpu_id);
+            switch_to_ap_runtime_stack(runtime_stack_top, mailbox.ap_slot, mailbox.cpu_id);
         }
     }
 
-    ap_entry_runtime(ap_slot, cpu_id)
+    ap_entry_runtime(mailbox.ap_slot, mailbox.cpu_id)
 }
 
 #[inline(never)]
