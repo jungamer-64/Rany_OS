@@ -79,7 +79,6 @@ pub use blk::{
     handle_virtio_blk_interrupt, init_virtio_blk_for_device, init_virtio_blk_with_transport,
 };
 pub use blk_driver::VirtioBlkDriver;
-pub use virtqueue::VringDesc as BlkVringDesc;
 
 // Re-exports for VirtIO-Blk IoScheduler Integration
 pub use blk_scheduler::{

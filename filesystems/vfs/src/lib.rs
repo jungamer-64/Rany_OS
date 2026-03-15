@@ -65,8 +65,6 @@ pub use block::SECTOR_SIZE;
 // Inode-related types (require alloc)
 #[cfg(feature = "alloc")]
 pub use inode::Inode;
-#[cfg(feature = "alloc")]
-pub use types::DirEntry as InodeDirEntry;
 
 // ============================================================================
 // Simple FileSystem Trait (High-level API)

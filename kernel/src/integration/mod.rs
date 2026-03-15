@@ -65,22 +65,23 @@ fn parse_virtio_capabilities(dev: &PciDeviceInfo) -> VirtioCapabilities {
     };
 
     for (_cap_id, cap_ptr) in &dev.capabilities {
-        let cap_id_raw = crate::io::pci::pci_read8(bus, device, function, *cap_ptr);
+        let cap_id_raw = crate::io::pci::legacy::pci_read8(bus, device, function, *cap_ptr);
         if cap_id_raw != 0x09 {
             continue;
         }
         let ptr = *cap_ptr;
-        let cfg_type = crate::io::pci::pci_read8(bus, device, function, ptr + 3);
-        let bar = crate::io::pci::pci_read8(bus, device, function, ptr + 4);
-        let offset = crate::io::pci::pci_read(bus, device, function, (ptr + 8) as u8);
-        let length = crate::io::pci::pci_read(bus, device, function, (ptr + 12) as u8);
+        let cfg_type = crate::io::pci::legacy::pci_read8(bus, device, function, ptr + 3);
+        let bar = crate::io::pci::legacy::pci_read8(bus, device, function, ptr + 4);
+        let offset = crate::io::pci::legacy::pci_read(bus, device, function, (ptr + 8) as u8);
+        let length = crate::io::pci::legacy::pci_read(bus, device, function, (ptr + 12) as u8);
 
         match cfg_type {
             1 => caps.common_cfg = Some((bar, offset, length)),
             2 => {
                 caps.notify_cfg = Some((bar, offset, length));
                 caps.notify_multiplier =
-                    crate::io::pci::pci_read(bus, device, function, (ptr + 16) as u8) as u32;
+                    crate::io::pci::legacy::pci_read(bus, device, function, (ptr + 16) as u8)
+                        as u32;
             }
             3 => caps.isr_cfg = Some((bar, offset, length)),
             4 => caps.device_cfg = Some((bar, offset, length)),

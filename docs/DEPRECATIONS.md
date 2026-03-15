@@ -161,6 +161,18 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `parse_dmar_table()` ❌ **removed**
     - Migration: Call `acpi::dmar::parse_dmar` directly.
 
+- `kernel/src/io/pci/mod.rs`
+  - Top-level legacy config helpers (`io::pci::{pci_read, pci_read8, pci_read16, pci_write}`) ❌ **removed**
+    - Migration: Use `crate::io::pci::legacy::{pci_read, pci_read8, pci_read16, pci_write}` explicitly, or migrate to ECAM-based accessors where possible.
+
+- `kernel/src/io/virtio/mod.rs`
+  - `BlkVringDesc` ❌ **removed**
+    - Migration: Use `VringDesc` directly.
+
+- `filesystems/kernel_fs/fs_abstraction.rs`
+  - `VfsUnixFileMode` ❌ **removed**
+    - Migration: Use `vfs::UnixFileMode` directly.
+
 - `kernel/src/shell/graphical/render.rs`
   - `redraw_input_only()` ✅ **deprecated**
     - Migration: Use `redraw_input_line()`.
@@ -216,6 +228,12 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `pci_driver::EcamAccess` or the new PCI APIs instead. The internal helper remains in `drivers/pci::legacy` but is no longer publicly re-exported.
   - `get_legacy_accessor()` ❌ **no longer publicly re-exported (internal)**
     - Migration: Prefer `pci_driver` accessors or ECAM APIs; the helper remains internal (`drivers::pci::legacy::get_legacy_accessor`) for in-repo use and is not intended for external callers.
+  - Top-level legacy config helpers (`pci_read`, `pci_read8`, `pci_read16`, `pci_write`) ❌ **removed**
+    - Migration: Use explicit module paths such as `pci_driver::legacy::pci_read16(...)` / `pci_driver::legacy::pci_write(...)`, or migrate to ECAM-based accessors where possible.
+
+- `drivers/pci` (`drivers/pci/src/types.rs`)
+  - `BdfAddress::legacy_address(offset)` ❌ **removed**
+    - Migration: Prefer `pci_driver::legacy::LegacyPciAccessor` / `ConfigSpaceAccessor` methods for legacy config-space access, or use `BdfAddress::ecam_offset(register)` for ECAM-based callers.
 
 - `drivers/serial` (`drivers/serial/src/lib.rs`)
   - `serial_print!`, `serial_println!` macros ❌ **removed**
@@ -234,6 +252,22 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `drivers/hid` (`drivers/hid/src/ps2/mod.rs`)
   - `ps2::{kbd_commands, mouse_commands}` re-exports ❌ **removed**
     - Migration: Prefer `Ps2Controller` helper methods over raw PS/2 keyboard/mouse command constants.
+
+- `filesystems/nvme_ns` (`filesystems/nvme_ns/src/lib.rs`)
+  - `NsDirEntry` ❌ **removed**
+    - Migration: Use `DirEntry` directly.
+
+- `filesystems/vfs` (`filesystems/vfs/src/lib.rs`)
+  - `InodeDirEntry` ❌ **removed**
+    - Migration: Use `vfs::types::DirEntry` directly.
+
+- `interfaces/kernel_api` (`interfaces/kernel_api/src/resource/system.rs`)
+  - `KernelSystemInfo` ❌ **removed**
+    - Migration: Use `SystemInfo` directly.
+
+- `drivers/usb/xhci` (`drivers/usb/src/xhci/mod.rs`)
+  - `CmdBuilder` ❌ **removed**
+    - Migration: Use `xhci::command::CommandBuilder` explicitly for command TRBs, or `xhci::CommandBuilder` for the ring-manager builder.
 
 - `drivers/nvme` (`drivers/nvme/src/driver.rs`)
   - `nvme_driver::driver` compatibility module ❌ **removed**
@@ -256,10 +290,19 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `KernelServices::fs_open()` — `fs_open_with_token(path, mode, None)` に移行
 - `KernelServices::nvme_open_direct()` — `nvme_open_direct_with_token(device_id, start_block, block_count, None)` に移行
 - `drivers::hid::KeyEvent` compatibility getters — public fields / `Modifiers` fields に移行
+- `pci_driver::{pci_read, pci_read8, pci_read16, pci_write}` top-level legacy config helpers — `pci_driver::legacy::*` に移行
+- `io::pci::{pci_read, pci_read8, pci_read16, pci_write}` top-level legacy config helpers — `io::pci::legacy::*` に移行
+- `pci_driver::BdfAddress::legacy_address()` — `LegacyPciAccessor` / `ecam_offset()` に移行
 - `io::hid::{KeyCodeExt, KeyEventExt, StreamAlreadyTaken}` compatibility re-exports — canonical `hid_driver` paths に移行
 - `io::hid::set_leds` top-level re-export — `io::hid::ps2::set_leds(...)` / `Ps2Controller::set_keyboard_leds(...)` に移行
 - `fat32::AsyncMutex::lock()` — `blocking_lock()` / `lock_async()` に移行
 - `nvme_driver::driver` compatibility module — concrete NVMe submodules に移行
+- `nvme_ns::NsDirEntry` — `nvme_ns::DirEntry` に移行
+- `kernel_api::resource::system::KernelSystemInfo` — `kernel_api::resource::system::SystemInfo` に移行
+- `io::virtio::BlkVringDesc` — `io::virtio::VringDesc` に移行
+- `kernel_fs::VfsUnixFileMode` — `vfs::UnixFileMode` に移行
+- `vfs::InodeDirEntry` — `vfs::types::DirEntry` に移行
+- `xhci::CmdBuilder` — `xhci::command::CommandBuilder` / `xhci::CommandBuilder` に移行
 - `memory::oom_killer::{DomainMemoryInfo, list_domains}` — `domain_system` + `quota_manager()` に移行
 - `net::services::dns::client()` — high-level DNS helpers / shared Arc-backed runtime access に移行
 - `iommu::runtime::command::CommandQueue::submit_sync()` — `submit(...).wait_blocking()` / `submit_sync_with_worker()` に移行

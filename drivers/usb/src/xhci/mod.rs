@@ -46,7 +46,7 @@ use alloc::sync::Arc;
 use crate::{PortNumber, UsbResult};
 
 // Re-exports
-pub use command::{CommandApi, CommandBuilder as CmdBuilder, CommandExecutor, CommandFuture};
+pub use command::{CommandApi, CommandExecutor, CommandFuture};
 pub use context::{DeviceContext, EndpointContext, InputContext, InputControlContext, SlotContext};
 pub use controller::XhciController;
 pub use device::XhciDevice;

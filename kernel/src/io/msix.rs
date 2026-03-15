@@ -63,7 +63,7 @@ struct LegacyConfigAccessor;
 
 impl LegacyConfigAccessor {
     fn read_aligned_dword(&self, bdf: BdfAddress, offset: u16) -> u32 {
-        pci::pci_read(
+        pci::legacy::pci_read(
             bdf.bus(),
             bdf.device(),
             bdf.function(),
@@ -77,7 +77,7 @@ impl LegacyConfigAccessor {
         let mut dword = self.read_aligned_dword(bdf, offset);
         dword &= !(mask << shift);
         dword |= (value & mask) << shift;
-        pci::pci_write(
+        pci::legacy::pci_write(
             bdf.bus(),
             bdf.device(),
             bdf.function(),
@@ -89,15 +89,15 @@ impl LegacyConfigAccessor {
 
 impl ConfigSpaceAccessor for LegacyConfigAccessor {
     fn read8(&self, bdf: BdfAddress, offset: u16) -> u8 {
-        pci::pci_read8(bdf.bus(), bdf.device(), bdf.function(), offset as u8)
+        pci::legacy::pci_read8(bdf.bus(), bdf.device(), bdf.function(), offset as u8)
     }
 
     fn read16(&self, bdf: BdfAddress, offset: u16) -> u16 {
-        pci::pci_read16(bdf.bus(), bdf.device(), bdf.function(), offset as u8)
+        pci::legacy::pci_read16(bdf.bus(), bdf.device(), bdf.function(), offset as u8)
     }
 
     fn read32(&self, bdf: BdfAddress, offset: u16) -> u32 {
-        pci::pci_read(bdf.bus(), bdf.device(), bdf.function(), offset as u8)
+        pci::legacy::pci_read(bdf.bus(), bdf.device(), bdf.function(), offset as u8)
     }
 
     fn write8(&self, bdf: BdfAddress, offset: u16, value: u8) {
@@ -109,7 +109,7 @@ impl ConfigSpaceAccessor for LegacyConfigAccessor {
     }
 
     fn write32(&self, bdf: BdfAddress, offset: u16, value: u32) {
-        pci::pci_write(bdf.bus(), bdf.device(), bdf.function(), offset as u8, value);
+        pci::legacy::pci_write(bdf.bus(), bdf.device(), bdf.function(), offset as u8, value);
     }
 }
 

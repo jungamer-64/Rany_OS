@@ -110,11 +110,11 @@ pub struct LegacyPciTopology;
 impl PciTopologyProvider for LegacyPciTopology {
     fn read_header_type(&self, bus: u8, device: u8, function: u8) -> Option<u8> {
         // Legacy PCI config space: Header Type is at offset 0x0E
-        let vendor_id = pci_driver::pci_read16(bus, device, function, 0x00);
+        let vendor_id = pci_driver::legacy::pci_read16(bus, device, function, 0x00);
         if vendor_id == 0xFFFF {
             return None; // Device not present
         }
-        Some(pci_driver::pci_read8(bus, device, function, 0x0E))
+        Some(pci_driver::legacy::pci_read8(bus, device, function, 0x0E))
     }
 
     fn is_acs_isolation_enabled(&self, _bus: u8, _device: u8, _function: u8) -> Option<bool> {
@@ -130,14 +130,14 @@ impl PciTopologyProvider for LegacyPciTopology {
         }
         // Scan bus 0 for bridges whose secondary bus matches child_bus
         for dev in 0..32u8 {
-            let vendor_id = pci_driver::pci_read16(0, dev, 0, 0x00);
+            let vendor_id = pci_driver::legacy::pci_read16(0, dev, 0, 0x00);
             if vendor_id == 0xFFFF {
                 continue;
             }
-            let header_type = pci_driver::pci_read8(0, dev, 0, 0x0E);
+            let header_type = pci_driver::legacy::pci_read8(0, dev, 0, 0x0E);
             if (header_type & 0x7F) == 0x01 {
                 // Type 1 header (PCI-to-PCI bridge)
-                let secondary_bus = pci_driver::pci_read8(0, dev, 0, 0x19);
+                let secondary_bus = pci_driver::legacy::pci_read8(0, dev, 0, 0x19);
                 if secondary_bus == child_bus {
                     return Some((0, dev, 0));
                 }

@@ -46,9 +46,6 @@ use spin::{Mutex, RwLock};
 
 /// VFSエラー型（vfsから再エクスポート）
 pub use vfs::VfsError;
-/// VFS UNIXファイルモード（vfsから再エクスポート）
-pub use vfs::types::UnixFileMode as VfsUnixFileMode;
-
 // ============================================================================
 // Error Types (Kernel-specific, with VFS conversion)
 // ============================================================================
@@ -257,15 +254,15 @@ impl Default for FileMode {
 }
 
 // FileMode <-> vfs::UnixFileMode conversion
-impl From<VfsUnixFileMode> for FileMode {
-    fn from(mode: VfsUnixFileMode) -> Self {
+impl From<vfs::UnixFileMode> for FileMode {
+    fn from(mode: vfs::UnixFileMode) -> Self {
         FileMode(mode.bits())
     }
 }
 
-impl From<FileMode> for VfsUnixFileMode {
+impl From<FileMode> for vfs::UnixFileMode {
     fn from(mode: FileMode) -> Self {
-        VfsUnixFileMode::new(mode.0)
+        vfs::UnixFileMode::new(mode.0)
     }
 }
 

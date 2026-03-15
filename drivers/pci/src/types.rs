@@ -118,15 +118,6 @@ impl BdfAddress {
         }
     }
 
-    /// Legacy I/O アドレスを計算
-    pub fn legacy_address(&self, offset: u8) -> u32 {
-        ((self.bus.0 as u32) << 16)
-            | ((self.device.0 as u32) << 11)
-            | ((self.function.0 as u32) << 8)
-            | ((offset as u32) & 0xFC)
-            | 0x80000000 // Enable bit
-    }
-
     /// ECAM オフセットを計算
     pub fn ecam_offset(&self, register: u16) -> u64 {
         ((self.bus.0 as u64) << 20)

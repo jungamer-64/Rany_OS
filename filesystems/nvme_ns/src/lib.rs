@@ -45,7 +45,7 @@ pub mod ondisk;
 
 // Re-exports
 pub use bitmap::Bitmap;
-pub use dir::{DirEntry as NsDirEntry, DirEntryIter};
+pub use dir::{DirEntry, DirEntryIter};
 pub use error::{NsError, NsResult};
 pub use fs::NvmeNamespaceFs;
 pub use inode::NsInode;

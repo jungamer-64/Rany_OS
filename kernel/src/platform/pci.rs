@@ -118,9 +118,9 @@ pub fn to_native_device(dev: &PciDeviceInfo) -> crate::io::pci::PciDeviceInfo {
 }
 
 fn update_command_bit(bdf: BdfAddress, bit: u16, enabled: bool) {
-    let cmd = crate::io::pci::pci_read16(bdf.bus(), bdf.device(), bdf.function(), 0x04);
+    let cmd = crate::io::pci::legacy::pci_read16(bdf.bus(), bdf.device(), bdf.function(), 0x04);
     let new_value = if enabled { cmd | bit } else { cmd & !bit };
-    crate::io::pci::pci_write(
+    crate::io::pci::legacy::pci_write(
         bdf.bus(),
         bdf.device(),
         bdf.function(),

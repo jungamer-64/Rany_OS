@@ -281,7 +281,7 @@ impl vfs::Inode for NsInode {
         Err(VfsError::NotFound)
     }
 
-    fn readdir(&self, _offset: u64) -> VfsResult<Vec<vfs::InodeDirEntry>> {
+    fn readdir(&self, _offset: u64) -> VfsResult<Vec<vfs::types::DirEntry>> {
         let disk = self.disk.lock().map_err(|_| VfsError::IoError)?;
         if disk.inode_kind() != InodeKind::Directory {
             return Err(VfsError::NotADirectory);
@@ -291,7 +291,7 @@ impl vfs::Inode for NsInode {
         let entries = self.read_dir_entries()?;
         Ok(entries
             .into_iter()
-            .map(|e| vfs::InodeDirEntry {
+            .map(|e| vfs::types::DirEntry {
                 name: e.name,
                 ino: e.ino,
                 file_type: e.file_type,
