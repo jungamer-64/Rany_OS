@@ -1,6 +1,7 @@
 use super::{VirtioNetDevice, VirtioNetError};
 use crate::io::virtio::transport::VirtioMmioTransport;
 use crate::io::virtio::transport::VirtioTransport;
+use crate::net::runtime::context::default_runtime_context;
 use crate::net::runtime::device::NetDeviceKey;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
@@ -13,23 +14,29 @@ use kernel_api::service::netdev::{
     NetDriverEvent, NetPortKind, NetPortRuntime, NetPortStats, NetTxMeta,
 };
 
-// ============================================================================
-// Global Device Instance
-// ============================================================================
+pub(crate) struct VirtioNetRegistryState {
+    devices: PoisonRwLock<BTreeMap<u8, Arc<PoisonLock<VirtioNetDevice>>>>,
+    transports: PoisonRwLock<BTreeMap<u8, Arc<dyn VirtioTransport>>>,
+    runtimes: PoisonRwLock<BTreeMap<u8, Arc<dyn NetPortRuntime>>>,
+}
 
-/// Primary (legacy) VirtIO-Net device slot kept for compatibility (`index=0`).
-pub(crate) static VIRTIO_NET_DEVICE: PoisonLock<Option<VirtioNetDevice>> = PoisonLock::new(None);
-/// Additional VirtIO-Net devices (`index != 0`).
-pub(crate) static VIRTIO_NET_DEVICES: PoisonRwLock<BTreeMap<u8, Arc<PoisonLock<VirtioNetDevice>>>> =
-    PoisonRwLock::new(BTreeMap::new());
-/// ISR-safe access to transport layer for interrupt acknowledgement.
-pub(crate) static VIRTIO_NET_TRANSPORTS: PoisonRwLock<BTreeMap<u8, Arc<dyn VirtioTransport>>> =
-    PoisonRwLock::new(BTreeMap::new());
-pub(crate) static VIRTIO_NET_RUNTIMES: PoisonRwLock<BTreeMap<u8, Arc<dyn NetPortRuntime>>> =
-    PoisonRwLock::new(BTreeMap::new());
+impl VirtioNetRegistryState {
+    pub const fn new() -> Self {
+        Self {
+            devices: PoisonRwLock::new(BTreeMap::new()),
+            transports: PoisonRwLock::new(BTreeMap::new()),
+            runtimes: PoisonRwLock::new(BTreeMap::new()),
+        }
+    }
+}
+
+fn registry_state() -> &'static VirtioNetRegistryState {
+    &default_runtime_context().virtio_net
+}
 
 pub(crate) fn virtio_net_runtime(index: u8) -> Option<Arc<dyn NetPortRuntime>> {
-    VIRTIO_NET_RUNTIMES
+    registry_state()
+        .runtimes
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&index)
@@ -37,7 +44,8 @@ pub(crate) fn virtio_net_runtime(index: u8) -> Option<Arc<dyn NetPortRuntime>> {
 }
 
 fn install_virtio_net_runtime(index: u8, runtime: Arc<dyn NetPortRuntime>) {
-    VIRTIO_NET_RUNTIMES
+    registry_state()
+        .runtimes
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .insert(index, runtime);
@@ -45,15 +53,13 @@ fn install_virtio_net_runtime(index: u8, runtime: Arc<dyn NetPortRuntime>) {
 
 fn install_virtio_net_device(index: u8, device: VirtioNetDevice) {
     let transport = device.transport.clone();
-    if index == 0 {
-        *VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(device);
-    } else {
-        VIRTIO_NET_DEVICES
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(index, Arc::new(PoisonLock::new(device)));
-    }
-    VIRTIO_NET_TRANSPORTS
+    registry_state()
+        .devices
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(index, Arc::new(PoisonLock::new(device)));
+    registry_state()
+        .transports
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .insert(index, transport);
@@ -177,7 +183,8 @@ impl NetDevicePort for VirtioNetDriverAdapter {
     }
 
     fn stop(&self) {
-        VIRTIO_NET_RUNTIMES
+        registry_state()
+            .runtimes
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.index);
@@ -192,15 +199,8 @@ pub(crate) fn with_virtio_net_device_at_index<F, R>(index: u8, f: F) -> Option<R
 where
     F: FnOnce(&VirtioNetDevice) -> R,
 {
-    if index == 0 {
-        return VIRTIO_NET_DEVICE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(f);
-    }
-
-    let device = VIRTIO_NET_DEVICES
+    let device = registry_state()
+        .devices
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&index)
@@ -213,12 +213,8 @@ fn with_virtio_net_device_at_index_mut<F, R>(index: u8, f: F) -> Option<R>
 where
     F: FnOnce(&mut VirtioNetDevice) -> R,
 {
-    if index == 0 {
-        let mut guard = VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
-        return guard.as_mut().map(f);
-    }
-
-    let device = VIRTIO_NET_DEVICES
+    let device = registry_state()
+        .devices
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&index)
@@ -228,35 +224,21 @@ where
 }
 
 pub(crate) fn has_virtio_net_device(index: u8) -> bool {
-    if index == 0 {
-        return VIRTIO_NET_DEVICE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some();
-    }
-    VIRTIO_NET_DEVICES
+    registry_state()
+        .devices
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&index)
 }
 
 fn collect_registered_virtio_net_indices() -> Vec<usize> {
-    let mut indices = Vec::new();
-    if VIRTIO_NET_DEVICE
-        .lock()
+    registry_state()
+        .devices
+        .read()
         .unwrap_or_else(|e| e.into_inner())
-        .is_some()
-    {
-        indices.push(0);
-    }
-    indices.extend(
-        VIRTIO_NET_DEVICES
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .map(|index| *index as usize),
-    );
-    indices
+        .keys()
+        .map(|index| *index as usize)
+        .collect()
 }
 
 #[cfg(test)]
@@ -364,9 +346,128 @@ where
 
 #[cfg(test)]
 pub(crate) fn clear_virtio_net_devices_for_tests() {
-    *VIRTIO_NET_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    VIRTIO_NET_DEVICES
+    registry_state()
+        .devices
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+    registry_state()
+        .transports
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    registry_state()
+        .runtimes
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::virtio::{TransportType, VIRTQUEUE_MAX_SIZE, VirtioDeviceType, VirtioTransport};
+
+    #[derive(Debug)]
+    struct NoopTransport;
+
+    impl VirtioTransport for NoopTransport {
+        fn device_type(&self) -> VirtioDeviceType {
+            VirtioDeviceType::Network
+        }
+
+        fn get_status(&self) -> u8 {
+            0
+        }
+
+        fn set_status(&self, _status: u8) {}
+
+        fn get_device_features_low(&self) -> u32 {
+            0
+        }
+
+        fn get_device_features_high(&self) -> u32 {
+            0
+        }
+
+        fn set_driver_features_low(&self, _features: u32) {}
+
+        fn set_driver_features_high(&self, _features: u32) {}
+
+        fn get_num_queues(&self) -> u16 {
+            2
+        }
+
+        fn select_queue(&self, _queue_index: u16) {}
+
+        fn get_queue_max_size(&self) -> u16 {
+            VIRTQUEUE_MAX_SIZE
+        }
+
+        fn set_queue_size(&self, _size: u16) {}
+
+        fn is_queue_ready(&self) -> bool {
+            false
+        }
+
+        fn enable_queue(&self) {}
+
+        fn disable_queue(&self) {}
+
+        fn set_queue_desc_addr(&self, _addr: u64) {}
+
+        fn set_queue_avail_addr(&self, _addr: u64) {}
+
+        fn set_queue_used_addr(&self, _addr: u64) {}
+
+        fn notify_queue(&self, _queue_index: u16) {}
+
+        fn get_notify_addr(&self, _queue_index: u16) -> Option<u64> {
+            None
+        }
+
+        fn get_interrupt_status(&self) -> u32 {
+            0
+        }
+
+        fn ack_interrupt(&self, _status: u32) {}
+
+        fn read_config_u8(&self, _offset: usize) -> u8 {
+            0
+        }
+
+        fn read_config_u16(&self, _offset: usize) -> u16 {
+            0
+        }
+
+        fn read_config_u32(&self, _offset: usize) -> u32 {
+            0
+        }
+
+        fn write_config_u8(&self, _offset: usize, _value: u8) {}
+
+        fn write_config_u16(&self, _offset: usize, _value: u16) {}
+
+        fn write_config_u32(&self, _offset: usize, _value: u32) {}
+
+        fn transport_type(&self) -> TransportType {
+            TransportType::Mmio
+        }
+    }
+
+    #[test]
+    fn registry_tracks_zero_and_nonzero_indices_uniformly() {
+        clear_virtio_net_devices_for_tests();
+
+        install_virtio_net_device(0, VirtioNetDevice::new_at_index(0, Box::new(NoopTransport)));
+        install_virtio_net_device(3, VirtioNetDevice::new_at_index(3, Box::new(NoopTransport)));
+
+        let indices = collect_registered_virtio_net_indices();
+
+        assert_eq!(indices, alloc::vec![0, 3]);
+        assert!(has_virtio_net_device(0));
+        assert!(has_virtio_net_device(3));
+        assert!(with_virtio_net_at_index(0, |_| ()).is_some());
+        assert!(with_virtio_net_at_index(3, |_| ()).is_some());
+    }
 }

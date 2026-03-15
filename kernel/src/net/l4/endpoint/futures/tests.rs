@@ -3,6 +3,7 @@ use crate::net::l4::endpoint::EndpointAddr;
 use crate::net::l4::endpoint::manager::init_endpoint_manager;
 use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry};
 use crate::net::l4::endpoint::{NetworkEvent, create_tcp_endpoint, create_udp_endpoint};
+use crate::net::runtime::default_runtime;
 use crate::net::runtime::stack;
 use core::future::Future;
 use core::pin::Pin;
@@ -217,6 +218,7 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream {
         tcb: tcb_arc.clone(),
+        runtime: default_runtime(),
     };
 
     if let Some(s) = sock.endpoint() {
@@ -301,6 +303,7 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint_v6() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream {
         tcb: tcb_arc.clone(),
+        runtime: default_runtime(),
     };
 
     if let Some(s) = sock.endpoint() {
@@ -383,6 +386,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream {
         tcb: tcb_arc.clone(),
+        runtime: default_runtime(),
     };
 
     if let Some(s) = sock.endpoint() {
@@ -479,6 +483,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let stream = TcpStream {
         tcb: tcb_arc.clone(),
+        runtime: default_runtime(),
     };
 
     if let Some(s) = sock.endpoint() {

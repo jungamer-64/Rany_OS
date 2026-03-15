@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::net::runtime::{
-    device,
+    NetRuntimeHandle, default_runtime, device,
     manager::{self, NetIfId, NetworkInterfaceInfo},
     stack,
 };
@@ -82,6 +82,13 @@ pub(crate) fn interface_config_snapshot(
 }
 
 fn interface_stats_snapshot(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
+    interface_stats_snapshot_in(default_runtime(), if_id)
+}
+
+fn interface_stats_snapshot_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<InterfaceStatsSnapshot> {
     let mut stack_snapshot = InterfaceStatsSnapshot {
         if_id: if_id.0,
         rx_packets: 0,
@@ -93,7 +100,7 @@ fn interface_stats_snapshot(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
         rx_dropped: 0,
     };
 
-    if let Ok(guard) = stack::stack().lock() {
+    if let Ok(guard) = runtime.context().stack.lock() {
         if let Some(stack) = guard.as_ref() {
             if let Some(stats) = stack.interface_stats(if_id) {
                 stack_snapshot.rx_packets =
@@ -112,7 +119,7 @@ fn interface_stats_snapshot(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
         }
     }
 
-    if let Some(port) = device::lookup_port(if_id) {
+    if let Some(port) = device::lookup_port_in(runtime, if_id) {
         let driver_stats = port.driver().stats();
         stack_snapshot.rx_packets = stack_snapshot.rx_packets.max(driver_stats.rx_packets);
         stack_snapshot.tx_packets = stack_snapshot.tx_packets.max(driver_stats.tx_packets);
@@ -136,6 +143,14 @@ fn interface_stats_snapshot(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
 }
 
 pub(crate) fn interface_stats_snapshot_with_stack(
+    if_id: NetIfId,
+    stack: Option<&stack::NetworkStack>,
+) -> Option<InterfaceStatsSnapshot> {
+    interface_stats_snapshot_with_stack_in(default_runtime(), if_id, stack)
+}
+
+pub(crate) fn interface_stats_snapshot_with_stack_in(
+    runtime: NetRuntimeHandle,
     if_id: NetIfId,
     stack: Option<&stack::NetworkStack>,
 ) -> Option<InterfaceStatsSnapshot> {
@@ -164,7 +179,7 @@ pub(crate) fn interface_stats_snapshot_with_stack(
         }
     }
 
-    if let Some(port) = device::lookup_port(if_id) {
+    if let Some(port) = device::lookup_port_in(runtime, if_id) {
         let driver_stats = port.driver().stats();
         stack_snapshot.rx_packets = stack_snapshot.rx_packets.max(driver_stats.rx_packets);
         stack_snapshot.tx_packets = stack_snapshot.tx_packets.max(driver_stats.tx_packets);
@@ -201,8 +216,12 @@ pub(crate) fn interface_summary_snapshot(iface: NetworkInterfaceInfo) -> Interfa
 }
 
 pub(crate) fn primary_interface_id() -> Option<NetIfId> {
-    device::primary_if().or_else(|| {
-        manager::list_interfaces()
+    primary_interface_id_in(default_runtime())
+}
+
+pub(crate) fn primary_interface_id_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
+    device::primary_if_in(runtime).or_else(|| {
+        manager::list_interfaces_in(runtime)
             .ok()
             .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
     })
@@ -226,14 +245,27 @@ pub(crate) fn aggregate_network_stats_from_list(
 }
 
 pub(crate) fn get_interface_config_from_runtime(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
-    manager::get_interface(if_id)
+    get_interface_config_from_runtime_in(default_runtime(), if_id)
+}
+
+pub(crate) fn get_interface_config_from_runtime_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<InterfaceConfigSnapshot> {
+    manager::get_interface_in(runtime, if_id)
         .ok()
         .flatten()
         .and_then(interface_config_snapshot)
 }
 
 pub(crate) fn list_interface_configs_from_runtime() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
-    manager::list_interfaces()
+    list_interface_configs_from_runtime_in(default_runtime())
+}
+
+pub(crate) fn list_interface_configs_from_runtime_in(
+    runtime: NetRuntimeHandle,
+) -> alloc::vec::Vec<InterfaceConfigSnapshot> {
+    manager::list_interfaces_in(runtime)
         .unwrap_or_default()
         .into_iter()
         .filter_map(interface_config_snapshot)
@@ -241,21 +273,41 @@ pub(crate) fn list_interface_configs_from_runtime() -> alloc::vec::Vec<Interface
 }
 
 pub(crate) fn get_interface_stats_without_stack(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
-    interface_stats_snapshot_with_stack(if_id, None)
+    get_interface_stats_without_stack_in(default_runtime(), if_id)
+}
+
+pub(crate) fn get_interface_stats_without_stack_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<InterfaceStatsSnapshot> {
+    interface_stats_snapshot_with_stack_in(runtime, if_id, None)
 }
 
 pub(crate) fn list_interface_stats_with_stack(
     stack: Option<&stack::NetworkStack>,
 ) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
-    manager::list_interfaces()
+    list_interface_stats_with_stack_in(default_runtime(), stack)
+}
+
+pub(crate) fn list_interface_stats_with_stack_in(
+    runtime: NetRuntimeHandle,
+    stack: Option<&stack::NetworkStack>,
+) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
+    manager::list_interfaces_in(runtime)
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|iface| interface_stats_snapshot_with_stack(iface.if_id, stack))
+        .filter_map(|iface| interface_stats_snapshot_with_stack_in(runtime, iface.if_id, stack))
         .collect()
 }
 
 pub(crate) fn list_interfaces_from_runtime() -> alloc::vec::Vec<InterfaceSnapshot> {
-    manager::list_interfaces()
+    list_interfaces_from_runtime_in(default_runtime())
+}
+
+pub(crate) fn list_interfaces_from_runtime_in(
+    runtime: NetRuntimeHandle,
+) -> alloc::vec::Vec<InterfaceSnapshot> {
+    manager::list_interfaces_in(runtime)
         .unwrap_or_default()
         .into_iter()
         .map(interface_summary_snapshot)
@@ -302,28 +354,47 @@ fn list_interfaces_sync() -> alloc::vec::Vec<InterfaceSnapshot> {
 }
 
 pub async fn primary_interface_config_snapshot() -> Option<NetworkConfigSnapshot> {
+    primary_interface_config_snapshot_in(default_runtime()).await
+}
+
+pub async fn primary_interface_config_snapshot_in(
+    runtime: NetRuntimeHandle,
+) -> Option<NetworkConfigSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<Option<NetworkConfigSnapshot>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetPrimaryInterfaceConfig {
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn aggregate_network_stats_snapshot() -> Option<NetworkStatsSnapshot> {
+    aggregate_network_stats_snapshot_in(default_runtime()).await
+}
+
+pub async fn aggregate_network_stats_snapshot_in(
+    runtime: NetRuntimeHandle,
+) -> Option<NetworkStatsSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<Option<NetworkStatsSnapshot>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetAggregateNetworkStats {
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn get_interface_config(if_id: NetIfId) -> Option<InterfaceConfigSnapshot> {
+    get_interface_config_in(default_runtime(), if_id).await
+}
+
+pub async fn get_interface_config_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<Option<InterfaceConfigSnapshot>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetInterfaceConfig {
@@ -331,20 +402,33 @@ pub async fn get_interface_config(if_id: NetIfId) -> Option<InterfaceConfigSnaps
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_interface_configs() -> alloc::vec::Vec<InterfaceConfigSnapshot> {
+    list_interface_configs_in(default_runtime()).await
+}
+
+pub async fn list_interface_configs_in(
+    runtime: NetRuntimeHandle,
+) -> alloc::vec::Vec<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<alloc::vec::Vec<InterfaceConfigSnapshot>>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceConfigs { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn get_interface_stats(if_id: NetIfId) -> Option<InterfaceStatsSnapshot> {
+    get_interface_stats_in(default_runtime(), if_id).await
+}
+
+pub async fn get_interface_stats_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<InterfaceStatsSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<Option<InterfaceStatsSnapshot>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetInterfaceStats {
@@ -352,30 +436,82 @@ pub async fn get_interface_stats(if_id: NetIfId) -> Option<InterfaceStatsSnapsho
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_interface_stats() -> alloc::vec::Vec<InterfaceStatsSnapshot> {
+    list_interface_stats_in(default_runtime()).await
+}
+
+pub async fn list_interface_stats_in(
+    runtime: NetRuntimeHandle,
+) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<alloc::vec::Vec<InterfaceStatsSnapshot>>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceStats { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_interfaces() -> alloc::vec::Vec<InterfaceSnapshot> {
+    list_interfaces_in(default_runtime()).await
+}
+
+pub async fn list_interfaces_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceSnapshot> {
     let (result_slot, waker, command_future) =
         stack::new_command_channel::<alloc::vec::Vec<InterfaceSnapshot>>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::ListInterfaces { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::net::runtime::{create_runtime, default_runtime, reset_runtime_registry_for_tests};
+    use core::future::Future;
+
+    fn run_with_event_task_in<F>(
+        runtime: crate::net::runtime::NetRuntimeHandle,
+        future: F,
+    ) -> F::Output
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let mut executor = crate::task::TestExecutor::new();
+
+        let result_slot_clone = result_slot.clone();
+        let completed_clone = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            let output = future.await;
+            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(output);
+            completed_clone.store(true, core::sync::atomic::Ordering::Release);
+        }));
+        executor.spawn(crate::task::Task::new(async move {
+            crate::net::l4::endpoint::tcp_rx::network_event_task_in(runtime).await;
+        }));
+
+        let mut output = None;
+        for _ in 0..100_000 {
+            executor.drive_once_for_test();
+            if completed.load(core::sync::atomic::Ordering::Acquire) {
+                output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                break;
+            }
+        }
+
+        crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+        output.expect("network config test future timed out")
+    }
+
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn list_interfaces_completes_with_event_task() {
@@ -408,5 +544,32 @@ mod tests {
             output.expect("list_interfaces test timed out")
         };
         assert!(interfaces.is_empty());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn list_interfaces_uses_runtime_local_manager() {
+        reset_runtime_registry_for_tests();
+
+        let runtime_a = default_runtime();
+        let runtime_b = create_runtime();
+
+        manager::init_network_manager_in(runtime_a);
+        manager::init_network_manager_in(runtime_b);
+
+        manager::register_interface_in(runtime_a, "rt-a0").expect("runtime a interface");
+        manager::register_interface_in(runtime_b, "rt-b0").expect("runtime b interface");
+        manager::register_interface_in(runtime_b, "rt-b1").expect("runtime b interface");
+
+        let interfaces = run_with_event_task_in(runtime_b, super::list_interfaces_in(runtime_b));
+
+        let names: alloc::vec::Vec<_> = interfaces.into_iter().map(|iface| iface.name).collect();
+        assert_eq!(
+            names,
+            alloc::vec![
+                alloc::string::String::from("rt-b0"),
+                alloc::string::String::from("rt-b1")
+            ]
+        );
     }
 }

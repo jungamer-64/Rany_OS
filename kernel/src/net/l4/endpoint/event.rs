@@ -5,11 +5,12 @@
 //!
 //! NetworkEvent, NetworkEventQueue, EventWaitFuture
 
+use crate::net::runtime::{NetRuntimeHandle, context::default_runtime_context};
 use crate::sync::{MpscRingBuffer, PoisonLock, WakerQueue};
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 use core::task::{Context, Poll};
 
 use super::types::{EndpointAddr, EndpointFd, EndpointType};
@@ -709,51 +710,91 @@ impl<'a> Future for QueueSpaceFuture<'a> {
     }
 }
 
-/// グローバルイベントキュー
-static NETWORK_EVENT_QUEUE: NetworkEventQueue = NetworkEventQueue::new();
-static NETWORK_EVENT_TASK_RUNNING: AtomicBool = AtomicBool::new(false);
-static NETWORK_EVENT_TASK_READY_WAITERS: WakerQueue = WakerQueue::new();
+fn runtime_context() -> &'static crate::net::runtime::NetRuntimeContext {
+    default_runtime_context()
+}
+
+fn runtime_context_for(
+    runtime: NetRuntimeHandle,
+) -> &'static crate::net::runtime::NetRuntimeContext {
+    runtime.context()
+}
 
 /// イベントキューへの参照取得
 pub fn event_queue() -> &'static NetworkEventQueue {
-    &NETWORK_EVENT_QUEUE
+    &runtime_context().event_queue
+}
+
+pub fn event_queue_in(runtime: NetRuntimeHandle) -> &'static NetworkEventQueue {
+    &runtime_context_for(runtime).event_queue
 }
 
 pub fn mark_event_task_running() {
-    let was_running = NETWORK_EVENT_TASK_RUNNING.swap(true, Ordering::AcqRel);
+    mark_event_task_running_in(crate::net::runtime::default_runtime());
+}
+
+pub fn mark_event_task_running_in(runtime: NetRuntimeHandle) {
+    let context = runtime_context_for(runtime);
+    let was_running = context.event_task_running.swap(true, Ordering::AcqRel);
     if !was_running {
-        NETWORK_EVENT_TASK_READY_WAITERS.wake_all();
+        context.event_task_ready_waiters.wake_all();
     }
 }
 
 pub fn mark_event_task_stopped() {
-    NETWORK_EVENT_TASK_RUNNING.store(false, Ordering::Release);
+    mark_event_task_stopped_in(crate::net::runtime::default_runtime());
+}
+
+pub fn mark_event_task_stopped_in(runtime: NetRuntimeHandle) {
+    runtime_context_for(runtime)
+        .event_task_running
+        .store(false, Ordering::Release);
 }
 
 pub fn event_task_running() -> bool {
-    NETWORK_EVENT_TASK_RUNNING.load(Ordering::Acquire)
+    event_task_running_in(crate::net::runtime::default_runtime())
+}
+
+pub fn event_task_running_in(runtime: NetRuntimeHandle) -> bool {
+    runtime_context_for(runtime)
+        .event_task_running
+        .load(Ordering::Acquire)
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub fn reset_event_system_for_tests() {
-    NETWORK_EVENT_TASK_RUNNING.store(false, Ordering::Release);
-    NETWORK_EVENT_TASK_READY_WAITERS.clear();
-    NETWORK_EVENT_QUEUE.reset_for_tests();
+    reset_event_system_for_tests_in(crate::net::runtime::default_runtime());
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub fn reset_event_system_for_tests_in(runtime: NetRuntimeHandle) {
+    runtime_context_for(runtime)
+        .event_task_running
+        .store(false, Ordering::Release);
+    runtime_context_for(runtime)
+        .event_task_ready_waiters
+        .clear();
+    event_queue_in(runtime).reset_for_tests();
 }
 
 /// イベントタスク起動待ちFuture
-pub struct EventTaskReadyFuture;
+pub struct EventTaskReadyFuture {
+    runtime: NetRuntimeHandle,
+}
 
 impl Future for EventTaskReadyFuture {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if event_task_running() {
+        let runtime = self.runtime;
+        if event_task_running_in(runtime) {
             return Poll::Ready(());
         }
 
-        NETWORK_EVENT_TASK_READY_WAITERS.register(cx.waker());
-        if event_task_running() {
+        runtime_context_for(runtime)
+            .event_task_ready_waiters
+            .register(cx.waker());
+        if event_task_running_in(runtime) {
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -766,7 +807,7 @@ use super::types::EndpointError;
 
 #[inline]
 pub fn enqueue_event(event: NetworkEvent) -> Result<(), EndpointError> {
-    if NETWORK_EVENT_QUEUE.send(event) {
+    if event_queue().send(event) {
         Ok(())
     } else {
         Err(EndpointError::ResourceExhausted)
@@ -776,21 +817,46 @@ pub fn enqueue_event(event: NetworkEvent) -> Result<(), EndpointError> {
 /// イベント送信（エラー無視版 - 内部用）
 #[inline]
 pub fn enqueue_event_ignore(event: NetworkEvent) {
-    let _ = NETWORK_EVENT_QUEUE.send(event);
+    let _ = event_queue().send(event);
+}
+
+#[inline]
+pub fn enqueue_event_in(
+    runtime: NetRuntimeHandle,
+    event: NetworkEvent,
+) -> Result<(), EndpointError> {
+    if event_queue_in(runtime).send(event) {
+        Ok(())
+    } else {
+        Err(EndpointError::ResourceExhausted)
+    }
+}
+
+#[inline]
+pub fn enqueue_event_ignore_in(runtime: NetRuntimeHandle, event: NetworkEvent) {
+    let _ = event_queue_in(runtime).send(event);
 }
 
 pub fn wait_for_event_task() -> EventTaskReadyFuture {
-    EventTaskReadyFuture
+    wait_for_event_task_in(crate::net::runtime::default_runtime())
+}
+
+pub fn wait_for_event_task_in(runtime: NetRuntimeHandle) -> EventTaskReadyFuture {
+    EventTaskReadyFuture { runtime }
 }
 
 /// タスクコンテキスト向け非同期イベント送信Future
 pub struct SendEventFuture {
+    runtime: NetRuntimeHandle,
     event: Option<NetworkEvent>,
 }
 
 impl SendEventFuture {
-    pub fn new(event: NetworkEvent) -> Self {
-        Self { event: Some(event) }
+    pub fn new(runtime: NetRuntimeHandle, event: NetworkEvent) -> Self {
+        Self {
+            runtime,
+            event: Some(event),
+        }
     }
 }
 
@@ -799,10 +865,13 @@ impl Future for SendEventFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+        let runtime = this.runtime;
 
-        if !event_task_running() {
-            NETWORK_EVENT_TASK_READY_WAITERS.register(cx.waker());
-            if !event_task_running() {
+        if !event_task_running_in(runtime) {
+            runtime_context_for(runtime)
+                .event_task_ready_waiters
+                .register(cx.waker());
+            if !event_task_running_in(runtime) {
                 return Poll::Pending;
             }
         }
@@ -811,17 +880,17 @@ impl Future for SendEventFuture {
             .event
             .take()
             .expect("send event future polled after completion");
-        match NETWORK_EVENT_QUEUE.send_owned(event) {
+        match event_queue_in(runtime).send_owned(event) {
             Ok(()) => Poll::Ready(Ok(())),
             Err(event) => {
                 this.event = Some(event);
-                NETWORK_EVENT_QUEUE.space_waiters.register(cx.waker());
+                event_queue_in(runtime).space_waiters.register(cx.waker());
 
                 let retry = this
                     .event
                     .take()
                     .expect("send event future lost pending event");
-                match NETWORK_EVENT_QUEUE.send_owned(retry) {
+                match event_queue_in(runtime).send_owned(retry) {
                     Ok(()) => Poll::Ready(Ok(())),
                     Err(event) => {
                         this.event = Some(event);
@@ -834,17 +903,29 @@ impl Future for SendEventFuture {
 }
 
 pub fn send_event(event: NetworkEvent) -> SendEventFuture {
-    SendEventFuture::new(event)
+    send_event_in(crate::net::runtime::default_runtime(), event)
+}
+
+pub fn send_event_in(runtime: NetRuntimeHandle, event: NetworkEvent) -> SendEventFuture {
+    SendEventFuture::new(runtime, event)
 }
 
 /// カスタムFuture向けの遅延ディスパッチ状態
 pub struct EventDispatch {
+    runtime: NetRuntimeHandle,
     enqueue: Option<SendEventFuture>,
 }
 
 impl EventDispatch {
-    pub const fn new() -> Self {
-        Self { enqueue: None }
+    pub fn new() -> Self {
+        Self::new_in(crate::net::runtime::default_runtime())
+    }
+
+    pub const fn new_in(runtime: NetRuntimeHandle) -> Self {
+        Self {
+            runtime,
+            enqueue: None,
+        }
     }
 
     pub fn poll<F>(&mut self, cx: &mut Context<'_>, event_fn: F) -> Poll<Result<(), EndpointError>>
@@ -852,7 +933,7 @@ impl EventDispatch {
         F: FnOnce() -> NetworkEvent,
     {
         if self.enqueue.is_none() {
-            self.enqueue = Some(send_event(event_fn()));
+            self.enqueue = Some(send_event_in(self.runtime, event_fn()));
         }
 
         let enqueue = self
@@ -881,6 +962,15 @@ impl Default for EventDispatch {
 /// 各パケットを個別に `enqueue_event_ignore` するより効率的。
 #[inline]
 pub fn send_batch_event_on(if_id: Option<NetIfId>, packets: Vec<PacketRef>) {
+    send_batch_event_on_in(crate::net::runtime::default_runtime(), if_id, packets);
+}
+
+#[inline]
+pub fn send_batch_event_on_in(
+    runtime: NetRuntimeHandle,
+    if_id: Option<NetIfId>,
+    packets: Vec<PacketRef>,
+) {
     if packets.is_empty() {
         return;
     }
@@ -888,11 +978,11 @@ pub fn send_batch_event_on(if_id: Option<NetIfId>, packets: Vec<PacketRef>) {
         // 1パケットなら通常パスを使用（Vec のオーバーヘッド回避）
         let mut packets = packets;
         if let Some(p) = packets.pop() {
-            let _ = NETWORK_EVENT_QUEUE.send(NetworkEvent::IngressPacket { if_id, packet: p });
+            let _ = event_queue_in(runtime).send(NetworkEvent::IngressPacket { if_id, packet: p });
         }
         return;
     }
-    let _ = NETWORK_EVENT_QUEUE.send(NetworkEvent::IngressBatch { if_id, packets });
+    let _ = event_queue_in(runtime).send(NetworkEvent::IngressBatch { if_id, packets });
 }
 
 #[inline]

@@ -693,15 +693,18 @@ impl TcpControlBlock {
         &mut self,
         backlog: Arc<PoisonLock<VecDeque<TcpStream>>>,
         accept_waker: Arc<crate::sync::atomic_waker::AtomicWaker>,
+        runtime: crate::net::runtime::NetRuntimeHandle,
     ) {
         self.waiters.backlog = Some(backlog);
         self.waiters.accept_waker = Some(accept_waker);
+        self.waiters.listener_runtime = Some(runtime);
     }
 
     #[inline]
     pub fn inherit_listener_waiters(&mut self, listener: &TcpControlBlock) {
         self.waiters.backlog = listener.waiters.backlog.clone();
         self.waiters.accept_waker = listener.waiters.accept_waker.clone();
+        self.waiters.listener_runtime = listener.waiters.listener_runtime;
     }
 
     #[inline]
@@ -718,8 +721,13 @@ impl TcpControlBlock {
                     return false;
                 }
 
+                let runtime = self
+                    .waiters
+                    .listener_runtime
+                    .unwrap_or_else(crate::net::runtime::default_runtime);
                 backlog.push_back(TcpStream {
                     tcb: tcb_arc.clone(),
+                    runtime,
                 });
                 if let Some(accept_waker) = &self.waiters.accept_waker {
                     accept_waker.wake();

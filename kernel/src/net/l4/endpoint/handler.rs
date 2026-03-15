@@ -18,6 +18,7 @@ use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
 
 /// イベント処理の結果
@@ -50,12 +51,17 @@ fn endpoint_is_native_v6_pair(local: EndpointAddr, remote: EndpointAddr) -> bool
 
 #[inline]
 fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
+    resolve_ingress_if_id_in(default_runtime(), if_id)
+}
+
+#[inline]
+fn resolve_ingress_if_id_in(runtime: NetRuntimeHandle, if_id: Option<NetIfId>) -> NetIfId {
     if let Some(if_id) = if_id {
         return if_id;
     }
-    crate::net::runtime::device::primary_if()
+    crate::net::runtime::device::primary_if_in(runtime)
         .or_else(|| {
-            crate::net::runtime::manager::list_interfaces()
+            crate::net::runtime::manager::list_interfaces_in(runtime)
                 .ok()
                 .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
         })
@@ -140,17 +146,25 @@ impl NetworkEventHandler {
     ///
     /// asyncコンテキストから直接呼び出す場合、スタックロックの二重取得に注意すること。
     pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
+        self.handle_event_in(default_runtime(), event)
+    }
+
+    pub fn handle_event_in(
+        &self,
+        runtime: NetRuntimeHandle,
+        event: NetworkEvent,
+    ) -> EventHandleResult {
         // 最適パス: スタックロックを1回取得し、handle_event_with_stack() に委譲
         // これにより、各イベントが個別にロックを取得する非効率なパターンを排除する
-        if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+        if let Ok(mut stack_guard) = runtime.context().stack.lock() {
             if let Some(ref mut stack) = *stack_guard {
-                return self.handle_event_with_stack(event, stack);
+                return self.handle_event_with_stack_in(runtime, event, stack);
             }
         }
 
         // フォールバック: スタック未初期化またはロック取得失敗時
         // スタック非依存のイベントのみ処理する（ロック再取得を完全に回避）
-        self.handle_event_stackless(event)
+        self.handle_event_stackless_in(runtime, event)
     }
 
     /// スタックロックなしで処理可能なイベントのみを処理するフォールバックパス
@@ -158,6 +172,14 @@ impl NetworkEventHandler {
     /// スタック依存のイベントはエラーを返すか、結果スロットにエラーを書き込んで
     /// Wakerを起床する。これにより、非同期Futureがデッドロックせずに完了する。
     fn handle_event_stackless(&self, event: NetworkEvent) -> EventHandleResult {
+        self.handle_event_stackless_in(default_runtime(), event)
+    }
+
+    fn handle_event_stackless_in(
+        &self,
+        runtime: NetRuntimeHandle,
+        event: NetworkEvent,
+    ) -> EventHandleResult {
         match event {
             // ============================================================
             // スタック非依存のイベント（そのまま処理可能）
@@ -370,12 +392,15 @@ impl NetworkEventHandler {
             } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::get_interface_config_from_runtime(NetIfId(if_id)),
+                crate::net::api::config::get_interface_config_from_runtime_in(
+                    runtime,
+                    NetIfId(if_id),
+                ),
             ),
             NetworkEvent::ListInterfaceConfigs { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::list_interface_configs_from_runtime(),
+                crate::net::api::config::list_interface_configs_from_runtime_in(runtime),
             ),
             NetworkEvent::GetInterfaceStats {
                 if_id,
@@ -384,17 +409,20 @@ impl NetworkEventHandler {
             } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::get_interface_stats_without_stack(NetIfId(if_id)),
+                crate::net::api::config::get_interface_stats_without_stack_in(
+                    runtime,
+                    NetIfId(if_id),
+                ),
             ),
             NetworkEvent::ListInterfaceStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::list_interface_stats_with_stack(None),
+                crate::net::api::config::list_interface_stats_with_stack_in(runtime, None),
             ),
             NetworkEvent::ListInterfaces { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::list_interfaces_from_runtime(),
+                crate::net::api::config::list_interfaces_from_runtime_in(runtime),
             ),
             NetworkEvent::GetNetworkSnapshot { result_slot, waker } => {
                 finish_command(result_slot, waker, crate::net::obs::snapshot())
@@ -507,15 +535,15 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
                 if let Some(if_id) = if_id {
-                    crate::net::api::dhcp::get_dhcp_state_sync(NetIfId(if_id))
+                    crate::net::api::dhcp::get_dhcp_state_sync_in(runtime, NetIfId(if_id))
                 } else {
-                    crate::net::api::dhcp::dhcp_state_sync()
+                    crate::net::api::dhcp::dhcp_state_sync_in(runtime)
                 },
             ),
             NetworkEvent::ListDhcpStates { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::dhcp::list_dhcp_states_sync(),
+                crate::net::api::dhcp::list_dhcp_states_sync_in(runtime),
             ),
             NetworkEvent::DhcpRenew { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -608,7 +636,8 @@ impl NetworkEventHandler {
                 ..
             } => {
                 if let Some(completion_id) = completion_id {
-                    let _ = crate::net::runtime::device::complete_tx_request(
+                    let _ = crate::net::runtime::device::complete_tx_request_in(
+                        runtime,
                         completion_id,
                         Err("network stack unavailable"),
                     );
@@ -636,6 +665,15 @@ impl NetworkEventHandler {
         event: NetworkEvent,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
+        self.handle_event_with_stack_in(default_runtime(), event, stack)
+    }
+
+    pub fn handle_event_with_stack_in(
+        &self,
+        runtime: NetRuntimeHandle,
+        event: NetworkEvent,
+        stack: &mut crate::net::runtime::stack::NetworkStack,
+    ) -> EventHandleResult {
         match event {
             NetworkEvent::IngressPacket { if_id, packet } => {
                 let pkt_len = packet.len();
@@ -645,6 +683,7 @@ impl NetworkEventHandler {
                 match stack.ethernet.process(data) {
                     crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
                         self.handle_ipv4_ingress_with_stack(
+                            runtime,
                             if_id,
                             payload,
                             src_mac,
@@ -756,7 +795,8 @@ impl NetworkEventHandler {
             NetworkEvent::IngressBatch { if_id, packets } => {
                 // バッチ着信: スタックロック保持中に全パケットを連続処理
                 for packet in packets {
-                    self.handle_event_with_stack(
+                    self.handle_event_with_stack_in(
+                        runtime,
                         NetworkEvent::IngressPacket { if_id, packet },
                         stack,
                     );
@@ -822,6 +862,7 @@ impl NetworkEventHandler {
                             }
                             crate::net::l3::ipv4::IpProtocol::Udp => {
                                 self.handle_udp_ingress_with_stack(
+                                    runtime,
                                     if_id,
                                     src_ip.octets(),
                                     dst_ip.octets(),
@@ -977,7 +1018,8 @@ impl NetworkEventHandler {
                     Ok(())
                 } else {
                     if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            runtime,
                             completion_id,
                             Err("raw UDP send failed"),
                         );
@@ -1018,7 +1060,8 @@ impl NetworkEventHandler {
                     Ok(())
                 } else {
                     if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            runtime,
                             completion_id,
                             Err("raw TCP send failed"),
                         );
@@ -1064,7 +1107,8 @@ impl NetworkEventHandler {
                     Ok(())
                 } else {
                     if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            runtime,
                             completion_id,
                             Err("raw UDPv6 send failed"),
                         );
@@ -1105,7 +1149,8 @@ impl NetworkEventHandler {
                     Ok(())
                 } else {
                     if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            runtime,
                             completion_id,
                             Err("raw TCPv6 send failed"),
                         );
@@ -1208,7 +1253,7 @@ impl NetworkEventHandler {
                 waker,
             } => {
                 // スタックロック保持版: TcpStreamを作成して返す
-                let result = stack.connect_tcp(local, remote);
+                let result = stack.connect_tcp_in(runtime, local, remote);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1301,7 +1346,7 @@ impl NetworkEventHandler {
                 waker,
             } => {
                 // スタックロック保持版: TcpListenerを作成して返す
-                let result = stack.bind_tcp(local);
+                let result = stack.bind_tcp_in(runtime, local);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1315,7 +1360,7 @@ impl NetworkEventHandler {
                 waker,
             } => {
                 // スタックロック保持版: TcpListenerをトークン付きで作成して返す
-                let result = stack.bind_tcp_with_token(local, token);
+                let result = stack.bind_tcp_with_token_in(runtime, local, token);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1456,7 +1501,8 @@ impl NetworkEventHandler {
                     Ok(())
                 } else {
                     if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            runtime,
                             completion_id,
                             Err("scoped raw UDP send failed"),
                         );
@@ -1499,7 +1545,8 @@ impl NetworkEventHandler {
                     Ok(())
                 } else {
                     if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            runtime,
                             completion_id,
                             Err("scoped raw TCP send failed"),
                         );
@@ -1561,7 +1608,8 @@ impl NetworkEventHandler {
                     Ok(())
                 } else {
                     if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            runtime,
                             completion_id,
                             Err("scoped raw UDPv6 send failed"),
                         );
@@ -1604,7 +1652,8 @@ impl NetworkEventHandler {
                     Ok(())
                 } else {
                     if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request(
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            runtime,
                             completion_id,
                             Err("scoped raw TCPv6 send failed"),
                         );
@@ -1758,14 +1807,15 @@ impl NetworkEventHandler {
                 let target_if = if_id.map(crate::net::runtime::manager::NetIfId);
                 let selected_primary = target_if
                     .map(|if_id| {
-                        crate::net::runtime::device::claim_bound_primary_interface_with_stack_state(
+                        crate::net::runtime::device::claim_bound_primary_interface_with_stack_state_in(
+                            runtime,
                             if_id, stack,
                         )
                     })
                     .unwrap_or(false);
                 if let Some(if_id) = target_if {
                     let is_primary = selected_primary
-                        || crate::net::runtime::device::primary_if() == Some(if_id);
+                        || crate::net::runtime::device::primary_if_in(runtime) == Some(if_id);
                     if is_primary {
                         crate::net::services::dhcp::mark_primary_interface(if_id);
                     }
@@ -1786,9 +1836,11 @@ impl NetworkEventHandler {
                 finish_command(result_slot, waker, result)
             }
             NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => {
-                let result = crate::net::api::config::primary_interface_id()
+                let result = crate::net::api::config::primary_interface_id_in(runtime)
                     .and_then(|if_id| {
-                        crate::net::api::config::get_interface_config_from_runtime(if_id)
+                        crate::net::api::config::get_interface_config_from_runtime_in(
+                            runtime, if_id,
+                        )
                     })
                     .map(|cfg| crate::net::api::config::NetworkConfigSnapshot {
                         ip: cfg.ip,
@@ -1799,7 +1851,10 @@ impl NetworkEventHandler {
                 finish_command(result_slot, waker, result)
             }
             NetworkEvent::GetAggregateNetworkStats { result_slot, waker } => {
-                let stats = crate::net::api::config::list_interface_stats_with_stack(Some(stack));
+                let stats = crate::net::api::config::list_interface_stats_with_stack_in(
+                    runtime,
+                    Some(stack),
+                );
                 finish_command(
                     result_slot,
                     waker,
@@ -1813,12 +1868,15 @@ impl NetworkEventHandler {
             } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::get_interface_config_from_runtime(NetIfId(if_id)),
+                crate::net::api::config::get_interface_config_from_runtime_in(
+                    runtime,
+                    NetIfId(if_id),
+                ),
             ),
             NetworkEvent::ListInterfaceConfigs { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::list_interface_configs_from_runtime(),
+                crate::net::api::config::list_interface_configs_from_runtime_in(runtime),
             ),
             NetworkEvent::GetInterfaceStats {
                 if_id,
@@ -1827,7 +1885,8 @@ impl NetworkEventHandler {
             } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::interface_stats_snapshot_with_stack(
+                crate::net::api::config::interface_stats_snapshot_with_stack_in(
+                    runtime,
                     NetIfId(if_id),
                     Some(stack),
                 ),
@@ -1835,12 +1894,12 @@ impl NetworkEventHandler {
             NetworkEvent::ListInterfaceStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::list_interface_stats_with_stack(Some(stack)),
+                crate::net::api::config::list_interface_stats_with_stack_in(runtime, Some(stack)),
             ),
             NetworkEvent::ListInterfaces { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::list_interfaces_from_runtime(),
+                crate::net::api::config::list_interfaces_from_runtime_in(runtime),
             ),
             NetworkEvent::GetNetworkSnapshot { result_slot, waker } => {
                 finish_command(result_slot, waker, crate::net::obs::snapshot())
@@ -1964,15 +2023,15 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
                 if let Some(if_id) = if_id {
-                    crate::net::api::dhcp::get_dhcp_state_sync(NetIfId(if_id))
+                    crate::net::api::dhcp::get_dhcp_state_sync_in(runtime, NetIfId(if_id))
                 } else {
-                    crate::net::api::dhcp::dhcp_state_sync()
+                    crate::net::api::dhcp::dhcp_state_sync_in(runtime)
                 },
             ),
             NetworkEvent::ListDhcpStates { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::dhcp::list_dhcp_states_sync(),
+                crate::net::api::dhcp::list_dhcp_states_sync_in(runtime),
             ),
             NetworkEvent::DhcpRenew { result_slot, waker } => {
                 use crate::net::services::dhcp;
@@ -1981,11 +2040,11 @@ impl NetworkEventHandler {
                 let mut touched = false;
                 let mut err_msg: Option<alloc::string::String> = None;
 
-                if let Some(client) = dhcp::primary_v4_client() {
+                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     client.force_renew_or_restart(now);
                     touched = true;
                 } else {
-                    match dhcp::DHCP_CLIENT.lock() {
+                    match dhcp::legacy_v4_client_lock_in(runtime).lock() {
                         Ok(guard) => {
                             if let Some(ref client) = *guard {
                                 client.force_renew_or_restart(now);
@@ -2001,7 +2060,7 @@ impl NetworkEventHandler {
                 }
 
                 if err_msg.is_none() {
-                    match dhcp::DHCPV6_CLIENT.lock() {
+                    match dhcp::legacy_v6_client_lock_in(runtime).lock() {
                         Ok(guard6) => {
                             if let Some(ref client6) = *guard6 {
                                 if let Err(e) = client6.force_renew_or_restart(now) {
@@ -2040,17 +2099,17 @@ impl NetworkEventHandler {
 
                 let mut released = false;
                 // DHCPv4 Release
-                if let Some(client) = dhcp::primary_v4_client() {
+                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     client.release();
                     released = true;
-                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                } else if let Ok(guard) = dhcp::legacy_v4_client_lock_in(runtime).lock() {
                     if let Some(ref client) = *guard {
                         client.release();
                         released = true;
                     }
                 }
                 // DHCPv6 Release (RFC 8415 Section 18.2.6)
-                if let Ok(guard) = dhcp::DHCPV6_CLIENT.lock() {
+                if let Ok(guard) = dhcp::legacy_v6_client_lock_in(runtime).lock() {
                     if let Some(ref client) = *guard {
                         client.release();
                         released = true;
@@ -2069,7 +2128,7 @@ impl NetworkEventHandler {
                 let now = tcb_table().get_current_tick();
                 let mut offer = None;
 
-                if let Some(client) = dhcp::primary_v4_client() {
+                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     let _ = client.drive(now, 1000);
                     if let Some(o) = client.offered_lease() {
                         offer = Some(crate::net::api::dhcp::DhcpOfferInfo {
@@ -2077,7 +2136,7 @@ impl NetworkEventHandler {
                             offered_ip: *o.ip_address.as_bytes(),
                         });
                     }
-                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                } else if let Ok(guard) = dhcp::legacy_v4_client_lock_in(runtime).lock() {
                     if let Some(ref client) = *guard {
                         let _ = client.drive(now, 1000);
                         if let Some(o) = client.offered_lease() {
@@ -2099,9 +2158,9 @@ impl NetworkEventHandler {
                 use crate::net::services::dhcp;
 
                 let mut ip = None;
-                if let Some(client) = dhcp::primary_v4_client() {
+                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     ip = client.last_declined_ip().map(|a| *a.as_bytes());
-                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                } else if let Ok(guard) = dhcp::legacy_v4_client_lock_in(runtime).lock() {
                     if let Some(ref client) = *guard {
                         ip = client.last_declined_ip().map(|a| *a.as_bytes());
                     }
@@ -2117,9 +2176,9 @@ impl NetworkEventHandler {
                 use crate::net::services::dhcp;
 
                 let mut ip = None;
-                if let Some(client) = dhcp::primary_v4_client() {
+                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     ip = client.last_released_ip().map(|a| *a.as_bytes());
-                } else if let Ok(guard) = dhcp::DHCP_CLIENT.lock() {
+                } else if let Ok(guard) = dhcp::legacy_v4_client_lock_in(runtime).lock() {
                     if let Some(ref client) = *guard {
                         ip = client.last_released_ip().map(|a| *a.as_bytes());
                     }
@@ -2178,22 +2237,24 @@ impl NetworkEventHandler {
     /// イベントを再エンキューして非同期パスに委譲する。
     fn handle_ingress_packet(
         &self,
+        runtime: NetRuntimeHandle,
         if_id: Option<NetIfId>,
         packet: PacketRef,
     ) -> EventHandleResult {
         // スタックロックなしのコンテキストから呼ばれた場合:
         // イベントキュー経由で再エンキューし、network_event_taskが
         // スタックロック保持下で処理する（二重ロック取得を回避）
-        crate::net::l4::endpoint::event::enqueue_event_ignore(NetworkEvent::IngressPacket {
-            if_id,
-            packet,
-        });
+        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+            runtime,
+            NetworkEvent::IngressPacket { if_id, packet },
+        );
         EventHandleResult::Success
     }
 
     /// IPv4パケットの処理
     fn handle_ipv4_ingress_with_stack(
         &self,
+        runtime: NetRuntimeHandle,
         if_id: Option<NetIfId>,
         data: &[u8],
         src_mac: MacAddress,
@@ -2265,6 +2326,7 @@ impl NetworkEventHandler {
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip, orig) => {
                 self.handle_udp_ingress_with_stack(
+                    runtime,
                     if_id,
                     src_ip.octets(),
                     dst_ip.octets(),
@@ -2342,6 +2404,7 @@ impl NetworkEventHandler {
     /// UDPパケットの処理
     fn handle_udp_ingress_with_stack(
         &self,
+        runtime: NetRuntimeHandle,
         if_id: Option<NetIfId>,
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
@@ -2359,7 +2422,7 @@ impl NetworkEventHandler {
         let data = &payload[8..];
 
         let remote = EndpointAddr::new(src_ip, src_port);
-        let ingress_if_id = resolve_ingress_if_id(if_id);
+        let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
 
         let mut found = false;
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
@@ -2822,10 +2885,13 @@ impl NetworkEventHandler {
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
             mgr.for_each(|socket| {
                 if socket.send_buffer_len() > 0 {
-                    super::event::enqueue_event_ignore(super::event::NetworkEvent::DataReady {
-                        fd: socket.fd(),
-                        endpoint_type: socket.socket_type(),
-                    });
+                    super::event::enqueue_event_ignore_in(
+                        socket.runtime(),
+                        super::event::NetworkEvent::DataReady {
+                            fd: socket.fd(),
+                            endpoint_type: socket.socket_type(),
+                        },
+                    );
                 } else {
                     // TCPバッファが空でも send_waker が設定されている場合（UDP の ResourceExhausted 待ち）
                     // はここで直接起床させる。TCP の SendFuture も安全に再ポーリング可能。

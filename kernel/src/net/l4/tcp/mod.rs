@@ -489,6 +489,7 @@ struct TcpAsyncWaiters {
     connect_waker: crate::sync::atomic_waker::AtomicWaker,
     backlog: Option<Arc<PoisonLock<VecDeque<TcpStream>>>>,
     accept_waker: Option<Arc<crate::sync::atomic_waker::AtomicWaker>>,
+    listener_runtime: Option<crate::net::runtime::NetRuntimeHandle>,
 }
 
 // ============================================================================

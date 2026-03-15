@@ -3,13 +3,10 @@
 use super::*;
 use alloc::sync::Arc;
 
-/// グローバルDNSクライアント
-pub(crate) static DNS_CLIENT: PoisonLock<Option<Arc<DnsClient>>> = PoisonLock::new(None);
-
 /// DNSクライアントを初期化
 pub fn init(tick_rate: u64) {
     let client = Arc::new(DnsClient::new(tick_rate));
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(mut g) => *g = Some(client),
         Err(_) => log::error!("[NET] DNS Global lock poisoned (init) - initialization skipped"),
     }
@@ -17,7 +14,7 @@ pub fn init(tick_rate: u64) {
 
 /// IPv4 DNSサーバーを設定
 pub fn set_ipv4_servers(servers: Vec<Ipv4Address>) {
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.set_ipv4_servers(servers);
@@ -31,7 +28,7 @@ pub fn set_ipv4_servers(servers: Vec<Ipv4Address>) {
 
 /// IPv6 DNSサーバーを設定
 pub fn set_ipv6_servers(servers: Vec<Ipv6Address>) {
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.set_ipv6_servers(servers);
@@ -45,7 +42,7 @@ pub fn set_ipv6_servers(servers: Vec<Ipv6Address>) {
 
 /// IPv6 DNSサーバーを追加
 pub fn add_ipv6_server(server: Ipv6Address) {
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.add_ipv6_server(server);
@@ -59,7 +56,7 @@ pub fn add_ipv6_server(server: Ipv6Address) {
 
 /// キャッシュからIPアドレスを解決
 pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(g) => g
             .as_ref()
             .and_then(|c| c.resolve_cached(name, current_tick)),
@@ -73,7 +70,7 @@ pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
 /// 非同期でIPv4アドレスを解決 (Global API)
 pub async fn resolve_ipv4(name: &str) -> Option<Ipv4Address> {
     // 1. クライアントの Arc を取得 (ロック時間は最小)
-    let client = match DNS_CLIENT.lock() {
+    let client = match super::shared_client_lock().lock() {
         Ok(g) => g.as_ref().cloned(),
         Err(_) => None,
     }?;
@@ -90,7 +87,7 @@ pub fn build_tcp_query(
     name: &str,
     qtype: DnsQueryType,
 ) -> Result<usize, &'static str> {
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.build_tcp_query(buffer, name, qtype)
@@ -112,7 +109,7 @@ pub fn parse_tcp_response(
     expected_name: &str,
     expected_type: DnsQueryType,
 ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.parse_tcp_response(data, current_tick, expected_name, expected_type)
@@ -129,7 +126,7 @@ pub fn parse_tcp_response(
 
 /// Check if a UDP response requires TCP fallback (global API)
 pub fn needs_tcp_fallback(data: &[u8]) -> bool {
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.needs_tcp_fallback(data)
@@ -148,7 +145,7 @@ pub fn needs_tcp_fallback(data: &[u8]) -> bool {
 ///
 /// ネットワークスタックの`periodic()`から呼び出される。
 pub fn cleanup_cache(current_tick: u64) {
-    match DNS_CLIENT.lock() {
+    match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.cleanup_cache(current_tick);

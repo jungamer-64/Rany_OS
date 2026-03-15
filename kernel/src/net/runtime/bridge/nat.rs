@@ -1,5 +1,6 @@
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address};
-use crate::net::runtime::manager::{self, NetIfId};
+use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -33,10 +34,28 @@ pub struct NatTable {
     outbound: BTreeMap<(IpProtocol, Ipv4Address, u16, Ipv4Address, u16), NatEntry>,
 }
 
-static NAT_TABLE: PoisonRwLock<NatTable> = PoisonRwLock::new(NatTable {
-    inbound: BTreeMap::new(),
-    outbound: BTreeMap::new(),
-});
+pub(crate) struct NatRuntimeState {
+    table: PoisonRwLock<NatTable>,
+}
+
+impl NatRuntimeState {
+    pub const fn new() -> Self {
+        Self {
+            table: PoisonRwLock::new(NatTable {
+                inbound: BTreeMap::new(),
+                outbound: BTreeMap::new(),
+            }),
+        }
+    }
+}
+
+fn nat_state() -> &'static NatRuntimeState {
+    &super::runtime_state().nat
+}
+
+fn nat_state_for(runtime: NetRuntimeHandle) -> &'static NatRuntimeState {
+    &super::runtime_state_for(runtime).nat
+}
 
 fn inbound_key(entry: &NatEntry) -> (IpProtocol, Ipv4Address, u16, u16) {
     (
@@ -104,7 +123,30 @@ pub fn nat_translate_in(
     dst_port: &mut u16,
     _tcp_flags: u8,
 ) -> bool {
-    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    nat_translate_in_in(
+        crate::net::runtime::default_runtime(),
+        proto,
+        src_ip,
+        src_port,
+        dst_ip,
+        dst_port,
+        _tcp_flags,
+    )
+}
+
+pub fn nat_translate_in_in(
+    runtime: NetRuntimeHandle,
+    proto: IpProtocol,
+    src_ip: Ipv4Address,
+    src_port: u16,
+    dst_ip: &mut Ipv4Address,
+    dst_port: &mut u16,
+    _tcp_flags: u8,
+) -> bool {
+    let mut table = nat_state_for(runtime)
+        .table
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     let now = get_current_tick();
 
     if let Some(entry) = table.inbound.get_mut(&(proto, src_ip, src_port, *dst_port)) {
@@ -139,7 +181,32 @@ pub fn nat_translate_out(
     if_id: NetIfId,
     _tcp_flags: u8,
 ) -> Option<(Ipv4Address, u16)> {
-    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    nat_translate_out_in(
+        crate::net::runtime::default_runtime(),
+        proto,
+        src_ip,
+        src_port,
+        dst_ip,
+        dst_port,
+        if_id,
+        _tcp_flags,
+    )
+}
+
+pub fn nat_translate_out_in(
+    runtime: NetRuntimeHandle,
+    proto: IpProtocol,
+    src_ip: Ipv4Address,
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    if_id: NetIfId,
+    _tcp_flags: u8,
+) -> Option<(Ipv4Address, u16)> {
+    let mut table = nat_state_for(runtime)
+        .table
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     let now = get_current_tick();
 
     // Check existing mapping
@@ -154,8 +221,11 @@ pub fn nat_translate_out(
     // Resource limit check and GC
     if table.outbound.len() >= MAX_NAT_ENTRIES {
         drop(table);
-        nat_maybe_gc(0); // Force GC
-        table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+        nat_maybe_gc_in(runtime, 0);
+        table = nat_state_for(runtime)
+            .table
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
 
         if table.outbound.len() >= MAX_NAT_ENTRIES {
             log::warn!("[NAT] Table full, dropping connection from {}", src_ip);
@@ -164,7 +234,7 @@ pub fn nat_translate_out(
     }
 
     // Get actual external IP of the interface
-    let ext_ip = if let Ok(mgr_guard) = manager::NETWORK_MANAGER.lock() {
+    let ext_ip = if let Ok(mgr_guard) = runtime.context().manager.lock() {
         mgr_guard
             .as_ref()
             .and_then(|mgr| {
@@ -196,12 +266,19 @@ pub fn nat_translate_out(
 }
 
 pub fn nat_maybe_gc(rx_count: u64) {
+    nat_maybe_gc_in(crate::net::runtime::default_runtime(), rx_count);
+}
+
+pub fn nat_maybe_gc_in(runtime: NetRuntimeHandle, rx_count: u64) {
     // Periodic GC every 1000 packets or when forced (rx_count=0)
     if rx_count != 0 && rx_count % 1000 != 0 {
         return;
     }
 
-    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    let mut table = nat_state_for(runtime)
+        .table
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
     let now = get_current_tick();
 
     let mut to_remove_out = Vec::new();
@@ -251,7 +328,8 @@ pub fn nat_translate_out_icmp(
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(super) fn nat_test_snapshot() -> Vec<NatEntry> {
-    NAT_TABLE
+    nat_state()
+        .table
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .outbound
@@ -262,7 +340,7 @@ pub(super) fn nat_test_snapshot() -> Vec<NatEntry> {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(super) fn nat_test_restore(entries: &[NatEntry]) {
-    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    let mut table = nat_state().table.write().unwrap_or_else(|e| e.into_inner());
     table.inbound.clear();
     table.outbound.clear();
     for entry in entries {
@@ -272,7 +350,7 @@ pub(super) fn nat_test_restore(entries: &[NatEntry]) {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(super) fn nat_test_clear() {
-    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    let mut table = nat_state().table.write().unwrap_or_else(|e| e.into_inner());
     table.inbound.clear();
     table.outbound.clear();
 }
@@ -284,7 +362,8 @@ pub(super) fn nat_test_entries() -> Vec<NatEntry> {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(super) fn nat_test_entry_count() -> usize {
-    NAT_TABLE
+    nat_state()
+        .table
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .outbound
@@ -293,7 +372,7 @@ pub(super) fn nat_test_entry_count() -> usize {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(super) fn nat_test_force_last_used(external_port: u16, last_used: u64) -> bool {
-    let mut table = NAT_TABLE.write().unwrap_or_else(|e| e.into_inner());
+    let mut table = nat_state().table.write().unwrap_or_else(|e| e.into_inner());
     let mut updated = false;
     for entry in table.outbound.values_mut() {
         if entry.external_port == external_port {
@@ -312,6 +391,18 @@ pub(super) fn nat_test_force_last_used(external_port: u16, last_used: u64) -> bo
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(super) fn nat_test_ephemeral_port_start() -> u16 {
     NAT_EPHEMERAL_PORT_START
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(super) fn nat_test_entries_in(runtime: NetRuntimeHandle) -> Vec<NatEntry> {
+    nat_state_for(runtime)
+        .table
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .outbound
+        .values()
+        .copied()
+        .collect()
 }
 
 /// Recompute transport checksum after NAT translation.

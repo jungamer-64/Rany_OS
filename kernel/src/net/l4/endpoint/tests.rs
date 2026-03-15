@@ -12,7 +12,9 @@ pub mod tests {
     use super::super::types::{
         AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
     };
+    use crate::net::l4::endpoint::event::{event_queue_in, reset_event_system_for_tests_in};
     use crate::net::runtime::manager::NetIfId;
+    use crate::net::runtime::{create_runtime, default_runtime, reset_runtime_registry_for_tests};
     use crate::net::types::InterfaceScope;
     use alloc::vec::Vec;
 
@@ -156,7 +158,8 @@ pub mod tests {
         }
 
         if let Some(conn) = inner.tcp_mut().and_then(|t| t.accept_queue.pop_front()) {
-            let new_endpoint = Endpoint::new_with_fd(EndpointType::Tcp, conn.fd);
+            let new_endpoint =
+                Endpoint::new_with_fd_in(EndpointType::Tcp, conn.fd, endpoint.runtime());
             {
                 let mut new_inner = new_endpoint
                     .inner()
@@ -379,6 +382,67 @@ pub mod tests {
         let inner = accepted.inner().lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(inner.scope, InterfaceScope::Pinned(NetIfId(4)));
         assert_eq!(inner.last_ingress_if_id, Some(NetIfId(4)));
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_endpoint_runtime_scopes_sync_events() {
+        reset_runtime_registry_for_tests();
+
+        let runtime_a = default_runtime();
+        let runtime_b = create_runtime();
+
+        reset_event_system_for_tests_in(runtime_a);
+        reset_event_system_for_tests_in(runtime_b);
+
+        let endpoint = Endpoint::new_in(EndpointType::Tcp, runtime_b);
+        endpoint
+            .set_priority(7)
+            .expect("priority event should enqueue");
+
+        assert!(event_queue_in(runtime_a).recv().is_none());
+        match event_queue_in(runtime_b).recv() {
+            Some(crate::net::l4::endpoint::event::NetworkEvent::SetPriority { fd, priority }) => {
+                assert_eq!(fd, endpoint.fd());
+                assert_eq!(priority, 7);
+            }
+            other => panic!("unexpected runtime-scoped event: {:?}", other),
+        }
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_accept_inherits_listener_runtime() {
+        reset_runtime_registry_for_tests();
+
+        let _runtime_a = default_runtime();
+        let runtime_b = create_runtime();
+
+        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, runtime_b);
+        {
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(EndpointAddr::new([0, 0, 0, 0], 8087));
+            let _ = inner.transition_to(EndpointState::Bound);
+            let _ = inner.transition_to(EndpointState::Listening);
+        }
+
+        let accepted_fd = EndpointFd::from_raw(901);
+        let local = EndpointAddr::new([192, 168, 20, 1], 8087);
+        let remote = EndpointAddr::new([10, 0, 0, 10], 54010);
+        let tcb = TcpControlBlockEntry::new(accepted_fd, local, remote);
+        let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(5), tcb);
+
+        {
+            let mut inner = listen_endpoint
+                .inner()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            inner.ensure_tcp().accept_queue.push_back(conn);
+        }
+
+        let (accepted, _, _) = listen_endpoint.next_incoming_sync().expect("accept");
+        assert_eq!(accepted.runtime().id(), runtime_b.id());
     }
 
     #[cfg_attr(test, test_case)]

@@ -296,7 +296,7 @@ impl NetNamespace {
     /// DHCP last declined — 非同期版（推奨）
     pub async fn dhcp_last_declined() -> ExoValue<'static> {
         use crate::net::services::dhcp;
-        match dhcp::DHCP_CLIENT.lock() {
+        match dhcp::legacy_v4_client_lock().lock() {
             Ok(guard) => {
                 if let Some(ref client) = *guard {
                     if let Some(ip) = client.last_declined_ip() {
@@ -316,7 +316,7 @@ impl NetNamespace {
     /// DHCP last released — 非同期版（推奨）
     pub async fn dhcp_last_released() -> ExoValue<'static> {
         use crate::net::services::dhcp;
-        match dhcp::DHCP_CLIENT.lock() {
+        match dhcp::legacy_v4_client_lock().lock() {
             Ok(guard) => {
                 if let Some(ref client) = *guard {
                     if let Some(ip) = client.last_released_ip() {

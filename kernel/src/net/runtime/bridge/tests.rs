@@ -18,25 +18,26 @@ struct BridgeStateGuard {
 
 impl BridgeStateGuard {
     fn new() -> Self {
-        let prev_if_stats = core::mem::take(
-            &mut *STACK_GLUE_IF_STATS
-                .write()
-                .unwrap_or_else(|e| e.into_inner()),
-        );
+        let runtime = crate::net::runtime::default_runtime();
+        let state = runtime_state_for(runtime);
+        let prev_if_stats =
+            core::mem::take(&mut *state.if_stats.write().unwrap_or_else(|e| e.into_inner()));
         let prev_primary_if = {
-            let mut g = PRIMARY_STACK_GLUE_IF
-                .write()
-                .unwrap_or_else(|e| e.into_inner());
+            let mut g = state.primary_if.write().unwrap_or_else(|e| e.into_inner());
             let v = *g;
             *g = None;
             v
         };
         let prev_nat_entries = nat_test_snapshot();
         nat_test_clear();
-        let prev_forward_events =
-            core::mem::take(&mut *FORWARD_EVENTS.write().unwrap_or_else(|e| e.into_inner()));
+        let prev_forward_events = core::mem::take(
+            &mut *state
+                .forward_events
+                .write()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
         let prev_manager = {
-            let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
+            let mut guard = crate::net::runtime::manager::network_manager()
                 .lock_for_init("[TEST][NET BRIDGE] manager snapshot");
             core::mem::take(&mut *guard)
         };
@@ -52,16 +53,17 @@ impl BridgeStateGuard {
 
 impl Drop for BridgeStateGuard {
     fn drop(&mut self) {
-        *STACK_GLUE_IF_STATS
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = core::mem::take(&mut self.prev_if_stats);
-        *PRIMARY_STACK_GLUE_IF
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = self.prev_primary_if.take();
+        let runtime = crate::net::runtime::default_runtime();
+        let state = runtime_state_for(runtime);
+        *state.if_stats.write().unwrap_or_else(|e| e.into_inner()) =
+            core::mem::take(&mut self.prev_if_stats);
+        *state.primary_if.write().unwrap_or_else(|e| e.into_inner()) = self.prev_primary_if.take();
         nat_test_restore(&self.prev_nat_entries);
-        *FORWARD_EVENTS.write().unwrap_or_else(|e| e.into_inner()) =
-            core::mem::take(&mut self.prev_forward_events);
-        let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
+        *state
+            .forward_events
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = core::mem::take(&mut self.prev_forward_events);
+        let mut guard = crate::net::runtime::manager::network_manager()
             .lock_for_init("[TEST][NET BRIDGE] manager restore");
         *guard = self.prev_manager.take();
     }
@@ -440,7 +442,8 @@ pub fn test_routing_and_nat() {
     // clear forward events
     #[cfg(any(test, feature = "qemu-test-export"))]
     {
-        FORWARD_EVENTS
+        runtime_state()
+            .forward_events
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
@@ -451,7 +454,10 @@ pub fn test_routing_and_nat() {
     // verify forwarded to if2 and NAT table contains entry
     #[cfg(any(test, feature = "qemu-test-export"))]
     {
-        let ev = FORWARD_EVENTS.read().unwrap_or_else(|e| e.into_inner());
+        let ev = runtime_state()
+            .forward_events
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         assert!(
             ev.iter()
                 .any(|(id, dst)| *id == if2 && *dst == Ipv4Address::new([10, 0, 1, 5]))
@@ -872,14 +878,15 @@ pub fn test_zero_copy_via_bridge_v6() {
 #[cfg_attr(test, test_case)]
 pub fn test_per_interface_bridge_stats_are_separated() {
     let _guard = BridgeStateGuard::new();
+    let runtime = crate::net::runtime::default_runtime();
     let if0 = NetIfId(10);
     let if1 = NetIfId(11);
 
-    ensure_stack_glue_if_state(if0, Some(0));
-    ensure_stack_glue_if_state(if1, Some(1));
-    record_stack_glue_if_rx(if0);
-    record_stack_glue_if_rx(if0);
-    record_stack_glue_if_tx(if1);
+    ensure_stack_glue_if_state_in(runtime, if0, Some(0));
+    ensure_stack_glue_if_state_in(runtime, if1, Some(1));
+    record_stack_glue_if_rx_in(runtime, if0);
+    record_stack_glue_if_rx_in(runtime, if0);
+    record_stack_glue_if_tx_in(runtime, if1);
 
     let s0 = get_stack_glue_stats_for_interface(if0).expect("if0 stats");
     let s1 = get_stack_glue_stats_for_interface(if1).expect("if1 stats");
@@ -940,4 +947,154 @@ pub fn test_transmit_from_stack_interface_argument() {
         b"hello",
         kernel_api::service::netdev::NetTxMeta::default(),
     ));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_runtime_scoped_bridge_and_nat_state_do_not_leak() {
+    crate::net::runtime::context::reset_runtime_registry_for_tests();
+
+    let runtime_a = crate::net::runtime::default_runtime();
+    let runtime_b = crate::net::runtime::create_runtime();
+    let if_a;
+    let if_b;
+
+    {
+        let mut manager = runtime_a
+            .context()
+            .manager
+            .lock_for_init("[TEST][NET BRIDGE] runtime_a manager");
+        *manager = Some(manager::NetworkManager::new());
+    }
+    {
+        let mut manager = runtime_b
+            .context()
+            .manager
+            .lock_for_init("[TEST][NET BRIDGE] runtime_b manager");
+        *manager = Some(manager::NetworkManager::new());
+    }
+
+    {
+        let mut manager = runtime_a
+            .context()
+            .manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let manager = manager.as_mut().expect("runtime_a manager");
+        if_a = manager.register_interface("rt-a".into());
+        manager
+            .set_interface_config(
+                if_a,
+                NetworkConfig {
+                    mac: MacAddress::from_octets(0, 1, 2, 3, 4, 20),
+                    ipv4: Ipv4Config {
+                        address: Ipv4Address::new([10, 10, 0, 1]),
+                        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                        gateway: Ipv4Address::ANY,
+                        dns: None,
+                    },
+                    ipv6: None,
+                    icmp_echo_enabled: true,
+                    ..NetworkConfig::default()
+                },
+            )
+            .expect("runtime_a config");
+    }
+    {
+        let mut manager = runtime_b
+            .context()
+            .manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let manager = manager.as_mut().expect("runtime_b manager");
+        if_b = manager.register_interface("rt-b".into());
+        manager
+            .set_interface_config(
+                if_b,
+                NetworkConfig {
+                    mac: MacAddress::from_octets(0, 1, 2, 3, 4, 21),
+                    ipv4: Ipv4Config {
+                        address: Ipv4Address::new([10, 20, 0, 1]),
+                        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                        gateway: Ipv4Address::ANY,
+                        dns: None,
+                    },
+                    ipv6: None,
+                    icmp_echo_enabled: true,
+                    ..NetworkConfig::default()
+                },
+            )
+            .expect("runtime_b config");
+    }
+
+    register_stack_glue_interface_in(runtime_a, if_a, Some(0));
+    register_stack_glue_interface_in(runtime_b, if_b, Some(1));
+    record_stack_glue_if_rx_in(runtime_a, if_a);
+    record_stack_glue_if_tx_in(runtime_b, if_b);
+
+    let (_ip_a, port_a) = nat_translate_out_in(
+        runtime_a,
+        IpProtocol::Udp,
+        Ipv4Address::new([10, 10, 0, 2]),
+        1000,
+        Ipv4Address::new([1, 1, 1, 1]),
+        53,
+        if_a,
+        0,
+    )
+    .expect("runtime_a nat");
+    let (_ip_b, port_b) = nat_translate_out_in(
+        runtime_b,
+        IpProtocol::Udp,
+        Ipv4Address::new([10, 20, 0, 2]),
+        2000,
+        Ipv4Address::new([8, 8, 8, 8]),
+        53,
+        if_b,
+        0,
+    )
+    .expect("runtime_b nat");
+
+    assert_ne!(port_a, 0);
+    assert_ne!(port_b, 0);
+
+    let stats_a = runtime_state_for(runtime_a)
+        .if_stats
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&if_a)
+        .copied()
+        .expect("runtime_a stats");
+    let stats_b = runtime_state_for(runtime_b)
+        .if_stats
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&if_b)
+        .copied()
+        .expect("runtime_b stats");
+
+    assert_eq!(stats_a.rx_packets, 1);
+    assert_eq!(stats_a.tx_packets, 0);
+    assert_eq!(stats_b.rx_packets, 0);
+    assert_eq!(stats_b.tx_packets, 1);
+    assert_eq!(
+        *runtime_state_for(runtime_a)
+            .primary_if
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        Some(if_a)
+    );
+    assert_eq!(
+        *runtime_state_for(runtime_b)
+            .primary_if
+            .read()
+            .unwrap_or_else(|e| e.into_inner()),
+        Some(if_b)
+    );
+
+    let entries_a = nat_test_entries_in(runtime_a);
+    let entries_b = nat_test_entries_in(runtime_b);
+    assert_eq!(entries_a.len(), 1);
+    assert_eq!(entries_b.len(), 1);
+    assert_eq!(entries_a[0].if_id, if_a);
+    assert_eq!(entries_b[0].if_id, if_b);
 }

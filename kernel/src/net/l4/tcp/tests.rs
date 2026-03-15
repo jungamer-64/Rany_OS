@@ -2,6 +2,7 @@ use super::*;
 use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::tcb::tcp_flags;
+use crate::net::runtime::default_runtime;
 use crate::security::capability::{CAP_NET_BIND, CapabilitySet, manager};
 use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
 use alloc::boxed::Box;
@@ -357,6 +358,7 @@ pub fn test_poll_read_consumes_recv_copy_fallback_queue_with_remainder() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let mut stream = TcpStream {
         tcb: tcb_arc.clone(),
+        runtime: default_runtime(),
     };
 
     use core::pin::Pin;
@@ -433,6 +435,7 @@ pub fn test_send_buffer_bytes_decrement_on_flush() {
     let tcb_arc = Arc::new(PoisonLock::new(tcb));
     let mut stream = TcpStream {
         tcb: tcb_arc.clone(),
+        runtime: default_runtime(),
     };
 
     // Create packet and enqueue
@@ -1069,6 +1072,7 @@ pub fn test_accept_future_returns_on_push_connection() {
     tcb.enter_established();
     let stream = TcpStream {
         tcb: Arc::new(PoisonLock::new(tcb)),
+        runtime: default_runtime(),
     };
 
     listener.push_connection(stream, remote);

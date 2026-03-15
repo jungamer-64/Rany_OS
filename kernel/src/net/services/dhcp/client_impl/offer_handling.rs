@@ -2,6 +2,7 @@ use super::*;
 use crate::net::runtime::manager::NetIfId;
 
 fn send_dhcpv4_packet_on(
+    runtime: crate::net::runtime::NetRuntimeHandle,
     if_id: Option<NetIfId>,
     src_ip: Ipv4Address,
     src_port: u16,
@@ -11,11 +12,18 @@ fn send_dhcpv4_packet_on(
     ttl: u8,
 ) -> bool {
     match if_id {
-        Some(if_id) => crate::net::runtime::stack::enqueue_udp_send_on_with_src(
-            if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
+        Some(if_id) => crate::net::runtime::stack::enqueue_udp_send_on_with_src_in(
+            runtime, if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
         ),
-        None => crate::net::runtime::stack::enqueue_udp_send_with_src(
-            src_ip, src_port, dst_ip, dst_port, payload, ttl,
+        None => crate::net::runtime::stack::enqueue_udp_send_scoped_with_src_in(
+            runtime,
+            crate::net::types::InterfaceScope::Any,
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+            payload,
+            ttl,
         ),
     }
 }
@@ -31,7 +39,8 @@ impl DhcpClient {
         }
 
         // Best-effort: ARP probe をイベントキュー経由で送信（デッドロック回避）
-        crate::net::l4::endpoint::event::enqueue_event_ignore(
+        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+            self.runtime,
             crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
                 target_ip: *lease.ip_address.as_bytes(),
             },
@@ -195,6 +204,7 @@ impl DhcpClient {
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
                 send_dhcpv4_packet_on(
+                    self.runtime,
                     if_id,
                     Ipv4Address::new([0, 0, 0, 0]),
                     DHCP_CLIENT_PORT,
@@ -294,6 +304,7 @@ impl DhcpClient {
         match self.build_release(&mut buf, 0) {
             // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
             Ok(len) => send_dhcpv4_packet_on(
+                self.runtime,
                 if_id,
                 lease.ip_address,
                 DHCP_CLIENT_PORT,
@@ -347,6 +358,7 @@ impl DhcpClient {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
         Ok(send_dhcpv4_packet_on(
+            self.runtime,
             if_id,
             Ipv4Address::new([0, 0, 0, 0]),
             DHCP_CLIENT_PORT,
@@ -403,6 +415,7 @@ impl DhcpClient {
             Ipv4Address::new([0, 0, 0, 0])
         };
         Ok(send_dhcpv4_packet_on(
+            self.runtime,
             if_id,
             src_ip,
             DHCP_CLIENT_PORT,
@@ -565,7 +578,8 @@ impl DhcpClient {
         current_tick: u64,
     ) -> bool {
         // ARP probe をイベントキュー経由で送信（デッドロック回避）
-        crate::net::l4::endpoint::event::enqueue_event_ignore(
+        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+            self.runtime,
             crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
                 target_ip: *offered_ip.as_bytes(),
             },
@@ -582,7 +596,7 @@ impl DhcpClient {
     ) -> bool {
         // ARP解決結果を非同期で取得（RFC 2131 Section 2.2 / RFC 5227）
         // get_arp_cache() は現在のARPキャッシュスナップショットを返す
-        let entries = crate::net::api::connections::get_arp_cache().await;
+        let entries = crate::net::api::connections::get_arp_cache_in(self.runtime).await;
         for entry in entries {
             // offered_ip に対する解決済みエントリが存在すれば、他者がそのIPを使用中と判断
             if entry.ip == offered_ip.octets() && entry.complete {
@@ -595,7 +609,8 @@ impl DhcpClient {
         }
 
         // また、将来的な競合を防ぐため、追加のプローブを定期的に送信
-        crate::net::l4::endpoint::event::enqueue_event_ignore(
+        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+            self.runtime,
             crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
                 target_ip: *offered_ip.as_bytes(),
             },

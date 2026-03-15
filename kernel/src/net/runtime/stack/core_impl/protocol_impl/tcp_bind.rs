@@ -14,8 +14,17 @@ impl NetworkStack {
 
     /// Bind a TCP listener
     pub fn bind_tcp(&mut self, addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
+        self.bind_tcp_in(crate::net::runtime::default_runtime(), addr)
+    }
+
+    /// Bind a TCP listener in a specific runtime
+    pub fn bind_tcp_in(
+        &mut self,
+        runtime: crate::net::runtime::NetRuntimeHandle,
+        addr: TcpEndpointAddr,
+    ) -> Result<TcpListener, TcpError> {
         // Default: no token
-        self.tcp.bind(addr, None)
+        self.tcp.bind_in(runtime, addr, None)
     }
 
     /// Bind a TCP listener with a capability token
@@ -24,7 +33,17 @@ impl NetworkStack {
         addr: TcpEndpointAddr,
         token: Option<u64>,
     ) -> Result<TcpListener, TcpError> {
-        self.tcp.bind(addr, token)
+        self.bind_tcp_with_token_in(crate::net::runtime::default_runtime(), addr, token)
+    }
+
+    /// Bind a TCP listener with a capability token in a specific runtime
+    pub fn bind_tcp_with_token_in(
+        &mut self,
+        runtime: crate::net::runtime::NetRuntimeHandle,
+        addr: TcpEndpointAddr,
+        token: Option<u64>,
+    ) -> Result<TcpListener, TcpError> {
+        self.tcp.bind_in(runtime, addr, token)
     }
 
     /// Test helper: insert a pre-built TCP connection into the stack.

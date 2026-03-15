@@ -7,6 +7,8 @@ extern crate alloc;
 
 use crate::net::l2::ethernet::MacAddress as StackMacAddress;
 use crate::net::l3::ipv4::Ipv4Config;
+use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::context::{NetRuntimeContext, default_runtime, default_runtime_context};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
 use crate::sync::atomic_waker::AtomicWaker;
@@ -17,7 +19,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use core::task::{Context, Poll};
 use kernel_api::resource::net::PacketRef;
 use kernel_api::service::netdev::{
@@ -32,7 +34,7 @@ const NET_DEVICE_EVENT_QUEUE_CAPACITY: usize = 256;
 
 type TxCompletionResult = Result<(), &'static str>;
 
-struct TxCompletionState {
+pub(crate) struct TxCompletionState {
     result: PoisonLock<Option<TxCompletionResult>>,
     waker: AtomicWaker,
 }
@@ -76,9 +78,21 @@ impl Future for TxCompletionFuture {
     }
 }
 
-static NEXT_TX_COMPLETION_ID: AtomicU64 = AtomicU64::new(1);
-static TX_COMPLETIONS: PoisonRwLock<BTreeMap<u64, Arc<TxCompletionState>>> =
-    PoisonRwLock::new(BTreeMap::new());
+fn runtime_context() -> &'static NetRuntimeContext {
+    default_runtime_context()
+}
+
+fn runtime_context_for(runtime: NetRuntimeHandle) -> &'static NetRuntimeContext {
+    runtime.context()
+}
+
+fn device_manager() -> &'static PoisonRwLock<NetDeviceManager> {
+    &runtime_context().device_manager
+}
+
+fn device_manager_in(runtime: NetRuntimeHandle) -> &'static PoisonRwLock<NetDeviceManager> {
+    &runtime_context_for(runtime).device_manager
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NetDeviceKey {
@@ -267,9 +281,17 @@ impl Future for NetEventWaitFuture<'_> {
 }
 
 pub fn register_tx_completion() -> (u64, TxCompletionFuture) {
-    let completion_id = NEXT_TX_COMPLETION_ID.fetch_add(1, Ordering::Relaxed);
+    register_tx_completion_in(default_runtime())
+}
+
+pub fn register_tx_completion_in(runtime: NetRuntimeHandle) -> (u64, TxCompletionFuture) {
+    let context = runtime_context_for(runtime);
+    let completion_id = context
+        .tx_completion_next_id
+        .fetch_add(1, Ordering::Relaxed);
     let state = Arc::new(TxCompletionState::new());
-    TX_COMPLETIONS
+    context
+        .tx_completions
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .insert(completion_id, state.clone());
@@ -277,7 +299,16 @@ pub fn register_tx_completion() -> (u64, TxCompletionFuture) {
 }
 
 pub fn complete_tx_request(completion_id: u64, result: TxCompletionResult) -> bool {
-    let state = TX_COMPLETIONS
+    complete_tx_request_in(default_runtime(), completion_id, result)
+}
+
+pub fn complete_tx_request_in(
+    runtime: NetRuntimeHandle,
+    completion_id: u64,
+    result: TxCompletionResult,
+) -> bool {
+    let state = runtime_context_for(runtime)
+        .tx_completions
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&completion_id);
@@ -292,13 +323,15 @@ pub fn complete_tx_request(completion_id: u64, result: TxCompletionResult) -> bo
 struct PortRuntimeHandle {
     key: NetDeviceKey,
     if_id: AtomicU16,
+    context: &'static NetRuntimeContext,
 }
 
 impl PortRuntimeHandle {
-    fn new(key: NetDeviceKey, if_id: NetIfId) -> Self {
+    fn new(key: NetDeviceKey, if_id: NetIfId, context: &'static NetRuntimeContext) -> Self {
         Self {
             key,
             if_id: AtomicU16::new(if_id.0),
+            context,
         }
     }
 
@@ -326,7 +359,8 @@ impl NetPortRuntime for PortRuntimeHandle {
     }
 
     fn submit_rx(&self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
-        crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
+        crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface_in(
+            self.context.handle(),
             self.current_if_id(),
             packet,
             meta.header_len as usize,
@@ -410,10 +444,14 @@ pub struct NetDeviceHandle {
 }
 
 impl NetDeviceHandle {
-    fn new(driver: Arc<dyn NetDevicePort>, binding: NetDeviceBinding) -> Arc<Self> {
+    fn new(
+        driver: Arc<dyn NetDevicePort>,
+        binding: NetDeviceBinding,
+        context: &'static NetRuntimeContext,
+    ) -> Arc<Self> {
         Arc::new(Self {
             driver,
-            runtime: Arc::new(PortRuntimeHandle::new(binding.key, binding.if_id)),
+            runtime: Arc::new(PortRuntimeHandle::new(binding.key, binding.if_id, context)),
             binding: PoisonLock::new(binding),
             tx_queue: Arc::new(NetTxQueue::new()),
             event_sink: Arc::new(NetEventSink::new()),
@@ -596,10 +634,6 @@ impl NetDeviceManager {
     }
 }
 
-static DEVICE_MANAGER: PoisonRwLock<NetDeviceManager> = PoisonRwLock::new(NetDeviceManager::new());
-static STACK_INITIALIZED: AtomicBool = AtomicBool::new(false);
-static DHCP_BOUND_PRIMARY_SELECTED: AtomicBool = AtomicBool::new(false);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FailoverReason {
     LinkDown,
@@ -668,7 +702,7 @@ fn interface_supports_failover(if_id: NetIfId) -> bool {
 }
 
 fn select_surviving_primary(excluding_if: NetIfId) -> Option<NetIfId> {
-    let candidates: Vec<NetIfId> = DEVICE_MANAGER
+    let candidates: Vec<NetIfId> = device_manager()
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .handles
@@ -686,7 +720,11 @@ fn select_surviving_primary(excluding_if: NetIfId) -> Option<NetIfId> {
 }
 
 fn set_primary_slot(primary: Option<NetIfId>) {
-    DEVICE_MANAGER
+    set_primary_slot_in(default_runtime(), primary);
+}
+
+fn set_primary_slot_in(runtime: NetRuntimeHandle, primary: Option<NetIfId>) {
+    device_manager_in(runtime)
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .primary = primary;
@@ -757,7 +795,9 @@ fn handle_interface_departure(if_id: NetIfId, reason: FailoverReason) {
 
     if let Some(new_if) = candidate {
         set_primary_slot(Some(new_if));
-        DHCP_BOUND_PRIMARY_SELECTED.store(true, Ordering::Release);
+        runtime_context()
+            .dhcp_bound_primary_selected
+            .store(true, Ordering::Release);
         crate::net::services::dhcp::mark_primary_interface(new_if);
         if let Err(err) = apply_primary_runtime_for_interface(new_if) {
             log::warn!(
@@ -776,7 +816,9 @@ fn handle_interface_departure(if_id: NetIfId, reason: FailoverReason) {
         );
     } else {
         set_primary_slot(None);
-        DHCP_BOUND_PRIMARY_SELECTED.store(false, Ordering::Release);
+        runtime_context()
+            .dhcp_bound_primary_selected
+            .store(false, Ordering::Release);
         log::warn!(
             target: "net::device",
             "[NET] primary_cleared: old=if{} reason={}",
@@ -787,11 +829,12 @@ fn handle_interface_departure(if_id: NetIfId, reason: FailoverReason) {
 }
 
 pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static str> {
-    if STACK_INITIALIZED.load(Ordering::Acquire) {
+    if runtime_context().stack_initialized.load(Ordering::Acquire) {
         return Ok(());
     }
 
-    if STACK_INITIALIZED
+    if runtime_context()
+        .stack_initialized
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
@@ -808,7 +851,9 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
     match stack::stack().lock() {
         Ok(mut guard) => {
             let Some(stack) = guard.as_mut() else {
-                STACK_INITIALIZED.store(false, Ordering::Release);
+                runtime_context()
+                    .stack_initialized
+                    .store(false, Ordering::Release);
                 return Err("network stack unavailable");
             };
             stack.set_transmit_fn_with_completion(
@@ -817,7 +862,9 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
             );
         }
         Err(_) => {
-            STACK_INITIALIZED.store(false, Ordering::Release);
+            runtime_context()
+                .stack_initialized
+                .store(false, Ordering::Release);
             return Err("network stack poisoned");
         }
     }
@@ -830,7 +877,7 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
 }
 
 pub fn is_initialized() -> bool {
-    STACK_INITIALIZED.load(Ordering::Acquire)
+    runtime_context().stack_initialized.load(Ordering::Acquire)
 }
 
 fn interface_for_key(
@@ -912,14 +959,14 @@ pub fn register_port(
             NetDeviceKey::Mlx5(_) => None,
         },
     };
-    let handle = NetDeviceHandle::new(driver.clone(), binding);
+    let handle = NetDeviceHandle::new(driver.clone(), binding, runtime_context());
     driver.bind(if_id.0)?;
     driver.start(handle.runtime.clone())?;
     handle.start_workers();
 
     let mut selected_as_primary = false;
     {
-        let mut guard = DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
         guard.key_map.insert(key, if_id);
         guard.handles.insert(if_id, handle);
         if guard.primary.is_none() || make_primary {
@@ -960,7 +1007,7 @@ pub fn register_port_with_default_config(
 
 pub fn bind_port_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'static str> {
     let handle = {
-        let guard = DEVICE_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+        let guard = device_manager().read().unwrap_or_else(|e| e.into_inner());
         let Some(bound_if_id) = guard.key_map.get(&key).copied() else {
             return Err("device key not registered");
         };
@@ -976,7 +1023,7 @@ pub fn bind_port_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'st
     };
     handle.rebind(binding)?;
 
-    let mut guard = DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner());
+    let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
     guard.key_map.insert(key, if_id);
     guard.handles.insert(if_id, handle.clone());
     if let Some(previous) = guard
@@ -997,7 +1044,7 @@ pub fn bind_port_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'st
 
 pub fn unregister_port(if_id: NetIfId) -> bool {
     let handle = {
-        let mut guard = DEVICE_MANAGER.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
         let handle = guard.handles.remove(&if_id);
         if let Some(handle) = handle.as_ref() {
             guard.key_map.remove(&handle.binding().key);
@@ -1022,7 +1069,11 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
 }
 
 pub fn lookup_if_by_key(key: NetDeviceKey) -> Option<NetIfId> {
-    DEVICE_MANAGER
+    lookup_if_by_key_in(default_runtime(), key)
+}
+
+pub fn lookup_if_by_key_in(runtime: NetRuntimeHandle, key: NetDeviceKey) -> Option<NetIfId> {
+    device_manager_in(runtime)
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .key_map
@@ -1031,7 +1082,11 @@ pub fn lookup_if_by_key(key: NetDeviceKey) -> Option<NetIfId> {
 }
 
 pub fn lookup_port(if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
-    DEVICE_MANAGER
+    lookup_port_in(default_runtime(), if_id)
+}
+
+pub fn lookup_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
+    device_manager_in(runtime)
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .handles
@@ -1040,7 +1095,7 @@ pub fn lookup_port(if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
 }
 
 pub fn list_ports() -> Vec<Arc<NetDeviceHandle>> {
-    DEVICE_MANAGER
+    device_manager()
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .handles
@@ -1069,7 +1124,14 @@ pub fn port_stats(key: NetDeviceKey) -> Option<NetPortStats> {
 }
 
 pub fn list_port_keys(kind: Option<NetPortKind>) -> Vec<NetDeviceKey> {
-    DEVICE_MANAGER
+    list_port_keys_in(default_runtime(), kind)
+}
+
+pub fn list_port_keys_in(
+    runtime: NetRuntimeHandle,
+    kind: Option<NetPortKind>,
+) -> Vec<NetDeviceKey> {
+    device_manager_in(runtime)
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .key_map
@@ -1080,15 +1142,23 @@ pub fn list_port_keys(kind: Option<NetPortKind>) -> Vec<NetDeviceKey> {
 }
 
 pub fn primary_if() -> Option<NetIfId> {
-    DEVICE_MANAGER
+    primary_if_in(default_runtime())
+}
+
+pub fn primary_if_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
+    device_manager_in(runtime)
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .primary
 }
 
 pub fn set_primary_interface(if_id: NetIfId) {
-    set_primary_slot(Some(if_id));
-    if let Ok(mut guard) = stack::stack().lock() {
+    set_primary_interface_in(default_runtime(), if_id);
+}
+
+pub fn set_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    set_primary_slot_in(runtime, Some(if_id));
+    if let Ok(mut guard) = runtime_context_for(runtime).stack.lock() {
         if let Some(stack) = guard.as_mut() {
             stack.set_primary_interface_state(Some(if_id));
         }
@@ -1105,11 +1175,16 @@ pub fn set_primary_interface(if_id: NetIfId) {
 }
 
 fn claim_bound_primary_slot(if_id: NetIfId) -> bool {
-    if DHCP_BOUND_PRIMARY_SELECTED
+    claim_bound_primary_slot_in(default_runtime(), if_id)
+}
+
+fn claim_bound_primary_slot_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
+    if runtime_context_for(runtime)
+        .dhcp_bound_primary_selected
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        set_primary_slot(Some(if_id));
+        set_primary_slot_in(runtime, Some(if_id));
         true
     } else {
         false
@@ -1120,9 +1195,17 @@ pub(crate) fn claim_bound_primary_interface_with_stack_state(
     if_id: NetIfId,
     stack: &mut stack::NetworkStack,
 ) -> bool {
+    claim_bound_primary_interface_with_stack_state_in(default_runtime(), if_id, stack)
+}
+
+pub(crate) fn claim_bound_primary_interface_with_stack_state_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    stack: &mut stack::NetworkStack,
+) -> bool {
     // DHCP lease binding runs under NETWORK_STACK; reuse that guard to avoid
     // self-deadlocking on the global stack lock during primary selection.
-    if claim_bound_primary_slot(if_id) {
+    if claim_bound_primary_slot_in(runtime, if_id) {
         stack.set_primary_interface_state(Some(if_id));
         true
     } else {
@@ -1132,7 +1215,7 @@ pub(crate) fn claim_bound_primary_interface_with_stack_state(
 
 pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
     if claim_bound_primary_slot(if_id) {
-        if let Ok(mut guard) = stack::stack().lock() {
+        if let Ok(mut guard) = runtime_context().stack.lock() {
             if let Some(stack) = guard.as_mut() {
                 stack.set_primary_interface_state(Some(if_id));
             }
@@ -1378,6 +1461,7 @@ mod tests {
                 kind: NetPortKind::Virtio,
                 virtio_index: Some(9),
             },
+            runtime_context(),
         );
 
         handle
@@ -1572,7 +1656,9 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn claim_bound_primary_interface_with_stack_state_updates_primary_without_global_lock() {
-        DHCP_BOUND_PRIMARY_SELECTED.store(false, Ordering::Release);
+        runtime_context()
+            .dhcp_bound_primary_selected
+            .store(false, Ordering::Release);
 
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());

@@ -14,7 +14,13 @@ impl DhcpClient {
 
     /// 新しいDHCPクライアントを作成
     pub fn new(mac_address: MacAddress) -> Self {
+        Self::new_in(crate::net::runtime::default_runtime(), mac_address)
+    }
+
+    /// 指定runtimeに属するDHCPクライアントを作成
+    pub fn new_in(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacAddress) -> Self {
         Self {
+            runtime,
             mac_address,
             state: PoisonLock::new(DhcpState::Init),
             xid: AtomicU32::new(0),
@@ -33,9 +39,10 @@ impl DhcpClient {
     /// 指定されたポートでUDPソケットをバインドし、DHCP状態機械を駆動します。
     pub async fn run(&self) -> Result<(), &'static str> {
         // DHCPクライアントポート(68)でバインド
-        let socket = crate::net::runtime::stack::bind_udp_endpoint(DHCP_CLIENT_PORT)
-            .await
-            .ok_or("Failed to bind DHCP socket")?;
+        let socket =
+            crate::net::runtime::stack::bind_udp_endpoint_in(self.runtime, DHCP_CLIENT_PORT)
+                .await
+                .ok_or("Failed to bind DHCP socket")?;
 
         log::info!("[NET] DHCPv4 client task started");
 
@@ -55,7 +62,8 @@ impl DhcpClient {
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
                             let hostname_bytes = lease.hostname.clone().unwrap_or_default();
-                            crate::net::l4::endpoint::event::enqueue_event_ignore(
+                            crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                                self.runtime,
                                 crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
                                     if_id: None,
                                     ip: *lease.ip_address.as_bytes(),
@@ -73,7 +81,9 @@ impl DhcpClient {
                                 },
                             );
                             // mDNS のローカル IP を更新
-                            if let Ok(mut guard) = crate::net::services::mdns::service().lock() {
+                            if let Ok(mut guard) =
+                                crate::net::services::mdns::service_in(self.runtime).lock()
+                            {
                                 if let Some(ref mut mdns) = *guard {
                                     mdns.set_local_ip(lease.ip_address);
                                 }
@@ -776,20 +786,21 @@ pub enum DhcpResponseResult {
     Nak,
 }
 
-/// グローバルDHCPクライアント
-pub(crate) static DHCP_CLIENT: PoisonLock<Option<DhcpClient>> = PoisonLock::new(None);
-
 /// DHCPクライアントを初期化
 pub fn init(mac_address: MacAddress) {
-    let client = DhcpClient::new(mac_address);
-    match DHCP_CLIENT.lock() {
+    init_in(crate::net::runtime::default_runtime(), mac_address);
+}
+
+pub fn init_in(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacAddress) {
+    let client = DhcpClient::new_in(runtime, mac_address);
+    match super::legacy_v4_client_lock_in(runtime).lock() {
         Ok(mut g) => *g = Some(client),
         Err(_) => log::error!("[NET] DHCP Global lock poisoned (init) - initialization skipped"),
     }
 }
 
 pub(crate) fn update_client_mac(mac_address: MacAddress) {
-    match DHCP_CLIENT.lock() {
+    match super::legacy_v4_client_lock().lock() {
         Ok(mut guard) => {
             if let Some(client) = guard.as_mut() {
                 client.mac_address = mac_address;

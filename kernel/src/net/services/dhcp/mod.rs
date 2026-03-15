@@ -6,6 +6,7 @@
 //! DHCPを使用してIPアドレス、サブネットマスク、ゲートウェイ、
 //! DNSサーバーなどのネットワーク設定を自動取得する。
 
+use crate::net::runtime::{NetRuntimeHandle, context::default_runtime_context};
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -59,10 +60,53 @@ impl DhcpInterfaceRuntime {
     }
 }
 
-static DHCP_INTERFACE_RUNTIMES: PoisonLock<BTreeMap<NetIfId, Arc<DhcpInterfaceRuntime>>> =
-    PoisonLock::new(BTreeMap::new());
-static DHCP_V4_DISPATCHER_STARTED: AtomicBool = AtomicBool::new(false);
-static DHCP_PRIMARY_IF_ID: AtomicU16 = AtomicU16::new(INVALID_IF_ID);
+pub(crate) struct DhcpRuntimeState {
+    interface_runtimes: PoisonLock<BTreeMap<NetIfId, Arc<DhcpInterfaceRuntime>>>,
+    v4_dispatcher_started: AtomicBool,
+    primary_if_id: AtomicU16,
+    legacy_v4_client: PoisonLock<Option<DhcpClient>>,
+    legacy_v6_client: PoisonLock<Option<DhcpV6Client>>,
+}
+
+impl DhcpRuntimeState {
+    pub const fn new() -> Self {
+        Self {
+            interface_runtimes: PoisonLock::new(BTreeMap::new()),
+            v4_dispatcher_started: AtomicBool::new(false),
+            primary_if_id: AtomicU16::new(INVALID_IF_ID),
+            legacy_v4_client: PoisonLock::new(None),
+            legacy_v6_client: PoisonLock::new(None),
+        }
+    }
+}
+
+pub(crate) fn runtime_state() -> &'static DhcpRuntimeState {
+    &default_runtime_context().dhcp
+}
+
+pub(crate) fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static DhcpRuntimeState {
+    &runtime.context().dhcp
+}
+
+pub(crate) fn legacy_v4_client_lock() -> &'static PoisonLock<Option<DhcpClient>> {
+    &runtime_state().legacy_v4_client
+}
+
+pub(crate) fn legacy_v4_client_lock_in(
+    runtime: NetRuntimeHandle,
+) -> &'static PoisonLock<Option<DhcpClient>> {
+    &runtime_state_for(runtime).legacy_v4_client
+}
+
+pub(crate) fn legacy_v6_client_lock() -> &'static PoisonLock<Option<DhcpV6Client>> {
+    &runtime_state().legacy_v6_client
+}
+
+pub(crate) fn legacy_v6_client_lock_in(
+    runtime: NetRuntimeHandle,
+) -> &'static PoisonLock<Option<DhcpV6Client>> {
+    &runtime_state_for(runtime).legacy_v6_client
+}
 
 pub(crate) fn ensure_interface_runtime(
     if_id: NetIfId,
@@ -71,7 +115,8 @@ pub(crate) fn ensure_interface_runtime(
     ensure_v4_dispatcher_task();
 
     let runtime = {
-        let mut guard = DHCP_INTERFACE_RUNTIMES
+        let mut guard = runtime_state()
+            .interface_runtimes
             .lock()
             .map_err(|_| "DHCP interface runtime lock poisoned")?;
         if let Some(existing) = guard.get(&if_id) {
@@ -95,7 +140,8 @@ pub(crate) fn ensure_interface_runtime(
 }
 
 pub(crate) fn unregister_interface_runtime(if_id: NetIfId) {
-    let removed = DHCP_INTERFACE_RUNTIMES
+    let removed = runtime_state()
+        .interface_runtimes
         .lock()
         .ok()
         .and_then(|mut guard| guard.remove(&if_id));
@@ -106,17 +152,33 @@ pub(crate) fn unregister_interface_runtime(if_id: NetIfId) {
 }
 
 pub(crate) fn mark_primary_interface(if_id: NetIfId) {
-    DHCP_PRIMARY_IF_ID.store(if_id.0, Ordering::Release);
+    runtime_state()
+        .primary_if_id
+        .store(if_id.0, Ordering::Release);
 }
 
 pub(crate) fn clear_primary_interface(if_id: NetIfId) {
-    if DHCP_PRIMARY_IF_ID.load(Ordering::Acquire) == if_id.0 {
-        DHCP_PRIMARY_IF_ID.store(INVALID_IF_ID, Ordering::Release);
+    if runtime_state().primary_if_id.load(Ordering::Acquire) == if_id.0 {
+        runtime_state()
+            .primary_if_id
+            .store(INVALID_IF_ID, Ordering::Release);
     }
 }
 
 fn interface_runtime(if_id: NetIfId) -> Option<Arc<DhcpInterfaceRuntime>> {
-    DHCP_INTERFACE_RUNTIMES
+    runtime_state()
+        .interface_runtimes
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(&if_id).cloned())
+}
+
+fn interface_runtime_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<Arc<DhcpInterfaceRuntime>> {
+    runtime_state_for(runtime)
+        .interface_runtimes
         .lock()
         .ok()
         .and_then(|guard| guard.get(&if_id).cloned())
@@ -126,12 +188,30 @@ pub(crate) fn interface_v4_client(if_id: NetIfId) -> Option<Arc<DhcpClient>> {
     interface_runtime(if_id).map(|runtime| Arc::clone(&runtime.v4))
 }
 
+pub(crate) fn interface_v4_client_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<Arc<DhcpClient>> {
+    interface_runtime_in(runtime, if_id).map(|runtime| Arc::clone(&runtime.v4))
+}
+
 pub(crate) fn lease_for_interface(if_id: NetIfId) -> Option<DhcpLease> {
     interface_v4_client(if_id).and_then(|client| client.lease())
 }
 
+pub(crate) fn lease_for_interface_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<DhcpLease> {
+    interface_v4_client_in(runtime, if_id).and_then(|client| client.lease())
+}
+
 pub(crate) fn has_bound_lease(if_id: NetIfId) -> bool {
     lease_for_interface(if_id).is_some()
+}
+
+pub(crate) fn has_bound_lease_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
+    lease_for_interface_in(runtime, if_id).is_some()
 }
 
 pub(crate) fn release_interface(if_id: NetIfId) -> bool {
@@ -165,8 +245,25 @@ pub(crate) fn restart_interface_runtime(if_id: NetIfId) -> Result<(), &'static s
 }
 
 fn primary_interface_runtime() -> Option<Arc<DhcpInterfaceRuntime>> {
-    let primary_if = DHCP_PRIMARY_IF_ID.load(Ordering::Acquire);
-    let guard = DHCP_INTERFACE_RUNTIMES.lock().ok()?;
+    let primary_if = runtime_state().primary_if_id.load(Ordering::Acquire);
+    let guard = runtime_state().interface_runtimes.lock().ok()?;
+    if primary_if != INVALID_IF_ID {
+        if let Some(runtime) = guard.get(&NetIfId(primary_if)) {
+            return Some(Arc::clone(runtime));
+        }
+    }
+    guard
+        .values()
+        .find(|runtime| {
+            runtime.active.load(Ordering::Acquire) && !runtime.suspended.load(Ordering::Acquire)
+        })
+        .cloned()
+}
+
+fn primary_interface_runtime_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpInterfaceRuntime>> {
+    let state = runtime_state_for(runtime);
+    let primary_if = state.primary_if_id.load(Ordering::Acquire);
+    let guard = state.interface_runtimes.lock().ok()?;
     if primary_if != INVALID_IF_ID {
         if let Some(runtime) = guard.get(&NetIfId(primary_if)) {
             return Some(Arc::clone(runtime));
@@ -184,12 +281,36 @@ pub(crate) fn primary_v4_client() -> Option<Arc<DhcpClient>> {
     primary_interface_runtime().map(|runtime| Arc::clone(&runtime.v4))
 }
 
+pub(crate) fn primary_v4_client_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpClient>> {
+    primary_interface_runtime_in(runtime).map(|runtime| Arc::clone(&runtime.v4))
+}
+
 pub(crate) fn primary_interface_if_id() -> Option<NetIfId> {
     primary_interface_runtime().map(|runtime| runtime.if_id)
 }
 
+pub(crate) fn primary_interface_if_id_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
+    primary_interface_runtime_in(runtime).map(|runtime| runtime.if_id)
+}
+
 fn find_runtime_for_v4_packet(packet: &[u8]) -> Option<Arc<DhcpInterfaceRuntime>> {
-    let guard = DHCP_INTERFACE_RUNTIMES.lock().ok()?;
+    let guard = runtime_state().interface_runtimes.lock().ok()?;
+    for runtime in guard.values() {
+        if runtime.active.load(Ordering::Acquire)
+            && !runtime.suspended.load(Ordering::Acquire)
+            && runtime.v4.matches_response(packet)
+        {
+            return Some(Arc::clone(runtime));
+        }
+    }
+    None
+}
+
+fn find_runtime_for_v4_packet_in(
+    runtime: NetRuntimeHandle,
+    packet: &[u8],
+) -> Option<Arc<DhcpInterfaceRuntime>> {
+    let guard = runtime_state_for(runtime).interface_runtimes.lock().ok()?;
     for runtime in guard.values() {
         if runtime.active.load(Ordering::Acquire)
             && !runtime.suspended.load(Ordering::Acquire)
@@ -202,11 +323,16 @@ fn find_runtime_for_v4_packet(packet: &[u8]) -> Option<Arc<DhcpInterfaceRuntime>
 }
 
 fn ensure_v4_dispatcher_task() {
-    if DHCP_V4_DISPATCHER_STARTED
+    ensure_v4_dispatcher_task_in(crate::net::runtime::default_runtime());
+}
+
+fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) {
+    if runtime_state_for(runtime)
+        .v4_dispatcher_started
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_dispatcher_task()));
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_dispatcher_task(runtime)));
     }
 }
 
@@ -241,15 +367,18 @@ async fn dhcp_v4_drive_task(runtime: Arc<DhcpInterfaceRuntime>) {
     runtime.drive_started.store(false, Ordering::Release);
 }
 
-async fn dhcp_v4_dispatcher_task() {
-    let socket = match crate::net::runtime::stack::bind_udp_endpoint(DHCP_CLIENT_PORT).await {
-        Some(socket) => socket,
-        None => {
-            log::error!("[NET] DHCPv4 dispatcher failed to bind UDP port 68");
-            DHCP_V4_DISPATCHER_STARTED.store(false, Ordering::Release);
-            return;
-        }
-    };
+async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
+    let socket =
+        match crate::net::runtime::stack::bind_udp_endpoint_in(runtime, DHCP_CLIENT_PORT).await {
+            Some(socket) => socket,
+            None => {
+                log::error!("[NET] DHCPv4 dispatcher failed to bind UDP port 68");
+                runtime_state_for(runtime)
+                    .v4_dispatcher_started
+                    .store(false, Ordering::Release);
+                return;
+            }
+        };
 
     log::info!("[NET] DHCPv4 dispatcher task started");
 
@@ -258,22 +387,23 @@ async fn dhcp_v4_dispatcher_task() {
             Some((_if_id, _src, _ttl, packet)) => {
                 let now = crate::task::current_tick();
                 let data = packet.data();
-                let Some(runtime) = find_runtime_for_v4_packet(data) else {
+                let Some(interface_runtime) = find_runtime_for_v4_packet_in(runtime, data) else {
                     continue;
                 };
 
-                match runtime.v4.process_response(data, now) {
+                match interface_runtime.v4.process_response(data, now) {
                     Ok(DhcpResponseResult::Ack(lease)) => {
                         log::info!(
                             "[NET] DHCPv4 ACK received: if{} mac={} ip={:?}",
-                            runtime.if_id.0,
-                            runtime.mac(),
+                            interface_runtime.if_id.0,
+                            interface_runtime.mac(),
                             lease.ip_address
                         );
                         let hostname_bytes = lease.hostname.clone().unwrap_or_default();
-                        crate::net::l4::endpoint::event::enqueue_event_ignore(
+                        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                            runtime,
                             crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
-                                if_id: Some(runtime.if_id.0),
+                                if_id: Some(interface_runtime.if_id.0),
                                 ip: *lease.ip_address.as_bytes(),
                                 subnet: *lease.subnet_mask.as_bytes(),
                                 gateway: lease
@@ -292,8 +422,8 @@ async fn dhcp_v4_dispatcher_task() {
                     Ok(DhcpResponseResult::Offer(lease)) => {
                         log::info!(
                             "[NET] DHCPv4 OFFER received: if{} mac={} ip={:?} server={:?}",
-                            runtime.if_id.0,
-                            runtime.mac(),
+                            interface_runtime.if_id.0,
+                            interface_runtime.mac(),
                             lease.ip_address,
                             lease.server_ip
                         );
@@ -301,15 +431,15 @@ async fn dhcp_v4_dispatcher_task() {
                     Ok(DhcpResponseResult::Nak) => {
                         log::warn!(
                             "[NET] DHCPv4 NAK received: if{} mac={}",
-                            runtime.if_id.0,
-                            runtime.mac()
+                            interface_runtime.if_id.0,
+                            interface_runtime.mac()
                         );
                     }
                     Err(err) => {
                         log::warn!(
                             "[NET] DHCPv4 response error: if{} mac={} err={}",
-                            runtime.if_id.0,
-                            runtime.mac(),
+                            interface_runtime.if_id.0,
+                            interface_runtime.mac(),
                             err
                         );
                     }
@@ -317,7 +447,9 @@ async fn dhcp_v4_dispatcher_task() {
             }
             None => {
                 log::warn!("[NET] DHCPv4 dispatcher socket closed unexpectedly");
-                DHCP_V4_DISPATCHER_STARTED.store(false, Ordering::Release);
+                runtime_state_for(runtime)
+                    .v4_dispatcher_started
+                    .store(false, Ordering::Release);
                 break;
             }
         }
@@ -608,6 +740,7 @@ pub enum DhcpState {
 
 /// DHCPクライアント
 pub struct DhcpClient {
+    runtime: NetRuntimeHandle,
     /// MACアドレス
     mac_address: MacAddress,
     /// 現在の状態

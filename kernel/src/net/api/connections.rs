@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::{TcpConnectionState, tcb_table};
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 extern crate alloc;
 
@@ -85,14 +86,16 @@ use core::task::{Context, Poll};
 
 /// 非同期ARPキャッシュ取得Future
 pub struct GetArpCacheFuture {
+    runtime: NetRuntimeHandle,
     result_slot: Arc<PoisonLock<Option<Vec<ArpCacheEntry>>>>,
     waker: Arc<AtomicWaker>,
     sent: bool,
 }
 
 impl GetArpCacheFuture {
-    fn new() -> Self {
+    fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             result_slot: Arc::new(PoisonLock::new(None)),
             waker: Arc::new(AtomicWaker::new()),
             sent: false,
@@ -107,7 +110,8 @@ impl Future for GetArpCacheFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::GetArpCache {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
@@ -134,14 +138,23 @@ impl Future for GetArpCacheFuture {
 /// let entries = get_arp_cache().await;
 /// ```
 pub fn get_arp_cache() -> GetArpCacheFuture {
-    GetArpCacheFuture::new()
+    get_arp_cache_in(default_runtime())
+}
+
+pub fn get_arp_cache_in(runtime: NetRuntimeHandle) -> GetArpCacheFuture {
+    GetArpCacheFuture::new(runtime)
 }
 
 /// 非同期ARPキャッシュ挿入（推奨API）
 ///
 /// イベントキュー経由でスタックにARP挿入イベントを送出する。
 pub fn enqueue_arp_cache_insert(ip: Ipv4Address, mac: MacAddress) {
-    crate::net::l4::endpoint::event::enqueue_event_ignore(
+    enqueue_arp_cache_insert_in(default_runtime(), ip, mac);
+}
+
+pub fn enqueue_arp_cache_insert_in(runtime: NetRuntimeHandle, ip: Ipv4Address, mac: MacAddress) {
+    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+        runtime,
         crate::net::l4::endpoint::event::NetworkEvent::ArpInsert {
             ip: *ip.as_bytes(),
             mac: *mac.as_bytes(),
@@ -151,14 +164,16 @@ pub fn enqueue_arp_cache_insert(ip: Ipv4Address, mac: MacAddress) {
 
 /// 非同期UDPエンドポイント一覧取得Future
 pub struct GetUdpEndpointsFuture {
+    runtime: NetRuntimeHandle,
     result_slot: Arc<PoisonLock<Option<Vec<UdpEndpointInfo>>>>,
     waker: Arc<AtomicWaker>,
     sent: bool,
 }
 
 impl GetUdpEndpointsFuture {
-    fn new() -> Self {
+    fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             result_slot: Arc::new(PoisonLock::new(None)),
             waker: Arc::new(AtomicWaker::new()),
             sent: false,
@@ -173,7 +188,8 @@ impl Future for GetUdpEndpointsFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::GetUdpEndpoints {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
@@ -192,19 +208,25 @@ impl Future for GetUdpEndpointsFuture {
 
 /// 非同期UDPエンドポイント一覧取得（推奨API）
 pub fn get_udp_endpoints() -> GetUdpEndpointsFuture {
-    GetUdpEndpointsFuture::new()
+    get_udp_endpoints_in(default_runtime())
+}
+
+pub fn get_udp_endpoints_in(runtime: NetRuntimeHandle) -> GetUdpEndpointsFuture {
+    GetUdpEndpointsFuture::new(runtime)
 }
 
 /// 非同期TCP接続一覧取得Future
 pub struct GetTcpConnectionsFuture {
+    runtime: NetRuntimeHandle,
     result_slot: Arc<PoisonLock<Option<Vec<TcpConnectionInfo>>>>,
     waker: Arc<AtomicWaker>,
     sent: bool,
 }
 
 impl GetTcpConnectionsFuture {
-    fn new() -> Self {
+    fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             result_slot: Arc::new(PoisonLock::new(None)),
             waker: Arc::new(AtomicWaker::new()),
             sent: false,
@@ -219,7 +241,8 @@ impl Future for GetTcpConnectionsFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::GetTcpConnections {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
@@ -243,7 +266,11 @@ impl Future for GetTcpConnectionsFuture {
 /// let connections = get_tcp_connections().await;
 /// ```
 pub fn get_tcp_connections() -> GetTcpConnectionsFuture {
-    GetTcpConnectionsFuture::new()
+    get_tcp_connections_in(default_runtime())
+}
+
+pub fn get_tcp_connections_in(runtime: NetRuntimeHandle) -> GetTcpConnectionsFuture {
+    GetTcpConnectionsFuture::new(runtime)
 }
 
 #[cfg(test)]

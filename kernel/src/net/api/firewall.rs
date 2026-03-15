@@ -17,6 +17,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::net::security::firewall::{
     self, FirewallAction, FirewallDirection, FirewallProtocol, FirewallRule, IpMatch, PortMatch,
 };
@@ -133,50 +134,97 @@ pub(crate) fn firewall_set_default_policy_sync(
 }
 
 pub async fn firewall_enable() -> Result<(), &'static str> {
+    firewall_enable_in(default_runtime()).await
+}
+
+pub async fn firewall_enable_in(runtime: NetRuntimeHandle) -> Result<(), &'static str> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<Result<(), &'static str>>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::FirewallEnable { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn firewall_disable() -> Result<(), &'static str> {
+    firewall_disable_in(default_runtime()).await
+}
+
+pub async fn firewall_disable_in(runtime: NetRuntimeHandle) -> Result<(), &'static str> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<Result<(), &'static str>>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::FirewallDisable { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn firewall_status() -> String {
+    firewall_status_in(default_runtime()).await
+}
+
+pub async fn firewall_status_in(runtime: NetRuntimeHandle) -> String {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<String>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::FirewallStatus { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn firewall_list_rules() -> String {
+    firewall_list_rules_in(default_runtime()).await
+}
+
+pub async fn firewall_list_rules_in(runtime: NetRuntimeHandle) -> String {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<String>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::FirewallListRules { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn firewall_stats() -> String {
+    firewall_stats_in(default_runtime()).await
+}
+
+pub async fn firewall_stats_in(runtime: NetRuntimeHandle) -> String {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<String>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::FirewallStats { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn firewall_add_rule(
+    action: &str,
+    direction: &str,
+    src_ip: &str,
+    dst_ip: &str,
+    protocol: &str,
+    src_port: &str,
+    dst_port: &str,
+    priority: u16,
+    name: &str,
+) -> Result<u64, String> {
+    firewall_add_rule_in(
+        default_runtime(),
+        action,
+        direction,
+        src_ip,
+        dst_ip,
+        protocol,
+        src_port,
+        dst_port,
+        priority,
+        name,
+    )
+    .await
+}
+
+pub async fn firewall_add_rule_in(
+    runtime: NetRuntimeHandle,
     action: &str,
     direction: &str,
     src_ip: &str,
@@ -213,11 +261,15 @@ pub async fn firewall_add_rule(
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn firewall_remove_rule(id: u64) -> Result<bool, String> {
+    firewall_remove_rule_in(default_runtime(), id).await
+}
+
+pub async fn firewall_remove_rule_in(runtime: NetRuntimeHandle, id: u64) -> Result<bool, String> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<Result<bool, String>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::FirewallRemoveRule {
@@ -225,20 +277,32 @@ pub async fn firewall_remove_rule(id: u64) -> Result<bool, String> {
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn firewall_clear_rules() -> Result<(), String> {
+    firewall_clear_rules_in(default_runtime()).await
+}
+
+pub async fn firewall_clear_rules_in(runtime: NetRuntimeHandle) -> Result<(), String> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<Result<(), String>>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::FirewallClearRules { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn firewall_set_default_policy(direction: &str, action: &str) -> Result<(), String> {
+    firewall_set_default_policy_in(default_runtime(), direction, action).await
+}
+
+pub async fn firewall_set_default_policy_in(
+    runtime: NetRuntimeHandle,
+    direction: &str,
+    action: &str,
+) -> Result<(), String> {
     let direction = parse_direction(direction)?;
     let action = parse_action(action)?;
     let (result_slot, waker, command_future) =
@@ -249,7 +313,7 @@ pub async fn firewall_set_default_policy(direction: &str, action: &str) -> Resul
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 

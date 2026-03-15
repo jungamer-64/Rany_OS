@@ -53,6 +53,7 @@ pub enum DhcpV6State {
 
 /// シンプルな DHCPv6 クライアント実装（IA_NA サポート）
 pub struct DhcpV6Client {
+    runtime: crate::net::runtime::NetRuntimeHandle,
     mac: crate::net::l2::ethernet::MacAddress,
     duid: Vec<u8>,
     state: PoisonLock<DhcpV6State>,
@@ -98,7 +99,7 @@ impl DhcpV6Client {
         }
 
         // 初回のみスタックロックで取得してキャッシュ
-        let result = match crate::net::runtime::stack::stack().lock() {
+        let result = match crate::net::runtime::stack::stack_in(self.runtime).lock() {
             Ok(guard) => guard
                 .as_ref()
                 .and_then(|s| s.config().ipv6.map(|c| c.link_local)),
@@ -119,7 +120,9 @@ impl DhcpV6Client {
 
     /// 非同期イベントキュー経由でUDPv6パケットを送信（ロック競合回避）
     fn enqueue_v6_send(&self, src: Ipv6Address, dst: Ipv6Address, data: &[u8]) -> bool {
-        crate::net::runtime::stack::enqueue_udp_v6_send(
+        crate::net::runtime::stack::enqueue_udp_v6_send_scoped_in(
+            self.runtime,
+            crate::net::types::InterfaceScope::Any,
             DHCPV6_CLIENT_PORT,
             src,
             dst,
@@ -141,11 +144,19 @@ impl DhcpV6Client {
     }
 
     pub fn new(mac: crate::net::l2::ethernet::MacAddress) -> Self {
+        Self::new_in(crate::net::runtime::default_runtime(), mac)
+    }
+
+    pub fn new_in(
+        runtime: crate::net::runtime::NetRuntimeHandle,
+        mac: crate::net::l2::ethernet::MacAddress,
+    ) -> Self {
         let duid = Self::make_duid_ll(&mac);
         // MAC アドレスベースの IAID（一意だが予測困難性は不要）
         let mac_bytes = mac.as_bytes();
         let iaid = u32::from_be_bytes([mac_bytes[2], mac_bytes[3], mac_bytes[4], mac_bytes[5]]);
         Self {
+            runtime,
             mac,
             duid,
             state: PoisonLock::new(DhcpV6State::Init),
@@ -162,9 +173,10 @@ impl DhcpV6Client {
 
     /// DHCPv6 クライアントのメインループ（非同期）
     pub async fn run(&self) -> Result<(), &'static str> {
-        let socket = crate::net::runtime::stack::bind_udp_endpoint(DHCPV6_CLIENT_PORT)
-            .await
-            .ok_or("Failed to bind DHCPv6 socket")?;
+        let socket =
+            crate::net::runtime::stack::bind_udp_endpoint_in(self.runtime, DHCPV6_CLIENT_PORT)
+                .await
+                .ok_or("Failed to bind DHCPv6 socket")?;
 
         log::info!("[NET] DHCPv6 client task started");
 
@@ -963,7 +975,8 @@ impl DhcpV6Client {
                 }
 
                 // Apply IPv6 address to the running NetworkStack (fire-and-forget via event queue)
-                crate::net::l4::endpoint::event::enqueue_event_ignore(
+                crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                    self.runtime,
                     crate::net::l4::endpoint::event::NetworkEvent::ApplyIpv6Address {
                         addr: lease.addr.octets(),
                         result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
@@ -1235,20 +1248,24 @@ impl DhcpV6Client {
     }
 }
 
-// Global singleton for DHCPv6 client (optional)
-pub(crate) static DHCPV6_CLIENT: PoisonLock<Option<DhcpV6Client>> = PoisonLock::new(None);
-
 /// DHCPv6 クライアントをグローバルに初期化
 pub fn init_v6(mac_address: crate::net::l2::ethernet::MacAddress) {
-    let client = DhcpV6Client::new(mac_address);
-    match DHCPV6_CLIENT.lock() {
+    init_v6_in(crate::net::runtime::default_runtime(), mac_address);
+}
+
+pub fn init_v6_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    mac_address: crate::net::l2::ethernet::MacAddress,
+) {
+    let client = DhcpV6Client::new_in(runtime, mac_address);
+    match super::legacy_v6_client_lock_in(runtime).lock() {
         Ok(mut g) => *g = Some(client),
         Err(_) => log::error!("[NET] DHCPv6 Global lock poisoned (init) - initialization skipped"),
     }
 }
 
 pub(crate) fn update_client_v6_mac(mac_address: crate::net::l2::ethernet::MacAddress) {
-    match DHCPV6_CLIENT.lock() {
+    match super::legacy_v6_client_lock().lock() {
         Ok(mut guard) => {
             if let Some(client) = guard.as_mut() {
                 client.mac = mac_address;

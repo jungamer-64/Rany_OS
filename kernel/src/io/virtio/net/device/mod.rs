@@ -17,6 +17,7 @@ mod mac;
 mod registry;
 mod rx;
 mod tx;
+pub(crate) use registry::VirtioNetRegistryState;
 pub use registry::*;
 
 const BOUNCE_POOL_CAPACITY: usize = 256;

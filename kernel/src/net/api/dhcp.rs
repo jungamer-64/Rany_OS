@@ -13,6 +13,7 @@ use core::task::{Context, Poll};
 use crate::net::l4::endpoint::tcb_table;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::net::services::dhcp;
 use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
@@ -136,7 +137,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         // Spawn DHCPv6 client task only when IPv6 is configured for the active stack.
         crate::task::spawn_task(crate::task::Task::new(async move {
             let client_ref: Option<&'static dhcp::DhcpV6Client> = {
-                let guard = match dhcp::DHCPV6_CLIENT.lock() {
+                let guard = match dhcp::legacy_v6_client_lock().lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };
@@ -194,6 +195,10 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
 }
 
 fn snapshot_for_interface(if_id: NetIfId) -> DhcpRuntimeState {
+    snapshot_for_interface_in(default_runtime(), if_id)
+}
+
+fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
     let now = tcb_table().get_current_tick();
     let tick_rate = 1000u64;
     let mut out = DhcpRuntimeState {
@@ -208,7 +213,7 @@ fn snapshot_for_interface(if_id: NetIfId) -> DhcpRuntimeState {
         v6_valid_remaining: None,
     };
 
-    if let Some(client) = dhcp::interface_v4_client(if_id) {
+    if let Some(client) = dhcp::interface_v4_client_in(runtime, if_id) {
         out.v4_state = String::from(dhcp_v4_state_name(client.state()));
         if let Some(lease) = client.lease() {
             out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
@@ -223,8 +228,8 @@ fn snapshot_for_interface(if_id: NetIfId) -> DhcpRuntimeState {
         out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
     }
 
-    if crate::net::runtime::device::primary_if() == Some(if_id) {
-        match dhcp::DHCPV6_CLIENT.lock() {
+    if crate::net::runtime::device::primary_if_in(runtime) == Some(if_id) {
+        match dhcp::legacy_v6_client_lock_in(runtime).lock() {
             Ok(guard6) => {
                 if let Some(ref client6) = *guard6 {
                     out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
@@ -253,16 +258,29 @@ fn snapshot_for_interface(if_id: NetIfId) -> DhcpRuntimeState {
 }
 
 pub(crate) fn get_dhcp_state_sync(if_id: NetIfId) -> DhcpRuntimeState {
-    snapshot_for_interface(if_id)
+    get_dhcp_state_sync_in(default_runtime(), if_id)
+}
+
+pub(crate) fn get_dhcp_state_sync_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> DhcpRuntimeState {
+    snapshot_for_interface_in(runtime, if_id)
 }
 
 pub(crate) fn list_dhcp_states_sync() -> alloc::vec::Vec<InterfaceDhcpState> {
-    manager::list_interfaces()
+    list_dhcp_states_sync_in(default_runtime())
+}
+
+pub(crate) fn list_dhcp_states_sync_in(
+    runtime: NetRuntimeHandle,
+) -> alloc::vec::Vec<InterfaceDhcpState> {
+    manager::list_interfaces_in(runtime)
         .unwrap_or_default()
         .into_iter()
         .map(|iface| InterfaceDhcpState {
             if_id: iface.if_id.0,
-            state: snapshot_for_interface(iface.if_id),
+            state: snapshot_for_interface_in(runtime, iface.if_id),
         })
         .collect()
 }
@@ -272,6 +290,10 @@ pub(crate) fn list_dhcp_states_sync() -> alloc::vec::Vec<InterfaceDhcpState> {
 /// DHCPv4/v6クライアントの現在の状態をスナップショットとして取得する。
 /// 読み取り専用のためロック保持時間は最小限。
 pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
+    dhcp_state_sync_in(default_runtime())
+}
+
+pub(crate) fn dhcp_state_sync_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
     let now = tcb_table().get_current_tick();
     let tick_rate = 1000u64;
 
@@ -287,7 +309,7 @@ pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
         v6_valid_remaining: None,
     };
 
-    if let Some(client) = dhcp::primary_v4_client() {
+    if let Some(client) = dhcp::primary_v4_client_in(runtime) {
         out.v4_state = String::from(dhcp_v4_state_name(client.state()));
         if let Some(lease) = client.lease() {
             out.v4_assigned_ip = Some(*lease.ip_address.as_bytes());
@@ -301,7 +323,7 @@ pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
         out.v4_last_declined = client.last_declined_ip().map(|ip| *ip.as_bytes());
         out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
     } else {
-        match dhcp::DHCP_CLIENT.lock() {
+        match dhcp::legacy_v4_client_lock_in(runtime).lock() {
             Ok(guard) => {
                 if let Some(ref client) = *guard {
                     out.v4_state = String::from(dhcp_v4_state_name(client.state()));
@@ -322,7 +344,7 @@ pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
         }
     }
 
-    match dhcp::DHCPV6_CLIENT.lock() {
+    match dhcp::legacy_v6_client_lock_in(runtime).lock() {
         Ok(guard6) => {
             if let Some(ref client6) = *guard6 {
                 out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
@@ -355,6 +377,10 @@ pub(crate) fn dhcp_state_sync() -> DhcpRuntimeState {
 ///
 /// イベントキュー経由でDHCPクライアントにアクセスし、同期ロックを回避する。
 pub async fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
+    get_dhcp_state_in(default_runtime(), if_id).await
+}
+
+pub async fn get_dhcp_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetDhcpState {
@@ -362,20 +388,28 @@ pub async fn get_dhcp_state(if_id: NetIfId) -> DhcpRuntimeState {
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_dhcp_states() -> alloc::vec::Vec<InterfaceDhcpState> {
+    list_dhcp_states_in(default_runtime()).await
+}
+
+pub async fn list_dhcp_states_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceDhcpState> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<alloc::vec::Vec<InterfaceDhcpState>>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::ListDhcpStates { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn dhcp_state() -> DhcpRuntimeState {
+    dhcp_state_in(default_runtime()).await
+}
+
+pub async fn dhcp_state_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetDhcpState {
@@ -383,20 +417,22 @@ pub async fn dhcp_state() -> DhcpRuntimeState {
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 /// 非同期DHCPリニューFuture
 pub struct DhcpRenewFuture {
+    runtime: NetRuntimeHandle,
     result_slot: Arc<PoisonLock<Option<Result<(), String>>>>,
     waker: Arc<AtomicWaker>,
     sent: bool,
 }
 
 impl DhcpRenewFuture {
-    fn new() -> Self {
+    fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             result_slot: Arc::new(PoisonLock::new(None)),
             waker: Arc::new(AtomicWaker::new()),
             sent: false,
@@ -411,7 +447,8 @@ impl Future for DhcpRenewFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::DhcpRenew {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
@@ -437,19 +474,25 @@ impl Future for DhcpRenewFuture {
 /// let result = dhcp_renew().await;
 /// ```
 pub fn dhcp_renew() -> DhcpRenewFuture {
-    DhcpRenewFuture::new()
+    dhcp_renew_in(default_runtime())
+}
+
+pub fn dhcp_renew_in(runtime: NetRuntimeHandle) -> DhcpRenewFuture {
+    DhcpRenewFuture::new(runtime)
 }
 
 /// 非同期DHCPリリースFuture
 pub struct DhcpReleaseFuture {
+    runtime: NetRuntimeHandle,
     result_slot: Arc<PoisonLock<Option<bool>>>,
     waker: Arc<AtomicWaker>,
     sent: bool,
 }
 
 impl DhcpReleaseFuture {
-    fn new() -> Self {
+    fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             result_slot: Arc::new(PoisonLock::new(None)),
             waker: Arc::new(AtomicWaker::new()),
             sent: false,
@@ -464,7 +507,8 @@ impl Future for DhcpReleaseFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::DhcpRelease {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
@@ -488,19 +532,25 @@ impl Future for DhcpReleaseFuture {
 /// let released = dhcp_release().await;
 /// ```
 pub fn dhcp_release() -> DhcpReleaseFuture {
-    DhcpReleaseFuture::new()
+    dhcp_release_in(default_runtime())
+}
+
+pub fn dhcp_release_in(runtime: NetRuntimeHandle) -> DhcpReleaseFuture {
+    DhcpReleaseFuture::new(runtime)
 }
 
 /// 非同期DHCPディスカバーFuture
 pub struct DhcpDiscoverFuture {
+    runtime: NetRuntimeHandle,
     result_slot: Arc<PoisonLock<Option<Option<DhcpOfferInfo>>>>,
     waker: Arc<AtomicWaker>,
     sent: bool,
 }
 
 impl DhcpDiscoverFuture {
-    fn new() -> Self {
+    fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             result_slot: Arc::new(PoisonLock::new(None)),
             waker: Arc::new(AtomicWaker::new()),
             sent: false,
@@ -515,7 +565,8 @@ impl Future for DhcpDiscoverFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::DhcpDiscover {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
@@ -539,19 +590,25 @@ impl Future for DhcpDiscoverFuture {
 /// let offer = dhcp_discover().await;
 /// ```
 pub fn dhcp_discover() -> DhcpDiscoverFuture {
-    DhcpDiscoverFuture::new()
+    dhcp_discover_in(default_runtime())
+}
+
+pub fn dhcp_discover_in(runtime: NetRuntimeHandle) -> DhcpDiscoverFuture {
+    DhcpDiscoverFuture::new(runtime)
 }
 
 /// 非同期DHCP最終拒否IP取得Future
 pub struct DhcpLastDeclinedFuture {
+    runtime: NetRuntimeHandle,
     result_slot: Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
     waker: Arc<AtomicWaker>,
     sent: bool,
 }
 
 impl DhcpLastDeclinedFuture {
-    fn new() -> Self {
+    fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             result_slot: Arc::new(PoisonLock::new(None)),
             waker: Arc::new(AtomicWaker::new()),
             sent: false,
@@ -566,7 +623,8 @@ impl Future for DhcpLastDeclinedFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::DhcpLastDeclined {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
@@ -585,19 +643,25 @@ impl Future for DhcpLastDeclinedFuture {
 
 /// 非同期DHCP最終拒否IP取得（推奨API）
 pub fn dhcp_last_declined() -> DhcpLastDeclinedFuture {
-    DhcpLastDeclinedFuture::new()
+    dhcp_last_declined_in(default_runtime())
+}
+
+pub fn dhcp_last_declined_in(runtime: NetRuntimeHandle) -> DhcpLastDeclinedFuture {
+    DhcpLastDeclinedFuture::new(runtime)
 }
 
 /// 非同期DHCP最終解放IP取得Future
 pub struct DhcpLastReleasedFuture {
+    runtime: NetRuntimeHandle,
     result_slot: Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
     waker: Arc<AtomicWaker>,
     sent: bool,
 }
 
 impl DhcpLastReleasedFuture {
-    fn new() -> Self {
+    fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             result_slot: Arc::new(PoisonLock::new(None)),
             waker: Arc::new(AtomicWaker::new()),
             sent: false,
@@ -612,7 +676,8 @@ impl Future for DhcpLastReleasedFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event(
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::DhcpLastReleased {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
@@ -631,11 +696,57 @@ impl Future for DhcpLastReleasedFuture {
 
 /// 非同期DHCP最終解放IP取得（推奨API）
 pub fn dhcp_last_released() -> DhcpLastReleasedFuture {
-    DhcpLastReleasedFuture::new()
+    dhcp_last_released_in(default_runtime())
+}
+
+pub fn dhcp_last_released_in(runtime: NetRuntimeHandle) -> DhcpLastReleasedFuture {
+    DhcpLastReleasedFuture::new(runtime)
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::net::runtime::{create_runtime, default_runtime, reset_runtime_registry_for_tests};
+    use core::future::Future;
+
+    fn run_with_event_task_in<F>(
+        runtime: crate::net::runtime::NetRuntimeHandle,
+        future: F,
+    ) -> F::Output
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let mut executor = crate::task::TestExecutor::new();
+
+        let result_slot_clone = result_slot.clone();
+        let completed_clone = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            let output = future.await;
+            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(output);
+            completed_clone.store(true, core::sync::atomic::Ordering::Release);
+        }));
+        executor.spawn(crate::task::Task::new(async move {
+            crate::net::l4::endpoint::tcp_rx::network_event_task_in(runtime).await;
+        }));
+
+        let mut output = None;
+        for _ in 0..100_000 {
+            executor.drive_once_for_test();
+            if completed.load(core::sync::atomic::Ordering::Acquire) {
+                output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                break;
+            }
+        }
+
+        crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+        output.expect("dhcp api test future timed out")
+    }
+
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn dhcp_state_completes_with_event_task() {
@@ -668,5 +779,26 @@ mod tests {
             output.expect("dhcp_state test timed out")
         };
         assert!(!state.v4_state.is_empty());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn list_dhcp_states_uses_runtime_local_manager() {
+        reset_runtime_registry_for_tests();
+
+        let runtime_a = default_runtime();
+        let runtime_b = create_runtime();
+
+        manager::init_network_manager_in(runtime_a);
+        manager::init_network_manager_in(runtime_b);
+
+        manager::register_interface_in(runtime_a, "dhcp-a0").expect("runtime a interface");
+        let if_b0 =
+            manager::register_interface_in(runtime_b, "dhcp-b0").expect("runtime b interface");
+
+        let states = run_with_event_task_in(runtime_b, super::list_dhcp_states_in(runtime_b));
+
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].if_id, if_b0.0);
     }
 }

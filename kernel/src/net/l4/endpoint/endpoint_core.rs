@@ -10,11 +10,12 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::sync::poison_lock::PoisonLock;
 
 use crate::net::l4::tcp::TcpStream;
 
-use super::event::{NetworkEvent, enqueue_event, enqueue_event_ignore};
+use super::event::{NetworkEvent, enqueue_event_ignore_in, enqueue_event_in};
 use super::inner::EndpointInner;
 use super::manager::ENDPOINT_MANAGER;
 use super::types::{
@@ -27,6 +28,8 @@ pub struct Endpoint {
     fd: EndpointFd,
     /// エンドポイントタイプ（不変）
     endpoint_type: EndpointType,
+    /// 所属するネットワークランタイム
+    runtime: NetRuntimeHandle,
     /// 内部状態（Arc<PoisonLock>で保護 — 設計書 8.4準拠）
     inner: Arc<PoisonLock<EndpointInner>>,
 }
@@ -34,19 +37,35 @@ pub struct Endpoint {
 impl Endpoint {
     /// 新規エンドポイント作成
     pub fn new(endpoint_type: EndpointType) -> Self {
+        Self::new_in(endpoint_type, default_runtime())
+    }
+
+    /// 指定ランタイムの新規エンドポイント作成
+    pub fn new_in(endpoint_type: EndpointType, runtime: NetRuntimeHandle) -> Self {
         let fd = EndpointFd::from_raw(NEXT_FD.fetch_add(1, Ordering::Relaxed));
         Self {
             fd,
             endpoint_type,
+            runtime,
             inner: Arc::new(PoisonLock::new(EndpointInner::new())),
         }
     }
 
     /// 指定FDでエンドポイント作成（Accept用）
     pub fn new_with_fd(endpoint_type: EndpointType, fd: EndpointFd) -> Self {
+        Self::new_with_fd_in(endpoint_type, fd, default_runtime())
+    }
+
+    /// 指定FD・ランタイムでエンドポイント作成（Accept用）
+    pub fn new_with_fd_in(
+        endpoint_type: EndpointType,
+        fd: EndpointFd,
+        runtime: NetRuntimeHandle,
+    ) -> Self {
         Self {
             fd,
             endpoint_type,
+            runtime,
             inner: Arc::new(PoisonLock::new(EndpointInner::new())),
         }
     }
@@ -61,6 +80,12 @@ impl Endpoint {
     #[inline(always)]
     pub const fn socket_type(&self) -> EndpointType {
         self.endpoint_type
+    }
+
+    /// 所属ランタイム取得
+    #[inline(always)]
+    pub const fn runtime(&self) -> NetRuntimeHandle {
+        self.runtime
     }
 
     /// 現在の状態取得
@@ -138,11 +163,14 @@ impl Endpoint {
         }
 
         // TCPスタックに接続イベントを送信（バックプレッシャー対応）
-        enqueue_event(NetworkEvent::Connect {
-            fd: self.fd,
-            local: local_addr,
-            remote: addr,
-        })
+        enqueue_event_in(
+            self.runtime,
+            NetworkEvent::Connect {
+                fd: self.fd,
+                local: local_addr,
+                remote: addr,
+            },
+        )
     }
 
     /// リッスンモードを開始（同期TCP bind）
@@ -168,18 +196,21 @@ impl Endpoint {
 
             // 同期TCP bind（ブートストラップ/テスト用）
             let tcp_addr = local_addr;
-            let listener = crate::net::runtime::stack::bind_tcp_sync(tcp_addr)
+            let listener = crate::net::runtime::stack::bind_tcp_sync_in(self.runtime, tcp_addr)
                 .map_err(|_| EndpointError::AddressInUse)?;
             inner.ensure_tcp().listener = Some(listener);
             inner.transition_to(EndpointState::Listening)?;
         }
 
         // ネットワークスタックにリッスンイベントを送信（バックプレッシャー対応）
-        enqueue_event(NetworkEvent::Listen {
-            fd: self.fd,
-            local: local_addr,
-            backlog,
-        })
+        enqueue_event_in(
+            self.runtime,
+            NetworkEvent::Listen {
+                fd: self.fd,
+                local: local_addr,
+                backlog,
+            },
+        )
     }
 
     /// 次の接続を取得（同期バッファ読み取り）
@@ -200,7 +231,7 @@ impl Endpoint {
         // Acceptキューから接続を取得
         if let Some(conn) = inner.tcp_mut().and_then(|t| t.accept_queue.pop_front()) {
             // 新しいソケットを作成
-            let new_socket = Endpoint::new_with_fd(EndpointType::Tcp, conn.fd);
+            let new_socket = Endpoint::new_with_fd_in(EndpointType::Tcp, conn.fd, self.runtime);
             {
                 let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
@@ -260,7 +291,7 @@ impl Endpoint {
             return Err(EndpointError::InvalidStateTransition);
         }
 
-        let new_socket = Endpoint::new(EndpointType::Tcp);
+        let new_socket = Endpoint::new_in(EndpointType::Tcp, self.runtime);
         {
             let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
             new_inner.local_addr = inner.local_addr;
@@ -289,10 +320,13 @@ impl Endpoint {
 
         // 送信データがあることをネットワークスタックに通知（バックプレッシャー対応）
         if len > 0 {
-            enqueue_event(NetworkEvent::DataReady {
-                fd: self.fd,
-                endpoint_type: self.endpoint_type,
-            })?;
+            enqueue_event_in(
+                self.runtime,
+                NetworkEvent::DataReady {
+                    fd: self.fd,
+                    endpoint_type: self.endpoint_type,
+                },
+            )?;
         }
 
         Ok(len)
@@ -333,11 +367,14 @@ impl Endpoint {
         }
 
         // UDPパケット送信イベント（バックプレッシャー対応）
-        enqueue_event(NetworkEvent::SendTo {
-            fd: self.fd,
-            data: data.to_vec(),
-            remote: addr,
-        })?;
+        enqueue_event_in(
+            self.runtime,
+            NetworkEvent::SendTo {
+                fd: self.fd,
+                data: data.to_vec(),
+                remote: addr,
+            },
+        )?;
 
         Ok(data.len())
     }
@@ -430,7 +467,7 @@ impl Endpoint {
         }
 
         // ネットワークスタックにクローズを通知（エラーは無視 - クローズは必ず進める）
-        enqueue_event_ignore(NetworkEvent::Close { fd: self.fd });
+        enqueue_event_ignore_in(self.runtime, NetworkEvent::Close { fd: self.fd });
 
         Ok(())
     }
@@ -478,10 +515,13 @@ impl Endpoint {
         }
 
         // ネットワークスタックに通知（接続済みの場合、TCBに反映させる）
-        enqueue_event(NetworkEvent::SetNoDelay {
-            fd: self.fd,
-            nodelay,
-        })
+        enqueue_event_in(
+            self.runtime,
+            NetworkEvent::SetNoDelay {
+                fd: self.fd,
+                nodelay,
+            },
+        )
     }
 
     /// QoS優先度 (DSCP) を設定
@@ -492,10 +532,13 @@ impl Endpoint {
         }
 
         // ネットワークスタックに通知
-        enqueue_event(NetworkEvent::SetPriority {
-            fd: self.fd,
-            priority: priority & 0x3F,
-        })
+        enqueue_event_in(
+            self.runtime,
+            NetworkEvent::SetPriority {
+                fd: self.fd,
+                priority: priority & 0x3F,
+            },
+        )
     }
 
     // =====================================================
@@ -620,6 +663,7 @@ impl Clone for Endpoint {
         Self {
             fd: self.fd,
             endpoint_type: self.endpoint_type,
+            runtime: self.runtime,
             inner: Arc::clone(&self.inner),
         }
     }
@@ -637,7 +681,12 @@ pub struct OwnedEndpoint {
 impl OwnedEndpoint {
     /// 新規OwnedEndpoint作成
     pub fn new(ep_type: EndpointType) -> Self {
-        let ep = Endpoint::new(ep_type);
+        Self::new_in(default_runtime(), ep_type)
+    }
+
+    /// 指定ランタイムの新規OwnedEndpoint作成
+    pub fn new_in(runtime: NetRuntimeHandle, ep_type: EndpointType) -> Self {
+        let ep = Endpoint::new_in(ep_type, runtime);
         // EndpointManagerに登録
         if let Some(ref manager) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
             manager.register(ep.clone());
@@ -650,6 +699,11 @@ impl OwnedEndpoint {
         Self {
             endpoint: Some(endpoint),
         }
+    }
+
+    /// 所属ランタイム取得
+    pub fn runtime(&self) -> Option<NetRuntimeHandle> {
+        self.endpoint.as_ref().map(Endpoint::runtime)
     }
 
     /// ファイルディスクリプタ取得
@@ -803,7 +857,12 @@ impl Drop for OwnedEndpoint {
 
 /// TCPソケット作成
 pub fn create_tcp_endpoint() -> OwnedEndpoint {
-    OwnedEndpoint::new(EndpointType::Tcp)
+    create_tcp_endpoint_in(default_runtime())
+}
+
+/// 指定ランタイムのTCPソケット作成
+pub fn create_tcp_endpoint_in(runtime: NetRuntimeHandle) -> OwnedEndpoint {
+    OwnedEndpoint::new_in(runtime, EndpointType::Tcp)
 }
 
 /// TCPソケット作成（輻輳制御アルゴリズム指定）
@@ -813,7 +872,15 @@ pub fn create_tcp_endpoint() -> OwnedEndpoint {
 pub fn create_tcp_endpoint_with_algorithm(
     algorithm: super::congestion::CongestionAlgorithm,
 ) -> OwnedEndpoint {
-    let ep = OwnedEndpoint::new(EndpointType::Tcp);
+    create_tcp_endpoint_with_algorithm_in(default_runtime(), algorithm)
+}
+
+/// 指定ランタイムのTCPソケット作成（輻輳制御アルゴリズム指定）
+pub fn create_tcp_endpoint_with_algorithm_in(
+    runtime: NetRuntimeHandle,
+    algorithm: super::congestion::CongestionAlgorithm,
+) -> OwnedEndpoint {
+    let ep = OwnedEndpoint::new_in(runtime, EndpointType::Tcp);
     if let Some(inner_ep) = ep.endpoint() {
         let mut inner = inner_ep.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.ensure_tcp().congestion_algorithm = Some(algorithm);
@@ -823,12 +890,22 @@ pub fn create_tcp_endpoint_with_algorithm(
 
 /// UDPソケット作成
 pub fn create_udp_endpoint() -> OwnedEndpoint {
-    OwnedEndpoint::new(EndpointType::Udp)
+    create_udp_endpoint_in(default_runtime())
+}
+
+/// 指定ランタイムのUDPソケット作成
+pub fn create_udp_endpoint_in(runtime: NetRuntimeHandle) -> OwnedEndpoint {
+    OwnedEndpoint::new_in(runtime, EndpointType::Udp)
 }
 
 /// RAWソケット作成
 pub fn create_raw_endpoint() -> OwnedEndpoint {
-    OwnedEndpoint::new(EndpointType::Raw)
+    create_raw_endpoint_in(default_runtime())
+}
+
+/// 指定ランタイムのRAWソケット作成
+pub fn create_raw_endpoint_in(runtime: NetRuntimeHandle) -> OwnedEndpoint {
+    OwnedEndpoint::new_in(runtime, EndpointType::Raw)
 }
 
 /// UDPエンドポイント作成とローカルアドレス設定（推奨API）
@@ -837,10 +914,6 @@ pub fn create_udp_endpoint_bound_sync(addr: EndpointAddr) -> EndpointResult<Owne
     ep.set_local_addr(addr)?;
     Ok(ep)
 }
-
-// =====================================================
-// 非同期便利関数 - Async-First API
-// =====================================================
 
 /// 非同期TCPサーバー作成（推奨API）
 ///
@@ -856,7 +929,16 @@ pub fn create_udp_endpoint_bound_sync(addr: EndpointAddr) -> EndpointResult<Owne
 /// }
 /// ```
 pub async fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResult<OwnedEndpoint> {
-    let ep = create_tcp_endpoint();
+    create_tcp_server_in(default_runtime(), addr, backlog).await
+}
+
+/// 指定ランタイムの非同期TCPサーバー作成
+pub async fn create_tcp_server_in(
+    runtime: NetRuntimeHandle,
+    addr: EndpointAddr,
+    backlog: u32,
+) -> EndpointResult<OwnedEndpoint> {
+    let ep = create_tcp_endpoint_in(runtime);
     ep.set_local_addr(addr)?;
     let fut = ep.start_listening(backlog).ok_or(EndpointError::NotFound)?;
     fut.await?;
@@ -874,7 +956,15 @@ pub async fn create_tcp_server(addr: EndpointAddr, backlog: u32) -> EndpointResu
 /// let conn = open_tcp_connection(addr).await?;
 /// ```
 pub async fn open_tcp_connection(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
-    let ep = create_tcp_endpoint();
+    open_tcp_connection_in(default_runtime(), addr).await
+}
+
+/// 指定ランタイムの非同期TCP接続
+pub async fn open_tcp_connection_in(
+    runtime: NetRuntimeHandle,
+    addr: EndpointAddr,
+) -> EndpointResult<OwnedEndpoint> {
+    let ep = create_tcp_endpoint_in(runtime);
     let fut = ep.open_connection(addr).ok_or(EndpointError::NotFound)?;
     fut.await?;
     Ok(ep)
@@ -890,11 +980,19 @@ pub async fn open_tcp_connection(addr: EndpointAddr) -> EndpointResult<OwnedEndp
 /// let udp = create_udp_endpoint_bound(addr).await?;
 /// ```
 pub async fn create_udp_endpoint_bound(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
-    let ep = create_udp_endpoint();
+    create_udp_endpoint_bound_in(default_runtime(), addr).await
+}
+
+/// 指定ランタイムの非同期UDPエンドポイント作成とバインド
+pub async fn create_udp_endpoint_bound_in(
+    runtime: NetRuntimeHandle,
+    addr: EndpointAddr,
+) -> EndpointResult<OwnedEndpoint> {
+    let ep = create_udp_endpoint_in(runtime);
     ep.set_local_addr(addr)?;
 
     // UDPソケットを非同期でbind（イベントキュー経由）
-    let udp_bind_future = crate::net::runtime::stack::bind_udp_endpoint(addr.port());
+    let udp_bind_future = crate::net::runtime::stack::bind_udp_endpoint_in(runtime, addr.port());
     if let Some(udp_ep) = udp_bind_future.await {
         if let Some(inner_ep) = ep.endpoint() {
             let mut inner = inner_ep.inner().lock().unwrap_or_else(|e| e.into_inner());

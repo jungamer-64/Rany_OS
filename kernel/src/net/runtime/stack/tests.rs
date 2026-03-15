@@ -22,7 +22,7 @@ struct ManagerStateGuard {
 impl ManagerStateGuard {
     fn new() -> Self {
         let prev_manager = {
-            let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
+            let mut guard = crate::net::runtime::manager::network_manager()
                 .lock_for_init("[TEST][STACK] manager snapshot");
             core::mem::take(&mut *guard)
         };
@@ -33,7 +33,7 @@ impl ManagerStateGuard {
 
 impl Drop for ManagerStateGuard {
     fn drop(&mut self) {
-        let mut guard = crate::net::runtime::manager::NETWORK_MANAGER
+        let mut guard = crate::net::runtime::manager::network_manager()
             .lock_for_init("[TEST][STACK] manager restore");
         *guard = self.prev_manager.take();
         *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -76,6 +76,42 @@ where
     output.expect("network stack test future timed out")
 }
 
+fn run_with_event_task_in<F>(runtime: crate::net::runtime::NetRuntimeHandle, future: F) -> F::Output
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+
+    let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+    let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let mut executor = crate::task::TestExecutor::new();
+
+    let result_slot_clone = result_slot.clone();
+    let completed_clone = completed.clone();
+    executor.spawn(crate::task::Task::new(async move {
+        let output = future.await;
+        let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+        *slot = Some(output);
+        completed_clone.store(true, core::sync::atomic::Ordering::Release);
+    }));
+    executor.spawn(crate::task::Task::new(async move {
+        crate::net::l4::endpoint::tcp_rx::network_event_task_in(runtime).await;
+    }));
+
+    let mut output = None;
+    for _ in 0..100_000 {
+        executor.drive_once_for_test();
+        if completed.load(core::sync::atomic::Ordering::Acquire) {
+            output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            break;
+        }
+    }
+
+    crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+    output.expect("network stack test future timed out")
+}
+
 #[cfg_attr(test, test_case)]
 pub fn test_network_stack_creation() {
     let stack = NetworkStack::new_default();
@@ -96,7 +132,7 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
     init_default();
 
     set_panicking(true);
-    if let Ok(_g) = NETWORK_STACK.lock() {
+    if let Ok(_g) = stack().lock() {
         // Dropping _g while panicking marks the lock poisoned
     }
     set_panicking(false);
@@ -217,6 +253,54 @@ pub fn test_send_icmp_event_dispatch_smoke() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_runtime_scoped_event_task_reads_runtime_local_stack() {
+    crate::net::runtime::context::reset_runtime_registry_for_tests();
+
+    let default_runtime = crate::net::runtime::default_runtime();
+    let other_runtime = crate::net::runtime::create_runtime();
+
+    let default_ipv6 =
+        crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x11]);
+    let other_ipv6 =
+        crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x22]);
+
+    {
+        let mut guard = default_runtime
+            .context()
+            .stack
+            .lock_for_init("[TEST][STACK] default runtime init");
+        *guard = Some(NetworkStack::new(NetworkConfig {
+            ipv6: Some(default_ipv6),
+            ..NetworkConfig::default()
+        }));
+    }
+    {
+        let mut guard = other_runtime
+            .context()
+            .stack
+            .lock_for_init("[TEST][STACK] other runtime init");
+        *guard = Some(NetworkStack::new(NetworkConfig {
+            ipv6: Some(other_ipv6),
+            ..NetworkConfig::default()
+        }));
+    }
+
+    let link_local = run_with_event_task_in(other_runtime, async move {
+        let (result_slot, waker, command_future) =
+            crate::net::runtime::stack::new_command_channel::<Option<[u8; 16]>>();
+        let _ = crate::net::l4::endpoint::event::send_event_in(
+            other_runtime,
+            crate::net::l4::endpoint::event::NetworkEvent::GetLinkLocal { result_slot, waker },
+        )
+        .await;
+        command_future.await
+    });
+
+    assert_eq!(link_local, Some(other_ipv6.link_local.octets()));
+    assert_ne!(link_local, Some(default_ipv6.link_local.octets()));
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     init_default();
 
@@ -225,7 +309,7 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
 
     let xid = {
         let mut discover = [0u8; crate::net::services::dhcp::DHCP_MAX_MESSAGE_SIZE];
-        let guard = match crate::net::services::dhcp::DHCP_CLIENT.lock() {
+        let guard = match crate::net::services::dhcp::legacy_v4_client_lock().lock() {
             Ok(g) => g,
             Err(_) => panic!("dhcp lock"),
         };
@@ -379,7 +463,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
     // simulate a conflict/decline via internal client API to verify state snapshot
     let test_ip = [192, 168, 123, 45];
     let server_ip = [192, 168, 123, 1];
-    if let Ok(guard) = crate::net::services::dhcp::DHCP_CLIENT.lock() {
+    if let Ok(guard) = crate::net::services::dhcp::legacy_v4_client_lock().lock() {
         if let Some(ref client) = *guard {
             let _ = client.send_decline(
                 crate::net::l3::ipv4::Ipv4Address::new(test_ip),

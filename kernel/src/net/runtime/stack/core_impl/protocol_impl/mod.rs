@@ -678,6 +678,20 @@ impl NetworkStack {
     /// Connect to a remote TCP address
     pub fn connect_tcp(
         &mut self,
+        local_addr: TcpEndpointAddr,
+        remote_addr: TcpEndpointAddr,
+    ) -> Result<TcpStream, TcpError> {
+        self.connect_tcp_in(
+            crate::net::runtime::default_runtime(),
+            local_addr,
+            remote_addr,
+        )
+    }
+
+    /// Connect to a remote TCP address in a specific runtime
+    pub fn connect_tcp_in(
+        &mut self,
+        runtime: crate::net::runtime::NetRuntimeHandle,
         mut local_addr: TcpEndpointAddr,
         remote_addr: TcpEndpointAddr,
     ) -> Result<TcpStream, TcpError> {
@@ -740,7 +754,7 @@ impl NetworkStack {
             };
         }
 
-        let stream = self.tcp.connect(local_addr, remote_addr)?;
+        let stream = self.tcp.connect_in(runtime, local_addr, remote_addr)?;
 
         // Send initial SYN
         let initial_seq = stream.initial_seq()?;

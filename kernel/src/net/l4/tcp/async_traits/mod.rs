@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 // ============================================================================
 // AsyncRead / AsyncWrite トレイト（POSIXソケット代替）
@@ -62,6 +63,7 @@ pub enum TcpError {
 #[derive(Debug)]
 pub struct TcpStream {
     pub(crate) tcb: Arc<PoisonLock<TcpControlBlock>>,
+    pub(crate) runtime: NetRuntimeHandle,
 }
 
 impl TcpStream {
@@ -69,19 +71,29 @@ impl TcpStream {
     ///
     /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
     pub async fn dial(addr: EndpointAddr) -> Result<Self, TcpError> {
+        Self::dial_in(default_runtime(), addr).await
+    }
+
+    /// 指定runtimeから指定アドレスに接続
+    pub async fn dial_in(runtime: NetRuntimeHandle, addr: EndpointAddr) -> Result<Self, TcpError> {
         // 完全非同期版: イベントキュー経由でconnectリクエストを送信
         // NETWORK_STACKロックはイベントハンドラ側で取得するため、
         // asyncタスクからの同期ロック取得を完全に回避する。
         let local_addr = EndpointAddr::new([0, 0, 0, 0], 0);
 
         // フェーズ1: イベントキュー経由でTCB作成とSYN送信を非同期リクエスト
-        let stream = crate::net::runtime::stack::connect_tcp_stream(local_addr, addr).await?;
+        let stream =
+            crate::net::runtime::stack::connect_tcp_stream_in(runtime, local_addr, addr).await?;
 
         // フェーズ2: 接続完了を非同期で待つ（SYN-ACK応答待機）
         let tcb = stream.tcb.clone();
         ConnectFuture { tcb }.await?;
 
         Ok(stream)
+    }
+
+    pub const fn runtime(&self) -> NetRuntimeHandle {
+        self.runtime
     }
 
     /// ローカルアドレスを取得
@@ -241,6 +253,7 @@ impl Clone for TcpStream {
     fn clone(&self) -> Self {
         TcpStream {
             tcb: self.tcb.clone(),
+            runtime: self.runtime,
         }
     }
 }
@@ -255,7 +268,8 @@ impl Drop for TcpStream {
             if let Ok(tcb) = self.tcb.lock() {
                 let local = tcb.local_addr();
                 if let Some(remote) = tcb.remote_addr() {
-                    crate::net::l4::endpoint::event::enqueue_event_ignore(
+                    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                        self.runtime,
                         crate::net::l4::endpoint::event::NetworkEvent::UnbindTcp {
                             local,
                             remote,
@@ -507,6 +521,7 @@ pub struct TcpListener {
     pub(crate) local_addr: EndpointAddr,
     pub(crate) backlog: Arc<PoisonLock<VecDeque<TcpStream>>>,
     pub(crate) accept_waker: Arc<crate::sync::atomic_waker::AtomicWaker>,
+    pub(crate) runtime: NetRuntimeHandle,
 }
 
 impl TcpListener {
@@ -515,14 +530,28 @@ impl TcpListener {
     /// 【設計書】POSIXのbind()と同様の動作
     /// イベントキュー経由で非同期にbindを実行し、ロック競合を回避する。
     pub async fn bind(addr: EndpointAddr) -> Result<Self, TcpError> {
-        crate::net::runtime::stack::bind_tcp_listener(addr).await
+        Self::bind_in(default_runtime(), addr).await
+    }
+
+    /// 指定runtimeで新しいリスナーを作成
+    pub async fn bind_in(runtime: NetRuntimeHandle, addr: EndpointAddr) -> Result<Self, TcpError> {
+        crate::net::runtime::stack::bind_tcp_listener_in(runtime, addr).await
     }
 
     /// 指定アドレスとトークンで新しいリスナーを作成
     ///
     /// イベントキュー経由で非同期にbindを実行する。
     pub async fn bind_with_token(addr: EndpointAddr, token: Option<u64>) -> Result<Self, TcpError> {
-        crate::net::runtime::stack::bind_tcp_listener_with_token(addr, token).await
+        Self::bind_with_token_in(default_runtime(), addr, token).await
+    }
+
+    /// 指定runtimeでトークン付きリスナーを作成
+    pub async fn bind_with_token_in(
+        runtime: NetRuntimeHandle,
+        addr: EndpointAddr,
+        token: Option<u64>,
+    ) -> Result<Self, TcpError> {
+        crate::net::runtime::stack::bind_tcp_listener_with_token_in(runtime, addr, token).await
     }
 
     // Legacy constructor `TcpListener::new` removed; use `TcpListener::bind(addr)` instead.
@@ -530,6 +559,10 @@ impl TcpListener {
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> EndpointAddr {
         self.local_addr
+    }
+
+    pub const fn runtime(&self) -> NetRuntimeHandle {
+        self.runtime
     }
 
     /// 次の接続を非同期で取得（推奨API）
@@ -557,7 +590,8 @@ impl Drop for TcpListener {
         // Automatically unbind the listener when the handle is dropped.
         // This prevents port leakage and DoS vulnerabilities.
         // イベントキュー経由で非同期unbindを送信（Drop内では同期ロックを回避）
-        crate::net::l4::endpoint::event::enqueue_event_ignore(
+        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+            self.runtime,
             crate::net::l4::endpoint::event::NetworkEvent::UnbindTcpListener {
                 local: self.local_addr,
                 result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
@@ -644,9 +678,19 @@ impl Future for ConnectTimeoutFuture {
 impl TcpStream {
     /// Connect with a timeout in microseconds
     pub async fn dial_timeout(addr: EndpointAddr, timeout_us: u64) -> Result<Self, TcpError> {
+        Self::dial_timeout_in(default_runtime(), addr, timeout_us).await
+    }
+
+    /// 指定runtimeでタイムアウト付き接続
+    pub async fn dial_timeout_in(
+        runtime: NetRuntimeHandle,
+        addr: EndpointAddr,
+        timeout_us: u64,
+    ) -> Result<Self, TcpError> {
         let local_addr = EndpointAddr::new([0, 0, 0, 0], 0);
         // 完全非同期版: イベントキュー経由でconnect
-        let stream = crate::net::runtime::stack::connect_tcp_stream(local_addr, addr).await?;
+        let stream =
+            crate::net::runtime::stack::connect_tcp_stream_in(runtime, local_addr, addr).await?;
         let start = crate::time::precise_time_nanos() / 1000;
         let tcb = stream.tcb.clone();
         ConnectTimeoutFuture {

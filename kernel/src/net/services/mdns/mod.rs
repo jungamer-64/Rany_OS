@@ -22,6 +22,7 @@ use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
+use crate::net::runtime::{NetRuntimeHandle, context::default_runtime_context, default_runtime};
 use crate::sync::PoisonLock;
 
 extern crate alloc;
@@ -137,6 +138,7 @@ pub struct MdnsCacheEntry {
 ///
 /// ローカルネットワーク上でホスト名の解決と公開を行う。
 pub struct MdnsService {
+    runtime: NetRuntimeHandle,
     /// 自ホスト名 (例: "myhost")
     hostname: String,
     /// 自ホストのIPアドレス
@@ -158,7 +160,12 @@ impl MdnsService {
     /// - `hostname` - 自ホスト名 (".local" 接尾辞なし)
     /// - `local_ip` - 自ホストのIPアドレス
     pub fn new(hostname: String, local_ip: Ipv4Address) -> Self {
+        Self::new_in(default_runtime(), hostname, local_ip)
+    }
+
+    pub fn new_in(runtime: NetRuntimeHandle, hostname: String, local_ip: Ipv4Address) -> Self {
         Self {
+            runtime,
             hostname,
             local_ip,
             cache: BTreeMap::new(),
@@ -169,7 +176,7 @@ impl MdnsService {
     /// mDNSサービスのメインループ（非同期）
     pub async fn run(&mut self) -> Result<(), &'static str> {
         // Create socket
-        let socket = crate::net::runtime::stack::bind_udp_endpoint(MDNS_PORT)
+        let socket = crate::net::runtime::stack::bind_udp_endpoint_in(self.runtime, MDNS_PORT)
             .await
             .ok_or("Failed to bind mDNS socket")?;
 
@@ -970,23 +977,45 @@ fn to_lowercase(s: &str) -> String {
     result
 }
 
-// ============================================================================
-// Global Instance
-// ============================================================================
+pub(crate) struct MdnsRuntimeState {
+    service: PoisonLock<Option<MdnsService>>,
+}
 
-pub static MDNS_SERVICE: PoisonLock<Option<MdnsService>> = PoisonLock::new(None);
+impl MdnsRuntimeState {
+    pub const fn new() -> Self {
+        Self {
+            service: PoisonLock::new(None),
+        }
+    }
+}
+
+pub(crate) fn runtime_state() -> &'static MdnsRuntimeState {
+    &default_runtime_context().mdns
+}
+
+pub(crate) fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static MdnsRuntimeState {
+    &runtime.context().mdns
+}
 
 /// mDNSサービスを初期化
 pub fn init(hostname: String, local_ip: Ipv4Address) {
-    let service = MdnsService::new(hostname, local_ip);
-    if let Ok(mut guard) = MDNS_SERVICE.lock() {
+    init_in(default_runtime(), hostname, local_ip);
+}
+
+pub fn init_in(runtime: NetRuntimeHandle, hostname: String, local_ip: Ipv4Address) {
+    let service = MdnsService::new_in(runtime, hostname, local_ip);
+    if let Ok(mut guard) = runtime_state_for(runtime).service.lock() {
         *guard = Some(service);
     }
 }
 
 /// mDNSサービスを取得
 pub fn service() -> &'static PoisonLock<Option<MdnsService>> {
-    &MDNS_SERVICE
+    &runtime_state().service
+}
+
+pub fn service_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<MdnsService>> {
+    &runtime_state_for(runtime).service
 }
 
 // ============================================================================

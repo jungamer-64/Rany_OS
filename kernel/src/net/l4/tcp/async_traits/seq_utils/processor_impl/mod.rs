@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 mod state_handlers;
 
@@ -133,6 +134,15 @@ impl TcpProcessor {
         addr: EndpointAddr,
         token: Option<u64>,
     ) -> Result<TcpListener, TcpError> {
+        self.bind_in(default_runtime(), addr, token)
+    }
+
+    pub fn bind_in(
+        &mut self,
+        runtime: NetRuntimeHandle,
+        addr: EndpointAddr,
+        token: Option<u64>,
+    ) -> Result<TcpListener, TcpError> {
         let port = addr.port();
 
         // Security: Check for privileged ports (< 1024)
@@ -187,7 +197,7 @@ impl TcpProcessor {
         // Create TCB with this shared state
         let mut tcb = TcpControlBlock::new(addr);
         tcb.enter_listen();
-        tcb.set_listener_waiters(backlog.clone(), accept_waker.clone());
+        tcb.set_listener_waiters(backlog.clone(), accept_waker.clone(), runtime);
 
         // Wrap in Arc<PoisonLock>
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
@@ -198,6 +208,7 @@ impl TcpProcessor {
             local_addr: addr,
             backlog,
             accept_waker,
+            runtime,
         })
     }
 
@@ -251,6 +262,15 @@ impl TcpProcessor {
         local_addr: EndpointAddr,
         remote_addr: EndpointAddr,
     ) -> Result<TcpStream, TcpError> {
+        self.connect_in(default_runtime(), local_addr, remote_addr)
+    }
+
+    pub fn connect_in(
+        &mut self,
+        runtime: NetRuntimeHandle,
+        local_addr: EndpointAddr,
+        remote_addr: EndpointAddr,
+    ) -> Result<TcpStream, TcpError> {
         if self.connections.len() >= Self::DEFAULT_MAX_CONNECTIONS {
             return Err(TcpError::BufferFull);
         }
@@ -268,7 +288,10 @@ impl TcpProcessor {
         // Better if caller does it, or we return an action.
         // But connect() is synchronous state setup.
 
-        Ok(TcpStream { tcb: tcb_arc })
+        Ok(TcpStream {
+            tcb: tcb_arc,
+            runtime,
+        })
     }
 
     /// Test-only helper to seed an existing connection.

@@ -16,7 +16,7 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::endpoint_core::Endpoint;
-use super::event::{NetworkEvent, event_queue};
+use super::event::{NetworkEvent, event_queue_in};
 use super::handler::{EventHandleResult, NetworkEventHandler};
 use super::manager::ENDPOINT_MANAGER;
 use super::ooo_queue;
@@ -30,6 +30,7 @@ use super::types::{
 };
 use super::window_scale::TcpOptionParser;
 use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 // ============================================================================
 // TCP Fast Path Statistics
@@ -2191,8 +2192,12 @@ fn notify_socket_urgent(fd: EndpointFd) {
 /// - バッチ間でロックを解放し、yield_now()で他のタスクに実行機会を与える
 /// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
 pub async fn network_event_task() {
+    network_event_task_in(default_runtime()).await;
+}
+
+pub async fn network_event_task_in(runtime: NetRuntimeHandle) {
     log::info!("[NET] network_event_task started (fully async)");
-    super::event::mark_event_task_running();
+    super::event::mark_event_task_running_in(runtime);
 
     /// 1回のバッチで処理するイベントの最大数
     /// ロック保持時間を制限し、他タスクのスターベーションを防止
@@ -2203,26 +2208,27 @@ pub async fn network_event_task() {
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         // イベントを非同期で待機（Futureベース）
-        let event = event_queue().wait_for_events().await;
+        let event = event_queue_in(runtime).wait_for_events().await;
 
         // スタックのロックを取得してバッチ処理
-        if let Ok(mut stack_guard) = crate::net::runtime::stack::NETWORK_STACK.lock() {
+        if let Ok(mut stack_guard) = runtime.context().stack.lock() {
             if let Some(ref mut stack) = *stack_guard {
                 // 最初のイベントを処理
                 let event_clone = event.clone();
-                let result = handler.handle_event_with_stack(event, stack);
-                process_handle_result(result, event_clone);
+                let result = handler.handle_event_with_stack_in(runtime, event, stack);
+                process_handle_result(runtime, result, event_clone);
 
                 // キューに溜まっている他のイベントもスタックロック保持中に一括処理
                 // バッチサイズに上限を設けてスターベーションを防止
                 let mut batch_count = 1usize;
                 // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while batch_count < MAX_BATCH_SIZE {
-                    match event_queue().recv() {
+                    match event_queue_in(runtime).recv() {
                         Some(batch_event) => {
                             let batch_clone = batch_event.clone();
-                            let result = handler.handle_event_with_stack(batch_event, stack);
-                            process_handle_result(result, batch_clone);
+                            let result =
+                                handler.handle_event_with_stack_in(runtime, batch_event, stack);
+                            process_handle_result(runtime, result, batch_clone);
                             batch_count += 1;
                         }
                         None => break,
@@ -2243,20 +2249,24 @@ pub async fn network_event_task() {
 
         // スタック未初期化やロック失敗時はstacklessフォールバック
         let event_clone = event.clone();
-        let result = handler.handle_event(event);
-        process_handle_result(result, event_clone);
+        let result = handler.handle_event_in(runtime, event);
+        process_handle_result(runtime, result, event_clone);
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(batch_event) = event_queue().recv() {
+        while let Some(batch_event) = event_queue_in(runtime).recv() {
             let batch_clone = batch_event.clone();
-            let result = handler.handle_event(batch_event);
-            process_handle_result(result, batch_clone);
+            let result = handler.handle_event_in(runtime, batch_event);
+            process_handle_result(runtime, result, batch_clone);
         }
     }
 }
 
 /// イベント処理結果の共通対応
-fn process_handle_result(result: EventHandleResult, event_clone: NetworkEvent) {
+fn process_handle_result(
+    runtime: NetRuntimeHandle,
+    result: EventHandleResult,
+    event_clone: NetworkEvent,
+) {
     match result {
         EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
         EventHandleResult::SocketNotFound(fd) => {
@@ -2287,7 +2297,7 @@ fn process_handle_result(result: EventHandleResult, event_clone: NetworkEvent) {
         }
         EventHandleResult::Retry => {
             // 再試行が必要な場合はイベントを再キュー（バックプレッシャー対応）
-            if let Err(_) = super::event::enqueue_event(event_clone) {
+            if let Err(_) = super::event::enqueue_event_in(runtime, event_clone) {
                 log::warn!("Network: Event requeue failed due to full queue");
             }
         }

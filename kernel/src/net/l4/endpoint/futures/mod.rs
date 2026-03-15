@@ -17,6 +17,7 @@ use super::types::{EndpointAddr, EndpointError, EndpointResult, EndpointState, E
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::tcp::TcpStream;
 use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 /// 非同期受信Future
 pub struct RecvFuture {
@@ -86,11 +87,12 @@ pub struct SendFuture {
 impl SendFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint, data: Vec<u8>) -> Self {
+        let runtime = endpoint.runtime();
         Self {
             endpoint,
             data,
             offset: 0,
-            dispatch: EventDispatch::new(),
+            dispatch: EventDispatch::new_in(runtime),
             pending_notify: false,
         }
     }
@@ -170,11 +172,12 @@ pub struct SendToFuture {
 impl SendToFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint, data: Vec<u8>, addr: EndpointAddr) -> Self {
+        let runtime = endpoint.runtime();
         Self {
             endpoint,
             data,
             addr,
-            dispatch: EventDispatch::new(),
+            dispatch: EventDispatch::new_in(runtime),
         }
     }
 }
@@ -506,7 +509,7 @@ impl Future for OpenConnectionFuture {
 
                     this.phase = OpenConnectionPhase::SendingConnect {
                         local_addr,
-                        dispatch: EventDispatch::new(),
+                        dispatch: EventDispatch::new_in(this.endpoint.runtime()),
                     };
                 }
                 OpenConnectionPhase::SendingConnect {
@@ -623,7 +626,10 @@ impl Future for StartListeningFuture {
                     }
 
                     // 非同期bind_tcp_listenerを開始
-                    let bind_future = crate::net::runtime::stack::bind_tcp_listener(local_addr);
+                    let bind_future = crate::net::runtime::stack::bind_tcp_listener_in(
+                        this.endpoint.runtime(),
+                        local_addr,
+                    );
                     this.phase = StartListeningPhase::WaitingBind { bind_future };
                     // fallthrough to poll bind_future
                 }
@@ -646,7 +652,7 @@ impl Future for StartListeningFuture {
                             drop(inner);
                             this.phase = StartListeningPhase::SendingListen {
                                 local_addr,
-                                dispatch: EventDispatch::new(),
+                                dispatch: EventDispatch::new_in(this.endpoint.runtime()),
                             };
                         }
                         Poll::Ready(Err(e)) => {
@@ -691,10 +697,11 @@ pub struct CloseFuture {
 impl CloseFuture {
     /// 新規作成
     pub fn new(endpoint: Endpoint) -> Self {
+        let runtime = endpoint.runtime();
         Self {
             endpoint,
             cleaned_up: false,
-            dispatch: EventDispatch::new(),
+            dispatch: EventDispatch::new_in(runtime),
         }
     }
 }
@@ -890,6 +897,7 @@ pub fn cleanup_icmp_echo_waiters() {
 /// }
 /// ```
 pub struct IcmpEchoFuture {
+    runtime: NetRuntimeHandle,
     target: [u8; 4],
     sequence: u16,
     registered: bool,
@@ -901,25 +909,42 @@ pub struct IcmpEchoFuture {
 impl IcmpEchoFuture {
     /// デフォルトタイムアウト（5秒）でFutureを作成
     pub fn new(target: [u8; 4], sequence: u16) -> Self {
+        Self::new_in(default_runtime(), target, sequence)
+    }
+
+    /// 指定ランタイムでデフォルトタイムアウト（5秒）Futureを作成
+    pub fn new_in(runtime: NetRuntimeHandle, target: [u8; 4], sequence: u16) -> Self {
         Self {
+            runtime,
             target,
             sequence,
             registered: false,
             sent: false,
             timeout_us: 5_000_000, // 5秒
-            dispatch: EventDispatch::new(),
+            dispatch: EventDispatch::new_in(runtime),
         }
     }
 
     /// カスタムタイムアウトでFutureを作成
     pub fn with_timeout(target: [u8; 4], sequence: u16, timeout_us: u64) -> Self {
+        Self::with_timeout_in(default_runtime(), target, sequence, timeout_us)
+    }
+
+    /// 指定ランタイムでカスタムタイムアウトFutureを作成
+    pub fn with_timeout_in(
+        runtime: NetRuntimeHandle,
+        target: [u8; 4],
+        sequence: u16,
+        timeout_us: u64,
+    ) -> Self {
         Self {
+            runtime,
             target,
             sequence,
             registered: false,
             sent: false,
             timeout_us,
-            dispatch: EventDispatch::new(),
+            dispatch: EventDispatch::new_in(runtime),
         }
     }
 }
@@ -1078,6 +1103,7 @@ pub mod qemu_tests {
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
         let stream = TcpStream {
             tcb: tcb_arc.clone(),
+            runtime: crate::net::runtime::default_runtime(),
         };
 
         if let Some(s) = sock.endpoint() {
@@ -1127,6 +1153,7 @@ pub mod qemu_tests {
         let tcb_arc = Arc::new(PoisonLock::new(tcb));
         let stream = TcpStream {
             tcb: tcb_arc.clone(),
+            runtime: crate::net::runtime::default_runtime(),
         };
 
         if let Some(s) = sock.endpoint() {

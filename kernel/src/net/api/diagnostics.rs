@@ -6,6 +6,7 @@
 use alloc::vec::Vec;
 
 use crate::net::obs::{NetSnapshot, NetTraceEvent, snapshot};
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 extern crate alloc;
 
@@ -21,15 +22,26 @@ fn network_recent_events_sync(limit: usize) -> Vec<NetTraceEvent> {
 }
 
 pub async fn network_snapshot() -> NetSnapshot {
+    network_snapshot_in(default_runtime()).await
+}
+
+pub async fn network_snapshot_in(runtime: NetRuntimeHandle) -> NetSnapshot {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<NetSnapshot>();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::GetNetworkSnapshot { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn network_recent_events(limit: usize) -> Vec<NetTraceEvent> {
+    network_recent_events_in(default_runtime(), limit).await
+}
+
+pub async fn network_recent_events_in(
+    runtime: NetRuntimeHandle,
+    limit: usize,
+) -> Vec<NetTraceEvent> {
     let (result_slot, waker, command_future) =
         crate::net::runtime::stack::new_command_channel::<Vec<NetTraceEvent>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetNetworkRecentEvents {
@@ -37,7 +49,7 @@ pub async fn network_recent_events(limit: usize) -> Vec<NetTraceEvent> {
         result_slot,
         waker,
     };
-    let _ = crate::net::l4::endpoint::event::send_event(event).await;
+    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
     command_future.await
 }
 
