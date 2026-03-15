@@ -1,8 +1,8 @@
 use super::*;
 
-/// Handle VirtIO block device interrupt
-pub fn handle_virtio_blk_interrupt() {
-    if let Some(device) = get_virtio_blk_device_at_index(0) {
+/// Handle VirtIO block device interrupt for a specific index.
+pub fn handle_virtio_blk_interrupt_for_index(index: u8) {
+    if let Some(device) = get_virtio_blk_device_at_index(index) {
         let status = device.transport.get_interrupt_status();
         if status == 0 {
             return;

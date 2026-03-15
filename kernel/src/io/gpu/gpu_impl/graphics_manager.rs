@@ -1,5 +1,4 @@
 use super::*;
-use alloc::sync::Arc;
 
 // =============================================================================
 // グラフィックスマネージャ
@@ -71,54 +70,6 @@ pub(crate) static GRAPHICS_MANAGER: spin::Once<GraphicsManager> = spin::Once::ne
 
 pub fn graphics_manager() -> &'static GraphicsManager {
     GRAPHICS_MANAGER.call_once(GraphicsManager::new)
-}
-
-/// Global VirtIO GPU device instance
-pub(crate) static VIRTIO_GPU_DEVICE: Mutex<Option<Arc<VirtioGpu>>> = Mutex::new(None);
-
-#[cfg(test)]
-fn test_device() -> IommuDeviceId {
-    let device = IommuDeviceId::new(0, 0, 0x40, 0);
-    crate::io::iommu::testkit::fixtures::ensure_test_intel_iommu_device(device);
-    device
-}
-
-#[cfg(test)]
-/// Initialize the global VirtIO GPU device.
-///
-/// # Safety
-/// Caller must ensure the transport's backing address is valid.
-pub unsafe fn init_virtio_gpu(transport: Box<dyn VirtioTransport>) -> GpuResult<()> {
-    let mut gpu = VirtioGpu::new(transport, test_device());
-    unsafe { gpu.init()? };
-    *VIRTIO_GPU_DEVICE.lock() = Some(Arc::new(gpu));
-    Ok(())
-}
-
-/// Initialize the global VirtIO GPU device with an IOMMU device ID.
-///
-/// # Safety
-/// Caller must ensure the transport's backing address is valid.
-pub unsafe fn init_virtio_gpu_for_device(
-    transport: Box<dyn VirtioTransport>,
-    iommu_device_id: IommuDeviceId,
-) -> GpuResult<()> {
-    let mut gpu = VirtioGpu::new_with_device(transport, iommu_device_id);
-    unsafe { gpu.init()? };
-    *VIRTIO_GPU_DEVICE.lock() = Some(Arc::new(gpu));
-    Ok(())
-}
-
-/// Handle VirtIO GPU interrupt.
-pub fn handle_virtio_gpu_interrupt() {
-    if let Some(device) = VIRTIO_GPU_DEVICE.lock().as_ref() {
-        device.handle_interrupt();
-    }
-}
-
-/// Get a clone of the global VirtIO GPU device Arc if initialized.
-pub fn get_virtio_gpu_device() -> Option<Arc<VirtioGpu>> {
-    VIRTIO_GPU_DEVICE.lock().as_ref().cloned()
 }
 
 /// Initialize via GraphicsManager.

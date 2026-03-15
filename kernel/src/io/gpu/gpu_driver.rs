@@ -8,7 +8,7 @@
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
-use super::gpu_impl::init_virtio_gpu_for_device;
+use super::gpu_impl::init;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 
 /// VirtIO GPU Driver
@@ -50,8 +50,7 @@ impl Driver for VirtioGpuDriver {
                 .map_err(|_| KapiError::IoError)?
         };
 
-        let res =
-            unsafe { init_virtio_gpu_for_device(alloc::boxed::Box::new(transport), self.iommu_id) };
+        let res = init(alloc::boxed::Box::new(transport), self.iommu_id);
 
         match res {
             Ok(_) => {

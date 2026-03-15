@@ -135,9 +135,13 @@ This document lists symbols that have been marked deprecated and recommended mig
   - DHCPv6 accessor `legacy_v6_client_lock_in(runtime)` ❌ **renamed**
     - Migration: Use `primary_v6_client_lock_in(runtime)`.
 
-- `kernel/src/io/virtio/{blk,console,input,balloon}`
-  - Zero-index compatibility wrappers (`init_virtio_*()`, `init_virtio_*_for_device()`, `init_virtio_*_with_transport()`, `get_virtio_*_device()`, `handle_virtio_*_interrupt()`) ❌ **removed**
-    - Migration: Use the explicit multi-device variants `*_at_index(index)` / `*_for_device_at_index(index, ...)` / `*_with_transport_at_index(index, ...)` / `get_virtio_*_device_at_index(index)` / `handle_virtio_*_interrupt_for_index(index)`. For the former default behavior, pass `0`.
+- `kernel/src/io/virtio/{net,blk,console,input,balloon}`
+  - Zero-index compatibility wrappers (`init_virtio_*()`, `init_virtio_*_for_device()`, `init_virtio_*_with_transport()`, `get_virtio_*_device()`, `handle_virtio_*_interrupt()`, `with_virtio_net()`) ❌ **removed**
+    - Migration: Use the explicit multi-device variants `*_at_index(index)` / `*_for_device_at_index(index, ...)` / `*_with_transport_at_index(index, ...)` / `get_virtio_*_device_at_index(index)` / `handle_virtio_*_interrupt_for_index(index)` / `with_virtio_net_at_index(index, ...)`. For the former default behavior, pass `0`.
+
+- `kernel/src/io/gpu/gpu_impl/graphics_manager.rs`
+  - Global GPU convenience wrappers (`init_virtio_gpu()`, `init_virtio_gpu_for_device()`, `get_virtio_gpu_device()`, `handle_virtio_gpu_interrupt()`) ❌ **removed**
+    - Migration: Use `gpu_impl::init(transport, iommu_device_id)` and interact through `graphics_manager()` / `GraphicsManager` APIs instead of the removed global singleton helpers.
 
 - `kernel/src/net/api/dhcp.rs`
   - Default-runtime wrappers (`get_dhcp_state()`, `list_dhcp_states()`, `dhcp_state()`, `dhcp_renew()`, `dhcp_release()`, `dhcp_discover()`, `dhcp_last_declined()`, `dhcp_last_released()`) ❌ **removed**

@@ -29,12 +29,8 @@ impl SystemIntegration {
             if let Some(transport) =
                 try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Gpu)
             {
-                match unsafe {
-                    crate::io::gpu::gpu_impl::init_virtio_gpu_for_device(
-                        alloc::boxed::Box::new(transport),
-                        iommu_device,
-                    )
-                } {
+                match crate::io::gpu::gpu_impl::init(alloc::boxed::Box::new(transport), iommu_device)
+                {
                     Ok(()) => {
                         self.log("    VirtIO-gpu PCI transport initialized");
                         initialized_via_pci = true;

@@ -11,7 +11,7 @@ use kernel_api::abi::driver::DriverContext;
 use kernel_api::driver::{AsyncDriver, DeviceId, Driver, DriverFuture, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
-use crate::drivers::virtio::init_virtio_net_for_device;
+use crate::drivers::virtio::init_virtio_net_for_device_at_index;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 
 /// Async-backed VirtIO-Net driver core.
@@ -22,7 +22,7 @@ pub struct VirtioNetAsyncDriver {
 }
 
 impl VirtioNetAsyncDriver {
-    /// Create a new VirtIO-Net driver (legacy default)
+    /// Create a new VirtIO-Net driver using the primary device slot (`index=0`).
     pub fn new() -> Self {
         Self {
             initialized: false,
@@ -64,7 +64,7 @@ impl AsyncDriver for VirtioNetAsyncDriver {
 
             if let (Some(base), Some(id)) = (self.mmio_base, self.iommu_id) {
                 log::info!(target: "net", "Probing VirtIO-Net at {:#x}", base);
-                match init_virtio_net_for_device(base as usize, id) {
+                match init_virtio_net_for_device_at_index(0, base as usize, id) {
                     Ok(_) => {
                         log::info!(target: "net", "VirtIO-Net device initialized");
                     }

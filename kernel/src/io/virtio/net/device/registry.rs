@@ -257,12 +257,6 @@ pub fn init_virtio_net_at_index(index: u8, base_addr: usize) -> Result<(), Virti
     Ok(())
 }
 
-#[cfg(test)]
-/// VirtIO ネットワークデバイス（MMIO）を初期化
-pub fn init_virtio_net(base_addr: usize) -> Result<(), VirtioNetError> {
-    init_virtio_net_at_index(0, base_addr)
-}
-
 /// VirtIO ネットワークデバイス（MMIO）を index + IOMMUデバイスID指定で初期化
 pub fn init_virtio_net_for_device_at_index(
     index: u8,
@@ -278,14 +272,6 @@ pub fn init_virtio_net_for_device_at_index(
     Ok(())
 }
 
-/// VirtIO ネットワークデバイス（MMIO）を初期化（IOMMUデバイスID付き）
-pub fn init_virtio_net_for_device(
-    base_addr: usize,
-    device: crate::io::iommu::types::DeviceId,
-) -> Result<(), VirtioNetError> {
-    init_virtio_net_for_device_at_index(0, base_addr, device)
-}
-
 /// Initialize VirtIO-Net from an existing VirtioTransport (MMIO or PCI).
 pub fn init_virtio_net_with_transport_at_index(
     index: u8,
@@ -296,14 +282,6 @@ pub fn init_virtio_net_with_transport_at_index(
     device.init()?;
     install_virtio_net_device(index, device);
     Ok(())
-}
-
-/// Initialize VirtIO-Net from an existing VirtioTransport (MMIO or PCI).
-pub fn init_virtio_net_with_transport(
-    transport: Box<dyn VirtioTransport>,
-    iommu_device_id: crate::io::iommu::types::DeviceId,
-) -> Result<(), VirtioNetError> {
-    init_virtio_net_with_transport_at_index(0, transport, iommu_device_id)
 }
 
 /// VirtIO ネットワークデバイスに index 指定でアクセス
@@ -334,14 +312,6 @@ where
             f(index, device);
         });
     }
-}
-
-/// VirtIO ネットワークデバイスにアクセス
-pub fn with_virtio_net<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&VirtioNetDevice) -> R,
-{
-    with_virtio_net_device_at_index(0, f)
 }
 
 #[cfg(test)]

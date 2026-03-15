@@ -501,7 +501,8 @@ impl SystemIntegration {
             try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Network)
         {
             crate::io::log::early_print("[VIRTIO-DBG] PCI transport created, init device...\n");
-            match crate::drivers::virtio::init_virtio_net_with_transport(
+            match crate::drivers::virtio::init_virtio_net_with_transport_at_index(
+                0,
                 alloc::boxed::Box::new(transport),
                 iommu_device,
             ) {
