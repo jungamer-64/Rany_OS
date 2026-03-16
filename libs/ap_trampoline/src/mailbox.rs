@@ -4,6 +4,7 @@
 use core::mem::align_of;
 use core::num::{NonZeroU32, NonZeroU64};
 use core::ptr::NonNull;
+use core::sync::atomic::{Ordering, fence};
 
 use crate::LAYOUT_VERSION;
 use crate::addr::{PageTable32Addr, TrampolineVirtAddr};
@@ -158,8 +159,9 @@ pub struct TrampolineMailboxReadHandle {
     ptr: *const ApTrampolineMailbox,
 }
 
-// The handle is a validated writable mailbox address. Callers are responsible
-// for external synchronization when sharing the mailbox across threads.
+// The handle is a validated writable mailbox address. Constructors validate the
+// pointer but do not enforce uniqueness, so callers must ensure no other
+// writable handle targets the same mailbox concurrently.
 unsafe impl Send for TrampolineMailboxHandle {}
 // Read handles may move between threads, but are intentionally not `Sync`:
 // volatile loads alone do not provide synchronization for shared concurrent
@@ -195,14 +197,12 @@ impl TrampolineMailboxHandle {
         })
     }
 
-    /// Writes a new launch mailbox image.
-    ///
-    /// Callers must issue a full memory barrier after populating the mailbox
-    /// and before sending the SIPI that allows the AP to observe it.
+    /// Writes a new launch mailbox image and publishes it for AP startup.
     pub fn write_launch(&mut self, launch_info: ApTrampolineLaunchInfo) {
         // Safety: the handle constructor validates the mailbox address and the
         // mutable borrow guarantees no concurrent access through this handle.
         unsafe { ApTrampolineMailbox::write_volatile_to_ptr(self.ptr, launch_info) };
+        fence(Ordering::SeqCst);
     }
 
     pub fn read_verified(&self) -> Result<ApTrampolineLaunchInfo, &'static str> {
@@ -380,6 +380,23 @@ mod tests {
         assert_eq!(
             handle.read_verified(),
             Err("AP trampoline mailbox CPU ID is zero")
+        );
+    }
+
+    #[test]
+    fn mailbox_read_verified_rejects_zero_page_table() {
+        let mut mailbox = ApTrampolineMailbox::from_launch_info(launch_info());
+        mailbox.page_table = 0;
+        let handle = unsafe {
+            TrampolineMailboxReadHandle::from_const_ptr(
+                (&mailbox as *const ApTrampolineMailbox).cast(),
+            )
+        }
+        .unwrap();
+
+        assert_eq!(
+            handle.read_verified(),
+            Err("AP page table base must not be zero")
         );
     }
 

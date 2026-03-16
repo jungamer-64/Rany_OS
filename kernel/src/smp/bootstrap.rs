@@ -222,6 +222,8 @@ impl ApBootstrap {
                 .ok_or("AP logical CPU ID overflow")?,
         )
         .ok_or("AP logical CPU ID overflow")?;
+        // The AP trampoline mailbox encodes CR3 in a nonzero 32-bit field, so
+        // bootstrap page-table roots must never use frame 0 or exceed 4 GiB.
         let page_table = PageTable32Addr::new(info.page_table)?;
         let stack_ptr = NonZeroU64::new(info.stack_ptr).ok_or("missing AP stack allocation")?;
         let entry_point =
@@ -243,8 +245,6 @@ impl ApBootstrap {
         self.mailbox
             .lock_for_init("SMP AP trampoline mailbox")
             .write_launch(launch_info);
-        // Publish the mailbox contents before the SIPI makes the AP observe it.
-        fence(Ordering::SeqCst);
 
         self.lapic.enable();
         info.set_state(ApState::InitSent);

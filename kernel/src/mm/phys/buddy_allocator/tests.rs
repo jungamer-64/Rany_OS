@@ -18,6 +18,22 @@ fn test_buddy_allocator() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_buddy_allocator_reserves_frame_zero() {
+    let mut allocator = BuddyFrameAllocator::new();
+    let regions = [(PhysAddr::new(0), 3 * PAGE_SIZE_4K as u64)];
+    unsafe {
+        allocator.init(&regions);
+    }
+
+    let first = allocator.allocate_4k_frame().expect("first frame");
+    let second = allocator.allocate_4k_frame().expect("second frame");
+    assert_eq!(first.start_address().as_u64(), PAGE_SIZE_4K as u64);
+    assert_eq!(second.start_address().as_u64(), 2 * PAGE_SIZE_4K as u64);
+    assert!(allocator.allocate_4k_frame().is_none());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_init_numa_frame_allocator_registers_region_with_buddy() {
     use crate::mm::phys::buddy_allocator::init_buddy_allocator;
     use crate::mm::phys::frame_allocator::init_numa_frame_allocator;

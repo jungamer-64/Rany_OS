@@ -87,6 +87,9 @@ pub struct PageTable32Addr(u32);
 impl PageTable32Addr {
     pub fn new(addr: u64) -> Result<Self, &'static str> {
         let addr32 = u32::try_from(addr).map_err(|_| "AP page table base exceeds u32")?;
+        if addr32 == 0 {
+            return Err("AP page table base must not be zero");
+        }
         if !(addr32 as usize).is_multiple_of(TRAMPOLINE_SIZE) {
             return Err("AP page table base must be 4 KiB aligned");
         }
@@ -153,6 +156,10 @@ mod tests {
         assert_eq!(
             PageTable32Addr::new(u64::from(u32::MAX) + 1),
             Err("AP page table base exceeds u32")
+        );
+        assert_eq!(
+            PageTable32Addr::new(0),
+            Err("AP page table base must not be zero")
         );
         assert_eq!(
             PageTable32Addr::new(0x2100),

@@ -44,6 +44,9 @@ const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024;
 const MAX_4K_FRAMES: usize = MAX_PHYSICAL_MEMORY / PAGE_SIZE_4K;
 /// ビットマップのワード数（64ビット単位）
 const BITMAP_WORDS: usize = MAX_4K_FRAMES / 64;
+/// Physical frame 0 remains permanently reserved so AP bootstrap can reject a
+/// zero CR3/mailbox page-table root without ever colliding with a real frame.
+pub(crate) const MANAGED_PHYS_START: u64 = PAGE_SIZE_4K as u64;
 
 /// ビットマップ方式の物理フレームアロケータ
 /// 設計書: ビットマップ管理。頻繁には呼ばれない。
@@ -88,15 +91,9 @@ impl BitmapFrameAllocator {
 
         // 使用可能な領域を空きとしてマーク
         for &(start, size) in usable_regions {
-            // 脆弱性修正: ページ境界にアライン。開始は切り上げ、終了は切り下げ。
-            // これにより、部分的に予約されているページが空きとしてマークされるのを防ぐ。
-            let start_addr =
-                (start.as_u64() + PAGE_SIZE_4K as u64 - 1) & !(PAGE_SIZE_4K as u64 - 1);
-            let end_addr = (start.as_u64() + size) & !(PAGE_SIZE_4K as u64 - 1);
-
-            if start_addr >= end_addr {
+            let Some((start_addr, end_addr)) = sanitize_managed_region(start.as_u64(), size) else {
                 continue;
-            }
+            };
 
             let start_frame = FrameIndex::from_phys_addr(start_addr);
             let end_frame = FrameIndex::from_phys_addr(end_addr);
@@ -504,22 +501,25 @@ fn align_size_to_page(size: usize) -> usize {
     size.saturating_add(PAGE_SIZE_4K - 1) / PAGE_SIZE_4K * PAGE_SIZE_4K
 }
 
+pub(crate) fn sanitize_managed_region(start: u64, size: u64) -> Option<(u64, u64)> {
+    if size == 0 {
+        return None;
+    }
+
+    let end_raw = start.checked_add(size)?;
+    let start = align_up(start.max(MANAGED_PHYS_START), PAGE_SIZE_4K as u64);
+    let end = align_down(end_raw, PAGE_SIZE_4K as u64);
+    if end <= start {
+        return None;
+    }
+
+    Some((start, end))
+}
+
 fn normalize_regions(usable_regions: &[(PhysAddr, u64)]) -> Vec<(u64, u64)> {
     let mut regions: Vec<(u64, u64)> = usable_regions
         .iter()
-        .filter_map(|&(addr, size)| {
-            if size == 0 {
-                return None;
-            }
-            let start = addr.as_u64();
-            let end_raw = start.checked_add(size)?;
-            let start = align_up(start, PAGE_SIZE_4K as u64);
-            let end = align_down(end_raw, PAGE_SIZE_4K as u64);
-            if end <= start {
-                return None;
-            }
-            Some((start, end))
-        })
+        .filter_map(|&(addr, size)| sanitize_managed_region(addr.as_u64(), size))
         .collect();
 
     regions.sort_by_key(|&(start, _)| start);
@@ -722,5 +722,48 @@ impl TypeIdHash for NumaFrameAllocator {
 
     fn type_version() -> SemVer {
         SemVer::new(1, 0, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_allocator_sanitize_managed_region_reserves_low_page() {
+        assert_eq!(sanitize_managed_region(0, PAGE_SIZE_4K as u64), None);
+        assert_eq!(
+            sanitize_managed_region(0, 3 * PAGE_SIZE_4K as u64),
+            Some((PAGE_SIZE_4K as u64, 3 * PAGE_SIZE_4K as u64))
+        );
+    }
+
+    #[test]
+    fn frame_allocator_bitmap_reserves_frame_zero() {
+        let mut allocator = BitmapFrameAllocator::new();
+        let regions = [(PhysAddr::new(0), 3 * PAGE_SIZE_4K as u64)];
+        unsafe {
+            allocator.init(&regions);
+        }
+
+        let first = allocator.allocate_4k_frame().expect("first frame");
+        let second = allocator.allocate_4k_frame().expect("second frame");
+        assert_eq!(first.start_address().as_u64(), PAGE_SIZE_4K as u64);
+        assert_eq!(second.start_address().as_u64(), 2 * PAGE_SIZE_4K as u64);
+        assert!(allocator.allocate_4k_frame().is_none());
+    }
+
+    #[test]
+    fn frame_allocator_pmm_reserves_frame_zero() {
+        let pmm = build_pmm_from_regions(&[(PhysAddr::new(0), 4 * PAGE_SIZE_4K as u64)])
+            .expect("pmm should build");
+
+        let first = pmm.alloc_4k().expect("first frame");
+        let second = pmm.alloc_4k().expect("second frame");
+        let third = pmm.alloc_4k().expect("third frame");
+        assert_eq!(first.start_address().as_u64(), PAGE_SIZE_4K as u64);
+        assert_eq!(second.start_address().as_u64(), 2 * PAGE_SIZE_4K as u64);
+        assert_eq!(third.start_address().as_u64(), 3 * PAGE_SIZE_4K as u64);
+        assert!(pmm.alloc_4k().is_none());
     }
 }

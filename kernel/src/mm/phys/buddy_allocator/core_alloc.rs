@@ -168,14 +168,11 @@ impl BuddyFrameAllocator {
         }
 
         for &(start, size) in usable_regions {
-            // 脆弱性修正: ページ境界にアライン。開始は切り上げ、終了は切り下げ。
-            let start_addr =
-                (start.as_u64() + PAGE_SIZE_4K as u64 - 1) & !(PAGE_SIZE_4K as u64 - 1);
-            let end_addr = (start.as_u64() + size) & !(PAGE_SIZE_4K as u64 - 1);
-
-            if start_addr >= end_addr {
+            let Some((start_addr, end_addr)) =
+                crate::mm::phys::frame_allocator::sanitize_managed_region(start.as_u64(), size)
+            else {
                 continue;
-            }
+            };
 
             let start_frame = FrameIndex::from_phys_addr(start_addr);
             let end_frame = FrameIndex::from_phys_addr(end_addr);

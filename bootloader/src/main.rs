@@ -179,8 +179,9 @@ fn main() -> Status {
     );
 
     info!("Allocating PML4...");
-    let pml4_addr = UefiMapper::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA)
-        .expect("Failed to allocate PML4");
+    // AP trampoline startup loads CR3 from a nonzero 32-bit mailbox field, so
+    // the live BSP page-table root must stay below 4 GiB and off frame 0.
+    let pml4_addr = UefiMapper::alloc_zeroed_page_table_pages(1).expect("Failed to allocate PML4");
     let pml4 = unsafe { &mut *(pml4_addr as *mut PageTable) };
     let mut mapper = UefiMapper::new(pml4);
 

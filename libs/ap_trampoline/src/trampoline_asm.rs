@@ -4,7 +4,9 @@
 use core::arch::global_asm;
 
 // Keep the assembler constants sourced from `contract.rs` so the Rust image
-// patching code and the trampoline binary stay in lockstep.
+// patching code and the trampoline binary stay in lockstep. The 16-bit entry
+// also uses the top of the trampoline page as a tiny scratch stack so startup
+// does not depend on a fixed low-memory stack address.
 global_asm!(
     r#"
 .section .ap_trampoline,"a"

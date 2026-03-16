@@ -6,6 +6,8 @@ use uefi::mem::memory_map::MemoryType;
 pub const PAGE_SIZE: u64 = 4096;
 pub const PAGE_SIZE_2MB: u64 = 2 * 1024 * 1024;
 pub const PAGE_SIZE_1GB: u64 = 1024 * 1024 * 1024;
+const PAGE_TABLE_MIN_ADDR: u64 = PAGE_SIZE;
+const PAGE_TABLE_MAX_ADDR: u64 = u32::MAX as u64;
 
 // Page Table Flags
 pub const PAGE_PRESENT: u64 = 1 << 0;
@@ -147,6 +149,40 @@ impl<'a> UefiMapper<'a> {
             })
     }
 
+    /// Allocate zeroed page-table pages suitable for the AP trampoline CR3 handoff.
+    ///
+    /// The trampoline mailbox stores the page-table root in a nonzero 32-bit
+    /// slot, so every boot page-table page must live below 4 GiB and never at
+    /// physical address zero.
+    pub fn alloc_zeroed_page_table_pages(num_pages: usize) -> Option<u64> {
+        if num_pages == 0 {
+            return None;
+        }
+
+        let ptr = boot::allocate_pages(
+            AllocateType::MaxAddress(PAGE_TABLE_MAX_ADDR),
+            MemoryType::RUNTIME_SERVICES_DATA,
+            num_pages,
+        )
+        .ok()?;
+        let addr = ptr.as_ptr() as u64;
+        let size = PAGE_SIZE.checked_mul(num_pages as u64)?;
+        let end = addr.checked_add(size.checked_sub(1)?)?;
+
+        if addr < PAGE_TABLE_MIN_ADDR || end > PAGE_TABLE_MAX_ADDR {
+            unsafe {
+                let _ = boot::free_pages(ptr, num_pages);
+            }
+            return None;
+        }
+
+        unsafe {
+            core::ptr::write_bytes(addr as *mut u8, 0, (PAGE_SIZE as usize) * num_pages);
+        }
+
+        Some(addr)
+    }
+
     /// Map a global page (kernel space)
     pub fn map_page(&mut self, virt: u64, phys: u64, flags: u64) -> Result<(), ()> {
         let p4_index = ((virt >> 39) & 0x1ff) as usize;
@@ -205,7 +241,7 @@ impl<'a> UefiMapper<'a> {
     fn get_or_create_table(&mut self, index: usize) -> Result<&'a mut PageTable, ()> {
         if self.pml4.entries[index].is_unused() {
             // Allocate page tables as RUNTIME_SERVICES_DATA so kernel preserves them
-            let frame = Self::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA).ok_or(())?;
+            let frame = Self::alloc_zeroed_page_table_pages(1).ok_or(())?;
             self.pml4.entries[index].set_addr(frame, PAGE_PRESENT | PAGE_WRITABLE);
         }
         let addr = self.pml4.entries[index].addr();
@@ -219,7 +255,7 @@ impl<'a> UefiMapper<'a> {
     ) -> Result<&'a mut PageTable, ()> {
         if table.entries[index].is_unused() {
             // Allocate page tables as RUNTIME_SERVICES_DATA so kernel preserves them
-            let frame = Self::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA).ok_or(())?;
+            let frame = Self::alloc_zeroed_page_table_pages(1).ok_or(())?;
             table.entries[index].set_addr(frame, PAGE_PRESENT | PAGE_WRITABLE);
         }
         let addr = table.entries[index].addr();
