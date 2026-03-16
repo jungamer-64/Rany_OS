@@ -852,10 +852,21 @@ mod tests {
             snapshot.local_apics[index].flags = boot_proto::acpi_local_apic_flags::ENABLED;
         }
 
-        let mut ap_boot = boot_proto::ApBootInfo::default();
         let bootable_aps = apics.len().saturating_sub(1) as u16;
-        ap_boot.ap_count = bootable_aps;
-        ap_boot.stack_count = bootable_aps;
+        let ap_boot = if bootable_aps == 0 {
+            boot_proto::ApBootInfo::default()
+        } else {
+            boot_proto::ApBootLayout::new(
+                bootable_aps,
+                bootable_aps,
+                ap_trampoline::TrampolinePhysAddr::new(0x8000).unwrap(),
+                ap_trampoline::TRAMPOLINE_SIZE as u64,
+                0x20_0000,
+                0x20_000,
+            )
+            .unwrap()
+            .into_boot_info()
+        };
 
         crate::smp::topology::reset();
         let topology = crate::smp::topology::CpuTopology::from_sources(

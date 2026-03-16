@@ -421,23 +421,28 @@ pub(crate) fn copy_boot_artifacts_to_boot_info(
     for (slot, artifact) in entries.iter_mut().zip(boot_artifacts.iter()) {
         let path_ptr = copy_bytes_to_loader_data(artifact.path.as_bytes(), hhdm_start);
         let data_ptr = copy_bytes_to_loader_data(&artifact.data, hhdm_start);
-        *slot = boot_proto::BootArtifactEntry {
-            kind: artifact.kind as u32,
-            flags: 0,
-            path_ptr,
-            path_len: artifact.path.len() as u64,
-            data_ptr,
-            data_len: artifact.data.len() as u64,
+        let path_span = boot_proto::BootHhdmSpan::new(path_ptr, artifact.path.len() as u64)
+            .expect("boot artifact path span invalid");
+        let data_span = if artifact.data.is_empty() {
+            None
+        } else {
+            Some(
+                boot_proto::BootHhdmSpan::new(data_ptr, artifact.data.len() as u64)
+                    .expect("boot artifact data span invalid"),
+            )
         };
+        *slot = boot_proto::BootArtifactEntry::new_hhdm(artifact.kind, path_span, data_span);
     }
 
-    boot_info.boot_artifacts = boot_proto::BootArtifactTable {
-        entries_ptr: hhdm_start + entries_phys,
-        count: boot_artifacts.len() as u64,
-    };
+    boot_info.boot_artifacts = boot_proto::BootArtifactTable::from_hhdm_addr(
+        hhdm_start + entries_phys,
+        boot_artifacts.len(),
+    )
+    .expect("boot artifact table span invalid");
     info!(
         "Boot artifacts mapped at HHDM 0x{:x}, count {}",
-        boot_info.boot_artifacts.entries_ptr, boot_info.boot_artifacts.count
+        boot_info.boot_artifacts.entries_ptr,
+        boot_info.boot_artifacts.len()
     );
 }
 
@@ -447,7 +452,7 @@ pub(crate) fn copy_cmdline_to_boot_info(
     cmdline_data: &Option<Vec<u8>>,
     hhdm_start: u64,
 ) {
-    if let Some(cmdline) = cmdline_data {
+    if let Some(cmdline) = cmdline_data.as_ref().filter(|cmdline| !cmdline.is_empty()) {
         let cmdline_size = cmdline.len() + 1;
         let num_pages = (cmdline_size + 4095) / 4096;
         let cmdline_phys =
@@ -462,15 +467,16 @@ pub(crate) fn copy_cmdline_to_boot_info(
             // Null terminate
             *((cmdline_phys + cmdline.len() as u64) as *mut u8) = 0;
         }
-        boot_info.cmdline_ptr = hhdm_start + cmdline_phys;
-        boot_info.cmdline_len = cmdline.len() as u64;
+        let span = boot_proto::BootHhdmSpan::new(hhdm_start + cmdline_phys, cmdline.len() as u64)
+            .expect("boot cmdline span invalid");
+        boot_info.set_cmdline_span(Some(span));
         info!(
             "Cmdline mapped at HHDM 0x{:x}, len {}",
-            boot_info.cmdline_ptr, boot_info.cmdline_len
+            span.start(),
+            span.len()
         );
     } else {
-        boot_info.cmdline_ptr = 0;
-        boot_info.cmdline_len = 0;
+        boot_info.set_cmdline_span(None);
     }
 }
 
@@ -490,7 +496,6 @@ pub(crate) fn build_memory_map_from_uefi(
 
     let mmap_entries = mmap.entries();
     let count = mmap_entries.len();
-    boot_info.memory_map.count = count as u64;
 
     let boot_mmap_slice = unsafe {
         core::slice::from_raw_parts_mut(
@@ -511,7 +516,9 @@ pub(crate) fn build_memory_map_from_uefi(
             attribute: desc.att.bits(),
         };
     }
-    boot_info.memory_map.entries = (hhdm_start + mmap_buffer_phys) as *const _;
+    boot_info.memory_map =
+        boot_proto::MemoryMap::from_hhdm_addr(hhdm_start + mmap_buffer_phys, count)
+            .expect("boot memory map span invalid");
 }
 
 fn snapshot_or_default(
@@ -763,11 +770,8 @@ fn subtract_reserved_range(
     Some(count)
 }
 
-fn hhdm_ptr_to_phys(ptr: u64, hhdm_start: u64) -> Option<u64> {
-    if ptr == 0 || ptr < hhdm_start {
-        return None;
-    }
-    Some(ptr - hhdm_start)
+fn span_with_trailing_nul(span: boot_proto::BootHhdmSpan) -> Option<boot_proto::BootHhdmSpan> {
+    boot_proto::BootHhdmSpan::new(span.start(), span.len().checked_add(1)?).ok()
 }
 
 fn addr_to_phys(addr: u64, hhdm_start: u64) -> Option<u64> {
@@ -779,6 +783,19 @@ fn addr_to_phys(addr: u64, hhdm_start: u64) -> Option<u64> {
     } else {
         Some(addr)
     }
+}
+
+fn apply_reserved_hhdm_span(
+    current: &mut [UsableMemoryRegion; MAX_USABLE_TEMP_REGIONS],
+    next: &mut [UsableMemoryRegion; MAX_USABLE_TEMP_REGIONS],
+    current_count: usize,
+    span: Option<boot_proto::BootHhdmSpan>,
+    hhdm_start: u64,
+) -> Option<usize> {
+    let (start, size) = span
+        .and_then(|span| span.phys_range(hhdm_start))
+        .map_or((None, 0), |(start, size)| (Some(start), size));
+    apply_reserved_range(current, next, current_count, start, size)
 }
 
 fn apply_reserved_range(
@@ -869,38 +886,35 @@ fn build_usable_memory_regions(
             Some(usable_buffer_phys),
             usable_buffer_bytes,
         )?;
-        current_count = apply_reserved_range(
+        current_count = apply_reserved_hhdm_span(
             &mut current,
             &mut next,
             current_count,
-            hhdm_ptr_to_phys(boot_info.cmdline_ptr, hhdm_start),
-            boot_info.cmdline_len.saturating_add(1),
+            boot_info.cmdline_span().and_then(span_with_trailing_nul),
+            hhdm_start,
         )?;
-        current_count = apply_reserved_range(
+        current_count = apply_reserved_hhdm_span(
             &mut current,
             &mut next,
             current_count,
-            hhdm_ptr_to_phys(boot_info.boot_artifacts.entries_ptr, hhdm_start),
-            boot_info
-                .boot_artifacts
-                .count
-                .saturating_mul(core::mem::size_of::<boot_proto::BootArtifactEntry>() as u64),
+            boot_info.boot_artifacts.entries_span(),
+            hhdm_start,
         )?;
 
         for entry in artifact_entries {
-            current_count = apply_reserved_range(
+            current_count = apply_reserved_hhdm_span(
                 &mut current,
                 &mut next,
                 current_count,
-                hhdm_ptr_to_phys(entry.path_ptr, hhdm_start),
-                entry.path_len,
+                entry.path_span(),
+                hhdm_start,
             )?;
-            current_count = apply_reserved_range(
+            current_count = apply_reserved_hhdm_span(
                 &mut current,
                 &mut next,
                 current_count,
-                hhdm_ptr_to_phys(entry.data_ptr, hhdm_start),
-                entry.data_len,
+                entry.data_span(),
+                hhdm_start,
             )?;
         }
 
@@ -911,22 +925,27 @@ fn build_usable_memory_regions(
             addr_to_phys(boot_info.framebuffer.address, hhdm_start),
             boot_info.framebuffer.size() as u64,
         )?;
+        let (trampoline_start, trampoline_size) = boot_info
+            .ap_boot
+            .trampoline_range()
+            .map_or((None, 0), |(start, size)| (Some(start), size));
         current_count = apply_reserved_range(
             &mut current,
             &mut next,
             current_count,
-            Some(boot_info.ap_boot.trampoline_addr),
-            boot_info.ap_boot.trampoline_size,
+            trampoline_start,
+            trampoline_size,
         )?;
-        let ap_stack_bytes = (boot_info.ap_boot.stack_count as u64)
-            .checked_mul(boot_info.ap_boot.stack_size)
-            .unwrap_or(0);
+        let (stack_start, stack_size) = boot_info
+            .ap_boot
+            .stack_region_range()
+            .map_or((None, 0), |(start, size)| (Some(start), size));
         current_count = apply_reserved_range(
             &mut current,
             &mut next,
             current_count,
-            Some(boot_info.ap_boot.stack_base),
-            ap_stack_bytes,
+            stack_start,
+            stack_size,
         )?;
 
         let runtime_count = usize::try_from(boot_info.uefi_runtime.runtime_mmap_count)
@@ -975,13 +994,14 @@ fn build_usable_memory_regions(
 fn boot_artifact_entries_from_phys(
     boot_info: &boot_proto::ExoBootInfo,
 ) -> &[boot_proto::BootArtifactEntry] {
-    let Some(entries_phys) = hhdm_ptr_to_phys(
-        boot_info.boot_artifacts.entries_ptr,
-        boot_info.phys_mem_offset,
-    ) else {
+    let Some((entries_phys, _)) = boot_info
+        .boot_artifacts
+        .entries_span()
+        .and_then(|span| span.phys_range(boot_info.phys_mem_offset))
+    else {
         return &[];
     };
-    let count = usize::try_from(boot_info.boot_artifacts.count).unwrap_or(usize::MAX);
+    let count = boot_info.boot_artifacts.len();
     if count == 0 {
         return &[];
     }
@@ -1001,19 +1021,24 @@ pub(crate) fn build_usable_memory_from_uefi(
     usable_buffer_phys: u64,
     hhdm_start: u64,
 ) {
-    let descriptors = if boot_info.memory_map.count == 0 {
+    let descriptors = if boot_info.memory_map.is_empty() {
         let _ = mmap;
         &[][..]
-    } else {
-        let count = usize::try_from(boot_info.memory_map.count)
-            .unwrap_or(usize::MAX)
-            .min(MAX_USABLE_MEMORY_REGIONS);
+    } else if let Some((descriptors_phys, _)) = boot_info
+        .memory_map
+        .span()
+        .and_then(|span| span.phys_range(hhdm_start))
+    {
+        let count = boot_info.memory_map.len().min(MAX_USABLE_MEMORY_REGIONS);
         unsafe {
             core::slice::from_raw_parts(
-                mmap_buffer_phys as *const boot_proto::MemoryDescriptor,
+                descriptors_phys as *const boot_proto::MemoryDescriptor,
                 count,
             )
         }
+    } else {
+        let _ = mmap;
+        &[][..]
     };
     let artifact_entries = boot_artifact_entries_from_phys(boot_info);
 
@@ -1039,10 +1064,11 @@ pub(crate) fn build_usable_memory_from_uefi(
         usable_buffer_bytes,
     ) {
         Some(count) if count > 0 => {
-            boot_info.usable_memory = boot_proto::UsableMemoryTable {
-                entries_ptr: hhdm_start + usable_buffer_phys,
-                count: count as u64,
-            };
+            boot_info.usable_memory = boot_proto::UsableMemoryTable::from_hhdm_addr(
+                hhdm_start + usable_buffer_phys,
+                count,
+            )
+            .expect("usable memory handoff span invalid");
             info!(
                 "Usable memory snapshot ready: {} region(s) at HHDM 0x{:x}",
                 count, boot_info.usable_memory.entries_ptr
@@ -1071,29 +1097,16 @@ mod tests {
     }
 
     fn sample_boot_info(hhdm_start: u64) -> boot_proto::ExoBootInfo {
-        let path = b"drivers/demo.cell";
-        let data = b"cell";
-        let entries = [boot_proto::BootArtifactEntry {
-            kind: boot_proto::BootArtifactKind::DriverArtifact as u32,
-            flags: 0,
-            path_ptr: hhdm_start + 0x1400_3000,
-            path_len: path.len() as u64,
-            data_ptr: hhdm_start + 0x1400_4000,
-            data_len: data.len() as u64,
-        }];
-        boot_proto::ExoBootInfo {
+        let mut boot_info = boot_proto::ExoBootInfo {
             version: boot_proto::EXO_BOOT_INFO_VERSION,
             phys_mem_offset: hhdm_start,
             rsdp_addr: 0,
-            cmdline_ptr: hhdm_start + 0x1400_2000,
-            cmdline_len: 31,
+            cmdline_ptr: 0,
+            cmdline_len: 0,
             boot_policy: boot_proto::BootPolicy::default(),
             page_table_base: 0,
             tls_template: boot_proto::TlsInfo::default(),
-            memory_map: boot_proto::MemoryMap {
-                entries: core::ptr::null(),
-                count: 0,
-            },
+            memory_map: boot_proto::MemoryMap::default(),
             usable_memory: boot_proto::UsableMemoryTable::default(),
             framebuffer: graphic_types::FramebufferInfo {
                 address: 0x1400_5000,
@@ -1103,10 +1116,11 @@ mod tests {
                 format: graphic_types::PixelFormat::Bgra8888,
                 bpp: 32,
             },
-            boot_artifacts: boot_proto::BootArtifactTable {
-                entries_ptr: hhdm_start + 0x1400_1000,
-                count: entries.len() as u64,
-            },
+            boot_artifacts: boot_proto::BootArtifactTable::from_hhdm_addr(
+                hhdm_start + 0x1400_1000,
+                1,
+            )
+            .unwrap(),
             numa_info: boot_proto::NumaInfo::default(),
             acpi_snapshot: boot_proto::AcpiBootSnapshot::default(),
             ap_boot: boot_proto::ApBootInfo {
@@ -1141,7 +1155,11 @@ mod tests {
             self_test: boot_proto::SelfTestInfo::default(),
             paging_levels: 4,
             la57_enabled: 0,
-        }
+        };
+        boot_info.set_cmdline_span(Some(
+            boot_proto::BootHhdmSpan::new(hhdm_start + 0x1400_2000, 31).unwrap(),
+        ));
+        boot_info
     }
 
     fn overlaps(range: &UsableMemoryRegion, start: u64, end: u64) -> bool {
@@ -1153,18 +1171,16 @@ mod tests {
     fn usable_memory_builder_excludes_reserved_ranges_and_coalesces_neighbors() {
         let hhdm_start = 0xffff_8000_0000_0000;
         let mut boot_info = sample_boot_info(hhdm_start);
-        let artifact_entries = [boot_proto::BootArtifactEntry {
-            kind: boot_proto::BootArtifactKind::DriverArtifact as u32,
-            flags: 0,
-            path_ptr: hhdm_start + 0x1400_3000,
-            path_len: 16,
-            data_ptr: hhdm_start + 0x1400_4000,
-            data_len: 4,
-        }];
-        boot_info.boot_artifacts = boot_proto::BootArtifactTable {
-            entries_ptr: artifact_entries.as_ptr() as u64,
-            count: artifact_entries.len() as u64,
-        };
+        let artifact_entries = [boot_proto::BootArtifactEntry::new_hhdm(
+            boot_proto::BootArtifactKind::DriverArtifact,
+            boot_proto::BootHhdmSpan::new(hhdm_start + 0x1400_3000, 16).unwrap(),
+            Some(boot_proto::BootHhdmSpan::new(hhdm_start + 0x1400_4000, 4).unwrap()),
+        )];
+        boot_info.boot_artifacts = boot_proto::BootArtifactTable::from_hhdm_addr(
+            hhdm_start + 0x1400_1000,
+            artifact_entries.len(),
+        )
+        .unwrap();
 
         let descriptors = [
             desc(EFI_MEMORY_TYPE_CONVENTIONAL, 0x1400_0000, 0x0020_0000),
@@ -1191,6 +1207,7 @@ mod tests {
 
         let reserved = [
             (0x1400_0000, 0x1400_1000),
+            (0x1400_1000, 0x1400_1028),
             (0x1400_2000, 0x1400_2020),
             (0x1400_3000, 0x1400_3010),
             (0x1400_4000, 0x1400_4004),
@@ -1217,6 +1234,44 @@ mod tests {
                 .iter()
                 .any(|region| region.base == 0x1500_0000 && region.length == 0x0020_0000)
         );
+    }
+
+    #[test]
+    fn usable_memory_builder_keeps_empty_artifact_payload_ranges_usable() {
+        let hhdm_start = 0xffff_8000_0000_0000;
+        let mut boot_info = sample_boot_info(hhdm_start);
+        let artifact_entries = [boot_proto::BootArtifactEntry::new_hhdm(
+            boot_proto::BootArtifactKind::DriverArtifact,
+            boot_proto::BootHhdmSpan::new(hhdm_start + 0x1400_3000, 16).unwrap(),
+            None,
+        )];
+        boot_info.boot_artifacts = boot_proto::BootArtifactTable::from_hhdm_addr(
+            hhdm_start + 0x1400_1000,
+            artifact_entries.len(),
+        )
+        .unwrap();
+
+        let descriptors = [desc(EFI_MEMORY_TYPE_CONVENTIONAL, 0x1400_0000, 0x0010_0000)];
+        let mut output = [UsableMemoryRegion::default(); 16];
+
+        let count = build_usable_memory_regions(
+            &descriptors,
+            &mut output,
+            &boot_info,
+            artifact_entries.as_slice(),
+            &[],
+            0x1400_0000,
+            0x1400_5000,
+            0x1000,
+            0x1400_6000,
+            0x1000,
+        )
+        .expect("usable memory build should succeed");
+        let regions = &output[..count];
+
+        assert!(regions.iter().any(|region| {
+            region.base <= 0x1400_4000 && region.base + region.length >= 0x1400_4000 + 0x1000
+        }));
     }
 
     #[test]

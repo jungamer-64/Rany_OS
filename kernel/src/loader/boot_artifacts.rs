@@ -11,14 +11,14 @@ use crate::driver_domain::RestartPolicy;
 use crate::driver_domain::lifecycle::DriverDomainConfig;
 use crate::loader::staged_pci::StageArtifactResult;
 use alloc::string::String;
-use boot_proto::{BootArtifactKind, BootArtifactTable};
+use boot_proto::{BootArtifactKind, BootArtifactTableView};
 use log::{debug, info, warn};
 
 /// Load driver Cells from boot artifact handoff.
 ///
 /// # Returns
 /// Number of successfully loaded driver cells
-pub fn load_cells_from_boot_artifacts(boot_artifacts: &BootArtifactTable) -> usize {
+pub fn load_cells_from_boot_artifacts(boot_artifacts: &BootArtifactTableView<'_>) -> usize {
     if boot_artifacts.is_empty() {
         debug!(target: "boot_artifacts", "No boot artifacts provided");
         return 0;
@@ -27,13 +27,13 @@ pub fn load_cells_from_boot_artifacts(boot_artifacts: &BootArtifactTable) -> usi
     info!(
         target: "boot_artifacts",
         "Loading {} boot artifact(s)",
-        boot_artifacts.count
+        boot_artifacts.len()
     );
 
     let mut loaded = 0;
     let mut staged = 0;
 
-    for entry in boot_artifacts.entries() {
+    for entry in boot_artifacts.iter() {
         let Some(path) = entry.path() else {
             warn!(target: "boot_artifacts", "Skipping artifact with invalid UTF-8 path");
             continue;
@@ -70,15 +70,7 @@ pub fn load_cells_from_boot_artifacts(boot_artifacts: &BootArtifactTable) -> usi
 
         let driver_name = extract_driver_name(path);
 
-        // SAFETY: boot artifact buffers are owned by the bootloader handoff
-        // allocation and remain mapped for the kernel lifetime.
-        let staged_artifact: &'static [u8] =
-            unsafe { core::slice::from_raw_parts(data.as_ptr(), data.len()) };
-        match crate::loader::staged_pci::stage_boot_artifact_static(
-            &driver_name,
-            staged_artifact,
-            true,
-        ) {
+        match crate::loader::staged_pci::stage_boot_artifact(&driver_name, data, true) {
             StageArtifactResult::Staged => {
                 info!(
                     target: "boot_artifacts",
@@ -152,31 +144,25 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn empty_boot_artifact_table_is_noop() {
-        assert_eq!(
-            load_cells_from_boot_artifacts(&BootArtifactTable::default()),
-            0
-        );
+        let table = unsafe { BootArtifactTable::default().view() }.unwrap();
+        assert_eq!(load_cells_from_boot_artifacts(&table), 0);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn fixture_artifacts_are_not_started_as_driver_cells() {
-        let path = b"cells/driver_cell_probe_v1.cell";
-        let data = b"fixture";
-        let entries = [BootArtifactEntry {
-            kind: BootArtifactKind::FixtureCell as u32,
-            flags: 0,
-            path_ptr: path.as_ptr() as u64,
-            path_len: path.len() as u64,
-            data_ptr: data.as_ptr() as u64,
-            data_len: data.len() as u64,
-        }];
-        let table = BootArtifactTable {
-            entries_ptr: entries.as_ptr() as u64,
-            count: entries.len() as u64,
-        };
+        static PATH: &[u8] = b"cells/driver_cell_probe_v1.cell";
+        static DATA: &[u8] = b"fixture";
+        let entries = [BootArtifactEntry::new_hhdm(
+            BootArtifactKind::FixtureCell,
+            boot_proto::BootHhdmSpan::new(PATH.as_ptr() as u64, PATH.len() as u64).unwrap(),
+            Some(boot_proto::BootHhdmSpan::new(DATA.as_ptr() as u64, DATA.len() as u64).unwrap()),
+        )];
+        let table =
+            BootArtifactTable::from_hhdm_addr(entries.as_ptr() as u64, entries.len()).unwrap();
+        let view = unsafe { table.view() }.unwrap();
 
-        assert_eq!(load_cells_from_boot_artifacts(&table), 0);
+        assert_eq!(load_cells_from_boot_artifacts(&view), 0);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

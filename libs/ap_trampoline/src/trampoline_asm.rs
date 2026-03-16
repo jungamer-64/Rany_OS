@@ -1,3 +1,6 @@
+// ============================================================================
+// libs/ap_trampoline/src/trampoline_asm.rs
+// ============================================================================
 use core::arch::global_asm;
 
 global_asm!(
@@ -84,15 +87,13 @@ __ap_mailbox:
     .zero {mailbox_size}
 __ap_trampoline_end:
 "#,
-    gdt_code32_selector = const crate::GDT32_CODE_SELECTOR,
-    gdt_data32_selector = const crate::GDT32_DATA_SELECTOR,
+    gdt_code32_selector = const crate::image::GDT32_CODE_SELECTOR,
+    gdt_data32_selector = const crate::image::GDT32_DATA_SELECTOR,
     mailbox_offset = const crate::MAILBOX_OFFSET,
-    mailbox_size = const core::mem::size_of::<crate::ApTrampolineMailbox>(),
+    mailbox_size = const core::mem::size_of::<crate::mailbox::ApTrampolineMailbox>(),
     mailbox_page_table_offset =
-        const crate::MAILBOX_OFFSET + core::mem::offset_of!(crate::ApTrampolineMailbox, page_table),
-    mailbox_stack_ptr_offset =
-        const core::mem::offset_of!(crate::ApTrampolineMailbox, stack_ptr),
-    mailbox_entry_point_offset =
-        const core::mem::offset_of!(crate::ApTrampolineMailbox, entry_point),
-    gdt_size = const crate::GDT_SIZE,
+        const crate::MAILBOX_OFFSET + crate::mailbox::MAILBOX_PAGE_TABLE_OFFSET,
+    mailbox_stack_ptr_offset = const crate::mailbox::MAILBOX_STACK_PTR_OFFSET,
+    mailbox_entry_point_offset = const crate::mailbox::MAILBOX_ENTRY_POINT_OFFSET,
+    gdt_size = const crate::image::GDT_SIZE,
 );

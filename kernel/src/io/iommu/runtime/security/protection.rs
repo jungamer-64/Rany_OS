@@ -40,19 +40,16 @@ pub fn init() {
 }
 
 /// Protect BIOS/UEFI reserved memory regions from DMA access.
-pub fn protect_bios_reserved_regions(boot_info: &boot_proto::ExoBootInfo) {
-    let mmap = &boot_info.memory_map;
-    if mmap.entries.is_null() || mmap.count == 0 {
+pub fn protect_bios_reserved_regions(boot_info: &boot_proto::ExoBootInfoView<'_>) {
+    let descriptors = boot_info.memory_map();
+    if descriptors.is_empty() {
         return;
     }
-
-    let count = mmap.count.min(2048) as usize;
-    let descriptors = unsafe { core::slice::from_raw_parts(mmap.entries, count) };
 
     let mut protected_count = 0;
     let mut protected_bytes = 0u64;
 
-    for desc in descriptors {
+    for desc in descriptors.iter().take(2048) {
         let ty = desc.r#type;
         // SECURITY: Skip only ranges that are genuinely usable RAM for general purposes.
         // Conventional Memory (7) is free RAM.

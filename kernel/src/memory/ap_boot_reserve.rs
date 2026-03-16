@@ -1,22 +1,16 @@
 use super::*;
-use boot_proto::{ExoBootInfo, NumaInfo};
+use boot_proto::{ExoBootInfo, ExoBootInfoView, NumaInfo, UsableMemoryRegion};
 
 /// Reserve AP boot trampoline and stack ranges.
 pub(crate) fn reserve_ap_boot_ranges(
     mut regions: Vec<(PhysAddr, u64)>,
     ap_boot: &boot_proto::ApBootInfo,
 ) -> Vec<(PhysAddr, u64)> {
-    if ap_boot.trampoline_size > 0 {
-        regions =
-            subtract_reserved_range(regions, ap_boot.trampoline_addr, ap_boot.trampoline_size);
+    if let Some((trampoline_start, trampoline_size)) = ap_boot.trampoline_range() {
+        regions = subtract_reserved_range(regions, trampoline_start, trampoline_size);
     }
-    if ap_boot.stack_size > 0 && ap_boot.stack_count > 0 {
-        let size = (ap_boot.stack_size as u64)
-            .checked_mul(ap_boot.stack_count as u64)
-            .unwrap_or(0);
-        if size > 0 {
-            regions = subtract_reserved_range(regions, ap_boot.stack_base, size);
-        }
+    if let Some((stack_start, stack_size)) = ap_boot.stack_region_range() {
+        regions = subtract_reserved_range(regions, stack_start, stack_size);
     }
     regions
 }
@@ -41,68 +35,69 @@ pub(crate) fn reserve_uefi_runtime_ranges(
     regions
 }
 
+fn span_with_trailing_nul(span: boot_proto::BootHhdmSpan) -> Option<boot_proto::BootHhdmSpan> {
+    boot_proto::BootHhdmSpan::new(span.start(), span.len().checked_add(1)?).ok()
+}
+
+fn subtract_hhdm_span(
+    regions: Vec<(PhysAddr, u64)>,
+    span: Option<boot_proto::BootHhdmSpan>,
+    hhdm_start: u64,
+) -> Vec<(PhysAddr, u64)> {
+    let Some((start, size)) = span.and_then(|span| span.phys_range(hhdm_start)) else {
+        return regions;
+    };
+    subtract_reserved_range(regions, start, size)
+}
+
 pub(crate) fn reserve_boot_info_ranges(
     mut regions: Vec<(PhysAddr, u64)>,
-    boot_info: &ExoBootInfo,
+    boot_info: &ExoBootInfoView<'_>,
 ) -> Vec<(PhysAddr, u64)> {
-    let boot_info_ptr = boot_info as *const _ as u64;
+    let raw = boot_info.boot_info();
+    let boot_info_ptr = raw as *const _ as u64;
     regions = subtract_if_valid(
         regions,
         hhdm_ptr_to_phys(boot_info_ptr),
         core::mem::size_of::<ExoBootInfo>() as u64,
     );
 
-    let mmap_ptr = boot_info.memory_map.entries as u64;
-    let entry_size = core::mem::size_of::<boot_proto::MemoryDescriptor>() as u64;
-    let mmap_bytes = boot_info
-        .memory_map
-        .count
-        .checked_mul(entry_size)
-        .unwrap_or(0);
-    regions = subtract_if_valid(regions, hhdm_ptr_to_phys(mmap_ptr), mmap_bytes);
-    regions = subtract_if_valid(
+    regions = subtract_hhdm_span(regions, raw.memory_map.span(), raw.phys_mem_offset);
+    regions = subtract_hhdm_span(
         regions,
-        hhdm_ptr_to_phys(boot_info.usable_memory.entries_ptr),
-        boot_info
-            .usable_memory
-            .count
-            .saturating_mul(core::mem::size_of::<boot_proto::UsableMemoryRegion>() as u64),
+        raw.usable_memory.regions_span(),
+        raw.phys_mem_offset,
     );
-
-    regions = subtract_if_valid(
+    regions = subtract_hhdm_span(
         regions,
-        hhdm_ptr_to_phys(boot_info.cmdline_ptr),
-        boot_info.cmdline_len.saturating_add(1),
+        raw.cmdline_span().and_then(span_with_trailing_nul),
+        raw.phys_mem_offset,
     );
-
-    regions = subtract_if_valid(
+    regions = subtract_hhdm_span(
         regions,
-        hhdm_ptr_to_phys(boot_info.boot_artifacts.entries_ptr),
-        boot_info
-            .boot_artifacts
-            .count
-            .saturating_mul(core::mem::size_of::<boot_proto::BootArtifactEntry>() as u64),
+        raw.boot_artifacts.entries_span(),
+        raw.phys_mem_offset,
     );
-    for entry in boot_info.boot_artifacts.entries() {
-        regions = subtract_if_valid(regions, hhdm_ptr_to_phys(entry.path_ptr), entry.path_len);
-        regions = subtract_if_valid(regions, hhdm_ptr_to_phys(entry.data_ptr), entry.data_len);
+    for entry in boot_info.boot_artifacts().iter() {
+        regions = subtract_hhdm_span(regions, Some(entry.path_span()), raw.phys_mem_offset);
+        regions = subtract_hhdm_span(regions, entry.data_span(), raw.phys_mem_offset);
     }
 
     regions = subtract_if_valid(
         regions,
-        addr_to_phys(boot_info.framebuffer.address),
-        boot_info.framebuffer.size() as u64,
+        addr_to_phys(raw.framebuffer.address),
+        raw.framebuffer.size() as u64,
     );
 
-    regions = reserve_ap_boot_ranges(regions, &boot_info.ap_boot);
-    regions = reserve_uefi_runtime_ranges(regions, &boot_info.uefi_runtime);
+    regions = reserve_ap_boot_ranges(regions, &raw.ap_boot);
+    regions = reserve_uefi_runtime_ranges(regions, &raw.uefi_runtime);
 
     regions
 }
 
-fn get_boot_usable_regions(usable_memory: &boot_proto::UsableMemoryTable) -> Vec<(PhysAddr, u64)> {
+fn get_boot_usable_regions(usable_memory: &[UsableMemoryRegion]) -> Vec<(PhysAddr, u64)> {
     let mut regions = Vec::new();
-    for region in usable_memory.regions() {
+    for region in usable_memory {
         if region.length == 0 {
             continue;
         }
@@ -113,17 +108,17 @@ fn get_boot_usable_regions(usable_memory: &boot_proto::UsableMemoryTable) -> Vec
 
 /// ブートメモリマップから使用可能領域を準備してBuddy Allocatorを初期化する
 pub(crate) fn init_buddy_from_boot_info(
-    boot_info: Option<&ExoBootInfo>,
+    boot_info: Option<&ExoBootInfoView<'_>>,
 ) -> alloc::vec::Vec<(x86_64::PhysAddr, u64)> {
     let usable_regions = if let Some(info) = boot_info {
-        let authoritative = get_boot_usable_regions(&info.usable_memory);
+        let authoritative = get_boot_usable_regions(info.usable_memory());
         if !authoritative.is_empty() {
             authoritative
         } else {
-            let mut fallback = if info.memory_map.entries.is_null() || info.memory_map.count == 0 {
+            let mut fallback = if info.memory_map().is_empty() {
                 get_default_memory_regions()
             } else {
-                let regions = get_boot_memory_regions(&info.memory_map);
+                let regions = get_boot_memory_regions(info.memory_map());
                 if regions.is_empty() {
                     get_default_memory_regions()
                 } else {
@@ -177,7 +172,7 @@ pub(crate) fn init_numa_pmm(
 }
 
 /// Exchange Heap, BSP Per-CPU/TLS, Per-Core Slab Cache の初期化
-pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfo>) {
+pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfoView<'_>>) {
     unsafe {
         crate::mm::cache::exchange_heap::init_exchange_heap(
             exchange_heap_start() as usize,
@@ -187,7 +182,9 @@ pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfo>) {
     verify_buddy_integrity();
 
     unsafe {
-        crate::per_cpu::complete_bsp_per_cpu_tls(boot_info.map(|info| &info.tls_template));
+        crate::per_cpu::complete_bsp_per_cpu_tls(
+            boot_info.map(|info| &info.boot_info().tls_template),
+        );
     }
 
     crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(0);
@@ -201,7 +198,7 @@ pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfo>) {
 /// 3. Exchange Heap（ゼロコピーIPC用）
 /// 4. Per-CPU データ構造
 /// 5. Per-Core Slab Cache
-pub fn init(numa_info: Option<&NumaInfo>, boot_info: Option<&ExoBootInfo>) {
+pub fn init(numa_info: Option<&NumaInfo>, boot_info: Option<&ExoBootInfoView<'_>>) {
     use core::sync::atomic::Ordering;
 
     crate::io::log::early_print("[MEM] init start\n");
@@ -330,14 +327,11 @@ pub fn checked_store_usize(addr: usize, val: usize, context: &str) {
 }
 
 /// ACPI Reclaimable メモリをPMMへ返却
-pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
-    let mmap = &boot_info.memory_map;
-    if mmap.entries.is_null() || mmap.count == 0 {
+pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfoView<'_>) {
+    let descriptors = boot_info.memory_map();
+    if descriptors.is_empty() {
         return;
     }
-
-    let count = mmap.count.min(usize::MAX as u64) as usize;
-    let descriptors = unsafe { core::slice::from_raw_parts(mmap.entries, count) };
 
     let mut total_pages = 0u64;
     for desc in descriptors {

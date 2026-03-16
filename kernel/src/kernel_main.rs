@@ -217,10 +217,8 @@ pub(crate) fn init_network_infra() {
 // Executor起動後に完全非同期で実行される。
 // ============================================================================
 
-fn kernel_cmdline<'a>(boot_info: &'a ExoBootInfo, _phys_mem_offset: u64) -> Option<&'a str> {
-    // boot_proto の統合ヘルパーを使用
-    // ブートローダーは cmdline_ptr を HHDM 仮想アドレスで格納するため直接読める
-    unsafe { boot_info.cmdline() }
+fn kernel_cmdline(boot_info: &boot_proto::ExoBootInfoView<'static>) -> Option<&'static str> {
+    boot_info.cmdline()
 }
 
 #[inline]
@@ -239,6 +237,7 @@ fn parse_cmdline_u64(v: &str) -> Option<u64> {
 #[derive(Clone, Copy)]
 struct KernelBootContext {
     boot_info_addr: usize,
+    boot_info_view: boot_proto::ExoBootInfoView<'static>,
     phys_mem_offset: u64,
     cmdline: Option<&'static str>,
 }
@@ -246,10 +245,13 @@ struct KernelBootContext {
 impl KernelBootContext {
     fn new(boot_info: &'static ExoBootInfo) -> Self {
         let phys_mem_offset = boot_info.phys_mem_offset;
+        let boot_info_view = unsafe { boot_info.view() }
+            .expect("bootloader handoff must validate before kernel initialization");
         Self {
             boot_info_addr: boot_info as *const ExoBootInfo as usize,
+            boot_info_view,
             phys_mem_offset,
-            cmdline: kernel_cmdline(boot_info, phys_mem_offset),
+            cmdline: kernel_cmdline(&boot_info_view),
         }
     }
 
@@ -257,6 +259,10 @@ impl KernelBootContext {
         // SAFETY: the bootloader handoff is immutable and lives for the full
         // kernel lifetime; the context only stores its stable address.
         unsafe { &*(self.boot_info_addr as *const ExoBootInfo) }
+    }
+
+    fn boot_info_view(&self) -> &boot_proto::ExoBootInfoView<'static> {
+        &self.boot_info_view
     }
 
     fn numa_info(&self) -> Option<&boot_proto::NumaInfo> {
@@ -390,7 +396,7 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
 
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    memory::init(context.numa_info(), Some(context.boot_info()));
+    memory::init(context.numa_info(), Some(context.boot_info_view()));
     memory::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
@@ -745,7 +751,7 @@ fn phase_platform_and_security_base(context: &KernelBootContext) {
 
     // Configure ACPI driver with HHDM offset for physical-to-virtual translation
     io::acpi::set_hhdm_offset(context.phys_mem_offset);
-    init_acpi_and_iommu(context.boot_info());
+    init_acpi_and_iommu(context.boot_info_view());
 
     crate::mm::numa::topology::configure_from_boot_info(&context.boot_info().numa_info);
     crate::mm::numa::topology::apply_current_cpu_locality();
@@ -943,8 +949,8 @@ fn phase_core_services_base(context: &KernelBootContext) {
 
     // 2.9. Boot artifact handoff からドライバ Cells をロード
     info!(target: "init", "Loading driver Cells from boot artifacts...");
-    let loaded_cells =
-        loader::boot_artifacts::load_cells_from_boot_artifacts(&context.boot_info().boot_artifacts);
+    let boot_artifacts = context.boot_info_view().boot_artifacts();
+    let loaded_cells = loader::boot_artifacts::load_cells_from_boot_artifacts(&boot_artifacts);
     if loaded_cells > 0 {
         info!(
             target: "init",

@@ -18,7 +18,7 @@ pub mod oom_killer;
 
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
-use boot_proto::{MemoryDescriptor, MemoryMap};
+use boot_proto::MemoryDescriptor;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -793,16 +793,13 @@ fn validate_usable_descriptor(desc: &MemoryDescriptor, min_addr: u64) -> Option<
     Some((start, end))
 }
 
-fn get_boot_memory_regions(memory_map: &MemoryMap) -> Vec<(PhysAddr, u64)> {
+fn get_boot_memory_regions(memory_map: &[MemoryDescriptor]) -> Vec<(PhysAddr, u64)> {
     let mut regions = Vec::new();
-    if memory_map.entries.is_null() || memory_map.count == 0 {
+    if memory_map.is_empty() {
         return regions;
     }
 
-    let count = memory_map.count.min(usize::MAX as u64) as usize;
-    let descriptors = unsafe { core::slice::from_raw_parts(memory_map.entries, count) };
-
-    for desc in descriptors {
+    for desc in memory_map {
         if !is_usable_efi_memory_type(desc.r#type) {
             continue;
         }

@@ -21,6 +21,22 @@ pub(crate) fn reset_cpu_routing_for_tests() {
 mod tests {
     use super::*;
 
+    fn test_ap_boot_info(bootable_aps: usize) -> boot_proto::ApBootInfo {
+        if bootable_aps == 0 {
+            return boot_proto::ApBootInfo::default();
+        }
+        boot_proto::ApBootLayout::new(
+            bootable_aps as u16,
+            bootable_aps as u16,
+            ap_trampoline::TrampolinePhysAddr::new(0x8000).unwrap(),
+            ap_trampoline::TRAMPOLINE_SIZE as u64,
+            0x20_0000,
+            0x20_000,
+        )
+        .unwrap()
+        .into_boot_info()
+    }
+
     fn install_cpu_topology(apics: &[u8]) {
         let mut snapshot = boot_proto::AcpiBootSnapshot::default();
         snapshot.local_apic_count = apics.len() as u16;
@@ -30,10 +46,8 @@ mod tests {
             snapshot.local_apics[index].flags = boot_proto::acpi_local_apic_flags::ENABLED;
         }
 
-        let mut ap_boot = boot_proto::ApBootInfo::default();
         let bootable_aps = apics.len().saturating_sub(1) as u16;
-        ap_boot.ap_count = bootable_aps;
-        ap_boot.stack_count = bootable_aps;
+        let ap_boot = test_ap_boot_info(bootable_aps as usize);
 
         crate::smp::topology::reset();
         let topology = crate::smp::topology::CpuTopology::from_sources(

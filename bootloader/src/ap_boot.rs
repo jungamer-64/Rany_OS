@@ -5,11 +5,8 @@
 //! - Per-AP stacks
 //! - AP boot information structure
 
-use ap_trampoline::{
-    ApBootFlags, LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE, TrampolinePageMut,
-    TrampolinePhysAddr,
-};
-use boot_proto::ApBootInfo;
+use ap_trampoline::{TRAMPOLINE_SIZE, TrampolinePageMut, TrampolinePhysAddr};
+use boot_proto::{ApBootInfo, ApBootLayout};
 use log::info;
 use uefi::Identify;
 use uefi::boot::{self, AllocateType, SearchType};
@@ -141,27 +138,22 @@ fn build_ap_boot_info(
         return ApBootInfo::default();
     }
 
-    ApBootInfo {
-        ap_count: ap_count.min(u16::MAX as u32) as u16,
-        stack_count: stack_count.min(u16::MAX as usize) as u16,
-        _reserved: [0; 4],
-        flags: ApBootFlags::TRAMPOLINE_READY,
-        trampoline_layout_version: LAYOUT_VERSION,
-        trampoline_mailbox_offset: MAILBOX_OFFSET as u32,
-        _reserved2: [0; 4],
-        trampoline_addr: trampoline_addr.as_u64(),
-        trampoline_size: AP_TRAMPOLINE_SIZE as u64,
+    ApBootLayout::new(
+        ap_count.min(u16::MAX as u32) as u16,
+        stack_count.min(u16::MAX as usize) as u16,
+        trampoline_addr,
+        AP_TRAMPOLINE_SIZE as u64,
         stack_base,
-        stack_size: AP_STACK_SIZE as u64,
-    }
+        AP_STACK_SIZE as u64,
+    )
+    .map(ApBootLayout::into_boot_info)
+    .unwrap_or_default()
 }
 
 fn install_trampoline(trampoline_addr: TrampolinePhysAddr) -> bool {
-    let install_result = unsafe {
-        let trampoline_ptr = trampoline_addr.as_u64() as *mut u8;
-        TrampolinePageMut::from_raw_ptr(trampoline_ptr)
-            .and_then(|mut trampoline_page| trampoline_page.install(trampoline_addr))
-    };
+    let install_result =
+        unsafe { TrampolinePageMut::from_raw_ptr(trampoline_addr.as_u64() as *mut u8) }
+            .and_then(|mut page| page.install(trampoline_addr));
 
     if let Err(error) = install_result {
         info!("AP Boot: Failed to patch trampoline image: {}", error);
@@ -272,17 +264,13 @@ fn allocate_ap_stacks(ap_count: usize) -> (u64, usize) {
 /// Stack pointer (top of stack) for the AP, or 0 if invalid
 #[allow(dead_code)]
 pub fn get_ap_stack_pointer(ap_boot_info: &ApBootInfo, ap_index: usize) -> u64 {
-    if ap_index >= ap_boot_info.stack_count as usize {
-        return 0;
-    }
-
-    // Stack grows downward, so return top of allocated region
-    ap_boot_info.stack_base + ((ap_index + 1) * ap_boot_info.stack_size as usize) as u64
+    ap_boot_info.stack_top_for(ap_index).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ap_trampoline::{ApBootFlags, LAYOUT_VERSION, MAILBOX_OFFSET};
 
     #[test]
     fn build_ap_boot_info_sets_shared_trampoline_metadata() {
@@ -303,6 +291,7 @@ mod tests {
         assert_eq!(info.trampoline_size, AP_TRAMPOLINE_SIZE as u64);
         assert_eq!(info.stack_base, 0x20_0000);
         assert_eq!(info.stack_size, AP_STACK_SIZE as u64);
+        assert_eq!(info.layout().unwrap().stack_top_for(3), Some(0x24_0000));
     }
 
     #[test]

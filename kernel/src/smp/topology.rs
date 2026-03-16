@@ -161,7 +161,7 @@ fn push_record(
 
     let logical_cpu_id = records.len();
     let boot_slot = (!is_bsp).then_some(logical_cpu_id.saturating_sub(1));
-    let boot_capacity = usize::from(ap_boot.ap_count).min(usize::from(ap_boot.stack_count));
+    let boot_capacity = ap_boot.boot_capacity();
     let bootable = if is_bsp {
         true
     } else {

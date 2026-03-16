@@ -336,15 +336,16 @@ fn iommu_config_from_boot_policy(
     }
 }
 
-fn init_acpi_and_iommu(boot_info: &ExoBootInfo) {
-    if boot_info.rsdp_addr == 0 {
+fn init_acpi_and_iommu(boot_info: &boot_proto::ExoBootInfoView<'_>) {
+    let raw = boot_info.boot_info();
+    if raw.rsdp_addr == 0 {
         panic!(
             "[SECURITY] IOMMU is mandatory but the bootloader did not provide an RSDP. \
              ACPI DMAR/IVRS discovery cannot continue."
         );
     }
 
-    let rsdp_addr = boot_info.rsdp_addr as usize;
+    let rsdp_addr = raw.rsdp_addr as usize;
     let parser = match unsafe { drivers::acpi::init(rsdp_addr as u64) } {
         Ok(p) => p,
         Err(e) => {
@@ -356,7 +357,7 @@ fn init_acpi_and_iommu(boot_info: &ExoBootInfo) {
     };
     info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
 
-    let iommu_config = iommu_config_from_boot_policy(&boot_info.boot_policy);
+    let iommu_config = iommu_config_from_boot_policy(&raw.boot_policy);
     init_iommu_driver(&parser, &iommu_config);
     io::iommu::api::enforce_iommu_requirement();
 

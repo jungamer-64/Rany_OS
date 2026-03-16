@@ -13,11 +13,10 @@ use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use ap_trampoline::{
-    ApBootFlags, ApTrampolineLaunchInfo, ApTrampolineMailbox, LAYOUT_VERSION, MAILBOX_OFFSET,
-    PageTable32Addr, TRAMPOLINE_SIZE, TrampolineMailboxHandle, TrampolinePhysAddr,
-    TrampolineVirtAddr,
+    ApBootFlags, ApTrampolineLaunchInfo, LAYOUT_VERSION, MAILBOX_OFFSET, PageTable32Addr,
+    TRAMPOLINE_SIZE, TrampolineMailboxHandle, TrampolineMailboxReadHandle, TrampolineVirtAddr,
 };
-use boot_proto::ExoBootInfo;
+use boot_proto::{ApBootLayout, ExoBootInfo};
 use core::num::{NonZeroU32, NonZeroU64};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 
@@ -137,10 +136,10 @@ pub struct ApBootstrap {
     ap_info: Vec<ApBootInfo>,
     /// Long-lived runtime stacks for AP workers after bootstrap handoff
     runtime_stacks: Vec<ApRuntimeStack>,
-    /// Physical address of the low-memory trampoline area provided by the bootloader
-    trampoline_base: TrampolinePhysAddr,
-    /// Shared mailbox view into the trampoline page.
-    mailbox: TrampolineMailboxHandle,
+    /// Validated AP boot handoff shared with the bootloader.
+    boot_layout: ApBootLayout,
+    /// Shared writable mailbox view into the trampoline page.
+    mailbox: PoisonLock<TrampolineMailboxHandle>,
     /// Serialize launches because all APs share one trampoline mailbox page.
     launch_lock: PoisonLock<()>,
     /// Number of APs started
@@ -156,12 +155,13 @@ impl ApBootstrap {
         boot_info: &ExoBootInfo,
         num_aps: u32,
     ) -> Result<Self, &'static str> {
-        let trampoline_base = TrampolinePhysAddr::new(boot_info.ap_boot.trampoline_addr)?;
+        let boot_layout = boot_info.ap_boot.layout()?;
+        let trampoline_base = boot_layout.trampoline_base();
         let trampoline_virt = TrampolineVirtAddr::new(
             crate::memory::phys_to_virt(x86_64::PhysAddr::new(trampoline_base.as_u64())).as_u64()
                 as usize,
         )?;
-        let mailbox = unsafe { mailbox_handle_from_trampoline_base(trampoline_virt) }?;
+        let mailbox = unsafe { TrampolineMailboxHandle::from_trampoline_virt(trampoline_virt) }?;
         let current_page_table = crate::mm::virt::higher_half::get_cr3().as_u64();
         if current_page_table != boot_info.page_table_base {
             log::info!(
@@ -185,7 +185,7 @@ impl ApBootstrap {
         let mut ap_info = Vec::with_capacity(num_aps as usize);
         for ap_index in 0..num_aps as usize {
             let mut info = ApBootInfo::new();
-            info.stack_ptr = map_ap_stack_window(&boot_info.ap_boot, ap_index)?;
+            info.stack_ptr = map_ap_stack_window(&boot_layout, ap_index)?;
             info.page_table = current_page_table;
             info.entry_point = ap_trampoline_entry as *const () as usize as u64;
             ap_info.push(info);
@@ -195,8 +195,8 @@ impl ApBootstrap {
             lapic: LocklessLocalApic::new(lapic_base),
             ap_info,
             runtime_stacks,
-            trampoline_base,
-            mailbox,
+            boot_layout,
+            mailbox: PoisonLock::new(mailbox),
             launch_lock: PoisonLock::new(()),
             aps_started: AtomicU32::new(0),
             expected_aps: num_aps,
@@ -240,7 +240,9 @@ impl ApBootstrap {
         crate::smp::mark_launching(cpu_id.get() as usize);
 
         info.started.store(false, Ordering::Release);
-        self.mailbox.write_launch(launch_info)?;
+        self.mailbox
+            .lock_for_init("SMP AP trampoline mailbox")
+            .write_launch(launch_info);
         fence(Ordering::SeqCst);
 
         self.lapic.enable();
@@ -249,7 +251,7 @@ impl ApBootstrap {
         self.delay_ms(10);
 
         info.set_state(ApState::SipiSent);
-        let vector = self.trampoline_base.sipi_vector();
+        let vector = self.boot_layout.trampoline_base().sipi_vector();
         self.lapic.send_sipi(apic_id, vector);
         self.delay_us(200);
         self.lapic.send_sipi(apic_id, vector);
@@ -314,25 +316,12 @@ fn bootstrap_ref() -> Option<&'static ApBootstrap> {
     *AP_BOOTSTRAP.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-unsafe fn mailbox_handle_from_trampoline_base(
-    trampoline_virt: TrampolineVirtAddr,
-) -> Result<TrampolineMailboxHandle, &'static str> {
-    unsafe { TrampolineMailboxHandle::from_trampoline_virt(trampoline_virt) }
-}
-
-unsafe fn mailbox_handle_from_ffi_ptr(
-    mailbox_ptr: *const ApTrampolineMailbox,
-) -> Result<TrampolineMailboxHandle, &'static str> {
-    unsafe { TrampolineMailboxHandle::from_raw_ptr(mailbox_ptr.cast_mut()) }
-}
-
 /// Initialize SMP bootstrap
 pub unsafe fn init(
     lapic_base: u64,
     boot_info: &ExoBootInfo,
     num_aps: u32,
 ) -> Result<(), &'static str> {
-    validate_trampoline_handoff(&boot_info.ap_boot)?;
     let bootstrap = Box::leak(Box::new(ApBootstrap::new(lapic_base, boot_info, num_aps)?));
     log::info!(
         "[SMP] Prepared {} AP stack guard page(s) in dedicated virtual windows",
@@ -354,48 +343,11 @@ pub fn online_aps() -> u32 {
     crate::cpu::count().saturating_sub(1) as u32
 }
 
-fn ap_stack_base(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
-    if ap_boot.stack_base == 0
-        || ap_boot.stack_size == 0
-        || ap_index >= ap_boot.stack_count as usize
-    {
-        return 0;
-    }
-
-    ap_boot.stack_base + (ap_index * ap_boot.stack_size as usize) as u64
-}
-
-fn ap_stack_top(ap_boot: &boot_proto::ApBootInfo, ap_index: usize) -> u64 {
-    let stack_base = ap_stack_base(ap_boot, ap_index);
-    if stack_base == 0 {
-        return 0;
-    }
-
-    stack_base + ap_boot.stack_size
-}
-
-fn ap_stack_window_size(ap_boot: &boot_proto::ApBootInfo) -> Result<u64, &'static str> {
-    if ap_boot.stack_size == 0 || ap_boot.stack_size % PAGE_SIZE != 0 {
-        return Err("AP stack size must be page aligned");
-    }
-
-    if ap_boot.stack_size <= PAGE_SIZE {
-        return Err("AP stack size must include one mapped page above the guard");
-    }
-
-    Ok(ap_boot.stack_size)
-}
-
-fn map_ap_stack_window(
-    ap_boot: &boot_proto::ApBootInfo,
-    ap_index: usize,
-) -> Result<u64, &'static str> {
-    let stack_phys_base = ap_stack_base(ap_boot, ap_index);
-    if stack_phys_base == 0 {
-        return Err("missing AP stack allocation");
-    }
-
-    let window_size = ap_stack_window_size(ap_boot)?;
+fn map_ap_stack_window(ap_boot: &ApBootLayout, ap_index: usize) -> Result<u64, &'static str> {
+    let stack_phys_base = ap_boot
+        .stack_base_for(ap_index)
+        .ok_or("missing AP stack allocation")?;
+    let window_size = ap_boot.stack_size();
     let window_pages = usize::try_from(window_size / PAGE_SIZE)
         .map_err(|_| "AP stack size exceeds kernel virtual allocation limits")?;
     let window_base = crate::mm::virt::higher_half::allocate_kernel_virt(window_pages);
@@ -471,10 +423,10 @@ fn ap_enter_executor(cpu_id: usize) -> ! {
 
 /// Rust-side AP trampoline handoff called after long mode is active.
 #[inline(never)]
-pub unsafe extern "C" fn ap_trampoline_entry(mailbox_ptr: *const ApTrampolineMailbox) -> ! {
+pub unsafe extern "C" fn ap_trampoline_entry(mailbox_ptr: *const u8) -> ! {
     ap_serial_mark(b'B');
 
-    let mailbox = match unsafe { mailbox_handle_from_ffi_ptr(mailbox_ptr) } {
+    let mailbox = match unsafe { TrampolineMailboxReadHandle::from_const_ptr(mailbox_ptr) } {
         Ok(mailbox) => mailbox,
         Err(_) => {
             ap_serial_mark(b'X');
@@ -489,7 +441,7 @@ pub unsafe extern "C" fn ap_trampoline_entry(mailbox_ptr: *const ApTrampolineMai
 }
 
 #[inline(never)]
-fn ap_trampoline_entry_inner(mailbox: TrampolineMailboxHandle) -> ! {
+fn ap_trampoline_entry_inner(mailbox: TrampolineMailboxReadHandle) -> ! {
     let mailbox = match mailbox.read_verified() {
         Ok(mailbox) => mailbox,
         Err(_) => {
@@ -501,11 +453,9 @@ fn ap_trampoline_entry_inner(mailbox: TrampolineMailboxHandle) -> ! {
         }
     };
 
-    let ap_probe = if mailbox.probe_addr() == 0 {
-        0
-    } else {
-        unsafe { core::ptr::read_volatile(mailbox.probe_addr() as *const u8) }
-    };
+    let ap_probe = mailbox.probe_addr().map_or(0, |probe_addr| unsafe {
+        core::ptr::read_volatile(probe_addr.get() as *const u8)
+    });
     if ap_probe == AP_BOOT_PROBE {
         ap_serial_mark(b'P');
     } else {
@@ -516,11 +466,15 @@ fn ap_trampoline_entry_inner(mailbox: TrampolineMailboxHandle) -> ! {
         .and_then(|bootstrap| bootstrap.runtime_stack_top(mailbox.ap_slot() as usize))
     {
         unsafe {
-            switch_to_ap_runtime_stack(runtime_stack_top, mailbox.ap_slot(), mailbox.cpu_id());
+            switch_to_ap_runtime_stack(
+                runtime_stack_top,
+                mailbox.ap_slot(),
+                mailbox.cpu_id().get(),
+            );
         }
     }
 
-    ap_entry_runtime(mailbox.ap_slot(), mailbox.cpu_id())
+    ap_entry_runtime(mailbox.ap_slot(), mailbox.cpu_id().get())
 }
 
 #[inline(never)]
@@ -647,36 +601,6 @@ pub fn send_eoi_current_cpu() {
     local_apic.send_eoi();
 }
 
-fn validate_trampoline_handoff(ap_boot: &boot_proto::ApBootInfo) -> Result<(), &'static str> {
-    if ap_boot.trampoline_addr == 0 {
-        return Err("missing AP trampoline allocation");
-    }
-    TrampolinePhysAddr::new(ap_boot.trampoline_addr)?;
-    if (ap_boot.flags & ApBootFlags::TRAMPOLINE_READY) == 0 {
-        return Err("shared AP trampoline is not marked ready");
-    }
-    if ap_boot.trampoline_size < TRAMPOLINE_SIZE as u64 {
-        return Err("shared AP trampoline allocation is smaller than expected");
-    }
-    if ap_boot.trampoline_layout_version != LAYOUT_VERSION {
-        return Err("shared AP trampoline layout version mismatch");
-    }
-    if ap_boot.trampoline_mailbox_offset != MAILBOX_OFFSET as u32 {
-        return Err("shared AP trampoline mailbox offset mismatch");
-    }
-    if ap_boot.stack_count < ap_boot.ap_count {
-        return Err("shared AP stack allocation count is smaller than AP count");
-    }
-    if ap_boot.stack_base == 0 {
-        return Err("missing AP stack allocation");
-    }
-    if ap_boot.stack_base % PAGE_SIZE != 0 {
-        return Err("AP stack base must be page aligned");
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,8 +615,8 @@ mod tests {
             lapic: LocklessLocalApic::new(0),
             ap_info: Vec::from([ap_info]),
             runtime_stacks: Vec::new(),
-            trampoline_base: TrampolinePhysAddr::new(0x8000).unwrap(),
-            mailbox: test_mailbox_handle(),
+            boot_layout: valid_ap_boot_info().layout().unwrap(),
+            mailbox: PoisonLock::new(test_mailbox_handle()),
             launch_lock: PoisonLock::new(()),
             aps_started: AtomicU32::new(0),
             expected_aps: 1,
@@ -717,147 +641,138 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_accepts_shared_layout() {
-        assert!(validate_trampoline_handoff(&valid_ap_boot_info()).is_ok());
+    fn ap_boot_layout_accepts_shared_layout() {
+        assert!(valid_ap_boot_info().layout().is_ok());
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_rejects_missing_ready_flag() {
+    fn ap_boot_layout_rejects_missing_ready_flag() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.flags = 0;
         assert_eq!(
-            validate_trampoline_handoff(&ap_boot),
+            ap_boot.layout(),
             Err("shared AP trampoline is not marked ready")
         );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_rejects_small_allocation() {
+    fn ap_boot_layout_rejects_small_allocation() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_size = (TRAMPOLINE_SIZE - 1) as u64;
         assert_eq!(
-            validate_trampoline_handoff(&ap_boot),
+            ap_boot.layout(),
             Err("shared AP trampoline allocation is smaller than expected")
         );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_rejects_high_trampoline_address() {
+    fn ap_boot_layout_rejects_high_trampoline_address() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_addr = 0x10_0000;
         assert_eq!(
-            validate_trampoline_handoff(&ap_boot),
+            ap_boot.layout(),
             Err("AP trampoline must reside below 1 MiB")
         );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_rejects_unaligned_trampoline_address() {
+    fn ap_boot_layout_rejects_unaligned_trampoline_address() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_addr = 0x8100;
-        assert_eq!(
-            validate_trampoline_handoff(&ap_boot),
-            Err("AP trampoline must be 4 KiB aligned")
-        );
+        assert_eq!(ap_boot.layout(), Err("AP trampoline must be 4 KiB aligned"));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_rejects_layout_version_mismatch() {
+    fn ap_boot_layout_rejects_layout_version_mismatch() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_layout_version = LAYOUT_VERSION + 1;
         assert_eq!(
-            validate_trampoline_handoff(&ap_boot),
+            ap_boot.layout(),
             Err("shared AP trampoline layout version mismatch")
         );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_rejects_mailbox_offset_mismatch() {
+    fn ap_boot_layout_rejects_mailbox_offset_mismatch() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.trampoline_mailbox_offset = (MAILBOX_OFFSET + 8) as u32;
         assert_eq!(
-            validate_trampoline_handoff(&ap_boot),
+            ap_boot.layout(),
             Err("shared AP trampoline mailbox offset mismatch")
         );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_rejects_short_stack_count() {
+    fn ap_boot_layout_rejects_short_stack_count() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.stack_count = 1;
         assert_eq!(
-            validate_trampoline_handoff(&ap_boot),
+            ap_boot.layout(),
             Err("shared AP stack allocation count is smaller than AP count")
         );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn validate_trampoline_handoff_rejects_unaligned_stack_base() {
+    fn ap_boot_layout_rejects_unaligned_stack_base() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.stack_base += 1;
-        assert_eq!(
-            validate_trampoline_handoff(&ap_boot),
-            Err("AP stack base must be page aligned")
-        );
+        assert_eq!(ap_boot.layout(), Err("AP stack base must be page aligned"));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn mailbox_handle_from_ffi_ptr_rejects_invalid_addresses() {
+    fn mailbox_read_handle_from_const_ptr_rejects_invalid_addresses() {
         assert_eq!(
-            unsafe { mailbox_handle_from_ffi_ptr(core::ptr::null()) },
+            unsafe { TrampolineMailboxReadHandle::from_const_ptr(core::ptr::null::<u8>()) },
             Err("AP trampoline mailbox address is null")
         );
 
         #[repr(align(8))]
-        struct Aligned([u8; core::mem::size_of::<ApTrampolineMailbox>() + 1]);
+        struct Aligned([u8; 2]);
 
-        let mut storage = Aligned([0u8; core::mem::size_of::<ApTrampolineMailbox>() + 1]);
-        let misaligned = unsafe { storage.0.as_mut_ptr().add(1) } as *const ApTrampolineMailbox;
+        let mut storage = Aligned([0u8; 2]);
+        let misaligned = unsafe { storage.0.as_mut_ptr().add(1) } as *const u8;
         assert_eq!(
-            unsafe { mailbox_handle_from_ffi_ptr(misaligned) },
+            unsafe { TrampolineMailboxReadHandle::from_const_ptr(misaligned) },
             Err("AP trampoline mailbox address is misaligned")
         );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn ap_stack_base_and_top_follow_boot_stack_blocks() {
+    fn ap_boot_info_helpers_follow_boot_stack_blocks() {
         let ap_boot = valid_ap_boot_info();
-        assert_eq!(ap_stack_base(&ap_boot, 0), 0x20_0000);
-        assert_eq!(ap_stack_top(&ap_boot, 0), 0x21_0000);
-        assert_eq!(ap_stack_base(&ap_boot, 1), 0x21_0000);
-        assert_eq!(ap_stack_top(&ap_boot, 1), 0x22_0000);
+        assert_eq!(ap_boot.stack_base_for(0), Some(0x20_0000));
+        assert_eq!(ap_boot.stack_top_for(0), Some(0x21_0000));
+        assert_eq!(ap_boot.stack_base_for(1), Some(0x21_0000));
+        assert_eq!(ap_boot.stack_top_for(1), Some(0x22_0000));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn ap_stack_window_requires_page_aligned_stack_size() {
+    fn ap_boot_layout_rejects_non_page_aligned_stack_size() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.stack_size = 0x18_000 + 1;
 
-        assert_eq!(
-            ap_stack_window_size(&ap_boot),
-            Err("AP stack size must be page aligned")
-        );
+        assert_eq!(ap_boot.layout(), Err("AP stack size must be page aligned"));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn ap_stack_window_requires_mapped_page_above_guard() {
+    fn ap_boot_layout_requires_mapped_page_above_guard() {
         let mut ap_boot = valid_ap_boot_info();
         ap_boot.stack_size = 0x1000;
 
         assert_eq!(
-            ap_stack_window_size(&ap_boot),
+            ap_boot.layout(),
             Err("AP stack size must include one mapped page above the guard")
         );
     }
