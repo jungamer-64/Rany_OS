@@ -243,6 +243,7 @@ impl ApBootstrap {
         self.mailbox
             .lock_for_init("SMP AP trampoline mailbox")
             .write_launch(launch_info);
+        // Publish the mailbox contents before the SIPI makes the AP observe it.
         fence(Ordering::SeqCst);
 
         self.lapic.enable();

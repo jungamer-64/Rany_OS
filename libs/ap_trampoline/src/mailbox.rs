@@ -161,6 +161,9 @@ pub struct TrampolineMailboxReadHandle {
 // The handle is a validated writable mailbox address. Callers are responsible
 // for external synchronization when sharing the mailbox across threads.
 unsafe impl Send for TrampolineMailboxHandle {}
+// Read handles may move between threads, but are intentionally not `Sync`:
+// volatile loads alone do not provide synchronization for shared concurrent
+// reads through the same handle.
 unsafe impl Send for TrampolineMailboxReadHandle {}
 
 impl TrampolineMailboxHandle {
@@ -192,6 +195,10 @@ impl TrampolineMailboxHandle {
         })
     }
 
+    /// Writes a new launch mailbox image.
+    ///
+    /// Callers must issue a full memory barrier after populating the mailbox
+    /// and before sending the SIPI that allows the AP to observe it.
     pub fn write_launch(&mut self, launch_info: ApTrampolineLaunchInfo) {
         // Safety: the handle constructor validates the mailbox address and the
         // mutable borrow guarantees no concurrent access through this handle.
@@ -256,6 +263,17 @@ mod tests {
         )
     }
 
+    fn launch_info_without_probe() -> ApTrampolineLaunchInfo {
+        ApTrampolineLaunchInfo::new(
+            2,
+            NonZeroU32::new(3).unwrap(),
+            PageTable32Addr::new(0x2000).unwrap(),
+            NonZeroU64::new(0x9000).unwrap(),
+            NonZeroU64::new(0xfeed_beef).unwrap(),
+            None,
+        )
+    }
+
     #[test]
     fn mailbox_offsets_match_asm_contract() {
         assert_eq!(offset_of!(ApTrampolineMailbox, magic), 0);
@@ -317,6 +335,18 @@ mod tests {
         handle.write_launch(launch_info);
 
         assert_eq!(handle.read_verified().unwrap(), launch_info);
+    }
+
+    #[test]
+    fn mailbox_handle_round_trips_launch_mailbox_without_probe() {
+        let mut mailbox = MaybeUninit::<ApTrampolineMailbox>::uninit();
+        let mut handle =
+            unsafe { TrampolineMailboxHandle::from_ptr(mailbox.as_mut_ptr().cast()) }.unwrap();
+        let launch_info = launch_info_without_probe();
+
+        handle.write_launch(launch_info);
+
+        assert_eq!(handle.read_verified().unwrap().probe_addr(), None);
     }
 
     #[test]

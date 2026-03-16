@@ -20,10 +20,9 @@ global_asm!(
 __ap_trampoline_start:
     cli
     cld
-    xor ax, ax
-    mov ss, ax
-    mov sp, 0x7000
     mov ax, cs
+    mov ss, ax
+    mov sp, {trampoline_size}
     mov ds, ax
     mov es, ax
     lgdt [AP_GDT_DESCRIPTOR_OFFSET]
@@ -96,4 +95,5 @@ __ap_trampoline_end:
     mailbox_stack_ptr_offset = const crate::mailbox::MAILBOX_STACK_PTR_OFFSET,
     mailbox_entry_point_offset = const crate::mailbox::MAILBOX_ENTRY_POINT_OFFSET,
     gdt_size = const crate::image::GDT_SIZE,
+    trampoline_size = const crate::TRAMPOLINE_SIZE,
 );

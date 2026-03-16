@@ -76,6 +76,8 @@ impl<'a> TrampolinePageMut<'a> {
         page.fill(0);
         page[..template.len()].copy_from_slice(template);
         patch_trampoline_image(&mut page[..template.len()], trampoline_addr, layout)?;
+        // Keep the mailbox scrub explicit so future template changes cannot
+        // accidentally preserve stale launch data across installs.
         page[layout.mailbox..layout.mailbox + size_of::<ApTrampolineMailbox>()].fill(0);
 
         Ok(())
@@ -193,6 +195,9 @@ fn validate_trampoline_layout(layout: TrampolineLayout) -> Result<TrampolineLayo
         if range.len == 0 {
             return Err("AP trampoline layout range is empty");
         }
+        if range_contains(range, layout.long_mode_entry)? {
+            return Err("AP trampoline long mode entry overlaps a patch range");
+        }
     }
 
     for (index, lhs) in ranges.iter().enumerate() {
@@ -210,6 +215,11 @@ fn ranges_overlap(lhs: LayoutRange, rhs: LayoutRange) -> Result<bool, &'static s
     let lhs_end = range_end(lhs.offset, lhs.len)?;
     let rhs_end = range_end(rhs.offset, rhs.len)?;
     Ok(lhs.offset < rhs_end && rhs.offset < lhs_end)
+}
+
+fn range_contains(range: LayoutRange, offset: usize) -> Result<bool, &'static str> {
+    let end = range_end(range.offset, range.len)?;
+    Ok(range.offset <= offset && offset < end)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -530,6 +540,17 @@ mod tests {
         assert_eq!(
             validate_trampoline_layout(layout),
             Err("AP trampoline layout ranges overlap")
+        );
+    }
+
+    #[test]
+    fn layout_validation_rejects_long_mode_entry_inside_patch_slot() {
+        let mut layout = resolve_trampoline_layout().unwrap();
+        layout.long_mode_entry = layout.gdt;
+
+        assert_eq!(
+            validate_trampoline_layout(layout),
+            Err("AP trampoline long mode entry overlaps a patch range")
         );
     }
 }

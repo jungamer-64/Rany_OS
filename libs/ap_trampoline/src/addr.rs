@@ -13,6 +13,9 @@ pub struct TrampolinePhysAddr(u32);
 impl TrampolinePhysAddr {
     pub fn new(addr: u64) -> Result<Self, &'static str> {
         let addr32 = u32::try_from(addr).map_err(|_| "AP trampoline address exceeds u32")?;
+        if addr32 == 0 {
+            return Err("AP trampoline must not reside at physical address zero");
+        }
         if addr >= LOW_MEM_LIMIT {
             return Err("AP trampoline must reside below 1 MiB");
         }
@@ -117,6 +120,10 @@ mod tests {
         assert_eq!(
             TrampolinePhysAddr::new(u64::from(u32::MAX) + 1),
             Err("AP trampoline address exceeds u32")
+        );
+        assert_eq!(
+            TrampolinePhysAddr::new(0),
+            Err("AP trampoline must not reside at physical address zero")
         );
         assert_eq!(
             TrampolinePhysAddr::new(LOW_MEM_LIMIT),
