@@ -23,7 +23,9 @@ use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice};
 use kernel_api::error::KapiError;
 use kernel_api::ipc::ChannelHandle;
 use kernel_api::resource::fs::{FileHandle, OpenMode};
-use kernel_api::resource::net::{Packet, RawEndpointHandle, TcpEndpoint};
+use kernel_api::resource::net::{
+    NetSocketAddr, Packet, RawEndpointHandle, TcpChunk, TcpListenerHandle, TcpStreamHandle,
+};
 use kernel_api::resource::storage::{
     DirectBlockHandle, NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
 };

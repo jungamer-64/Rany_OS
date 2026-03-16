@@ -1,4 +1,5 @@
 pub use crate::types_impl::{
-    InterfaceScope, Packet, PacketMeta, PacketRef, PacketRefStorage, PacketRefVTable, PacketType,
-    PhysicalAddress, RawEndpointHandle, TcpEndpoint,
+    InterfaceScope, NetSocketAddr, Packet, PacketMeta, PacketRef, PacketRefStorage,
+    PacketRefVTable, PacketType, PhysicalAddress, RawEndpointHandle, TcpChunk,
+    TcpListenerHandle, TcpStreamHandle,
 };

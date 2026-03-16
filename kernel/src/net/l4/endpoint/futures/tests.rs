@@ -3,12 +3,30 @@ use crate::net::l4::endpoint::EndpointAddr;
 use crate::net::l4::endpoint::manager::init_endpoint_manager;
 use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry};
 use crate::net::l4::endpoint::{NetworkEvent, create_tcp_endpoint, create_udp_endpoint};
-use crate::net::runtime::default_runtime;
 use crate::net::runtime::stack;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+fn configure_connected_tcp_endpoint(
+    sock: &crate::net::l4::endpoint::OwnedEndpoint,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+) {
+    if let Some(endpoint) = sock.endpoint() {
+        let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+        let _ = inner.transition_to(EndpointState::Bound);
+        let _ = inner.transition_to(EndpointState::Connected);
+    }
+}
+
+fn push_tcp_bytes(sock: &crate::net::l4::endpoint::OwnedEndpoint, data: &[u8]) {
+    let endpoint = sock.endpoint().expect("tcp endpoint should exist");
+    assert_eq!(endpoint.push_data(data), data.len());
+}
 
 // Simple test that verifies SendFuture writes into endpoint buffer
 // and is woken when the DataReady event is processed successfully
@@ -193,53 +211,11 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint() {
     stack::init_default();
 
     let sock = create_tcp_endpoint();
-    let _fd = sock.fd();
     let local = EndpointAddr::new([127, 0, 0, 1], 12345);
     let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-    if let Some(s) = sock.endpoint() {
-        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.local_addr = Some(local);
-        inner.remote_addr = Some(remote);
-    }
-
-    // Create TCB and attach a TcpStream to the endpoint
-    use crate::net::l4::tcp::{
-        EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpControlBlock, TcpStream,
-    };
-    use crate::sync::PoisonLock;
-    use alloc::sync::Arc;
-
-    let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
-    let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
-
-    let mut tcb = TcpControlBlock::new(t_local);
-    tcb.set_remote_addr(t_remote);
-    tcb.enter_established();
-    let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    let stream = TcpStream {
-        tcb: tcb_arc.clone(),
-        runtime: default_runtime(),
-    };
-
-    if let Some(s) = sock.endpoint() {
-        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.ensure_tcp().stream = Some(stream.clone());
-        let _ = inner.transition_to(EndpointState::Connected);
-    }
-
-    // Prepare a packet and push it into the TCB recv buffer
-    let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     let data = [1u8, 2u8, 3u8, 4u8];
-    packet.data_mut()[..data.len()].copy_from_slice(&data);
-    packet.set_len(data.len());
-
-    {
-        if let Ok(mut tlock) = tcb_arc.lock() {
-            tlock.push_recv_packet(packet);
-        } else {
-            panic!("TCB lock poisoned");
-        }
-    }
+    configure_connected_tcp_endpoint(&sock, local, remote);
+    push_tcp_bytes(&sock, &data);
 
     // Prepare a simple waker
     static WAKE_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -278,53 +254,11 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint_v6() {
     stack::init_default();
 
     let sock = create_tcp_endpoint();
-    let _fd = sock.fd();
     let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
     let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-    if let Some(s) = sock.endpoint() {
-        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.local_addr = Some(local);
-        inner.remote_addr = Some(remote);
-    }
-
-    // Create TCB and attach a TcpStream to the endpoint (IPv6)
-    use crate::net::l4::tcp::{EndpointAddr as TcpEndpointAddr, TcpControlBlock, TcpStream};
-    use crate::sync::PoisonLock;
-    use alloc::sync::Arc;
-
-    let t_local =
-        TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
-    let t_remote =
-        TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-
-    let mut tcb = TcpControlBlock::new(t_local);
-    tcb.set_remote_addr(t_remote);
-    tcb.enter_established();
-    let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    let stream = TcpStream {
-        tcb: tcb_arc.clone(),
-        runtime: default_runtime(),
-    };
-
-    if let Some(s) = sock.endpoint() {
-        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.ensure_tcp().stream = Some(stream.clone());
-        let _ = inner.transition_to(EndpointState::Connected);
-    }
-
-    // Prepare a packet and push it into the TCB recv buffer
-    let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     let data = [9u8, 10u8, 11u8];
-    packet.data_mut()[..data.len()].copy_from_slice(&data);
-    packet.set_len(data.len());
-
-    {
-        if let Ok(mut tlock) = tcb_arc.lock() {
-            tlock.push_recv_packet(packet);
-        } else {
-            panic!("TCB lock poisoned");
-        }
-    }
+    configure_connected_tcp_endpoint(&sock, local, remote);
+    push_tcp_bytes(&sock, &data);
 
     // Prepare a simple waker
     static WAKE_COUNT_V6: AtomicU32 = AtomicU32::new(0);
@@ -361,59 +295,12 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     stack::init_default();
 
     let sock = create_tcp_endpoint();
-    let _fd = sock.fd();
     let local = EndpointAddr::new([127, 0, 0, 1], 12345);
     let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-    if let Some(s) = sock.endpoint() {
-        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.local_addr = Some(local);
-        inner.remote_addr = Some(remote);
-    }
+    configure_connected_tcp_endpoint(&sock, local, remote);
 
-    // Create TCB and attach a TcpStream to the endpoint
-    use crate::net::l4::tcp::{
-        EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpControlBlock, TcpStream,
-    };
-    use crate::sync::PoisonLock;
-    use alloc::sync::Arc;
-
-    let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
-    let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
-
-    let mut tcb = TcpControlBlock::new(t_local);
-    tcb.set_remote_addr(t_remote);
-    tcb.enter_established();
-    let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    let stream = TcpStream {
-        tcb: tcb_arc.clone(),
-        runtime: default_runtime(),
-    };
-
-    if let Some(s) = sock.endpoint() {
-        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.ensure_tcp().stream = Some(stream.clone());
-        let _ = inner.transition_to(EndpointState::Connected);
-    }
-
-    // Prepare two packets and push into TCB recv buffer
-    let mut p1 = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     let d1 = [10u8, 11u8];
-    p1.data_mut()[..d1.len()].copy_from_slice(&d1);
-    p1.set_len(d1.len());
-
-    let mut p2 = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     let d2 = [20u8, 21u8, 22u8];
-    p2.data_mut()[..d2.len()].copy_from_slice(&d2);
-    p2.set_len(d2.len());
-
-    {
-        if let Ok(mut tlock) = tcb_arc.lock() {
-            tlock.push_recv_packet(p1);
-            tlock.push_recv_packet(p2);
-        } else {
-            panic!("TCB lock poisoned");
-        }
-    }
 
     let stream_wrapper = sock
         .tcp_packet_stream()
@@ -435,7 +322,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     let waker = unsafe { Waker::from_raw(raw) };
     let mut cx = Context::from_waker(&waker);
 
-    // First packet
+    push_tcp_bytes(&sock, &d1);
     let mut fut1 = stream_wrapper.next_packet();
     let mut pinned1 = unsafe { Pin::new_unchecked(&mut fut1) };
     match pinned1.as_mut().poll(&mut cx) {
@@ -443,7 +330,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
         _ => panic!("Expected first packet"),
     }
 
-    // Second packet
+    push_tcp_bytes(&sock, &d2);
     let mut fut2 = stream_wrapper.next_packet();
     let mut pinned2 = unsafe { Pin::new_unchecked(&mut fut2) };
     match pinned2.as_mut().poll(&mut cx) {
@@ -458,59 +345,12 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     stack::init_default();
 
     let sock = create_tcp_endpoint();
-    let _fd = sock.fd();
     let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
     let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-    if let Some(s) = sock.endpoint() {
-        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.local_addr = Some(local);
-        inner.remote_addr = Some(remote);
-    }
+    configure_connected_tcp_endpoint(&sock, local, remote);
 
-    // Create TCB and attach a TcpStream to the endpoint (IPv6)
-    use crate::net::l4::tcp::{EndpointAddr as TcpEndpointAddr, TcpControlBlock, TcpStream};
-    use crate::sync::PoisonLock;
-    use alloc::sync::Arc;
-
-    let t_local =
-        TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
-    let t_remote =
-        TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-
-    let mut tcb = TcpControlBlock::new(t_local);
-    tcb.set_remote_addr(t_remote);
-    tcb.enter_established();
-    let tcb_arc = Arc::new(PoisonLock::new(tcb));
-    let stream = TcpStream {
-        tcb: tcb_arc.clone(),
-        runtime: default_runtime(),
-    };
-
-    if let Some(s) = sock.endpoint() {
-        let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.ensure_tcp().stream = Some(stream.clone());
-        let _ = inner.transition_to(EndpointState::Connected);
-    }
-
-    // Prepare two packets and push into TCB recv buffer
-    let mut p1 = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     let d1 = [10u8, 11u8];
-    p1.data_mut()[..d1.len()].copy_from_slice(&d1);
-    p1.set_len(d1.len());
-
-    let mut p2 = crate::net::datapath::mempool::alloc_packet().expect("alloc packet");
     let d2 = [20u8, 21u8, 22u8];
-    p2.data_mut()[..d2.len()].copy_from_slice(&d2);
-    p2.set_len(d2.len());
-
-    {
-        if let Ok(mut tlock) = tcb_arc.lock() {
-            tlock.push_recv_packet(p1);
-            tlock.push_recv_packet(p2);
-        } else {
-            panic!("TCB lock poisoned");
-        }
-    }
 
     let stream_wrapper = sock
         .tcp_packet_stream()
@@ -532,7 +372,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     let waker = unsafe { Waker::from_raw(raw) };
     let mut cx = Context::from_waker(&waker);
 
-    // First packet
+    push_tcp_bytes(&sock, &d1);
     let mut fut1 = stream_wrapper.next_packet();
     let mut pinned1 = unsafe { Pin::new_unchecked(&mut fut1) };
     match pinned1.as_mut().poll(&mut cx) {
@@ -540,7 +380,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
         _ => panic!("Expected first packet"),
     }
 
-    // Second packet
+    push_tcp_bytes(&sock, &d2);
     let mut fut2 = stream_wrapper.next_packet();
     let mut pinned2 = unsafe { Pin::new_unchecked(&mut fut2) };
     match pinned2.as_mut().poll(&mut cx) {

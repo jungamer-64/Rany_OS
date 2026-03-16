@@ -34,6 +34,66 @@ fn apply_endpoint_scope(
     inner.scope = stack_scope(scope);
 }
 
+fn endpoint_addr_from_kapi(addr: kernel_api::resource::net::NetSocketAddr) -> crate::net::l4::endpoint::EndpointAddr {
+    match addr {
+        kernel_api::resource::net::NetSocketAddr::V4 { ip, port } => {
+            crate::net::l4::endpoint::EndpointAddr::new(ip, port)
+        }
+        kernel_api::resource::net::NetSocketAddr::V6 { ip, port } => {
+            crate::net::l4::endpoint::EndpointAddr::new_v6(ip, port)
+        }
+    }
+}
+
+fn endpoint_error_to_kapi(error: crate::net::l4::endpoint::EndpointError) -> KapiError {
+    match error {
+        crate::net::l4::endpoint::EndpointError::Timeout => KapiError::Timeout,
+        crate::net::l4::endpoint::EndpointError::PortInUse
+        | crate::net::l4::endpoint::EndpointError::AddressInUse => KapiError::ResourceExhausted,
+        crate::net::l4::endpoint::EndpointError::PermissionDenied => KapiError::PermissionDenied,
+        crate::net::l4::endpoint::EndpointError::NotFound => KapiError::InvalidHandle,
+        _ => KapiError::IoError,
+    }
+}
+
+fn tcp_error_to_kapi(error: crate::net::l4::tcp::TcpError) -> KapiError {
+    match error {
+        crate::net::l4::tcp::TcpError::Timeout => KapiError::Timeout,
+        crate::net::l4::tcp::TcpError::AddressInUse
+        | crate::net::l4::tcp::TcpError::BufferFull => KapiError::ResourceExhausted,
+        crate::net::l4::tcp::TcpError::PermissionDenied => KapiError::PermissionDenied,
+        crate::net::l4::tcp::TcpError::NetworkUnreachable => KapiError::NotFound,
+        _ => KapiError::IoError,
+    }
+}
+
+fn lookup_endpoint(
+    fd: crate::net::l4::endpoint::EndpointFd,
+) -> Result<crate::net::l4::endpoint::endpoint_core::Endpoint, KapiError> {
+    let Some(mgr_lock) = crate::net::l4::endpoint::endpoint_manager() else {
+        return Err(KapiError::NotFound);
+    };
+    let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
+    let Some(mgr) = guard.as_ref() else {
+        return Err(KapiError::NotFound);
+    };
+    mgr.get(fd).ok_or(KapiError::InvalidHandle)
+}
+
+fn close_endpoint_handle(fd: crate::net::l4::endpoint::EndpointFd) -> Result<(), KapiError> {
+    let socket = lookup_endpoint(fd)?;
+    socket.close_sync().map_err(endpoint_error_to_kapi)?;
+
+    if let Some(mgr_lock) = crate::net::l4::endpoint::endpoint_manager() {
+        let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(mgr) = guard.as_ref() {
+            let _ = mgr.unregister(fd);
+        }
+    }
+
+    Ok(())
+}
+
 // SAFETY: ExoKernel is stateless and accesses thread-safe globals
 mod gui_services;
 pub use self::gui_services::*;
@@ -231,114 +291,125 @@ impl KernelServices for ExoKernel {
     // Network (Connected to network stack)
     // ========================================================================
 
-    fn net_create_endpoint(
+    fn net_tcp_connect(
         &self,
+        remote: kernel_api::resource::net::NetSocketAddr,
         scope: kernel_api::resource::net::InterfaceScope,
-    ) -> Result<TcpEndpoint, KapiError> {
-        use crate::net::l4::endpoint::create_tcp_endpoint;
-
-        let owned = create_tcp_endpoint();
-        if let Some(endpoint) = owned.endpoint() {
-            apply_endpoint_scope(endpoint, scope);
-        }
-        let fd = owned.fd();
-
-        // Detach from OwnedEndpoint so it remains registered in EndpointManager
-        // and doesn't close on drop.
-        let _ = owned.into_inner();
-
-        Ok(TcpEndpoint::new(fd.raw() as u64, scope))
-    }
-    fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> Result<(), KapiError> {
-        use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
-
-        let fd = EndpointFd::from_raw(endpoint.id() as u32);
-
-        if let Some(mgr_lock) = endpoint_manager() {
-            let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(mgr) = guard.as_ref() {
-                if mgr.unregister(fd).is_some() {
-                    return Ok(());
-                }
-            }
-        }
-
-        Err(KapiError::InvalidHandle)
-    }
-
-    fn net_recv_packet(
-        &self,
-        endpoint: TcpEndpoint,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStreamHandle>> + Send>>
+    {
         Box::pin(async move {
-            use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
+            let remote = endpoint_addr_from_kapi(remote);
+            let owned = crate::net::l4::endpoint::create_tcp_endpoint();
+            let endpoint = owned.endpoint().ok_or(KapiError::NotFound)?.clone();
+            apply_endpoint_scope(&endpoint, scope);
+            endpoint
+                .open_connection(remote)
+                .await
+                .map_err(endpoint_error_to_kapi)?;
 
-            let fd = EndpointFd::from_raw(endpoint.id() as u32);
-
-            if let Some(mgr_lock) = endpoint_manager() {
-                let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-                if let Some(mgr) = guard.as_ref() {
-                    if let Some(socket) = mgr.get(fd) {
-                        // Create and await RecvFuture
-                        let fut = crate::net::l4::endpoint::futures::RecvFuture::new(
-                            socket.clone(),
-                            crate::net::runtime::stack::MAX_PACKET_SIZE,
-                        );
-                        match fut.await {
-                            Ok(vec) => Ok(Packet::new(vec)),
-                            Err(_) => Err(KapiError::IoError),
-                        }
-                    } else {
-                        Err(KapiError::InvalidHandle)
-                    }
-                } else {
-                    Err(KapiError::InvalidHandle)
-                }
-            } else {
-                Err(KapiError::NotFound)
-            }
+            let endpoint = owned.into_inner().ok_or(KapiError::NotFound)?;
+            let stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(endpoint, false);
+            let fd = stream.into_retained_handle();
+            Ok(kernel_api::resource::net::TcpStreamHandle::new(
+                fd.raw() as u64,
+                scope,
+            ))
         })
     }
 
-    fn net_send_packet(
+    fn net_tcp_listen(
         &self,
-        endpoint: TcpEndpoint,
+        local: kernel_api::resource::net::NetSocketAddr,
         scope: kernel_api::resource::net::InterfaceScope,
-        packet: Packet,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+        backlog: u32,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpListenerHandle>> + Send>>
+    {
         Box::pin(async move {
-            use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
-            let resolved_scope = match scope {
-                kernel_api::resource::net::InterfaceScope::Any => endpoint.default_scope(),
-                other => other,
-            };
+            let local = endpoint_addr_from_kapi(local);
+            let owned = crate::net::l4::endpoint::create_tcp_endpoint();
+            let endpoint = owned.endpoint().ok_or(KapiError::NotFound)?.clone();
+            apply_endpoint_scope(&endpoint, scope);
+            endpoint
+                .set_local_addr(local)
+                .map_err(endpoint_error_to_kapi)?;
+            endpoint
+                .start_listening(backlog)
+                .await
+                .map_err(endpoint_error_to_kapi)?;
 
-            let fd = EndpointFd::from_raw(endpoint.id() as u32);
+            let endpoint = owned.into_inner().ok_or(KapiError::NotFound)?;
+            let listener =
+                crate::net::l4::tcp::TcpListener::from_endpoint_with_drop(endpoint, false);
+            let fd = listener.into_retained_handle();
+            Ok(kernel_api::resource::net::TcpListenerHandle::new(
+                fd.raw() as u64,
+                scope,
+            ))
+        })
+    }
 
-            if let Some(mgr_lock) = endpoint_manager() {
-                let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-                if let Some(mgr) = guard.as_ref() {
-                    if let Some(socket) = mgr.get(fd) {
-                        apply_endpoint_scope(&socket, resolved_scope);
-                        // Clone/convert packet data for socket send
-                        let data = packet.data().to_vec();
-                        let fut = crate::net::l4::endpoint::futures::SendFuture::new(
-                            socket.clone(),
-                            data,
-                        );
-                        match fut.await {
-                            Ok(_) => Ok(()),
-                            Err(_) => Err(KapiError::IoError),
-                        }
-                    } else {
-                        Err(KapiError::InvalidHandle)
-                    }
-                } else {
-                    Err(KapiError::InvalidHandle)
-                }
-            } else {
-                Err(KapiError::NotFound)
-            }
+    fn net_tcp_accept(
+        &self,
+        listener: kernel_api::resource::net::TcpListenerHandle,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStreamHandle>> + Send>>
+    {
+        Box::pin(async move {
+            let fd = crate::net::l4::endpoint::EndpointFd::from_raw(listener.id() as u32);
+            let socket = lookup_endpoint(fd)?;
+            let (accepted, _addr, _if_id) = socket.accept().await.map_err(endpoint_error_to_kapi)?;
+            let endpoint = accepted.into_inner().ok_or(KapiError::NotFound)?;
+            let stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(endpoint, false);
+            let fd = stream.into_retained_handle();
+            Ok(kernel_api::resource::net::TcpStreamHandle::new(
+                fd.raw() as u64,
+                listener.default_scope(),
+            ))
+        })
+    }
+
+    fn net_tcp_close_stream(
+        &self,
+        stream: kernel_api::resource::net::TcpStreamHandle,
+    ) -> Result<(), KapiError> {
+        close_endpoint_handle(crate::net::l4::endpoint::EndpointFd::from_raw(
+            stream.id() as u32,
+        ))
+    }
+
+    fn net_tcp_close_listener(
+        &self,
+        listener: kernel_api::resource::net::TcpListenerHandle,
+    ) -> Result<(), KapiError> {
+        close_endpoint_handle(crate::net::l4::endpoint::EndpointFd::from_raw(
+            listener.id() as u32,
+        ))
+    }
+
+    fn net_tcp_read(
+        &self,
+        stream: kernel_api::resource::net::TcpStreamHandle,
+        max_len: usize,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpChunk>> + Send>> {
+        Box::pin(async move {
+            let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
+            let socket = lookup_endpoint(fd)?;
+            let data = socket.recv(max_len).await.map_err(endpoint_error_to_kapi)?;
+            Ok(kernel_api::resource::net::TcpChunk::new(data))
+        })
+    }
+
+    fn net_tcp_write(
+        &self,
+        stream: kernel_api::resource::net::TcpStreamHandle,
+        chunk: kernel_api::resource::net::TcpChunk,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<usize>> + Send>> {
+        Box::pin(async move {
+            let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
+            let socket = lookup_endpoint(fd)?;
+            socket
+                .send(chunk.into_vec())
+                .await
+                .map_err(endpoint_error_to_kapi)
         })
     }
 

@@ -1,55 +1,15 @@
 // ============================================================================
-// kernel/src/net/l4/tcp/mod.rs - 軽量TCP/IPスタック (設計書 6.2)
+// kernel/src/net/l4/tcp/mod.rs
 // ============================================================================
-// TCPスタックは段階的に構築中。未使用のヘルパー関数が存在するが、
-// 今後のruntime統合で使用予定のためallowを配置。
-//!
-//! # 真のゼロコピーネットワークスタック
-//!
-//! POSIX socketを廃止し、RustのAsyncRead/AsyncWriteトレイトを実装した
-//! 非同期ストリームを提供します。
-//!
-//! ## 設計原則
-//! - バッファの所有権連鎖: NIC → IP層 → TCP層 → アプリケーション
-//! - データコピーなし（ゼロコピー）
-//! - async/await ファースト
+//! TCP public facade backed by the endpoint subsystem.
 
-use crate::sync::PoisonLock;
-use alloc::collections::{BTreeMap, VecDeque};
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
-
-use crate::net::datapath::mempool::PacketRef;
-
-// ============================================================================
-// ネットワークアドレス
-// ============================================================================
-
-/// IPv4アドレス
 mod async_traits;
-pub use async_traits::*;
-mod control_block_impl;
 
-/// ソケットアドレス（統一定義）
-///
-/// `crate::net::l4::endpoint::types::EndpointAddr` を正規定義とする。
+pub use async_traits::*;
 pub use crate::net::l4::endpoint::types::EndpointAddr;
 pub use crate::net::types::Ipv4Addr;
 
-// ============================================================================
-// TCP接続状態
-// ============================================================================
-
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-/// 全接続での合計OOOセグメント数
-pub(crate) static GLOBAL_OOO_COUNT: AtomicUsize = AtomicUsize::new(0);
-const GLOBAL_MAX_OOO_SEGMENTS: usize = 4096; // Increased from 512 to prevent easy exhaustion DoS
-
-/// TCP状態マシン
+/// TCP state machine values shared with the endpoint TCB table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
     Closed,
@@ -65,28 +25,20 @@ pub enum TcpState {
     TimeWait,
 }
 
-/// TCP接続統計
+/// TCP connection statistics owned by the endpoint state.
 #[derive(Debug, Default, Clone)]
 pub struct TcpStats {
     pub bytes_sent: u64,
-    /// TCPとして受理した受信バイト数（wire側、再assembly後のpayload単位）
     pub bytes_received: u64,
     pub packets_sent: u64,
-    /// TCPとして受理した受信セグメント数（payload を伴うもの）
     pub packets_received: u64,
-    /// アプリケーションへ実際に引き渡した受信バイト数（read/read_zero_copy）
     pub app_bytes_delivered: u64,
     pub retransmissions: u64,
     pub rtt_us: u64,
-    /// Zero-copy受信に失敗してVecフォールバックした総バイト数
     pub recv_copy_fallback_bytes: u64,
-    /// Zero-copy受信に失敗してVecフォールバックした総パケット数
     pub recv_copy_fallback_packets: u64,
-    /// Vecフォールバックキューのピークバイト数
     pub recv_copy_fallback_peak_bytes: u64,
-    /// OOMでドロップされた受信パケット数
     pub oom_dropped_packets: u64,
-    /// OOMでドロップされた受信バイト数
     pub oom_dropped_bytes: u64,
 }
 
@@ -123,453 +75,39 @@ impl TcpStats {
     }
 }
 
-/// `recv_queue` (Vec fallback) の上限バイト数.
-///
-/// **NOTE:** the original design touted "zero copy", but the fallback allowed
-/// `Vec<u8>` copies up to this many bytes.  We are in the process of
-/// deprecating the fallback entirely; setting the constant to `0` causes any
-/// attempt to enqueue data to close the connection instead, forcing callers to
-/// address the condition explicitly.  Eventually the `recv_queue` field will be
-/// removed once the rest of the stack no longer depends on it.
-pub const TCP_RECV_COPY_FALLBACK_LIMIT_BYTES: usize = 0; // disabled
-
-/// Zero-copy receive buffer limit (bytes)
-pub const TCP_RECV_BUFFER_LIMIT_DEFAULT: usize = 128 * 1024; // 128 KB
-
-/// TCP受信状態（バッファ管理）
-struct TcpRxState {
-    /// 受信バッファ (zero-copy when available)
-    recv_buffer: VecDeque<PacketRef>,
-    /// `recv_buffer` 内の合計バイト数
-    recv_buffer_bytes: usize,
-    /// `recv_buffer` の総バイト上限 (Security: prevent memory exhaustion)
-    recv_buffer_limit_bytes: usize,
-    /// 受信バッファ (コピー版フォールバック)
-    recv_queue: VecDeque<Vec<u8>>,
-    /// `recv_queue` 内の合計バイト数
-    recv_queue_bytes: usize,
-    /// `recv_queue` の総バイト上限
-    recv_queue_limit_bytes: usize,
-    /// Out-of-order segments queue (wrapping-aware sorted Vec)
-    pub(crate) ooo_queue: Vec<(u32, PacketRef)>,
-    /// Sequence number of the FIN segment, if received out-of-order
-    ooo_fin_seq: Option<u32>,
+/// Minimal TCP header constants shared across the networking stack.
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct TcpHeader {
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub seq_num: u32,
+    pub ack_num: u32,
+    pub data_offset_flags: u16,
+    pub window: u16,
+    pub checksum: u16,
+    pub urgent_ptr: u16,
 }
 
-impl TcpRxState {
-    pub fn new() -> Self {
-        Self {
-            recv_buffer: VecDeque::new(),
-            recv_buffer_bytes: 0,
-            recv_buffer_limit_bytes: TCP_RECV_BUFFER_LIMIT_DEFAULT,
-            recv_queue: VecDeque::new(),
-            recv_queue_bytes: 0,
-            recv_queue_limit_bytes: TCP_RECV_COPY_FALLBACK_LIMIT_BYTES,
-            ooo_queue: Vec::new(),
-            ooo_fin_seq: None,
-        }
-    }
-}
+impl TcpHeader {
+    pub const FLAG_FIN: u16 = 0x0001;
+    pub const FLAG_SYN: u16 = 0x0002;
+    pub const FLAG_RST: u16 = 0x0004;
+    pub const FLAG_PSH: u16 = 0x0008;
+    pub const FLAG_ACK: u16 = 0x0010;
+    pub const FLAG_URG: u16 = 0x0020;
+    pub const FLAG_ECE: u16 = 0x0040;
+    pub const FLAG_CWR: u16 = 0x0080;
+    pub const FLAG_NS: u16 = 0x0100;
+    pub const MIN_HEADER_LEN: usize = 20;
 
-/// TCPシーケンス/ウィンドウ状態（基本の送受信番号）
-struct TcpSeqState {
-    /// 送信シーケンス番号（次に送信するバイト）
-    snd_nxt: u32,
-    /// 未確認の最古のシーケンス番号
-    snd_una: u32,
-    /// 送信ウィンドウサイズ (scaled)
-    snd_wnd: u32,
-    /// 最大送信ウィンドウサイズ (SWS回避用, RFC 1122)
-    max_snd_wnd: u32,
-    /// SND.WL1 - segment sequence number used for last window update (RFC 793)
-    snd_wl1: u32,
-    /// SND.WL2 - segment acknowledgment number used for last window update (RFC 793)
-    snd_wl2: u32,
-    /// 受信シーケンス番号（次に期待するバイト）
-    rcv_nxt: u32,
-    /// 受信ウィンドウサイズ (16-bit field for header)
-    rcv_wnd: u16,
-}
-
-impl TcpSeqState {
-    fn new(isn: u32) -> Self {
-        Self {
-            snd_nxt: isn,
-            snd_una: isn,
-            snd_wnd: 65535,
-            max_snd_wnd: 65535,
-            snd_wl1: 0,
-            snd_wl2: isn,
-            rcv_nxt: 0,
-            rcv_wnd: 65535,
-        }
-    }
-}
-
-/// TCP送信キュー状態（送信バッファ/未確認送信量）
-struct TcpTxState {
-    /// 送信バッファ（ゼロコピー: PacketRefのキュー）
-    send_buffer: VecDeque<PacketRef>,
-    /// 送信バッファ内のバイト数（キューされている未送信バイト）
-    send_buffer_bytes: u32,
-    /// 送信済みだが未確認のバイト数（in-flight）
-    outstanding_bytes: u32,
-}
-
-impl TcpTxState {
-    fn new() -> Self {
-        Self {
-            send_buffer: VecDeque::new(),
-            send_buffer_bytes: 0,
-            outstanding_bytes: 0,
-        }
-    }
-}
-
-/// TCP輻輳制御/送信挙動状態
-struct TcpCongestionState {
-    /// 輻輳ウィンドウ
-    cwnd: u32,
-    /// スロースタート閾値
-    ssthresh: u32,
-    /// Maximum Segment Size (default 1460 for Ethernet)
-    mss: u16,
-    /// Duplicate ACK counter (for fast retransmit)
-    dup_ack_count: u8,
-    /// Last ACK number received
-    last_ack: u32,
-    /// Last advertised window received from peer (for duplicate ACK detection)
-    last_snd_wnd: u16,
-    /// Fast recovery state
-    in_recovery: bool,
-    /// Recovery exit point (snd_nxt at enter_fast_recovery) - RFC 6582 (NewReno)
-    recovery_exit_point: u32,
-    /// Bytes acknowledged since last cwnd increase (for linear Congestion Avoidance)
-    bytes_acked_in_ca: u32,
-    /// Nagle's algorithm enabled (delays small packets until ACK received)
-    nagle_enabled: bool,
-}
-
-impl TcpCongestionState {
-    fn new(mss: u16) -> Self {
-        Self {
-            cwnd: 10 * mss as u32, // 初期値: 10 MSS (RFC 6928 compliance)
-            ssthresh: 65535,
-            mss, // RFC 1122 Section 4.2.2.6 default
-            dup_ack_count: 0,
-            last_ack: 0,
-            last_snd_wnd: 65535,
-            in_recovery: false,
-            recovery_exit_point: 0,
-            bytes_acked_in_ca: 0,
-            nagle_enabled: true, // Nagle's algorithm on by default
-        }
-    }
-}
-
-/// TCPオプション拡張状態（WSCALE/TS/SACK）
-struct TcpOptionsState {
-    // TCP Window Scaling (RFC 7323)
-    /// Our window scale factor (0-14)
-    our_wscale: u8,
-    /// Peer's window scale factor (0-14)
-    peer_wscale: u8,
-    /// Window scaling enabled (negotiated during SYN)
-    wscale_enabled: bool,
-    /// Actual receive window (scaled: rcv_wnd << our_wscale)
-    rcv_wnd_scaled: u32,
-    /// Maximum advertised window on this connection (RFC 1122 Section 4.2.2.13 avoidance)
-    rcv_wnd_max_adv: u32,
-
-    // TCP Timestamps (RFC 7323)
-    /// Timestamps enabled (negotiated during SYN)
-    ts_enabled: bool,
-    /// Our timestamp value (monotonically increasing)
-    ts_val: u32,
-    /// Last received timestamp echo reply
-    ts_ecr: u32,
-    /// Timestamp of last segment for RTT measurement
-    ts_recent: u32,
-    /// Age of ts_recent (for PAWS check, in milliseconds)
-    ts_recent_age: u64,
-
-    // TCP SACK (RFC 2018)
-    /// SACK enabled (negotiated during SYN)
-    sack_enabled: bool,
-    /// SACK blocks - received out-of-order segments [(left_edge, right_edge)]
-    sack_blocks: [(u32, u32); 4],
-    /// Number of valid SACK blocks
-    sack_block_count: u8,
-    /// Segments marked as SACKed (for selective retransmit)
-    sack_scoreboard: alloc::vec::Vec<(u32, u32)>,
-}
-
-impl TcpOptionsState {
-    fn new() -> Self {
-        Self {
-            our_wscale: 7,
-            peer_wscale: 0,             // Set when peer SYN received
-            wscale_enabled: false,      // Negotiated during handshake
-            rcv_wnd_scaled: 65535 << 7, // Initial scaled window
-            rcv_wnd_max_adv: 65535 << 7,
-            ts_enabled: false,
-            ts_val: 0,
-            ts_ecr: 0,
-            ts_recent: 0,
-            ts_recent_age: 0,
-            sack_enabled: false,
-            sack_blocks: [(0, 0); 4],
-            sack_block_count: 0,
-            sack_scoreboard: alloc::vec::Vec::new(),
-        }
+    #[inline]
+    pub fn data_offset(&self) -> usize {
+        (((u16::from_be(self.data_offset_flags) >> 12) & 0x0f) as usize) * 4
     }
 
-    /// Check if a sequence number is within a range (handling wrap-around)
-    pub(crate) fn seq_in_range(seq: u32, left: u32, right: u32) -> bool {
-        let diff_left = seq.wrapping_sub(left) as i32;
-        let diff_right = right.wrapping_sub(seq) as i32;
-        diff_left >= 0 && diff_right > 0
-    }
-
-    /// Check if a segment is marked as SACKed
-    pub fn is_sacked(&self, seq: u32, len: u32) -> bool {
-        let end = seq.wrapping_add(len);
-        for &(left, right) in &self.sack_scoreboard {
-            if Self::seq_in_range(seq, left, right)
-                && (Self::seq_in_range(end, left, right) || end == right)
-            {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Process SACK option received from peer
-    pub fn process_sack_option(&mut self, blocks: &[(u32, u32)]) {
-        use crate::net::l4::endpoint::types::{seq_max, seq_min};
-        for &(left, right) in blocks {
-            // Validate: left must be before right (handling wrap-around)
-            if (right.wrapping_sub(left) as i32) <= 0 {
-                continue; // Ignore invalid or empty blocks
-            }
-
-            // RFC 2018: Merge or add to scoreboard.
-            // A new block might overlap or bridge multiple existing blocks.
-            // We collect all blocks that intersect with [left, right],
-            // merge them into one, and remove the originals.
-            let mut merged_left = left;
-            let mut merged_right = right;
-            let mut i = 0;
-
-            // LOOP_PROOF: mode=condition; reason=i is incremented and bounds-checked by sack_scoreboard.len().;
-            while i < self.sack_scoreboard.len() {
-                let (l, r) = self.sack_scoreboard[i];
-                // Check for overlap or adjacency
-                // Adjacency check: merged_left == r or merged_right == l
-                if Self::seq_in_range(merged_left, l, r)
-                    || Self::seq_in_range(merged_right, l, r)
-                    || Self::seq_in_range(l, merged_left, merged_right)
-                    || merged_left == r
-                    || merged_right == l
-                {
-                    merged_left = seq_min(merged_left, l);
-                    merged_right = seq_max(merged_right, r);
-                    self.sack_scoreboard.remove(i);
-                    // Don't increment i, check the next element shifted into this position
-                } else {
-                    i += 1;
-                }
-            }
-
-            // Security: Limit scoreboard size to prevent memory exhaustion (DoS)
-            // RFC 2018 recommends keeping the most recent SACK information.
-            // Since we merged everything, we only add one entry.
-            if self.sack_scoreboard.len() < 64 {
-                self.sack_scoreboard.push((merged_left, merged_right));
-            } else {
-                // Scoreboard full - evict the oldest or just don't add?
-                // For simplicity we just don't add, but in a real stack we might rotate.
-            }
-        }
+    #[inline]
+    pub fn flags(&self) -> u16 {
+        u16::from_be(self.data_offset_flags) & 0x01ff
     }
 }
-
-/// TCPタイマー/再送/keepalive状態
-struct TcpTimerState {
-    // Retransmission Timer (RFC 6298)
-    /// Smoothed Round-Trip Time (milliseconds)
-    srtt: Option<u64>,
-    /// Round-Trip Time Variation (milliseconds)
-    rttvar: Option<u64>,
-    /// Retransmission Timeout (milliseconds)
-    rto: u64,
-    /// Last retransmit timestamp (tick/ms)
-    last_retransmit_time: u64,
-    /// Retransmission count for current segment
-    retransmit_count: u8,
-    /// Unacknowledged segments queue (for retransmission)
-    unacked_segments: VecDeque<UnackedSegment>,
-
-    // TCP Keepalive
-    /// Keepalive enabled
-    keepalive_enabled: bool,
-    /// Keepalive idle time (milliseconds) - time before first probe
-    keepalive_idle: u64,
-    /// Keepalive interval (milliseconds) - time between probes
-    keepalive_interval: u64,
-    /// Keepalive probe count before giving up
-    keepalive_count: u8,
-    /// Current keepalive probe count
-    keepalive_probes_sent: u8,
-    /// Last activity timestamp (milliseconds) - last data received
-    last_activity_time: u64,
-    /// Timestamp when TIME_WAIT state was entered (milliseconds)
-    time_wait_entered: u64,
-
-    // Zero-Window Probe (RFC 1122 Section 4.2.2.17)
-    /// Number of zero-window probes sent since peer window became 0
-    zwp_probes_sent: u8,
-    /// Timestamp of last zero-window probe sent (milliseconds)
-    zwp_last_probe_time: u64,
-
-    // Delayed ACK (RFC 1122)
-    /// Whether an ACK is pending (delayed ACK)
-    ack_pending: bool,
-    /// Timestamp when the first unacknowledged segment was received (milliseconds)
-    delayed_ack_timer: u64,
-}
-
-impl TcpTimerState {
-    fn new() -> Self {
-        Self {
-            srtt: None,
-            rttvar: None,
-            rto: 1_000, // Initial RTO = 1 second (in milliseconds)
-            last_retransmit_time: 0,
-            retransmit_count: 0,
-            unacked_segments: VecDeque::new(),
-            keepalive_enabled: false,
-            keepalive_idle: 7_200_000,  // 2 hours in milliseconds
-            keepalive_interval: 75_000, // 75 seconds in milliseconds
-            keepalive_count: 9,
-            keepalive_probes_sent: 0,
-            last_activity_time: 0,
-            time_wait_entered: 0,
-            zwp_probes_sent: 0,
-            zwp_last_probe_time: 0,
-            ack_pending: false,
-            delayed_ack_timer: 0,
-        }
-    }
-}
-
-/// TCP接続のエンドポイント情報
-struct TcpEndpointMeta {
-    /// ローカルアドレス
-    local_addr: EndpointAddr,
-    /// リモートアドレス
-    remote_addr: Option<EndpointAddr>,
-}
-
-impl TcpEndpointMeta {
-    fn new(local_addr: EndpointAddr) -> Self {
-        Self {
-            local_addr,
-            remote_addr: None,
-        }
-    }
-}
-
-/// TCP非同期待機状態（waker/backlog）
-#[derive(Default)]
-struct TcpAsyncWaiters {
-    read_waker: crate::sync::atomic_waker::AtomicWaker,
-    write_waker: crate::sync::atomic_waker::AtomicWaker,
-    connect_waker: crate::sync::atomic_waker::AtomicWaker,
-    backlog: Option<Arc<PoisonLock<VecDeque<TcpStream>>>>,
-    accept_waker: Option<Arc<crate::sync::atomic_waker::AtomicWaker>>,
-    listener_runtime: Option<crate::net::runtime::NetRuntimeHandle>,
-}
-
-// ============================================================================
-// TCP制御ブロック (TCB)
-// ============================================================================
-
-impl Drop for TcpControlBlock {
-    fn drop(&mut self) {
-        let ooo_count = self.rx.ooo_queue.len();
-        if ooo_count > 0 {
-            GLOBAL_OOO_COUNT.fetch_sub(ooo_count, Ordering::Relaxed);
-        }
-    }
-}
-
-impl core::fmt::Debug for TcpControlBlock {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TcpControlBlock")
-            .field("endpoints", &"...")
-            .field("state", &self.state)
-            .field("snd_nxt", &self.seq.snd_nxt)
-            .field("snd_una", &self.seq.snd_una)
-            .field("rcv_nxt", &self.seq.rcv_nxt)
-            .finish()
-    }
-}
-
-/// TCP制御ブロック
-pub struct TcpControlBlock {
-    /// 接続エンドポイント情報
-    endpoints: TcpEndpointMeta,
-    /// 現在の状態
-    state: TcpState,
-
-    // シーケンス番号管理
-    /// 基本シーケンス/ウィンドウ状態
-    seq: TcpSeqState,
-
-    // バッファ
-    /// 送信状態（送信キュー/未確認送信量）
-    tx: TcpTxState,
-    /// 受信バッファ群
-    rx: TcpRxState,
-
-    // 輻輳制御
-    congestion: TcpCongestionState,
-
-    // TCPオプション拡張
-    options: TcpOptionsState,
-
-    // タイマー/再送/keepalive
-    timers: TcpTimerState,
-
-    // Waker / backlog（非同期通知用）
-    waiters: TcpAsyncWaiters,
-
-    /// 統計
-    stats: TcpStats,
-
-    /// 接続作成時刻 (tick)
-    created_at: u64,
-}
-
-/// Unacknowledged segment for retransmission (internal queue entry)
-#[derive(Clone)]
-struct UnackedSegment {
-    /// Sequence number of first byte
-    seq: u32,
-    /// Segment data
-    data: Vec<u8>,
-    /// Timestamp when sent (tick)
-    sent_time: u64,
-    /// TCP Timestamp value (RFC 7323)
-    ts_val: u32,
-    /// Number of retransmissions
-    retransmit_count: u8,
-    /// Flags associated with the segment (SYN/FIN/PSH/etc)
-    flags: u16,
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod security_tests;
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests;

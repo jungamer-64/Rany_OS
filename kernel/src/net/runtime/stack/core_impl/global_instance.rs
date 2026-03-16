@@ -692,10 +692,8 @@ pub fn bind_tcp_sync_in(
     runtime: NetRuntimeHandle,
     addr: TcpEndpointAddr,
 ) -> Result<TcpListener, TcpError> {
-    match stack_in(runtime).lock() {
-        Ok(mut guard) => guard.as_mut().ok_or(TcpError::InvalidState)?.bind_tcp(addr),
-        Err(_) => Err(TcpError::InvalidState),
-    }
+    let _ = (runtime, addr);
+    Err(TcpError::InvalidState)
 }
 
 // ============================================================================

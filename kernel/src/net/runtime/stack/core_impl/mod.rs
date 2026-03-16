@@ -198,7 +198,6 @@ impl NetworkStack {
             igmp: IgmpProcessor::new(ip),
             ndp: ndp_proc,
             udp: UdpProcessor::new(),
-            tcp: TcpProcessor::new(),
             tx_pool: PacketPool::new(64, MAX_PACKET_SIZE),
             stats: NetworkStats::default(),
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
@@ -329,6 +328,172 @@ impl NetworkStack {
         false
     }
 
+    /// Compatibility helper for callers that do not specify an interface.
+    pub fn transmit(&self, data: &[u8]) -> bool {
+        self.transmit_on(None, data)
+    }
+
+    fn send_tcp_raw_scoped_with_ttl(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+        ttl: u8,
+    ) -> bool {
+        let (src_port, dst_port, tcp_flags) = if tcp_segment.len() >= 14 {
+            (
+                u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]),
+                u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]),
+                tcp_segment[13],
+            )
+        } else {
+            (0, 0, 0)
+        };
+
+        if !crate::net::security::firewall::check_egress_v4(
+            src_ip.octets(),
+            dst_ip.octets(),
+            6,
+            src_port,
+            dst_port,
+            tcp_flags,
+        ) {
+            self.stats.record_dropped();
+            return false;
+        }
+
+        let Ok((if_id, config, resolved_src)) =
+            self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)
+        else {
+            self.stats.record_dropped();
+            return false;
+        };
+
+        let dst_mac = if dst_ip.is_loopback() {
+            config.mac
+        } else {
+            match self.resolve_mac(if_id, dst_ip, &config, self.current_time()) {
+                Some(mac) => mac,
+                None => return false,
+            }
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                ip_packet
+                    .init_header()
+                    .set_source(resolved_src)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Tcp)
+                    .set_identification(self.ipv4.next_id(dst_ip))
+                    .set_ttl(ttl);
+
+                let payload_buf = ip_packet.payload_mut();
+                if payload_buf.len() < tcp_segment.len() {
+                    return false;
+                }
+
+                payload_buf[..tcp_segment.len()].copy_from_slice(tcp_segment);
+                ip_packet.finalize(tcp_segment.len());
+                let total_len = ip_packet.total_len();
+                let _ = ip_packet;
+                frame.set_payload_len(total_len);
+                return self.transmit_on(if_id, frame.as_bytes());
+            }
+        }
+
+        false
+    }
+
+    pub fn send_tcp(&mut self, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
+        self.send_tcp_raw_scoped_with_ttl(
+            crate::net::types::InterfaceScope::Any,
+            src_ip,
+            dst_ip,
+            tcp_segment,
+            64,
+        )
+    }
+
+    pub fn send_tcp_on(
+        &mut self,
+        if_id: NetIfId,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+    ) -> bool {
+        self.send_tcp_raw_scoped_with_ttl(
+            crate::net::types::InterfaceScope::Pinned(if_id),
+            src_ip,
+            dst_ip,
+            tcp_segment,
+            64,
+        )
+    }
+
+    pub fn send_tcp_with_ttl(
+        &mut self,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+        ttl: u8,
+    ) -> bool {
+        self.send_tcp_raw_scoped_with_ttl(
+            crate::net::types::InterfaceScope::Any,
+            src_ip,
+            dst_ip,
+            tcp_segment,
+            ttl,
+        )
+    }
+
+    pub fn bind_udp_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        port: u16,
+    ) -> Option<UdpEndpoint> {
+        self.udp.bind_with_token(scope, port, None).ok()
+    }
+
+    pub fn bind_udp_with_token_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        port: u16,
+        token: Option<u64>,
+    ) -> Option<UdpEndpoint> {
+        self.udp.bind_with_token(scope, port, token).ok()
+    }
+
+    pub fn unbind_udp_scoped(&mut self, scope: crate::net::types::InterfaceScope, port: u16) {
+        self.udp.unbind(scope, port);
+    }
+
+    pub fn join_multicast_group(
+        &mut self,
+        group: Ipv4Address,
+    ) -> Result<(), crate::net::l3::igmp::IgmpError> {
+        self.igmp.join_group(group)
+    }
+
+    pub fn leave_multicast_group(
+        &mut self,
+        group: Ipv4Address,
+    ) -> Result<(), crate::net::l3::igmp::IgmpError> {
+        self.igmp.leave_group(group)
+    }
+
+    pub fn list_udp_endpoints(&self) -> Vec<crate::net::l4::udp::UdpEndpointSnapshot> {
+        self.udp.endpoints().list_endpoints()
+    }
+
     /// Update current time (call periodically)
     pub fn update_time(&self, ticks: u64) {
         self.current_time.store(ticks, Ordering::Release);
@@ -342,29 +507,9 @@ impl NetworkStack {
     /// Process periodic timeouts (call periodically, e.g., every 100ms)
     pub fn process_timeouts(&mut self) {
         let now = self.current_time();
-
-        // 1. Process TCP retransmissions
-        self.process_tcp_retransmissions(now);
-
-        // 2. Process TCP keepalives and zero-window probes
-        let mut extra_packets = self.tcp.process_keepalives(now);
-        extra_packets.extend(self.tcp.process_zero_window_probes(now));
-
-        for res in extra_packets {
-            let mut buffer = [0u8; MAX_PACKET_SIZE];
-            if let Some((local, remote, seq, total_len)) =
-                Self::build_tcp_packet_from_result(&res, &mut buffer)
-            {
-                let sent = self.send_tcp_packet_for_flow(local, remote, &buffer[..total_len]);
-
-                if sent {
-                    self.tcp
-                        .record_sent_packet(local, remote, seq, 0x10 /* ACK */, &[], now);
-                }
-            }
-        }
-
-        // 3. Process other scheduled timeouts
+        // Endpoint-owned TCP timers/retransmits are driven from the endpoint event
+        // task via `tcb_table().tick()`. The integrated stack keeps only generic
+        // timeout-wheel work here.
         let expired = self.timeout_wheel.tick(now);
 
         for timer in expired {

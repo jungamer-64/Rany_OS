@@ -124,6 +124,12 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Removal: These compatibility wrappers have been removed; migrate to the async-first APIs: `set_local_addr()`, `open_connection()`, `start_listening()`/`next_connection()`, and `dial()`/`TcpStream::dial()`.
   - `TcpListener::new` ❌ **removed** (was deprecated)
     - Migration: Use `TcpListener::listen_on(addr)`.
+  - Legacy TCP processor / control-block internals ❌ **removed**
+    - Migration: TCP state is now owned by `l4::endpoint` (`tcb_table + endpoint handler + network_event_task`). Public callers should use `TcpStream` / `TcpListener`; internal tests should target `TcpControlBlockEntry`, endpoint fixtures, or `TcpSegmentBuilder`.
+  - Packet-oriented TCP KAPI helpers ❌ **removed**
+    - Migration: Use stream/listener-oriented TCP KAPI: `net_tcp_connect`, `net_tcp_listen`, `net_tcp_accept`, `net_tcp_close_stream`, `net_tcp_close_listener`, `net_tcp_read`, `net_tcp_write`.
+  - Legacy shared TCP KAPI endpoint type ❌ **removed**
+    - Migration: Use `NetSocketAddr`, `TcpStreamHandle`, `TcpListenerHandle`, and `TcpChunk`. `Packet` / `RawEndpointHandle` remain available only for RAW endpoint operations.
   - UDP legacy bind wrappers (`UdpSocketTable::bind`, `UdpProcessor::bind`) ❌ **removed**
     - Migration: Use the token-aware API: `UdpSocketTable::bind_with_token(port, Some(token))`. For the no-token case use `UdpSocketTable::bind_with_token(port, None)` or the stack helper `bind_udp(port)`/`bind_udp_with_token(port, token)` as appropriate.
 

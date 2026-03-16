@@ -194,11 +194,7 @@ impl Endpoint {
 
             local_addr = inner.local_addr.ok_or(EndpointError::InvalidArgument)?;
 
-            // 同期TCP bind（ブートストラップ/テスト用）
-            let tcp_addr = local_addr;
-            let listener = crate::net::runtime::stack::bind_tcp_sync_in(self.runtime, tcp_addr)
-                .map_err(|_| EndpointError::AddressInUse)?;
-            inner.ensure_tcp().listener = Some(listener);
+            inner.ensure_tcp().accept_backlog = backlog as usize;
             inner.transition_to(EndpointState::Listening)?;
         }
 
@@ -278,7 +274,7 @@ impl Endpoint {
     /// 接続受け入れ（内部用 - バックログ経由）
     pub fn accept_from_backlog(
         &self,
-        stream: TcpStream,
+        _stream: TcpStream,
         remote_addr: EndpointAddr,
     ) -> EndpointResult<Endpoint> {
         if self.endpoint_type != EndpointType::Tcp {
@@ -296,7 +292,6 @@ impl Endpoint {
             let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
             new_inner.local_addr = inner.local_addr;
             new_inner.remote_addr = Some(remote_addr);
-            new_inner.ensure_tcp().stream = Some(stream);
             let _ = new_inner.transition_to(EndpointState::Connected);
         }
 
@@ -405,13 +400,28 @@ impl Endpoint {
     /// プロトコルスタックから呼ばれる
     /// 実際にバッファに追加されたバイト数を返す。
     pub fn push_data(&self, data: &[u8]) -> usize {
-        let (pushed, waker) = {
+        let (pushed, local, remote, waker) = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             let pushed = inner.push_recv_data(data);
+            let local = inner.local_addr;
+            let remote = inner.remote_addr;
+            if pushed > 0 {
+                if let Some(tcp) = inner.tcp_mut() {
+                    tcp.stats.record_rx_segment(pushed);
+                }
+            }
             // 待機中のタスクを起こす準備 (push_recv_dataがwakeする場合もあるが、
             // ここでwakerを取り出すのは古いコードとの互換性/安全策)
-            (pushed, inner.recv_waker.take())
+            (pushed, local, remote, inner.recv_waker.take())
         };
+
+        if pushed > 0 {
+            if let (Some(local), Some(remote)) = (local, remote) {
+                let _ = crate::net::l4::endpoint::tcb::tcb_table().lookup_mut(local, remote, |tcb| {
+                    tcb.on_data_received(pushed as u32);
+                });
+            }
+        }
 
         // ロック外でWakerを起こす（デッドロック回避）
         if let Some(w) = waker {

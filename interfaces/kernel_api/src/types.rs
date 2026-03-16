@@ -516,34 +516,41 @@ impl ChannelHandle {
     }
 }
 
-/// TCP endpoint
-pub struct TcpEndpoint {
+/// Shared socket address for stream-oriented KAPI TCP operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetSocketAddr {
+    V4 { ip: [u8; 4], port: u16 },
+    V6 { ip: [u8; 16], port: u16 },
+}
+
+impl NetSocketAddr {
+    pub const fn v4(ip: [u8; 4], port: u16) -> Self {
+        Self::V4 { ip, port }
+    }
+
+    pub const fn v6(ip: [u8; 16], port: u16) -> Self {
+        Self::V6 { ip, port }
+    }
+
+    pub const fn port(self) -> u16 {
+        match self {
+            Self::V4 { port, .. } | Self::V6 { port, .. } => port,
+        }
+    }
+}
+
+/// Opaque handle for a connected TCP stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpStreamHandle {
     id: u64,
-    connected: bool,
     default_scope: InterfaceScope,
 }
 
-impl TcpEndpoint {
-    /// Create new TCP endpoint
-    pub fn new(id: u64, default_scope: InterfaceScope) -> Self {
-        Self {
-            id,
-            connected: false,
-            default_scope,
-        }
+impl TcpStreamHandle {
+    pub const fn new(id: u64, default_scope: InterfaceScope) -> Self {
+        Self { id, default_scope }
     }
 
-    /// Check if connected
-    pub fn is_connected(&self) -> bool {
-        self.connected
-    }
-
-    /// Set connection state (kernel-only)
-    pub fn set_connected(&mut self, connected: bool) {
-        self.connected = connected;
-    }
-
-    /// Get raw endpoint id
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -552,13 +559,53 @@ impl TcpEndpoint {
         self.default_scope
     }
 
-    pub fn set_default_scope(&mut self, default_scope: InterfaceScope) {
-        self.default_scope = default_scope;
-    }
-
-    /// Consume the endpoint and return its raw id
     pub fn into_raw(self) -> u64 {
         self.id
+    }
+}
+
+/// Opaque handle for a listening TCP socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TcpListenerHandle {
+    id: u64,
+    default_scope: InterfaceScope,
+}
+
+impl TcpListenerHandle {
+    pub const fn new(id: u64, default_scope: InterfaceScope) -> Self {
+        Self { id, default_scope }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn default_scope(&self) -> InterfaceScope {
+        self.default_scope
+    }
+
+    pub fn into_raw(self) -> u64 {
+        self.id
+    }
+}
+
+/// Owned TCP byte chunk exchanged through the KAPI.
+#[derive(Debug, Clone, Default)]
+pub struct TcpChunk {
+    data: Vec<u8>,
+}
+
+impl TcpChunk {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data }
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        self.data
     }
 }
 

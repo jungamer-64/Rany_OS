@@ -132,6 +132,8 @@ pub enum EndpointError {
     Interrupted,
     /// バッファフル
     BufferFull,
+    /// 権限不足
+    PermissionDenied,
     /// 不正な状態遷移
     InvalidStateTransition,
     /// リソース不足
@@ -158,6 +160,7 @@ impl core::fmt::Display for EndpointError {
             Self::Timeout => write!(f, "Operation timed out"),
             Self::Interrupted => write!(f, "Operation interrupted"),
             Self::BufferFull => write!(f, "Buffer full"),
+            Self::PermissionDenied => write!(f, "Permission denied"),
             Self::InvalidStateTransition => write!(f, "Invalid state transition"),
             Self::ResourceExhausted => write!(f, "Resource exhausted"),
             Self::PortInUse => write!(f, "Port already in use"),
@@ -177,9 +180,9 @@ impl EndpointError {
             TcpError::Timeout => EndpointError::Timeout,
             TcpError::AddressInUse => EndpointError::AddressInUse,
             TcpError::BufferFull => EndpointError::BufferFull,
+            TcpError::PermissionDenied => EndpointError::PermissionDenied,
             TcpError::InvalidState => EndpointError::InvalidStateTransition,
             TcpError::NetworkUnreachable => EndpointError::ResourceExhausted,
-            TcpError::PermissionDenied => EndpointError::Internal,
         }
     }
 }

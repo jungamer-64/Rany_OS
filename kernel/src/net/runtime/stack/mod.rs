@@ -27,10 +27,7 @@ use crate::net::l3::ipv6::{
     Ipv6PmtuCache, Ipv6ProcessResult, Ipv6Processor,
 };
 use crate::net::l3::ndp::{NdpProcessor, NdpResult};
-use crate::net::l4::tcp::{
-    EndpointAddr as TcpEndpointAddr, TcpError, TcpHeader, TcpListener, TcpProcessResult,
-    TcpProcessor, TcpStream,
-};
+use crate::net::l4::tcp::{EndpointAddr as TcpEndpointAddr, TcpError, TcpListener, TcpStream};
 
 use crate::net::l4::udp::{UdpEndpoint, UdpProcessor, UdpResult};
 use crate::net::obs::{
@@ -274,8 +271,6 @@ pub struct NetworkStack {
     pub ndp: Option<NdpProcessor>,
     /// UDP processor
     pub udp: UdpProcessor,
-    /// TCP processor
-    pub tcp: TcpProcessor,
     /// Packet pool for transmit buffers
     pub tx_pool: PacketPool,
     /// Statistics

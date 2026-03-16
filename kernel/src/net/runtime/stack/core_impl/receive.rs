@@ -680,11 +680,13 @@ impl NetworkStack {
                                     let remote_addr =
                                         TcpEndpointAddr::new_v6(dst.octets(), dst_port);
 
-                                    if !self.tcp.validate_icmp_sequence(
+                                    if !crate::net::l4::endpoint::tcb_table()
+                                        .validate_icmp_sequence(
                                         local_addr,
                                         remote_addr,
                                         seq_num,
-                                    ) {
+                                    )
+                                    {
                                         log::warn!(
                                             "[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq",
                                             dst

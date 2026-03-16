@@ -13,7 +13,9 @@ use super::event::NetworkEvent;
 use super::manager::{ENDPOINT_MANAGER, EndpointFamily};
 use super::segment::TcpSegmentBuilder;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
-use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
+use super::types::{
+    EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
+};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
@@ -74,6 +76,22 @@ fn endpoint_error_from_network(error: crate::net::types::NetworkError) -> Endpoi
         crate::net::types::NetworkError::InvalidAddress => EndpointError::InvalidArgument,
         crate::net::types::NetworkError::NetworkUnreachable => EndpointError::NetworkUnreachable,
         _ => EndpointError::Internal,
+    }
+}
+
+#[inline]
+fn tcp_error_from_endpoint_error(error: EndpointError) -> crate::net::l4::tcp::TcpError {
+    match error {
+        EndpointError::NotConnected => crate::net::l4::tcp::TcpError::ConnectionClosed,
+        EndpointError::ConnectionRefused => crate::net::l4::tcp::TcpError::ConnectionRefused,
+        EndpointError::Timeout => crate::net::l4::tcp::TcpError::Timeout,
+        EndpointError::AddressInUse | EndpointError::PortInUse => {
+            crate::net::l4::tcp::TcpError::AddressInUse
+        }
+        EndpointError::BufferFull => crate::net::l4::tcp::TcpError::BufferFull,
+        EndpointError::NetworkUnreachable => crate::net::l4::tcp::TcpError::NetworkUnreachable,
+        EndpointError::PermissionDenied => crate::net::l4::tcp::TcpError::PermissionDenied,
+        _ => crate::net::l4::tcp::TcpError::InvalidState,
     }
 }
 
@@ -1183,15 +1201,11 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::TcpBind {
-                local,
                 result_slot,
                 waker,
+                ..
             } => {
-                // スタックロック保持版: 二重ロックを回避
-                let result = stack
-                    .bind_tcp(local)
-                    .map(|_| ())
-                    .map_err(|e| EndpointError::from_tcp_error(e));
+                let result = Err(EndpointError::InvalidStateTransition);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1230,16 +1244,11 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::TcpConnect {
-                local,
-                remote,
                 result_slot,
                 waker,
+                ..
             } => {
-                // スタックロック保持版: TCP接続を実行
-                let result = stack
-                    .connect_tcp(local, remote)
-                    .map(|_| ())
-                    .map_err(|e| EndpointError::from_tcp_error(e));
+                let result = Err(EndpointError::InvalidStateTransition);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1252,8 +1261,7 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                // スタックロック保持版: TcpStreamを作成して返す
-                let result = stack.connect_tcp_in(runtime, local, remote);
+                let result = self.make_tcp_stream_with_stack(runtime, local, remote, stack);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1305,7 +1313,9 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                stack.unbind_tcp(local, remote);
+                if let Some(entry) = tcb_table().remove(local, remote) {
+                    self.close_endpoint_for_unbind(entry.fd);
+                }
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(true);
                 }
@@ -1317,7 +1327,10 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                stack.unbind_tcp_listener(local);
+                if let Some(fd) = self.find_tcp_listener_fd_by_local(local) {
+                    let _ = tcb_table().remove_by_fd(fd);
+                    self.close_endpoint_for_unbind(fd);
+                }
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(true);
                 }
@@ -1325,15 +1338,11 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::TcpBindWithToken {
-                local,
-                token,
                 result_slot,
                 waker,
+                ..
             } => {
-                let result = stack
-                    .bind_tcp_with_token(local, token)
-                    .map(|_| ())
-                    .map_err(|e| EndpointError::from_tcp_error(e));
+                let result = Err(EndpointError::InvalidStateTransition);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1345,8 +1354,8 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                // スタックロック保持版: TcpListenerを作成して返す
-                let result = stack.bind_tcp_in(runtime, local);
+                let result =
+                    self.make_tcp_listener_with_stack(runtime, local, super::inner::EndpointInner::DEFAULT_BACKLOG as u32);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1359,8 +1368,9 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                // スタックロック保持版: TcpListenerをトークン付きで作成して返す
-                let result = stack.bind_tcp_with_token_in(runtime, local, token);
+                let _ = token;
+                let result =
+                    self.make_tcp_listener_with_stack(runtime, local, super::inner::EndpointInner::DEFAULT_BACKLOG as u32);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -2724,6 +2734,11 @@ impl NetworkEventHandler {
     /// DataReadyイベント処理
     /// 送信バッファにデータがあるのでTCPで送信
     fn handle_data_ready(&self, fd: EndpointFd, _socket_type: EndpointType) -> EventHandleResult {
+        enum SendSource {
+            Buffered(usize),
+            ZeroCopy(usize),
+        }
+
         let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
@@ -2756,13 +2771,20 @@ impl NetworkEventHandler {
                 }
 
                 let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let zero_copy_packet = inner
+                    .tcp()
+                    .and_then(|tcp| tcp.send_zero_copy_queue.front().cloned());
                 let buffer_len = inner.send_buffer.len();
-                if buffer_len == 0 {
+                let pending_len = zero_copy_packet
+                    .as_ref()
+                    .map(|packet| packet.data().len())
+                    .unwrap_or(buffer_len);
+                if pending_len == 0 {
                     return None;
                 }
 
                 // 1. Sender SWS Avoidance & Nagle チェック
-                if tcb.should_delay_send(buffer_len) {
+                if tcb.should_delay_send(pending_len) {
                     return None;
                 }
 
@@ -2774,19 +2796,32 @@ impl NetworkEventHandler {
 
                 // 3. 1セグメントあたりのサイズ決定 (min(buffer, window, MSS))
                 let mss = tcb.mss as usize;
-                let len = (buffer_len as u32).min(effective_wnd).min(mss as u32) as usize;
+                let len = (pending_len as u32).min(effective_wnd).min(mss as u32) as usize;
 
                 if len == 0 {
                     return None;
                 }
 
-                // データをコピー (本当はゼロコピーにしたいが、まずはRFC準拠を優先)
-                let data: Vec<u8> = inner.send_buffer.iter().take(len).copied().collect();
-
-                Some((data, tcb.snd_nxt, tcb.rcv_nxt, tcb.advertised_recv_window()))
+                if let Some(packet) = zero_copy_packet {
+                    Some((
+                        packet.data()[..len].to_vec(),
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        tcb.advertised_recv_window(),
+                        SendSource::ZeroCopy(len),
+                    ))
+                } else {
+                    Some((
+                        inner.send_buffer.iter().take(len).copied().collect(),
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        tcb.advertised_recv_window(),
+                        SendSource::Buffered(len),
+                    ))
+                }
             });
 
-            let Some((data, seq, ack, advertised_wnd)) = send_params else {
+            let Some((data, seq, ack, advertised_wnd, source)) = send_params else {
                 break;
             };
 
@@ -2808,10 +2843,28 @@ impl NetworkEventHandler {
             // パケット送信を試みる
             match self.send_tcp_segment(local, remote, segment) {
                 Ok(()) => {
-                    // 送信成功: send_buffer から削除し、TCB を更新
+                    // 送信成功: endpointキューから削除し、TCB を更新
                     {
                         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                        inner.send_buffer.drain(..data.len());
+                        match source {
+                            SendSource::Buffered(len) => {
+                                inner.send_buffer.drain(..len);
+                            }
+                            SendSource::ZeroCopy(len) => {
+                                if let Some(tcp) = inner.tcp_mut() {
+                                    if let Some(mut packet) = tcp.send_zero_copy_queue.pop_front() {
+                                        let original_len = packet.data().len();
+                                        if original_len > len {
+                                            packet.advance(len);
+                                            packet.set_len(original_len - len);
+                                            tcp.send_zero_copy_queue.push_front(packet);
+                                        }
+                                    }
+                                    tcp.send_zero_copy_bytes =
+                                        tcp.send_zero_copy_bytes.saturating_sub(len);
+                                }
+                            }
+                        }
                         // 送信可能になったため、待ちタスクを起こす
                         if let Some(w) = inner.send_waker.take() {
                             w.wake();
@@ -2847,7 +2900,15 @@ impl NetworkEventHandler {
         // また、イベントキュー満杯で待機していた UDP ソケットの send_waker も起床させる
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
             mgr.for_each(|socket| {
-                if socket.send_buffer_len() > 0 {
+                let pending = {
+                    let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                    !inner.send_buffer.is_empty()
+                        || inner
+                            .tcp()
+                            .map(|tcp| !tcp.send_zero_copy_queue.is_empty())
+                            .unwrap_or(false)
+                };
+                if pending {
                     super::event::enqueue_event_ignore_in(
                         socket.runtime(),
                         super::event::NetworkEvent::DataReady {
@@ -2868,6 +2929,124 @@ impl NetworkEventHandler {
         }
 
         EventHandleResult::Success
+    }
+
+    fn unregister_endpoint(&self, fd: EndpointFd) {
+        if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
+            let _ = mgr.unregister(fd);
+        }
+    }
+
+    fn make_tcp_stream_with_stack(
+        &self,
+        runtime: NetRuntimeHandle,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        stack: &mut crate::net::runtime::stack::NetworkStack,
+    ) -> Result<crate::net::l4::tcp::TcpStream, crate::net::l4::tcp::TcpError> {
+        let owned = crate::net::l4::endpoint::create_tcp_endpoint_in(runtime);
+        let endpoint = owned
+            .into_inner()
+            .ok_or(crate::net::l4::tcp::TcpError::InvalidState)?;
+
+        {
+            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            inner.remote_addr = Some(remote);
+            inner.ensure_tcp();
+            let _ = inner.transition_to(EndpointState::Connecting);
+        }
+
+        match self.handle_connect_with_stack(endpoint.fd(), local, remote, stack) {
+            EventHandleResult::Success => Ok(crate::net::l4::tcp::TcpStream::from_endpoint(
+                endpoint,
+            )),
+            EventHandleResult::ProtocolError(err) => {
+                self.unregister_endpoint(endpoint.fd());
+                Err(tcp_error_from_endpoint_error(err))
+            }
+            _ => {
+                self.unregister_endpoint(endpoint.fd());
+                Err(crate::net::l4::tcp::TcpError::InvalidState)
+            }
+        }
+    }
+
+    fn make_tcp_listener_with_stack(
+        &self,
+        runtime: NetRuntimeHandle,
+        local: EndpointAddr,
+        backlog: u32,
+    ) -> Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError> {
+        let owned = crate::net::l4::endpoint::create_tcp_endpoint_in(runtime);
+        let endpoint = owned
+            .into_inner()
+            .ok_or(crate::net::l4::tcp::TcpError::InvalidState)?;
+
+        {
+            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            inner.ensure_tcp().accept_backlog = backlog as usize;
+            let _ = inner.transition_to(EndpointState::Listening);
+        }
+
+        match self.handle_listen(endpoint.fd(), local, backlog) {
+            EventHandleResult::Success => Ok(crate::net::l4::tcp::TcpListener::from_endpoint(
+                endpoint,
+            )),
+            EventHandleResult::ProtocolError(err) => {
+                self.unregister_endpoint(endpoint.fd());
+                Err(tcp_error_from_endpoint_error(err))
+            }
+            _ => {
+                self.unregister_endpoint(endpoint.fd());
+                Err(crate::net::l4::tcp::TcpError::InvalidState)
+            }
+        }
+    }
+
+    fn close_endpoint_for_unbind(&self, fd: EndpointFd) {
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+        let Some(ref mgr) = *manager else {
+            return;
+        };
+        let Some(socket) = mgr.get(fd) else {
+            return;
+        };
+
+        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.clear_protocol();
+        inner.recv_buffer.clear();
+        inner.send_buffer.clear();
+        if let Some(waker) = inner.recv_waker.take() {
+            waker.wake();
+        }
+        if let Some(waker) = inner.send_waker.take() {
+            waker.wake();
+        }
+        if let Some(waker) = inner.connect_waker.take() {
+            waker.wake();
+        }
+        if let Some(waker) = inner.accept_waker.take() {
+            waker.wake();
+        }
+        let _ = inner.transition_to(EndpointState::Closed);
+    }
+
+    fn find_tcp_listener_fd_by_local(&self, local: EndpointAddr) -> Option<EndpointFd> {
+        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+        let mgr = manager.as_ref()?;
+        let mut result = None;
+        mgr.for_each(|socket| {
+            if result.is_some() || socket.socket_type() != EndpointType::Tcp {
+                return;
+            }
+            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            if inner.local_addr == Some(local) && inner.state == EndpointState::Listening {
+                result = Some(socket.fd());
+            }
+        });
+        result
     }
 
     /// Connectイベント処理
@@ -2953,6 +3132,10 @@ impl NetworkEventHandler {
         {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local_addr);
+            inner.remote_addr = Some(remote);
+            if inner.state.can_connect() {
+                let _ = inner.transition_to(EndpointState::Connecting);
+            }
         }
 
         let isn = tcb_table().generate_isn(local_addr, remote);
@@ -3030,6 +3213,10 @@ impl NetworkEventHandler {
         let (scope, preferred_if, congestion_algo, nodelay, priority) = {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local_addr);
+            inner.remote_addr = Some(remote);
+            if inner.state.can_connect() {
+                let _ = inner.transition_to(EndpointState::Connecting);
+            }
             (
                 inner.scope,
                 inner.last_ingress_if_id,
@@ -3136,6 +3323,10 @@ impl NetworkEventHandler {
         {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
+            inner.ensure_tcp().accept_backlog = backlog as usize;
+            if inner.state.can_listen() {
+                let _ = inner.transition_to(EndpointState::Listening);
+            }
         }
 
         // TCBテーブルにリスナーエントリを作成

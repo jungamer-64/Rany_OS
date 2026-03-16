@@ -382,24 +382,14 @@ impl OwnedEndpoint {
     /// TCPのゼロコピーストリームを取得（`TcpStream`をクローンして返す）
     pub fn tcp_stream(&self) -> Option<TcpStream> {
         self.endpoint().and_then(|s| {
-            s.inner()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .tcp()
-                .and_then(|t| t.stream.clone())
+            (s.socket_type() == EndpointType::Tcp && s.state() == EndpointState::Connected)
+                .then(|| TcpStream::from_endpoint_with_drop(s.clone(), false))
         })
     }
 
     /// 非同期ゼロコピー受信（TCP向け） - 成功すると `PacketRef` を返す
     pub fn recv_packet(&self) -> Option<RecvPacketFuture> {
-        self.endpoint().and_then(|s| {
-            s.inner()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .tcp()
-                .and_then(|t| t.stream.clone())
-                .map(|stream| RecvPacketFuture::new(stream))
-        })
+        self.tcp_stream().map(RecvPacketFuture::new)
     }
 
     /// UDPのゼロコピー受信ヘルパ（内部UDPソケットが設定されている場合にのみ利用可能）
@@ -572,12 +562,8 @@ pub struct StartListeningFuture {
 }
 
 enum StartListeningPhase {
-    /// 初回poll: 非同期bindFutureを作成
+    /// 初回poll: 状態を検証してListenイベント送信準備
     Init,
-    /// bind完了待ち
-    WaitingBind {
-        bind_future: crate::net::runtime::stack::TcpBindListenerFuture,
-    },
     /// Listen イベントのキュー投入待ち
     SendingListen {
         local_addr: EndpointAddr,
@@ -609,7 +595,7 @@ impl Future for StartListeningFuture {
                     // ソケット状態チェック
                     let local_addr;
                     {
-                        let inner = this
+                        let mut inner = this
                             .endpoint
                             .inner()
                             .lock()
@@ -624,45 +610,16 @@ impl Future for StartListeningFuture {
                             Some(addr) => addr,
                             None => return Poll::Ready(Err(EndpointError::InvalidArgument)),
                         };
+                        inner.ensure_tcp().accept_backlog = this.backlog as usize;
+                        if let Err(e) = inner.transition_to(EndpointState::Listening) {
+                            return Poll::Ready(Err(e));
+                        }
                     }
 
-                    // 非同期bind_tcp_listenerを開始
-                    let bind_future = crate::net::runtime::stack::bind_tcp_listener_in(
-                        this.endpoint.runtime(),
+                    this.phase = StartListeningPhase::SendingListen {
                         local_addr,
-                    );
-                    this.phase = StartListeningPhase::WaitingBind { bind_future };
-                    // fallthrough to poll bind_future
-                }
-                StartListeningPhase::WaitingBind { bind_future } => {
-                    // bind Futureをポーリング
-                    let pinned = unsafe { Pin::new_unchecked(bind_future) };
-                    match pinned.poll(cx) {
-                        Poll::Ready(Ok(listener)) => {
-                            // bind成功: EndpointInnerにリスナーを設定
-                            let mut inner = this
-                                .endpoint
-                                .inner()
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner());
-                            inner.ensure_tcp().listener = Some(listener);
-                            if let Err(e) = inner.transition_to(EndpointState::Listening) {
-                                return Poll::Ready(Err(e));
-                            }
-                            let local_addr = inner.local_addr.unwrap();
-                            drop(inner);
-                            this.phase = StartListeningPhase::SendingListen {
-                                local_addr,
-                                dispatch: EventDispatch::new_in(this.endpoint.runtime()),
-                            };
-                        }
-                        Poll::Ready(Err(e)) => {
-                            return Poll::Ready(Err(EndpointError::from_tcp_error(e)));
-                        }
-                        Poll::Pending => {
-                            return Poll::Pending;
-                        }
-                    }
+                        dispatch: EventDispatch::new_in(this.endpoint.runtime()),
+                    };
                 }
                 StartListeningPhase::SendingListen {
                     local_addr,
@@ -1087,29 +1044,6 @@ pub mod qemu_tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
-        }
-
-        use crate::net::l4::tcp::{
-            EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpControlBlock, TcpStream,
-        };
-        use crate::sync::PoisonLock;
-        use alloc::sync::Arc;
-
-        let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
-        let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
-
-        let mut tcb = TcpControlBlock::new(t_local);
-        tcb.set_remote_addr(t_remote);
-        tcb.enter_established();
-        let tcb_arc = Arc::new(PoisonLock::new(tcb));
-        let stream = TcpStream {
-            tcb: tcb_arc.clone(),
-            runtime: crate::net::runtime::default_runtime(),
-        };
-
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.ensure_tcp().stream = Some(stream.clone());
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Connected);
         }
@@ -1119,7 +1053,7 @@ pub mod qemu_tests {
 
         let mut fut = match sock.recv_packet() {
             Some(f) => f,
-            None => RecvPacketFuture::new(stream),
+            None => return false,
         };
         let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
@@ -1137,29 +1071,6 @@ pub mod qemu_tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
-        }
-
-        use crate::net::l4::tcp::{
-            EndpointAddr as TcpEndpointAddr, Ipv4Addr as TcpIpv4Addr, TcpControlBlock, TcpStream,
-        };
-        use crate::sync::PoisonLock;
-        use alloc::sync::Arc;
-
-        let t_local = TcpEndpointAddr::new([127, 0, 0, 1], 12345);
-        let t_remote = TcpEndpointAddr::new([127, 0, 0, 1], 80);
-
-        let mut tcb = TcpControlBlock::new(t_local);
-        tcb.set_remote_addr(t_remote);
-        tcb.enter_established();
-        let tcb_arc = Arc::new(PoisonLock::new(tcb));
-        let stream = TcpStream {
-            tcb: tcb_arc.clone(),
-            runtime: crate::net::runtime::default_runtime(),
-        };
-
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.ensure_tcp().stream = Some(stream.clone());
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Connected);
         }

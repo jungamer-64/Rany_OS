@@ -2,7 +2,10 @@ use super::*;
 use crate::net::datapath::mempool;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, Ipv4Config, Ipv4PacketMut};
-use crate::net::l4::tcp::{EndpointAddr as TcpEndpointAddr, TcpControlBlock};
+use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
+use crate::net::l4::endpoint::{
+    EndpointAddr as TcpEndpointAddr, EndpointState, create_tcp_endpoint, init_endpoint_manager,
+};
 use crate::net::runtime::manager;
 use crate::net::runtime::stack::{self, NetworkConfig};
 use alloc::collections::BTreeMap;
@@ -81,35 +84,46 @@ fn qemu_prepare_zero_copy_env() -> BridgeStateGuard {
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn qemu_insert_established_tcb(
+fn qemu_insert_established_tcp_endpoint(
     local: TcpEndpointAddr,
     remote: TcpEndpointAddr,
-) -> Option<alloc::sync::Arc<PoisonLock<TcpControlBlock>>> {
-    let mut tcb = TcpControlBlock::new(local);
-    tcb.set_remote_addr(remote);
-    tcb.enter_established();
-    tcb.set_rcv_nxt(1);
-    let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
-
-    match stack::stack().lock() {
-        Ok(mut guard) => {
-            let stack = guard.as_mut()?;
-            stack.insert_test_tcp_connection(local, remote, tcb_arc.clone());
-            Some(tcb_arc)
-        }
-        Err(_) => None,
+) -> Option<crate::net::l4::endpoint::OwnedEndpoint> {
+    init_endpoint_manager();
+    let sock = create_tcp_endpoint();
+    if let Some(endpoint) = sock.endpoint() {
+        let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+        let _ = inner.transition_to(EndpointState::Bound);
+        let _ = inner.transition_to(EndpointState::Connected);
+    } else {
+        return None;
     }
+
+    let _ = tcb_table().remove(local, remote);
+    let mut tcb = TcpControlBlockEntry::new(sock.fd(), local, remote);
+    tcb.state = TcpConnectionState::Established;
+    tcb.rcv_nxt = 1;
+    tcb_table().insert(tcb).ok()?;
+    Some(sock)
 }
 
 #[cfg(feature = "qemu-test-export")]
 fn qemu_zero_copy_prereq_postcheck(
-    tcb_arc: &alloc::sync::Arc<PoisonLock<TcpControlBlock>>,
+    sock: &crate::net::l4::endpoint::OwnedEndpoint,
+    local: TcpEndpointAddr,
+    remote: TcpEndpointAddr,
 ) -> bool {
     check_batch_timeout(100_000, 1);
-    match tcb_arc.lock() {
-        Ok(guard) => guard.recv_buffer_is_empty() && guard.is_established(),
-        Err(_) => false,
-    }
+    let endpoint_ready = sock.endpoint().map_or(false, |endpoint| {
+        let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.state == EndpointState::Connected && inner.recv_buffer.is_empty()
+    });
+    let tcb_ready = matches!(
+        tcb_table().get(local, remote),
+        Some(entry) if entry.state == TcpConnectionState::Established && entry.rcv_nxt == 1
+    );
+    endpoint_ready && tcb_ready
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -128,12 +142,12 @@ fn qemu_zero_copy_prereq_ipv4_heapless_smoke() -> bool {
 
     let local = TcpEndpointAddr::new([127, 0, 0, 1], 1000);
     let remote = TcpEndpointAddr::new([127, 0, 0, 1], 2000);
-    let tcb_arc = match qemu_insert_established_tcb(local, remote) {
-        Some(tcb) => tcb,
+    let sock = match qemu_insert_established_tcp_endpoint(local, remote) {
+        Some(sock) => sock,
         None => return false,
     };
 
-    qemu_zero_copy_prereq_postcheck(&tcb_arc)
+    qemu_zero_copy_prereq_postcheck(&sock, local, remote)
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -149,12 +163,12 @@ fn qemu_zero_copy_prereq_ipv6_heapless_smoke() -> bool {
     let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 1000);
     let remote =
         TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
-    let tcb_arc = match qemu_insert_established_tcb(local, remote) {
-        Some(tcb) => tcb,
+    let sock = match qemu_insert_established_tcp_endpoint(local, remote) {
+        Some(sock) => sock,
         None => return false,
     };
 
-    qemu_zero_copy_prereq_postcheck(&tcb_arc)
+    qemu_zero_copy_prereq_postcheck(&sock, local, remote)
 }
 
 // Heapless fallback for routing/NAT parity when packet-path allocation is unavailable.
@@ -249,6 +263,7 @@ pub fn qemu_zero_copy_via_bridge_v6_smoke() -> bool {
 pub fn test_zero_copy_via_bridge() {
     let _guard = BridgeStateGuard::new();
     stack::stack().clear_poison();
+    init_endpoint_manager();
 
     // Initialize mempool and stack
     let _ = mempool::init_net_mempool(4);
@@ -261,22 +276,8 @@ pub fn test_zero_copy_via_bridge() {
     // Prepare a TCB and register it in the global stack
     let local = TcpEndpointAddr::new([127, 0, 0, 1], 1000);
     let remote = TcpEndpointAddr::new([127, 0, 0, 1], 2000);
-
-    let mut tcb = TcpControlBlock::new(local);
-    tcb.set_remote_addr(remote);
-    tcb.enter_established();
-    tcb.set_rcv_nxt(1);
-    let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
-
-    // Insert into stack's tcp connections
-    match stack::stack().lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
-            }
-        }
-        Err(_) => panic!("Stack poisoned"),
-    }
+    let sock = qemu_insert_established_tcp_endpoint(local, remote)
+        .expect("established TCP endpoint should be inserted");
 
     // Build packet: virtio header + ethernet + IPv4 + TCP + payload
     let header_size = crate::io::virtio::net::VirtioNetHeader::SIZE;
@@ -346,13 +347,10 @@ pub fn test_zero_copy_via_bridge() {
     // Force a batch timeout to flush the packet into the stack
     check_batch_timeout(100_000, 1);
 
-    // Now verify TCB received the payload zero-copy
-    if let Ok(guard) = tcb_arc.lock() {
-        assert!(!guard.recv_buffer_is_empty());
-        assert_eq!(guard.recv_buffer_front_data().unwrap(), payload);
-    } else {
-        panic!("TCB lock poisoned in test");
-    }
+    let mut buf = [0u8; 32];
+    let len = sock.recv_sync(&mut buf).expect("tcp endpoint should receive payload");
+    assert_eq!(&buf[..len], payload);
+    let _ = tcb_table().remove(local, remote);
 }
 
 #[cfg_attr(test, test_case)]
@@ -770,6 +768,7 @@ pub fn test_nat_icmp_error() {
 pub fn test_zero_copy_via_bridge_v6() {
     let _guard = BridgeStateGuard::new();
     stack::stack().clear_poison();
+    init_endpoint_manager();
 
     // Initialize mempool and stack
     let _ = mempool::init_net_mempool(4);
@@ -785,22 +784,8 @@ pub fn test_zero_copy_via_bridge_v6() {
     let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 1000);
     let remote =
         TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
-
-    let mut tcb = TcpControlBlock::new(local);
-    tcb.set_remote_addr(remote);
-    tcb.enter_established();
-    tcb.set_rcv_nxt(1);
-    let tcb_arc = alloc::sync::Arc::new(PoisonLock::new(tcb));
-
-    // Insert into stack's tcp connections
-    match stack::stack().lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut s) = *guard {
-                s.insert_test_tcp_connection(local, remote, tcb_arc.clone());
-            }
-        }
-        Err(_) => panic!("Stack poisoned"),
-    }
+    let sock = qemu_insert_established_tcp_endpoint(local, remote)
+        .expect("established TCP endpoint should be inserted");
 
     // Build packet: virtio header + ethernet + IPv6 + TCP + payload
     let header_size = crate::io::virtio::net::VirtioNetHeader::SIZE;
@@ -866,13 +851,10 @@ pub fn test_zero_copy_via_bridge_v6() {
     // Force a batch timeout to flush the packet into the stack
     check_batch_timeout(100_000, 1);
 
-    // Now verify TCB received the payload zero-copy
-    if let Ok(guard) = tcb_arc.lock() {
-        assert!(!guard.recv_buffer_is_empty());
-        assert_eq!(guard.recv_buffer_front_data().unwrap(), payload);
-    } else {
-        panic!("TCB lock poisoned in test");
-    }
+    let mut buf = [0u8; 32];
+    let len = sock.recv_sync(&mut buf).expect("tcp endpoint should receive payload");
+    assert_eq!(&buf[..len], payload);
+    let _ = tcb_table().remove(local, remote);
 }
 
 #[cfg_attr(test, test_case)]

@@ -9,7 +9,7 @@ ExoRust Kernelの公開APIリファレンスドキュメントです。
 3. [タスク管理 API](#タスク管理-api)
 4. [IPC API（所有権移動ベース）](#ipc-api所有権移動ベース)
 5. [I/O API（ゼロコピー）](#io-apiゼロコピー)
-6. [ネットワーク API（パケット所有権交換）](#ネットワーク-apiパケット所有権交換)
+6. [ネットワーク API（TCPストリーム + RAWパケット）](#ネットワーク-apitcpストリーム--rawパケット)
 7. [ファイルシステム API](#ファイルシステム-api)
 8. [静的ケイパビリティ](#静的ケイパビリティ)
 9. [ドメインシステム](#ドメインシステム)
@@ -24,7 +24,7 @@ ExoRust Kernelは、従来のPOSIX APIパラダイムを**意図的に排除**�
 
 | POSIX | ExoRust | 理由 |
 |-------|---------|------|
-| `socket()` / `bind()` / `listen()` | パケット所有権交換 | ソケットはカーネル内バッファのコピーを強制 |
+| `socket()` / `bind()` / `listen()` | `TcpStream` / `TcpListener` + `RawEndpoint` | TCPはストリームAPI、パケット所有権交換はRAWに限定 |
 | `read()` / `write()` | 所有権移動（`Transfer<T>`） | syscallごとのコピーを排除 |
 | 旧メモリマップ + シグナル | 明示的な非同期API | シグナルは協調的タスクと相性が悪い |
 | ファイルディスクリプタ | 型付きハンドル + ケイパビリティ | 整数FDは型安全でない |
@@ -224,18 +224,19 @@ let completed: Buffer = virtqueue.poll().await;
 
 ---
 
-## ネットワーク API（パケット所有権交換）
+## ネットワーク API（TCPストリーム + RAWパケット）
 
 ### 設計原則
 
 **POSIXソケット（`socket`, `bind`, `listen`）は提供しません。**
 
-代わりに、パケット単位での所有権交換APIを提供します。
+TCPは `TcpStream` / `TcpListener` によるAsync-firstなストリームAPIを提供し、
+パケット単位での所有権交換はRAW endpointとdatapathに限定します。
 これはRedLeafやio_uringの設計哲学に近いアプローチです。
 
 ### モジュール: `exorust::net`
 
-#### パケットプール
+#### RAW / datapath パケットプール
 
 ```rust
 use exorust::net::mempool::{PacketPool, Packet};
@@ -248,7 +249,7 @@ packet.write_header(&eth_header);
 packet.write_payload(&data);
 ```
 
-#### 送信キュー（所有権を放棄）
+#### RAW / datapath 送信キュー（所有権を放棄）
 
 ```rust
 use exorust::net::tx_queue::TxQueue;
@@ -260,7 +261,7 @@ tx_queue.submit(packet);  // packetは消費される
 tx_queue.poll_completion().await;
 ```
 
-#### 受信キュー（所有権を取得）
+#### RAW / datapath 受信キュー（所有権を取得）
 
 ```rust
 use exorust::net::rx_queue::RxQueue;
@@ -276,26 +277,38 @@ let payload = packet.payload();
 pool.free(packet);
 ```
 
-#### TCPストリーム（非POSIX）
+#### TCPストリーム / リスナー（非POSIX）
 
 従来のBerkeley Sockets風APIではなく、
-バッチ処理とゼロコピーを前提とした設計：
+`AsyncRead` / `AsyncWrite` 相当のストリームAPIを正規面として提供します。
+RAW endpointのような packet ownership exchange はTCPでは使いません。
 
 ```rust
-use exorust::net::tcp::TcpStream;
+use exorust::net::tcp::{TcpListener, TcpStream};
 
-// TCP接続（Async-first API）
+// クライアント接続
 let mut connection = TcpStream::dial(remote_addr).await?;
 
-// 送信：AsyncWrite トレイトとして書き込む
+// 送信
 connection.write(b"hello").await?;
 
-// 受信：AsyncRead トレイトとして読み出す
+// 受信
 let mut buf = [0u8; 2048];
 let n = connection.read(&mut buf).await?;
 
-// （バッチ送信などの最適化APIは別途提供されます）
+// リスナー
+let listener = TcpListener::listen_on(local_addr).await?;
+let (mut accepted, peer) = listener.next_connection().await?;
+
+// ゼロコピー補助はストリームの延長として提供
+let packetish_chunk = accepted.read_zero_copy().await;
 ```
+
+#### RAW endpoint KAPI
+
+TCP KAPIは `TcpStreamHandle` / `TcpListenerHandle` / `TcpChunk` を使う
+ストリーム指向APIです。`Packet` と `RawEndpointHandle` は
+RAW endpoint (`net_create_raw_endpoint`, `net_recv_raw_packet`, `net_send_raw_packet`) 専用です。
 
 #### 10Gbps最適化API
 

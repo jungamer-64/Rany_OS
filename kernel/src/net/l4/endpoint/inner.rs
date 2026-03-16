@@ -13,7 +13,8 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-use crate::net::l4::tcp::{TcpListener as TcpListenerImpl, TcpStream};
+use crate::net::datapath::mempool::PacketRef;
+use crate::net::l4::tcp::TcpStats;
 use crate::net::l4::udp::UdpEndpoint as RawUdpSocket;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
@@ -29,20 +30,22 @@ use super::types::{
 
 /// TCP固有のプロトコル状態
 pub struct TcpProtocolState {
-    /// TCPストリーム（接続済みの場合）
-    pub stream: Option<TcpStream>,
-    /// TCPリスナー（リスニング中の場合）
-    pub listener: Option<TcpListenerImpl>,
     /// Acceptキュー: ハンドシェイク完了済みの接続
     pub accept_queue: VecDeque<AcceptedConnection>,
     /// Acceptキューのバックログサイズ
     pub accept_backlog: usize,
+    /// Zero-copy write queue owned by the endpoint.
+    pub send_zero_copy_queue: VecDeque<PacketRef>,
+    /// Total queued bytes in `send_zero_copy_queue`.
+    pub send_zero_copy_bytes: usize,
     /// TCP_NODELAY (Nagleアルゴリズム無効化)
     pub nodelay: bool,
     /// Urgent data pending flag (TCP OOB data)
     pub urgent_pending: bool,
     /// 輻輳制御アルゴリズム選択（TCB作成時に使用）
     pub congestion_algorithm: Option<CongestionAlgorithm>,
+    /// TCP statistics snapshot for the endpoint-backed stream API.
+    pub stats: TcpStats,
 }
 
 impl TcpProtocolState {
@@ -52,13 +55,14 @@ impl TcpProtocolState {
     /// 新規作成
     pub fn new() -> Self {
         Self {
-            stream: None,
-            listener: None,
             accept_queue: VecDeque::with_capacity(Self::DEFAULT_BACKLOG),
             accept_backlog: Self::DEFAULT_BACKLOG,
+            send_zero_copy_queue: VecDeque::new(),
+            send_zero_copy_bytes: 0,
             nodelay: false,
             urgent_pending: false,
             congestion_algorithm: None,
+            stats: TcpStats::default(),
         }
     }
 }

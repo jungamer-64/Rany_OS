@@ -18,7 +18,10 @@ use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::{ChannelHandle, DomainId};
 use crate::msix::MsixVectorInfo;
 use crate::resource::fs::{FileHandle, OpenMode};
-use crate::resource::net::{InterfaceScope, Packet, RawEndpointHandle, TcpEndpoint};
+use crate::resource::net::{
+    InterfaceScope, NetSocketAddr, Packet, RawEndpointHandle, TcpChunk, TcpListenerHandle,
+    TcpStreamHandle,
+};
 use crate::resource::storage::{
     DirectBlockHandle, NvmeIoHandle, NvmeIoResult, NvmeIoType, NvmeRwRequest,
 };
@@ -153,40 +156,46 @@ pub trait KernelServices: Send + Sync {
     // Network
     // ========================================================================
 
-    /// Create a TCP endpoint
-    ///
-    /// Returns a typed `TcpEndpoint` on success.
-    ///
-    /// # Errors
-    /// - `KapiError::ResourceExhausted` if the kernel cannot allocate a socket
-    fn net_create_endpoint(&self, scope: InterfaceScope) -> KapiResult<TcpEndpoint>;
-
-    /// Close a TCP endpoint
-    ///
-    /// # Errors
-    /// - `KapiError::InvalidHandle` if the endpoint handle is not recognized
-    fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> KapiResult<()>;
-
-    /// Receive a packet (async). Returns an owned `Packet` on success.
-    ///
-    /// This returns a future that resolves when data is available for the
-    /// specified endpoint. The implementation may allocate/copy data as
-    /// necessary for cross-domain safety.
-    fn net_recv_packet(
+    /// Open a TCP connection and return a stream handle.
+    fn net_tcp_connect(
         &self,
-        endpoint: TcpEndpoint,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>>;
-
-    /// Send a packet (async). Takes ownership of the `Packet`.
-    ///
-    /// This returns a future that completes when the packet has been queued
-    /// for transmission (or an error occurred).
-    fn net_send_packet(
-        &self,
-        endpoint: TcpEndpoint,
+        remote: NetSocketAddr,
         scope: InterfaceScope,
-        packet: Packet,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = KapiResult<TcpStreamHandle>> + Send>>;
+
+    /// Start listening for TCP connections and return a listener handle.
+    fn net_tcp_listen(
+        &self,
+        local: NetSocketAddr,
+        scope: InterfaceScope,
+        backlog: u32,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<TcpListenerHandle>> + Send>>;
+
+    /// Accept a new TCP connection from a listener.
+    fn net_tcp_accept(
+        &self,
+        listener: TcpListenerHandle,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<TcpStreamHandle>> + Send>>;
+
+    /// Close a connected TCP stream.
+    fn net_tcp_close_stream(&self, stream: TcpStreamHandle) -> KapiResult<()>;
+
+    /// Close a listening TCP socket.
+    fn net_tcp_close_listener(&self, listener: TcpListenerHandle) -> KapiResult<()>;
+
+    /// Read bytes from a TCP stream.
+    fn net_tcp_read(
+        &self,
+        stream: TcpStreamHandle,
+        max_len: usize,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<TcpChunk>> + Send>>;
+
+    /// Write bytes to a TCP stream.
+    fn net_tcp_write(
+        &self,
+        stream: TcpStreamHandle,
+        chunk: TcpChunk,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<usize>> + Send>>;
     /// Create a raw (packet-oriented) endpoint
     fn net_create_raw_endpoint(&self, scope: InterfaceScope) -> KapiResult<RawEndpointHandle>;
 
@@ -853,31 +862,58 @@ mod standalone {
             }
         }
 
-        fn net_create_endpoint(&self, scope: InterfaceScope) -> KapiResult<TcpEndpoint> {
-            let _ = scope;
-            Err(KapiError::NotSupported)
-        }
-
-        fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> KapiResult<()> {
-            let _ = endpoint;
-            Err(KapiError::NotSupported)
-        }
-
-        fn net_recv_packet(
+        fn net_tcp_connect(
             &self,
-            endpoint: TcpEndpoint,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
-            let _ = endpoint;
+            remote: NetSocketAddr,
+            scope: InterfaceScope,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<TcpStreamHandle>> + Send>> {
+            let _ = (remote, scope);
             unsupported_future()
         }
 
-        fn net_send_packet(
+        fn net_tcp_listen(
             &self,
-            endpoint: TcpEndpoint,
+            local: NetSocketAddr,
             scope: InterfaceScope,
-            packet: Packet,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
-            let _ = (endpoint, scope, packet);
+            backlog: u32,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<TcpListenerHandle>> + Send>> {
+            let _ = (local, scope, backlog);
+            unsupported_future()
+        }
+
+        fn net_tcp_accept(
+            &self,
+            listener: TcpListenerHandle,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<TcpStreamHandle>> + Send>> {
+            let _ = listener;
+            unsupported_future()
+        }
+
+        fn net_tcp_close_stream(&self, stream: TcpStreamHandle) -> KapiResult<()> {
+            let _ = stream;
+            Err(KapiError::NotSupported)
+        }
+
+        fn net_tcp_close_listener(&self, listener: TcpListenerHandle) -> KapiResult<()> {
+            let _ = listener;
+            Err(KapiError::NotSupported)
+        }
+
+        fn net_tcp_read(
+            &self,
+            stream: TcpStreamHandle,
+            max_len: usize,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<TcpChunk>> + Send>> {
+            let _ = (stream, max_len);
+            unsupported_future()
+        }
+
+        fn net_tcp_write(
+            &self,
+            stream: TcpStreamHandle,
+            chunk: TcpChunk,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<usize>> + Send>> {
+            let _ = (stream, chunk);
             unsupported_future()
         }
 
