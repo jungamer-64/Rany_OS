@@ -9,15 +9,12 @@ use core::slice;
 use crate::MAILBOX_OFFSET;
 use crate::TRAMPOLINE_SIZE;
 use crate::addr::TrampolinePhysAddr;
+use crate::contract::{GDT_ENTRY_COUNT, GDT_SIZE};
 use crate::mailbox::ApTrampolineMailbox;
 
 const FAR_POINTER_SIZE: usize = 6;
 const GDT_DESCRIPTOR_SIZE: usize = 6;
-const GDT_ENTRY_COUNT: usize = 4;
-pub(crate) const GDT_SIZE: usize = GDT_ENTRY_COUNT * size_of::<u64>();
 const GDT_FLAT_LIMIT: u32 = 0x000F_FFFF;
-pub(crate) const GDT32_CODE_SELECTOR: u16 = 0x08;
-pub(crate) const GDT32_DATA_SELECTOR: u16 = 0x10;
 const GDT64_CODE_SELECTOR: u16 = 0x18;
 const GDT_ACCESS_CODE: u8 = 0x9A;
 const GDT_ACCESS_DATA: u8 = 0x92;

@@ -3,6 +3,8 @@
 // ============================================================================
 use core::arch::global_asm;
 
+// Keep the assembler constants sourced from `contract.rs` so the Rust image
+// patching code and the trampoline binary stay in lockstep.
 global_asm!(
     r#"
 .section .ap_trampoline,"a"
@@ -86,14 +88,14 @@ __ap_mailbox:
     .zero {mailbox_size}
 __ap_trampoline_end:
 "#,
-    gdt_code32_selector = const crate::image::GDT32_CODE_SELECTOR,
-    gdt_data32_selector = const crate::image::GDT32_DATA_SELECTOR,
+    gdt_code32_selector = const crate::contract::GDT32_CODE_SELECTOR,
+    gdt_data32_selector = const crate::contract::GDT32_DATA_SELECTOR,
     mailbox_offset = const crate::MAILBOX_OFFSET,
     mailbox_size = const core::mem::size_of::<crate::mailbox::ApTrampolineMailbox>(),
     mailbox_page_table_offset =
         const crate::MAILBOX_OFFSET + crate::mailbox::MAILBOX_PAGE_TABLE_OFFSET,
     mailbox_stack_ptr_offset = const crate::mailbox::MAILBOX_STACK_PTR_OFFSET,
     mailbox_entry_point_offset = const crate::mailbox::MAILBOX_ENTRY_POINT_OFFSET,
-    gdt_size = const crate::image::GDT_SIZE,
+    gdt_size = const crate::contract::GDT_SIZE,
     trampoline_size = const crate::TRAMPOLINE_SIZE,
 );

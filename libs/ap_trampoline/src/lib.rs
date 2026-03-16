@@ -5,6 +5,7 @@
 #![allow(clippy::cargo_common_metadata)]
 
 mod addr;
+mod contract;
 mod image;
 mod mailbox;
 mod trampoline_asm;
