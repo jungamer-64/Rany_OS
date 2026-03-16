@@ -421,6 +421,11 @@ impl ExoBootInfo {
     }
 }
 
+// `ExoBootInfo` is a read-only handoff struct provided by the bootloader.
+// It contains only plain data and pointers to immutable regions, so it is
+// safe to access it from multiple threads concurrently.
+unsafe impl Sync for ExoBootInfo {}
+
 /// Kind discriminator for a boot artifact handed off by the bootloader.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
