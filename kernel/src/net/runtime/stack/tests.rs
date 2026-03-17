@@ -12,7 +12,10 @@ fn test_payload(data: &[u8]) -> PacketPayload {
 }
 
 fn payload_bytes(payload: &PacketPayload) -> Vec<u8> {
-    crate::net::payload::payload_to_vec(payload)
+    let mut out = vec![0u8; payload.total_len()];
+    let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+    out.truncate(copied);
+    out
 }
 
 fn record_test_tx_if(

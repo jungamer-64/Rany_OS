@@ -14,13 +14,11 @@
 //! - Parameter Problem
 //! - NDP messages (delegated to ndp.rs)
 
-use alloc::vec;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::ipv4::{IpProtocol, data_checksum};
 use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
-use crate::net::payload::PacketPayloadView;
+use crate::net::payload::{PacketPayloadView, alloc_packet_with_headroom, payload_range};
 use kernel_api::resource::net::PacketPayload;
 
 fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
@@ -212,7 +210,7 @@ pub enum Icmpv6Result {
         /// Echo sequence number
         sequence: u16,
         /// Echo data payload
-        data: Vec<u8>,
+        data: PacketPayload,
     },
     /// Echo Reply received (from our ping)
     EchoReplyReceived {
@@ -247,7 +245,7 @@ pub enum Icmpv6Result {
         /// MTU from the message
         mtu: u32,
         /// Quoted portion of the original packet for validation (ports/seq)
-        quoted_packet: Vec<u8>,
+        quoted_packet: PacketPayload,
     },
     /// Destination Unreachable received
     DestinationUnreachable {
@@ -258,7 +256,7 @@ pub enum Icmpv6Result {
         /// Original destination
         quoted_dst: Ipv6Address,
         /// Quoted portion of original packet
-        quoted_packet: Vec<u8>,
+        quoted_packet: PacketPayload,
     },
     /// Time Exceeded received (Hop limit exceeded or fragment reassembly timeout)
     TimeExceeded {
@@ -269,7 +267,7 @@ pub enum Icmpv6Result {
         /// Original destination
         quoted_dst: Ipv6Address,
         /// Quoted portion of original packet
-        quoted_packet: Vec<u8>,
+        quoted_packet: PacketPayload,
     },
     /// Parameter Problem received
     ParameterProblem {
@@ -282,7 +280,7 @@ pub enum Icmpv6Result {
         /// Original destination
         quoted_dst: Ipv6Address,
         /// Quoted portion of original packet
-        quoted_packet: Vec<u8>,
+        quoted_packet: PacketPayload,
     },
     /// Packet dropped (unknown type, checksum error, etc.)
     Dropped,
@@ -611,14 +609,9 @@ impl Icmpv6Processor {
         // 1232 bytes is the max payload that fits in a minimum IPv6 MTU (1280).
         let max_payload = 1232;
         let echo_data_len = (view.total_len() - ICMPV6_ECHO_HEADER_SIZE).min(max_payload);
-        let echo_data = if echo_data_len > 0 {
-            let mut echo_data = vec![0u8; echo_data_len];
-            if view.copy_range(ICMPV6_ECHO_HEADER_SIZE, &mut echo_data) != echo_data_len {
-                return Icmpv6Result::Error;
-            }
-            echo_data
-        } else {
-            Vec::new()
+        let Some(echo_data) = payload_range(view.payload(), ICMPV6_ECHO_HEADER_SIZE, echo_data_len)
+        else {
+            return Icmpv6Result::Error;
         };
 
         Icmpv6Result::SendEchoReply {
@@ -658,7 +651,7 @@ impl Icmpv6Processor {
     /// Helper to extract info from quoted packets in ICMPv6 error messages (RFC 4443)
     fn handle_quoted_error_payload<F>(&self, view: &PacketPayloadView<'_>, f: F) -> Icmpv6Result
     where
-        F: FnOnce(u8, u32, Ipv6Address, Ipv6Address, Vec<u8>) -> Icmpv6Result,
+        F: FnOnce(u8, u32, Ipv6Address, Ipv6Address, PacketPayload) -> Icmpv6Result,
     {
         if view.total_len() < 8 {
             return Icmpv6Result::Error;
@@ -687,10 +680,9 @@ impl Icmpv6Processor {
 
             // Quoted portion starts after the ICMPv6 header (offset 8)
             let quoted_len = view.total_len() - 8;
-            let mut quoted_packet = vec![0u8; quoted_len];
-            if view.copy_range(8, &mut quoted_packet) != quoted_len {
+            let Some(quoted_packet) = payload_range(view.payload(), 8, quoted_len) else {
                 return Icmpv6Result::Error;
-            }
+            };
 
             f(code, arg, quoted_src, quoted_dst, quoted_packet)
         } else {
@@ -733,8 +725,8 @@ impl Icmpv6Builder {
         dst: &Ipv6Address,
         identifier: u16,
         sequence: u16,
-        payload: &[u8],
-    ) -> Vec<u8> {
+        payload: &PacketPayloadView<'_>,
+    ) -> Option<PacketPayload> {
         Self::build_echo(
             src,
             dst,
@@ -753,8 +745,8 @@ impl Icmpv6Builder {
         dst: &Ipv6Address,
         identifier: u16,
         sequence: u16,
-        payload: &[u8],
-    ) -> Vec<u8> {
+        payload: &PacketPayloadView<'_>,
+    ) -> Option<PacketPayload> {
         Self::build_echo(
             src,
             dst,
@@ -772,39 +764,30 @@ impl Icmpv6Builder {
         msg_type: Icmpv6Type,
         identifier: u16,
         sequence: u16,
-        payload: &[u8],
-    ) -> Vec<u8> {
-        let total_len = ICMPV6_ECHO_HEADER_SIZE + payload.len();
-        let mut message = vec![0u8; total_len];
+        payload: &PacketPayloadView<'_>,
+    ) -> Option<PacketPayload> {
+        let payload_len = payload.total_len();
+        let total_len = ICMPV6_ECHO_HEADER_SIZE + payload_len;
+        let mut packet = alloc_packet_with_headroom(total_len, 0)?;
+        let message = &mut packet.data_mut()[..total_len];
 
-        // Type
         message[0] = u8::from(msg_type);
-        // Code = 0 for Echo
         message[1] = 0;
-        // Checksum placeholder (computed below)
         message[2] = 0;
         message[3] = 0;
-        // Identifier
-        let id_bytes = identifier.to_be_bytes();
-        message[4] = id_bytes[0];
-        message[5] = id_bytes[1];
-        // Sequence number
-        let seq_bytes = sequence.to_be_bytes();
-        message[6] = seq_bytes[0];
-        message[7] = seq_bytes[1];
-        // Payload
-        if !payload.is_empty() {
-            message[ICMPV6_ECHO_HEADER_SIZE..].copy_from_slice(payload);
+        message[4..6].copy_from_slice(&identifier.to_be_bytes());
+        message[6..8].copy_from_slice(&sequence.to_be_bytes());
+        if payload_len > 0
+            && payload.copy_all_into(&mut message[ICMPV6_ECHO_HEADER_SIZE..]) != payload_len
+        {
+            return None;
         }
 
-        // Compute checksum with IPv6 pseudo-header
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
-        let cksum = data_checksum(&message, pseudo);
-        let cksum_bytes = cksum.to_be_bytes();
-        message[2] = cksum_bytes[0];
-        message[3] = cksum_bytes[1];
+        let cksum = data_checksum(message, pseudo);
+        message[2..4].copy_from_slice(&cksum.to_be_bytes());
 
-        message
+        Some(PacketPayload::single(packet))
     }
 
     /// Build a Packet Too Big message (RFC 4443 Section 3.2)
@@ -812,8 +795,8 @@ impl Icmpv6Builder {
         src: &Ipv6Address,
         dst: &Ipv6Address,
         mtu: u32,
-        trigger_packet: &[u8],
-    ) -> Vec<u8> {
+        trigger_packet: &PacketPayloadView<'_>,
+    ) -> Option<PacketPayload> {
         Self::build_error(src, dst, Icmpv6Type::PacketTooBig, 0, mtu, trigger_packet)
     }
 
@@ -822,8 +805,8 @@ impl Icmpv6Builder {
         src: &Ipv6Address,
         dst: &Ipv6Address,
         code: u8,
-        trigger_packet: &[u8],
-    ) -> Vec<u8> {
+        trigger_packet: &PacketPayloadView<'_>,
+    ) -> Option<PacketPayload> {
         Self::build_error(
             src,
             dst,
@@ -839,8 +822,8 @@ impl Icmpv6Builder {
         src: &Ipv6Address,
         dst: &Ipv6Address,
         code: u8,
-        trigger_packet: &[u8],
-    ) -> Vec<u8> {
+        trigger_packet: &PacketPayloadView<'_>,
+    ) -> Option<PacketPayload> {
         Self::build_error(src, dst, Icmpv6Type::TimeExceeded, code, 0, trigger_packet)
     }
 
@@ -850,8 +833,8 @@ impl Icmpv6Builder {
         dst: &Ipv6Address,
         code: u8,
         pointer: u32,
-        trigger_packet: &[u8],
-    ) -> Vec<u8> {
+        trigger_packet: &PacketPayloadView<'_>,
+    ) -> Option<PacketPayload> {
         Self::build_error(
             src,
             dst,
@@ -869,13 +852,14 @@ impl Icmpv6Builder {
         msg_type: Icmpv6Type,
         code: u8,
         arg: u32,
-        trigger_packet: &[u8],
-    ) -> Vec<u8> {
+        trigger_packet: &PacketPayloadView<'_>,
+    ) -> Option<PacketPayload> {
         // ICMPv6 header (4) + arg/unused (4) + as much of trigger as fits
         // stay under minimum MTU of 1280 (RFC 4443)
-        let max_trigger = 1232.min(trigger_packet.len());
+        let max_trigger = 1232.min(trigger_packet.total_len());
         let total_len = 8 + max_trigger;
-        let mut message = vec![0u8; total_len];
+        let mut packet = alloc_packet_with_headroom(total_len, 0)?;
+        let message = &mut packet.data_mut()[..total_len];
 
         message[0] = u8::from(msg_type);
         message[1] = code;
@@ -885,16 +869,20 @@ impl Icmpv6Builder {
         message[4..8].copy_from_slice(&arg_bytes);
 
         // Trigger packet
-        message[8..8 + max_trigger].copy_from_slice(&trigger_packet[..max_trigger]);
+        if max_trigger > 0
+            && trigger_packet.copy_all_into(&mut message[8..8 + max_trigger]) != max_trigger
+        {
+            return None;
+        }
 
         // Compute checksum
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
-        let cksum = data_checksum(&message, pseudo);
+        let cksum = data_checksum(message, pseudo);
         let cksum_bytes = cksum.to_be_bytes();
         message[2] = cksum_bytes[0];
         message[3] = cksum_bytes[1];
 
-        message
+        Some(PacketPayload::single(packet))
     }
 }
 
@@ -905,6 +893,19 @@ impl Icmpv6Builder {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    fn payload_bytes(payload: &PacketPayload) -> Vec<u8> {
+        let mut out = vec![0u8; payload.total_len()];
+        let copied = PacketPayloadView::new(payload).copy_all_into(&mut out);
+        out.truncate(copied);
+        out
+    }
+
+    fn test_payload(data: &[u8]) -> PacketPayload {
+        crate::net::payload::payload_from_bytes(data).expect("payload allocation")
+    }
 
     #[cfg_attr(test, test_case)]
     pub fn test_icmpv6_type_from_u8() {
@@ -934,8 +935,17 @@ pub mod tests {
         let src = Ipv6Address::LOOPBACK;
         let dst = Ipv6Address::LOOPBACK;
         let payload = [0xDE, 0xAD, 0xBE, 0xEF];
+        let payload = test_payload(&payload);
 
-        let msg = Icmpv6Builder::build_echo_reply(&src, &dst, 0x1234, 1, &payload);
+        let msg = Icmpv6Builder::build_echo_reply(
+            &src,
+            &dst,
+            0x1234,
+            1,
+            &PacketPayloadView::new(&payload),
+        )
+        .expect("echo reply");
+        let msg = payload_bytes(&msg);
 
         // Verify structure
         assert_eq!(msg[0], u8::from(Icmpv6Type::EchoReply));
@@ -955,7 +965,15 @@ pub mod tests {
         let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
         let dst = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
-        let msg = Icmpv6Builder::build_echo_request(&src, &dst, 42, 7, &[1, 2, 3]);
+        let msg = Icmpv6Builder::build_echo_request(
+            &src,
+            &dst,
+            42,
+            7,
+            &PacketPayloadView::new(&test_payload(&[1, 2, 3])),
+        )
+        .expect("echo request");
+        let msg = payload_bytes(&msg);
 
         assert_eq!(msg[0], u8::from(Icmpv6Type::EchoRequest));
         assert_eq!(msg.len(), ICMPV6_ECHO_HEADER_SIZE + 3);
@@ -973,7 +991,15 @@ pub mod tests {
         let dst = Ipv6Address::LOOPBACK;
 
         // Build a valid Echo Request
-        let msg = Icmpv6Builder::build_echo_request(&src, &dst, 100, 5, &[0xAB]);
+        let msg = Icmpv6Builder::build_echo_request(
+            &src,
+            &dst,
+            100,
+            5,
+            &PacketPayloadView::new(&test_payload(&[0xAB])),
+        )
+        .expect("echo request");
+        let msg = payload_bytes(&msg);
 
         // Process it
         let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
@@ -988,7 +1014,7 @@ pub mod tests {
                 assert_eq!(reply_dst, src);
                 assert_eq!(identifier, 100);
                 assert_eq!(sequence, 5);
-                assert_eq!(data, vec![0xAB]);
+                assert_eq!(payload_bytes(&data), vec![0xAB]);
             }
             _ => panic!("Expected SendEchoReply"),
         }
@@ -1000,7 +1026,15 @@ pub mod tests {
         let src = Ipv6Address::LOOPBACK;
         let dst = Ipv6Address::LOOPBACK;
 
-        let msg = Icmpv6Builder::build_echo_request(&src, &dst, 1, 1, &[]);
+        let msg = Icmpv6Builder::build_echo_request(
+            &src,
+            &dst,
+            1,
+            1,
+            &PacketPayloadView::new(&test_payload(&[])),
+        )
+        .expect("echo request");
+        let msg = payload_bytes(&msg);
         let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);
         let result = processor.process(&msg, src, dst, mac, 64, 100);
         assert!(matches!(result, Icmpv6Result::Dropped));
@@ -1013,7 +1047,16 @@ pub mod tests {
         let dst = Ipv6Address::LOOPBACK;
 
         // Build a valid message, then corrupt the checksum
-        let mut msg = Icmpv6Builder::build_echo_request(&src, &dst, 1, 1, &[]);
+        let mut msg = payload_bytes(
+            &Icmpv6Builder::build_echo_request(
+                &src,
+                &dst,
+                1,
+                1,
+                &PacketPayloadView::new(&test_payload(&[])),
+            )
+            .expect("echo request"),
+        );
         msg[2] ^= 0xFF; // corrupt checksum
 
         let mac = crate::net::l2::ethernet::MacAddress::new([0x02, 0, 0, 0, 0, 0]);

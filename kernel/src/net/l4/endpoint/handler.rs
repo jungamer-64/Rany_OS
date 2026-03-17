@@ -3940,7 +3940,11 @@ pub mod tests {
             .recv_raw_payload_sync()
             .expect("raw payload");
         assert_eq!(if_id, ingress_if);
-        assert_eq!(crate::net::payload::payload_to_vec(&payload), ip_bytes);
+        let mut actual = vec![0u8; payload.total_len()];
+        let copied =
+            crate::net::payload::PacketPayloadView::new(&payload).copy_all_into(&mut actual);
+        actual.truncate(copied);
+        assert_eq!(actual, ip_bytes);
 
         let mut buf = [0u8; 32];
         assert!(matches!(

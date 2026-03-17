@@ -1,3 +1,4 @@
+use crate::net::l3::ipv4::IpProtocol;
 use alloc::vec;
 use alloc::vec::Vec;
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
@@ -184,14 +185,6 @@ impl<'a> PacketPayloadCursor<'a> {
     }
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub fn payload_to_vec(payload: &PacketPayload) -> Vec<u8> {
-    let mut out = vec![0u8; payload.total_len()];
-    let written = PacketPayloadView::new(payload).copy_all_into(&mut out);
-    out.truncate(written);
-    out
-}
-
 pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketRef> {
     if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
         let available_headroom = packet.headroom();
@@ -274,6 +267,82 @@ pub fn packet_from_payload_prefix(payload: &PacketPayload, max_len: usize) -> Op
             Some(packet)
         }
     }
+}
+
+pub fn payload_range(payload: &PacketPayload, offset: usize, len: usize) -> Option<PacketPayload> {
+    payload.slice(offset, len)
+}
+
+pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, PacketPayload)> {
+    const IPV6_HEADER_SIZE: usize = 40;
+    const EXT_HEADER_HOP_BY_HOP: u8 = 0;
+    const EXT_HEADER_ROUTING: u8 = 43;
+    const EXT_HEADER_FRAGMENT: u8 = 44;
+    const EXT_HEADER_AUTH: u8 = 51;
+    const EXT_HEADER_DESTINATION: u8 = 60;
+    const EXT_HEADER_NO_NEXT: u8 = 59;
+    const MAX_EXTENSION_HEADERS: usize = 16;
+
+    let view = PacketPayloadView::new(payload);
+    if view.total_len() < IPV6_HEADER_SIZE {
+        return None;
+    }
+
+    let mut next_header = IpProtocol::from(view.read_array::<1>(6)?[0]);
+    let mut offset = IPV6_HEADER_SIZE;
+    let mut headers_seen = 0usize;
+
+    loop {
+        headers_seen += 1;
+        if headers_seen > MAX_EXTENSION_HEADERS {
+            return None;
+        }
+
+        match u8::from(next_header) {
+            EXT_HEADER_HOP_BY_HOP | EXT_HEADER_ROUTING | EXT_HEADER_DESTINATION => {
+                let header = view.read_array::<3>(offset)?;
+                if header[0] == EXT_HEADER_NO_NEXT {
+                    return None;
+                }
+                if u8::from(next_header) == EXT_HEADER_ROUTING && header[2] == 0 {
+                    return None;
+                }
+                let ext_len = (header[1] as usize + 1) * 8;
+                if offset.checked_add(ext_len)? > view.total_len() {
+                    return None;
+                }
+                next_header = IpProtocol::from(header[0]);
+                offset += ext_len;
+            }
+            EXT_HEADER_AUTH => {
+                let header = view.read_array::<2>(offset)?;
+                if header[0] == EXT_HEADER_NO_NEXT {
+                    return None;
+                }
+                let ext_len = (header[1] as usize + 2) * 4;
+                if offset.checked_add(ext_len)? > view.total_len() {
+                    return None;
+                }
+                next_header = IpProtocol::from(header[0]);
+                offset += ext_len;
+            }
+            EXT_HEADER_FRAGMENT => {
+                let header = view.read_array::<8>(offset)?;
+                let off_and_flags = u16::from_be_bytes([header[2], header[3]]);
+                let frag_offset = (off_and_flags & 0xfff8) >> 3;
+                let more_fragments = (off_and_flags & 0x1) != 0;
+                if frag_offset != 0 || more_fragments {
+                    return None;
+                }
+                next_header = IpProtocol::from(header[0]);
+                offset += 8;
+            }
+            _ => break,
+        }
+    }
+
+    let transport_len = view.total_len().checked_sub(offset)?;
+    payload_range(payload, offset, transport_len).map(|transport| (next_header, transport))
 }
 
 pub fn payload_from_bytes(data: &[u8]) -> Option<PacketPayload> {

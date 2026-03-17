@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::net::l2::ethernet::MacAddress;
-use crate::net::payload::PacketPayloadView;
+use crate::net::payload::{PacketPayloadView, alloc_packet_with_headroom};
 use kernel_api::resource::net::PacketPayload;
 
 impl NdpProcessor {
@@ -721,10 +721,11 @@ impl NdpProcessor {
         dst: &Ipv6Address,
         target: &Ipv6Address,
         src_mac: &[u8; 6],
-    ) -> Vec<u8> {
+    ) -> Option<PacketPayload> {
         // NS: type(1) + code(1) + checksum(2) + reserved(4) + target(16) + SLLA option(8) = 32
         let total_len = 32;
-        let mut msg = vec![0u8; total_len];
+        let mut packet = alloc_packet_with_headroom(total_len, 0)?;
+        let msg = &mut packet.data_mut()[..total_len];
 
         msg[0] = u8::from(Icmpv6Type::NeighborSolicitation);
         msg[1] = 0; // code
@@ -745,7 +746,7 @@ impl NdpProcessor {
         msg[2] = cksum_bytes[0];
         msg[3] = cksum_bytes[1];
 
-        msg
+        Some(PacketPayload::single(packet))
     }
 
     /// Build a Neighbor Advertisement message
@@ -757,10 +758,11 @@ impl NdpProcessor {
         target: &Ipv6Address,
         our_mac: &[u8; 6],
         solicited: bool,
-    ) -> Vec<u8> {
+    ) -> Option<PacketPayload> {
         // NA: type(1) + code(1) + checksum(2) + flags(4) + target(16) + TLLA option(8) = 32
         let total_len = 32;
-        let mut msg = vec![0u8; total_len];
+        let mut packet = alloc_packet_with_headroom(total_len, 0)?;
+        let msg = &mut packet.data_mut()[..total_len];
 
         msg[0] = u8::from(Icmpv6Type::NeighborAdvertisement);
         msg[1] = 0; // code
@@ -789,17 +791,18 @@ impl NdpProcessor {
         msg[2] = cksum_bytes[0];
         msg[3] = cksum_bytes[1];
 
-        msg
+        Some(PacketPayload::single(packet))
     }
 
     /// Build a Router Solicitation message
     ///
     /// Sent to ff02::2 (all-routers) to solicit Router Advertisements
-    pub fn build_rs(src: &Ipv6Address, src_mac: &[u8; 6]) -> Vec<u8> {
+    pub fn build_rs(src: &Ipv6Address, src_mac: &[u8; 6]) -> Option<PacketPayload> {
         let dst = Ipv6Address::ALL_ROUTERS_LINK_LOCAL;
         // RS: type(1) + code(1) + checksum(2) + reserved(4) + SLLA option(8) = 16
         let total_len = 16;
-        let mut msg = vec![0u8; total_len];
+        let mut packet = alloc_packet_with_headroom(total_len, 0)?;
+        let msg = &mut packet.data_mut()[..total_len];
 
         msg[0] = u8::from(Icmpv6Type::RouterSolicitation);
         msg[1] = 0; // code
@@ -818,7 +821,7 @@ impl NdpProcessor {
         msg[2] = cksum_bytes[0];
         msg[3] = cksum_bytes[1];
 
-        msg
+        Some(PacketPayload::single(packet))
     }
 
     /// Resolve an IPv6 address to MAC address
@@ -844,7 +847,11 @@ impl NdpProcessor {
     /// Start resolution for a neighbor (create Incomplete entry)
     ///
     /// Returns the NS message to send (caller sends it)
-    pub fn start_resolution(&mut self, target: &Ipv6Address, current_time: u64) -> Vec<u8> {
+    pub fn start_resolution(
+        &mut self,
+        target: &Ipv6Address,
+        current_time: u64,
+    ) -> Option<PacketPayload> {
         // Create incomplete entry
         self.cache
             .insert(NeighborEntry::new_incomplete(*target, current_time));
@@ -869,7 +876,7 @@ impl NdpProcessor {
     /// Run periodic maintenance (expire entries + NUD timer processing)
     ///
     /// Returns a list of NS probe messages to send (for NUD Probe/Incomplete states)
-    pub fn tick(&mut self, current_time: u64) -> Vec<Vec<u8>> {
+    pub fn tick(&mut self, current_time: u64) -> Vec<PacketPayload> {
         self.cache.expire_reachable(current_time);
         self.cache.expire_old(current_time);
 
@@ -891,8 +898,10 @@ impl NdpProcessor {
                     Self::build_ns(&self.our_link_local, &sn_mcast, &target, &self.our_mac)
                 }
             };
-            self.stats.ns_sent.fetch_add(1, Ordering::Relaxed);
-            ns_messages.push(ns);
+            if let Some(ns) = ns {
+                self.stats.ns_sent.fetch_add(1, Ordering::Relaxed);
+                ns_messages.push(ns);
+            }
         }
 
         ns_messages

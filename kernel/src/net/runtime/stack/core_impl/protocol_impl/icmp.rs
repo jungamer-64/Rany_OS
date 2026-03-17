@@ -610,11 +610,25 @@ impl NetworkStack {
         code: u8,
         original_packet: &[u8],
     ) -> bool {
+        let Some(original_packet) = crate::net::payload::payload_from_bytes(original_packet) else {
+            self.stats.record_dropped();
+            return false;
+        };
+        self.send_icmpv6_error_payload(dst_v6, code, &original_packet)
+    }
+
+    pub fn send_icmpv6_error_payload(
+        &mut self,
+        dst_v6: Ipv6Address,
+        code: u8,
+        original_packet: &kernel_api::resource::net::PacketPayload,
+    ) -> bool {
         let current_time = self.current_time();
+        let original_packet = crate::net::payload::PacketPayloadView::new(original_packet);
 
         // Security: RFC 4443 compliance check (e.g. no errors for multicast)
         if !self.should_send_icmp_v6_error(
-            original_packet,
+            &original_packet,
             dst_v6,
             Icmpv6Type::DestinationUnreachable,
             code,
@@ -638,29 +652,18 @@ impl NetworkStack {
         };
 
         // Build ICMPv6 Destination Unreachable (Type 1)
-        let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6Builder::build_dest_unreachable(
+        let Some(icmpv6_msg) = crate::net::l3::icmpv6::Icmpv6Builder::build_dest_unreachable(
             &src_v6,
             &dst_v6,
             code,
-            original_packet,
-        );
-
-        self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
-        true
-    }
-
-    pub fn send_icmpv6_error_payload(
-        &mut self,
-        dst_v6: Ipv6Address,
-        code: u8,
-        original_packet: &kernel_api::resource::net::PacketPayload,
-    ) -> bool {
-        let Some(packet) = crate::net::payload::packet_from_payload_prefix(original_packet, 1232)
-        else {
-            self.stats.record_rx_error();
+            &original_packet,
+        ) else {
+            self.stats.record_dropped();
             return false;
         };
-        self.send_icmpv6_error(dst_v6, code, packet.data())
+        let icmpv6_msg = crate::net::payload::PacketPayloadView::new(&icmpv6_msg);
+        self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
+        true
     }
 
     /// Send an ICMPv6 Parameter Problem error (RFC 4443 Section 3.4).
@@ -671,11 +674,16 @@ impl NetworkStack {
         pointer: u32,
         original_packet: &[u8],
     ) -> bool {
+        let Some(original_packet) = crate::net::payload::payload_from_bytes(original_packet) else {
+            self.stats.record_dropped();
+            return false;
+        };
+        let original_packet = crate::net::payload::PacketPayloadView::new(&original_packet);
         let current_time = self.current_time();
 
         // Security: RFC 4443 compliance check
         if !self.should_send_icmp_v6_error(
-            original_packet,
+            &original_packet,
             dst_v6,
             Icmpv6Type::ParameterProblem,
             code,
@@ -697,14 +705,17 @@ impl NetworkStack {
             None => return false,
         };
 
-        let icmpv6_msg = crate::net::l3::icmpv6::Icmpv6Builder::build_parameter_problem(
+        let Some(icmpv6_msg) = crate::net::l3::icmpv6::Icmpv6Builder::build_parameter_problem(
             &src_v6,
             &dst_v6,
             code,
             pointer,
-            original_packet,
-        );
-
+            &original_packet,
+        ) else {
+            self.stats.record_dropped();
+            return false;
+        };
+        let icmpv6_msg = crate::net::payload::PacketPayloadView::new(&icmpv6_msg);
         self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
         true
     }
@@ -727,20 +738,21 @@ impl NetworkStack {
     /// Check if an ICMPv6 error message should be sent (RFC 4443 Section 2.4(e))
     pub(crate) fn should_send_icmp_v6_error(
         &self,
-        original_packet: &[u8],
+        original_packet: &crate::net::payload::PacketPayloadView<'_>,
         dst_ip: Ipv6Address,
         error_type: Icmpv6Type,
         error_code: u8,
     ) -> bool {
         // (e.1) An ICMPv6 error message.
         // (e.2) An ICMPv6 redirect message.
-        if original_packet.len() >= 40 {
-            let next_header = original_packet[6];
-            use crate::net::l3::ipv6::skip_extension_headers;
-            let (final_proto, icmp_data) =
-                skip_extension_headers(IpProtocol::from(next_header), &original_packet[40..]);
-            if final_proto == IpProtocol::Icmpv6 && icmp_data.len() >= 1 {
-                let icmp_type = icmp_data[0];
+        if let Some((final_proto, icmp_data)) =
+            crate::net::payload::ipv6_transport_payload(original_packet.payload())
+        {
+            let icmp_data = crate::net::payload::PacketPayloadView::new(&icmp_data);
+            if final_proto == IpProtocol::Icmpv6 {
+                let Some(icmp_type) = icmp_data.read_array::<1>(0).map(|bytes| bytes[0]) else {
+                    return false;
+                };
                 if icmp_type < 128 || icmp_type == 137
                 /* Redirect */
                 {
@@ -750,25 +762,7 @@ impl NetworkStack {
         }
 
         // (e.3, e.4, e.5) A packet destined to a multicast address (with exceptions)
-        if original_packet.len() >= 40 {
-            let orig_dst = Ipv6Address::new([
-                original_packet[24],
-                original_packet[25],
-                original_packet[26],
-                original_packet[27],
-                original_packet[28],
-                original_packet[29],
-                original_packet[30],
-                original_packet[31],
-                original_packet[32],
-                original_packet[33],
-                original_packet[34],
-                original_packet[35],
-                original_packet[36],
-                original_packet[37],
-                original_packet[38],
-                original_packet[39],
-            ]);
+        if let Some(orig_dst) = original_packet.read_array::<16>(24).map(Ipv6Address::new) {
             if orig_dst.is_multicast() {
                 // RFC 4443 Section 2.4(e.3) Exceptions:
                 // 1. Packet Too Big is allowed for multicast
@@ -1144,36 +1138,26 @@ impl NetworkStack {
         quoted_dst: Ipv6Address,
         icmp_type: Icmpv6Type,
         code: u8,
-        quoted_packet: &[u8],
+        quoted_packet: &kernel_api::resource::net::PacketPayload,
     ) {
-        // Quoted packet starts with an IPv6 header (40 bytes)
-        if quoted_packet.len() < 48 {
-            // Header(40) + minimum transport(8)
+        let Some((final_proto, transport_payload)) =
+            crate::net::payload::ipv6_transport_payload(quoted_packet)
+        else {
             return;
-        }
-
-        let next_header = quoted_packet[6];
-        let payload = &quoted_packet[40..];
-
-        // Skip extension headers to find the upper-layer header
-        use crate::net::l3::ipv6::skip_extension_headers;
-        let (final_proto, transport_data) =
-            skip_extension_headers(IpProtocol::from(next_header), payload);
-
-        if transport_data.len() < 8 {
+        };
+        let transport_data = crate::net::payload::PacketPayloadView::new(&transport_payload);
+        if transport_data.total_len() < 8 {
             return;
         }
 
         match final_proto {
             IpProtocol::Tcp => {
-                let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
-                let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
-                let seq_num = u32::from_be_bytes([
-                    transport_data[4],
-                    transport_data[5],
-                    transport_data[6],
-                    transport_data[7],
-                ]);
+                let Some(header) = transport_data.read_array::<8>(0) else {
+                    return;
+                };
+                let src_port = u16::from_be_bytes([header[0], header[1]]);
+                let dst_port = u16::from_be_bytes([header[2], header[3]]);
+                let seq_num = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
 
                 use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
                 let local_addr = TcpEndpointAddr::new_v6(quoted_src.octets(), src_port);
@@ -1199,7 +1183,10 @@ impl NetworkStack {
                 }
             }
             IpProtocol::Udp => {
-                let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                let Some(header) = transport_data.read_array::<4>(0) else {
+                    return;
+                };
+                let src_port = u16::from_be_bytes([header[0], header[1]]);
                 if !self.udp.has_endpoint(src_port) {
                     return;
                 }

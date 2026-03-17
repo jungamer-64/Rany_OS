@@ -12,7 +12,6 @@
 //! - NDP option parsing (Source/Target Link-Layer Address, Prefix Info, MTU)
 
 use alloc::collections::BTreeMap;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 

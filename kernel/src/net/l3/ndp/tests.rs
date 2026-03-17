@@ -1,6 +1,13 @@
 use super::processor_impl::ipv6_multicast_to_mac;
 use super::*;
 
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+    let mut out = vec![0u8; payload.total_len()];
+    let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+    out.truncate(copied);
+    out
+}
+
 #[cfg_attr(test, test_case)]
 pub fn test_neighbor_cache_basic() {
     let mut cache = NeighborCache::new();
@@ -126,7 +133,8 @@ pub fn test_build_ns() {
     let dst = target.solicited_node();
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
-    let msg = NdpProcessor::build_ns(&src, &dst, &target, &mac);
+    let msg = NdpProcessor::build_ns(&src, &dst, &target, &mac).expect("ns");
+    let msg = payload_bytes(&msg);
     assert_eq!(msg.len(), 32);
     assert_eq!(msg[0], u8::from(Icmpv6Type::NeighborSolicitation));
     // Target at bytes 8-23
@@ -149,7 +157,8 @@ pub fn test_build_na() {
     let target = src;
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
-    let msg = NdpProcessor::build_na(&src, &dst, &target, &mac, true);
+    let msg = NdpProcessor::build_na(&src, &dst, &target, &mac, true).expect("na");
+    let msg = payload_bytes(&msg);
     assert_eq!(msg.len(), 32);
     assert_eq!(msg[0], u8::from(Icmpv6Type::NeighborAdvertisement));
     // Flags: Solicited + Override = 0x60
@@ -168,7 +177,8 @@ pub fn test_build_rs() {
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
-    let msg = NdpProcessor::build_rs(&src, &mac);
+    let msg = NdpProcessor::build_rs(&src, &mac).expect("rs");
+    let msg = payload_bytes(&msg);
     assert_eq!(msg.len(), 16);
     assert_eq!(msg[0], u8::from(Icmpv6Type::RouterSolicitation));
 
@@ -207,7 +217,8 @@ pub fn test_ns_processing() {
     let dst = our_ip.solicited_node();
 
     // Build an NS targeting our address
-    let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &sender_mac);
+    let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &sender_mac).expect("ns");
+    let ns = payload_bytes(&ns);
 
     let result = processor.process(
         Icmpv6Type::NeighborSolicitation,
@@ -253,7 +264,8 @@ pub fn test_ndp_spoofing_detection() {
     let slla_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let actual_eth_mac = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
 
-    let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &slla_mac);
+    let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &slla_mac).expect("ns");
+    let ns = payload_bytes(&ns);
 
     let result = processor.process(
         Icmpv6Type::NeighborSolicitation,
@@ -282,7 +294,9 @@ pub fn test_na_multicast_target_rejection() {
 
     // Build an NA with a MULTICAST target address (invalid per RFC 4861)
     let mcast_target = Ipv6Address::ALL_NODES_LINK_LOCAL;
-    let na = NdpProcessor::build_na(&sender_ip, &our_ip, &mcast_target, &sender_mac, true);
+    let na =
+        NdpProcessor::build_na(&sender_ip, &our_ip, &mcast_target, &sender_mac, true).expect("na");
+    let na = payload_bytes(&na);
 
     let result = processor.process(
         Icmpv6Type::NeighborAdvertisement,
@@ -311,7 +325,9 @@ pub fn test_na_discard_unknown_target() {
     let target_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
 
     // Build an NA for a target NOT in our cache
-    let na = NdpProcessor::build_na(&sender_ip, &our_ip, &target_ip, &sender_mac, true);
+    let na =
+        NdpProcessor::build_na(&sender_ip, &our_ip, &target_ip, &sender_mac, true).expect("na");
+    let na = payload_bytes(&na);
 
     let result = processor.process(
         Icmpv6Type::NeighborAdvertisement,

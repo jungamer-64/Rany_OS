@@ -536,19 +536,6 @@ pub fn send_tcp_segment_packet(
     send_tcp_segment_payload(local, remote, PacketPayload::single(segment))
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<u8>) -> bool {
-    let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
-        log::debug!(
-            "TCP TX enqueue failed: {} -> {} (packet alloc)",
-            local,
-            remote
-        );
-        return false;
-    };
-    send_tcp_segment_payload(local, remote, payload)
-}
-
 // =====================================================
 // テスト
 // =====================================================
@@ -556,6 +543,13 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;
+
+    fn send_test_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<u8>) -> bool {
+        let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
+            return false;
+        };
+        send_tcp_segment_payload(local, remote, payload)
+    }
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_segment_builder() {
@@ -676,7 +670,7 @@ pub mod tests {
             .syn()
             .build();
 
-        assert!(!send_tcp_segment(local, remote, segment));
+        assert!(!send_test_segment(local, remote, segment));
     }
 
     #[cfg_attr(test, test_case)]
@@ -687,7 +681,7 @@ pub mod tests {
             .syn()
             .build();
 
-        let _ = send_tcp_segment(local, remote, segment);
+        let _ = send_test_segment(local, remote, segment);
     }
 
     #[cfg_attr(test, test_case)]
@@ -699,7 +693,7 @@ pub mod tests {
             .syn()
             .build();
 
-        let _ = send_tcp_segment(local, remote, segment);
+        let _ = send_test_segment(local, remote, segment);
     }
 }
 

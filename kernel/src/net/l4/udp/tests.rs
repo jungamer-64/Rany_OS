@@ -12,7 +12,10 @@ fn test_packet(data: &[u8]) -> PacketRef {
 }
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
-    crate::net::payload::payload_to_vec(payload)
+    let mut out = alloc::vec![0u8; payload.total_len()];
+    let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+    out.truncate(copied);
+    out
 }
 
 fn idle_entry(_: u64) -> ! {

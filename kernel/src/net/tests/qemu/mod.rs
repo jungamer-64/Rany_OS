@@ -21,6 +21,13 @@ fn test_packet(data: &[u8]) -> crate::net::datapath::mempool::PacketRef {
     crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed qemu test packet")
 }
 
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec![0u8; payload.total_len()];
+    let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+    out.truncate(copied);
+    out
+}
+
 fn qemu_stack_record_tx_if(
     if_id: Option<crate::net::runtime::manager::NetIfId>,
     data: &[u8],
@@ -339,7 +346,7 @@ pub fn udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
 
         return if_id == crate::net::runtime::manager::NetIfId::default()
             && addr == UdpAddr::new(src_ip, 1234)
-            && crate::net::payload::payload_to_vec(&packet) == payload;
+            && payload_bytes(&packet) == payload;
     }
 
     #[cfg(not(feature = "qemu-test-export"))]

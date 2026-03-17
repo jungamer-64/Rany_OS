@@ -5,6 +5,13 @@ fn test_packet(data: &[u8]) -> kernel_api::resource::net::PacketRef {
     crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed test packet")
 }
 
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec![0u8; payload.total_len()];
+    let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+    out.truncate(copied);
+    out
+}
+
 // --- Address tests ---
 
 #[cfg_attr(test, test_case)]
@@ -481,7 +488,7 @@ pub fn test_ipv6_fragment_reassembly_success() {
     assert_eq!(reassembler.active_buffers(), 0);
 
     // Check reassembled packet
-    let packet_bytes = crate::net::payload::payload_to_vec(&packet);
+    let packet_bytes = payload_bytes(&packet);
     assert_eq!(packet_bytes.len(), 40 + 16);
     assert_eq!(packet_bytes[6], 58); // Patched Next Header (ICMPv6)
     assert_eq!(u16::from_be_bytes([packet_bytes[4], packet_bytes[5]]), 16); // Patched Payload Length
@@ -548,7 +555,7 @@ pub fn test_ipv6_fragment_reassembly_returns_payload_chain() {
         ),
     }
 
-    let bytes = crate::net::payload::payload_to_vec(&payload);
+    let bytes = payload_bytes(&payload);
     assert_eq!(bytes.len(), 40 + payload1.len() + payload2.len());
     assert_eq!(&bytes[40..48], &payload1);
     assert_eq!(&bytes[48..56], &payload2);

@@ -419,6 +419,13 @@ pub fn check_retransmit_timeouts() {
 pub mod tests {
     use super::*;
 
+    fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+        let mut out = alloc::vec![0u8; payload.total_len()];
+        let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+        out.truncate(copied);
+        out
+    }
+
     #[cfg_attr(test, test_case)]
     pub fn test_rto_calculator_initial() {
         let calc = RtoCalculator::new();
@@ -486,10 +493,7 @@ pub mod tests {
         let original_data = crate::net::payload::payload_from_bytes(&[1, 2, 3, 4, 5]).unwrap();
         queue.push(1000, original_data.clone(), 0);
         let retransmitted = queue.retransmit(1500).unwrap();
-        assert_eq!(
-            crate::net::payload::payload_to_vec(&retransmitted),
-            crate::net::payload::payload_to_vec(&original_data)
-        );
+        assert_eq!(payload_bytes(&retransmitted), payload_bytes(&original_data));
         let seg = queue.check_timeout(1500 + queue.get_rto()).unwrap();
         assert_eq!(seg.retransmit_count, 1);
         assert!(seg.is_retransmit);
@@ -534,6 +538,13 @@ pub mod tests {
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
+
+    fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+        let mut out = alloc::vec![0u8; payload.total_len()];
+        let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+        out.truncate(copied);
+        out
+    }
 
     pub fn rto_calculator_initial_smoke() -> bool {
         let calc = RtoCalculator::new();
@@ -607,9 +618,7 @@ pub mod qemu_tests {
         let Some(retransmitted) = queue.retransmit(1500) else {
             return false;
         };
-        if crate::net::payload::payload_to_vec(&retransmitted)
-            != crate::net::payload::payload_to_vec(&original_data)
-        {
+        if payload_bytes(&retransmitted) != payload_bytes(&original_data) {
             return false;
         }
         let Some(seg) = queue.check_timeout(1500 + queue.get_rto()) else {

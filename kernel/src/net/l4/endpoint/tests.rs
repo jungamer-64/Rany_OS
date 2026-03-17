@@ -23,6 +23,13 @@ pub mod tests {
         crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
     }
 
+    fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> Vec<u8> {
+        let mut out = vec![0u8; payload.total_len()];
+        let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+        out.truncate(copied);
+        out
+    }
+
     fn endpoint_new_with_fd_impl() {
         let fd = EndpointFd::from_raw(42);
         let endpoint = Endpoint::new_with_fd(EndpointType::Tcp, fd);
@@ -565,10 +572,7 @@ pub mod tests {
             .recv_raw_payload_sync()
             .expect("pinned delivery");
         assert_eq!(if_id, NetIfId(12));
-        assert_eq!(
-            crate::net::payload::payload_to_vec(&received_pinned),
-            vec![1, 2, 3, 4]
-        );
+        assert_eq!(payload_bytes(&received_pinned), vec![1, 2, 3, 4]);
         assert!(matches!(
             raw_any
                 .endpoint()
@@ -588,10 +592,7 @@ pub mod tests {
             .recv_raw_payload_sync()
             .expect("wildcard delivery");
         assert_eq!(if_id, NetIfId(13));
-        assert_eq!(
-            crate::net::payload::payload_to_vec(&received_any),
-            vec![9, 8, 7]
-        );
+        assert_eq!(payload_bytes(&received_any), vec![9, 8, 7]);
     }
 
     #[cfg_attr(test, test_case)]

@@ -506,6 +506,11 @@ impl TcbTable {
                                     drop(manager);
                                     let payload = alloc::vec![probe_byte];
                                     let seq = entry.snd_nxt;
+                                    let Some(payload_packet) =
+                                        crate::net::payload::payload_from_bytes(&payload)
+                                    else {
+                                        continue;
+                                    };
                                     let mut builder =
                                         TcpSegmentBuilder::new(key.0.port(), key.1.port())
                                             .seq(seq)
@@ -513,7 +518,7 @@ impl TcbTable {
                                             .ack_flag()
                                             .psh()
                                             .window(entry.advertised_recv_window())
-                                            .data(payload.clone());
+                                            .payload_packet(payload_packet);
                                     if entry.ts_enabled {
                                         let ts_val = (current_tick / 10) as u32;
                                         builder =

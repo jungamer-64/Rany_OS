@@ -344,6 +344,7 @@ impl NetworkStack {
                 Some(Ok(mac)) => MacAddress::new(mac),
                 Some(Err((ns_if_id, our_ll, ns_msg))) => {
                     let solicited = dst_ip.solicited_node();
+                    let ns_msg = crate::net::payload::PacketPayloadView::new(&ns_msg);
                     if let Some(ns_if_id) = ns_if_id {
                         self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &solicited, &ns_msg);
                     } else {
@@ -947,8 +948,12 @@ impl NetworkStack {
         if let Some(ref mut ndp) = self.ndp {
             let res = ndp.initiate_dad(&addr);
             if let NdpResult::SendNeighborSolicitation { src, dst, target } = res {
-                let msg = NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes());
-                self.send_ipv6_icmpv6(&src, &dst, &msg);
+                if let Some(msg) =
+                    NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes())
+                {
+                    let msg = crate::net::payload::PacketPayloadView::new(&msg);
+                    self.send_ipv6_icmpv6(&src, &dst, &msg);
+                }
             }
         }
     }

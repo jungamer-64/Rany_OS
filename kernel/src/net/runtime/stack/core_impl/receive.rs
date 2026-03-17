@@ -506,7 +506,10 @@ impl NetworkStack {
                 if let Some(fh) = frag_header {
                     quoted.extend_from_slice(&fh);
                 }
-                self.send_icmpv6_time_exceeded(src, 1, &quoted);
+                if let Some(quoted) = crate::net::payload::payload_from_bytes(&quoted) {
+                    let quoted = crate::net::payload::PacketPayloadView::new(&quoted);
+                    self.send_icmpv6_time_exceeded(src, 1, &quoted);
+                }
             }
             Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => {
                 match err {
@@ -568,7 +571,10 @@ impl NetworkStack {
                     "IPv6: Hop Limit exceeded from {} - sending ICMPv6 Time Exceeded",
                     src
                 );
-                self.send_icmpv6_time_exceeded(src, 0, orig_packet);
+                if let Some(orig_packet) = crate::net::payload::payload_from_bytes(orig_packet) {
+                    let orig_packet = crate::net::payload::PacketPayloadView::new(&orig_packet);
+                    self.send_icmpv6_time_exceeded(src, 0, &orig_packet);
+                }
             }
             Ipv6ProcessResult::Dropped => {
                 self.stats.record_dropped();
@@ -663,6 +669,7 @@ impl NetworkStack {
                 }
 
                 if let Some(src_addr) = reply_src {
+                    let echo_data = crate::net::payload::PacketPayloadView::new(&echo_data);
                     if let Some(if_id) = if_id {
                         self.send_icmpv6_echo_reply_with_src_on(
                             if_id, src_addr, reply_dst, identifier, sequence, &echo_data,
@@ -738,28 +745,18 @@ impl NetworkStack {
 
                 if is_our_packet {
                     // Further validation: check transport layer (ports/sequence numbers)
-                    // Quoted packet starts with an IPv6 header (40 bytes)
-                    if quoted_packet.len() >= 40 {
-                        let next_header = quoted_packet[6];
-                        let payload = &quoted_packet[40..];
-
-                        // Skip extension headers to find the upper-layer header
-                        use crate::net::l3::ipv6::skip_extension_headers;
-                        let (final_proto, transport_data) =
-                            skip_extension_headers(IpProtocol::from(next_header), payload);
-
+                    if let Some((final_proto, transport_payload)) =
+                        crate::net::payload::ipv6_transport_payload(&quoted_packet)
+                    {
+                        let transport_data =
+                            crate::net::payload::PacketPayloadView::new(&transport_payload);
                         match final_proto {
                             IpProtocol::Tcp => {
-                                if transport_data.len() >= 8 {
-                                    let src_port =
-                                        u16::from_be_bytes([transport_data[0], transport_data[1]]);
-                                    let dst_port =
-                                        u16::from_be_bytes([transport_data[2], transport_data[3]]);
+                                if let Some(header) = transport_data.read_array::<8>(0) {
+                                    let src_port = u16::from_be_bytes([header[0], header[1]]);
+                                    let dst_port = u16::from_be_bytes([header[2], header[3]]);
                                     let seq_num = u32::from_be_bytes([
-                                        transport_data[4],
-                                        transport_data[5],
-                                        transport_data[6],
-                                        transport_data[7],
+                                        header[4], header[5], header[6], header[7],
                                     ]);
 
                                     use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
@@ -780,9 +777,8 @@ impl NetworkStack {
                                 }
                             }
                             IpProtocol::Udp => {
-                                if transport_data.len() >= 4 {
-                                    let src_port =
-                                        u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                                if let Some(header) = transport_data.read_array::<4>(0) {
+                                    let src_port = u16::from_be_bytes([header[0], header[1]]);
                                     if !self.udp.has_endpoint(src_port) {
                                         log::warn!(
                                             "[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})",
@@ -793,9 +789,7 @@ impl NetworkStack {
                                     }
                                 }
                             }
-                            _ => {
-                                // For other protocols, we've already checked the IP addresses
-                            }
+                            _ => {}
                         }
                     }
 
@@ -966,8 +960,13 @@ impl NetworkStack {
                     self.ipv6.as_ref().map(|ipv6| ipv6.config().link_local)
                 };
                 if let Some(our_addr) = our_addr {
-                    let na_msg =
-                        NdpProcessor::build_na(&our_addr, &na_dst, &target, &our_mac, solicited);
+                    let Some(na_msg) =
+                        NdpProcessor::build_na(&our_addr, &na_dst, &target, &our_mac, solicited)
+                    else {
+                        self.stats.record_dropped();
+                        return;
+                    };
+                    let na_msg = crate::net::payload::PacketPayloadView::new(&na_msg);
                     if let Some(if_id) = if_id {
                         self.send_ipv6_icmpv6_on(if_id, &our_addr, &na_dst, &na_msg);
                     } else {
@@ -987,10 +986,14 @@ impl NetworkStack {
                 };
                 if let Some(our_addr) = our_addr {
                     let mcast_dst = Ipv6Address::ALL_NODES_LINK_LOCAL;
-                    let na_msg = NdpProcessor::build_na(
+                    let Some(na_msg) = NdpProcessor::build_na(
                         &our_addr, &mcast_dst, &target, &our_mac,
                         false, // solicited = false for multicast defense
-                    );
+                    ) else {
+                        self.stats.record_dropped();
+                        return;
+                    };
+                    let na_msg = crate::net::payload::PacketPayloadView::new(&na_msg);
                     if let Some(if_id) = if_id {
                         self.send_ipv6_icmpv6_on(if_id, &our_addr, &mcast_dst, &na_msg);
                     } else {
@@ -1010,7 +1013,11 @@ impl NetworkStack {
                 } else {
                     *self.config.mac.as_bytes()
                 };
-                let ns_msg = NdpProcessor::build_ns(&src, &dst, &target, &src_mac);
+                let Some(ns_msg) = NdpProcessor::build_ns(&src, &dst, &target, &src_mac) else {
+                    self.stats.record_dropped();
+                    return;
+                };
+                let ns_msg = crate::net::payload::PacketPayloadView::new(&ns_msg);
                 if let Some(if_id) = if_id {
                     self.send_ipv6_icmpv6_on(if_id, &src, &dst, &ns_msg);
                 } else {
@@ -1085,9 +1092,12 @@ impl NetworkStack {
                                                     target,
                                                 } = ndp_proc.initiate_dad(&global_addr)
                                                 {
-                                                    let ns_msg = NdpProcessor::build_ns(
+                                                    let Some(ns_msg) = NdpProcessor::build_ns(
                                                         &src, &dst, &target, &mac_bytes,
-                                                    );
+                                                    ) else {
+                                                        self.stats.record_dropped();
+                                                        continue;
+                                                    };
                                                     dad_messages.push((src, dst, ns_msg, target));
                                                 }
                                             }
@@ -1131,6 +1141,7 @@ impl NetworkStack {
                     }
 
                     for (src, dst, ns_msg, target) in dad_messages {
+                        let ns_msg = crate::net::payload::PacketPayloadView::new(&ns_msg);
                         self.send_ipv6_icmpv6_on(if_id, &src, &dst, &ns_msg);
                         log::info!("NDP: Sent DAD NS for target {}", target);
                     }
@@ -1171,12 +1182,19 @@ impl NetworkStack {
                                                 dst,
                                                 target,
                                             } => {
-                                                let ns_msg = NdpProcessor::build_ns(
+                                                let Some(ns_msg) = NdpProcessor::build_ns(
                                                     &src,
                                                     &dst,
                                                     &target,
                                                     self.config.mac.as_bytes(),
-                                                );
+                                                ) else {
+                                                    self.stats.record_dropped();
+                                                    continue;
+                                                };
+                                                let ns_msg =
+                                                    crate::net::payload::PacketPayloadView::new(
+                                                        &ns_msg,
+                                                    );
                                                 if let Some(if_id) = if_id {
                                                     self.send_ipv6_icmpv6_on(
                                                         if_id, &src, &dst, &ns_msg,
