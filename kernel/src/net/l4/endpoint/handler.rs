@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 
 use super::event::NetworkEvent;
 use super::manager::{ENDPOINT_MANAGER, EndpointFamily};
-use super::segment::TcpSegmentBuilder;
+use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
 use super::types::{
     EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
@@ -2945,26 +2945,24 @@ impl NetworkEventHandler {
             };
 
             let data_len = payload.total_len() as u32;
-            let Some(payload_packet) = crate::net::payload::packet_from_payload(&payload) else {
-                return EventHandleResult::ProtocolError(EndpointError::Internal);
-            };
 
             // TCPセグメントを構築
-            let mut segment = TcpSegmentBuilder::new(local.port(), remote.port())
+            let segment = match TcpSegmentBuilder::new(local.port(), remote.port())
                 .seq(seq)
                 .ack(ack)
                 .psh()
                 .window(advertised_wnd)
-                .payload(payload_packet.data())
-                .build();
-
-            if let Err(e) = apply_tcp_checksum_for_addrs(&mut segment, local, remote) {
-                return EventHandleResult::ProtocolError(e);
-            }
-            let retransmit_segment = segment.clone();
+                .payload_packet(payload.clone())
+                .build_checked_packet(local, remote)
+            {
+                Ok(segment) => segment,
+                Err(e) => return EventHandleResult::ProtocolError(e),
+            };
+            let segment_payload = PacketPayload::single(segment);
+            let retransmit_segment = segment_payload.clone();
 
             // パケット送信を試みる
-            match self.send_tcp_segment(local, remote, segment) {
+            match self.send_tcp_segment(local, remote, segment_payload) {
                 Ok(()) => {
                     // 送信成功: endpointキューから削除し、TCB を更新
                     {
@@ -3238,7 +3236,7 @@ impl NetworkEventHandler {
         tcb.state = TcpConnectionState::SynSent;
         let _ = tcb_table().insert(tcb);
 
-        let mut syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
+        let syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
             .seq(isn)
             .syn()
             .window(65535)
@@ -3248,13 +3246,16 @@ impl NetworkEventHandler {
                 true,
                 Some(crate::net::l4::endpoint::tcp_rx::generate_tcp_timestamp()),
             )
-            .build();
+            .build_checked_packet(local_addr, remote);
 
-        if let Err(e) = apply_tcp_checksum_for_addrs(&mut syn_segment, local_addr, remote) {
-            return EventHandleResult::ProtocolError(e);
-        }
+        let syn_segment = match syn_segment {
+            Ok(segment) => segment,
+            Err(e) => return EventHandleResult::ProtocolError(e),
+        };
 
-        if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
+        if let Err(e) =
+            self.send_tcp_segment(local_addr, remote, PacketPayload::single(syn_segment))
+        {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
                 EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -3330,7 +3331,7 @@ impl NetworkEventHandler {
         // SYNパケット構築 (TCPオプション付き)
         // MSS=1460 (標準的なイーサネットMTU)
         // Window Scale=7 (最大8MBウィンドウ)
-        let mut syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
+        let syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
             .seq(isn)
             .syn()
             .window(65535)
@@ -3340,15 +3341,17 @@ impl NetworkEventHandler {
                 true,
                 Some(crate::net::l4::endpoint::tcp_rx::generate_tcp_timestamp()),
             ) // MSS + Window Scale + SACK Permitted + TS
-            .build();
+            .build_checked_packet(local_addr, remote);
 
-        // チェックサム計算 (IPv4/IPv6)
-        if let Err(e) = apply_tcp_checksum_for_addrs(&mut syn_segment, local_addr, remote) {
-            return EventHandleResult::ProtocolError(e);
-        }
+        let syn_segment = match syn_segment {
+            Ok(segment) => segment,
+            Err(e) => return EventHandleResult::ProtocolError(e),
+        };
 
         // パケット送信（IPスタック経由）
-        if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
+        if let Err(e) =
+            self.send_tcp_segment(local_addr, remote, PacketPayload::single(syn_segment))
+        {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
                 EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -3374,14 +3377,14 @@ impl NetworkEventHandler {
         &self,
         src: EndpointAddr,
         dst: EndpointAddr,
-        segment: Vec<u8>,
+        segment: PacketPayload,
     ) -> EndpointResult<()> {
         if endpoint_ipv4_pair(src, dst).is_none() && !endpoint_is_native_v6_pair(src, dst) {
             return Err(EndpointError::InvalidArgument);
         }
-        // Delegate to the module-level `send_tcp_segment` which is IPv4/IPv6-aware.
+        // Delegate to the packet-backed module-level TCP sender.
         // This centralizes IP family handling and ARP/NDP queuing logic.
-        if super::segment::send_tcp_segment(src, dst, segment) {
+        if send_tcp_segment_payload(src, dst, segment) {
             Ok(())
         } else {
             Err(EndpointError::ResourceExhausted)
@@ -3489,18 +3492,21 @@ impl NetworkEventHandler {
                     })
                     .unwrap_or(0);
 
-                let mut fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
+                let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
                     .seq(seq)
                     .fin()
                     .ack(0) // ACKは最新の受信シーケンス番号
                     .window(65535)
-                    .build();
+                    .build_checked_packet(local, remote);
 
-                if let Err(e) = apply_tcp_checksum_for_addrs(&mut fin_segment, local, remote) {
-                    return EventHandleResult::ProtocolError(e);
-                }
+                let fin_segment = match fin_segment {
+                    Ok(segment) => segment,
+                    Err(e) => return EventHandleResult::ProtocolError(e),
+                };
 
-                if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
+                if let Err(e) =
+                    self.send_tcp_segment(local, remote, PacketPayload::single(fin_segment))
+                {
                     log::info!("TCP: Failed to send FIN: {:?}", e);
                     return EventHandleResult::ProtocolError(match e {
                         EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -3522,18 +3528,21 @@ impl NetworkEventHandler {
                     })
                     .unwrap_or(0);
 
-                let mut fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
+                let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
                     .seq(seq)
                     .fin()
                     .ack(0)
                     .window(65535)
-                    .build();
+                    .build_checked_packet(local, remote);
 
-                if let Err(e) = apply_tcp_checksum_for_addrs(&mut fin_segment, local, remote) {
-                    return EventHandleResult::ProtocolError(e);
-                }
+                let fin_segment = match fin_segment {
+                    Ok(segment) => segment,
+                    Err(e) => return EventHandleResult::ProtocolError(e),
+                };
 
-                if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
+                if let Err(e) =
+                    self.send_tcp_segment(local, remote, PacketPayload::single(fin_segment))
+                {
                     log::info!("TCP: Failed to send FIN (LastAck): {:?}", e);
                 }
             }

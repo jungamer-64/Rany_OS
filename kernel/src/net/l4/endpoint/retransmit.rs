@@ -5,12 +5,13 @@
 //!
 //! RtoCalculator, RetransmitQueue, UnackedSegment
 
-use crate::sync::{PoisonLock, PoisonRwLock};
+use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+use kernel_api::resource::net::PacketPayload;
 
-use super::segment::send_tcp_segment;
+use super::segment::send_tcp_segment_payload;
 use super::tcb::tcb_table;
 use super::timer_wheel::TimingWheel;
 use super::types::{
@@ -23,7 +24,7 @@ pub struct UnackedSegment {
     /// シーケンス番号
     pub seq: u32,
     /// セグメントデータ（ヘッダ含む）
-    pub data: Vec<u8>,
+    pub data: PacketPayload,
     /// 送信時刻（tick）
     pub send_tick: u64,
     /// 再送回数
@@ -132,7 +133,7 @@ impl RetransmitQueue {
     }
 
     /// セグメントを追加
-    pub fn push(&mut self, seq: u32, data: Vec<u8>, current_tick: u64) {
+    pub fn push(&mut self, seq: u32, data: PacketPayload, current_tick: u64) {
         self.unacked.push_back(UnackedSegment {
             seq,
             data,
@@ -149,7 +150,7 @@ impl RetransmitQueue {
         // 累積ACKによって完全に確認されたセグメントを全て削除
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(seg) = self.unacked.front() {
-            let seg_len = seg.data.len() as u32;
+            let seg_len = seg.data.total_len() as u32;
             let seg_end = seg.seq.wrapping_add(seg_len);
 
             // セグメントの末尾まで確認されているか？
@@ -183,7 +184,7 @@ impl RetransmitQueue {
 
     /// 再送処理
     /// 戻り値: 再送するセグメントデータ、Noneの場合は最大再送回数超過
-    pub fn retransmit(&mut self, current_tick: u64) -> Option<Vec<u8>> {
+    pub fn retransmit(&mut self, current_tick: u64) -> Option<PacketPayload> {
         // SACKされていない最古のセグメントを探す
         if let Some(seg) = self.unacked.iter_mut().find(|s| !s.is_sacked) {
             if seg.retransmit_count >= self.max_retries {
@@ -240,10 +241,10 @@ fn retransmit_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize 
 }
 
 /// シャード化されたグローバル再送キューテーブル
-static RETRANSMIT_SHARDS: [PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>;
+static RETRANSMIT_SHARDS: [PoisonLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>;
     RETRANSMIT_SHARD_COUNT] = {
-    const EMPTY: PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>> =
-        PoisonRwLock::new(BTreeMap::new());
+    const EMPTY: PoisonLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>> =
+        PoisonLock::new(BTreeMap::new());
     [EMPTY; RETRANSMIT_SHARD_COUNT]
 };
 
@@ -274,7 +275,7 @@ fn cancel_retransmit_timer(local: &EndpointAddr, remote: &EndpointAddr) {
 pub fn get_or_create_retransmit_queue(local: EndpointAddr, remote: EndpointAddr) -> bool {
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx]
-        .write()
+        .lock()
         .unwrap_or_else(|e| e.into_inner());
     if !queues.contains_key(&(local, remote)) {
         queues.insert((local, remote), RetransmitQueue::new());
@@ -285,11 +286,16 @@ pub fn get_or_create_retransmit_queue(local: EndpointAddr, remote: EndpointAddr)
 }
 
 /// 再送キューにセグメント追加
-pub fn retransmit_queue_push(local: EndpointAddr, remote: EndpointAddr, seq: u32, data: Vec<u8>) {
+pub fn retransmit_queue_push(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    seq: u32,
+    data: PacketPayload,
+) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx]
-        .write()
+        .lock()
         .unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         let was_empty = queue.is_empty();
@@ -306,7 +312,7 @@ pub fn retransmit_queue_ack(local: EndpointAddr, remote: EndpointAddr, ack_num: 
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx]
-        .write()
+        .lock()
         .unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         queue.ack_received(ack_num, current_tick);
@@ -327,11 +333,11 @@ pub fn retransmit_queue_process_sack(
 ) {
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx]
-        .write()
+        .lock()
         .unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         for seg in queue.unacked.iter_mut() {
-            let seg_end = seg.seq.wrapping_add(seg.data.len() as u32);
+            let seg_end = seg.seq.wrapping_add(seg.data.total_len() as u32);
             for &(l, r) in blocks {
                 let in_left = (seg.seq.wrapping_sub(l) as i32) >= 0;
                 let in_right = (r.wrapping_sub(seg_end) as i32) >= 0;
@@ -348,7 +354,7 @@ pub fn retransmit_queue_process_sack(
 pub fn retransmit_queue_remove(local: EndpointAddr, remote: EndpointAddr) {
     let idx = retransmit_shard_index(&local, &remote);
     RETRANSMIT_SHARDS[idx]
-        .write()
+        .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&(local, remote));
     cancel_retransmit_timer(&local, &remote);
@@ -365,7 +371,7 @@ pub fn check_retransmit_timeouts() {
         } else {
             let mut result = Vec::new();
             for shard in &RETRANSMIT_SHARDS {
-                let queues = shard.read().unwrap_or_else(|e| e.into_inner());
+                let queues = shard.lock().unwrap_or_else(|e| e.into_inner());
                 for ((local, remote), queue) in queues.iter() {
                     if queue.check_timeout(current_tick).is_some() {
                         result.push((*local, *remote));
@@ -379,13 +385,13 @@ pub fn check_retransmit_timeouts() {
     for (local, remote) in expired {
         let idx = retransmit_shard_index(&local, &remote);
         let mut queues = RETRANSMIT_SHARDS[idx]
-            .write()
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
 
         if let Some(queue) = queues.get_mut(&(local, remote)) {
             if queue.check_timeout(current_tick).is_some() {
                 if let Some(segment_data) = queue.retransmit(current_tick) {
-                    send_tcp_segment(local, remote, segment_data);
+                    send_tcp_segment_payload(local, remote, segment_data);
                     let deadline = current_tick + queue.get_rto();
                     schedule_retransmit_timer(local, remote, deadline);
                 } else {
@@ -444,8 +450,16 @@ pub mod tests {
     pub fn test_retransmit_queue_push_and_ack() {
         let mut queue = RetransmitQueue::new();
         assert!(queue.is_empty());
-        queue.push(1000, alloc::vec![1, 2, 3], 100);
-        queue.push(1003, alloc::vec![4, 5, 6], 110);
+        queue.push(
+            1000,
+            crate::net::payload::payload_from_bytes(&[1, 2, 3]).unwrap(),
+            100,
+        );
+        queue.push(
+            1003,
+            crate::net::payload::payload_from_bytes(&[4, 5, 6]).unwrap(),
+            110,
+        );
         assert!(!queue.is_empty());
         queue.ack_received(1003, 150);
         assert!(!queue.is_empty());
@@ -456,7 +470,11 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_retransmit_queue_timeout() {
         let mut queue = RetransmitQueue::new();
-        queue.push(1000, alloc::vec![1, 2, 3], 0);
+        queue.push(
+            1000,
+            crate::net::payload::payload_from_bytes(&[1, 2, 3]).unwrap(),
+            0,
+        );
         assert!(queue.check_timeout(500).is_none());
         let timed_out = queue.check_timeout(1500);
         assert!(timed_out.is_some());
@@ -465,10 +483,13 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_retransmit_queue_retransmit() {
         let mut queue = RetransmitQueue::new();
-        let original_data = alloc::vec![1, 2, 3, 4, 5];
+        let original_data = crate::net::payload::payload_from_bytes(&[1, 2, 3, 4, 5]).unwrap();
         queue.push(1000, original_data.clone(), 0);
         let retransmitted = queue.retransmit(1500).unwrap();
-        assert_eq!(retransmitted, original_data);
+        assert_eq!(
+            crate::net::payload::payload_to_vec(&retransmitted),
+            crate::net::payload::payload_to_vec(&original_data)
+        );
         let seg = queue.check_timeout(1500 + queue.get_rto()).unwrap();
         assert_eq!(seg.retransmit_count, 1);
         assert!(seg.is_retransmit);
@@ -480,12 +501,22 @@ pub mod tests {
         let local = EndpointAddr::new([192, 168, 0, 1], 10000);
         let remote = EndpointAddr::new([192, 168, 0, 2], 20000);
         get_or_create_retransmit_queue(local, remote);
-        retransmit_queue_push(local, remote, 1000, alloc::vec![1, 2, 3]);
-        retransmit_queue_push(local, remote, 1003, alloc::vec![4, 5, 6]);
+        retransmit_queue_push(
+            local,
+            remote,
+            1000,
+            crate::net::payload::payload_from_bytes(&[1, 2, 3]).unwrap(),
+        );
+        retransmit_queue_push(
+            local,
+            remote,
+            1003,
+            crate::net::payload::payload_from_bytes(&[4, 5, 6]).unwrap(),
+        );
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
         let idx = retransmit_shard_index(&local, &remote);
         let qs = RETRANSMIT_SHARDS[idx]
-            .read()
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
         let q = qs.get(&(local, remote)).unwrap();
         assert_eq!(q.unacked.len(), 2);
@@ -535,8 +566,16 @@ pub mod qemu_tests {
         if !queue.is_empty() {
             return false;
         }
-        queue.push(1000, alloc::vec![1, 2, 3], 100);
-        queue.push(1003, alloc::vec![4, 5, 6], 110);
+        queue.push(
+            1000,
+            crate::net::payload::payload_from_bytes(&[1, 2, 3]).unwrap(),
+            100,
+        );
+        queue.push(
+            1003,
+            crate::net::payload::payload_from_bytes(&[4, 5, 6]).unwrap(),
+            110,
+        );
         if queue.is_empty() {
             return false;
         }
@@ -550,7 +589,11 @@ pub mod qemu_tests {
 
     pub fn retransmit_queue_timeout_smoke() -> bool {
         let mut queue = RetransmitQueue::new();
-        queue.push(1000, alloc::vec![1, 2, 3], 0);
+        queue.push(
+            1000,
+            crate::net::payload::payload_from_bytes(&[1, 2, 3]).unwrap(),
+            0,
+        );
         if queue.check_timeout(500).is_some() {
             return false;
         }
@@ -559,12 +602,14 @@ pub mod qemu_tests {
 
     pub fn retransmit_queue_retransmit_smoke() -> bool {
         let mut queue = RetransmitQueue::new();
-        let original_data = alloc::vec![1, 2, 3, 4, 5];
+        let original_data = crate::net::payload::payload_from_bytes(&[1, 2, 3, 4, 5]).unwrap();
         queue.push(1000, original_data.clone(), 0);
         let Some(retransmitted) = queue.retransmit(1500) else {
             return false;
         };
-        if retransmitted != original_data {
+        if crate::net::payload::payload_to_vec(&retransmitted)
+            != crate::net::payload::payload_to_vec(&original_data)
+        {
             return false;
         }
         let Some(seg) = queue.check_timeout(1500 + queue.get_rto()) else {
@@ -578,13 +623,23 @@ pub mod qemu_tests {
         let remote = EndpointAddr::new([192, 168, 0, 2], 20000);
         retransmit_queue_remove(local, remote);
         get_or_create_retransmit_queue(local, remote);
-        retransmit_queue_push(local, remote, 1000, alloc::vec![1, 2, 3]);
-        retransmit_queue_push(local, remote, 1003, alloc::vec![4, 5, 6]);
+        retransmit_queue_push(
+            local,
+            remote,
+            1000,
+            crate::net::payload::payload_from_bytes(&[1, 2, 3]).unwrap(),
+        );
+        retransmit_queue_push(
+            local,
+            remote,
+            1003,
+            crate::net::payload::payload_from_bytes(&[4, 5, 6]).unwrap(),
+        );
         retransmit_queue_process_sack(local, remote, &[(1000, 1003)]);
         let ok = {
             let idx = retransmit_shard_index(&local, &remote);
             let qs = RETRANSMIT_SHARDS[idx]
-                .read()
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let Some(q) = qs.get(&(local, remote)) else {
                 return false;

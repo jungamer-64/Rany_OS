@@ -34,15 +34,6 @@ const GLOBAL_MAX_OOO_SEGMENTS: usize = 512;
 /// 現在のグローバルなOOOセグメント合計数
 static GLOBAL_OOO_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// 順序外セグメント
-#[derive(Clone)]
-struct OooSegment {
-    /// シーケンス番号
-    seq: u32,
-    /// データ
-    data: Vec<u8>,
-}
-
 /// 接続ごとのOOOキュー
 struct ConnectionOooQueue {
     /// シーケンス番号順（wrapping-aware）にソートされたセグメント

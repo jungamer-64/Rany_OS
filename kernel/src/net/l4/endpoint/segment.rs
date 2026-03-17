@@ -8,7 +8,9 @@
 use alloc::vec::Vec;
 
 use super::tcb::tcp_flags;
-use super::types::EndpointAddr;
+use super::types::{EndpointAddr, EndpointError};
+use crate::net::payload::PacketPayloadView;
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload, PacketRef};
 
 #[inline]
 fn endpoint_ipv4_pair(local: EndpointAddr, remote: EndpointAddr) -> Option<([u8; 4], [u8; 4])> {
@@ -28,11 +30,39 @@ pub struct TcpSegmentBuilder {
     ack_num: u32,
     flags: u8,
     window: u16,
-    data: Vec<u8>,
+    data: TcpSegmentPayload,
     /// TCPオプション
     options: Vec<u8>,
     /// Urgent pointer
     urgent_ptr: u16,
+}
+
+enum TcpSegmentPayload {
+    Empty,
+    Owned(Vec<u8>),
+    Packet(PacketPayload),
+}
+
+impl TcpSegmentPayload {
+    fn len(&self) -> usize {
+        match self {
+            Self::Empty => 0,
+            Self::Owned(data) => data.len(),
+            Self::Packet(payload) => payload.total_len(),
+        }
+    }
+
+    fn copy_into(&self, dst: &mut [u8]) {
+        match self {
+            Self::Empty => {}
+            Self::Owned(data) => dst[..data.len()].copy_from_slice(data),
+            Self::Packet(payload) => {
+                let view = PacketPayloadView::new(payload);
+                let copied = view.copy_all_into(dst);
+                debug_assert_eq!(copied, view.total_len());
+            }
+        }
+    }
 }
 
 impl TcpSegmentBuilder {
@@ -45,7 +75,7 @@ impl TcpSegmentBuilder {
             ack_num: 0,
             flags: 0,
             window: 65535,
-            data: Vec::new(),
+            data: TcpSegmentPayload::Empty,
             options: Vec::new(),
             urgent_ptr: 0,
         }
@@ -135,13 +165,31 @@ impl TcpSegmentBuilder {
 
     /// データ設定
     pub fn data(mut self, data: Vec<u8>) -> Self {
-        self.data = data;
+        self.data = if data.is_empty() {
+            TcpSegmentPayload::Empty
+        } else {
+            TcpSegmentPayload::Owned(data)
+        };
         self
     }
 
     /// ペイロード設定（スライスから）
     pub fn payload(mut self, data: &[u8]) -> Self {
-        self.data = data.to_vec();
+        self.data = if data.is_empty() {
+            TcpSegmentPayload::Empty
+        } else {
+            TcpSegmentPayload::Owned(data.to_vec())
+        };
+        self
+    }
+
+    /// ペイロード設定（packet-backed payload から）
+    pub fn payload_packet(mut self, payload: PacketPayload) -> Self {
+        self.data = if payload.total_len() == 0 {
+            TcpSegmentPayload::Empty
+        } else {
+            TcpSegmentPayload::Packet(payload)
+        };
         self
     }
 
@@ -262,6 +310,63 @@ impl TcpSegmentBuilder {
         let total_len = header_len + self.data.len();
 
         let mut segment = alloc::vec![0u8; total_len];
+        self.write_segment_bytes(&mut segment, header_len, data_offset, options_len);
+        segment
+    }
+
+    pub fn build_packet(mut self) -> Result<PacketRef, EndpointError> {
+        self.pad_options();
+
+        if self.options.len() > 40 {
+            self.options.truncate(40);
+        }
+
+        let options_len = self.options.len();
+        let header_len = 20 + options_len;
+        let data_offset = (header_len / 4) as u8;
+        let total_len = header_len + self.data.len();
+        let mut packet =
+            crate::net::payload::alloc_packet_with_headroom(total_len, DEFAULT_PACKET_HEADROOM)
+                .ok_or(EndpointError::ResourceExhausted)?;
+        self.write_segment_bytes(packet.data_mut(), header_len, data_offset, options_len);
+        Ok(packet)
+    }
+
+    pub fn build_checked_packet(
+        self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> Result<PacketRef, EndpointError> {
+        let mut packet = self.build_packet()?;
+        if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
+            Self::calculate_checksum(packet.data_mut(), src_v4, dst_v4);
+            return Ok(packet);
+        }
+        if endpoint_is_native_v6_pair(local, remote) {
+            Self::calculate_checksum_v6(
+                packet.data_mut(),
+                crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
+                crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
+            );
+            return Ok(packet);
+        }
+
+        log::warn!(
+            "[NET][endpoint] mixed TCP address family rejected: {} -> {}",
+            local,
+            remote
+        );
+        Err(EndpointError::InvalidArgument)
+    }
+
+    fn write_segment_bytes(
+        &self,
+        segment: &mut [u8],
+        header_len: usize,
+        data_offset: u8,
+        options_len: usize,
+    ) {
+        debug_assert_eq!(segment.len(), header_len + self.data.len());
 
         // Source port (2 bytes)
         segment[0..2].copy_from_slice(&self.src_port.to_be_bytes());
@@ -287,11 +392,9 @@ impl TcpSegmentBuilder {
         }
 
         // Data
-        if !self.data.is_empty() {
-            segment[header_len..].copy_from_slice(&self.data);
+        if self.data.len() > 0 {
+            self.data.copy_into(&mut segment[header_len..]);
         }
-
-        segment
     }
 
     /// チェックサム計算（疑似ヘッダ込み） — IPv4 用
@@ -352,31 +455,27 @@ impl TcpSegmentBuilder {
 /// 非同期イベントキュー経由で送信。スタックロックを直接取得せず、
 /// `network_event_task` が一括処理するため、async コンテキストからの
 /// 呼び出しでデッドロックを回避する。
-pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<u8>) -> bool {
+pub fn send_tcp_segment_payload(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    segment: PacketPayload,
+) -> bool {
     let (scope, ingress_if) = super::tcb::tcb_table()
         .get(local, remote)
         .map(|tcb| (tcb.scope, tcb.ingress_if_id))
         .unwrap_or((crate::net::types::InterfaceScope::Any, None));
     let scoped_if = scope.as_if_id().or(ingress_if);
+    let segment_len = segment.total_len();
     if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
         let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
         let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
-        let segment_len = segment.len();
-        let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
-            log::debug!(
-                "TCP TX enqueue failed: {} -> {} (packet alloc)",
-                local,
-                remote
-            );
-            return false;
-        };
 
         // 非同期イベントキュー経由で送信（ロック競合回避）
         let ok = match scoped_if {
             Some(if_id) => {
-                crate::net::runtime::stack::enqueue_tcp_send_on(if_id, src_ip, dst_ip, payload)
+                crate::net::runtime::stack::enqueue_tcp_send_on(if_id, src_ip, dst_ip, segment)
             }
-            None => crate::net::runtime::stack::enqueue_tcp_send(src_ip, dst_ip, payload),
+            None => crate::net::runtime::stack::enqueue_tcp_send(src_ip, dst_ip, segment),
         };
         if ok {
             log::debug!(
@@ -394,22 +493,11 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
     if endpoint_is_native_v6_pair(local, remote) {
         let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-        let segment_len = segment.len();
-        let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
-            log::debug!(
-                "TCP TX enqueue failed (v6): [{}]:{} -> [{}]:{} (packet alloc)",
-                src_v6,
-                local.port(),
-                dst_v6,
-                remote.port()
-            );
-            return false;
-        };
         let ok = match scoped_if {
             Some(if_id) => {
-                crate::net::runtime::stack::enqueue_tcp_v6_send_on(if_id, src_v6, dst_v6, payload)
+                crate::net::runtime::stack::enqueue_tcp_v6_send_on(if_id, src_v6, dst_v6, segment)
             }
-            None => crate::net::runtime::stack::enqueue_tcp_v6_send(src_v6, dst_v6, payload),
+            None => crate::net::runtime::stack::enqueue_tcp_v6_send(src_v6, dst_v6, segment),
         };
         if ok {
             log::debug!(
@@ -438,6 +526,27 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
         remote
     );
     false
+}
+
+pub fn send_tcp_segment_packet(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    segment: PacketRef,
+) -> bool {
+    send_tcp_segment_payload(local, remote, PacketPayload::single(segment))
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<u8>) -> bool {
+    let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
+        log::debug!(
+            "TCP TX enqueue failed: {} -> {} (packet alloc)",
+            local,
+            remote
+        );
+        return false;
+    };
+    send_tcp_segment_payload(local, remote, payload)
 }
 
 // =====================================================

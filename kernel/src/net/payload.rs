@@ -184,6 +184,7 @@ impl<'a> PacketPayloadCursor<'a> {
     }
 }
 
+#[cfg(any(test, feature = "qemu-test-export"))]
 pub fn payload_to_vec(payload: &PacketPayload) -> Vec<u8> {
     let mut out = vec![0u8; payload.total_len()];
     let written = PacketPayloadView::new(payload).copy_all_into(&mut out);

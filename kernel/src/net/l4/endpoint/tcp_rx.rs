@@ -23,7 +23,7 @@ use super::ooo_queue;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
-use super::segment::{TcpSegmentBuilder, send_tcp_segment};
+use super::segment::{TcpSegmentBuilder, send_tcp_segment_packet};
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 use super::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
@@ -239,17 +239,17 @@ fn send_challenge_ack(tcb: &TcpControlBlockEntry) {
             .timestamp(generate_tcp_timestamp(), tcb.ts_ecr);
     }
 
-    let mut ack = builder.build();
-    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
-    } else {
-        TcpSegmentBuilder::calculate_checksum_v6(
-            &mut ack,
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
-        );
-    }
-    send_tcp_segment(tcb.local, tcb.remote, ack);
+    let Ok(ack) = builder.build_checked_packet(tcb.local, tcb.remote) else {
+        return;
+    };
+    send_tcp_segment_packet(tcb.local, tcb.remote, ack);
+}
+
+fn send_control_segment(local: EndpointAddr, remote: EndpointAddr, builder: TcpSegmentBuilder) {
+    let Ok(segment) = builder.build_checked_packet(local, remote) else {
+        return;
+    };
+    send_tcp_segment_packet(local, remote, segment);
 }
 
 /// TCPチェックサム検証（IPv4疑似ヘッダ込み）
@@ -871,17 +871,7 @@ fn send_ack_for_fast_path(tcb: &TcpControlBlockEntry, rcv_nxt: u32) {
             .timestamp(generate_tcp_timestamp(), tcb.ts_ecr);
     }
 
-    let mut ack = builder.build();
-    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
-    } else {
-        TcpSegmentBuilder::calculate_checksum_v6(
-            &mut ack,
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
-        );
-    }
-    send_tcp_segment(tcb.local, tcb.remote, ack);
+    send_control_segment(tcb.local, tcb.remote, builder);
 }
 
 /// Delayed ACK タイマー処理
@@ -925,17 +915,7 @@ pub fn flush_delayed_acks() {
                 .timestamp(generate_tcp_timestamp(), ts_ecr);
         }
 
-        let mut ack = builder.build();
-        if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-            TcpSegmentBuilder::calculate_checksum(&mut ack, lv4, rv4);
-        } else {
-            TcpSegmentBuilder::calculate_checksum_v6(
-                &mut ack,
-                crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
-                crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
-            );
-        }
-        send_tcp_segment(local, remote, ack);
+        send_control_segment(local, remote, builder);
 
         // カウンタリセット
         tcb_table().update(local, remote, |e| {
@@ -1016,36 +996,15 @@ fn handle_simultaneous_syn_received(
             .timestamp(generate_tcp_timestamp(), peer_ts_val);
     }
 
-    let mut syn_ack = builder.build();
-    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut syn_ack, lv4, rv4);
-    } else {
-        TcpSegmentBuilder::calculate_checksum_v6(
-            &mut syn_ack,
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
-        );
-    }
-    send_tcp_segment(tcb.local, tcb.remote, syn_ack);
+    send_control_segment(tcb.local, tcb.remote, builder);
 }
 
 /// 予期しないACKに対するRST送信 (RFC 793)
 fn send_rst_for_unexpected_ack(tcb: &TcpControlBlockEntry, ack_num: u32) {
-    let mut rst = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
+    let builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(ack_num)
-        .rst()
-        .build();
-
-    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut rst, lv4, rv4);
-    } else {
-        TcpSegmentBuilder::calculate_checksum_v6(
-            &mut rst,
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
-        );
-    }
-    send_tcp_segment(tcb.local, tcb.remote, rst);
+        .rst();
+    send_control_segment(tcb.local, tcb.remote, builder);
 }
 
 /// 既存TCBに対するTCPセグメント処理（RFC 793 / 9293 / 5961 準拠）
@@ -1597,20 +1556,8 @@ fn handle_syn_ack_received(
         builder = builder.nop().nop().timestamp(our_ts, peer_ts_val);
     }
 
-    let mut ack_segment = builder.build();
-
-    if let (Some(lv4), Some(rv4)) = (tcb.local.as_ipv4(), tcb.remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut ack_segment, lv4, rv4);
-    } else {
-        // one or both addresses are IPv6; fall back to v6 checksum generator
-        TcpSegmentBuilder::calculate_checksum_v6(
-            &mut ack_segment,
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.local.as_ipv6()),
-            crate::net::l3::ipv6::Ipv6Address::new(tcb.remote.as_ipv6()),
-        );
-    }
-
     // パケット送信
+    send_control_segment(tcb.local, tcb.remote, builder);
     log::info!(
         "TCP: Connection established {} <-> {}",
         tcb.local,
@@ -1723,17 +1670,7 @@ fn process_tcp_new_connection(
             builder = builder.seq(0).ack(ack).ack_flag();
         }
 
-        let mut rst = builder.build();
-        if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-            TcpSegmentBuilder::calculate_checksum(&mut rst, lv4, rv4);
-        } else {
-            TcpSegmentBuilder::calculate_checksum_v6(
-                &mut rst,
-                crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
-                crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
-            );
-        }
-        send_tcp_segment(local, remote, rst);
+        send_control_segment(local, remote, builder);
         return;
     }
 
@@ -1851,19 +1788,8 @@ fn process_tcp_new_connection(
         builder = builder.nop().nop().timestamp(our_ts, peer_ts_val);
     }
 
-    let mut syn_ack = builder.build();
-    if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-        TcpSegmentBuilder::calculate_checksum(&mut syn_ack, lv4, rv4);
-    } else {
-        TcpSegmentBuilder::calculate_checksum_v6(
-            &mut syn_ack,
-            crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
-            crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
-        );
-    }
-
     // パケット送信
-    send_tcp_segment(local, remote, syn_ack);
+    send_control_segment(local, remote, builder);
     log::info!("TCP: SYN-ACK sent {} -> {}", local, remote);
 }
 

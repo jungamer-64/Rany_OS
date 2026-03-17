@@ -486,7 +486,7 @@ impl TcbTable {
     fn check_zero_window_probes(&self, current_tick: u64) {
         use super::manager::ENDPOINT_MANAGER;
         use super::retransmit::retransmit_queue_push;
-        use super::segment::{TcpSegmentBuilder, send_tcp_segment};
+        use super::segment::{TcpSegmentBuilder, send_tcp_segment_packet};
         for shard in &self.shards {
             let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
             for (key, entry) in entries.iter_mut() {
@@ -519,24 +519,21 @@ impl TcbTable {
                                         builder =
                                             builder.nop().nop().timestamp(ts_val, entry.ts_ecr);
                                     }
-                                    let mut segment = builder.build();
-                                    if let (Some(lv4), Some(rv4)) =
-                                        (key.0.as_ipv4(), key.1.as_ipv4())
-                                    {
-                                        TcpSegmentBuilder::calculate_checksum(
-                                            &mut segment,
-                                            lv4,
-                                            rv4,
+                                    let Ok(segment) = builder.build_checked_packet(key.0, key.1)
+                                    else {
+                                        continue;
+                                    };
+                                    let retransmit_segment =
+                                        kernel_api::resource::net::PacketPayload::single(
+                                            segment.clone(),
                                         );
-                                    } else {
-                                        TcpSegmentBuilder::calculate_checksum_v6(
-                                            &mut segment,
-                                            crate::net::l3::ipv6::Ipv6Address::new(key.0.as_ipv6()),
-                                            crate::net::l3::ipv6::Ipv6Address::new(key.1.as_ipv6()),
+                                    if send_tcp_segment_packet(key.0, key.1, segment) {
+                                        retransmit_queue_push(
+                                            key.0,
+                                            key.1,
+                                            seq,
+                                            retransmit_segment,
                                         );
-                                    }
-                                    if send_tcp_segment(key.0, key.1, segment) {
-                                        retransmit_queue_push(key.0, key.1, seq, payload);
                                         entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
                                         entry.flow_control.on_probe_sent(current_tick);
                                     } else {
