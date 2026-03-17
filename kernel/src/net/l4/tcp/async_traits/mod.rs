@@ -165,8 +165,8 @@ impl TcpStream {
             EndpointAddr::new([0, 0, 0, 0], 0)
         };
 
-        let stream = crate::net::runtime::stack::connect_tcp_stream_in(runtime, local_addr, addr)
-            .await?;
+        let stream =
+            crate::net::runtime::stack::connect_tcp_stream_in(runtime, local_addr, addr).await?;
         ConnectFuture {
             stream: stream.clone(),
         }
@@ -189,8 +189,8 @@ impl TcpStream {
             EndpointAddr::new([0, 0, 0, 0], 0)
         };
 
-        let stream = crate::net::runtime::stack::connect_tcp_stream_in(runtime, local_addr, addr)
-            .await?;
+        let stream =
+            crate::net::runtime::stack::connect_tcp_stream_in(runtime, local_addr, addr).await?;
         ConnectTimeoutFuture {
             stream: stream.clone(),
             start_us: crate::time::precise_time_nanos() / 1000,
@@ -234,7 +234,10 @@ impl TcpStream {
             .unwrap_or_else(|e| e.into_inner());
 
         if let Some(err) = inner.last_error.take() {
-            log::warn!("[NET][tcp] zero-copy receive observed endpoint error: {:?}", err);
+            log::warn!(
+                "[NET][tcp] zero-copy receive observed endpoint error: {:?}",
+                err
+            );
         }
 
         if !inner.recv_buffer.is_empty() {
@@ -705,7 +708,9 @@ impl<'a> Future for AcceptFuture<'a> {
                 Poll::Ready(Ok((TcpStream::from_endpoint(endpoint), addr)))
             }
             Err(EndpointError::Timeout) => {
-                self.listener.endpoint.register_accept_waker(cx.waker().clone());
+                self.listener
+                    .endpoint
+                    .register_accept_waker(cx.waker().clone());
                 Poll::Pending
             }
             Err(err) => Poll::Ready(Err(tcp_error_from_endpoint(err))),

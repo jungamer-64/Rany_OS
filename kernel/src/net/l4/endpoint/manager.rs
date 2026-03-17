@@ -193,7 +193,10 @@ impl EndpointManager {
     }
 
     pub fn register_raw_scope(&self, scope: InterfaceScope, fd: EndpointFd) -> EndpointResult<()> {
-        let mut guard = self.raw_endpoints.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .raw_endpoints
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         if guard.contains_key(&scope) {
             return Err(EndpointError::ResourceExhausted);
         }
@@ -321,7 +324,5 @@ pub fn deliver_raw_payload(ingress_if_id: NetIfId, payload: PacketPayload) -> bo
     let Some(endpoint) = mgr.find_raw_endpoint(ingress_if_id) else {
         return false;
     };
-    endpoint
-        .deliver_raw_payload(ingress_if_id, payload)
-        .is_ok()
+    endpoint.deliver_raw_payload(ingress_if_id, payload).is_ok()
 }

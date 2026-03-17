@@ -602,7 +602,10 @@ impl Ipv6FragmentReassembler {
         match buffer.add_fragment(unfragmentable, frag, payload, payload_packet) {
             Ok(()) => {
                 if buffer.is_complete() {
-                    let result = self.buffers.remove(&key).and_then(Ipv6FragmentBuffer::reassemble);
+                    let result = self
+                        .buffers
+                        .remove(&key)
+                        .and_then(Ipv6FragmentBuffer::reassemble);
                     if result.is_some() {
                         self.stats.reassembled += 1;
                     }

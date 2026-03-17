@@ -79,8 +79,7 @@ fn build_ipv6_raw_udp_packet(
     dst_port: u16,
     payload: &[u8],
 ) -> Vec<u8> {
-    let mut buffer =
-        alloc::vec![0u8; crate::net::l3::ipv6::IPV6_HEADER_SIZE + 8 + payload.len()];
+    let mut buffer = alloc::vec![0u8; crate::net::l3::ipv6::IPV6_HEADER_SIZE + 8 + payload.len()];
     let mut ip = crate::net::l3::ipv6::Ipv6PacketMut::new(&mut buffer).expect("ipv6 packet");
     ip.init_header();
     ip.set_source(&src_ip);
@@ -755,12 +754,14 @@ pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
             8088,
             b"pinned",
         );
-        assert!(stack
-            .send_raw_ip_payload_scoped(
-                crate::net::types::InterfaceScope::Pinned(if0),
-                PacketPayload::from_vec(packet),
-            )
-            .is_ok());
+        assert!(
+            stack
+                .send_raw_ip_payload_scoped(
+                    crate::net::types::InterfaceScope::Pinned(if0),
+                    PacketPayload::from_vec(packet),
+                )
+                .is_ok()
+        );
     } else {
         panic!("stack lock");
     }

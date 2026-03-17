@@ -931,14 +931,13 @@ impl Ipv4Processor {
                 payload_packet.set_len(payload.len());
                 Some(payload_packet)
             });
-            let (reassembled, expired) =
-                self.reassembler.process_fragment(
-                    header,
-                    header_data,
-                    payload,
-                    payload_packet,
-                    current_time,
-                );
+            let (reassembled, expired) = self.reassembler.process_fragment(
+                header,
+                header_data,
+                payload,
+                payload_packet,
+                current_time,
+            );
 
             if let Some(data) = reassembled {
                 // Reassembly complete - return the reassembled packet

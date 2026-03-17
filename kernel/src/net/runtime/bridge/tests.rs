@@ -348,7 +348,9 @@ pub fn test_zero_copy_via_bridge() {
     check_batch_timeout(100_000, 1);
 
     let mut buf = [0u8; 32];
-    let len = sock.recv_sync(&mut buf).expect("tcp endpoint should receive payload");
+    let len = sock
+        .recv_sync(&mut buf)
+        .expect("tcp endpoint should receive payload");
     assert_eq!(&buf[..len], payload);
     let _ = tcb_table().remove(local, remote);
 }
@@ -852,7 +854,9 @@ pub fn test_zero_copy_via_bridge_v6() {
     check_batch_timeout(100_000, 1);
 
     let mut buf = [0u8; 32];
-    let len = sock.recv_sync(&mut buf).expect("tcp endpoint should receive payload");
+    let len = sock
+        .recv_sync(&mut buf)
+        .expect("tcp endpoint should receive payload");
     assert_eq!(&buf[..len], payload);
     let _ = tcb_table().remove(local, remote);
 }

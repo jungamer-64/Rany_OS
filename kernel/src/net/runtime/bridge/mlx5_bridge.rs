@@ -401,9 +401,7 @@ fn parse_cmdline_mac_address(value: &str) -> Option<crate::net::l2::ethernet::Ma
 }
 
 fn mlx5_cmdline_vf_mac_key(segment: u16, bus: u8, device: u8, function: u8) -> String {
-    format!(
-        "mlx5_vf_mac_{segment:04x}_{bus:02x}_{device:02x}_{function:x}"
-    )
+    format!("mlx5_vf_mac_{segment:04x}_{bus:02x}_{device:02x}_{function:x}")
 }
 
 fn mlx5_cmdline_vf_mac_override(
@@ -499,8 +497,11 @@ fn mlx5_tx_runtime_healthy(state: &Mlx5BridgeState) -> bool {
 }
 
 fn mlx5_port_healthy(state: &Mlx5BridgeState) -> bool {
-    with_mlx5_device(state, |device| unsafe { device.health_check() } && device.tx_is_runtime_healthy())
-        .unwrap_or(false)
+    with_mlx5_device(
+        state,
+        |device| unsafe { device.health_check() } && device.tx_is_runtime_healthy(),
+    )
+    .unwrap_or(false)
 }
 
 impl NetDevicePort for Mlx5NetDriverAdapter {
@@ -819,7 +820,10 @@ fn mlx5_l2_inline_header_len(packet: &PacketRef) -> usize {
     ETHERNET_HEADER_LEN
 }
 
-fn validate_mlx5_tx_packet(state: &Mlx5BridgeState, packet: &PacketRef) -> Result<(), &'static str> {
+fn validate_mlx5_tx_packet(
+    state: &Mlx5BridgeState,
+    packet: &PacketRef,
+) -> Result<(), &'static str> {
     if state.dma_device_id.load(Ordering::Acquire) == u64::MAX {
         return Err("mlx5 DMA device unavailable");
     }
@@ -1926,8 +1930,8 @@ pub fn mlx5_health_check(index: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        mlx5_cmdline_vf_mac_key, mlx5_l2_inline_header_len, packet_uses_device_visible_dma,
-        parse_cmdline_mac_address, validate_mlx5_tx_packet, Mlx5BridgeState,
+        Mlx5BridgeState, mlx5_cmdline_vf_mac_key, mlx5_l2_inline_header_len,
+        packet_uses_device_visible_dma, parse_cmdline_mac_address, validate_mlx5_tx_packet,
     };
     use kernel_api::resource::net::PacketRef;
 

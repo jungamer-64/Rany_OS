@@ -22,7 +22,9 @@ fn qemu_stack_record_tx_if(
     data: &[u8],
     _meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
-    let mut guard = QEMU_STACK_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = QEMU_STACK_LAST_TX_IF
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     *guard = if_id;
     QEMU_STACK_LAST_TX_LEN.store(data.len(), Ordering::Release);
     true
@@ -437,7 +439,9 @@ pub fn stack_send_udp_event_task_zero_copy_smoke() -> bool {
         config.ipv4.subnet_mask = Ipv4Address::new([255, 255, 255, 0]);
 
         {
-            let mut guard = QEMU_STACK_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = QEMU_STACK_LAST_TX_IF
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *guard = None;
         }
         QEMU_STACK_LAST_TX_LEN.store(0, Ordering::Release);
@@ -454,10 +458,9 @@ pub fn stack_send_udp_event_task_zero_copy_smoke() -> bool {
         net_stack.set_primary_interface_state(Some(if_id));
         net_stack.set_transmit_fn(qemu_stack_record_tx_if);
 
-        let (result_slot, waker) =
-            stack::new_detached_command_channel::<
-                Result<(), crate::net::l4::endpoint::types::EndpointError>,
-            >();
+        let (result_slot, waker) = stack::new_detached_command_channel::<
+            Result<(), crate::net::l4::endpoint::types::EndpointError>,
+        >();
         let result_slot_view = result_slot.clone();
 
         let result = NetworkEventHandler::new().handle_event_with_stack(

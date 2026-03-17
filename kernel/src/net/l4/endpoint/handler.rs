@@ -871,13 +871,18 @@ impl NetworkEventHandler {
                             return EventHandleResult::Success;
                         }
                         let header_len = ((header[0] & 0x0f) as usize) * 4;
-                        if header_len < 20 || header.len() < header_len || view.total_len() < header_len {
+                        if header_len < 20
+                            || header.len() < header_len
+                            || view.total_len() < header_len
+                        {
                             return EventHandleResult::Success;
                         }
-                        let src_ip =
-                            crate::net::l3::ipv4::Ipv4Address::new([header[12], header[13], header[14], header[15]]);
-                        let dst_ip =
-                            crate::net::l3::ipv4::Ipv4Address::new([header[16], header[17], header[18], header[19]]);
+                        let src_ip = crate::net::l3::ipv4::Ipv4Address::new([
+                            header[12], header[13], header[14], header[15],
+                        ]);
+                        let dst_ip = crate::net::l3::ipv4::Ipv4Address::new([
+                            header[16], header[17], header[18], header[19],
+                        ]);
                         let protocol = crate::net::l3::ipv4::IpProtocol::from(header[9]);
                         let transport_len = view.total_len().saturating_sub(header_len);
                         let prefix_len = transport_len.min(20);
@@ -885,20 +890,16 @@ impl NetworkEventHandler {
                         let ttl = header[8];
 
                         let (src_port, dst_port, tcp_flags) = match protocol {
-                            crate::net::l3::ipv4::IpProtocol::Tcp if prefix.len() >= 20 => {
-                                (
-                                    u16::from_be_bytes([prefix[0], prefix[1]]),
-                                    u16::from_be_bytes([prefix[2], prefix[3]]),
-                                    prefix[13],
-                                )
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Udp if prefix.len() >= 8 => {
-                                (
-                                    u16::from_be_bytes([prefix[0], prefix[1]]),
-                                    u16::from_be_bytes([prefix[2], prefix[3]]),
-                                    0,
-                                )
-                            }
+                            crate::net::l3::ipv4::IpProtocol::Tcp if prefix.len() >= 20 => (
+                                u16::from_be_bytes([prefix[0], prefix[1]]),
+                                u16::from_be_bytes([prefix[2], prefix[3]]),
+                                prefix[13],
+                            ),
+                            crate::net::l3::ipv4::IpProtocol::Udp if prefix.len() >= 8 => (
+                                u16::from_be_bytes([prefix[0], prefix[1]]),
+                                u16::from_be_bytes([prefix[2], prefix[3]]),
+                                0,
+                            ),
                             crate::net::l3::ipv4::IpProtocol::Icmp if prefix.len() >= 2 => {
                                 (prefix[0] as u16, prefix[1] as u16, 0)
                             }
@@ -974,7 +975,9 @@ impl NetworkEventHandler {
                             _ => {}
                         }
                     }
-                } else if view.total_len() >= 40 && view.first_byte().map(|byte| byte >> 4) == Some(6) {
+                } else if view.total_len() >= 40
+                    && view.first_byte().map(|byte| byte >> 4) == Some(6)
+                {
                     // IPv6
                     if let Some(header_packet) = view.first_segment() {
                         let header = header_packet.data();
@@ -1002,20 +1005,16 @@ impl NetworkEventHandler {
                         let hop_limit = header[7];
 
                         let (src_port, dst_port, tcp_flags) = match protocol {
-                            crate::net::l3::ipv4::IpProtocol::Tcp if prefix.len() >= 20 => {
-                                (
-                                    u16::from_be_bytes([prefix[0], prefix[1]]),
-                                    u16::from_be_bytes([prefix[2], prefix[3]]),
-                                    prefix[13],
-                                )
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Udp if prefix.len() >= 8 => {
-                                (
-                                    u16::from_be_bytes([prefix[0], prefix[1]]),
-                                    u16::from_be_bytes([prefix[2], prefix[3]]),
-                                    0,
-                                )
-                            }
+                            crate::net::l3::ipv4::IpProtocol::Tcp if prefix.len() >= 20 => (
+                                u16::from_be_bytes([prefix[0], prefix[1]]),
+                                u16::from_be_bytes([prefix[2], prefix[3]]),
+                                prefix[13],
+                            ),
+                            crate::net::l3::ipv4::IpProtocol::Udp if prefix.len() >= 8 => (
+                                u16::from_be_bytes([prefix[0], prefix[1]]),
+                                u16::from_be_bytes([prefix[2], prefix[3]]),
+                                0,
+                            ),
                             crate::net::l3::ipv4::IpProtocol::Icmp if prefix.len() >= 2 => {
                                 (prefix[0] as u16, prefix[1] as u16, 0)
                             }
@@ -1048,10 +1047,7 @@ impl NetworkEventHandler {
                                     let transport = PacketPayloadView::new(&transport_payload)
                                         .read_vec(0, transport_payload.total_len());
                                     super::tcp_rx::process_tcp_segment_v6_on(
-                                        if_id,
-                                        src,
-                                        dst,
-                                        &transport,
+                                        if_id, src, dst, &transport,
                                     );
                                 }
                             }
@@ -1311,9 +1307,7 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::TcpBind {
-                result_slot,
-                waker,
-                ..
+                result_slot, waker, ..
             } => {
                 let result = Err(EndpointError::InvalidStateTransition);
                 if let Ok(mut slot) = result_slot.lock() {
@@ -1354,9 +1348,7 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::TcpConnect {
-                result_slot,
-                waker,
-                ..
+                result_slot, waker, ..
             } => {
                 let result = Err(EndpointError::InvalidStateTransition);
                 if let Ok(mut slot) = result_slot.lock() {
@@ -1448,9 +1440,7 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::TcpBindWithToken {
-                result_slot,
-                waker,
-                ..
+                result_slot, waker, ..
             } => {
                 let result = Err(EndpointError::InvalidStateTransition);
                 if let Ok(mut slot) = result_slot.lock() {
@@ -1464,8 +1454,11 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                let result =
-                    self.make_tcp_listener_with_stack(runtime, local, super::inner::EndpointInner::DEFAULT_BACKLOG as u32);
+                let result = self.make_tcp_listener_with_stack(
+                    runtime,
+                    local,
+                    super::inner::EndpointInner::DEFAULT_BACKLOG as u32,
+                );
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -1479,8 +1472,11 @@ impl NetworkEventHandler {
                 waker,
             } => {
                 let _ = token;
-                let result =
-                    self.make_tcp_listener_with_stack(runtime, local, super::inner::EndpointInner::DEFAULT_BACKLOG as u32);
+                let result = self.make_tcp_listener_with_stack(
+                    runtime,
+                    local,
+                    super::inner::EndpointInner::DEFAULT_BACKLOG as u32,
+                );
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -2477,10 +2473,7 @@ impl NetworkEventHandler {
                 // 再組立てパケットを再帰的に処理
                 let _ = src_mac;
                 self.handle_event_with_stack(
-                    NetworkEvent::ReassembledPacket {
-                        if_id,
-                        payload,
-                    },
+                    NetworkEvent::ReassembledPacket { if_id, payload },
                     stack,
                 );
             }
@@ -3136,9 +3129,9 @@ impl NetworkEventHandler {
         }
 
         match self.handle_connect_with_stack(endpoint.fd(), local, remote, stack) {
-            EventHandleResult::Success => Ok(crate::net::l4::tcp::TcpStream::from_endpoint(
-                endpoint,
-            )),
+            EventHandleResult::Success => {
+                Ok(crate::net::l4::tcp::TcpStream::from_endpoint(endpoint))
+            }
             EventHandleResult::ProtocolError(err) => {
                 self.unregister_endpoint(endpoint.fd());
                 Err(tcp_error_from_endpoint_error(err))
@@ -3169,9 +3162,9 @@ impl NetworkEventHandler {
         }
 
         match self.handle_listen(endpoint.fd(), local, backlog) {
-            EventHandleResult::Success => Ok(crate::net::l4::tcp::TcpListener::from_endpoint(
-                endpoint,
-            )),
+            EventHandleResult::Success => {
+                Ok(crate::net::l4::tcp::TcpListener::from_endpoint(endpoint))
+            }
             EventHandleResult::ProtocolError(err) => {
                 self.unregister_endpoint(endpoint.fd());
                 Err(tcp_error_from_endpoint_error(err))
@@ -3803,8 +3796,7 @@ pub mod tests {
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
     use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
     use crate::net::l4::endpoint::{
-        EndpointAddr, EndpointState, create_raw_endpoint, create_tcp_endpoint,
-        create_udp_endpoint,
+        EndpointAddr, EndpointState, create_raw_endpoint, create_tcp_endpoint, create_udp_endpoint,
     };
 
     fn build_ipv4_udp_frame(
@@ -3998,13 +3990,15 @@ pub mod tests {
             let _ = inner.transition_to(EndpointState::Bound);
         }
 
-        let manager = crate::net::l4::endpoint::manager::endpoint_manager()
-            .expect("endpoint manager lock");
+        let manager =
+            crate::net::l4::endpoint::manager::endpoint_manager().expect("endpoint manager lock");
         let guard = manager.read().unwrap_or_else(|e| e.into_inner());
         let manager = guard.as_ref().expect("endpoint manager");
-        assert!(manager
-            .register_raw_scope(crate::net::types::InterfaceScope::Any, raw.fd())
-            .is_ok());
+        assert!(
+            manager
+                .register_raw_scope(crate::net::types::InterfaceScope::Any, raw.fd())
+                .is_ok()
+        );
         drop(guard);
 
         let ingress_if = NetIfId(9);
@@ -4032,8 +4026,7 @@ pub mod tests {
             .expect("raw payload");
         assert_eq!(if_id, ingress_if);
         assert_eq!(
-            crate::net::payload::PacketPayloadView::new(&payload)
-                .read_vec(0, payload.total_len()),
+            crate::net::payload::PacketPayloadView::new(&payload).read_vec(0, payload.total_len()),
             ip_bytes
         );
 

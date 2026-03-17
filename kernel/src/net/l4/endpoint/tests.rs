@@ -309,7 +309,10 @@ pub mod tests {
         if let Some(s) = sock.endpoint() {
             let inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(inner.local_addr.unwrap(), local);
-            assert_eq!(inner.state, crate::net::l4::endpoint::EndpointState::Listening);
+            assert_eq!(
+                inner.state,
+                crate::net::l4::endpoint::EndpointState::Listening
+            );
             assert!(inner.tcp().is_some());
         } else {
             panic!("endpoint not found");
@@ -453,7 +456,11 @@ pub mod tests {
         let any_fd = EndpointFd::from_raw(910);
         let pinned_fd = EndpointFd::from_raw(911);
 
-        assert!(manager.register_raw_scope(InterfaceScope::Any, any_fd).is_ok());
+        assert!(
+            manager
+                .register_raw_scope(InterfaceScope::Any, any_fd)
+                .is_ok()
+        );
         assert!(matches!(
             manager.register_raw_scope(InterfaceScope::Any, pinned_fd),
             Err(EndpointError::ResourceExhausted)
@@ -477,9 +484,11 @@ pub mod tests {
             let _ = inner.transition_to(EndpointState::Bound);
         }
         manager.register(wildcard.clone());
-        assert!(manager
-            .register_raw_scope(InterfaceScope::Any, wildcard.fd())
-            .is_ok());
+        assert!(
+            manager
+                .register_raw_scope(InterfaceScope::Any, wildcard.fd())
+                .is_ok()
+        );
 
         let pinned = Endpoint::new_with_fd(EndpointType::Raw, EndpointFd::from_raw(921));
         {
@@ -489,9 +498,11 @@ pub mod tests {
             let _ = inner.transition_to(EndpointState::Bound);
         }
         manager.register(pinned.clone());
-        assert!(manager
-            .register_raw_scope(InterfaceScope::Pinned(NetIfId(7)), pinned.fd())
-            .is_ok());
+        assert!(
+            manager
+                .register_raw_scope(InterfaceScope::Pinned(NetIfId(7)), pinned.fd())
+                .is_ok()
+        );
 
         assert_eq!(
             manager.find_raw_endpoint(NetIfId(7)).map(|ep| ep.fd()),
@@ -523,16 +534,20 @@ pub mod tests {
             let _ = inner.transition_to(EndpointState::Bound);
         }
 
-        let manager = crate::net::l4::endpoint::manager::endpoint_manager()
-            .expect("endpoint manager lock");
+        let manager =
+            crate::net::l4::endpoint::manager::endpoint_manager().expect("endpoint manager lock");
         let guard = manager.read().unwrap_or_else(|e| e.into_inner());
         let manager = guard.as_ref().expect("endpoint manager");
-        assert!(manager
-            .register_raw_scope(InterfaceScope::Any, raw_any.fd())
-            .is_ok());
-        assert!(manager
-            .register_raw_scope(InterfaceScope::Pinned(NetIfId(12)), raw_pinned.fd())
-            .is_ok());
+        assert!(
+            manager
+                .register_raw_scope(InterfaceScope::Any, raw_any.fd())
+                .is_ok()
+        );
+        assert!(
+            manager
+                .register_raw_scope(InterfaceScope::Pinned(NetIfId(12)), raw_pinned.fd())
+                .is_ok()
+        );
         drop(guard);
 
         let pinned_payload = kernel_api::resource::net::PacketPayload::from_vec(vec![1, 2, 3, 4]);

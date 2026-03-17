@@ -452,11 +452,7 @@ impl Mlx5Device {
             .unwrap_or(0);
         let fallback_tis0 = tisn == 0 && self.tis_list.iter().all(|t| t.tisn != 0);
         let attempts: &[(&str, bool)] = if fallback_tis0 {
-            if self.is_vf() {
-                &[("implicit-tis0", true)]
-            } else {
-                &[("explicit-tis0", false), ("implicit-tis0", true)]
-            }
+            &[("explicit-tis0", false), ("implicit-tis0", true)]
         } else {
             &[("normal", false)]
         };
@@ -489,6 +485,15 @@ impl Mlx5Device {
                 .copy_from_slice(&in_mbox.data[..sq_in_len as usize]);
             match self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10) {
                 Ok(()) => {
+                    if fallback_tis0 {
+                        log::warn!(
+                            target: "mlx5",
+                            "CREATE_SQ accepted with {} fallback on {} (tisn={})",
+                            mode,
+                            if self.is_vf() { "VF" } else { "PF" },
+                            tisn
+                        );
+                    }
                     if cfg!(feature = "debug_mlx5_cmd") {
                         log::info!(
                             target: "mlx5",
@@ -538,7 +543,12 @@ impl Mlx5Device {
         let sqn = parse_create_sq_output(out_mbox);
         if let Err(err) = self.transition_sq_to_ready(sqn) {
             if self.is_vf() {
-                let _ = err;
+                log::warn!(
+                    target: "mlx5",
+                    "MODIFY_SQ to Ready failed on VF for sqn={:#x}; continuing to inspect/query SQ state: {:?}",
+                    sqn,
+                    err
+                );
                 crate::boot_trace("[MLX5_SQ] modify_sq failed on VF; continue\n");
             } else {
                 return Err(err);
@@ -561,6 +571,21 @@ impl Mlx5Device {
                     ctx.wq_type,
                     effective_tisn,
                 );
+                if self.is_vf() {
+                    log::warn!(
+                        target: "mlx5",
+                        "VF QUERY_SQ: sqn={:#x} state={} min_inline={} tis_lst_sz={} tis_num_0={:#x} wq_type={} cqn={:#x} pd={} dbr_addr={:#x}",
+                        sqn,
+                        ctx.state,
+                        ctx.min_wqe_inline_mode,
+                        ctx.tis_lst_sz,
+                        ctx.tis_num_0,
+                        ctx.wq_type,
+                        ctx.cqn,
+                        ctx.pd,
+                        ctx.dbr_addr
+                    );
+                }
                 if cfg!(feature = "debug_mlx5_cmd") {
                     log::info!(
                         target: "mlx5",
@@ -1234,13 +1259,27 @@ impl Mlx5Device {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
+        let mut tried = [false; 16];
         for current_state in [WqState::Reset as u8, WqState::Ready as u8] {
+            tried[current_state as usize] = true;
             build_modify_sq_input(in_mbox, sqn, current_state, WqState::Ready as u8);
             match self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, 0x110, 0x10) {
                 Ok(()) => return Ok(()),
                 Err(err) => last_err = Err(err),
             }
         }
+
+        if let Ok(ctx) = self.query_sq_hw(sqn) {
+            let current_state = ctx.state & 0x0f;
+            if usize::from(current_state) < tried.len() && !tried[current_state as usize] {
+                build_modify_sq_input(in_mbox, sqn, current_state, WqState::Ready as u8);
+                match self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, 0x110, 0x10) {
+                    Ok(()) => return Ok(()),
+                    Err(err) => last_err = Err(err),
+                }
+            }
+        }
+
         last_err
     }
 

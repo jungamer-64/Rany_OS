@@ -200,10 +200,7 @@ impl AsyncWrite for TcpStream {
         }
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), TcpError>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
         if self.pending_send.is_some() {
             match self.as_mut().poll_flush(cx) {
                 Poll::Ready(Ok(())) => {}
@@ -212,7 +209,9 @@ impl AsyncWrite for TcpStream {
             }
         }
 
-        match kernel::instance().net_close_tcp_stream(Self::from_raw_parts(self.id, self.default_scope)) {
+        match kernel::instance()
+            .net_close_tcp_stream(Self::from_raw_parts(self.id, self.default_scope))
+        {
             Ok(()) => Poll::Ready(Ok(())),
             Err(err) => Poll::Ready(Err(tcp_error_from_kapi(err))),
         }
@@ -327,7 +326,9 @@ impl RawEndpoint {
     }
 
     pub async fn send_payload(&self, payload: PacketPayload) -> KapiResult<()> {
-        kernel::instance().net_raw_send_payload(*self, payload).await
+        kernel::instance()
+            .net_raw_send_payload(*self, payload)
+            .await
     }
 
     pub fn close(self) -> KapiResult<()> {

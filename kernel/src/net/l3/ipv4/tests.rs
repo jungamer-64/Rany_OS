@@ -145,13 +145,22 @@ pub fn test_fragment_reassembly_returns_payload_chain() {
             assert_eq!(chain.segments()[1].data(), &payload1);
             assert_eq!(chain.segments()[2].data(), &payload2);
         }
-        other => panic!("expected payload chain, got {:?}", core::mem::discriminant(other)),
+        other => panic!(
+            "expected payload chain, got {:?}",
+            core::mem::discriminant(other)
+        ),
     }
 
-    let bytes = crate::net::payload::PacketPayloadView::new(&payload)
-        .read_vec(0, payload.total_len());
-    assert_eq!(bytes.len(), Ipv4Header::MIN_SIZE + payload1.len() + payload2.len());
-    assert_eq!(&bytes[Ipv4Header::MIN_SIZE..Ipv4Header::MIN_SIZE + payload1.len()], &payload1);
+    let bytes =
+        crate::net::payload::PacketPayloadView::new(&payload).read_vec(0, payload.total_len());
+    assert_eq!(
+        bytes.len(),
+        Ipv4Header::MIN_SIZE + payload1.len() + payload2.len()
+    );
+    assert_eq!(
+        &bytes[Ipv4Header::MIN_SIZE..Ipv4Header::MIN_SIZE + payload1.len()],
+        &payload1
+    );
     assert_eq!(&bytes[Ipv4Header::MIN_SIZE + payload1.len()..], &payload2);
 }
 

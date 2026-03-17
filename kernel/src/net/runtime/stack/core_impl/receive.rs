@@ -58,9 +58,9 @@ impl NetworkStack {
         packet: PacketRef,
         _src_mac: MacAddress,
     ) {
-        let result = self
-            .ipv4
-            .process_with_time_and_packet(data, Some(packet.clone()), current_time);
+        let result =
+            self.ipv4
+                .process_with_time_and_packet(data, Some(packet.clone()), current_time);
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
@@ -737,11 +737,7 @@ impl NetworkStack {
                                         TcpEndpointAddr::new_v6(dst.octets(), dst_port);
 
                                     if !crate::net::l4::endpoint::tcb_table()
-                                        .validate_icmp_sequence(
-                                        local_addr,
-                                        remote_addr,
-                                        seq_num,
-                                    )
+                                        .validate_icmp_sequence(local_addr, remote_addr, seq_num)
                                     {
                                         log::warn!(
                                             "[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq",

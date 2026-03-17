@@ -128,9 +128,11 @@ impl Mlx5Device {
         for attempt in Self::vf_tx_tis_attempt_order() {
             match attempt {
                 TxTisAttemptKind::ReuseExisting => {
-                    match self
-                        .find_existing_tis_strict_match(Self::PF_TIS_REUSE_SCAN_LIMIT, self.td, 0)
-                    {
+                    match self.find_existing_tis_strict_match(
+                        Self::PF_TIS_REUSE_SCAN_LIMIT,
+                        self.td,
+                        0,
+                    ) {
                         Ok(tisn) => {
                             log::warn!(
                                 target: "mlx5",
@@ -147,6 +149,29 @@ impl Mlx5Device {
                             log::warn!(
                                 target: "mlx5",
                                 "No strict-match VF TIS found via QUERY_TIS before CREATE_TIS: {:?}",
+                                err
+                            );
+                        }
+                    }
+
+                    match self.find_existing_tis_matching(Self::PF_TIS_REUSE_SCAN_LIMIT, self.td, 0)
+                    {
+                        Ok(tisn) => {
+                            log::warn!(
+                                target: "mlx5",
+                                "Reusing relaxed-match existing VF TIS {:#x} after strict QUERY_TIS miss",
+                                tisn
+                            );
+                            return TxTisSelection {
+                                kind: TxTisAttemptKind::ReuseExisting,
+                                tisn: self.adopt_external_tis(tisn, &tis_params),
+                                implicit_tis0_fallback: false,
+                            };
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                target: "mlx5",
+                                "No relaxed-match VF TIS candidate found via QUERY_TIS before CREATE_TIS: {:?}",
                                 err
                             );
                         }
@@ -1106,38 +1131,22 @@ impl Mlx5Device {
         self.alloc_pd()?;
         self.alloc_td()?;
 
-        // VF では CREATE_MKEY が拒否される FW があるため、reserved lkey を優先する。
+        // VF では FW 世代によって reserved lkey / CREATE_MKEY の通り方が揺れるため、
+        // まずは明示的な MKEY 作成を self.pd 優先で試し、失敗時のみ reserved lkey に戻す。
         let mut mkey_ok = false;
-        if self.is_vf() {
-            log::info!(target: "mlx5", "Attempting to use reserved lkey for VF first...");
-            match self.query_reserved_lkey() {
-                Ok(lkey) => {
-                    self.mkey = lkey;
-                    mkey_ok = true;
-                    log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x}", lkey);
-                }
-                Err(e) => {
-                    log::warn!(
-                        target: "mlx5",
-                        "[5/8] Reserved lkey query failed, falling back to CREATE_MKEY: {:?}",
-                        e
-                    );
-                }
-            }
-        }
-
         if !mkey_ok {
-            // PF では通常 CREATE_MKEY、VF でも reserved lkey が得られない場合は試行。
-            let mut pd_candidates = if self.is_vf() {
-                vec![0, 1]
-            } else {
-                vec![self.pd, 0, 1]
-            };
+            let mut pd_candidates = vec![self.pd, 0, 1];
             if !pd_candidates.contains(&self.pd) {
                 pd_candidates.push(self.pd);
             }
 
             let mut effective_mkey_params = mkey_params.clone();
+            if self.is_vf() {
+                log::info!(
+                    target: "mlx5",
+                    "Attempting CREATE_MKEY for VF before reserved lkey fallback..."
+                );
+            }
             for &pd_try in &pd_candidates {
                 effective_mkey_params.pd = pd_try;
                 match self.create_mkey(&effective_mkey_params) {
@@ -1159,6 +1168,27 @@ impl Mlx5Device {
             }
         }
 
+        if self.is_vf() && !mkey_ok {
+            log::warn!(
+                target: "mlx5",
+                "[5/8] CREATE_MKEY attempts failed on VF; falling back to reserved lkey"
+            );
+            match self.query_reserved_lkey() {
+                Ok(lkey) => {
+                    self.mkey = lkey;
+                    mkey_ok = true;
+                    log::warn!(target: "mlx5", "[5/8] Using reserved lkey={:#x}", lkey);
+                }
+                Err(e) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "[5/8] Reserved lkey query failed after CREATE_MKEY attempts: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+
         if !mkey_ok {
             return Err(Mlx5Error::CommandFailed(0xff));
         }
@@ -1166,7 +1196,7 @@ impl Mlx5Device {
         self.tx_mkey = self.mkey;
         log::info!(
             target: "mlx5",
-            "[5/8] Using created mkey {:#x} for TX/RX data path",
+            "[5/8] Using TX/RX data path key {:#x}",
             self.tx_mkey
         );
 

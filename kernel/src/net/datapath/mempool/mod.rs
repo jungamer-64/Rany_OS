@@ -13,8 +13,8 @@ use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice as KapiDmaSlice};
-pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketRefStorage, PacketRefVTable};
+pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
 use kernel_api::service::kernel::instance as kernel_instance;
 use x86_64::PhysAddr;
 

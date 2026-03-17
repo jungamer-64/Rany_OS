@@ -330,7 +330,16 @@ impl core::cmp::Ord for EndpointAddr {
         use core::cmp::Ordering;
 
         match (*self, *other) {
-            (EndpointAddr::V4 { ip: lhs_ip, port: lhs_port }, EndpointAddr::V4 { ip: rhs_ip, port: rhs_port }) => {
+            (
+                EndpointAddr::V4 {
+                    ip: lhs_ip,
+                    port: lhs_port,
+                },
+                EndpointAddr::V4 {
+                    ip: rhs_ip,
+                    port: rhs_port,
+                },
+            ) => {
                 let mut i = 0usize;
                 while i < lhs_ip.len() {
                     match lhs_ip[i].cmp(&rhs_ip[i]) {
@@ -341,7 +350,16 @@ impl core::cmp::Ord for EndpointAddr {
                 }
                 lhs_port.cmp(&rhs_port)
             }
-            (EndpointAddr::V6 { ip: lhs_ip, port: lhs_port }, EndpointAddr::V6 { ip: rhs_ip, port: rhs_port }) => {
+            (
+                EndpointAddr::V6 {
+                    ip: lhs_ip,
+                    port: lhs_port,
+                },
+                EndpointAddr::V6 {
+                    ip: rhs_ip,
+                    port: rhs_port,
+                },
+            ) => {
                 let mut i = 0usize;
                 while i < lhs_ip.len() {
                     match lhs_ip[i].cmp(&rhs_ip[i]) {

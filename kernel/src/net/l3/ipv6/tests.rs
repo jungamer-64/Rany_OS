@@ -514,15 +514,8 @@ pub fn test_ipv6_fragment_reassembly_returns_payload_chain() {
     };
     let payload1 = [0x13, 0x37, 0x00, 0x08, 0x99, 0x88, 0x77, 0x66];
     let packet1 = kernel_api::resource::net::PacketRef::from_vec(payload1.to_vec());
-    let (res1, _) = reassembler.process_fragment(
-        src,
-        dst,
-        &unfrag,
-        &frag1_hdr,
-        &payload1,
-        Some(packet1),
-        now,
-    );
+    let (res1, _) =
+        reassembler.process_fragment(src, dst, &unfrag, &frag1_hdr, &payload1, Some(packet1), now);
     assert!(matches!(res1, Ok(None)));
 
     let frag2_hdr = Ipv6FragmentHeader {
@@ -533,15 +526,8 @@ pub fn test_ipv6_fragment_reassembly_returns_payload_chain() {
     };
     let payload2 = [0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xaa, 0xbb];
     let packet2 = kernel_api::resource::net::PacketRef::from_vec(payload2.to_vec());
-    let (res2, _) = reassembler.process_fragment(
-        src,
-        dst,
-        &unfrag,
-        &frag2_hdr,
-        &payload2,
-        Some(packet2),
-        now,
-    );
+    let (res2, _) =
+        reassembler.process_fragment(src, dst, &unfrag, &frag2_hdr, &payload2, Some(packet2), now);
     let payload = res2
         .expect("reassembly should not error")
         .expect("reassembly should complete");
@@ -553,11 +539,14 @@ pub fn test_ipv6_fragment_reassembly_returns_payload_chain() {
             assert_eq!(chain.segments()[1].data(), &payload1);
             assert_eq!(chain.segments()[2].data(), &payload2);
         }
-        other => panic!("expected payload chain, got {:?}", core::mem::discriminant(other)),
+        other => panic!(
+            "expected payload chain, got {:?}",
+            core::mem::discriminant(other)
+        ),
     }
 
-    let bytes = crate::net::payload::PacketPayloadView::new(&payload)
-        .read_vec(0, payload.total_len());
+    let bytes =
+        crate::net::payload::PacketPayloadView::new(&payload).read_vec(0, payload.total_len());
     assert_eq!(bytes.len(), 40 + payload1.len() + payload2.len());
     assert_eq!(&bytes[40..48], &payload1);
     assert_eq!(&bytes[48..56], &payload2);

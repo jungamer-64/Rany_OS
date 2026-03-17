@@ -1052,7 +1052,10 @@ mod tests {
 
     #[test]
     fn kvm_machine_uses_split_irqchip() {
-        assert_eq!(machine_arg_for_accel(FullbootAccel::Kvm), "q35,kernel-irqchip=split");
+        assert_eq!(
+            machine_arg_for_accel(FullbootAccel::Kvm),
+            "q35,kernel-irqchip=split"
+        );
         assert_eq!(machine_arg_for_accel(FullbootAccel::Tcg), "q35");
     }
 }

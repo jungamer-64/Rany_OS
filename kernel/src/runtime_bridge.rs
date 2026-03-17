@@ -477,9 +477,7 @@ impl NetdevPortAdapter {
     fn new(registration: &AbiNetPortRegistration, driver_name: &'static str) -> Self {
         Self {
             registration: *registration,
-            set_interrupts_enabled: registration
-                .as_v2()
-                .map(|v2| v2.set_interrupts_enabled),
+            set_interrupts_enabled: registration.as_v2().map(|v2| v2.set_interrupts_enabled),
             driver_name,
             runtime_state: PoisonLock::new(None),
         }

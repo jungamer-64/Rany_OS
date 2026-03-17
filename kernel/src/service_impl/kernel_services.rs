@@ -34,7 +34,9 @@ fn apply_endpoint_scope(
     inner.scope = stack_scope(scope);
 }
 
-fn endpoint_addr_from_kapi(addr: kernel_api::resource::net::NetSocketAddr) -> crate::net::l4::endpoint::EndpointAddr {
+fn endpoint_addr_from_kapi(
+    addr: kernel_api::resource::net::NetSocketAddr,
+) -> crate::net::l4::endpoint::EndpointAddr {
     match addr {
         kernel_api::resource::net::NetSocketAddr::V4 { ip, port } => {
             crate::net::l4::endpoint::EndpointAddr::new(ip, port)
@@ -59,8 +61,9 @@ fn endpoint_error_to_kapi(error: crate::net::l4::endpoint::EndpointError) -> Kap
 fn tcp_error_to_kapi(error: crate::net::l4::tcp::TcpError) -> KapiError {
     match error {
         crate::net::l4::tcp::TcpError::Timeout => KapiError::Timeout,
-        crate::net::l4::tcp::TcpError::AddressInUse
-        | crate::net::l4::tcp::TcpError::BufferFull => KapiError::ResourceExhausted,
+        crate::net::l4::tcp::TcpError::AddressInUse | crate::net::l4::tcp::TcpError::BufferFull => {
+            KapiError::ResourceExhausted
+        }
         crate::net::l4::tcp::TcpError::PermissionDenied => KapiError::PermissionDenied,
         crate::net::l4::tcp::TcpError::NetworkUnreachable => KapiError::NotFound,
         _ => KapiError::IoError,
@@ -369,7 +372,8 @@ impl KernelServices for ExoKernel {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(listener.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let (accepted, _addr, _if_id) = socket.accept().await.map_err(endpoint_error_to_kapi)?;
+            let (accepted, _addr, _if_id) =
+                socket.accept().await.map_err(endpoint_error_to_kapi)?;
             let endpoint = accepted.into_inner().ok_or(KapiError::NotFound)?;
             let stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(endpoint, false);
             let fd = stream.into_retained_handle();
@@ -385,7 +389,7 @@ impl KernelServices for ExoKernel {
         stream: kernel_api::resource::net::TcpStream,
     ) -> Result<(), KapiError> {
         close_endpoint_handle(crate::net::l4::endpoint::EndpointFd::from_raw(
-            stream.id() as u32,
+            stream.id() as u32
         ))
     }
 

@@ -440,9 +440,10 @@ impl Endpoint {
 
         if pushed > 0 {
             if let (Some(local), Some(remote)) = (local, remote) {
-                let _ = crate::net::l4::endpoint::tcb::tcb_table().lookup_mut(local, remote, |tcb| {
-                    tcb.on_data_received(pushed as u32);
-                });
+                let _ =
+                    crate::net::l4::endpoint::tcb::tcb_table().lookup_mut(local, remote, |tcb| {
+                        tcb.on_data_received(pushed as u32);
+                    });
             }
         }
 
@@ -543,7 +544,10 @@ impl Endpoint {
             return Err(EndpointError::NotConnected);
         }
 
-        if let Some((if_id, payload)) = inner.raw_mut().and_then(|raw| raw.pending_payloads.pop_front()) {
+        if let Some((if_id, payload)) = inner
+            .raw_mut()
+            .and_then(|raw| raw.pending_payloads.pop_front())
+        {
             inner.last_ingress_if_id = Some(if_id);
             return Ok((payload, if_id));
         }
@@ -563,7 +567,10 @@ impl Endpoint {
         let recv_waker = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.last_ingress_if_id = Some(if_id);
-            inner.ensure_raw().pending_payloads.push_back((if_id, payload));
+            inner
+                .ensure_raw()
+                .pending_payloads
+                .push_back((if_id, payload));
             inner.recv_waker.take()
         };
 

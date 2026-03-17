@@ -479,7 +479,8 @@ static HEAP_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
 impl PacketRef {
     pub fn from_vec(data: Vec<u8>) -> Self {
         let mut backing = alloc::vec![0u8; DEFAULT_PACKET_HEADROOM + data.len()].into_boxed_slice();
-        backing[DEFAULT_PACKET_HEADROOM..DEFAULT_PACKET_HEADROOM + data.len()].copy_from_slice(&data);
+        backing[DEFAULT_PACKET_HEADROOM..DEFAULT_PACKET_HEADROOM + data.len()]
+            .copy_from_slice(&data);
         let state = HeapPacketState {
             backing: Arc::new(HeapPacketBacking {
                 data: backing,
@@ -488,9 +489,7 @@ impl PacketRef {
             offset: DEFAULT_PACKET_HEADROOM,
             len: data.len(),
         };
-        unsafe {
-            Self::from_opaque_parts(PacketRefStorage::from_state(state), &HEAP_PACKET_VTABLE)
-        }
+        unsafe { Self::from_opaque_parts(PacketRefStorage::from_state(state), &HEAP_PACKET_VTABLE) }
     }
 }
 
@@ -820,7 +819,7 @@ impl NetSocketAddr {
             Self::V4 { port, .. } | Self::V6 { port, .. } => port,
         }
     }
-    
+
     pub const fn is_ipv6(self) -> bool {
         matches!(self, Self::V6 { .. })
     }

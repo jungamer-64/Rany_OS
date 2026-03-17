@@ -205,7 +205,9 @@ impl NetworkStack {
         original_packet: &PacketPayload,
         current_time: u64,
     ) {
-        let result = self.udp.process_payload_on(if_id, payload, src_ip, dst_ip, ttl);
+        let result = self
+            .udp
+            .process_payload_on(if_id, payload, src_ip, dst_ip, ttl);
 
         match result {
             UdpResult::Delivered => {}
@@ -333,13 +335,15 @@ impl NetworkStack {
     ) {
         use crate::net::l4::udp::UdpResult;
 
-        match self.udp.process_payload_v6_on(if_id, payload, src, dst, hop_limit) {
+        match self
+            .udp
+            .process_payload_v6_on(if_id, payload, src, dst, hop_limit)
+        {
             UdpResult::Delivered => {}
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
-                let original_packet =
-                    crate::net::payload::PacketPayloadView::new(original_packet)
-                        .read_vec(0, original_packet.total_len());
+                let original_packet = crate::net::payload::PacketPayloadView::new(original_packet)
+                    .read_vec(0, original_packet.total_len());
                 self.send_icmpv6_error(src, 4, &original_packet);
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {

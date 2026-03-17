@@ -197,7 +197,6 @@ async fn run_service_supervisor() {
 }
 
 async fn run_service(listener: TcpListener) -> Result<(), TcpError> {
-
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match task::with_timeout(listener.next_connection(), 500).await {

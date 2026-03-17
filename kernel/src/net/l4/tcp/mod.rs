@@ -5,9 +5,9 @@
 
 mod async_traits;
 
-pub use async_traits::*;
 pub use crate::net::l4::endpoint::types::EndpointAddr;
 pub use crate::net::types::Ipv4Addr;
+pub use async_traits::*;
 
 /// TCP state machine values shared with the endpoint TCB table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 use super::NetIfId;
 use super::*;
-use alloc::vec;
 use crate::net::payload::PacketPayloadView;
+use alloc::vec;
 use kernel_api::resource::net::PacketPayload;
 
 mod global_instance;
@@ -314,8 +314,7 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
-        let total_len = IPV6_HEADER_SIZE
-            + u16::from_be_bytes([header[4], header[5]]) as usize;
+        let total_len = IPV6_HEADER_SIZE + u16::from_be_bytes([header[4], header[5]]) as usize;
         if total_len != payload.total_len() {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
@@ -681,7 +680,12 @@ impl NetworkStack {
         false
     }
 
-    pub fn send_tcp(&mut self, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
+    pub fn send_tcp(
+        &mut self,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+    ) -> bool {
         self.send_tcp_raw_scoped_with_ttl(
             crate::net::types::InterfaceScope::Any,
             src_ip,

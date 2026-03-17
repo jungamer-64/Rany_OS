@@ -1,6 +1,6 @@
 use super::*;
-use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
 
 impl Ipv6Processor {
     /// Create a new IPv6 processor
@@ -117,8 +117,8 @@ impl Ipv6Processor {
                     &frag_header,
                     frag_payload,
                     packet_ref.as_ref().and_then(|ip_packet| {
-                        let payload_offset = (frag_payload.as_ptr() as usize)
-                            .checked_sub(data.as_ptr() as usize)?;
+                        let payload_offset =
+                            (frag_payload.as_ptr() as usize).checked_sub(data.as_ptr() as usize)?;
                         let mut payload_packet = ip_packet.clone();
                         payload_packet.advance(payload_offset);
                         payload_packet.set_len(frag_payload.len());
