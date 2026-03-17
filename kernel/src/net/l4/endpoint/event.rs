@@ -17,6 +17,7 @@ use super::types::{EndpointAddr, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
+use kernel_api::resource::net::PacketPayload;
 
 /// ネットワークイベント種別
 #[derive(Debug, Clone)]
@@ -35,7 +36,7 @@ pub enum NetworkEvent {
     /// 再組立てパケット - プロトコルスタックへのオフロード
     ReassembledPacket {
         if_id: Option<NetIfId>,
-        data: Vec<u8>,
+        payload: PacketPayload,
     },
     /// 送信データ準備完了 - プロトコルスタックに送信を要求
     DataReady {

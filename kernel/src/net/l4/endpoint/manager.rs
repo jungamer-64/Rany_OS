@@ -13,6 +13,7 @@ use super::endpoint_core::Endpoint;
 use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
+use kernel_api::resource::net::PacketPayload;
 
 const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
@@ -61,6 +62,7 @@ pub struct EndpointManager {
     endpoints: PoisonRwLock<BTreeMap<EndpointFd, Endpoint>>,
     tcp_ports: PoisonRwLock<BTreeMap<PortBindingKey, EndpointFd>>,
     udp_ports: PoisonRwLock<BTreeMap<PortBindingKey, EndpointFd>>,
+    raw_endpoints: PoisonRwLock<BTreeMap<InterfaceScope, EndpointFd>>,
     next_ephemeral_port: AtomicU32,
 }
 
@@ -70,6 +72,7 @@ impl EndpointManager {
             endpoints: PoisonRwLock::new(BTreeMap::new()),
             tcp_ports: PoisonRwLock::new(BTreeMap::new()),
             udp_ports: PoisonRwLock::new(BTreeMap::new()),
+            raw_endpoints: PoisonRwLock::new(BTreeMap::new()),
             next_ephemeral_port: AtomicU32::new(EPHEMERAL_PORT_START as u32),
         }
     }
@@ -139,8 +142,19 @@ impl EndpointManager {
                             .unwrap_or_else(|e| e.into_inner())
                             .remove(&PortBindingKey::new(family, addr.port(), scope));
                     }
-                    _ => {}
+                    EndpointType::Raw => {
+                        self.raw_endpoints
+                            .write()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&scope);
+                    }
                 }
+            } else if s.socket_type() == EndpointType::Raw {
+                let scope = s.inner().lock().unwrap_or_else(|e| e.into_inner()).scope;
+                self.raw_endpoints
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&scope);
             }
         }
         removed
@@ -176,6 +190,26 @@ impl EndpointManager {
         }
         guard.insert(PortBindingKey::new(family, port, scope), fd);
         Ok(())
+    }
+
+    pub fn register_raw_scope(&self, scope: InterfaceScope, fd: EndpointFd) -> EndpointResult<()> {
+        let mut guard = self.raw_endpoints.write().unwrap_or_else(|e| e.into_inner());
+        if guard.contains_key(&scope) {
+            return Err(EndpointError::ResourceExhausted);
+        }
+        guard.insert(scope, fd);
+        Ok(())
+    }
+
+    pub fn find_raw_endpoint(&self, ingress_if_id: NetIfId) -> Option<Endpoint> {
+        let fd = {
+            let guard = self.raw_endpoints.read().unwrap_or_else(|e| e.into_inner());
+            guard
+                .get(&InterfaceScope::Pinned(ingress_if_id))
+                .copied()
+                .or_else(|| guard.get(&InterfaceScope::Any).copied())
+        }?;
+        self.get(fd)
     }
 
     pub fn find_by_port(
@@ -274,4 +308,20 @@ pub fn find_listening_socket(
     } else {
         None
     }
+}
+
+pub fn deliver_raw_payload(ingress_if_id: NetIfId, payload: PacketPayload) -> bool {
+    let Some(mgr_lock) = endpoint_manager() else {
+        return false;
+    };
+    let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
+    let Some(mgr) = guard.as_ref() else {
+        return false;
+    };
+    let Some(endpoint) = mgr.find_raw_endpoint(ingress_if_id) else {
+        return false;
+    };
+    endpoint
+        .deliver_raw_payload(ingress_if_id, payload)
+        .is_ok()
 }

@@ -205,6 +205,13 @@ impl FullbootAccel {
     }
 }
 
+const fn machine_arg_for_accel(accel: FullbootAccel) -> &'static str {
+    match accel {
+        FullbootAccel::Kvm => "q35,kernel-irqchip=split",
+        FullbootAccel::Tcg => "q35",
+    }
+}
+
 #[must_use]
 pub const fn normalize_qemu_exit_code(host_exit_code: i32) -> Option<u32> {
     match host_exit_code {
@@ -906,7 +913,7 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     );
     qemu_cmd
         .arg("-machine")
-        .arg("q35")
+        .arg(machine_arg_for_accel(accel))
         .arg("-accel")
         .arg(accel.as_str())
         .arg("-cpu")
@@ -1041,5 +1048,11 @@ mod tests {
             select_fullboot_accel(AccelPreference::Tcg, false).unwrap(),
             FullbootAccel::Tcg
         );
+    }
+
+    #[test]
+    fn kvm_machine_uses_split_irqchip() {
+        assert_eq!(machine_arg_for_accel(FullbootAccel::Kvm), "q35,kernel-irqchip=split");
+        assert_eq!(machine_arg_for_accel(FullbootAccel::Tcg), "q35");
     }
 }

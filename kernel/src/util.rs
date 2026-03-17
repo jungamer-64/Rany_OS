@@ -8,6 +8,21 @@
 use alloc::alloc::alloc_zeroed;
 use core::mem;
 use core::ptr::NonNull;
+use spin::Once;
+
+static BOOT_CMDLINE: Once<Option<&'static str>> = Once::new();
+
+pub fn set_boot_cmdline(cmdline: Option<&'static str>) {
+    let _ = BOOT_CMDLINE.call_once(|| cmdline);
+}
+
+pub fn boot_cmdline() -> Option<&'static str> {
+    BOOT_CMDLINE.get().copied().flatten()
+}
+
+pub fn boot_cmdline_option(key: &str) -> Option<&'static str> {
+    boot_cmdline().and_then(|cmdline| get_cmdline_option(cmdline, key))
+}
 
 /// Try to read a value of type T from a byte slice at offset 'offset'.
 /// Returns Some(T) on success, None on bounds/overflow errors.

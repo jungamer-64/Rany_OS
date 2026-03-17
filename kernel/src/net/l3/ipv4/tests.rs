@@ -70,7 +70,7 @@ pub fn test_fragment_reassembly_simple() {
     let payload1 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
     let h1_data = crate::util::struct_as_bytes(&header1);
 
-    let result = reassembler.process_fragment(&header1, h1_data, &payload1, 0);
+    let result = reassembler.process_fragment(&header1, h1_data, &payload1, None, 0);
     assert!(result.0.is_none()); // Not complete yet
 
     // Second fragment (offset 8, last fragment)
@@ -89,12 +89,70 @@ pub fn test_fragment_reassembly_simple() {
     let payload2 = [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
     let h2_data = crate::util::struct_as_bytes(&header2);
 
-    let result = reassembler.process_fragment(&header2, h2_data, &payload2, 0);
+    let result = reassembler.process_fragment(&header2, h2_data, &payload2, None, 0);
     assert!(result.0.is_some()); // Complete!
 
     let reassembled = result.0.unwrap();
-    // Check payload in reassembled packet
-    assert!(reassembled.len() >= 36); // 20 header + 16 payload
+    let bytes = crate::net::payload::PacketPayloadView::new(&reassembled)
+        .read_vec(0, reassembled.total_len());
+    assert!(bytes.len() >= 36); // 20 header + 16 payload
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_fragment_reassembly_returns_payload_chain() {
+    let mut reassembler = FragmentReassembler::new(16);
+
+    let header1 = Ipv4Header {
+        version_ihl: 0x45,
+        dscp_ecn: 0,
+        total_length: [0, 28],
+        identification: [0x00, 0x77],
+        flags_fragment: [0x20, 0x00],
+        ttl: 64,
+        protocol: 17,
+        checksum: [0, 0],
+        src_addr: [10, 1, 0, 1],
+        dst_addr: [10, 1, 0, 2],
+    };
+    let payload1 = [0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04];
+    let h1_data = crate::util::struct_as_bytes(&header1);
+    let packet1 = kernel_api::resource::net::PacketRef::from_vec(payload1.to_vec());
+    let result = reassembler.process_fragment(&header1, h1_data, &payload1, Some(packet1), 0);
+    assert!(result.0.is_none());
+
+    let header2 = Ipv4Header {
+        version_ihl: 0x45,
+        dscp_ecn: 0,
+        total_length: [0, 28],
+        identification: [0x00, 0x77],
+        flags_fragment: [0x00, 0x01],
+        ttl: 64,
+        protocol: 17,
+        checksum: [0, 0],
+        src_addr: [10, 1, 0, 1],
+        dst_addr: [10, 1, 0, 2],
+    };
+    let payload2 = [0x05, 0x06, 0x07, 0x08, 0xaa, 0xbb, 0xcc, 0xdd];
+    let h2_data = crate::util::struct_as_bytes(&header2);
+    let packet2 = kernel_api::resource::net::PacketRef::from_vec(payload2.to_vec());
+    let result = reassembler.process_fragment(&header2, h2_data, &payload2, Some(packet2), 0);
+    let payload = result.0.expect("reassembly should complete");
+
+    match &payload {
+        kernel_api::resource::net::PacketPayload::Chain(chain) => {
+            assert_eq!(chain.segments().len(), 3);
+            assert_eq!(chain.segments()[0].len(), Ipv4Header::MIN_SIZE);
+            assert_eq!(chain.segments()[1].data(), &payload1);
+            assert_eq!(chain.segments()[2].data(), &payload2);
+        }
+        other => panic!("expected payload chain, got {:?}", core::mem::discriminant(other)),
+    }
+
+    let bytes = crate::net::payload::PacketPayloadView::new(&payload)
+        .read_vec(0, payload.total_len());
+    assert_eq!(bytes.len(), Ipv4Header::MIN_SIZE + payload1.len() + payload2.len());
+    assert_eq!(&bytes[Ipv4Header::MIN_SIZE..Ipv4Header::MIN_SIZE + payload1.len()], &payload1);
+    assert_eq!(&bytes[Ipv4Header::MIN_SIZE + payload1.len()..], &payload2);
 }
 
 #[cfg_attr(test, test_case)]
@@ -163,7 +221,7 @@ pub fn test_fragment_overflow_rejected() {
     let payload = vec![0u8; (FragmentBuffer::MAX_DATAGRAM_SIZE + 1) as usize];
     // fragment_offset bytes = 0
     assert!(
-        !buffer.add_fragment(&header, &payload, 0),
+        !buffer.add_fragment(&header, &payload, None, 0),
         "overflow should be rejected"
     );
 }
@@ -186,7 +244,7 @@ pub fn test_fragment_overlap_detection() {
     };
     let p1 = [0u8; 8];
     let h1_data = crate::util::struct_as_bytes(&hdr1);
-    let result = reassembler.process_fragment(&hdr1, h1_data, &p1, 0);
+    let result = reassembler.process_fragment(&hdr1, h1_data, &p1, None, 0);
     assert!(result.0.is_none());
 
     // second fragment overlaps first (offset 0)
@@ -197,7 +255,7 @@ pub fn test_fragment_overlap_detection() {
     // offset field still 0 (means overlap)
     let p2 = [0u8; 8];
     let h2_data = crate::util::struct_as_bytes(&hdr2);
-    let result2 = reassembler.process_fragment(&hdr2, h2_data, &p2, 0);
+    let result2 = reassembler.process_fragment(&hdr2, h2_data, &p2, None, 0);
     // reassembler should drop buffer and return None
     assert!(result2.0.is_none());
     // buffer map should be empty now
@@ -229,7 +287,7 @@ pub fn test_fragment_hole_exhaustion() {
             off_val as u8,
         ];
         let payload = [0u8; 8];
-        let accepted = buffer.add_fragment(&hdr, &payload, 0);
+        let accepted = buffer.add_fragment(&hdr, &payload, None, 0);
         if i as usize > FragmentBuffer::MAX_HOLES {
             assert!(!accepted, "should start rejecting after hole limit");
             break;
@@ -261,7 +319,7 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
 
     let payload1 = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
 
-    let result = reassembler.process_fragment(&header1, &h1_full, &payload1, 0);
+    let result = reassembler.process_fragment(&header1, &h1_full, &payload1, None, 0);
     assert!(result.0.is_none());
 
     // Second fragment (offset 8, last fragment)
@@ -280,13 +338,15 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
     let payload2 = [0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10];
     let h2_data = crate::util::struct_as_bytes(&header2);
 
-    let result = reassembler.process_fragment(&header2, h2_data, &payload2, 0);
+    let result = reassembler.process_fragment(&header2, h2_data, &payload2, None, 0);
     assert!(result.0.is_some());
 
     let reassembled = result.0.unwrap();
 
     // Parse the reassembled packet
-    if let Some(packet) = Ipv4Packet::parse(&reassembled) {
+    let reassembled_bytes = crate::net::payload::PacketPayloadView::new(&reassembled)
+        .read_vec(0, reassembled.total_len());
+    if let Some(packet) = Ipv4Packet::parse(&reassembled_bytes) {
         assert_eq!(packet.header().ihl(), 6);
         assert_eq!(packet.header().header_len(), 24);
 

@@ -374,7 +374,7 @@ impl NetworkStack {
         }
     }
 
-    fn resolve_ndp_for_send<F>(
+    pub(crate) fn resolve_ndp_for_send<F>(
         &mut self,
         if_id: Option<super::NetIfId>,
         dst: &Ipv6Address,

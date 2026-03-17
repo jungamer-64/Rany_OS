@@ -111,6 +111,10 @@ pub struct Mlx5Device {
     pub(crate) polling_state: AdaptivePollingState,
     pub(crate) health_monitor: HealthMonitor,
     pub(crate) allocated_uars: Vec<u32>,
+    pub(crate) tx_path_enabled: bool,
+    pub(crate) tx_probe_pending: bool,
+    pub(crate) tx_probe_verified: bool,
+    pub(crate) tx_implicit_tis0_fallback: bool,
 }
 
 // Types moved to crate::flow
@@ -202,6 +206,10 @@ impl Mlx5Device {
             polling_state: AdaptivePollingState::with_defaults(),
             health_monitor: HealthMonitor::new(),
             allocated_uars: Vec::new(),
+            tx_path_enabled: false,
+            tx_probe_pending: false,
+            tx_probe_verified: false,
+            tx_implicit_tis0_fallback: false,
         }
     }
 
@@ -295,12 +303,66 @@ impl Mlx5Device {
         self.pci_function = function;
     }
 
+    pub fn pci_location(&self) -> (u16, u8, u8, u8) {
+        (
+            self.pci_segment,
+            self.pci_bus,
+            self.pci_device,
+            self.pci_function,
+        )
+    }
+
     pub fn num_rqs(&self) -> usize {
         self.rqs.len()
     }
 
     pub fn num_sqs(&self) -> usize {
         self.sqs.len()
+    }
+
+    pub fn tx_path_enabled(&self) -> bool {
+        self.tx_path_enabled
+    }
+
+    pub fn tx_uses_implicit_tis0(&self) -> bool {
+        self.tx_implicit_tis0_fallback
+    }
+
+    pub fn tx_is_runtime_healthy(&self) -> bool {
+        self.tx_path_enabled && (!self.tx_probe_pending || self.tx_probe_verified)
+    }
+
+    pub(crate) fn set_tx_runtime_state(
+        &mut self,
+        tx_path_enabled: bool,
+        implicit_tis0_fallback: bool,
+    ) {
+        self.tx_path_enabled = tx_path_enabled;
+        self.tx_implicit_tis0_fallback = tx_path_enabled && implicit_tis0_fallback;
+        self.tx_probe_pending = tx_path_enabled && self.is_vf();
+        self.tx_probe_verified = tx_path_enabled && !self.tx_probe_pending;
+    }
+
+    pub fn mark_tx_runtime_probe_success(&mut self) -> bool {
+        if !self.tx_path_enabled || !self.tx_probe_pending {
+            return false;
+        }
+
+        self.tx_probe_pending = false;
+        self.tx_probe_verified = true;
+        true
+    }
+
+    pub fn mark_tx_runtime_broken(&mut self) -> bool {
+        let changed = self.tx_path_enabled
+            || self.tx_probe_pending
+            || self.tx_probe_verified
+            || self.tx_implicit_tis0_fallback;
+        self.tx_path_enabled = false;
+        self.tx_probe_pending = false;
+        self.tx_probe_verified = false;
+        self.tx_implicit_tis0_fallback = false;
+        changed
     }
 
     pub fn tx_cq_index_for_sq(&self, sq_index: usize) -> Option<usize> {
@@ -612,6 +674,35 @@ impl Mlx5Device {
             | (self.pci_function as u16);
         let masked = raw & 0x3fff;
         if masked == 0 { 1 } else { masked }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mlx5Device;
+
+    #[test]
+    fn tx_runtime_probe_requires_completion_before_healthy() {
+        let mut device = Mlx5Device::new(0, 0, 0x1013);
+        device.set_tx_runtime_state(true, true);
+
+        assert!(device.tx_path_enabled());
+        assert!(device.tx_uses_implicit_tis0());
+        assert!(!device.tx_is_runtime_healthy());
+
+        assert!(device.mark_tx_runtime_probe_success());
+        assert!(device.tx_is_runtime_healthy());
+    }
+
+    #[test]
+    fn tx_runtime_probe_failure_marks_path_unavailable() {
+        let mut device = Mlx5Device::new(0, 0, 0x1013);
+        device.set_tx_runtime_state(true, true);
+
+        assert!(device.mark_tx_runtime_broken());
+        assert!(!device.tx_path_enabled());
+        assert!(!device.tx_uses_implicit_tis0());
+        assert!(!device.tx_is_runtime_healthy());
     }
 }
 

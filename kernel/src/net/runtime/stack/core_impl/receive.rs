@@ -8,6 +8,15 @@
 
 use super::*;
 
+#[inline]
+fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
+    let base = container.as_ptr() as usize;
+    let sub = subslice.as_ptr() as usize;
+    let end = base.checked_add(container.len())?;
+    let sub_end = sub.checked_add(subslice.len())?;
+    (sub >= base && sub_end <= end).then_some(sub - base)
+}
+
 impl NetworkStack {
     /// Process an incoming packet (main entry point)
     /// Receive a packet from the network
@@ -49,7 +58,9 @@ impl NetworkStack {
         packet: PacketRef,
         _src_mac: MacAddress,
     ) {
-        let result = self.ipv4.process_with_time(data, current_time);
+        let result = self
+            .ipv4
+            .process_with_time_and_packet(data, Some(packet.clone()), current_time);
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
@@ -107,15 +118,16 @@ impl NetworkStack {
                     },
                 );
             }
-            Ipv4ProcessResult::Reassembled(reassembled_data) => {
+            Ipv4ProcessResult::Reassembled(payload) => {
                 // Security Fix: Offload reassembled packets to the asynchronous endpoint stack
                 // instead of processing them directly. This ensures fragmented packets are
                 // handled by the same stack as normal packets, preventing DoS and state bypass.
 
                 // We perform basic filtering here as well
-                if let Some(packet) = Ipv4Packet::parse(&reassembled_data) {
-                    let dst = packet.destination();
-                    if packet.protocol() == IpProtocol::Tcp
+                let view = crate::net::payload::PacketPayloadView::new(&payload);
+                if let Some(header) = view.read_array::<20>(0) {
+                    let dst = Ipv4Address::new([header[16], header[17], header[18], header[19]]);
+                    if IpProtocol::from(header[9]) == IpProtocol::Tcp
                         && (dst.is_multicast()
                             || dst.is_broadcast()
                             || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
@@ -129,7 +141,7 @@ impl NetworkStack {
                 crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
                         if_id: None,
-                        data: reassembled_data,
+                        payload,
                     },
                 );
             }
@@ -362,29 +374,39 @@ impl NetworkStack {
         current_time: u64,
         src_mac: MacAddress,
         _reassembled: bool,
+        ip_packet: Option<PacketRef>,
     ) {
         let result = if let Some(if_id) = if_id {
             if let Some(state) = self.interfaces.get_mut(&if_id) {
                 if let Some(ref mut ipv6) = state.ipv6 {
-                    ipv6.process(data, current_time)
+                    ipv6.process_with_packet(data, current_time, ip_packet.clone())
                 } else if let Some(ref mut ipv6) = self.ipv6 {
-                    ipv6.process(data, current_time)
+                    ipv6.process_with_packet(data, current_time, ip_packet.clone())
                 } else {
                     return;
                 }
             } else if let Some(ref mut ipv6) = self.ipv6 {
-                ipv6.process(data, current_time)
+                ipv6.process_with_packet(data, current_time, ip_packet.clone())
             } else {
                 return;
             }
         } else if let Some(ref mut ipv6) = self.ipv6 {
-            ipv6.process(data, current_time)
+            ipv6.process_with_packet(data, current_time, ip_packet.clone())
         } else {
             return;
         };
 
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
+                let ingress_if_id = self.resolve_ingress_if(if_id);
+                if let Some(packet) = ip_packet.clone() {
+                    if crate::net::l4::endpoint::manager::deliver_raw_payload(
+                        ingress_if_id,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    ) {
+                        return;
+                    }
+                }
                 self.process_icmpv6_data(
                     if_id,
                     payload,
@@ -396,19 +418,53 @@ impl NetworkStack {
                 );
             }
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
+                let ingress_if_id = self.resolve_ingress_if(if_id);
+                if let Some(packet) = ip_packet.clone() {
+                    if crate::net::l4::endpoint::manager::deliver_raw_payload(
+                        ingress_if_id,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    ) {
+                        return;
+                    }
+                }
                 crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_on(
                     if_id, src, dst, payload,
                 );
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
-                self.process_udp_data_v6(if_id, payload, src, dst, hop_limit, data);
+                let ingress_if_id = self.resolve_ingress_if(if_id);
+                if let Some(packet) = ip_packet.clone() {
+                    if crate::net::l4::endpoint::manager::deliver_raw_payload(
+                        ingress_if_id,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    ) {
+                        return;
+                    }
+                }
+                let udp_segment_packet = ip_packet.as_ref().and_then(|ip_packet| {
+                    subslice_offset(data, payload).map(|offset| {
+                        let mut udp_packet = ip_packet.clone();
+                        udp_packet.advance(offset);
+                        udp_packet.set_len(payload.len());
+                        udp_packet
+                    })
+                });
+                self.process_udp_data_v6(
+                    if_id,
+                    payload,
+                    src,
+                    dst,
+                    hop_limit,
+                    data,
+                    udp_segment_packet,
+                );
             }
-            Ipv6ProcessResult::Reassembled(reassembled_data) => {
+            Ipv6ProcessResult::Reassembled(payload) => {
                 // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
                 crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
                         if_id,
-                        data: reassembled_data,
+                        payload,
                     },
                 );
             }

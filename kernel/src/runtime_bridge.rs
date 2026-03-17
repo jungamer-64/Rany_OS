@@ -465,6 +465,7 @@ extern "C" fn runtime_log(runtime_cookie: u64, level: u32, msg_ptr: *const u8, m
 
 struct NetdevPortAdapter {
     registration: AbiNetPortRegistration,
+    set_interrupts_enabled: Option<extern "C" fn(opaque: u64, enabled: bool) -> i32>,
     driver_name: &'static str,
     runtime_state: PoisonLock<Option<Box<NetRuntimeState>>>,
 }
@@ -473,9 +474,12 @@ unsafe impl Send for NetdevPortAdapter {}
 unsafe impl Sync for NetdevPortAdapter {}
 
 impl NetdevPortAdapter {
-    fn new(registration: AbiNetPortRegistration, driver_name: &'static str) -> Self {
+    fn new(registration: &AbiNetPortRegistration, driver_name: &'static str) -> Self {
         Self {
-            registration,
+            registration: *registration,
+            set_interrupts_enabled: registration
+                .as_v2()
+                .map(|v2| v2.set_interrupts_enabled),
             driver_name,
             runtime_state: PoisonLock::new(None),
         }
@@ -556,6 +560,22 @@ impl NetDevicePort for NetdevPortAdapter {
             Ok(())
         } else {
             Err("standalone netdev tx failed")
+        }
+    }
+
+    fn set_interrupts_enabled(&self, enabled: bool) -> Result<(), &'static str> {
+        let Some(setter) = self.set_interrupts_enabled else {
+            return if enabled {
+                Ok(())
+            } else {
+                Err("standalone netdev interrupt suppression unsupported")
+            };
+        };
+        let status = setter(self.registration.opaque, enabled);
+        if AbiErrorCode::from_raw(status).is_success() {
+            Ok(())
+        } else {
+            Err("standalone netdev interrupt toggle failed")
         }
     }
 
@@ -653,7 +673,7 @@ impl NetdevBridgeRegistry {
         };
 
         let name = leak_driver_name(&registration.info);
-        let adapter: Arc<dyn NetDevicePort> = Arc::new(NetdevPortAdapter::new(*registration, name));
+        let adapter: Arc<dyn NetDevicePort> = Arc::new(NetdevPortAdapter::new(registration, name));
         let if_id = net_device_runtime::register_port_with_default_config(key, adapter, true)
             .map_err(|_| AbiErrorCode::IoError)?;
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
@@ -868,6 +888,7 @@ pub fn standalone_nvme_namespace_info(namespace_id: u32) -> Option<AbiNvmeNamesp
 mod tests {
     use super::*;
     use crate::domain_system::DomainId;
+    use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     extern "C" fn test_block_submit(
         _opaque: u64,
@@ -932,6 +953,102 @@ mod tests {
 
     extern "C" fn test_audio_disable_irq(_opaque: u64) -> i32 {
         AbiErrorCode::Success as i32
+    }
+
+    static TEST_NET_INTERRUPT_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static TEST_NET_INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
+
+    extern "C" fn test_net_start(_opaque: u64, _runtime: *const AbiNetPortRuntimeV1) -> i32 {
+        AbiErrorCode::Success as i32
+    }
+
+    extern "C" fn test_net_bind(_opaque: u64, _if_id: u16) -> i32 {
+        AbiErrorCode::Success as i32
+    }
+
+    extern "C" fn test_net_submit_tx(
+        _opaque: u64,
+        _data_ptr: *const u8,
+        _data_len: usize,
+        _meta: AbiNetTxMeta,
+    ) -> i32 {
+        AbiErrorCode::Success as i32
+    }
+
+    extern "C" fn test_net_poll(_opaque: u64, _if_id: u16) -> i32 {
+        AbiErrorCode::Success as i32
+    }
+
+    extern "C" fn test_net_handle_event(
+        _opaque: u64,
+        _if_id: u16,
+        _event: AbiNetDriverEvent,
+    ) -> i32 {
+        AbiErrorCode::Success as i32
+    }
+
+    extern "C" fn test_net_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 {
+        if out.is_null() {
+            return AbiErrorCode::InvalidParam as i32;
+        }
+        unsafe {
+            *out = AbiNetPortStats::default();
+        }
+        AbiErrorCode::Success as i32
+    }
+
+    extern "C" fn test_net_stop(_opaque: u64) {}
+
+    extern "C" fn test_net_set_interrupts_enabled(_opaque: u64, enabled: bool) -> i32 {
+        TEST_NET_INTERRUPT_CALLS.fetch_add(1, Ordering::Relaxed);
+        TEST_NET_INTERRUPTS_ENABLED.store(enabled, Ordering::Release);
+        AbiErrorCode::Success as i32
+    }
+
+    fn test_net_info(kind: AbiNetPortKind, port_index: u16) -> AbiNetPortInfo {
+        AbiNetPortInfo {
+            port_id: 0x9000 + port_index as u64,
+            kind: kind as u32,
+            queue_pairs: 1,
+            port_index,
+            mtu: 1500,
+            flags: 0,
+            mac: [0x02, 0, 0, 0, 0, port_index as u8],
+            _padding0: [0; 2],
+            name_ptr: core::ptr::null(),
+            name_len: 0,
+        }
+    }
+
+    fn test_net_registration(port_index: u16) -> AbiNetPortRegistration {
+        AbiNetPortRegistration::new(
+            test_net_info(AbiNetPortKind::Virtio, port_index),
+            0,
+            test_net_start,
+            test_net_bind,
+            test_net_submit_tx,
+            test_net_poll,
+            test_net_handle_event,
+            test_net_stats,
+            test_net_stop,
+        )
+    }
+
+    fn test_net_registration_v2(
+        port_index: u16,
+    ) -> kernel_api::abi::driver::AbiNetPortRegistrationV2 {
+        kernel_api::abi::driver::AbiNetPortRegistrationV2::new(
+            test_net_info(AbiNetPortKind::Virtio, port_index),
+            0,
+            test_net_start,
+            test_net_bind,
+            test_net_submit_tx,
+            test_net_poll,
+            test_net_handle_event,
+            test_net_stats,
+            test_net_stop,
+            test_net_set_interrupts_enabled,
+        )
     }
 
     fn test_block_registration(device_id: u64, namespace_id: u32) -> AbiBlockDeviceRegistration {
@@ -1046,5 +1163,36 @@ mod tests {
         );
         registry.cleanup_owner(owner);
         assert!(registry.devices().is_empty());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn netdev_adapter_v1_rejects_interrupt_suppression() {
+        let registration = test_net_registration(1);
+        let adapter = NetdevPortAdapter::new(&registration, "test-net");
+
+        assert_eq!(
+            adapter.set_interrupts_enabled(false),
+            Err("standalone netdev interrupt suppression unsupported")
+        );
+        assert_eq!(adapter.set_interrupts_enabled(true), Ok(()));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn netdev_adapter_v2_invokes_interrupt_toggle_callback() {
+        TEST_NET_INTERRUPT_CALLS.store(0, Ordering::Relaxed);
+        TEST_NET_INTERRUPTS_ENABLED.store(true, Ordering::Release);
+
+        let registration_v2 = test_net_registration_v2(2);
+        let registration = unsafe {
+            &*((&registration_v2 as *const kernel_api::abi::driver::AbiNetPortRegistrationV2)
+                .cast::<AbiNetPortRegistration>())
+        };
+        let adapter = NetdevPortAdapter::new(registration, "test-net");
+
+        assert_eq!(adapter.set_interrupts_enabled(false), Ok(()));
+        assert_eq!(TEST_NET_INTERRUPT_CALLS.load(Ordering::Relaxed), 1);
+        assert!(!TEST_NET_INTERRUPTS_ENABLED.load(Ordering::Acquire));
     }
 }

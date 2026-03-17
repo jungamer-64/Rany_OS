@@ -17,6 +17,20 @@ use alloc::vec; // bring `vec!` macro into scope for candidate lists
 use alloc::vec::Vec;
 // unused MkeyParams removed
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxTisAttemptKind {
+    ReuseExisting,
+    CreateTis,
+    ImplicitTis0,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TxTisSelection {
+    kind: TxTisAttemptKind,
+    tisn: u32,
+    implicit_tis0_fallback: bool,
+}
+
 impl Mlx5Device {
     const PF_TIS_REUSE_SCAN_LIMIT: u32 = 4096;
     const PF_SQ_TIS_SCAN_LIMIT: u32 = 64;
@@ -54,6 +68,122 @@ impl Mlx5Device {
                     && caps.max_sq <= 1
             })
             .unwrap_or(false)
+    }
+
+    const fn vf_tx_tis_attempt_order() -> [TxTisAttemptKind; 3] {
+        [
+            TxTisAttemptKind::ReuseExisting,
+            TxTisAttemptKind::CreateTis,
+            TxTisAttemptKind::ImplicitTis0,
+        ]
+    }
+
+    unsafe fn log_port_state_before_tis_selection(&mut self, label: &str) {
+        if self.is_vf() {
+            crate::boot_trace("[MLX5_STAGE] pre_tis_port_admin_up_vf\n");
+        } else {
+            crate::boot_trace("[MLX5_STAGE] pre_tis_port_admin_up_pf\n");
+        }
+
+        match self.set_port_admin_up(0) {
+            Ok(()) => match self.query_port_state(0) {
+                Ok(state) => {
+                    log::info!(
+                        target: "mlx5",
+                        "{} port link state before TX object selection: {:?}",
+                        label,
+                        state
+                    );
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "mlx5",
+                        "Failed to query {} port state before TX object selection: {:?}",
+                        label,
+                        err
+                    );
+                }
+            },
+            Err(err) => {
+                log::warn!(
+                    target: "mlx5",
+                    "{} pre-TIS admin-up failed; continuing TX object selection: {:?}",
+                    label,
+                    err
+                );
+            }
+        }
+    }
+
+    unsafe fn select_vf_tis_for_tx(&mut self) -> TxTisSelection {
+        let tis_params = crate::resources::TisParams {
+            pd: self.pd,
+            td: self.td,
+            port: 1,
+            prio: 0,
+        };
+
+        self.log_port_state_before_tis_selection("VF");
+
+        for attempt in Self::vf_tx_tis_attempt_order() {
+            match attempt {
+                TxTisAttemptKind::ReuseExisting => {
+                    match self
+                        .find_existing_tis_strict_match(Self::PF_TIS_REUSE_SCAN_LIMIT, self.td, 0)
+                    {
+                        Ok(tisn) => {
+                            log::warn!(
+                                target: "mlx5",
+                                "Reusing strict-match existing VF TIS {:#x} before CREATE_TIS",
+                                tisn
+                            );
+                            return TxTisSelection {
+                                kind: TxTisAttemptKind::ReuseExisting,
+                                tisn: self.adopt_external_tis(tisn, &tis_params),
+                                implicit_tis0_fallback: false,
+                            };
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                target: "mlx5",
+                                "No strict-match VF TIS found via QUERY_TIS before CREATE_TIS: {:?}",
+                                err
+                            );
+                        }
+                    }
+                }
+                TxTisAttemptKind::CreateTis => match self.create_tis(&tis_params) {
+                    Ok(tisn) => {
+                        return TxTisSelection {
+                            kind: TxTisAttemptKind::CreateTis,
+                            tisn,
+                            implicit_tis0_fallback: false,
+                        };
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            target: "mlx5",
+                            "CREATE_TIS failed on VF; keeping implicit TIS=0 as last-resort fallback: {:?}",
+                            err
+                        );
+                    }
+                },
+                TxTisAttemptKind::ImplicitTis0 => {
+                    crate::boot_trace("[MLX5_STAGE] create_tis_use_implicit_tis0_vf\n");
+                    log::warn!(
+                        target: "mlx5",
+                        "VF TX bring-up falling back to implicit TIS=0 after reusable/create TIS attempts"
+                    );
+                    return TxTisSelection {
+                        kind: TxTisAttemptKind::ImplicitTis0,
+                        tisn: 0,
+                        implicit_tis0_fallback: true,
+                    };
+                }
+            }
+        }
+
+        unreachable!("VF TX TIS attempt order always terminates with implicit TIS=0 fallback");
     }
 
     unsafe fn adopt_external_tis(
@@ -1046,43 +1176,14 @@ impl Mlx5Device {
         let mut tx_using_fallback_tis0 = false;
         let mut tx_oracle_tisn = None;
         crate::boot_trace("[MLX5_STAGE] create_tis_enter\n");
+        let mut vf_tis_selection_kind = TxTisAttemptKind::CreateTis;
         let tisn = if self.is_vf() {
-            // On several VF firmware variants (including CX4-Lx SR-IOV),
-            // CREATE_TIS is rejected but SQ can still run with implicit TIS=0.
-            // Skip noisy retries and activate the proven fallback directly.
-            log::warn!(
-                target: "mlx5",
-                "Skipping CREATE_TIS on VF; using TX fallback with implicit TIS=0"
-            );
-            tx_using_fallback_tis0 = true;
-            0
+            let selection = self.select_vf_tis_for_tx();
+            vf_tis_selection_kind = selection.kind;
+            tx_using_fallback_tis0 = selection.implicit_tis0_fallback;
+            selection.tisn
         } else {
-            crate::boot_trace("[MLX5_STAGE] pre_tis_port_admin_up_pf\n");
-            match self.set_port_admin_up(0) {
-                Ok(()) => match self.query_port_state(0) {
-                    Ok(state) => {
-                        log::info!(
-                            target: "mlx5",
-                            "PF port link state before CREATE_TIS: {:?}",
-                            state
-                        );
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            target: "mlx5",
-                            "Failed to query PF port state before CREATE_TIS: {:?}",
-                            err
-                        );
-                    }
-                },
-                Err(err) => {
-                    log::warn!(
-                        target: "mlx5",
-                        "PF pre-TIS admin-up failed; continuing TIS probe anyway: {:?}",
-                        err
-                    );
-                }
-            }
+            self.log_port_state_before_tis_selection("PF");
             let tis_params = crate::resources::TisParams {
                 pd: self.pd,
                 td: self.td,
@@ -1189,6 +1290,7 @@ impl Mlx5Device {
             }
         };
         crate::boot_trace("[MLX5_STAGE] create_tis_done\n");
+        let mut active_vf_tisn = tisn;
 
         // Phase 4: Queues
         let mut eqns = Vec::new();
@@ -1243,15 +1345,95 @@ impl Mlx5Device {
             for (i, sq_buf) in sq_bufs.iter().take(sq_queue_count).enumerate() {
                 let cqn = tx_cqns[i % tx_cqns.len()];
                 let sq_result = if self.is_vf() {
-                    self.create_sq_hw(
+                    let tis_params = crate::resources::TisParams {
+                        pd: self.pd,
+                        td: self.td,
+                        port: 1,
+                        prio: 0,
+                    };
+                    match self.create_sq_hw(
                         sq_buf.0,
                         sq_buf.1,
                         sq_buf.2,
                         sq_buf.3,
                         log_sq_size,
                         cqn,
-                        tisn,
-                    )
+                        active_vf_tisn,
+                    ) {
+                        Ok(sqn) => Ok(sqn),
+                        Err(err)
+                            if active_vf_tisn != 0
+                                && !tx_using_fallback_tis0
+                                && matches!(
+                                    vf_tis_selection_kind,
+                                    TxTisAttemptKind::ReuseExisting
+                                ) =>
+                        {
+                            log::warn!(
+                                target: "mlx5",
+                                "CREATE_SQ rejected reused VF TIS {:#x}; trying CREATE_TIS before implicit TIS=0 fallback: {:?}",
+                                active_vf_tisn,
+                                err
+                            );
+                            match self.create_tis(&tis_params) {
+                                Ok(created_tisn) => {
+                                    active_vf_tisn = created_tisn;
+                                    vf_tis_selection_kind = TxTisAttemptKind::CreateTis;
+                                    self.create_sq_hw(
+                                        sq_buf.0,
+                                        sq_buf.1,
+                                        sq_buf.2,
+                                        sq_buf.3,
+                                        log_sq_size,
+                                        cqn,
+                                        active_vf_tisn,
+                                    )
+                                }
+                                Err(create_tis_err) => {
+                                    crate::boot_trace("[MLX5_STAGE] vf_sq_use_implicit_tis0\n");
+                                    log::warn!(
+                                        target: "mlx5",
+                                        "CREATE_TIS also failed after reused VF TIS rejection; retrying with implicit TIS=0 fallback: {:?}",
+                                        create_tis_err
+                                    );
+                                    active_vf_tisn = 0;
+                                    vf_tis_selection_kind = TxTisAttemptKind::ImplicitTis0;
+                                    tx_using_fallback_tis0 = true;
+                                    self.create_sq_hw(
+                                        sq_buf.0,
+                                        sq_buf.1,
+                                        sq_buf.2,
+                                        sq_buf.3,
+                                        log_sq_size,
+                                        cqn,
+                                        active_vf_tisn,
+                                    )
+                                }
+                            }
+                        }
+                        Err(err) if active_vf_tisn != 0 && !tx_using_fallback_tis0 => {
+                            crate::boot_trace("[MLX5_STAGE] vf_sq_use_implicit_tis0\n");
+                            log::warn!(
+                                target: "mlx5",
+                                "CREATE_SQ rejected VF TIS {:#x}; retrying with implicit TIS=0 fallback: {:?}",
+                                active_vf_tisn,
+                                err
+                            );
+                            active_vf_tisn = 0;
+                            vf_tis_selection_kind = TxTisAttemptKind::ImplicitTis0;
+                            tx_using_fallback_tis0 = true;
+                            self.create_sq_hw(
+                                sq_buf.0,
+                                sq_buf.1,
+                                sq_buf.2,
+                                sq_buf.3,
+                                log_sq_size,
+                                cqn,
+                                active_vf_tisn,
+                            )
+                        }
+                        Err(err) => Err(err),
+                    }
                 } else if let Some(discovered_tisn) = tx_oracle_tisn {
                     match self.create_sq_hw(
                         sq_buf.0,
@@ -1395,12 +1577,14 @@ impl Mlx5Device {
         }
 
         if self.is_vf() && self.sqs.is_empty() {
-            log::error!(
+            log::warn!(
                 target: "mlx5",
-                "VF bootstrap failed: no working SQ was created"
+                "VF bootstrap produced no working SQ; continuing RX-only with TX unavailable"
             );
-            return Err(Mlx5Error::NotSupported);
+            tx_path_enabled = false;
         }
+
+        self.set_tx_runtime_state(tx_path_enabled, tx_using_fallback_tis0);
 
         let scatter_fcs = self.hca_caps().map(|c| c.scatter_fcs).unwrap_or(false);
         let vlan_strip = self.hca_caps().map(|c| c.vlan_strip).unwrap_or(false);
@@ -1608,5 +1792,22 @@ impl Mlx5Device {
 
         log::info!(target: "mlx5", "Device recovery successful: ready for re-initialization");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Mlx5Device, TxTisAttemptKind};
+
+    #[test]
+    fn vf_tis_attempt_order_tries_reuse_then_create_before_implicit_fallback() {
+        assert_eq!(
+            Mlx5Device::vf_tx_tis_attempt_order(),
+            [
+                TxTisAttemptKind::ReuseExisting,
+                TxTisAttemptKind::CreateTis,
+                TxTisAttemptKind::ImplicitTis0,
+            ]
+        );
     }
 }

@@ -173,7 +173,7 @@ pub mod p256 {
             for i in 0..4 {
                 let sum = (result[i] as u128) + (P[i] as u128) + (carry as u128);
                 added[i] = sum as u64;
-                carry = (sum >> 127) as u64; // sum >> 64 but u128
+                carry = (sum >> 64) as u64;
             }
 
             let res_fe = Self { limbs: result };

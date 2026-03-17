@@ -190,7 +190,7 @@ impl DnsClient {
                 TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
                     // Security: Verify source (RFC 5452)
                     if src.ip_v4() == Some(server) && src.port() == DNS_PORT {
-                        udp_response = Some(packet.data().to_vec());
+                        udp_response = Some(packet.into_vec());
                         break;
                     }
                 }

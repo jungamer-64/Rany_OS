@@ -653,11 +653,9 @@ impl TcbTable {
 
     pub fn get(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlockEntry> {
         let idx = shard_index(&local, &remote);
-        self.shards[idx]
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&(local, remote))
-            .cloned()
+        let shard = self.shards[idx].read().unwrap_or_else(|e| e.into_inner());
+        let found = shard.get(&(local, remote));
+        found.cloned()
     }
 
     pub fn update<F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> bool

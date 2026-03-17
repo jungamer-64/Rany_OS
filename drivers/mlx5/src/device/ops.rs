@@ -731,11 +731,10 @@ impl Mlx5Device {
             .get(port_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
 
-        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-
         build_modify_nic_vport_mac_input(in_mbox, 0, false, mac.0);
-        cmd.execute(
+
+        self.execute_cmd_with_uid_candidates(
             CmdOpcode::ModifyNicVportContext,
             self.cmd_in_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,

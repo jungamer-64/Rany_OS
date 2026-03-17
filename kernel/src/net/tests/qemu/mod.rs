@@ -3,12 +3,30 @@
 //! This module delegates to existing NET core `tests::test_*` implementations
 //! so host `#[test_case]` and QEMU full-boot runtime tests stay aligned.
 
+use crate::sync::PoisonLock;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::net::datapath::{adaptive_polling, mempool, zero_copy};
 use crate::net::l2::{arp, ethernet};
 use crate::net::l3::{icmp, icmpv6, igmp, ipv4, ipv6, ndp};
 use crate::net::l4::{tcp, udp};
 use crate::net::runtime::{bridge as stack_glue, stack, timeouts as stack_timeouts};
 use crate::net::services::{dhcp, dns, mdns};
+
+static QEMU_STACK_LAST_TX_IF: PoisonLock<Option<crate::net::runtime::manager::NetIfId>> =
+    PoisonLock::new(None);
+static QEMU_STACK_LAST_TX_LEN: AtomicUsize = AtomicUsize::new(0);
+
+fn qemu_stack_record_tx_if(
+    if_id: Option<crate::net::runtime::manager::NetIfId>,
+    data: &[u8],
+    _meta: kernel_api::service::netdev::NetTxMeta,
+) -> bool {
+    let mut guard = QEMU_STACK_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = if_id;
+    QEMU_STACK_LAST_TX_LEN.store(data.len(), Ordering::Release);
+    true
+}
 
 macro_rules! run_case {
     ($func:path) => {{
@@ -212,10 +230,113 @@ pub fn udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
 }
 
 pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        use crate::net::l3::ipv4::Ipv4Address;
+        use crate::net::l4::udp::UdpAddr;
+        use crate::net::runtime::manager::NetIfId;
+        use core::pin::Pin;
+        use core::ptr;
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+        fn counting_waker(counter: &AtomicUsize) -> Waker {
+            unsafe fn clone(data: *const ()) -> RawWaker {
+                RawWaker::new(data, &VTABLE)
+            }
+            unsafe fn wake(data: *const ()) {
+                let counter = &*(data as *const AtomicUsize);
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+            unsafe fn wake_by_ref(data: *const ()) {
+                wake(data);
+            }
+            unsafe fn drop_waker(_: *const ()) {}
+
+            static VTABLE: RawWakerVTable =
+                RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
+
+            unsafe { Waker::from_raw(RawWaker::new(counter as *const _ as *const (), &VTABLE)) }
+        }
+
+        let endpoint = udp::UdpEndpoint::new(54322);
+        let mut fut1 = endpoint.recv();
+        let mut fut2 = endpoint.recv();
+
+        let wake_count = AtomicUsize::new(0);
+        let waker = counting_waker(&wake_count);
+        let mut cx = Context::from_waker(&waker);
+
+        if !matches!(Pin::new(&mut fut1).poll(&mut cx), Poll::Pending) {
+            return false;
+        }
+        if !matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending) {
+            return false;
+        }
+
+        let packet = crate::net::datapath::mempool::PacketRef::from_vec(b"abc".to_vec());
+        let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
+        endpoint.deliver(NetIfId(7), src, 255, packet);
+
+        if wake_count.load(Ordering::SeqCst) != 2 {
+            return false;
+        }
+
+        match Pin::new(&mut fut1).poll(&mut cx) {
+            Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
+                if if_id != NetIfId(7) || addr != src || packet.into_vec() != b"abc" {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+
+        return matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending);
+    }
+
+    #[cfg(not(feature = "qemu-test-export"))]
     run_case!(udp::tests::test_udp_socket_multiple_waiters_woken_on_deliver)
 }
 
 pub fn udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        use crate::net::l3::ipv4::Ipv4Address;
+        use crate::net::l4::udp::{UdpAddr, UdpProcessor, UdpResult};
+        use crate::net::types::InterfaceScope;
+
+        let processor = UdpProcessor::new();
+        let endpoint = match processor.bind_with_token(InterfaceScope::Any, 10000, None) {
+            Ok(endpoint) => endpoint,
+            Err(_) => return false,
+        };
+
+        let src_ip = Ipv4Address::from_octets(10, 0, 0, 1);
+        let dst_ip = Ipv4Address::from_octets(10, 0, 0, 2);
+        let payload = b"zc";
+        let mut buf = [0u8; 64];
+        let Some(len) = UdpProcessor::build_packet(&mut buf, src_ip, 1234, dst_ip, 10000, payload)
+        else {
+            return false;
+        };
+
+        let packet = crate::net::datapath::mempool::PacketRef::from_vec(buf[..len].to_vec());
+        if processor.process_with_packet(&buf[..len], src_ip, dst_ip, packet, 255)
+            != UdpResult::Delivered
+        {
+            return false;
+        }
+
+        let Some((if_id, addr, _ttl, packet)) = endpoint.try_recv_sync() else {
+            return false;
+        };
+
+        return if_id == crate::net::runtime::manager::NetIfId::default()
+            && addr == UdpAddr::new(src_ip, 1234)
+            && packet.into_vec() == payload;
+    }
+
+    #[cfg(not(feature = "qemu-test-export"))]
     run_case!(udp::tests::test_udp_processor_process_enqueues_zero_copy_packet)
 }
 
@@ -303,6 +424,74 @@ pub fn stack_network_stack_poisoned_runtime_apis_fail_smoke() -> bool {
 }
 
 pub fn stack_send_udp_event_task_zero_copy_smoke() -> bool {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        use crate::net::l3::ipv4::Ipv4Address;
+        use crate::net::l4::endpoint::event::NetworkEvent;
+        use crate::net::l4::endpoint::handler::{EventHandleResult, NetworkEventHandler};
+        use crate::net::runtime::manager::NetIfId;
+
+        let if_id = NetIfId(0x4242);
+        let mut config = stack::NetworkConfig::default();
+        config.ipv4.address = Ipv4Address::new([10, 0, 0, 2]);
+        config.ipv4.subnet_mask = Ipv4Address::new([255, 255, 255, 0]);
+
+        {
+            let mut guard = QEMU_STACK_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = None;
+        }
+        QEMU_STACK_LAST_TX_LEN.store(0, Ordering::Release);
+
+        stack::init(config);
+        let Ok(mut guard) = stack::stack().lock() else {
+            return false;
+        };
+        let Some(ref mut net_stack) = *guard else {
+            return false;
+        };
+
+        net_stack.register_interface_state(if_id, config);
+        net_stack.set_primary_interface_state(Some(if_id));
+        net_stack.set_transmit_fn(qemu_stack_record_tx_if);
+
+        let (result_slot, waker) =
+            stack::new_detached_command_channel::<
+                Result<(), crate::net::l4::endpoint::types::EndpointError>,
+            >();
+        let result_slot_view = result_slot.clone();
+
+        let result = NetworkEventHandler::new().handle_event_with_stack(
+            NetworkEvent::RawUdpSendOn {
+                if_id: if_id.0,
+                src_port: 1234,
+                src_ip: None,
+                dst_ip: [255, 255, 255, 255],
+                dst_port: 80,
+                data: alloc::vec![1, 2, 3],
+                ttl: 64,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+            net_stack,
+        );
+
+        let last_tx_if = *QEMU_STACK_LAST_TX_IF
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tx_len = QEMU_STACK_LAST_TX_LEN.load(Ordering::Acquire);
+        let command_result = result_slot_view
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
+        return matches!(result, EventHandleResult::Success)
+            && matches!(command_result, Some(Ok(())))
+            && last_tx_if == Some(if_id)
+            && tx_len >= 14 + 20 + 8 + 3;
+    }
+
+    #[cfg(not(feature = "qemu-test-export"))]
     run_case!(stack::tests::test_send_udp_event_task_zero_copy)
 }
 

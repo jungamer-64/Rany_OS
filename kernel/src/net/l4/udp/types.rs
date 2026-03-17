@@ -275,6 +275,76 @@ impl UdpProcessor {
         }
     }
 
+    /// Process an incoming UDP payload that may be backed by a packet chain (zero-copy, IPv4).
+    pub fn process_payload_on(
+        &self,
+        if_id: Option<NetIfId>,
+        payload: PacketPayload,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+    ) -> UdpResult {
+        let resolved_if_id = resolve_ingress_if_id(if_id);
+        self.process_payload_impl(resolved_if_id, payload, src_ip, dst_ip, ttl)
+    }
+
+    pub fn process_payload(
+        &self,
+        payload: PacketPayload,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+    ) -> UdpResult {
+        self.process_payload_on(None, payload, src_ip, dst_ip, ttl)
+    }
+
+    fn process_payload_impl(
+        &self,
+        if_id: NetIfId,
+        payload: PacketPayload,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+    ) -> UdpResult {
+        use core::sync::atomic::Ordering;
+
+        let view = PacketPayloadView::new(&payload);
+        let Some(header) = view.read_array::<8>(0) else {
+            return UdpResult::Invalid;
+        };
+        let length = u16::from_be_bytes([header[4], header[5]]) as usize;
+        if !(UdpHeader::SIZE..=view.total_len()).contains(&length) || length != view.total_len() {
+            return UdpResult::Invalid;
+        }
+
+        let checksum = u16::from_be_bytes([header[6], header[7]]);
+        if checksum != 0 {
+            let pseudo = pseudo_header_checksum(src_ip, dst_ip, IpProtocol::Udp, length as u16);
+            if payload_checksum(&view, pseudo) != 0 {
+                self.endpoints
+                    .stats
+                    .checksum_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                return UdpResult::ChecksumError;
+            }
+        }
+
+        let Some(udp_payload) = payload.slice(UdpHeader::SIZE, length - UdpHeader::SIZE) else {
+            return UdpResult::Invalid;
+        };
+        let src = UdpAddr::new(src_ip, u16::from_be_bytes([header[0], header[1]]));
+        let dst_port = u16::from_be_bytes([header[2], header[3]]);
+
+        if self
+            .endpoints
+            .deliver_payload(if_id, src, dst_port, ttl, udp_payload)
+        {
+            UdpResult::Delivered
+        } else {
+            UdpResult::NoEndpoint
+        }
+    }
+
     /// Process an incoming UDP packet with an existing PacketRef (zero-copy, IPv6)
     pub fn process_with_packet_v6_on(
         &self,
@@ -337,6 +407,78 @@ impl UdpProcessor {
         let dst_port = packet_view.dst_port();
 
         if self.endpoints.deliver(if_id, src, dst_port, ttl, packet) {
+            UdpResult::Delivered
+        } else {
+            UdpResult::NoEndpoint
+        }
+    }
+
+    /// Process an incoming UDP payload that may be backed by a packet chain (zero-copy, IPv6).
+    pub fn process_payload_v6_on(
+        &self,
+        if_id: Option<NetIfId>,
+        payload: PacketPayload,
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        ttl: u8,
+    ) -> UdpResult {
+        let resolved_if_id = resolve_ingress_if_id(if_id);
+        self.process_payload_v6_impl(resolved_if_id, payload, src_ip, dst_ip, ttl)
+    }
+
+    pub fn process_payload_v6(
+        &self,
+        payload: PacketPayload,
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        ttl: u8,
+    ) -> UdpResult {
+        self.process_payload_v6_on(None, payload, src_ip, dst_ip, ttl)
+    }
+
+    fn process_payload_v6_impl(
+        &self,
+        if_id: NetIfId,
+        payload: PacketPayload,
+        src_ip: Ipv6Address,
+        dst_ip: Ipv6Address,
+        ttl: u8,
+    ) -> UdpResult {
+        use core::sync::atomic::Ordering;
+
+        let view = PacketPayloadView::new(&payload);
+        let Some(header) = view.read_array::<8>(0) else {
+            return UdpResult::Invalid;
+        };
+        let length = u16::from_be_bytes([header[4], header[5]]) as usize;
+        if !(UdpHeader::SIZE..=view.total_len()).contains(&length) || length != view.total_len() {
+            return UdpResult::Invalid;
+        }
+
+        let checksum = u16::from_be_bytes([header[6], header[7]]);
+        if checksum == 0 {
+            return UdpResult::ChecksumError;
+        }
+
+        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Udp, length as u32);
+        if payload_checksum(&view, pseudo) != 0 {
+            self.endpoints
+                .stats
+                .checksum_errors
+                .fetch_add(1, Ordering::Relaxed);
+            return UdpResult::ChecksumError;
+        }
+
+        let Some(udp_payload) = payload.slice(UdpHeader::SIZE, length - UdpHeader::SIZE) else {
+            return UdpResult::Invalid;
+        };
+        let src = UdpAddr::new_v6(src_ip, u16::from_be_bytes([header[0], header[1]]));
+        let dst_port = u16::from_be_bytes([header[2], header[3]]);
+
+        if self
+            .endpoints
+            .deliver_payload(if_id, src, dst_port, ttl, udp_payload)
+        {
             UdpResult::Delivered
         } else {
             UdpResult::NoEndpoint

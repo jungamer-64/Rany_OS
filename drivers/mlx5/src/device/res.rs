@@ -26,6 +26,19 @@ struct CreateTisAttempt {
 }
 
 impl Mlx5Device {
+    fn tis_matches_reuse_profile(
+        info: &crate::cmd::res::QueryTisInfo,
+        preferred_td: u32,
+        preferred_prio: u8,
+    ) -> bool {
+        !info.tls_en
+            && info.transport_domain == preferred_td
+            && info.prio == preferred_prio
+            && info.underlay_qpn == 0
+            && info.lag_tx_port_affinity == 0
+            && !info.strict_lag_tx_port_affinity
+    }
+
     fn is_default_profile_tis(info: &crate::cmd::res::QueryTisInfo) -> bool {
         !info.tls_en
             && info.transport_domain == 0
@@ -190,10 +203,8 @@ impl Mlx5Device {
                 let tisn = (base + offset) & 0x00ff_ffff;
                 match self.query_tis(tisn) {
                     Ok(info) => {
-                        let matched = !info.tls_en
-                            && info.transport_domain == preferred_td
-                            && info.prio == preferred_prio
-                            && info.underlay_qpn == 0;
+                        let matched =
+                            Self::tis_matches_reuse_profile(&info, preferred_td, preferred_prio);
                         if first_any.is_none() {
                             first_any = Some((tisn, info));
                         }
@@ -240,6 +251,56 @@ impl Mlx5Device {
             );
             return Ok(tisn);
         }
+        last_err
+    }
+
+    /// VF 向けに、既存 TIS は厳密一致のみ再利用する
+    pub unsafe fn find_existing_tis_strict_match(
+        &mut self,
+        max_scan: u32,
+        preferred_td: u32,
+        preferred_prio: u8,
+    ) -> Mlx5Result<u32> {
+        let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
+        let scan_windows = Self::object_id_scan_windows(max_scan);
+
+        for &(base, count) in &scan_windows {
+            for offset in 0..count {
+                let tisn = (base + offset) & 0x00ff_ffff;
+                match self.query_tis(tisn) {
+                    Ok(info) => {
+                        if Self::tis_matches_reuse_profile(&info, preferred_td, preferred_prio) {
+                            log::info!(
+                                target: "mlx5",
+                                "Found strict-match existing TIS via QUERY_TIS: tisn={:#x} td={} prio={} pd={} lag_port={} strict_lag={}",
+                                tisn,
+                                info.transport_domain,
+                                info.prio,
+                                info.pd,
+                                info.lag_tx_port_affinity,
+                                info.strict_lag_tx_port_affinity
+                            );
+                            return Ok(tisn);
+                        }
+
+                        log::info!(
+                            target: "mlx5",
+                            "Ignoring non-matching VF TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
+                            tisn,
+                            info.transport_domain,
+                            info.prio,
+                            info.pd,
+                            info.underlay_qpn,
+                            info.tls_en,
+                            info.lag_tx_port_affinity,
+                            info.strict_lag_tx_port_affinity
+                        );
+                    }
+                    Err(err) => last_err = Err(err),
+                }
+            }
+        }
+
         last_err
     }
 
@@ -1217,5 +1278,33 @@ impl Mlx5Device {
             destination_tirn,
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mlx5Device;
+    use crate::cmd::res::QueryTisInfo;
+
+    #[test]
+    fn tis_reuse_profile_requires_exact_td_and_no_underlay() {
+        let mut info = QueryTisInfo {
+            strict_lag_tx_port_affinity: false,
+            tls_en: false,
+            lag_tx_port_affinity: 0,
+            prio: 0,
+            transport_domain: 1,
+            underlay_qpn: 0,
+            pd: 17,
+        };
+
+        assert!(Mlx5Device::tis_matches_reuse_profile(&info, 1, 0));
+
+        info.transport_domain = 0;
+        assert!(!Mlx5Device::tis_matches_reuse_profile(&info, 1, 0));
+
+        info.transport_domain = 1;
+        info.underlay_qpn = 1;
+        assert!(!Mlx5Device::tis_matches_reuse_profile(&info, 1, 0));
     }
 }

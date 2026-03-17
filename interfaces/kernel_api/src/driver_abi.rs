@@ -779,6 +779,76 @@ impl AbiNetPortRegistration {
             reserved: [0; 4],
         }
     }
+
+    pub fn as_v2(&self) -> Option<&AbiNetPortRegistrationV2> {
+        (self.abi_size as usize >= core::mem::size_of::<AbiNetPortRegistrationV2>())
+            .then(|| unsafe { &*(self as *const Self).cast::<AbiNetPortRegistrationV2>() })
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AbiNetPortRegistrationV2 {
+    pub abi_size: u32,
+    pub info: AbiNetPortInfo,
+    pub opaque: u64,
+    pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV1) -> i32,
+    pub bind: extern "C" fn(opaque: u64, if_id: u16) -> i32,
+    pub submit_tx_bytes:
+        extern "C" fn(opaque: u64, data_ptr: *const u8, data_len: usize, meta: AbiNetTxMeta) -> i32,
+    pub poll: extern "C" fn(opaque: u64, if_id: u16) -> i32,
+    pub handle_event: extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
+    pub stats: extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
+    pub stop: extern "C" fn(opaque: u64),
+    pub set_interrupts_enabled: extern "C" fn(opaque: u64, enabled: bool) -> i32,
+    pub reserved: [u64; 3],
+}
+
+impl AbiNetPortRegistrationV2 {
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        info: AbiNetPortInfo,
+        opaque: u64,
+        start: extern "C" fn(u64, *const AbiNetPortRuntimeV1) -> i32,
+        bind: extern "C" fn(u64, u16) -> i32,
+        submit_tx_bytes: extern "C" fn(u64, *const u8, usize, AbiNetTxMeta) -> i32,
+        poll: extern "C" fn(u64, u16) -> i32,
+        handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
+        stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
+        stop: extern "C" fn(u64),
+        set_interrupts_enabled: extern "C" fn(u64, bool) -> i32,
+    ) -> Self {
+        Self {
+            abi_size: core::mem::size_of::<Self>() as u32,
+            info,
+            opaque,
+            start,
+            bind,
+            submit_tx_bytes,
+            poll,
+            handle_event,
+            stats,
+            stop,
+            set_interrupts_enabled,
+            reserved: [0; 3],
+        }
+    }
+
+    pub const fn as_v1(&self) -> AbiNetPortRegistration {
+        AbiNetPortRegistration {
+            abi_size: self.abi_size,
+            info: self.info,
+            opaque: self.opaque,
+            start: self.start,
+            bind: self.bind,
+            submit_tx_bytes: self.submit_tx_bytes,
+            poll: self.poll,
+            handle_event: self.handle_event,
+            stats: self.stats,
+            stop: self.stop,
+            reserved: [0; 4],
+        }
+    }
 }
 
 #[repr(C)]

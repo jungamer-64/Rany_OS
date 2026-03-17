@@ -195,6 +195,41 @@ impl NetworkStack {
         }
     }
 
+    pub fn process_udp_payload(
+        &mut self,
+        if_id: Option<crate::net::runtime::manager::NetIfId>,
+        payload: PacketPayload,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+        original_packet: &PacketPayload,
+        current_time: u64,
+    ) {
+        let result = self.udp.process_payload_on(if_id, payload, src_ip, dst_ip, ttl);
+
+        match result {
+            UdpResult::Delivered => {}
+            UdpResult::NoEndpoint => {
+                self.stats.record_dropped();
+                if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
+                    let original_packet =
+                        crate::net::payload::PacketPayloadView::new(original_packet)
+                            .read_vec(0, original_packet.total_len());
+                    self.send_icmp_error(
+                        src_ip,
+                        DestUnreachCode::PortUnreachable,
+                        None,
+                        &original_packet,
+                        current_time,
+                    );
+                }
+            }
+            UdpResult::ChecksumError | UdpResult::Invalid => {
+                self.stats.record_rx_error();
+            }
+        }
+    }
+
     /// Try to deliver a raw UDP segment (with header) to a stack-level UdpEndpoint.
     ///
     /// This is used as a fallback when ENDPOINT_MANAGER doesn't have a matching
@@ -236,6 +271,7 @@ impl NetworkStack {
         dst: crate::net::l3::ipv6::Ipv6Address,
         hop_limit: u8,
         original_packet: &[u8],
+        udp_segment_packet: Option<PacketRef>,
     ) {
         use crate::net::l4::udp::UdpResult;
 
@@ -245,6 +281,14 @@ impl NetworkStack {
             let remote =
                 crate::net::l4::endpoint::types::EndpointAddr::new_v6(src.octets(), src_port);
             let ingress_if_id = self.resolve_ingress_if(if_id);
+            let mut udp_payload_packet = udp_segment_packet.and_then(|mut packet| {
+                if packet.len() < 8 {
+                    return None;
+                }
+                packet.advance(8);
+                packet.set_len(data.len() - 8);
+                Some(packet)
+            });
 
             if let Some(ref mgr) = *crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
                 .read()
@@ -256,7 +300,11 @@ impl NetworkStack {
                     dst_port,
                     Some(ingress_if_id),
                 ) {
-                    socket.push_packet(ingress_if_id, remote, data[8..].to_vec());
+                    let payload = udp_payload_packet
+                        .take()
+                        .map(PacketPayload::single)
+                        .unwrap_or_else(|| PacketPayload::from_vec(data[8..].to_vec()));
+                    let _ = socket.deliver_udp_payload(ingress_if_id, remote, hop_limit, payload);
                     return;
                 }
             }
@@ -267,6 +315,32 @@ impl NetworkStack {
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
                 self.send_icmpv6_error(src, 4, original_packet);
+            }
+            UdpResult::ChecksumError | UdpResult::Invalid => {
+                self.stats.record_rx_error();
+            }
+        }
+    }
+
+    pub(crate) fn process_udp_payload_v6(
+        &mut self,
+        if_id: Option<crate::net::runtime::manager::NetIfId>,
+        payload: PacketPayload,
+        src: crate::net::l3::ipv6::Ipv6Address,
+        dst: crate::net::l3::ipv6::Ipv6Address,
+        hop_limit: u8,
+        original_packet: &PacketPayload,
+    ) {
+        use crate::net::l4::udp::UdpResult;
+
+        match self.udp.process_payload_v6_on(if_id, payload, src, dst, hop_limit) {
+            UdpResult::Delivered => {}
+            UdpResult::NoEndpoint => {
+                self.stats.record_dropped();
+                let original_packet =
+                    crate::net::payload::PacketPayloadView::new(original_packet)
+                        .read_vec(0, original_packet.total_len());
+                self.send_icmpv6_error(src, 4, &original_packet);
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
                 self.stats.record_rx_error();
@@ -373,7 +447,9 @@ mod family_guard_tests {
         let local = TcpEndpointAddr::new([127, 0, 0, 1], 1234);
         let remote =
             TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-        assert!(tcp_ipv4_pair(local, remote).is_none());
-        assert!(!tcp_is_native_v6_pair(local, remote));
+        assert!(local.is_ipv4());
+        assert!(remote.is_ipv6());
+        assert!(local.as_ipv4().is_some());
+        assert!(remote.as_ipv4().is_none());
     }
 }

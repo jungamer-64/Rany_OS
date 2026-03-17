@@ -11,13 +11,13 @@
 //! 不可能な状態（TCP + UDPが同時に存在）を型レベルで排除する。
 
 use alloc::collections::VecDeque;
-use alloc::vec::Vec;
 
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::tcp::TcpStats;
 use crate::net::l4::udp::UdpEndpoint as RawUdpSocket;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
+use kernel_api::resource::net::PacketPayload;
 
 use super::congestion::CongestionAlgorithm;
 use super::types::{
@@ -78,7 +78,7 @@ pub struct UdpProtocolState {
     /// UDPソケット
     pub socket: Option<RawUdpSocket>,
     /// 保留中のパケット
-    pub pending_packets: VecDeque<(NetIfId, EndpointAddr, Vec<u8>)>,
+    pub pending_packets: VecDeque<(NetIfId, EndpointAddr, PacketPayload)>,
 }
 
 impl UdpProtocolState {
@@ -97,6 +97,26 @@ impl Default for UdpProtocolState {
     }
 }
 
+/// RAW固有のプロトコル状態
+pub struct RawProtocolState {
+    /// 保留中のIPパケット
+    pub pending_payloads: VecDeque<(NetIfId, PacketPayload)>,
+}
+
+impl RawProtocolState {
+    pub fn new() -> Self {
+        Self {
+            pending_payloads: VecDeque::with_capacity(16),
+        }
+    }
+}
+
+impl Default for RawProtocolState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// プロトコル固有の内部状態
 ///
 /// TCP/UDPの状態を排他的に保持し、
@@ -108,6 +128,8 @@ pub enum ProtocolState {
     Tcp(TcpProtocolState),
     /// UDPソケット
     Udp(UdpProtocolState),
+    /// RAW IPソケット
+    Raw(RawProtocolState),
 }
 
 impl Default for ProtocolState {
@@ -246,6 +268,36 @@ impl EndpointInner {
         }
         match &mut self.protocol {
             ProtocolState::Udp(udp) => udp,
+            _ => unreachable!(),
+        }
+    }
+
+    /// RAW状態の読み取り参照を取得
+    #[inline]
+    pub fn raw(&self) -> Option<&RawProtocolState> {
+        match &self.protocol {
+            ProtocolState::Raw(raw) => Some(raw),
+            _ => None,
+        }
+    }
+
+    /// RAW状態の可変参照を取得
+    #[inline]
+    pub fn raw_mut(&mut self) -> Option<&mut RawProtocolState> {
+        match &mut self.protocol {
+            ProtocolState::Raw(raw) => Some(raw),
+            _ => None,
+        }
+    }
+
+    /// RAW状態を保証して可変参照を返す（未設定なら初期化）
+    #[inline]
+    pub fn ensure_raw(&mut self) -> &mut RawProtocolState {
+        if !matches!(self.protocol, ProtocolState::Raw(_)) {
+            self.protocol = ProtocolState::Raw(RawProtocolState::new());
+        }
+        match &mut self.protocol {
+            ProtocolState::Raw(raw) => raw,
             _ => unreachable!(),
         }
     }

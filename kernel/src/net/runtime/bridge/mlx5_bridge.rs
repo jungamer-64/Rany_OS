@@ -51,6 +51,7 @@ struct Mlx5BridgeState {
     index: u8,
     port_runtime_initialized: AtomicBool,
     poll_task_started: AtomicBool,
+    interrupts_enabled: AtomicBool,
     link_state_initialized: AtomicBool,
     last_link_up: AtomicBool,
     dma_device_id: AtomicU64,
@@ -88,6 +89,7 @@ impl Mlx5BridgeState {
             index,
             port_runtime_initialized: AtomicBool::new(false),
             poll_task_started: AtomicBool::new(false),
+            interrupts_enabled: AtomicBool::new(true),
             link_state_initialized: AtomicBool::new(false),
             last_link_up: AtomicBool::new(false),
             dma_device_id: AtomicU64::new(u64::MAX),
@@ -345,6 +347,8 @@ fn initialize_mlx5_runtime(state: &Arc<Mlx5BridgeState>) -> Result<(), &'static 
 /// `mlx5_registry.rs` の `probe_device` から呼び出される。
 pub fn register_mlx5_device(index: u8, device: Mlx5Device) {
     let state = mlx5_state(index);
+    let mut device = device;
+    install_mlx5_vf_mac_override(&mut device);
     let dma_device_id = device.dma_device_id();
     if let Ok(mut guard) = state.device.lock() {
         *guard = Some(device);
@@ -367,14 +371,117 @@ pub fn take_mlx5_device(index: u8) -> Option<Mlx5Device> {
     device
 }
 
+fn parse_cmdline_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn parse_cmdline_mac_address(value: &str) -> Option<crate::net::l2::ethernet::MacAddress> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 17 {
+        return None;
+    }
+
+    let mut octets = [0u8; 6];
+    for (idx, octet) in octets.iter_mut().enumerate() {
+        let base = idx * 3;
+        let hi = parse_cmdline_hex_nibble(*bytes.get(base)?)?;
+        let lo = parse_cmdline_hex_nibble(*bytes.get(base + 1)?)?;
+        if idx < 5 && *bytes.get(base + 2)? != b':' {
+            return None;
+        }
+        *octet = (hi << 4) | lo;
+    }
+
+    Some(crate::net::l2::ethernet::MacAddress::new(octets))
+}
+
+fn mlx5_cmdline_vf_mac_key(segment: u16, bus: u8, device: u8, function: u8) -> String {
+    format!(
+        "mlx5_vf_mac_{segment:04x}_{bus:02x}_{device:02x}_{function:x}"
+    )
+}
+
+fn mlx5_cmdline_vf_mac_override(
+    device: &Mlx5Device,
+) -> Option<crate::net::l2::ethernet::MacAddress> {
+    if !device.is_vf() {
+        return None;
+    }
+
+    let (segment, bus, dev, function) = device.pci_location();
+    let key = mlx5_cmdline_vf_mac_key(segment, bus, dev, function);
+    crate::util::boot_cmdline_option(key.as_str())
+        .or_else(|| crate::util::boot_cmdline_option("mlx5_vf_mac"))
+        .and_then(parse_cmdline_mac_address)
+}
+
+fn install_mlx5_vf_mac_override(device: &mut Mlx5Device) {
+    let needs_override = device
+        .port(0)
+        .map(|port| port.mac_address().0 == [0; 6])
+        .unwrap_or(false);
+    if !needs_override {
+        return;
+    }
+
+    let Some(override_mac) = mlx5_cmdline_vf_mac_override(device) else {
+        return;
+    };
+
+    let (segment, bus, dev, function) = device.pci_location();
+    let key = mlx5_cmdline_vf_mac_key(segment, bus, dev, function);
+    let driver_mac = mlx5_driver::port::MacAddr(*override_mac.as_bytes());
+
+    if let Some(port) = device.port_mut(0) {
+        port.set_mac_address(driver_mac);
+    }
+
+    match unsafe { device.set_port_mac(0, driver_mac) } {
+        Ok(()) => {
+            log::info!(
+                target: "mlx5::bridge",
+                "Applied mlx5 VF MAC override from cmdline: bdf={:04x}:{:02x}:{:02x}.{} key={} mac={}",
+                segment,
+                bus,
+                dev,
+                function,
+                key,
+                override_mac,
+            );
+        }
+        Err(err) => {
+            log::warn!(
+                target: "mlx5::bridge",
+                "Using mlx5 VF MAC override for software state only: bdf={:04x}:{:02x}:{:02x}.{} key={} mac={} err={:?}",
+                segment,
+                bus,
+                dev,
+                function,
+                key,
+                override_mac,
+                err,
+            );
+        }
+    }
+}
+
 fn mlx5_mac_address(state: &Mlx5BridgeState) -> crate::net::l2::ethernet::MacAddress {
     let mut mac = with_mlx5_device(state, |dev| {
-        dev.port(0).map(|port| {
-            let mac = port.mac_address();
-            crate::net::l2::ethernet::MacAddress::from_octets(
-                mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5],
-            )
-        })
+        dev.port(0)
+            .and_then(|port| {
+                let mac = port.mac_address();
+                (mac.0 != [0; 6]).then(|| {
+                    crate::net::l2::ethernet::MacAddress::from_octets(
+                        mac.0[0], mac.0[1], mac.0[2], mac.0[3], mac.0[4], mac.0[5],
+                    )
+                })
+            })
+            .or_else(|| mlx5_cmdline_vf_mac_override(dev))
     })
     .flatten()
     .unwrap_or_else(|| {
@@ -385,6 +492,15 @@ fn mlx5_mac_address(state: &Mlx5BridgeState) -> crate::net::l2::ethernet::MacAdd
         mac = crate::net::l2::ethernet::MacAddress::from_octets(0x02, 0x00, 0x5E, 0x00, 0x53, 0x01);
     }
     mac
+}
+
+fn mlx5_tx_runtime_healthy(state: &Mlx5BridgeState) -> bool {
+    with_mlx5_device(state, |device| device.tx_is_runtime_healthy()).unwrap_or(false)
+}
+
+fn mlx5_port_healthy(state: &Mlx5BridgeState) -> bool {
+    with_mlx5_device(state, |device| unsafe { device.health_check() } && device.tx_is_runtime_healthy())
+        .unwrap_or(false)
 }
 
 impl NetDevicePort for Mlx5NetDriverAdapter {
@@ -406,7 +522,7 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
             .unwrap_or(1) as u16,
             mtu: crate::net::runtime::stack::MTU as u32,
             mac: MacAddress(*mlx5_mac_address(state.as_ref()).as_bytes()),
-            flags: if mlx5_health_check(self.index) {
+            flags: if mlx5_port_healthy(state.as_ref()) {
                 if link_up {
                     NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP
                 } else {
@@ -443,6 +559,13 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
         } else {
             Err("mlx5 TX submission failed")
         }
+    }
+
+    fn set_interrupts_enabled(&self, enabled: bool) -> Result<(), &'static str> {
+        mlx5_state(self.index)
+            .interrupts_enabled
+            .store(enabled, Ordering::Release);
+        Ok(())
     }
 
     fn poll(&self, _if_id: u16) -> Result<(), &'static str> {
@@ -664,6 +787,50 @@ fn pad_mlx5_tx_packet_if_needed(state: &Mlx5BridgeState, mut pkt: PacketRef) -> 
     Some(padded)
 }
 
+fn packet_uses_device_visible_dma(packet: &PacketRef) -> bool {
+    let headroom = packet.headroom() as u64;
+    !(packet.phys_addr().as_u64() == headroom && packet.device_address() == headroom)
+}
+
+fn mlx5_l2_inline_header_len(packet: &PacketRef) -> usize {
+    const ETHERNET_HEADER_LEN: usize = 14;
+    const VLAN_ETHERTYPE_8021Q: u16 = 0x8100;
+    const VLAN_ETHERTYPE_8021AD: u16 = 0x88A8;
+    const VLAN_ETHERTYPE_9100: u16 = 0x9100;
+    const VLAN_ETHERTYPE_9200: u16 = 0x9200;
+
+    if packet.len() < ETHERNET_HEADER_LEN {
+        return packet.len();
+    }
+
+    if packet.len() >= 18 {
+        let ethertype = u16::from_be_bytes([packet.data()[12], packet.data()[13]]);
+        if matches!(
+            ethertype,
+            VLAN_ETHERTYPE_8021Q
+                | VLAN_ETHERTYPE_8021AD
+                | VLAN_ETHERTYPE_9100
+                | VLAN_ETHERTYPE_9200
+        ) {
+            return 18;
+        }
+    }
+
+    ETHERNET_HEADER_LEN
+}
+
+fn validate_mlx5_tx_packet(state: &Mlx5BridgeState, packet: &PacketRef) -> Result<(), &'static str> {
+    if state.dma_device_id.load(Ordering::Acquire) == u64::MAX {
+        return Err("mlx5 DMA device unavailable");
+    }
+
+    if !packet_uses_device_visible_dma(packet) {
+        return Err("mlx5 TX packet is not backed by device-visible DMA");
+    }
+
+    Ok(())
+}
+
 fn poll_mlx5_tx_cqs(
     state: &Mlx5BridgeState,
     device: &mut Mlx5Device,
@@ -705,6 +872,10 @@ fn poll_mlx5_tx_cqs(
                 cqe.opcode,
                 mlx5_driver::defs::CqeOpcode::ReqErr | mlx5_driver::defs::CqeOpcode::RespErr
             ) {
+                let fallback_tis0 = device.tx_uses_implicit_tis0();
+                let probe_pending = device.tx_path_enabled() && !device.tx_is_runtime_healthy();
+                state.tx_errors.fetch_add(1, Ordering::Relaxed);
+                counters::global().record_error();
                 if let Some(sq_state) = unsafe { device.debug_tx_queue_state(sq_index) } {
                     let wqe_info = unsafe {
                         device
@@ -755,6 +926,32 @@ fn poll_mlx5_tx_cqs(
                         pkt_head
                     );
                 }
+                if probe_pending && device.mark_tx_runtime_broken() {
+                    if fallback_tis0 {
+                        log::error!(
+                            target: "mlx5::bridge",
+                            "mlx5 implicit TIS=0 fallback failed at runtime; leaving port {} RX-only until reinitialized",
+                            state.index
+                        );
+                    } else {
+                        log::error!(
+                            target: "mlx5::bridge",
+                            "mlx5 VF TX probe failed before first successful completion; leaving port {} RX-only until reinitialized",
+                            state.index
+                        );
+                    }
+                }
+            }
+            if !matches!(
+                cqe.opcode,
+                mlx5_driver::defs::CqeOpcode::ReqErr | mlx5_driver::defs::CqeOpcode::RespErr
+            ) && device.mark_tx_runtime_probe_success()
+            {
+                log::warn!(
+                    target: "mlx5::bridge",
+                    "mlx5 TX fallback verified by first successful completion; restoring healthy TX state for port {}",
+                    state.index
+                );
             }
             let infos = device.process_tx_completions(sq_index, cqe.wqe_counter);
             for _info in infos {
@@ -937,6 +1134,30 @@ fn submit_mlx5_tx_packet_on_device(
         }
     };
 
+    if !device.tx_path_enabled() {
+        return false;
+    }
+
+    if let Err(err) = validate_mlx5_tx_packet(state, &pkt) {
+        if track_stats {
+            state.tx_errors.fetch_add(1, Ordering::Relaxed);
+            counters::global().record_error();
+        }
+        log::warn!(
+            target: "mlx5::bridge",
+            "Rejecting mlx5 TX packet before SQ submission: idx={} err={} len={} cap={} headroom={} phys={:#x} device={:#x} dma_device_id={:#x}",
+            state.index,
+            err,
+            pkt.len(),
+            pkt.capacity(),
+            pkt.headroom(),
+            pkt.phys_addr().as_u64(),
+            pkt.device_address(),
+            state.dma_device_id.load(Ordering::Acquire),
+        );
+        return false;
+    }
+
     let data_virt = pkt.as_ptr() as u64;
     let data_device = pkt.device_address();
     let data_len = pkt.len() as u32;
@@ -947,7 +1168,7 @@ fn submit_mlx5_tx_packet_on_device(
         .unwrap_or(0);
     let inline_hdr_len = match min_inline_mode {
         0 => 0,
-        1 => core::cmp::min(pkt.len(), 18),
+        1 => core::cmp::min(pkt.len(), mlx5_l2_inline_header_len(&pkt)),
         unsupported => {
             log::warn!(
                 target: "mlx5::bridge",
@@ -1520,7 +1741,8 @@ pub async fn mlx5_poll_task(index: u8) {
                 }
             }
 
-            if MLX5_FORCE_POLL_ONLY {
+            let interrupts_enabled = state.interrupts_enabled.load(Ordering::Acquire);
+            if MLX5_FORCE_POLL_ONLY || !interrupts_enabled {
                 crate::task::yield_now().await;
             } else {
                 if let Some(vec) = msix_vector {
@@ -1622,7 +1844,8 @@ fn current_mlx5_port_stats(state: &Mlx5BridgeState) -> NetPortStats {
         rx_packets: state.rx_packets.load(Ordering::Relaxed),
         tx_errors: state.tx_errors.load(Ordering::Relaxed),
         rx_errors: state.rx_errors.load(Ordering::Relaxed),
-        initialized: state.port_runtime_initialized.load(Ordering::Acquire),
+        initialized: state.port_runtime_initialized.load(Ordering::Acquire)
+            && mlx5_tx_runtime_healthy(state),
     }
 }
 
@@ -1697,9 +1920,75 @@ pub(crate) fn reset_mlx5_port_runtime(index: u8) {
 /// - `false`: FW エラーが検出された
 pub fn mlx5_health_check(index: u8) -> bool {
     let state = mlx5_state(index);
-    with_mlx5_device(state.as_ref(), |device| {
-        // Safety: bar0_base が有効であること
-        unsafe { device.health_check() }
-    })
-    .unwrap_or(false)
+    mlx5_port_healthy(state.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        mlx5_cmdline_vf_mac_key, mlx5_l2_inline_header_len, packet_uses_device_visible_dma,
+        parse_cmdline_mac_address, validate_mlx5_tx_packet, Mlx5BridgeState,
+    };
+    use kernel_api::resource::net::PacketRef;
+
+    #[test]
+    fn provenance_guard_rejects_heap_backed_packet_refs() {
+        let packet = PacketRef::from_vec(vec![1, 2, 3, 4]);
+        assert!(!packet_uses_device_visible_dma(&packet));
+    }
+
+    #[test]
+    fn provenance_guard_accepts_mempool_packets() {
+        crate::net::datapath::mempool::pool_impl::init_net_mempool(1).ok();
+        let packet = crate::net::datapath::mempool::pool_impl::alloc_packet().expect("packet");
+        assert!(packet_uses_device_visible_dma(&packet));
+    }
+
+    #[test]
+    fn provenance_validation_requires_active_dma_device() {
+        let state = Mlx5BridgeState::new(0);
+        let packet = PacketRef::from_vec(vec![9, 8, 7]);
+        assert_eq!(
+            validate_mlx5_tx_packet(&state, &packet),
+            Err("mlx5 DMA device unavailable")
+        );
+    }
+
+    #[test]
+    fn l2_inline_header_len_uses_plain_ethernet_header_by_default() {
+        let packet = PacketRef::from_vec(vec![
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x00, 0x5e, 0x00, 0x53, 0x01, 0x08, 0x00,
+            0x45, 0x00, 0x00, 0x2e,
+        ]);
+        assert_eq!(mlx5_l2_inline_header_len(&packet), 14);
+    }
+
+    #[test]
+    fn l2_inline_header_len_expands_for_vlan_frames() {
+        let packet = PacketRef::from_vec(vec![
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x00, 0x5e, 0x00, 0x53, 0x01, 0x81, 0x00,
+            0x00, 0x01, 0x08, 0x00, 0x45, 0x00,
+        ]);
+        assert_eq!(mlx5_l2_inline_header_len(&packet), 18);
+    }
+
+    #[test]
+    fn cmdline_mac_parser_accepts_colon_separated_mac() {
+        let mac = parse_cmdline_mac_address("02:07:00:02:01:00").expect("mac");
+        assert_eq!(mac.as_bytes(), &[0x02, 0x07, 0x00, 0x02, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn cmdline_mac_parser_rejects_malformed_input() {
+        assert!(parse_cmdline_mac_address("0207:00:02:01:00").is_none());
+        assert!(parse_cmdline_mac_address("zz:07:00:02:01:00").is_none());
+    }
+
+    #[test]
+    fn vf_mac_cmdline_key_matches_state_file_bdf_encoding() {
+        assert_eq!(
+            mlx5_cmdline_vf_mac_key(0x0000, 0x07, 0x00, 0x02),
+            "mlx5_vf_mac_0000_07_00_2"
+        );
+    }
 }

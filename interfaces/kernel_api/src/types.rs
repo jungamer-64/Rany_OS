@@ -7,12 +7,16 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem::{MaybeUninit, align_of, size_of};
 use core::ops::{Add, AddAssign};
+use core::pin::Pin;
 use core::ptr;
+use core::task::{Context, Poll};
 
 /// Task handle - opaque reference to a spawned task
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,52 +57,8 @@ impl InterfaceScope {
     }
 }
 
-/// Network packet with ownership semantics
-pub struct Packet {
-    data: Vec<u8>,
-    pub src_port: u16,
-    pub dst_port: u16,
-}
-
-impl Packet {
-    /// Create a new packet
-    pub fn new(data: Vec<u8>) -> Self {
-        Self {
-            data,
-            src_port: 0,
-            dst_port: 0,
-        }
-    }
-
-    /// Create with port info
-    pub fn with_ports(data: Vec<u8>, src_port: u16, dst_port: u16) -> Self {
-        Self {
-            data,
-            src_port,
-            dst_port,
-        }
-    }
-
-    /// Get packet data
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    /// Get mutable packet data
-    pub fn data_mut(&mut self) -> &mut Vec<u8> {
-        &mut self.data
-    }
-
-    /// Packet length
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    /// Is packet empty
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
-    }
-}
+/// Shared default headroom for L2/L3/L4 header prepends.
+pub const DEFAULT_PACKET_HEADROOM: usize = 128;
 
 /// Canonical physical address wrapper shared across kernel-facing interfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -257,7 +217,9 @@ pub struct PacketRefVTable {
     pub capacity: unsafe fn(&PacketRefStorage) -> usize,
     pub phys_addr: unsafe fn(&PacketRefStorage) -> u64,
     pub device_address: unsafe fn(&PacketRefStorage) -> u64,
+    pub headroom: unsafe fn(&PacketRefStorage) -> usize,
     pub advance: unsafe fn(&mut PacketRefStorage, usize),
+    pub retreat: unsafe fn(&mut PacketRefStorage, usize) -> bool,
     pub clone_storage: unsafe fn(&PacketRefStorage) -> PacketRefStorage,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
 }
@@ -327,6 +289,11 @@ impl PacketRef {
     }
 
     #[inline]
+    pub fn headroom(&self) -> usize {
+        unsafe { (self.vtable.headroom)(&self.storage) }
+    }
+
+    #[inline]
     pub fn phys_addr(&self) -> PhysicalAddress {
         PhysicalAddress::new(unsafe { (self.vtable.phys_addr)(&self.storage) })
     }
@@ -339,6 +306,11 @@ impl PacketRef {
     #[inline]
     pub fn advance(&mut self, size: usize) {
         unsafe { (self.vtable.advance)(&mut self.storage, size) };
+    }
+
+    #[inline]
+    pub fn retreat(&mut self, size: usize) -> bool {
+        unsafe { (self.vtable.retreat)(&mut self.storage, size) }
     }
 
     #[inline]
@@ -359,6 +331,10 @@ impl PacketRef {
     #[inline]
     pub fn clone_ref(&self) -> Self {
         self.clone()
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.data().to_vec()
     }
 }
 
@@ -387,10 +363,317 @@ impl fmt::Debug for PacketRef {
         f.debug_struct("PacketRef")
             .field("len", &self.len())
             .field("capacity", &self.capacity())
+            .field("headroom", &self.headroom())
             .field("phys_addr", &self.phys_addr())
             .field("device_address", &self.device_address())
             .field("meta", &self.meta_cache)
             .finish()
+    }
+}
+
+#[derive(Debug)]
+struct HeapPacketBacking {
+    data: Box<[u8]>,
+    base_addr: u64,
+}
+
+#[derive(Clone)]
+struct HeapPacketState {
+    backing: Arc<HeapPacketBacking>,
+    offset: usize,
+    len: usize,
+}
+
+unsafe fn heap_state_ref(storage: &PacketRefStorage) -> &HeapPacketState {
+    unsafe { storage.as_state_ref::<HeapPacketState>() }
+}
+
+unsafe fn heap_state_mut(storage: &mut PacketRefStorage) -> &mut HeapPacketState {
+    unsafe { storage.as_state_mut::<HeapPacketState>() }
+}
+
+unsafe fn heap_data_ptr(storage: &PacketRefStorage) -> *const u8 {
+    let state = unsafe { heap_state_ref(storage) };
+    state.backing.data.as_ptr().wrapping_add(state.offset)
+}
+
+unsafe fn heap_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
+    let state = unsafe { heap_state_mut(storage) };
+    state
+        .backing
+        .data
+        .as_ptr()
+        .cast_mut()
+        .wrapping_add(state.offset)
+}
+
+unsafe fn heap_len(storage: &PacketRefStorage) -> usize {
+    unsafe { heap_state_ref(storage) }.len
+}
+
+unsafe fn heap_set_len(storage: &mut PacketRefStorage, len: usize) {
+    let state = unsafe { heap_state_mut(storage) };
+    state.len = len.min(state.backing.data.len().saturating_sub(state.offset));
+}
+
+unsafe fn heap_capacity(storage: &PacketRefStorage) -> usize {
+    unsafe { heap_state_ref(storage) }.backing.data.len()
+}
+
+unsafe fn heap_headroom(storage: &PacketRefStorage) -> usize {
+    unsafe { heap_state_ref(storage) }.offset
+}
+
+unsafe fn heap_phys(storage: &PacketRefStorage) -> u64 {
+    let state = unsafe { heap_state_ref(storage) };
+    state.backing.base_addr + state.offset as u64
+}
+
+unsafe fn heap_device(storage: &PacketRefStorage) -> u64 {
+    unsafe { heap_phys(storage) }
+}
+
+unsafe fn heap_advance(storage: &mut PacketRefStorage, size: usize) {
+    let state = unsafe { heap_state_mut(storage) };
+    state.offset = state
+        .offset
+        .saturating_add(size)
+        .min(state.backing.data.len());
+    state.len = state.len.saturating_sub(size);
+}
+
+unsafe fn heap_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
+    let state = unsafe { heap_state_mut(storage) };
+    if size > state.offset {
+        return false;
+    }
+    state.offset -= size;
+    state.len = state.len.saturating_add(size);
+    true
+}
+
+unsafe fn heap_clone(storage: &PacketRefStorage) -> PacketRefStorage {
+    let state = unsafe { heap_state_ref(storage) };
+    unsafe { PacketRefStorage::from_state(state.clone()) }
+}
+
+unsafe fn heap_drop(storage: &mut PacketRefStorage) {
+    unsafe { ptr::drop_in_place(storage.as_state_mut::<HeapPacketState>()) };
+}
+
+static HEAP_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
+    data_ptr: heap_data_ptr,
+    data_mut_ptr: heap_data_mut_ptr,
+    len: heap_len,
+    set_len: heap_set_len,
+    capacity: heap_capacity,
+    phys_addr: heap_phys,
+    device_address: heap_device,
+    headroom: heap_headroom,
+    advance: heap_advance,
+    retreat: heap_retreat,
+    clone_storage: heap_clone,
+    drop_storage: heap_drop,
+};
+
+impl PacketRef {
+    pub fn from_vec(data: Vec<u8>) -> Self {
+        let mut backing = alloc::vec![0u8; DEFAULT_PACKET_HEADROOM + data.len()].into_boxed_slice();
+        backing[DEFAULT_PACKET_HEADROOM..DEFAULT_PACKET_HEADROOM + data.len()].copy_from_slice(&data);
+        let state = HeapPacketState {
+            backing: Arc::new(HeapPacketBacking {
+                data: backing,
+                base_addr: 0,
+            }),
+            offset: DEFAULT_PACKET_HEADROOM,
+            len: data.len(),
+        };
+        unsafe {
+            Self::from_opaque_parts(PacketRefStorage::from_state(state), &HEAP_PACKET_VTABLE)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PacketChain {
+    segments: Vec<PacketRef>,
+    total_len: usize,
+}
+
+impl PacketChain {
+    pub const fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+            total_len: 0,
+        }
+    }
+
+    pub fn from_segments(segments: Vec<PacketRef>) -> Self {
+        let total_len = segments.iter().map(PacketRef::len).sum();
+        Self {
+            segments,
+            total_len,
+        }
+    }
+
+    pub fn push(&mut self, packet: PacketRef) {
+        self.total_len = self.total_len.saturating_add(packet.len());
+        self.segments.push(packet);
+    }
+
+    pub fn segments(&self) -> &[PacketRef] {
+        &self.segments
+    }
+
+    pub fn into_segments(self) -> Vec<PacketRef> {
+        self.segments
+    }
+
+    pub fn total_len(&self) -> usize {
+        self.total_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_len == 0
+    }
+
+    pub fn copy_into(&mut self, dst: &mut [u8]) -> usize {
+        let mut written = 0usize;
+        while written < dst.len() {
+            let Some(front) = self.segments.first_mut() else {
+                break;
+            };
+            if front.is_empty() {
+                self.segments.remove(0);
+                continue;
+            }
+
+            let take = front.len().min(dst.len() - written);
+            dst[written..written + take].copy_from_slice(&front.data()[..take]);
+            front.advance(take);
+            self.total_len = self.total_len.saturating_sub(take);
+            written += take;
+
+            if front.is_empty() {
+                self.segments.remove(0);
+            }
+        }
+        written
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PacketPayload {
+    Single(PacketRef),
+    Chain(PacketChain),
+}
+
+impl Default for PacketPayload {
+    fn default() -> Self {
+        Self::Chain(PacketChain::new())
+    }
+}
+
+impl PacketPayload {
+    pub fn single(packet: PacketRef) -> Self {
+        Self::Single(packet)
+    }
+
+    pub fn chain(chain: PacketChain) -> Self {
+        Self::Chain(chain)
+    }
+
+    pub fn from_vec(data: Vec<u8>) -> Self {
+        Self::Single(PacketRef::from_vec(data))
+    }
+
+    pub fn total_len(&self) -> usize {
+        match self {
+            Self::Single(packet) => packet.len(),
+            Self::Chain(chain) => chain.total_len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_len() == 0
+    }
+
+    pub fn copy_into(&mut self, dst: &mut [u8]) -> usize {
+        match self {
+            Self::Single(packet) => {
+                let len = packet.len().min(dst.len());
+                dst[..len].copy_from_slice(&packet.data()[..len]);
+                packet.advance(len);
+                len
+            }
+            Self::Chain(chain) => chain.copy_into(dst),
+        }
+    }
+
+    pub fn slice(&self, offset: usize, len: usize) -> Option<Self> {
+        let total_len = self.total_len();
+        if len == 0 {
+            return (offset <= total_len).then(Self::default);
+        }
+        if offset >= total_len || len > total_len.saturating_sub(offset) {
+            return None;
+        }
+
+        match self {
+            Self::Single(packet) => {
+                let mut slice = packet.clone();
+                slice.advance(offset);
+                slice.set_len(len);
+                Some(Self::Single(slice))
+            }
+            Self::Chain(chain) => {
+                let mut segments = Vec::new();
+                let mut remaining_offset = offset;
+                let mut remaining_len = len;
+
+                for segment in chain.segments() {
+                    if remaining_len == 0 {
+                        break;
+                    }
+                    if remaining_offset >= segment.len() {
+                        remaining_offset -= segment.len();
+                        continue;
+                    }
+
+                    let mut slice = segment.clone();
+                    if remaining_offset > 0 {
+                        slice.advance(remaining_offset);
+                    }
+                    let take = remaining_len.min(slice.len());
+                    slice.set_len(take);
+                    segments.push(slice);
+                    remaining_len -= take;
+                    remaining_offset = 0;
+                }
+
+                (remaining_len == 0).then(|| Self::Chain(PacketChain::from_segments(segments)))
+            }
+        }
+    }
+
+    pub fn into_segments(self) -> Vec<PacketRef> {
+        match self {
+            Self::Single(packet) => alloc::vec![packet],
+            Self::Chain(chain) => chain.into_segments(),
+        }
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.total_len());
+        match self {
+            Self::Single(packet) => out.extend_from_slice(packet.data()),
+            Self::Chain(chain) => {
+                for packet in chain.into_segments() {
+                    out.extend_from_slice(packet.data());
+                }
+            }
+        }
+        out
     }
 }
 
@@ -537,103 +820,43 @@ impl NetSocketAddr {
             Self::V4 { port, .. } | Self::V6 { port, .. } => port,
         }
     }
+    
+    pub const fn is_ipv6(self) -> bool {
+        matches!(self, Self::V6 { .. })
+    }
 }
 
-/// Opaque handle for a connected TCP stream.
+pub trait AsyncRead {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Result<usize, TcpError>>;
+}
+
+pub trait AsyncWrite {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, TcpError>>;
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>>;
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TcpStreamHandle {
-    id: u64,
-    default_scope: InterfaceScope,
-}
-
-impl TcpStreamHandle {
-    pub const fn new(id: u64, default_scope: InterfaceScope) -> Self {
-        Self { id, default_scope }
-    }
-
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    pub fn default_scope(&self) -> InterfaceScope {
-        self.default_scope
-    }
-
-    pub fn into_raw(self) -> u64 {
-        self.id
-    }
-}
-
-/// Opaque handle for a listening TCP socket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TcpListenerHandle {
-    id: u64,
-    default_scope: InterfaceScope,
-}
-
-impl TcpListenerHandle {
-    pub const fn new(id: u64, default_scope: InterfaceScope) -> Self {
-        Self { id, default_scope }
-    }
-
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    pub fn default_scope(&self) -> InterfaceScope {
-        self.default_scope
-    }
-
-    pub fn into_raw(self) -> u64 {
-        self.id
-    }
-}
-
-/// Owned TCP byte chunk exchanged through the KAPI.
-#[derive(Debug, Clone, Default)]
-pub struct TcpChunk {
-    data: Vec<u8>,
-}
-
-impl TcpChunk {
-    pub fn new(data: Vec<u8>) -> Self {
-        Self { data }
-    }
-
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    pub fn into_vec(self) -> Vec<u8> {
-        self.data
-    }
-}
-
-/// Raw endpoint handle (for packet-oriented raw endpoints)
-pub struct RawEndpointHandle {
-    id: u64,
-    default_scope: InterfaceScope,
-}
-
-impl RawEndpointHandle {
-    /// Create new raw endpoint handle (kernel-only)
-    pub const fn new(id: u64, default_scope: InterfaceScope) -> Self {
-        Self { id, default_scope }
-    }
-
-    /// Get raw id
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    pub fn default_scope(&self) -> InterfaceScope {
-        self.default_scope
-    }
-
-    /// Consume and return raw id
-    pub fn into_raw(self) -> u64 {
-        self.id
-    }
+pub enum TcpError {
+    ConnectionClosed,
+    ConnectionRefused,
+    ConnectionReset,
+    Timeout,
+    AddressInUse,
+    BufferFull,
+    InvalidState,
+    NetworkUnreachable,
+    PermissionDenied,
 }
 
 // ============================================================================
@@ -787,6 +1010,10 @@ mod packet_ref_tests {
         unsafe { heap_state_ref(storage) }.backing.data.len()
     }
 
+    unsafe fn heap_headroom(storage: &PacketRefStorage) -> usize {
+        unsafe { heap_state_ref(storage) }.offset
+    }
+
     unsafe fn heap_phys(storage: &PacketRefStorage) -> u64 {
         let state = unsafe { heap_state_ref(storage) };
         state.backing.addr + state.offset as u64
@@ -803,6 +1030,16 @@ mod packet_ref_tests {
             .saturating_add(size)
             .min(state.backing.data.len());
         state.len = state.len.saturating_sub(size);
+    }
+
+    unsafe fn heap_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
+        let state = unsafe { heap_state_mut(storage) };
+        if size > state.offset {
+            return false;
+        }
+        state.offset -= size;
+        state.len = state.len.saturating_add(size);
+        true
     }
 
     unsafe fn heap_clone(storage: &PacketRefStorage) -> PacketRefStorage {
@@ -822,7 +1059,9 @@ mod packet_ref_tests {
         capacity: heap_capacity,
         phys_addr: heap_phys,
         device_address: heap_device,
+        headroom: heap_headroom,
         advance: heap_advance,
+        retreat: heap_retreat,
         clone_storage: heap_clone,
         drop_storage: heap_drop,
     };
@@ -873,6 +1112,10 @@ mod packet_ref_tests {
         unsafe { dma_state_ref(storage) }.backing.len
     }
 
+    unsafe fn dma_headroom(storage: &PacketRefStorage) -> usize {
+        unsafe { dma_state_ref(storage) }.offset
+    }
+
     unsafe fn dma_phys(storage: &PacketRefStorage) -> u64 {
         let state = unsafe { dma_state_ref(storage) };
         state.backing.phys_addr + state.offset as u64
@@ -887,6 +1130,16 @@ mod packet_ref_tests {
         let state = unsafe { dma_state_mut(storage) };
         state.offset = state.offset.saturating_add(size).min(state.backing.len);
         state.len = state.len.saturating_sub(size);
+    }
+
+    unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
+        let state = unsafe { dma_state_mut(storage) };
+        if size > state.offset {
+            return false;
+        }
+        state.offset -= size;
+        state.len = state.len.saturating_add(size);
+        true
     }
 
     unsafe fn dma_clone(storage: &PacketRefStorage) -> PacketRefStorage {
@@ -906,7 +1159,9 @@ mod packet_ref_tests {
         capacity: dma_capacity,
         phys_addr: dma_phys,
         device_address: dma_device,
+        headroom: dma_headroom,
         advance: dma_advance,
+        retreat: dma_retreat,
         clone_storage: dma_clone,
         drop_storage: dma_drop,
     };

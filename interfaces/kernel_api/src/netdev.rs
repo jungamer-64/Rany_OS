@@ -153,6 +153,10 @@ pub trait NetDevicePort: Send + Sync {
 
     fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str>;
 
+    fn set_interrupts_enabled(&self, _enabled: bool) -> Result<(), &'static str> {
+        Ok(())
+    }
+
     fn poll(&self, _if_id: u16) -> Result<(), &'static str> {
         Ok(())
     }

@@ -67,6 +67,19 @@ fn tcp_error_to_kapi(error: crate::net::l4::tcp::TcpError) -> KapiError {
     }
 }
 
+fn network_error_to_kapi(error: crate::net::types::NetworkError) -> KapiError {
+    match error {
+        crate::net::types::NetworkError::PermissionDenied => KapiError::PermissionDenied,
+        crate::net::types::NetworkError::PortInUse => KapiError::ResourceExhausted,
+        crate::net::types::NetworkError::Timeout => KapiError::Timeout,
+        crate::net::types::NetworkError::NetworkUnreachable => KapiError::NotFound,
+        crate::net::types::NetworkError::BufferTooSmall
+        | crate::net::types::NetworkError::ArpResolutionPending
+        | crate::net::types::NetworkError::TransmitFailed => KapiError::ResourceExhausted,
+        _ => KapiError::IoError,
+    }
+}
+
 fn lookup_endpoint(
     fd: crate::net::l4::endpoint::EndpointFd,
 ) -> Result<crate::net::l4::endpoint::endpoint_core::Endpoint, KapiError> {
@@ -291,11 +304,11 @@ impl KernelServices for ExoKernel {
     // Network (Connected to network stack)
     // ========================================================================
 
-    fn net_tcp_connect(
+    fn net_open_tcp_stream(
         &self,
         remote: kernel_api::resource::net::NetSocketAddr,
         scope: kernel_api::resource::net::InterfaceScope,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStreamHandle>> + Send>>
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStream>> + Send>>
     {
         Box::pin(async move {
             let remote = endpoint_addr_from_kapi(remote);
@@ -310,19 +323,19 @@ impl KernelServices for ExoKernel {
             let endpoint = owned.into_inner().ok_or(KapiError::NotFound)?;
             let stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(endpoint, false);
             let fd = stream.into_retained_handle();
-            Ok(kernel_api::resource::net::TcpStreamHandle::new(
+            Ok(kernel_api::resource::net::TcpStream::from_raw_parts(
                 fd.raw() as u64,
                 scope,
             ))
         })
     }
 
-    fn net_tcp_listen(
+    fn net_open_tcp_listener(
         &self,
         local: kernel_api::resource::net::NetSocketAddr,
         scope: kernel_api::resource::net::InterfaceScope,
         backlog: u32,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpListenerHandle>> + Send>>
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpListener>> + Send>>
     {
         Box::pin(async move {
             let local = endpoint_addr_from_kapi(local);
@@ -341,17 +354,17 @@ impl KernelServices for ExoKernel {
             let listener =
                 crate::net::l4::tcp::TcpListener::from_endpoint_with_drop(endpoint, false);
             let fd = listener.into_retained_handle();
-            Ok(kernel_api::resource::net::TcpListenerHandle::new(
+            Ok(kernel_api::resource::net::TcpListener::from_raw_parts(
                 fd.raw() as u64,
                 scope,
             ))
         })
     }
 
-    fn net_tcp_accept(
+    fn net_tcp_listener_accept(
         &self,
-        listener: kernel_api::resource::net::TcpListenerHandle,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStreamHandle>> + Send>>
+        listener: kernel_api::resource::net::TcpListener,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStream>> + Send>>
     {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(listener.id() as u32);
@@ -360,63 +373,76 @@ impl KernelServices for ExoKernel {
             let endpoint = accepted.into_inner().ok_or(KapiError::NotFound)?;
             let stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(endpoint, false);
             let fd = stream.into_retained_handle();
-            Ok(kernel_api::resource::net::TcpStreamHandle::new(
+            Ok(kernel_api::resource::net::TcpStream::from_raw_parts(
                 fd.raw() as u64,
                 listener.default_scope(),
             ))
         })
     }
 
-    fn net_tcp_close_stream(
+    fn net_close_tcp_stream(
         &self,
-        stream: kernel_api::resource::net::TcpStreamHandle,
+        stream: kernel_api::resource::net::TcpStream,
     ) -> Result<(), KapiError> {
         close_endpoint_handle(crate::net::l4::endpoint::EndpointFd::from_raw(
             stream.id() as u32,
         ))
     }
 
-    fn net_tcp_close_listener(
+    fn net_close_tcp_listener(
         &self,
-        listener: kernel_api::resource::net::TcpListenerHandle,
+        listener: kernel_api::resource::net::TcpListener,
     ) -> Result<(), KapiError> {
         close_endpoint_handle(crate::net::l4::endpoint::EndpointFd::from_raw(
             listener.id() as u32,
         ))
     }
 
-    fn net_tcp_read(
+    fn net_tcp_stream_recv_payload(
         &self,
-        stream: kernel_api::resource::net::TcpStreamHandle,
-        max_len: usize,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpChunk>> + Send>> {
+        stream: kernel_api::resource::net::TcpStream,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::PacketPayload>> + Send>>
+    {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let data = socket.recv(max_len).await.map_err(endpoint_error_to_kapi)?;
-            Ok(kernel_api::resource::net::TcpChunk::new(data))
+            let mut stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(socket, false);
+            match stream.read_zero_copy().await {
+                Some(packet) => Ok(kernel_api::resource::net::PacketPayload::single(packet)),
+                None => Ok(kernel_api::resource::net::PacketPayload::default()),
+            }
         })
     }
 
-    fn net_tcp_write(
+    fn net_tcp_stream_send_payload(
         &self,
-        stream: kernel_api::resource::net::TcpStreamHandle,
-        chunk: kernel_api::resource::net::TcpChunk,
+        stream: kernel_api::resource::net::TcpStream,
+        payload: kernel_api::resource::net::PacketPayload,
     ) -> Pin<Box<dyn Future<Output = KapiResult<usize>> + Send>> {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            socket
-                .send(chunk.into_vec())
-                .await
-                .map_err(endpoint_error_to_kapi)
+            let mut stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(socket, false);
+            let mut sent = 0usize;
+            for packet in payload.into_segments() {
+                let len = packet.len();
+                if len == 0 {
+                    continue;
+                }
+                stream
+                    .write_zero_copy(packet)
+                    .await
+                    .map_err(tcp_error_to_kapi)?;
+                sent = sent.saturating_add(len);
+            }
+            Ok(sent)
         })
     }
 
-    fn net_create_raw_endpoint(
+    fn net_open_raw_endpoint(
         &self,
         scope: kernel_api::resource::net::InterfaceScope,
-    ) -> Result<RawEndpointHandle, KapiError> {
+    ) -> Result<kernel_api::resource::net::RawEndpoint, KapiError> {
         // Security: Check for CAP_NET_RAW capability (Design Doc 8.2)
         let caller = context::current_subject().domain.as_u64();
         if !crate::security::capability::manager()
@@ -434,36 +460,45 @@ impl KernelServices for ExoKernel {
         let owned = create_raw_endpoint();
         if let Some(endpoint) = owned.endpoint() {
             apply_endpoint_scope(endpoint, scope);
+            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.ensure_raw();
+            inner
+                .transition_to(crate::net::l4::endpoint::types::EndpointState::Bound)
+                .map_err(endpoint_error_to_kapi)?;
+        }
+
+        if let Some(mgr_lock) = crate::net::l4::endpoint::endpoint_manager() {
+            let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
+            if let Some(mgr) = guard.as_ref() {
+                mgr.register_raw_scope(stack_scope(scope), owned.fd())
+                    .map_err(endpoint_error_to_kapi)?;
+            }
         }
         let fd = owned.fd();
 
         // Detach so it remains registered
         let _ = owned.into_inner();
 
-        Ok(RawEndpointHandle::new(fd.raw() as u64, scope))
+        Ok(kernel_api::resource::net::RawEndpoint::from_raw_parts(
+            fd.raw() as u64,
+            scope,
+        ))
     }
 
-    fn net_close_raw_endpoint(&self, endpoint: RawEndpointHandle) -> Result<(), KapiError> {
-        use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
-
-        let fd = EndpointFd::from_raw(endpoint.id() as u32);
-
-        if let Some(mgr_lock) = endpoint_manager() {
-            let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(mgr) = guard.as_ref() {
-                if mgr.unregister(fd).is_some() {
-                    return Ok(());
-                }
-            }
-        }
-
-        Err(KapiError::InvalidHandle)
-    }
-
-    fn net_recv_raw(
+    fn net_close_raw_endpoint(
         &self,
-        endpoint: RawEndpointHandle,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<Packet>> + Send>> {
+        endpoint: kernel_api::resource::net::RawEndpoint,
+    ) -> Result<(), KapiError> {
+        close_endpoint_handle(crate::net::l4::endpoint::EndpointFd::from_raw(
+            endpoint.id() as u32,
+        ))
+    }
+
+    fn net_raw_recv_payload(
+        &self,
+        endpoint: kernel_api::resource::net::RawEndpoint,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::PacketPayload>> + Send>>
+    {
         // Security: Check for CAP_NET_RAW capability
         let caller = context::current_subject().domain.as_u64();
         if !crate::security::capability::manager()
@@ -477,39 +512,25 @@ impl KernelServices for ExoKernel {
         }
 
         Box::pin(async move {
-            use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
+            let fd = crate::net::l4::endpoint::EndpointFd::from_raw(endpoint.id() as u32);
+            let socket = lookup_endpoint(fd)?;
 
-            let fd = EndpointFd::from_raw(endpoint.id() as u32);
-
-            if let Some(mgr_lock) = endpoint_manager() {
-                let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-                if let Some(mgr) = guard.as_ref() {
-                    if let Some(socket) = mgr.get(fd) {
-                        let fut = crate::net::l4::endpoint::futures::RecvFuture::new(
-                            socket.clone(),
-                            crate::net::runtime::stack::MAX_PACKET_SIZE,
-                        );
-                        match fut.await {
-                            Ok(vec) => Ok(Packet::new(vec)),
-                            Err(_) => Err(KapiError::IoError),
-                        }
-                    } else {
-                        Err(KapiError::InvalidHandle)
-                    }
-                } else {
-                    Err(KapiError::InvalidHandle)
+            core::future::poll_fn(|cx| match socket.recv_raw_payload_sync() {
+                Ok((payload, _if_id)) => core::task::Poll::Ready(Ok(payload)),
+                Err(crate::net::l4::endpoint::EndpointError::Timeout) => {
+                    socket.register_recv_waker(cx.waker().clone());
+                    core::task::Poll::Pending
                 }
-            } else {
-                Err(KapiError::NotFound)
-            }
+                Err(err) => core::task::Poll::Ready(Err(endpoint_error_to_kapi(err))),
+            })
+            .await
         })
     }
 
-    fn net_send_raw(
+    fn net_raw_send_payload(
         &self,
-        endpoint: RawEndpointHandle,
-        scope: kernel_api::resource::net::InterfaceScope,
-        packet: Packet,
+        endpoint: kernel_api::resource::net::RawEndpoint,
+        payload: kernel_api::resource::net::PacketPayload,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         // Security: Check for CAP_NET_RAW capability
         let caller = context::current_subject().domain.as_u64();
@@ -524,37 +545,19 @@ impl KernelServices for ExoKernel {
         }
 
         Box::pin(async move {
-            use crate::net::l4::endpoint::{EndpointFd, endpoint_manager};
-            let resolved_scope = match scope {
-                kernel_api::resource::net::InterfaceScope::Any => endpoint.default_scope(),
-                other => other,
-            };
+            let resolved_scope = endpoint.default_scope();
+            let fd = crate::net::l4::endpoint::EndpointFd::from_raw(endpoint.id() as u32);
+            let socket = lookup_endpoint(fd)?;
+            apply_endpoint_scope(&socket, resolved_scope);
 
-            let fd = EndpointFd::from_raw(endpoint.id() as u32);
-
-            if let Some(mgr_lock) = endpoint_manager() {
-                let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-                if let Some(mgr) = guard.as_ref() {
-                    if let Some(socket) = mgr.get(fd) {
-                        apply_endpoint_scope(&socket, resolved_scope);
-                        let data = packet.data().to_vec();
-                        let fut = crate::net::l4::endpoint::futures::SendFuture::new(
-                            socket.clone(),
-                            data,
-                        );
-                        match fut.await {
-                            Ok(_) => Ok(()),
-                            Err(_) => Err(KapiError::IoError),
-                        }
-                    } else {
-                        Err(KapiError::InvalidHandle)
-                    }
-                } else {
-                    Err(KapiError::InvalidHandle)
-                }
-            } else {
-                Err(KapiError::NotFound)
-            }
+            let runtime = socket.runtime();
+            let mut guard = crate::net::runtime::stack::stack_in(runtime)
+                .lock()
+                .map_err(|_| KapiError::IoError)?;
+            let stack = guard.as_mut().ok_or(KapiError::NotFound)?;
+            stack
+                .send_raw_ip_payload_scoped(stack_scope(resolved_scope), payload)
+                .map_err(network_error_to_kapi)
         })
     }
 

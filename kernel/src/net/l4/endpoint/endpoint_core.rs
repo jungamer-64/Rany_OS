@@ -9,9 +9,14 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+use crate::net::datapath::mempool::PacketRef;
+use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::l3::ipv6::Ipv6Address;
+use crate::net::l4::udp::UdpAddr;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::sync::poison_lock::PoisonLock;
+use kernel_api::resource::net::PacketPayload;
 
 use crate::net::l4::tcp::TcpStream;
 
@@ -382,18 +387,36 @@ impl Endpoint {
             return Err(EndpointError::InvalidArgument);
         }
 
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let socket = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
-        if let Some((if_id, addr, data)) =
-            inner.udp_mut().and_then(|u| u.pending_packets.pop_front())
-        {
-            inner.last_ingress_if_id = Some(if_id);
-            let len = buf.len().min(data.len());
-            buf[..len].copy_from_slice(&data[..len]);
-            Ok((len, addr, if_id))
-        } else {
-            Err(EndpointError::Timeout)
+            if let Some((if_id, addr, mut data)) =
+                inner.udp_mut().and_then(|u| u.pending_packets.pop_front())
+            {
+                inner.last_ingress_if_id = Some(if_id);
+                let len = data.copy_into(buf);
+                return Ok((len, addr, if_id));
+            }
+
+            inner.udp().and_then(|u| u.socket.clone())
+        };
+
+        if let Some(socket) = socket {
+            if let Some((if_id, addr, _ttl, mut payload)) = socket.try_recv_sync() {
+                let len = payload.copy_into(buf);
+                let endpoint_addr = match addr {
+                    UdpAddr::V4 { ip, port } => EndpointAddr::new(ip.octets(), port),
+                    UdpAddr::V6 { ip, port } => EndpointAddr::new_v6(ip.octets(), port),
+                };
+                self.inner
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .last_ingress_if_id = Some(if_id);
+                return Ok((len, endpoint_addr, if_id));
+            }
         }
+
+        Err(EndpointError::Timeout)
     }
 
     /// 受信バッファにデータ追加（内部用）
@@ -433,13 +456,18 @@ impl Endpoint {
     /// UDPパケット追加（内部用）
     /// プロトコルスタックから呼ばれる
     pub fn push_packet(&self, if_id: NetIfId, addr: EndpointAddr, data: Vec<u8>) {
+        self.push_packet_payload(if_id, addr, PacketPayload::from_vec(data));
+    }
+
+    /// UDPパケット追加（内部用）
+    pub fn push_packet_payload(&self, if_id: NetIfId, addr: EndpointAddr, payload: PacketPayload) {
         let waker = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.last_ingress_if_id = Some(if_id);
             inner
                 .ensure_udp()
                 .pending_packets
-                .push_back((if_id, addr, data));
+                .push_back((if_id, addr, payload));
             // 待機中のタスクを起こす準備
             inner.recv_waker.take()
         };
@@ -448,6 +476,102 @@ impl Endpoint {
         if let Some(w) = waker {
             w.wake();
         }
+    }
+
+    /// UDPパケット追加（ゼロコピー内部キュー優先）
+    ///
+    /// 内部UDPソケットがある場合は `PacketRef` の所有権をそのまま移動し、
+    /// 呼び出し側が `recv_from*()` を使う場合のみコピーする。
+    pub fn deliver_udp_packet(
+        &self,
+        if_id: NetIfId,
+        addr: EndpointAddr,
+        ttl: u8,
+        packet: PacketRef,
+    ) -> EndpointResult<()> {
+        self.deliver_udp_payload(if_id, addr, ttl, PacketPayload::single(packet))
+    }
+
+    pub fn deliver_udp_payload(
+        &self,
+        if_id: NetIfId,
+        addr: EndpointAddr,
+        ttl: u8,
+        payload: PacketPayload,
+    ) -> EndpointResult<()> {
+        if self.endpoint_type != EndpointType::Udp {
+            return Err(EndpointError::InvalidArgument);
+        }
+
+        let (socket, recv_waker) = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.last_ingress_if_id = Some(if_id);
+
+            let socket = inner.ensure_udp().socket.clone();
+            if socket.is_none() {
+                inner
+                    .ensure_udp()
+                    .pending_packets
+                    .push_back((if_id, addr, payload.clone()));
+            }
+
+            (socket, inner.recv_waker.take())
+        };
+
+        if let Some(socket) = socket {
+            let udp_addr = match addr {
+                EndpointAddr::V4 { ip, port } => UdpAddr::new(Ipv4Address::new(ip), port),
+                EndpointAddr::V6 { ip, port } => UdpAddr::new_v6(Ipv6Address::new(ip), port),
+            };
+            socket.deliver_payload(if_id, udp_addr, ttl, payload);
+        }
+
+        if let Some(waker) = recv_waker {
+            waker.wake();
+        }
+
+        Ok(())
+    }
+
+    pub fn recv_raw_payload_sync(&self) -> EndpointResult<(PacketPayload, NetIfId)> {
+        if self.endpoint_type != EndpointType::Raw {
+            return Err(EndpointError::InvalidArgument);
+        }
+
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !inner.state.can_receive() {
+            return Err(EndpointError::NotConnected);
+        }
+
+        if let Some((if_id, payload)) = inner.raw_mut().and_then(|raw| raw.pending_payloads.pop_front()) {
+            inner.last_ingress_if_id = Some(if_id);
+            return Ok((payload, if_id));
+        }
+
+        Err(EndpointError::Timeout)
+    }
+
+    pub fn deliver_raw_payload(
+        &self,
+        if_id: NetIfId,
+        payload: PacketPayload,
+    ) -> EndpointResult<()> {
+        if self.endpoint_type != EndpointType::Raw {
+            return Err(EndpointError::InvalidArgument);
+        }
+
+        let recv_waker = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.last_ingress_if_id = Some(if_id);
+            inner.ensure_raw().pending_payloads.push_back((if_id, payload));
+            inner.recv_waker.take()
+        };
+
+        if let Some(waker) = recv_waker {
+            waker.wake();
+        }
+
+        Ok(())
     }
 
     /// クローズ

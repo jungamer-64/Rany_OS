@@ -379,9 +379,26 @@ impl UdpEndpointTable {
         ttl: u8,
         packet: PacketRef,
     ) -> bool {
+        self.deliver_payload(
+            if_id,
+            src,
+            dst_port,
+            ttl,
+            kernel_api::resource::net::PacketPayload::single(packet),
+        )
+    }
+
+    pub fn deliver_payload(
+        &self,
+        if_id: NetIfId,
+        src: UdpAddr,
+        dst_port: u16,
+        ttl: u8,
+        payload: kernel_api::resource::net::PacketPayload,
+    ) -> bool {
         if let Some(inner) = self.find(family_from_addr(src), dst_port, if_id) {
             let socket = crate::net::l4::udp::UdpEndpoint { inner };
-            socket.deliver(if_id, src, ttl, packet);
+            socket.deliver_payload(if_id, src, ttl, payload);
             self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
             true
         } else {

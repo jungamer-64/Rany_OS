@@ -56,8 +56,9 @@ impl DhcpClient {
             match task::with_timeout(socket.recv(), 1000).await {
                 TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
                     let now = crate::task::current_tick();
+                    let packet = packet.into_vec();
                     // 応答パケットを処理
-                    match self.process_response(packet.data(), now) {
+                    match self.process_response(&packet, now) {
                         Ok(DhcpResponseResult::Ack(lease)) => {
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）

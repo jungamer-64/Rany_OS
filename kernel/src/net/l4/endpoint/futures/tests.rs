@@ -452,9 +452,114 @@ pub fn test_udp_packet_stream_delivered() {
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
     match pinned.as_mut().poll(&mut cx2) {
         Poll::Ready(Some((_if_id, addr, _ttl, pkt))) => {
-            assert_eq!(pkt.data(), b"hello");
+            assert_eq!(pkt.into_vec(), b"hello");
             assert_eq!(addr.port(), 12345);
         }
         _ => panic!("Expected UDP packet"),
     }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_udp_recv_from_sync_reads_zero_copy_socket_queue() {
+    init_endpoint_manager();
+
+    let processor = crate::net::l4::udp::UdpProcessor::new();
+    let port = 40001u16;
+    let udp_socket = processor
+        .bind_with_token(crate::net::types::InterfaceScope::Any, port, None)
+        .expect("bind failed");
+
+    let sock = create_udp_endpoint();
+    let endpoint = sock.endpoint().expect("udp endpoint should exist");
+    {
+        let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(EndpointAddr::new([127, 0, 0, 1], port));
+        inner.ensure_udp().socket = Some(udp_socket.clone());
+        let _ = inner.transition_to(EndpointState::Bound);
+        let _ = inner.transition_to(EndpointState::Connected);
+    }
+
+    let src_ip = crate::net::l3::ipv4::Ipv4Address::from_octets(127, 0, 0, 1);
+    let dst_ip = src_ip;
+    let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc");
+    let len = crate::net::l4::udp::UdpProcessor::build_packet(
+        packet.data_mut(),
+        src_ip,
+        54321,
+        dst_ip,
+        port,
+        b"zero-copy",
+    )
+    .unwrap();
+    packet.set_len(len);
+
+    let packet_data = alloc::vec::Vec::from(packet.data());
+    let res = processor.process_with_packet(&packet_data, src_ip, dst_ip, packet, 128);
+    assert_eq!(res, crate::net::l4::udp::UdpResult::Delivered);
+
+    let mut buf = [0u8; 32];
+    let (len, addr, if_id) = endpoint
+        .recv_from_sync(&mut buf)
+        .expect("recv_from_sync should read UDP socket queue");
+    assert_eq!(&buf[..len], b"zero-copy");
+    assert_eq!(addr, EndpointAddr::new([127, 0, 0, 1], 54321));
+    assert_eq!(if_id, crate::net::runtime::manager::NetIfId::default());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_udp_recv_from_sync_reads_zero_copy_socket_queue_v6() {
+    init_endpoint_manager();
+
+    let processor = crate::net::l4::udp::UdpProcessor::new();
+    let port = 40002u16;
+    let udp_socket = processor
+        .bind_with_token(crate::net::types::InterfaceScope::Any, port, None)
+        .expect("bind failed");
+
+    let sock = create_udp_endpoint();
+    let endpoint = sock.endpoint().expect("udp endpoint should exist");
+    {
+        let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(EndpointAddr::new_v6(
+            crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(),
+            port,
+        ));
+        inner.ensure_udp().socket = Some(udp_socket.clone());
+        let _ = inner.transition_to(EndpointState::Bound);
+        let _ = inner.transition_to(EndpointState::Connected);
+    }
+
+    let src_ip = crate::net::l3::ipv6::Ipv6Address::new([
+        0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+    ]);
+    let dst_ip = crate::net::l3::ipv6::Ipv6Address::LOOPBACK;
+    let mut packet = crate::net::datapath::mempool::alloc_packet().expect("alloc");
+    let len = {
+        let mut udp_packet =
+            crate::net::l4::udp::UdpPacketMut::new(packet.data_mut()).expect("udp packet");
+        udp_packet
+            .set_src_port(54322)
+            .set_dst_port(port)
+            .write_payload(b"zero-copy-v6");
+        udp_packet.finalize_v6(src_ip, dst_ip)
+    };
+    packet.set_len(len);
+
+    let packet_data = alloc::vec::Vec::from(packet.data());
+    let res = processor.process_with_packet_v6(&packet_data, src_ip, dst_ip, packet, 64);
+    assert_eq!(res, crate::net::l4::udp::UdpResult::Delivered);
+
+    let mut buf = [0u8; 32];
+    let (len, addr, if_id) = endpoint
+        .recv_from_sync(&mut buf)
+        .expect("recv_from_sync should read UDP socket queue");
+    assert_eq!(&buf[..len], b"zero-copy-v6");
+    assert_eq!(
+        addr,
+        EndpointAddr::new_v6(
+            [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            54322,
+        )
+    );
+    assert_eq!(if_id, crate::net::runtime::manager::NetIfId::default());
 }

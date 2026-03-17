@@ -119,7 +119,7 @@ fn udp_endpoint_multiple_waiters_woken_on_deliver_impl() {
         Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
             assert_eq!(if_id, NetIfId(7));
             assert_eq!(addr, src);
-            assert_eq!(packet.data(), b"abc");
+            assert_eq!(packet.into_vec(), b"abc");
         }
         _ => panic!("expected ready packet after wake"),
     }
@@ -416,10 +416,46 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
             assert_eq!(if_id, NetIfId::default());
             assert_eq!(addr, UdpAddr::new(src_ip, 1234));
-            assert_eq!(packet.data(), payload);
+            assert_eq!(packet.into_vec(), payload);
         }
         _ => panic!("expected delivered packet"),
     }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
+    let processor = UdpProcessor::new();
+    let endpoint = processor
+        .bind_with_token(InterfaceScope::Any, 10001, None)
+        .expect("bind udp endpoint for payload-chain test");
+
+    let src_ip = Ipv4Address::from_octets(10, 0, 0, 10);
+    let dst_ip = Ipv4Address::from_octets(10, 0, 0, 20);
+    let payload = b"chain-payload";
+
+    let mut buf = [0u8; 64];
+    let len = UdpProcessor::build_packet(&mut buf, src_ip, 4321, dst_ip, 10001, payload).unwrap();
+
+    let header = PacketRef::from_vec(buf[..UdpHeader::SIZE].to_vec());
+    let body = PacketRef::from_vec(payload.to_vec());
+    let chain = kernel_api::resource::net::PacketChain::from_segments(alloc::vec![header, body]);
+
+    assert_eq!(
+        processor.process_payload(
+            kernel_api::resource::net::PacketPayload::chain(chain),
+            src_ip,
+            dst_ip,
+            64,
+        ),
+        UdpResult::Delivered
+    );
+
+    let (_if_id, addr, _ttl, packet) = endpoint
+        .try_recv_sync()
+        .expect("payload-chain delivery should enqueue a datagram");
+    assert_eq!(addr, UdpAddr::new(src_ip, 4321));
+    assert_eq!(packet.into_vec(), payload);
+    assert_eq!(len, UdpHeader::SIZE + payload.len());
 }
 
 #[cfg_attr(test, test_case)]

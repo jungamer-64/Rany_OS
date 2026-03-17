@@ -111,6 +111,18 @@ fn process_device_events(index: u8) -> Result<(), &'static str> {
     }
 }
 
+fn set_device_interrupts_enabled(index: u8, enabled: bool) -> Result<(), &'static str> {
+    with_virtio_net_device_at_index(index, |device| {
+        for queue in &device.rx_queues {
+            queue.set_interrupts_enabled(enabled);
+        }
+        for queue in &device.tx_queues {
+            queue.set_interrupts_enabled(enabled);
+        }
+    })
+    .ok_or("VirtIO-Net device not initialized")
+}
+
 impl NetDevicePort for VirtioNetDriverAdapter {
     fn info(&self) -> NetDeviceInfo {
         with_virtio_net_device_at_index(self.index, |device| {
@@ -153,6 +165,10 @@ impl NetDevicePort for VirtioNetDriverAdapter {
 
     fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str> {
         submit_zero_copy_tx(self.index, packet, meta)
+    }
+
+    fn set_interrupts_enabled(&self, enabled: bool) -> Result<(), &'static str> {
+        set_device_interrupts_enabled(self.index, enabled)
     }
 
     fn poll(&self, _if_id: u16) -> Result<(), &'static str> {

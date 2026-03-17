@@ -1,5 +1,8 @@
 use super::NetIfId;
 use super::*;
+use alloc::vec;
+use crate::net::payload::PacketPayloadView;
+use kernel_api::resource::net::PacketPayload;
 
 mod global_instance;
 pub use global_instance::*;
@@ -161,6 +164,271 @@ impl NetworkStack {
                     .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
             })
             .unwrap_or_default()
+    }
+
+    pub fn send_raw_ip_payload_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        payload: PacketPayload,
+    ) -> Result<(), crate::net::types::NetworkError> {
+        let view = PacketPayloadView::new(&payload);
+        let Some(version) = view.first_byte().map(|byte| byte >> 4) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+
+        match version {
+            4 => self.send_raw_ipv4_payload_scoped(scope, &view),
+            6 => self.send_raw_ipv6_payload_scoped(scope, &view),
+            _ => Err(crate::net::types::NetworkError::InvalidAddress),
+        }
+    }
+
+    fn send_raw_ipv4_payload_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        payload: &PacketPayloadView<'_>,
+    ) -> Result<(), crate::net::types::NetworkError> {
+        let mut fixed = [0u8; 60];
+        if payload.copy_range(0, &mut fixed[..20]) < 20 {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+
+        if (fixed[0] >> 4) != 4 {
+            return Err(crate::net::types::NetworkError::InvalidAddress);
+        }
+
+        let ihl = ((fixed[0] & 0x0f) as usize) * 4;
+        if !(20..=60).contains(&ihl) {
+            return Err(crate::net::types::NetworkError::InvalidAddress);
+        }
+
+        let mut header = vec![0u8; ihl];
+        if payload.copy_range(0, &mut header) < ihl {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+
+        let total_len = u16::from_be_bytes([header[2], header[3]]) as usize;
+        if total_len < ihl || total_len != payload.total_len() {
+            return Err(crate::net::types::NetworkError::InvalidAddress);
+        }
+
+        let observed_checksum = u16::from_be_bytes([header[10], header[11]]);
+        let expected_checksum = crate::net::l3::ipv4::calculate_ip_checksum(&header);
+        if observed_checksum != expected_checksum {
+            return Err(crate::net::types::NetworkError::InvalidAddress);
+        }
+
+        let src_ip = crate::net::l3::ipv4::Ipv4Address::new([
+            header[12], header[13], header[14], header[15],
+        ]);
+        let dst_ip = crate::net::l3::ipv4::Ipv4Address::new([
+            header[16], header[17], header[18], header[19],
+        ]);
+        let protocol = header[9];
+        let (src_port, dst_port, tcp_flags) = if total_len >= ihl + 4 {
+            match protocol {
+                6 if total_len >= ihl + 14 => {
+                    let ports = payload.read_vec(ihl, 14);
+                    if ports.len() < 14 {
+                        (0, 0, 0)
+                    } else {
+                        (
+                            u16::from_be_bytes([ports[0], ports[1]]),
+                            u16::from_be_bytes([ports[2], ports[3]]),
+                            ports[13],
+                        )
+                    }
+                }
+                17 if total_len >= ihl + 4 => {
+                    let ports = payload.read_vec(ihl, 4);
+                    if ports.len() < 4 {
+                        (0, 0, 0)
+                    } else {
+                        (
+                            u16::from_be_bytes([ports[0], ports[1]]),
+                            u16::from_be_bytes([ports[2], ports[3]]),
+                            0,
+                        )
+                    }
+                }
+                _ => (0, 0, 0),
+            }
+        } else {
+            (0, 0, 0)
+        };
+
+        if !crate::net::security::firewall::check_egress_v4(
+            src_ip.octets(),
+            dst_ip.octets(),
+            protocol,
+            src_port,
+            dst_port,
+            tcp_flags,
+        ) {
+            self.stats.record_dropped();
+            return Err(crate::net::types::NetworkError::PermissionDenied);
+        }
+
+        let (if_id, config, _) = self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)?;
+        let dst_mac = if dst_ip.is_loopback() {
+            config.mac
+        } else {
+            self.resolve_mac(if_id, dst_ip, &config, self.current_time())
+                .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?
+        };
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let Some(mut frame) = EthernetFrameMut::new(&mut buffer) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        frame
+            .set_destination(dst_mac)
+            .set_source(config.mac)
+            .set_ether_type(EtherType::Ipv4);
+        let frame_payload = frame.payload_mut();
+        if frame_payload.len() < total_len {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+        if payload.copy_all_into(&mut frame_payload[..total_len]) != total_len {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+        frame.set_payload_len(total_len);
+        if self.transmit_on(if_id, frame.as_bytes()) {
+            Ok(())
+        } else {
+            Err(crate::net::types::NetworkError::TransmitFailed)
+        }
+    }
+
+    fn send_raw_ipv6_payload_scoped(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        payload: &PacketPayloadView<'_>,
+    ) -> Result<(), crate::net::types::NetworkError> {
+        let mut header = [0u8; 40];
+        if payload.copy_range(0, &mut header) < 40 {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+
+        if (header[0] >> 4) != 6 {
+            return Err(crate::net::types::NetworkError::InvalidAddress);
+        }
+
+        let total_len = IPV6_HEADER_SIZE
+            + u16::from_be_bytes([header[4], header[5]]) as usize;
+        if total_len != payload.total_len() {
+            return Err(crate::net::types::NetworkError::InvalidAddress);
+        }
+
+        let src_ip = crate::net::l3::ipv6::Ipv6Address::new([
+            header[8], header[9], header[10], header[11], header[12], header[13], header[14],
+            header[15], header[16], header[17], header[18], header[19], header[20], header[21],
+            header[22], header[23],
+        ]);
+        let dst_ip = crate::net::l3::ipv6::Ipv6Address::new([
+            header[24], header[25], header[26], header[27], header[28], header[29], header[30],
+            header[31], header[32], header[33], header[34], header[35], header[36], header[37],
+            header[38], header[39],
+        ]);
+        let next_header = header[6];
+
+        let (if_id, config, _) = self.resolve_ipv6_egress(scope, None, Some(src_ip), dst_ip)?;
+        let dst_mac = if dst_ip.is_multicast() {
+            MacAddress::new(dst_ip.multicast_mac())
+        } else {
+            match self.resolve_ndp_for_send(
+                if_id,
+                &dst_ip,
+                self.current_time.load(Ordering::Relaxed),
+                |_| {},
+            ) {
+                Some(Ok(mac)) => MacAddress::new(mac),
+                Some(Err((ns_if_id, our_ll, ns_msg))) => {
+                    let solicited = dst_ip.solicited_node();
+                    if let Some(ns_if_id) = ns_if_id {
+                        self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &solicited, &ns_msg);
+                    } else {
+                        self.send_ipv6_icmpv6_raw(&our_ll, &solicited, &ns_msg);
+                    }
+                    return Err(crate::net::types::NetworkError::ArpResolutionPending);
+                }
+                None => return Err(crate::net::types::NetworkError::NetworkUnreachable),
+            }
+        };
+
+        let (src_port, dst_port, tcp_flags) = if total_len >= IPV6_HEADER_SIZE + 4 {
+            match next_header {
+                6 if total_len >= IPV6_HEADER_SIZE + 14 => {
+                    let ports = payload.read_vec(IPV6_HEADER_SIZE, 14);
+                    if ports.len() < 14 {
+                        (0, 0, 0)
+                    } else {
+                        (
+                            u16::from_be_bytes([ports[0], ports[1]]),
+                            u16::from_be_bytes([ports[2], ports[3]]),
+                            ports[13],
+                        )
+                    }
+                }
+                17 => {
+                    let ports = payload.read_vec(IPV6_HEADER_SIZE, 4);
+                    if ports.len() < 4 {
+                        (0, 0, 0)
+                    } else {
+                        (
+                            u16::from_be_bytes([ports[0], ports[1]]),
+                            u16::from_be_bytes([ports[2], ports[3]]),
+                            0,
+                        )
+                    }
+                }
+                58 => {
+                    let icmp = payload.read_vec(IPV6_HEADER_SIZE, 2);
+                    if icmp.len() < 2 {
+                        (0, 0, 0)
+                    } else {
+                        (icmp[0] as u16, icmp[1] as u16, 0)
+                    }
+                }
+                _ => (0, 0, 0),
+            }
+        } else {
+            (0, 0, 0)
+        };
+
+        if !crate::net::security::firewall::check_egress(
+            crate::net::security::firewall::IpAddress::V6(src_ip.octets()),
+            crate::net::security::firewall::IpAddress::V6(dst_ip.octets()),
+            next_header,
+            src_port,
+            dst_port,
+            tcp_flags,
+        ) {
+            self.stats.record_dropped();
+            return Err(crate::net::types::NetworkError::PermissionDenied);
+        }
+
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let Some(mut frame) = EthernetFrameMut::new(&mut buffer) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        frame
+            .set_destination(dst_mac)
+            .set_source(config.mac)
+            .set_ether_type(EtherType::Ipv6);
+        let frame_payload = frame.payload_mut();
+        if frame_payload.len() < total_len {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+        if payload.copy_all_into(&mut frame_payload[..total_len]) != total_len {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+        frame.set_payload_len(total_len);
+        if self.transmit_on(if_id, frame.as_bytes()) {
+            Ok(())
+        } else {
+            Err(crate::net::types::NetworkError::TransmitFailed)
+        }
     }
 
     /// Create a new network stack with configuration

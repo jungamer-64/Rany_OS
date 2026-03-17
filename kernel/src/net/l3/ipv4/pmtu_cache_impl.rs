@@ -1,4 +1,6 @@
 use super::*;
+use crate::net::datapath::mempool::PacketRef;
+use kernel_api::resource::net::{PacketChain, PacketPayload};
 
 impl PmtuCache {
     /// Default maximum entries
@@ -140,6 +142,11 @@ pub(crate) struct FragmentHole {
 }
 
 /// Fragment reassembly buffer for a single datagram
+struct FragmentSegment {
+    offset: u16,
+    packet: PacketRef,
+}
+
 pub struct FragmentBuffer {
     /// Reassembled data buffer
     data: Vec<u8>,
@@ -155,6 +162,8 @@ pub struct FragmentBuffer {
     created_at: u64,
     /// Last update timestamp
     last_update: u64,
+    /// Original fragment payload ownership chain used to rebuild a packet-backed result.
+    segments: Vec<FragmentSegment>,
 }
 
 impl FragmentBuffer {
@@ -182,6 +191,7 @@ impl FragmentBuffer {
             first_payload_prefix: None,
             created_at: timestamp,
             last_update: timestamp,
+            segments: Vec::new(),
         }
     }
 
@@ -198,7 +208,13 @@ impl FragmentBuffer {
     /// Add a fragment to the buffer (RFC 815 hole-filling algorithm)
     ///
     /// Returns true if the fragment was accepted, false if invalid/overlapping
-    pub fn add_fragment(&mut self, header: &Ipv4Header, payload: &[u8], current_time: u64) -> bool {
+    pub fn add_fragment(
+        &mut self,
+        header: &Ipv4Header,
+        payload: &[u8],
+        payload_packet: Option<PacketRef>,
+        current_time: u64,
+    ) -> bool {
         let fragment_offset = (header.fragment_offset() as u32) * 8; // Convert to bytes
         let fragment_len = payload.len() as u32;
         let fragment_end = fragment_offset + fragment_len;
@@ -318,6 +334,12 @@ impl FragmentBuffer {
 
         // Copy fragment data
         self.data[fragment_offset as usize..fragment_end as usize].copy_from_slice(payload);
+        if fragment_len > 0 {
+            self.segments.push(FragmentSegment {
+                offset: fragment_offset,
+                packet: payload_packet.unwrap_or_else(|| PacketRef::from_vec(payload.to_vec())),
+            });
+        }
 
         // Update hole list (RFC 815 algorithm)
         self.update_holes(fragment_offset, fragment_end, header.more_fragments());
@@ -388,7 +410,7 @@ impl FragmentBuffer {
 
     /// Get the reassembled packet (only valid when is_complete() is true)
     /// Build the reassembled packet once complete
-    pub fn get_reassembled(&self) -> Option<Vec<u8>> {
+    pub fn get_reassembled(self) -> Option<PacketPayload> {
         if !self.is_complete() {
             return None;
         }
@@ -427,7 +449,22 @@ impl FragmentBuffer {
         packet[10] = (checksum >> 8) as u8;
         packet[11] = (checksum & 0xff) as u8;
 
-        Some(packet)
+        let mut header_packet = PacketRef::from_vec(packet[..header_len].to_vec());
+        header_packet.set_len(header_len);
+
+        if self.segments.is_empty() {
+            return Some(PacketPayload::from_vec(packet));
+        }
+
+        let mut segments = self.segments;
+        segments.sort_unstable_by_key(|segment| segment.offset);
+
+        let mut chain = PacketChain::new();
+        chain.push(header_packet);
+        for segment in segments {
+            chain.push(segment.packet);
+        }
+        Some(PacketPayload::chain(chain))
     }
 }
 
@@ -486,8 +523,9 @@ impl FragmentReassembler {
         header: &Ipv4Header,
         header_data: &[u8],
         payload: &[u8],
+        payload_packet: Option<PacketRef>,
         current_time: u64,
-    ) -> (Option<Vec<u8>>, Vec<(Ipv4Address, Vec<u8>)>) {
+    ) -> (Option<PacketPayload>, Vec<(Ipv4Address, Vec<u8>)>) {
         self.stats.fragments_received += 1;
 
         let key = FragmentKey::from_header(header);
@@ -538,7 +576,7 @@ impl FragmentReassembler {
         // Capture first header for reassembly
         buffer.store_first_header_if_needed(header_data, header.fragment_offset());
 
-        if !buffer.add_fragment(header, payload, current_time) {
+        if !buffer.add_fragment(header, payload, payload_packet, current_time) {
             self.stats.dropped_invalid += 1;
             // Remove invalid buffer
             self.buffers.remove(&key);
@@ -546,9 +584,12 @@ impl FragmentReassembler {
         }
 
         // Check if reassembly is complete
-        if buffer.is_complete() {
-            let result = buffer.get_reassembled();
-            self.buffers.remove(&key);
+        let complete = buffer.is_complete();
+        if complete {
+            let result = self
+                .buffers
+                .remove(&key)
+                .and_then(FragmentBuffer::get_reassembled);
 
             if result.is_some() {
                 self.stats.reassembled += 1;
@@ -659,8 +700,8 @@ pub enum Ipv4ProcessResult<'a> {
     Tcp(&'a [u8], Ipv4Address, Ipv4Address, &'a [u8]),
     /// UDP packet with source address, destination address, and original packet data
     Udp(&'a [u8], Ipv4Address, Ipv4Address, &'a [u8]),
-    /// Reassembled packet (owned data from fragment reassembly)
-    Reassembled(Vec<u8>),
+    /// Reassembled packet backed by the fragment ownership chain
+    Reassembled(PacketPayload),
     /// Fragment received, reassembly in progress
     FragmentPending,
     /// Reassembly timeout (source address and first fragment's header for ICMP)
@@ -736,13 +777,22 @@ impl Ipv4Processor {
     /// Process an incoming IPv4 packet (without timestamp - for backwards compatibility)
     pub fn process<'a>(&mut self, data: &'a [u8]) -> Ipv4ProcessResult<'a> {
         // Use a default timestamp of 0 when not provided
-        self.process_with_time(data, 0)
+        self.process_with_time_and_packet(data, None, 0)
     }
 
     /// Process an incoming IPv4 packet with timestamp for fragment timeout handling
     pub fn process_with_time<'a>(
         &mut self,
         data: &'a [u8],
+        mut current_time: u64,
+    ) -> Ipv4ProcessResult<'a> {
+        self.process_with_time_and_packet(data, None, current_time)
+    }
+
+    pub fn process_with_time_and_packet<'a>(
+        &mut self,
+        data: &'a [u8],
+        packet_ref: Option<PacketRef>,
         mut current_time: u64,
     ) -> Ipv4ProcessResult<'a> {
         // Security: Ensure we have a valid timestamp for fragment timeout handling.
@@ -875,9 +925,20 @@ impl Ipv4Processor {
             let header_len = header.header_len();
             let header_data = &data[..header_len];
             let payload = packet.payload();
+            let payload_packet = packet_ref.as_ref().and_then(|ip_packet| {
+                let mut payload_packet = ip_packet.clone();
+                payload_packet.advance(header_len);
+                payload_packet.set_len(payload.len());
+                Some(payload_packet)
+            });
             let (reassembled, expired) =
-                self.reassembler
-                    .process_fragment(header, header_data, payload, current_time);
+                self.reassembler.process_fragment(
+                    header,
+                    header_data,
+                    payload,
+                    payload_packet,
+                    current_time,
+                );
 
             if let Some(data) = reassembled {
                 // Reassembly complete - return the reassembled packet

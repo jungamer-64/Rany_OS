@@ -191,7 +191,7 @@ impl EndpointError {
 pub type EndpointResult<T> = Result<T, EndpointError>;
 
 /// エンドポイントアドレス（IPv4 / IPv6 - unified）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EndpointAddr {
     /// IPv4 address + port
     V4 { ip: [u8; 4], port: u16 },
@@ -322,6 +322,45 @@ impl EndpointAddr {
         bytes[..16].copy_from_slice(&self.as_ipv6());
         bytes[16..18].copy_from_slice(&self.port().to_be_bytes());
         bytes
+    }
+}
+
+impl core::cmp::Ord for EndpointAddr {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        use core::cmp::Ordering;
+
+        match (*self, *other) {
+            (EndpointAddr::V4 { ip: lhs_ip, port: lhs_port }, EndpointAddr::V4 { ip: rhs_ip, port: rhs_port }) => {
+                let mut i = 0usize;
+                while i < lhs_ip.len() {
+                    match lhs_ip[i].cmp(&rhs_ip[i]) {
+                        Ordering::Equal => {}
+                        non_eq => return non_eq,
+                    }
+                    i += 1;
+                }
+                lhs_port.cmp(&rhs_port)
+            }
+            (EndpointAddr::V6 { ip: lhs_ip, port: lhs_port }, EndpointAddr::V6 { ip: rhs_ip, port: rhs_port }) => {
+                let mut i = 0usize;
+                while i < lhs_ip.len() {
+                    match lhs_ip[i].cmp(&rhs_ip[i]) {
+                        Ordering::Equal => {}
+                        non_eq => return non_eq,
+                    }
+                    i += 1;
+                }
+                lhs_port.cmp(&rhs_port)
+            }
+            (EndpointAddr::V4 { .. }, EndpointAddr::V6 { .. }) => Ordering::Less,
+            (EndpointAddr::V6 { .. }, EndpointAddr::V4 { .. }) => Ordering::Greater,
+        }
+    }
+}
+
+impl core::cmp::PartialOrd for EndpointAddr {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 

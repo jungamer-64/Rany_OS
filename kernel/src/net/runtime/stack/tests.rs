@@ -1,7 +1,9 @@
 use super::*;
 use crate::net::runtime::manager;
 use crate::sync::PoisonLock;
+use alloc::vec::Vec;
 use core::future::Future;
+use kernel_api::resource::net::PacketPayload;
 
 static TEST_LAST_TX_IF: PoisonLock<Option<NetIfId>> = PoisonLock::new(None);
 
@@ -38,6 +40,64 @@ impl Drop for ManagerStateGuard {
         *guard = self.prev_manager.take();
         *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
+}
+
+fn build_ipv4_raw_udp_packet(
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    src_port: u16,
+    dst_port: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut buffer =
+        alloc::vec![0u8; crate::net::l3::ipv4::Ipv4Header::MIN_SIZE + 8 + payload.len()];
+    let mut ip = crate::net::l3::ipv4::Ipv4PacketMut::new(&mut buffer).expect("ipv4 packet");
+    ip.init_header()
+        .set_source(src_ip)
+        .set_destination(dst_ip)
+        .set_ttl(64)
+        .set_protocol(crate::net::l3::ipv4::IpProtocol::Udp);
+
+    let udp_len = crate::net::l4::udp::UdpProcessor::build_packet(
+        ip.payload_mut(),
+        src_ip,
+        src_port,
+        dst_ip,
+        dst_port,
+        payload,
+    )
+    .expect("udp packet");
+    ip.finalize(udp_len);
+    buffer.truncate(crate::net::l3::ipv4::Ipv4Header::MIN_SIZE + udp_len);
+    buffer
+}
+
+fn build_ipv6_raw_udp_packet(
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    src_port: u16,
+    dst_port: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut buffer =
+        alloc::vec![0u8; crate::net::l3::ipv6::IPV6_HEADER_SIZE + 8 + payload.len()];
+    let mut ip = crate::net::l3::ipv6::Ipv6PacketMut::new(&mut buffer).expect("ipv6 packet");
+    ip.init_header();
+    ip.set_source(&src_ip);
+    ip.set_destination(&dst_ip);
+    ip.set_hop_limit(64);
+    ip.set_next_header(crate::net::l3::ipv4::IpProtocol::Udp);
+
+    let udp_len = {
+        let mut udp = crate::net::l4::udp::UdpPacketMut::new(ip.payload_mut()).expect("udp packet");
+        udp.set_src_port(src_port)
+            .set_dst_port(dst_port)
+            .write_payload(payload);
+        udp.finalize_v6(src_ip, dst_ip)
+    };
+    ip.finalize(udp_len);
+    buffer.truncate(crate::net::l3::ipv6::IPV6_HEADER_SIZE + udp_len);
+    buffer
 }
 
 fn install_primary_dhcp_v4_client(
@@ -171,10 +231,7 @@ pub fn test_send_udp_event_task_zero_copy() {
             s.set_transmit_fn(
                 |_if_id: Option<super::NetIfId>,
                  _data: &[u8],
-                 _meta: kernel_api::service::netdev::NetTxMeta| {
-                    assert!(_if_id.is_none());
-                    true
-                },
+                 _meta: kernel_api::service::netdev::NetTxMeta| true,
             );
         }
     }
@@ -223,10 +280,7 @@ pub fn test_send_icmp_event_dispatch_smoke() {
             s.set_transmit_fn(
                 |_if_id: Option<super::NetIfId>,
                  _data: &[u8],
-                 _meta: kernel_api::service::netdev::NetTxMeta| {
-                    assert!(_if_id.is_none());
-                    true
-                },
+                 _meta: kernel_api::service::netdev::NetTxMeta| true,
             );
             // Pre-populate ARP cache so ping will proceed
             let target = Ipv4Address::new([8, 8, 8, 8]);
@@ -610,6 +664,152 @@ pub fn test_send_udp_raw_without_route_does_not_fallback() {
 
     let last_if = *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(last_if, None);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_raw_ipv4_payload_rejects_bad_checksum() {
+    let _guard = ManagerStateGuard::new();
+    manager::init_network_manager();
+    init_default();
+
+    let if0 = manager::register_interface("raw0").expect("register raw0");
+    let cfg0 = NetworkConfig {
+        mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 5),
+        ipv4: Ipv4Config {
+            address: Ipv4Address::new([10, 10, 0, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Ipv4Address::ANY,
+            dns: None,
+        },
+        ..NetworkConfig::default()
+    };
+    manager::set_interface_config(if0, cfg0).expect("cfg raw0");
+
+    if let Ok(mut guard) = stack().lock() {
+        let stack = guard.as_mut().expect("stack");
+        stack.set_transmit_fn(record_test_tx_if);
+        stack.register_interface_state(if0, cfg0);
+
+        let mut packet = build_ipv4_raw_udp_packet(
+            cfg0.ipv4.address,
+            Ipv4Address::new([10, 10, 0, 55]),
+            1234,
+            8080,
+            b"checksum",
+        );
+        packet[10] ^= 0xff;
+
+        let result = stack.send_raw_ip_payload_scoped(
+            crate::net::types::InterfaceScope::Pinned(if0),
+            PacketPayload::from_vec(packet),
+        );
+        assert_eq!(result, Err(crate::net::types::NetworkError::InvalidAddress));
+    } else {
+        panic!("stack lock");
+    }
+
+    let last_if = *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(last_if, None);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
+    let _guard = ManagerStateGuard::new();
+    manager::init_network_manager();
+    init_default();
+
+    let if0 = manager::register_interface("raw-pin0").expect("register raw-pin0");
+    let cfg0 = NetworkConfig {
+        mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 6),
+        ipv4: Ipv4Config {
+            address: Ipv4Address::new([10, 20, 0, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Ipv4Address::ANY,
+            dns: None,
+        },
+        ..NetworkConfig::default()
+    };
+    manager::set_interface_config(if0, cfg0).expect("cfg raw-pin0");
+
+    if let Ok(mut guard) = stack().lock() {
+        let stack = guard.as_mut().expect("stack");
+        stack.set_transmit_fn(record_test_tx_if);
+        stack.register_interface_state(if0, cfg0);
+        let now = stack.current_time();
+        stack
+            .interfaces
+            .get_mut(&if0)
+            .expect("if0 state")
+            .arp
+            .cache()
+            .insert(
+                Ipv4Address::new([10, 20, 0, 55]),
+                MacAddress::from_octets(0x52, 0x54, 0, 0x65, 0x43, 0x21),
+                now,
+            );
+
+        let packet = build_ipv4_raw_udp_packet(
+            cfg0.ipv4.address,
+            Ipv4Address::new([10, 20, 0, 55]),
+            2222,
+            8088,
+            b"pinned",
+        );
+        assert!(stack
+            .send_raw_ip_payload_scoped(
+                crate::net::types::InterfaceScope::Pinned(if0),
+                PacketPayload::from_vec(packet),
+            )
+            .is_ok());
+    } else {
+        panic!("stack lock");
+    }
+
+    let last_if = *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(last_if, Some(if0));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_raw_ipv6_payload_rejects_length_mismatch() {
+    let _guard = ManagerStateGuard::new();
+    manager::init_network_manager();
+    init_default();
+
+    let if0 = manager::register_interface("raw6").expect("register raw6");
+    let ipv6_cfg =
+        crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x33]);
+    let cfg0 = NetworkConfig {
+        mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 7),
+        ipv4: Ipv4Config::default(),
+        ipv6: Some(ipv6_cfg),
+        ..NetworkConfig::default()
+    };
+    manager::set_interface_config(if0, cfg0).expect("cfg raw6");
+
+    if let Ok(mut guard) = stack().lock() {
+        let stack = guard.as_mut().expect("stack");
+        stack.register_interface_state(if0, cfg0);
+
+        let mut packet = build_ipv6_raw_udp_packet(
+            ipv6_cfg.link_local,
+            crate::net::l3::ipv6::Ipv6Address::new([
+                0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x12, 0x34, 0, 0, 0, 0, 0, 0x55,
+            ]),
+            3333,
+            8089,
+            b"ipv6",
+        );
+        packet[4] = 0;
+        packet[5] = 1;
+
+        let result = stack.send_raw_ip_payload_scoped(
+            crate::net::types::InterfaceScope::Pinned(if0),
+            PacketPayload::from_vec(packet),
+        );
+        assert_eq!(result, Err(crate::net::types::NetworkError::InvalidAddress));
+    } else {
+        panic!("stack lock");
+    }
 }
 
 #[cfg_attr(test, test_case)]

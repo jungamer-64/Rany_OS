@@ -11,6 +11,7 @@ use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::context::{NetRuntimeContext, default_runtime, default_runtime_context};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
+use crate::per_cpu::in_interrupt_context;
 use crate::sync::atomic_waker::AtomicWaker;
 use crate::sync::lockfree::MpmcRingBuffer;
 use crate::sync::{PoisonLock, PoisonRwLock};
@@ -370,7 +371,12 @@ impl NetPortRuntime for PortRuntimeHandle {
     }
 
     fn schedule_event(&self, event: NetDriverEvent) -> Result<(), &'static str> {
-        if enqueue_event(self.key, event) {
+        let queued = if in_interrupt_context() {
+            enqueue_event_from_isr(self.key, event)
+        } else {
+            enqueue_event(self.key, event)
+        };
+        if queued {
             Ok(())
         } else {
             Err("port event queue full")
@@ -1447,6 +1453,33 @@ mod tests {
         );
         assert!(sink.pop().is_none());
         assert_eq!(sink.len(), 0);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn schedule_event_from_interrupt_context_enqueues_successfully() {
+        unsafe {
+            crate::per_cpu::init_per_cpu(1);
+        }
+
+        let driver = Arc::new(FakeDriver::new());
+        let if_id = register_port_with_default_config(NetDeviceKey::Virtio(89), driver, false)
+            .expect("register port");
+        let handle = lookup_port(if_id).expect("handle");
+
+        crate::per_cpu::enter_interrupt();
+        let result = handle
+            .runtime
+            .schedule_event(NetDriverEvent::QueueWake { queue_index: 3 });
+        crate::per_cpu::exit_interrupt();
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            handle.event_sink.pop(),
+            Some(NetDriverEvent::QueueWake { queue_index: 3 })
+        );
+
+        let _ = unregister_port(if_id);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

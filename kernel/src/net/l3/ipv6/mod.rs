@@ -1112,8 +1112,8 @@ pub enum Ipv6ProcessResult<'a> {
     Tcp(&'a [u8], Ipv6Address, Ipv6Address, u8),
     /// UDP payload with addresses and hop limit
     Udp(&'a [u8], Ipv6Address, Ipv6Address, u8),
-    /// Reassembled packet (owned data from fragment reassembly)
-    Reassembled(Vec<u8>),
+    /// Reassembled packet backed by the fragment ownership chain
+    Reassembled(kernel_api::resource::net::PacketPayload),
     /// Fragment received, reassembly in progress
     FragmentPending,
     /// Reassembly timeout (src, dst, unfragmentable_part, fragment_header for ICMPv6)

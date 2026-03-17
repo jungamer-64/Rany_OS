@@ -29,6 +29,8 @@ use alloc::vec::Vec;
 
 use super::Ipv6Address;
 use super::Ipv6ReassemblyError;
+use crate::net::datapath::mempool::PacketRef;
+use kernel_api::resource::net::{PacketChain, PacketPayload};
 
 // =====================================================
 // Fragment Header Parsing
@@ -113,6 +115,11 @@ struct Hole {
 // =====================================================
 
 /// Reassembly buffer for a single IPv6 datagram.
+struct FragmentSegment {
+    offset: u32,
+    packet: PacketRef,
+}
+
 pub struct Ipv6FragmentBuffer {
     /// Payload data (fragment payloads, without extension headers)
     data: Vec<u8>,
@@ -130,6 +137,8 @@ pub struct Ipv6FragmentBuffer {
     first_frag_header: Option<[u8; 8]>,
     /// Timestamp of first fragment arrival
     created_at: u64,
+    /// Original fragment ownership chain used to rebuild a packet-backed result.
+    segments: Vec<FragmentSegment>,
 }
 
 impl Ipv6FragmentBuffer {
@@ -154,6 +163,7 @@ impl Ipv6FragmentBuffer {
             unfragmentable_part: None,
             first_frag_header: None,
             created_at: timestamp,
+            segments: Vec::new(),
         }
     }
 
@@ -180,6 +190,7 @@ impl Ipv6FragmentBuffer {
         unfragmentable: &[u8],
         frag: &Ipv6FragmentHeader,
         payload: &[u8],
+        payload_packet: Option<PacketRef>,
     ) -> Result<(), Ipv6ReassemblyError> {
         let offset = frag.offset_bytes();
         let payload_len = payload.len() as u32;
@@ -319,6 +330,12 @@ impl Ipv6FragmentBuffer {
 
         // Copy payload into buffer
         self.data[offset as usize..end as usize].copy_from_slice(payload);
+        if payload_len > 0 {
+            self.segments.push(FragmentSegment {
+                offset,
+                packet: payload_packet.unwrap_or_else(|| PacketRef::from_vec(payload.to_vec())),
+            });
+        }
 
         // RFC 815 hole-list update
         self.update_holes(offset, end, frag.more_fragments);
@@ -377,7 +394,7 @@ impl Ipv6FragmentBuffer {
     ///
     /// The result is: unfragmentable_part (with Next Header patched) + reassembled payload.
     /// The caller receives a fully-formed IPv6 packet that can be re-processed.
-    fn reassemble(&self) -> Option<Vec<u8>> {
+    fn reassemble(self) -> Option<PacketPayload> {
         if !self.is_complete() {
             return None;
         }
@@ -462,7 +479,23 @@ impl Ipv6FragmentBuffer {
             }
         }
 
-        Some(packet)
+        let header_len = unfrag.len();
+        let mut header_packet = PacketRef::from_vec(packet[..header_len].to_vec());
+        header_packet.set_len(header_len);
+
+        if self.segments.is_empty() {
+            return Some(PacketPayload::from_vec(packet));
+        }
+
+        let mut segments = self.segments;
+        segments.sort_unstable_by_key(|segment| segment.offset);
+
+        let mut chain = PacketChain::new();
+        chain.push(header_packet);
+        for segment in segments {
+            chain.push(segment.packet);
+        }
+        Some(PacketPayload::chain(chain))
     }
 }
 
@@ -527,9 +560,10 @@ impl Ipv6FragmentReassembler {
         unfragmentable: &[u8],
         frag: &Ipv6FragmentHeader,
         payload: &[u8],
+        payload_packet: Option<PacketRef>,
         current_time: u64,
     ) -> (
-        Result<Option<Vec<u8>>, Ipv6ReassemblyError>,
+        Result<Option<PacketPayload>, Ipv6ReassemblyError>,
         Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)>,
     ) {
         self.stats.fragments_received += 1;
@@ -565,11 +599,10 @@ impl Ipv6FragmentReassembler {
             None => return (Ok(None), expired),
         };
 
-        match buffer.add_fragment(unfragmentable, frag, payload) {
+        match buffer.add_fragment(unfragmentable, frag, payload, payload_packet) {
             Ok(()) => {
                 if buffer.is_complete() {
-                    let result = buffer.reassemble();
-                    self.buffers.remove(&key);
+                    let result = self.buffers.remove(&key).and_then(Ipv6FragmentBuffer::reassemble);
                     if result.is_some() {
                         self.stats.reassembled += 1;
                     }

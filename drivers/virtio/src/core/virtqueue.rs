@@ -227,6 +227,18 @@ impl VirtQueue {
         transport.notify_queue(self.queue_index);
     }
 
+    pub fn set_interrupts_enabled(&self, enabled: bool) {
+        let flags = if enabled {
+            0
+        } else {
+            crate::defs::avail_flags::VRING_AVAIL_F_NO_INTERRUPT
+        };
+        unsafe {
+            (*self.avail_ring.as_ptr()).flags = flags;
+        }
+        core::sync::atomic::fence(Ordering::SeqCst);
+    }
+
     pub fn poll_complete(&self) -> Option<(u16, u32)> {
         core::sync::atomic::fence(Ordering::Acquire);
         let used = unsafe { self.used_ring.as_ref() };

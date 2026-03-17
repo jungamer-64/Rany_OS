@@ -189,6 +189,7 @@ impl DhcpV6Client {
             // 応答待機
             match task::with_timeout(socket.recv(), 1000).await {
                 TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
+                    let packet = packet.into_vec();
                     // Get the actual source IPv6 address from UdpAddr (RFC 8415 compliant)
                     let src_v6 = match src {
                         crate::net::l4::udp::UdpAddr::V6 { ip, .. } => ip,
@@ -198,7 +199,7 @@ impl DhcpV6Client {
                         }
                     };
 
-                    if self.handle_packet(packet.data(), src_v6) {
+                    if self.handle_packet(&packet, src_v6) {
                         log::info!("[NET] DHCPv6 packet handled from {}", src_v6);
                     }
                 }

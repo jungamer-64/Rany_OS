@@ -203,6 +203,7 @@ impl MdnsService {
             // パケット受信を待機
             if let Some((_if_id, src, ttl, packet)) = socket.recv().await {
                 let now = crate::task::current_tick() / 1000;
+                let packet = packet.into_vec();
 
                 // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently
                 // discard any Multicast DNS queries that arrive with an IP TTL (or Hop Limit)
@@ -222,7 +223,7 @@ impl MdnsService {
 
                 // 受信パケットを処理
                 let src_ip = src.ip_v4().unwrap_or(Ipv4Address::ANY);
-                let result = self.process_packet(packet.data(), src_ip, ttl, now);
+                let result = self.process_packet(&packet, src_ip, ttl, now);
 
                 match result {
                     MdnsResult::SendResponse { name, ip, ttl } => {

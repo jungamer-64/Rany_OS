@@ -16,6 +16,7 @@ pub mod tests {
     use crate::net::runtime::manager::NetIfId;
     use crate::net::runtime::{create_runtime, default_runtime, reset_runtime_registry_for_tests};
     use crate::net::types::InterfaceScope;
+    use alloc::vec;
     use alloc::vec::Vec;
 
     fn endpoint_new_with_fd_impl() {
@@ -308,7 +309,8 @@ pub mod tests {
         if let Some(s) = sock.endpoint() {
             let inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(inner.local_addr.unwrap(), local);
-            assert!(inner.tcp().map_or(false, |t| t.listener.is_some()));
+            assert_eq!(inner.state, crate::net::l4::endpoint::EndpointState::Listening);
+            assert!(inner.tcp().is_some());
         } else {
             panic!("endpoint not found");
         }
@@ -443,6 +445,128 @@ pub mod tests {
 
         let (accepted, _, _) = listen_endpoint.next_incoming_sync().expect("accept");
         assert_eq!(accepted.runtime().id(), runtime_b.id());
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_raw_scope_registration_rejects_duplicate_scope() {
+        let manager = crate::net::l4::endpoint::manager::EndpointManager::new();
+        let any_fd = EndpointFd::from_raw(910);
+        let pinned_fd = EndpointFd::from_raw(911);
+
+        assert!(manager.register_raw_scope(InterfaceScope::Any, any_fd).is_ok());
+        assert!(matches!(
+            manager.register_raw_scope(InterfaceScope::Any, pinned_fd),
+            Err(EndpointError::ResourceExhausted)
+        ));
+        assert!(
+            manager
+                .register_raw_scope(InterfaceScope::Pinned(NetIfId(6)), pinned_fd)
+                .is_ok()
+        );
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_raw_endpoint_prefers_pinned_scope_over_any() {
+        let manager = crate::net::l4::endpoint::manager::EndpointManager::new();
+
+        let wildcard = Endpoint::new_with_fd(EndpointType::Raw, EndpointFd::from_raw(920));
+        {
+            let mut inner = wildcard.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.scope = InterfaceScope::Any;
+            inner.ensure_raw();
+            let _ = inner.transition_to(EndpointState::Bound);
+        }
+        manager.register(wildcard.clone());
+        assert!(manager
+            .register_raw_scope(InterfaceScope::Any, wildcard.fd())
+            .is_ok());
+
+        let pinned = Endpoint::new_with_fd(EndpointType::Raw, EndpointFd::from_raw(921));
+        {
+            let mut inner = pinned.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.scope = InterfaceScope::Pinned(NetIfId(7));
+            inner.ensure_raw();
+            let _ = inner.transition_to(EndpointState::Bound);
+        }
+        manager.register(pinned.clone());
+        assert!(manager
+            .register_raw_scope(InterfaceScope::Pinned(NetIfId(7)), pinned.fd())
+            .is_ok());
+
+        assert_eq!(
+            manager.find_raw_endpoint(NetIfId(7)).map(|ep| ep.fd()),
+            Some(pinned.fd())
+        );
+        assert_eq!(
+            manager.find_raw_endpoint(NetIfId(8)).map(|ep| ep.fd()),
+            Some(wildcard.fd())
+        );
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_raw_delivery_prefers_pinned_then_falls_back_to_any() {
+        crate::net::l4::endpoint::manager::init_endpoint_manager();
+
+        let raw_any = crate::net::l4::endpoint::create_raw_endpoint();
+        if let Some(endpoint) = raw_any.endpoint() {
+            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.scope = InterfaceScope::Any;
+            inner.ensure_raw();
+            let _ = inner.transition_to(EndpointState::Bound);
+        }
+
+        let raw_pinned = crate::net::l4::endpoint::create_raw_endpoint();
+        if let Some(endpoint) = raw_pinned.endpoint() {
+            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.scope = InterfaceScope::Pinned(NetIfId(12));
+            inner.ensure_raw();
+            let _ = inner.transition_to(EndpointState::Bound);
+        }
+
+        let manager = crate::net::l4::endpoint::manager::endpoint_manager()
+            .expect("endpoint manager lock");
+        let guard = manager.read().unwrap_or_else(|e| e.into_inner());
+        let manager = guard.as_ref().expect("endpoint manager");
+        assert!(manager
+            .register_raw_scope(InterfaceScope::Any, raw_any.fd())
+            .is_ok());
+        assert!(manager
+            .register_raw_scope(InterfaceScope::Pinned(NetIfId(12)), raw_pinned.fd())
+            .is_ok());
+        drop(guard);
+
+        let pinned_payload = kernel_api::resource::net::PacketPayload::from_vec(vec![1, 2, 3, 4]);
+        assert!(crate::net::l4::endpoint::manager::deliver_raw_payload(
+            NetIfId(12),
+            pinned_payload
+        ));
+        let (received_pinned, if_id) = raw_pinned
+            .endpoint()
+            .expect("pinned raw endpoint")
+            .recv_raw_payload_sync()
+            .expect("pinned delivery");
+        assert_eq!(if_id, NetIfId(12));
+        assert_eq!(received_pinned.into_vec(), vec![1, 2, 3, 4]);
+        assert!(matches!(
+            raw_any
+                .endpoint()
+                .expect("wildcard raw endpoint")
+                .recv_raw_payload_sync(),
+            Err(EndpointError::Timeout)
+        ));
+
+        let wildcard_payload = kernel_api::resource::net::PacketPayload::from_vec(vec![9, 8, 7]);
+        assert!(crate::net::l4::endpoint::manager::deliver_raw_payload(
+            NetIfId(13),
+            wildcard_payload
+        ));
+        let (received_any, if_id) = raw_any
+            .endpoint()
+            .expect("wildcard raw endpoint")
+            .recv_raw_payload_sync()
+            .expect("wildcard delivery");
+        assert_eq!(if_id, NetIfId(13));
+        assert_eq!(received_any.into_vec(), vec![9, 8, 7]);
     }
 
     #[cfg_attr(test, test_case)]

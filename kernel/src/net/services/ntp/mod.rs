@@ -161,8 +161,8 @@ impl NtpClient {
 
         match with_timeout(socket.recv(), NTP_TIMEOUT_MS).await {
             TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
-                let data = packet.data();
-                let resp = NtpHeader::from_bytes(data).ok_or(EndpointError::Internal)?;
+                let data = packet.into_vec();
+                let resp = NtpHeader::from_bytes(&data).ok_or(EndpointError::Internal)?;
 
                 // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
                 // in the response matches the transmit timestamp in the request.

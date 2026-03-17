@@ -455,7 +455,8 @@ pub fn test_ipv6_fragment_reassembly_success() {
     };
     let payload1 = [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // 8 bytes
 
-    let (res1, _) = reassembler.process_fragment(src, dst, &unfrag, &frag1_hdr, &payload1, now);
+    let (res1, _) =
+        reassembler.process_fragment(src, dst, &unfrag, &frag1_hdr, &payload1, None, now);
     assert!(matches!(res1, Ok(None)));
     assert_eq!(reassembler.active_buffers(), 1);
 
@@ -468,18 +469,98 @@ pub fn test_ipv6_fragment_reassembly_success() {
     };
     let payload2 = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22];
 
-    let (res2, _) = reassembler.process_fragment(src, dst, &unfrag, &frag2_hdr, &payload2, now);
+    let (res2, _) =
+        reassembler.process_fragment(src, dst, &unfrag, &frag2_hdr, &payload2, None, now);
     let packet = res2
         .expect("reassembly should not error")
         .expect("reassembly failed");
     assert_eq!(reassembler.active_buffers(), 0);
 
     // Check reassembled packet
-    assert_eq!(packet.len(), 40 + 16);
-    assert_eq!(packet[6], 58); // Patched Next Header (ICMPv6)
-    assert_eq!(u16::from_be_bytes([packet[4], packet[5]]), 16); // Patched Payload Length
-    assert_eq!(&packet[40..48], &payload1);
-    assert_eq!(&packet[48..56], &payload2);
+    let packet_bytes =
+        crate::net::payload::PacketPayloadView::new(&packet).read_vec(0, packet.total_len());
+    assert_eq!(packet_bytes.len(), 40 + 16);
+    assert_eq!(packet_bytes[6], 58); // Patched Next Header (ICMPv6)
+    assert_eq!(u16::from_be_bytes([packet_bytes[4], packet_bytes[5]]), 16); // Patched Payload Length
+    assert_eq!(&packet_bytes[40..48], &payload1);
+    assert_eq!(&packet_bytes[48..56], &payload2);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_ipv6_fragment_reassembly_returns_payload_chain() {
+    let mut reassembler = Ipv6FragmentReassembler::new(4);
+    let src = Ipv6Address::LOOPBACK;
+    let dst = Ipv6Address::LOOPBACK;
+    let id = 0x87654321;
+    let now = 2000;
+
+    let mut unfrag = [0u8; 40];
+    unfrag[0] = 0x60;
+    unfrag[6] = 44;
+    src.as_bytes()
+        .iter()
+        .enumerate()
+        .for_each(|(i, &b)| unfrag[8 + i] = b);
+    dst.as_bytes()
+        .iter()
+        .enumerate()
+        .for_each(|(i, &b)| unfrag[24 + i] = b);
+
+    let frag1_hdr = Ipv6FragmentHeader {
+        next_header: 17,
+        fragment_offset: 0,
+        more_fragments: true,
+        identification: id,
+    };
+    let payload1 = [0x13, 0x37, 0x00, 0x08, 0x99, 0x88, 0x77, 0x66];
+    let packet1 = kernel_api::resource::net::PacketRef::from_vec(payload1.to_vec());
+    let (res1, _) = reassembler.process_fragment(
+        src,
+        dst,
+        &unfrag,
+        &frag1_hdr,
+        &payload1,
+        Some(packet1),
+        now,
+    );
+    assert!(matches!(res1, Ok(None)));
+
+    let frag2_hdr = Ipv6FragmentHeader {
+        next_header: 17,
+        fragment_offset: 1,
+        more_fragments: false,
+        identification: id,
+    };
+    let payload2 = [0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xaa, 0xbb];
+    let packet2 = kernel_api::resource::net::PacketRef::from_vec(payload2.to_vec());
+    let (res2, _) = reassembler.process_fragment(
+        src,
+        dst,
+        &unfrag,
+        &frag2_hdr,
+        &payload2,
+        Some(packet2),
+        now,
+    );
+    let payload = res2
+        .expect("reassembly should not error")
+        .expect("reassembly should complete");
+
+    match &payload {
+        kernel_api::resource::net::PacketPayload::Chain(chain) => {
+            assert_eq!(chain.segments().len(), 3);
+            assert_eq!(chain.segments()[0].len(), 40);
+            assert_eq!(chain.segments()[1].data(), &payload1);
+            assert_eq!(chain.segments()[2].data(), &payload2);
+        }
+        other => panic!("expected payload chain, got {:?}", core::mem::discriminant(other)),
+    }
+
+    let bytes = crate::net::payload::PacketPayloadView::new(&payload)
+        .read_vec(0, payload.total_len());
+    assert_eq!(bytes.len(), 40 + payload1.len() + payload2.len());
+    assert_eq!(&bytes[40..48], &payload1);
+    assert_eq!(&bytes[48..56], &payload2);
 }
 
 #[cfg_attr(test, test_case)]
@@ -503,10 +584,10 @@ pub fn test_ipv6_fragment_overlap_rejection() {
         identification: id,
     };
 
-    reassembler.process_fragment(src, dst, &unfrag, &frag1, &[0xaa; 16], 0);
+    reassembler.process_fragment(src, dst, &unfrag, &frag1, &[0xaa; 16], None, 0);
 
     // Overlapping fragment (starts at offset 8, but offset 0-16 already filled)
-    let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag2, &[0xbb; 8], 0);
+    let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag2, &[0xbb; 8], None, 0);
     assert!(res.is_err());
     assert_eq!(reassembler.stats().dropped_invalid, 1);
     assert_eq!(reassembler.active_buffers(), 0); // Entire datagram discarded on overlap
@@ -528,7 +609,7 @@ pub fn test_ipv6_fragment_tiny_attack_rejection() {
         identification: 0x123,
     };
 
-    let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag, &[0x00; 4], 0);
+    let (res, _) = reassembler.process_fragment(src, dst, &unfrag, &frag, &[0x00; 4], None, 0);
     assert!(res.is_err());
     assert_eq!(reassembler.stats().dropped_invalid, 1);
 }

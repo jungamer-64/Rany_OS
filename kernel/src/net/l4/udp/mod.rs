@@ -9,6 +9,7 @@
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
+use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::net::types::NetworkError;
@@ -19,6 +20,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+use kernel_api::resource::net::PacketPayload;
 
 extern crate alloc;
 
@@ -31,6 +33,44 @@ fn ipv6_checksum(
 ) -> u16 {
     let pseudo = ipv6_pseudo_header_checksum(src, dst, next_header, data.len() as u32);
     data_checksum(data, pseudo)
+}
+
+fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
+    let mut sum = initial;
+    let mut trailing = None;
+
+    view.for_each_chunk(|chunk| {
+        let mut index = 0usize;
+        if let Some(prev) = trailing.take() {
+            if let Some((&first, rest)) = chunk.split_first() {
+                sum = sum.saturating_add(u16::from_be_bytes([prev, first]) as u32);
+                index = 1;
+                if rest.is_empty() {
+                    return;
+                }
+            } else {
+                trailing = Some(prev);
+                return;
+            }
+        }
+
+        while index + 1 < chunk.len() {
+            sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
+            index += 2;
+        }
+        if index < chunk.len() {
+            trailing = Some(chunk[index]);
+        }
+    });
+
+    if let Some(last) = trailing {
+        sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
+    }
+
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
 }
 
 /// UDP header
@@ -367,8 +407,8 @@ pub(crate) struct UdpEndpointInner {
     scope: InterfaceScope,
     /// Most recent ingress interface
     last_ingress_if_id: Option<NetIfId>,
-    /// Receive queue (zero-copy PacketRef + source addr + IP TTL/HopLimit)
-    rx_packet_queue: VecDeque<(NetIfId, UdpAddr, u8, PacketRef)>,
+    /// Receive queue (zero-copy payload + source addr + IP TTL/HopLimit)
+    rx_packet_queue: VecDeque<(NetIfId, UdpAddr, u8, PacketPayload)>,
     /// Total bytes in receive queue
     rx_queue_bytes: usize,
     /// Wakers for async receive
@@ -514,12 +554,12 @@ impl UdpEndpoint {
     ///
     /// ブートストラップ同期コンテキスト（async executor 未起動時）で使用する。
     /// キューにパケットがなければ `None` を返す。
-    pub fn try_recv_sync(&self) -> Option<(NetIfId, UdpAddr, u8, PacketRef)> {
+    pub fn try_recv_sync(&self) -> Option<(NetIfId, UdpAddr, u8, PacketPayload)> {
         match self.inner.lock() {
             Ok(mut inner) => {
                 if let Some((if_id, addr, ttl, pkt)) = inner.rx_packet_queue.pop_front() {
                     inner.last_ingress_if_id = Some(if_id);
-                    inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(pkt.len());
+                    inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(pkt.total_len());
                     Some((if_id, addr, ttl, pkt))
                 } else {
                     None
@@ -534,19 +574,24 @@ impl UdpEndpoint {
 
     /// Deliver a packet to this socket (called by the network stack)
     pub fn deliver(&self, if_id: NetIfId, src: UdpAddr, ttl: u8, packet: PacketRef) {
+        self.deliver_payload(if_id, src, ttl, PacketPayload::single(packet));
+    }
+
+    /// Deliver a packet payload to this socket without flattening chained payloads.
+    pub fn deliver_payload(&self, if_id: NetIfId, src: UdpAddr, ttl: u8, payload: PacketPayload) {
         match self.inner.lock() {
             Ok(mut inner) => {
                 if inner.closed {
                     return;
                 }
 
-                let pkt_len = packet.len();
+                let pkt_len = payload.total_len();
                 if inner.rx_packet_queue.len() < 64
                     && inner.rx_queue_bytes + pkt_len <= MAX_UDP_RX_QUEUE_BYTES
                 {
                     inner.last_ingress_if_id = Some(if_id);
                     inner.rx_queue_bytes += pkt_len;
-                    inner.rx_packet_queue.push_back((if_id, src, ttl, packet));
+                    inner.rx_packet_queue.push_back((if_id, src, ttl, payload));
 
                     for waker in inner.wakers.drain(..) {
                         waker.wake();
@@ -712,7 +757,7 @@ pub struct UdpRecvFuture {
 }
 
 impl Future for UdpRecvFuture {
-    type Output = Option<(NetIfId, UdpAddr, u8, PacketRef)>;
+    type Output = Option<(NetIfId, UdpAddr, u8, PacketPayload)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.endpoint.lock() {
@@ -723,7 +768,7 @@ impl Future for UdpRecvFuture {
 
                 if let Some((if_id, addr, ttl, packet)) = inner.rx_packet_queue.pop_front() {
                     inner.last_ingress_if_id = Some(if_id);
-                    inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(packet.len());
+                    inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(packet.total_len());
                     Poll::Ready(Some((if_id, addr, ttl, packet)))
                 } else {
                     inner.wakers.push(cx.waker().clone());

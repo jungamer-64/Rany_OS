@@ -27,6 +27,7 @@
 
 pub mod api;
 pub mod obs;
+pub mod payload;
 pub mod types;
 
 pub mod datapath;

@@ -247,11 +247,13 @@ impl KernelBootContext {
         let phys_mem_offset = boot_info.phys_mem_offset;
         let boot_info_view = unsafe { boot_info.view() }
             .expect("bootloader handoff must validate before kernel initialization");
+        let cmdline = kernel_cmdline(&boot_info_view);
+        crate::util::set_boot_cmdline(cmdline);
         Self {
             boot_info_addr: boot_info as *const ExoBootInfo as usize,
             boot_info_view,
             phys_mem_offset,
-            cmdline: kernel_cmdline(&boot_info_view),
+            cmdline,
         }
     }
 
@@ -1056,18 +1058,33 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
     };
 
     #[cfg(feature = "qemu-test-export")]
-    crate::task::spawn_on_cpu_for_test(target_cpu, async move {
-        crate::task::sleep_ms(10).await;
+    crate::task::spawn_on_cpu_with_priority(target_cpu, crate::task::Priority::High, async move {
+        info!(
+            target: "init",
+            "Runtime test task starting on cpu={} profile='{}'",
+            target_cpu,
+            request.profile
+        );
+        crate::task::yield_now().await;
         let summary = crate::test::runtime_dispatch::run(request.profile, request.case_filter);
         exit_with_runtime_summary(summary);
     });
 
     #[cfg(not(feature = "qemu-test-export"))]
-    crate::task::spawn(async move {
-        crate::task::sleep_ms(10).await;
-        let summary = crate::test::runtime_dispatch::run(request.profile, request.case_filter);
-        exit_with_runtime_summary(summary);
-    });
+    crate::task::spawn_with_priority(
+        async move {
+            info!(
+                target: "init",
+                "Runtime test task starting profile='{}'",
+                request.profile
+            );
+            crate::task::yield_now().await;
+            let summary = crate::test::runtime_dispatch::run(request.profile, request.case_filter);
+            exit_with_runtime_summary(summary);
+        },
+        crate::task::Priority::High,
+        None,
+    );
 }
 
 fn resolve_shell_mode(

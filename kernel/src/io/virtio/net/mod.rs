@@ -175,6 +175,12 @@ impl NetVirtQueue {
         }
     }
 
+    pub fn set_interrupts_enabled(&self, enabled: bool) {
+        if let Ok(inner) = self.inner.lock() {
+            inner.set_interrupts_enabled(enabled);
+        }
+    }
+
     /// 送信バッファを追加
     pub fn add_tx_buffer(
         &self,

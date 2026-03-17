@@ -237,6 +237,10 @@ impl NetVirtQueue {
     pub fn notify(&self, transport: &dyn crate::transport::VirtioTransport) {
         self.vq.notify(transport);
     }
+
+    pub fn set_interrupts_enabled(&self, enabled: bool) {
+        self.vq.set_interrupts_enabled(enabled);
+    }
 }
 
 /// Shared device configuration snapshot.

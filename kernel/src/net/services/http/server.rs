@@ -1,7 +1,7 @@
 use alloc::{format, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::net::l4::tcp::{EndpointAddr, TcpListener, TcpStream};
+use crate::net::l4::tcp::{EndpointAddr, TcpError, TcpListener, TcpStream};
 use crate::task::{self, Task, TimeoutResult};
 
 static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
@@ -14,6 +14,15 @@ static BYTES_TX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::
 
 /// 同時接続数の上限
 const MAX_CONCURRENT_CONNECTIONS: u32 = 16;
+const HOST_HTTP_READY_POLL_MS: u64 = 100;
+const HOST_HTTP_RETRY_BASE_MS: u64 = 100;
+const HOST_HTTP_RETRY_MAX_MS: u64 = 5_000;
+
+#[derive(Debug, Clone, Copy)]
+enum ServiceRestartCause {
+    Listen(TcpError),
+    Accept(TcpError),
+}
 
 pub fn start_once() {
     if HOST_HTTP_SERVICE_STARTED.swap(true, Ordering::AcqRel) {
@@ -26,7 +35,7 @@ pub fn start_once() {
         run_net_poller().await;
     }));
     task::spawn_task(Task::new(async {
-        run_service().await;
+        run_service_supervisor().await;
     }));
 }
 
@@ -63,17 +72,131 @@ async fn run_net_poller() {
 ///
 /// 各接続をspawn_globalで独立タスクとして起動し、
 /// acceptループがブロックされないようにする。
-async fn run_service() {
-    let listener = match TcpListener::listen_on(EndpointAddr::new([0, 0, 0, 0], 80)).await {
-        Ok(listener) => {
-            log::info!("[HOST-HTTP] listening on 0.0.0.0:80");
-            listener
-        }
-        Err(err) => {
-            log::warn!("[HOST-HTTP] listen_on failed on port 80: {:?}", err);
+const fn http_supervisor_backoff_ms(consecutive_failures: u32) -> u64 {
+    let shift = if consecutive_failures > 5 {
+        5
+    } else {
+        consecutive_failures
+    };
+    let delay = match HOST_HTTP_RETRY_BASE_MS.checked_shl(shift) {
+        Some(delay) => delay,
+        None => HOST_HTTP_RETRY_MAX_MS,
+    };
+    if delay > HOST_HTTP_RETRY_MAX_MS {
+        HOST_HTTP_RETRY_MAX_MS
+    } else {
+        delay
+    }
+}
+
+fn should_log_http_restart_warning(consecutive_failures: u32) -> bool {
+    consecutive_failures < 4 || consecutive_failures.is_power_of_two()
+}
+
+fn http_config_usable(config: &crate::net::api::config::NetworkConfigSnapshot) -> bool {
+    config.ip != [0, 0, 0, 0] && config.mac != [0, 0, 0, 0, 0, 0]
+}
+
+fn http_network_ready() -> bool {
+    if !crate::net::runtime::bridge::get_stack_glue_stats().initialized {
+        return false;
+    }
+
+    crate::net::runtime::bridge::get_real_config()
+        .as_ref()
+        .is_some_and(http_config_usable)
+}
+
+async fn wait_for_http_network_ready() {
+    let mut logged_wait = false;
+    loop {
+        if http_network_ready() {
             return;
         }
-    };
+
+        if !logged_wait {
+            log::info!("[HOST-HTTP] waiting for usable network configuration before binding");
+            logged_wait = true;
+        }
+
+        task::sleep_ms(HOST_HTTP_READY_POLL_MS).await;
+    }
+}
+
+fn log_http_restart(cause: ServiceRestartCause, consecutive_failures: u32, backoff_ms: u64) {
+    if !should_log_http_restart_warning(consecutive_failures) {
+        return;
+    }
+
+    match cause {
+        ServiceRestartCause::Listen(err) => {
+            log::warn!(
+                "[HOST-HTTP] listen_on failed on port 80: {:?} (restart #{}, backoff={}ms)",
+                err,
+                consecutive_failures + 1,
+                backoff_ms
+            );
+        }
+        ServiceRestartCause::Accept(err) => {
+            log::warn!(
+                "[HOST-HTTP] accept error: {:?} (rebind #{}, backoff={}ms)",
+                err,
+                consecutive_failures + 1,
+                backoff_ms
+            );
+        }
+    }
+}
+
+async fn bind_http_listener() -> Result<TcpListener, TcpError> {
+    TcpListener::listen_on(EndpointAddr::new([0, 0, 0, 0], 80)).await
+}
+
+async fn run_service_supervisor() {
+    let mut consecutive_failures = 0u32;
+
+    loop {
+        wait_for_http_network_ready().await;
+
+        let listener = match bind_http_listener().await {
+            Ok(listener) => {
+                if consecutive_failures > 0 {
+                    log::info!(
+                        "[HOST-HTTP] listener recovered after {} restart attempt(s)",
+                        consecutive_failures
+                    );
+                }
+                consecutive_failures = 0;
+                log::info!("[HOST-HTTP] listening on 0.0.0.0:80");
+                listener
+            }
+            Err(err) => {
+                let backoff_ms = http_supervisor_backoff_ms(consecutive_failures);
+                log_http_restart(
+                    ServiceRestartCause::Listen(err),
+                    consecutive_failures,
+                    backoff_ms,
+                );
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                task::sleep_ms(backoff_ms).await;
+                continue;
+            }
+        };
+
+        if let Err(err) = run_service(listener).await {
+            let backoff_ms = http_supervisor_backoff_ms(consecutive_failures);
+            log_http_restart(
+                ServiceRestartCause::Accept(err),
+                consecutive_failures,
+                backoff_ms,
+            );
+            consecutive_failures = consecutive_failures.saturating_add(1);
+            task::sleep_ms(backoff_ms).await;
+        }
+    }
+}
+
+async fn run_service(listener: TcpListener) -> Result<(), TcpError> {
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
@@ -109,8 +232,7 @@ async fn run_service() {
                 }));
             }
             TimeoutResult::Completed(Err(err)) => {
-                log::warn!("[HOST-HTTP] accept error: {:?}", err);
-                task::sleep_ms(20).await;
+                return Err(err);
             }
         }
     }
@@ -239,6 +361,47 @@ async fn handle_client(mut client: TcpStream) {
     }
 
     let _ = client.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{http_config_usable, http_supervisor_backoff_ms, should_log_http_restart_warning};
+
+    #[test]
+    fn http_backoff_is_exponential_and_capped() {
+        assert_eq!(http_supervisor_backoff_ms(0), 100);
+        assert_eq!(http_supervisor_backoff_ms(1), 200);
+        assert_eq!(http_supervisor_backoff_ms(3), 800);
+        assert_eq!(http_supervisor_backoff_ms(8), 3_200);
+    }
+
+    #[test]
+    fn http_restart_logging_is_rate_limited() {
+        assert!(should_log_http_restart_warning(0));
+        assert!(should_log_http_restart_warning(1));
+        assert!(should_log_http_restart_warning(3));
+        assert!(!should_log_http_restart_warning(5));
+        assert!(should_log_http_restart_warning(8));
+    }
+
+    #[test]
+    fn http_config_requires_nonzero_ip_and_mac() {
+        let unusable = crate::net::api::config::NetworkConfigSnapshot {
+            ip: [0, 0, 0, 0],
+            netmask: [0, 0, 0, 0],
+            gateway: [0, 0, 0, 0],
+            mac: [0, 0, 0, 0, 0, 0],
+        };
+        let usable = crate::net::api::config::NetworkConfigSnapshot {
+            ip: [192, 168, 1, 10],
+            netmask: [255, 255, 255, 0],
+            gateway: [192, 168, 1, 1],
+            mac: [0x02, 0x00, 0x5e, 0x00, 0x53, 0x01],
+        };
+
+        assert!(!http_config_usable(&unusable));
+        assert!(http_config_usable(&usable));
+    }
 }
 
 async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &'static str> {
