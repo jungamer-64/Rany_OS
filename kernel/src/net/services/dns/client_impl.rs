@@ -177,7 +177,9 @@ impl DnsClient {
         let query_len = self.build_query(&mut buffer, name, qtype)?;
 
         let dest = UdpAddr::new(server, DNS_PORT);
-        if socket.send_to_sync(&buffer[..query_len], dest).is_err() {
+        let query_payload = crate::net::payload::payload_from_bytes(&buffer[..query_len])
+            .ok_or("UDP send failed")?;
+        if socket.send_to_sync(query_payload, dest).is_err() {
             return Err("UDP send failed");
         }
 
@@ -190,31 +192,49 @@ impl DnsClient {
                 TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
                     // Security: Verify source (RFC 5452)
                     if src.ip_v4() == Some(server) && src.port() == DNS_PORT {
-                        udp_response = Some(packet.into_vec());
+                        udp_response = Some(packet);
                         break;
                     }
                 }
                 _ => {
                     attempt += 1;
                     if attempt < DNS_MAX_RETRIES {
-                        let _ = socket.send_to_sync(&buffer[..query_len], dest);
+                        if let Some(query_payload) =
+                            crate::net::payload::payload_from_bytes(&buffer[..query_len])
+                        {
+                            let _ = socket.send_to_sync(query_payload, dest);
+                        }
                     }
                 }
             }
         }
 
         if let Some(data) = udp_response {
-            // Check for truncation (RFC 7766)
-            if self.needs_tcp_fallback(&data) {
-                log::info!(
-                    "[NET] DNS: UDP response truncated, retrying with TCP (RFC 7766 fallback)"
-                );
-                return self.query_tcp(server, name, qtype).await;
+            let parsed = match &data {
+                kernel_api::resource::net::PacketPayload::Single(packet) => {
+                    if self.needs_tcp_fallback(packet.data()) {
+                        None
+                    } else {
+                        Some(self.parse_response(packet.data(), tick, name, qtype))
+                    }
+                }
+                kernel_api::resource::net::PacketPayload::Chain(_) => {
+                    let bytes = crate::net::payload::PacketPayloadView::new(&data)
+                        .read_vec(0, data.total_len());
+                    if self.needs_tcp_fallback(&bytes) {
+                        None
+                    } else {
+                        Some(self.parse_response(&bytes, tick, name, qtype))
+                    }
+                }
+            };
+
+            if let Some(parsed) = parsed {
+                return parsed.map_err(|_| "Parse error");
             }
 
-            return self
-                .parse_response(&data, tick, name, qtype)
-                .map_err(|_| "Parse error");
+            log::info!("[NET] DNS: UDP response truncated, retrying with TCP (RFC 7766 fallback)");
+            return self.query_tcp(server, name, qtype).await;
         }
 
         Err("DNS query timed out")

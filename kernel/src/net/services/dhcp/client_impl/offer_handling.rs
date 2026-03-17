@@ -8,7 +8,7 @@ fn send_dhcpv4_packet_on(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    payload: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     match if_id {
@@ -203,16 +203,18 @@ impl DhcpClient {
                     .store(declined_ip.to_u32(), Ordering::SeqCst);
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
-                send_dhcpv4_packet_on(
-                    self.runtime,
-                    if_id,
-                    Ipv4Address::new([0, 0, 0, 0]),
-                    DHCP_CLIENT_PORT,
-                    dst,
-                    DHCP_SERVER_PORT,
-                    &buf[..len],
-                    64,
-                )
+                crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
+                    send_dhcpv4_packet_on(
+                        self.runtime,
+                        if_id,
+                        Ipv4Address::new([0, 0, 0, 0]),
+                        DHCP_CLIENT_PORT,
+                        dst,
+                        DHCP_SERVER_PORT,
+                        payload,
+                        64,
+                    )
+                })
             }
             Err(_) => false,
         }
@@ -303,16 +305,20 @@ impl DhcpClient {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_release(&mut buf, 0) {
             // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
-            Ok(len) => send_dhcpv4_packet_on(
-                self.runtime,
-                if_id,
-                lease.ip_address,
-                DHCP_CLIENT_PORT,
-                lease.server_ip,
-                DHCP_SERVER_PORT,
-                &buf[..len],
-                64,
-            ),
+            Ok(len) => {
+                crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
+                    send_dhcpv4_packet_on(
+                        self.runtime,
+                        if_id,
+                        lease.ip_address,
+                        DHCP_CLIENT_PORT,
+                        lease.server_ip,
+                        DHCP_SERVER_PORT,
+                        payload,
+                        64,
+                    )
+                })
+            }
             Err(_) => false,
         }
     }
@@ -357,16 +363,20 @@ impl DhcpClient {
     ) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
-        Ok(send_dhcpv4_packet_on(
-            self.runtime,
-            if_id,
-            Ipv4Address::new([0, 0, 0, 0]),
-            DHCP_CLIENT_PORT,
-            Ipv4Address::new([255, 255, 255, 255]),
-            DHCP_SERVER_PORT,
-            &buf[..len],
-            64,
-        ))
+        Ok(
+            crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
+                send_dhcpv4_packet_on(
+                    self.runtime,
+                    if_id,
+                    Ipv4Address::new([0, 0, 0, 0]),
+                    DHCP_CLIENT_PORT,
+                    Ipv4Address::new([255, 255, 255, 255]),
+                    DHCP_SERVER_PORT,
+                    payload,
+                    64,
+                )
+            }),
+        )
     }
 
     /// Resolve DHCPREQUEST destination address from current state.
@@ -414,16 +424,20 @@ impl DhcpClient {
             // Requesting/Rebinding: src_ip = 0.0.0.0
             Ipv4Address::new([0, 0, 0, 0])
         };
-        Ok(send_dhcpv4_packet_on(
-            self.runtime,
-            if_id,
-            src_ip,
-            DHCP_CLIENT_PORT,
-            dst,
-            DHCP_SERVER_PORT,
-            &buf[..len],
-            64,
-        ))
+        Ok(
+            crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
+                send_dhcpv4_packet_on(
+                    self.runtime,
+                    if_id,
+                    src_ip,
+                    DHCP_CLIENT_PORT,
+                    dst,
+                    DHCP_SERVER_PORT,
+                    payload,
+                    64,
+                )
+            }),
+        )
     }
 
     /// Drive DHCP state machine and emit outbound packets when state changes

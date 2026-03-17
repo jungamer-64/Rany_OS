@@ -520,6 +520,11 @@ impl PacketChain {
         self.segments.push(packet);
     }
 
+    pub fn push_front(&mut self, packet: PacketRef) {
+        self.total_len = self.total_len.saturating_add(packet.len());
+        self.segments.insert(0, packet);
+    }
+
     pub fn segments(&self) -> &[PacketRef] {
         &self.segments
     }
@@ -586,6 +591,18 @@ impl PacketPayload {
         Self::Single(PacketRef::from_vec(data))
     }
 
+    pub fn prepend(self, packet: PacketRef) -> Self {
+        match self {
+            Self::Single(existing) => {
+                Self::Chain(PacketChain::from_segments(alloc::vec![packet, existing,]))
+            }
+            Self::Chain(mut chain) => {
+                chain.push_front(packet);
+                Self::Chain(chain)
+            }
+        }
+    }
+
     pub fn total_len(&self) -> usize {
         match self {
             Self::Single(packet) => packet.len(),
@@ -607,6 +624,75 @@ impl PacketPayload {
             }
             Self::Chain(chain) => chain.copy_into(dst),
         }
+    }
+
+    pub fn take_prefix(&mut self, len: usize) -> Option<Self> {
+        if len == 0 {
+            return Some(Self::default());
+        }
+        if len > self.total_len() {
+            return None;
+        }
+
+        match self {
+            Self::Single(packet) => {
+                if len == packet.len() {
+                    let taken = packet.clone();
+                    *self = Self::default();
+                    return Some(Self::Single(taken));
+                }
+
+                let mut taken = packet.clone();
+                taken.set_len(len);
+                packet.advance(len);
+                Some(Self::Single(taken))
+            }
+            Self::Chain(chain) => {
+                let mut remaining = len;
+                let mut segments = Vec::new();
+
+                while remaining > 0 {
+                    let Some(front) = chain.segments.first_mut() else {
+                        break;
+                    };
+                    if front.is_empty() {
+                        chain.segments.remove(0);
+                        continue;
+                    }
+
+                    let take = remaining.min(front.len());
+                    let mut prefix = front.clone();
+                    prefix.set_len(take);
+                    segments.push(prefix);
+
+                    front.advance(take);
+                    chain.total_len = chain.total_len.saturating_sub(take);
+                    remaining -= take;
+
+                    if front.is_empty() {
+                        chain.segments.remove(0);
+                    }
+                }
+
+                if remaining != 0 {
+                    return None;
+                }
+
+                if chain.is_empty() {
+                    *self = Self::default();
+                }
+
+                if segments.len() == 1 {
+                    Some(Self::Single(segments.remove(0)))
+                } else {
+                    Some(Self::Chain(PacketChain::from_segments(segments)))
+                }
+            }
+        }
+    }
+
+    pub fn consume_prefix(&mut self, len: usize) -> usize {
+        self.take_prefix(len).map_or(0, |prefix| prefix.total_len())
     }
 
     pub fn slice(&self, offset: usize, len: usize) -> Option<Self> {

@@ -130,8 +130,8 @@ pub fn net_endpoint_flow_control_probe_timing_smoke() -> bool {
     crate::net::l4::endpoint::flow_control::qemu_tests::probe_timing_smoke()
 }
 
-pub fn net_endpoint_futures_sendfuture_wakes_on_send_smoke() -> bool {
-    crate::net::l4::endpoint::futures::qemu_tests::sendfuture_wakes_on_send_smoke()
+pub fn net_endpoint_futures_write_future_wakes_on_send_smoke() -> bool {
+    crate::net::l4::endpoint::futures::qemu_tests::write_future_wakes_on_send_smoke()
 }
 
 pub fn net_endpoint_futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
@@ -158,8 +158,8 @@ pub fn net_endpoint_inner_socket_state_transitions_smoke() -> bool {
     crate::net::l4::endpoint::inner::qemu_tests::endpoint_state_transitions_smoke()
 }
 
-pub fn net_endpoint_inner_vecdeque_buffer_smoke() -> bool {
-    crate::net::l4::endpoint::inner::qemu_tests::vecdeque_buffer_smoke()
+pub fn net_endpoint_inner_payload_queue_buffer_smoke() -> bool {
+    crate::net::l4::endpoint::inner::qemu_tests::payload_queue_buffer_smoke()
 }
 
 pub fn net_endpoint_retransmit_rto_calculator_initial_smoke() -> bool {

@@ -174,7 +174,7 @@ pub fn flow_control_probe_timing_smoke() -> bool {
     }
 }
 
-pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
+pub fn futures_write_future_wakes_on_send_smoke() -> bool {
     let sock = crate::net::l4::endpoint::create_tcp_endpoint();
     if let Some(s) = sock.endpoint() {
         let Ok(mut inner) = s.inner().lock() else {
@@ -185,7 +185,12 @@ pub fn futures_sendfuture_wakes_on_send_smoke() -> bool {
         let _ = inner.transition_to(super::types::EndpointState::Connected);
     }
 
-    sock.send(alloc::vec![1u8, 2, 3, 4]).is_some()
+    let Some(mut stream) = sock.tcp_stream() else {
+        return false;
+    };
+    let payload = [1u8, 2, 3, 4];
+    let _ = stream.write(&payload);
+    true
 }
 
 pub fn futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
@@ -217,7 +222,10 @@ pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
         };
         inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
         inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
-        inner.send_buffer.extend(&[1, 2, 3]);
+        let _ = inner.send_payload(
+            crate::net::payload::payload_from_bytes(&[1, 2, 3])
+                .expect("allocate packet-backed handler smoke payload"),
+        );
     }
 
     let handler = handler::NetworkEventHandler::new();
@@ -254,7 +262,10 @@ pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
         };
         inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
         inner.remote_addr = Some(super::types::EndpointAddr::new([10, 0, 2, 2], 80));
-        inner.send_buffer.extend(&[1, 2, 3, 4]);
+        let _ = inner.send_payload(
+            crate::net::payload::payload_from_bytes(&[1, 2, 3, 4])
+                .expect("allocate packet-backed handler smoke payload"),
+        );
     }
 
     let handler = handler::NetworkEventHandler::new();
@@ -269,8 +280,8 @@ pub fn inner_socket_state_transitions_smoke() -> bool {
     run_case!(inner::tests::test_endpoint_state_transitions)
 }
 
-pub fn inner_vecdeque_buffer_smoke() -> bool {
-    run_case!(inner::tests::test_vecdeque_buffer)
+pub fn inner_payload_queue_buffer_smoke() -> bool {
+    run_case!(inner::tests::test_payload_queue_buffer)
 }
 
 pub fn retransmit_rto_calculator_initial_smoke() -> bool {

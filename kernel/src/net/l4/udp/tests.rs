@@ -7,6 +7,14 @@ use crate::task::context::{TaskControlBlock, get_current_task, set_current_task}
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
+fn test_packet(data: &[u8]) -> PacketRef {
+    crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed test packet")
+}
+
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+    crate::net::payload::PacketPayloadView::new(payload).read_vec(0, payload.total_len())
+}
+
 fn idle_entry(_: u64) -> ! {
     // LOOP_PROOF: mode=halt; reason=Idle test entry intentionally spins forever because the harness never returns from the parked CPU stub.;
     loop {
@@ -119,7 +127,7 @@ fn udp_endpoint_multiple_waiters_woken_on_deliver_impl() {
         Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
             assert_eq!(if_id, NetIfId(7));
             assert_eq!(addr, src);
-            assert_eq!(packet.into_vec(), b"abc");
+            assert_eq!(payload_bytes(&packet), b"abc");
         }
         _ => panic!("expected ready packet after wake"),
     }
@@ -416,7 +424,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
             assert_eq!(if_id, NetIfId::default());
             assert_eq!(addr, UdpAddr::new(src_ip, 1234));
-            assert_eq!(packet.into_vec(), payload);
+            assert_eq!(payload_bytes(&packet), payload);
         }
         _ => panic!("expected delivered packet"),
     }
@@ -436,8 +444,8 @@ pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
     let mut buf = [0u8; 64];
     let len = UdpProcessor::build_packet(&mut buf, src_ip, 4321, dst_ip, 10001, payload).unwrap();
 
-    let header = PacketRef::from_vec(buf[..UdpHeader::SIZE].to_vec());
-    let body = PacketRef::from_vec(payload.to_vec());
+    let header = test_packet(&buf[..UdpHeader::SIZE]);
+    let body = test_packet(payload);
     let chain = kernel_api::resource::net::PacketChain::from_segments(alloc::vec![header, body]);
 
     assert_eq!(
@@ -454,7 +462,7 @@ pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
         .try_recv_sync()
         .expect("payload-chain delivery should enqueue a datagram");
     assert_eq!(addr, UdpAddr::new(src_ip, 4321));
-    assert_eq!(packet.into_vec(), payload);
+    assert_eq!(payload_bytes(&packet), payload);
     assert_eq!(len, UdpHeader::SIZE + payload.len());
 }
 

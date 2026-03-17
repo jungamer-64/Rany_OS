@@ -203,7 +203,6 @@ impl MdnsService {
             // パケット受信を待機
             if let Some((_if_id, src, ttl, packet)) = socket.recv().await {
                 let now = crate::task::current_tick() / 1000;
-                let packet = packet.into_vec();
 
                 // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently
                 // discard any Multicast DNS queries that arrive with an IP TTL (or Hop Limit)
@@ -223,14 +222,27 @@ impl MdnsService {
 
                 // 受信パケットを処理
                 let src_ip = src.ip_v4().unwrap_or(Ipv4Address::ANY);
-                let result = self.process_packet(&packet, src_ip, ttl, now);
+                let result = match &packet {
+                    kernel_api::resource::net::PacketPayload::Single(packet) => {
+                        self.process_packet(packet.data(), src_ip, ttl, now)
+                    }
+                    kernel_api::resource::net::PacketPayload::Chain(_) => {
+                        let data = crate::net::payload::PacketPayloadView::new(&packet)
+                            .read_vec(0, packet.total_len());
+                        self.process_packet(&data, src_ip, ttl, now)
+                    }
+                };
 
                 match result {
                     MdnsResult::SendResponse { name, ip, ttl } => {
                         let mut buffer = [0u8; 512];
                         if let Some(len) = Self::build_response(&mut buffer, &name, ip, ttl) {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            let _ = socket.send_to_sync(&buffer[..len], dst);
+                            if let Some(payload) =
+                                crate::net::payload::payload_from_bytes(&buffer[..len])
+                            {
+                                let _ = socket.send_to_sync(payload, dst);
+                            }
                         }
                     }
                     _ => {}
@@ -246,13 +258,21 @@ impl MdnsService {
                                 Self::build_response(&mut buffer, &report.name, ip, report.ttl)
                             {
                                 let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                                let _ = socket.send_to_sync(&buffer[..len], dst);
+                                if let Some(payload) =
+                                    crate::net::payload::payload_from_bytes(&buffer[..len])
+                                {
+                                    let _ = socket.send_to_sync(payload, dst);
+                                }
                             }
                         }
                     } else {
                         if let Some(len) = Self::build_query(&mut buffer, &report.name) {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            let _ = socket.send_to_sync(&buffer[..len], dst);
+                            if let Some(payload) =
+                                crate::net::payload::payload_from_bytes(&buffer[..len])
+                            {
+                                let _ = socket.send_to_sync(payload, dst);
+                            }
                         }
                     }
                 }

@@ -1,5 +1,9 @@
 use super::*;
 
+fn test_packet(data: &[u8]) -> kernel_api::resource::net::PacketRef {
+    crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed test packet")
+}
+
 #[cfg_attr(test, test_case)]
 pub fn test_ipv4_address() {
     eprintln!("[TEST] Running test_ipv4_address...");
@@ -116,7 +120,7 @@ pub fn test_fragment_reassembly_returns_payload_chain() {
     };
     let payload1 = [0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04];
     let h1_data = crate::util::struct_as_bytes(&header1);
-    let packet1 = kernel_api::resource::net::PacketRef::from_vec(payload1.to_vec());
+    let packet1 = test_packet(&payload1);
     let result = reassembler.process_fragment(&header1, h1_data, &payload1, Some(packet1), 0);
     assert!(result.0.is_none());
 
@@ -134,7 +138,7 @@ pub fn test_fragment_reassembly_returns_payload_chain() {
     };
     let payload2 = [0x05, 0x06, 0x07, 0x08, 0xaa, 0xbb, 0xcc, 0xdd];
     let h2_data = crate::util::struct_as_bytes(&header2);
-    let packet2 = kernel_api::resource::net::PacketRef::from_vec(payload2.to_vec());
+    let packet2 = test_packet(&payload2);
     let result = reassembler.process_fragment(&header2, h2_data, &payload2, Some(packet2), 0);
     let payload = result.0.expect("reassembly should complete");
 

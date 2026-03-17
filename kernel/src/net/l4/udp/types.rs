@@ -531,6 +531,23 @@ impl UdpProcessor {
             .write_payload(payload);
         Some(packet.finalize(src_ip, dst_ip))
     }
+
+    /// Build a UDP packet for transmission from a packet-backed payload.
+    pub fn build_packet_view<'a>(
+        buffer: &'a mut [u8],
+        src_ip: Ipv4Address,
+        src_port: u16,
+        dst_ip: Ipv4Address,
+        dst_port: u16,
+        payload: &PacketPayloadView<'_>,
+    ) -> Option<usize> {
+        let mut packet = UdpPacketMut::new(buffer)?;
+        packet
+            .set_src_port(src_port)
+            .set_dst_port(dst_port)
+            .write_payload_view(payload);
+        Some(packet.finalize(src_ip, dst_ip))
+    }
 }
 
 impl Default for UdpProcessor {

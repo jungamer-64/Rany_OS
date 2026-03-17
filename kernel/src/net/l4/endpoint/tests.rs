@@ -19,6 +19,10 @@ pub mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
+    fn test_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
+        crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+    }
+
     fn endpoint_new_with_fd_impl() {
         let fd = EndpointFd::from_raw(42);
         let endpoint = Endpoint::new_with_fd(EndpointType::Tcp, fd);
@@ -550,7 +554,7 @@ pub mod tests {
         );
         drop(guard);
 
-        let pinned_payload = kernel_api::resource::net::PacketPayload::from_vec(vec![1, 2, 3, 4]);
+        let pinned_payload = test_payload(&[1, 2, 3, 4]);
         assert!(crate::net::l4::endpoint::manager::deliver_raw_payload(
             NetIfId(12),
             pinned_payload
@@ -561,7 +565,11 @@ pub mod tests {
             .recv_raw_payload_sync()
             .expect("pinned delivery");
         assert_eq!(if_id, NetIfId(12));
-        assert_eq!(received_pinned.into_vec(), vec![1, 2, 3, 4]);
+        assert_eq!(
+            crate::net::payload::PacketPayloadView::new(&received_pinned)
+                .read_vec(0, received_pinned.total_len()),
+            vec![1, 2, 3, 4]
+        );
         assert!(matches!(
             raw_any
                 .endpoint()
@@ -570,7 +578,7 @@ pub mod tests {
             Err(EndpointError::Timeout)
         ));
 
-        let wildcard_payload = kernel_api::resource::net::PacketPayload::from_vec(vec![9, 8, 7]);
+        let wildcard_payload = test_payload(&[9, 8, 7]);
         assert!(crate::net::l4::endpoint::manager::deliver_raw_payload(
             NetIfId(13),
             wildcard_payload
@@ -581,7 +589,11 @@ pub mod tests {
             .recv_raw_payload_sync()
             .expect("wildcard delivery");
         assert_eq!(if_id, NetIfId(13));
-        assert_eq!(received_any.into_vec(), vec![9, 8, 7]);
+        assert_eq!(
+            crate::net::payload::PacketPayloadView::new(&received_any)
+                .read_vec(0, received_any.total_len()),
+            vec![9, 8, 7]
+        );
     }
 
     #[cfg_attr(test, test_case)]

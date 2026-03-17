@@ -366,12 +366,28 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
         match socket.recv().await {
             Some((_if_id, _src, _ttl, packet)) => {
                 let now = crate::task::current_tick();
-                let data = packet.into_vec();
-                let Some(interface_runtime) = find_runtime_for_v4_packet_in(runtime, &data) else {
+                let process = match &packet {
+                    kernel_api::resource::net::PacketPayload::Single(packet) => {
+                        let data = packet.data();
+                        find_runtime_for_v4_packet_in(runtime, data).map(|interface_runtime| {
+                            let result = interface_runtime.v4.process_response(data, now);
+                            (interface_runtime, result)
+                        })
+                    }
+                    kernel_api::resource::net::PacketPayload::Chain(_) => {
+                        let data = crate::net::payload::PacketPayloadView::new(&packet)
+                            .read_vec(0, packet.total_len());
+                        find_runtime_for_v4_packet_in(runtime, &data).map(|interface_runtime| {
+                            let result = interface_runtime.v4.process_response(&data, now);
+                            (interface_runtime, result)
+                        })
+                    }
+                };
+                let Some((interface_runtime, result)) = process else {
                     continue;
                 };
 
-                match interface_runtime.v4.process_response(&data, now) {
+                match result {
                     Ok(DhcpResponseResult::Ack(lease)) => {
                         log::info!(
                             "[NET] DHCPv4 ACK received: if{} mac={} ip={:?}",

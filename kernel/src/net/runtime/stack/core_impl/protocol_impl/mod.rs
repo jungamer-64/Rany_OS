@@ -168,9 +168,14 @@ impl NetworkStack {
         original_packet: &[u8],
         current_time: u64,
     ) {
-        // For reassembled packets, we don't have a PacketRef for zero-copy
-        // Use the non-zero-copy path
-        let result = self.udp.process(data, src_ip, dst_ip, ttl);
+        let Some(payload) = crate::net::payload::payload_from_bytes(data) else {
+            self.stats.record_rx_error();
+            return;
+        };
+
+        let result = self
+            .udp
+            .process_payload_on(None, payload, src_ip, dst_ip, ttl);
 
         match result {
             UdpResult::Delivered => {}
@@ -180,13 +185,20 @@ impl NetworkStack {
                 // RFC 1122: Send ICMP Port Unreachable
                 // Only send if it wasn't broadcast/multicast
                 if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
-                    self.send_icmp_error(
-                        src_ip,
-                        DestUnreachCode::PortUnreachable,
-                        None,
-                        original_packet,
-                        current_time,
-                    );
+                    if let Some(original_packet) =
+                        crate::net::payload::payload_from_bytes(original_packet)
+                    {
+                        let original_packet =
+                            crate::net::payload::PacketPayloadView::new(&original_packet)
+                                .read_vec(0, original_packet.total_len());
+                        self.send_icmp_error(
+                            src_ip,
+                            DestUnreachCode::PortUnreachable,
+                            None,
+                            &original_packet,
+                            current_time,
+                        );
+                    }
                 }
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
@@ -243,7 +255,20 @@ impl NetworkStack {
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> UdpResult {
-        self.udp.process(udp_segment, src_ip, dst_ip, ttl)
+        let Some(payload) = crate::net::payload::payload_from_bytes(udp_segment) else {
+            return UdpResult::Invalid;
+        };
+        self.udp_process_raw_payload(payload, src_ip, dst_ip, ttl)
+    }
+
+    pub fn udp_process_raw_payload(
+        &self,
+        udp_segment: PacketPayload,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+    ) -> UdpResult {
+        self.udp.process_payload(udp_segment, src_ip, dst_ip, ttl)
     }
 
     /// Process TCP data (for reassembled packets)
@@ -277,20 +302,16 @@ impl NetworkStack {
     ) {
         use crate::net::l4::udp::UdpResult;
 
+        let udp_segment_payload = udp_segment_packet
+            .map(PacketPayload::single)
+            .or_else(|| crate::net::payload::payload_from_bytes(data));
+
         if data.len() >= 8 {
             let src_port = u16::from_be_bytes([data[0], data[1]]);
             let dst_port = u16::from_be_bytes([data[2], data[3]]);
             let remote =
                 crate::net::l4::endpoint::types::EndpointAddr::new_v6(src.octets(), src_port);
             let ingress_if_id = self.resolve_ingress_if(if_id);
-            let mut udp_payload_packet = udp_segment_packet.and_then(|mut packet| {
-                if packet.len() < 8 {
-                    return None;
-                }
-                packet.advance(8);
-                packet.set_len(data.len() - 8);
-                Some(packet)
-            });
 
             if let Some(ref mgr) = *crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
                 .read()
@@ -302,17 +323,29 @@ impl NetworkStack {
                     dst_port,
                     Some(ingress_if_id),
                 ) {
-                    let payload = udp_payload_packet
-                        .take()
-                        .map(PacketPayload::single)
-                        .unwrap_or_else(|| PacketPayload::from_vec(data[8..].to_vec()));
-                    let _ = socket.deliver_udp_payload(ingress_if_id, remote, hop_limit, payload);
+                    if let Some(payload) = udp_segment_payload
+                        .as_ref()
+                        .and_then(|segment| segment.slice(8, data.len() - 8))
+                    {
+                        let _ =
+                            socket.deliver_udp_payload(ingress_if_id, remote, hop_limit, payload);
+                        return;
+                    }
+                    self.stats.record_dropped();
                     return;
                 }
             }
         }
 
-        match self.udp.process_v6(data, src, dst, hop_limit) {
+        let Some(udp_segment_payload) = udp_segment_payload else {
+            self.stats.record_rx_error();
+            return;
+        };
+
+        match self
+            .udp
+            .process_payload_v6_on(if_id, udp_segment_payload, src, dst, hop_limit)
+        {
             UdpResult::Delivered => {}
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();

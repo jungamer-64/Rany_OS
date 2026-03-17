@@ -500,8 +500,8 @@ impl TcbTable {
                             if let Some(socket) = mgr.get(entry.fd) {
                                 let mut inner =
                                     socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                                if !inner.send_buffer.is_empty() {
-                                    let probe_byte = inner.send_buffer.pop_front().unwrap();
+                                if let Some(probe_byte) = inner.peek_send_byte() {
+                                    inner.consume_send_payload(1);
                                     drop(inner);
                                     drop(manager);
                                     let payload = alloc::vec![probe_byte];
@@ -544,7 +544,11 @@ impl TcbTable {
                                             .inner()
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        inner.send_buffer.push_front(probe_byte);
+                                        if let Some(payload) =
+                                            crate::net::payload::payload_from_bytes(&[probe_byte])
+                                        {
+                                            inner.push_send_payload_front(payload);
+                                        }
                                     }
                                 }
                             }

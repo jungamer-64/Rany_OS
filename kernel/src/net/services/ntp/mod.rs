@@ -152,7 +152,11 @@ impl NtpClient {
         let sent_ts = req.transmit_timestamp;
 
         socket
-            .send_to_sync(req.as_bytes(), remote)
+            .send_to_sync(
+                crate::net::payload::payload_from_bytes(req.as_bytes())
+                    .ok_or(EndpointError::Internal)?,
+                remote,
+            )
             .map_err(|_| EndpointError::Internal)?;
 
         // 非同期受信: UdpRecvFuture経由（タイムアウト付き）
@@ -161,8 +165,17 @@ impl NtpClient {
 
         match with_timeout(socket.recv(), NTP_TIMEOUT_MS).await {
             TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
-                let data = packet.into_vec();
-                let resp = NtpHeader::from_bytes(&data).ok_or(EndpointError::Internal)?;
+                let resp_storage;
+                let resp = match &packet {
+                    kernel_api::resource::net::PacketPayload::Single(packet) => {
+                        NtpHeader::from_bytes(packet.data()).ok_or(EndpointError::Internal)?
+                    }
+                    kernel_api::resource::net::PacketPayload::Chain(_) => {
+                        resp_storage = crate::net::payload::PacketPayloadView::new(&packet)
+                            .read_vec(0, NtpHeader::SIZE);
+                        NtpHeader::from_bytes(&resp_storage).ok_or(EndpointError::Internal)?
+                    }
+                };
 
                 // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
                 // in the response matches the transmit timestamp in the request.

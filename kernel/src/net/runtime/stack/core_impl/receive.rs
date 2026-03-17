@@ -407,9 +407,18 @@ impl NetworkStack {
                         return;
                     }
                 }
+                let icmpv6_payload = ip_packet.as_ref().and_then(|ip_packet| {
+                    subslice_offset(data, payload).map(|offset| {
+                        let mut icmp_packet = ip_packet.clone();
+                        icmp_packet.advance(offset);
+                        icmp_packet.set_len(payload.len());
+                        kernel_api::resource::net::PacketPayload::single(icmp_packet)
+                    })
+                });
                 self.process_icmpv6_data(
                     if_id,
                     payload,
+                    icmpv6_payload,
                     src,
                     dst,
                     src_mac,
@@ -560,28 +569,36 @@ impl NetworkStack {
         &mut self,
         if_id: Option<super::NetIfId>,
         data: &[u8],
+        payload: Option<kernel_api::resource::net::PacketPayload>,
         src: Ipv6Address,
         dst: Ipv6Address,
         src_mac: MacAddress,
         hop_limit: u8,
         current_time: u64,
     ) {
+        let payload = match payload.or_else(|| crate::net::payload::payload_from_bytes(data)) {
+            Some(payload) => payload,
+            None => {
+                self.stats.record_rx_error();
+                return;
+            }
+        };
         let result = if let Some(if_id) = if_id {
             if let Some(state) = self.interfaces.get(&if_id) {
                 if let Some(ref icmpv6) = state.icmpv6 {
-                    icmpv6.process(data, src, dst, src_mac, hop_limit, current_time)
+                    icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
                 } else if let Some(ref icmpv6) = self.icmpv6 {
-                    icmpv6.process(data, src, dst, src_mac, hop_limit, current_time)
+                    icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
                 } else {
                     return;
                 }
             } else if let Some(ref icmpv6) = self.icmpv6 {
-                icmpv6.process(data, src, dst, src_mac, hop_limit, current_time)
+                icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
             } else {
                 return;
             }
         } else if let Some(ref icmpv6) = self.icmpv6 {
-            icmpv6.process(data, src, dst, src_mac, hop_limit, current_time)
+            icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
         } else {
             return;
         };
@@ -664,7 +681,7 @@ impl NetworkStack {
                 self.process_ndp_message(
                     if_id,
                     msg_type,
-                    &ndp_data,
+                    ndp_data,
                     ndp_src,
                     ndp_dst,
                     ndp_src_mac,
@@ -856,7 +873,7 @@ impl NetworkStack {
         &mut self,
         if_id: Option<super::NetIfId>,
         msg_type: crate::net::l3::icmpv6::Icmpv6Type,
-        data: &[u8],
+        payload: kernel_api::resource::net::PacketPayload,
         src: Ipv6Address,
         dst: Ipv6Address,
         src_mac: MacAddress,
@@ -873,19 +890,47 @@ impl NetworkStack {
         let result = if let Some(if_id) = if_id {
             if let Some(state) = self.interfaces.get_mut(&if_id) {
                 if let Some(ref mut ndp) = state.ndp {
-                    ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time)
+                    ndp.process_payload(
+                        msg_type,
+                        &payload,
+                        src,
+                        dst,
+                        *src_mac.as_bytes(),
+                        current_time,
+                    )
                 } else if let Some(ref mut ndp) = self.ndp {
-                    ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time)
+                    ndp.process_payload(
+                        msg_type,
+                        &payload,
+                        src,
+                        dst,
+                        *src_mac.as_bytes(),
+                        current_time,
+                    )
                 } else {
                     return;
                 }
             } else if let Some(ref mut ndp) = self.ndp {
-                ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time)
+                ndp.process_payload(
+                    msg_type,
+                    &payload,
+                    src,
+                    dst,
+                    *src_mac.as_bytes(),
+                    current_time,
+                )
             } else {
                 return;
             }
         } else if let Some(ref mut ndp) = self.ndp {
-            ndp.process(msg_type, data, src, dst, *src_mac.as_bytes(), current_time)
+            ndp.process_payload(
+                msg_type,
+                &payload,
+                src,
+                dst,
+                *src_mac.as_bytes(),
+                current_time,
+            )
         } else {
             return;
         };

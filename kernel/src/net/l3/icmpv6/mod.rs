@@ -20,6 +20,46 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::ipv4::{IpProtocol, data_checksum};
 use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
+use crate::net::payload::PacketPayloadView;
+use kernel_api::resource::net::PacketPayload;
+
+fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
+    let mut sum = initial;
+    let mut trailing = None;
+
+    view.for_each_chunk(|chunk| {
+        let mut index = 0usize;
+        if let Some(prev) = trailing.take() {
+            if let Some((&first, rest)) = chunk.split_first() {
+                sum = sum.saturating_add(u16::from_be_bytes([prev, first]) as u32);
+                index = 1;
+                if rest.is_empty() {
+                    return;
+                }
+            } else {
+                trailing = Some(prev);
+                return;
+            }
+        }
+
+        while index + 1 < chunk.len() {
+            sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
+            index += 2;
+        }
+        if index < chunk.len() {
+            trailing = Some(chunk[index]);
+        }
+    });
+
+    if let Some(last) = trailing {
+        sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
+    }
+
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
 
 // =====================================================
 // ICMPv6 Types
@@ -188,7 +228,7 @@ pub enum Icmpv6Result {
         /// NDP message type
         msg_type: Icmpv6Type,
         /// Full ICMPv6 data (including header)
-        data: Vec<u8>,
+        data: PacketPayload,
         /// Source address
         src: Ipv6Address,
         /// Destination address
@@ -374,27 +414,103 @@ impl Icmpv6Processor {
         hop_limit: u8,
         current_time: u64,
     ) -> Icmpv6Result {
-        if data.len() < ICMPV6_HEADER_SIZE {
+        let Some(payload) = crate::net::payload::payload_from_bytes(data) else {
+            return Icmpv6Result::Error;
+        };
+        self.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
+    }
+
+    pub fn process_payload(
+        &self,
+        payload: PacketPayload,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        src_mac: crate::net::l2::ethernet::MacAddress,
+        hop_limit: u8,
+        current_time: u64,
+    ) -> Icmpv6Result {
+        if payload.total_len() < ICMPV6_HEADER_SIZE {
             return Icmpv6Result::Error;
         }
 
         self.stats.rx_messages.fetch_add(1, Ordering::Relaxed);
 
-        // Security: Check rate limit for incoming messages too to prevent DoS.
-        // We use a separate bucket (rx_tokens) from outgoing error messages.
         if !self.check_rx_rate_limit(current_time) {
             return Icmpv6Result::Dropped;
         }
 
-        // Verify checksum (mandatory for ICMPv6)
-        if !self.verify_checksum(data, &src, &dst) {
+        if !self.verify_checksum_payload(&payload, &src, &dst) {
             self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
             return Icmpv6Result::Dropped;
         }
 
-        let msg_type = Icmpv6Type::from(data[0]);
-        let code = data[1];
+        let view = PacketPayloadView::new(&payload);
+        let Some(header) = view.read_array::<2>(0) else {
+            return Icmpv6Result::Error;
+        };
+        let msg_type = Icmpv6Type::from(header[0]);
+        let code = header[1];
 
+        match msg_type {
+            Icmpv6Type::RouterSolicitation
+            | Icmpv6Type::RouterAdvertisement
+            | Icmpv6Type::NeighborSolicitation
+            | Icmpv6Type::NeighborAdvertisement => {
+                self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
+                Icmpv6Result::NdpMessage {
+                    msg_type,
+                    data: payload,
+                    src,
+                    dst,
+                    src_mac,
+                    hop_limit,
+                }
+            }
+            Icmpv6Type::Redirect => {
+                self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
+                log::warn!(
+                    "ICMPv6: Ignoring Redirect from {} (Security: disabled by default)",
+                    src
+                );
+                Icmpv6Result::Dropped
+            }
+            _ => {
+                let data = view.read_vec(0, view.total_len());
+                self.dispatch_message(&data, msg_type, code, src, dst, src_mac, hop_limit)
+            }
+        }
+    }
+
+    /// Verify ICMPv6 checksum using IPv6 pseudo-header
+    fn verify_checksum(&self, data: &[u8], src: &Ipv6Address, dst: &Ipv6Address) -> bool {
+        let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, data.len() as u32);
+        let checksum = data_checksum(data, pseudo);
+        checksum == 0
+    }
+
+    fn verify_checksum_payload(
+        &self,
+        payload: &PacketPayload,
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+    ) -> bool {
+        let view = PacketPayloadView::new(payload);
+        let pseudo =
+            ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, view.total_len() as u32);
+        payload_checksum(&view, pseudo) == 0
+    }
+
+    fn dispatch_message(
+        &self,
+        data: &[u8],
+        msg_type: Icmpv6Type,
+        code: u8,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        src_mac: crate::net::l2::ethernet::MacAddress,
+        hop_limit: u8,
+    ) -> Icmpv6Result {
+        let _ = hop_limit;
         match msg_type {
             Icmpv6Type::EchoRequest => {
                 self.stats.rx_echo_requests.fetch_add(1, Ordering::Relaxed);
@@ -436,21 +552,6 @@ impl Icmpv6Processor {
                     }
                 })
             }
-            // NDP messages → delegate
-            Icmpv6Type::RouterSolicitation
-            | Icmpv6Type::RouterAdvertisement
-            | Icmpv6Type::NeighborSolicitation
-            | Icmpv6Type::NeighborAdvertisement => {
-                self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
-                Icmpv6Result::NdpMessage {
-                    msg_type,
-                    data: data.to_vec(),
-                    src,
-                    dst,
-                    src_mac,
-                    hop_limit,
-                }
-            }
             Icmpv6Type::Redirect => {
                 self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
                 log::warn!(
@@ -459,18 +560,27 @@ impl Icmpv6Processor {
                 );
                 Icmpv6Result::Dropped
             }
+            Icmpv6Type::RouterSolicitation
+            | Icmpv6Type::RouterAdvertisement
+            | Icmpv6Type::NeighborSolicitation
+            | Icmpv6Type::NeighborAdvertisement => {
+                self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
+                crate::net::payload::payload_from_bytes(data)
+                    .map(|data| Icmpv6Result::NdpMessage {
+                        msg_type,
+                        data,
+                        src,
+                        dst,
+                        src_mac,
+                        hop_limit,
+                    })
+                    .unwrap_or(Icmpv6Result::Error)
+            }
             _ => {
                 log::debug!("ICMPv6: Unknown type {} code {}", u8::from(msg_type), code);
                 Icmpv6Result::Dropped
             }
         }
-    }
-
-    /// Verify ICMPv6 checksum using IPv6 pseudo-header
-    fn verify_checksum(&self, data: &[u8], src: &Ipv6Address, dst: &Ipv6Address) -> bool {
-        let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, data.len() as u32);
-        let checksum = data_checksum(data, pseudo);
-        checksum == 0
     }
 
     /// Handle Echo Request → produce Echo Reply

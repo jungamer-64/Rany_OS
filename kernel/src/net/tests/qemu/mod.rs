@@ -17,6 +17,10 @@ static QEMU_STACK_LAST_TX_IF: PoisonLock<Option<crate::net::runtime::manager::Ne
     PoisonLock::new(None);
 static QEMU_STACK_LAST_TX_LEN: AtomicUsize = AtomicUsize::new(0);
 
+fn test_packet(data: &[u8]) -> crate::net::datapath::mempool::PacketRef {
+    crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed qemu test packet")
+}
+
 fn qemu_stack_record_tx_if(
     if_id: Option<crate::net::runtime::manager::NetIfId>,
     data: &[u8],
@@ -276,7 +280,7 @@ pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
             return false;
         }
 
-        let packet = crate::net::datapath::mempool::PacketRef::from_vec(b"abc".to_vec());
+        let packet = test_packet(b"abc");
         let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
         endpoint.deliver(NetIfId(7), src, 255, packet);
 
@@ -286,7 +290,7 @@ pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
 
         match Pin::new(&mut fut1).poll(&mut cx) {
             Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
-                if if_id != NetIfId(7) || addr != src || packet.into_vec() != b"abc" {
+                if if_id != NetIfId(7) || addr != src || packet.data() != b"abc" {
                     return false;
                 }
             }
@@ -322,7 +326,7 @@ pub fn udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
             return false;
         };
 
-        let packet = crate::net::datapath::mempool::PacketRef::from_vec(buf[..len].to_vec());
+        let packet = test_packet(&buf[..len]);
         if processor.process_with_packet(&buf[..len], src_ip, dst_ip, packet, 255)
             != UdpResult::Delivered
         {
@@ -335,7 +339,9 @@ pub fn udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
 
         return if_id == crate::net::runtime::manager::NetIfId::default()
             && addr == UdpAddr::new(src_ip, 1234)
-            && packet.into_vec() == payload;
+            && crate::net::payload::PacketPayloadView::new(&packet)
+                .read_vec(0, packet.total_len())
+                == payload;
     }
 
     #[cfg(not(feature = "qemu-test-export"))]

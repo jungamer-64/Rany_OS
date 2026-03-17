@@ -6,7 +6,6 @@
 //! Socket, OwnedEndpoint, および関連ヘルパー関数
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use crate::net::datapath::mempool::PacketRef;
@@ -303,35 +302,6 @@ impl Endpoint {
         Ok(new_socket)
     }
 
-    /// データ送信（イベントキュー経由）
-    ///
-    /// 内部バッファに書き込み、DataReadyイベントを発火する。
-    /// ネットワークスタックロックは使用しない。
-    pub fn send_sync(&self, data: &[u8]) -> EndpointResult<usize> {
-        let len = {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-            if !inner.state.can_send() {
-                return Err(EndpointError::NotConnected);
-            }
-
-            inner.send_to_buffer(data)?
-        };
-
-        // 送信データがあることをネットワークスタックに通知（バックプレッシャー対応）
-        if len > 0 {
-            enqueue_event_in(
-                self.runtime,
-                NetworkEvent::DataReady {
-                    fd: self.fd,
-                    endpoint_type: self.endpoint_type,
-                },
-            )?;
-        }
-
-        Ok(len)
-    }
-
     /// データ受信（同期バッファ読み取り）
     ///
     /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
@@ -353,7 +323,11 @@ impl Endpoint {
     /// UDP送信（イベントキュー経由）
     ///
     /// SendToイベントを発火して送信を委任する。
-    pub fn send_to_sync(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
+    pub fn send_to_sync(
+        &self,
+        payload: PacketPayload,
+        addr: EndpointAddr,
+    ) -> EndpointResult<usize> {
         if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
         }
@@ -366,17 +340,19 @@ impl Endpoint {
             }
         }
 
+        let payload_len = payload.total_len();
+
         // UDPパケット送信イベント（バックプレッシャー対応）
         enqueue_event_in(
             self.runtime,
             NetworkEvent::SendTo {
                 fd: self.fd,
-                data: data.to_vec(),
+                payload,
                 remote: addr,
             },
         )?;
 
-        Ok(data.len())
+        Ok(payload_len)
     }
 
     /// UDP受信（同期バッファ読み取り）
@@ -422,10 +398,10 @@ impl Endpoint {
     /// 受信バッファにデータ追加（内部用）
     /// プロトコルスタックから呼ばれる
     /// 実際にバッファに追加されたバイト数を返す。
-    pub fn push_data(&self, data: &[u8]) -> usize {
+    pub fn push_payload(&self, payload: PacketPayload) -> usize {
         let (pushed, local, remote, waker) = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let pushed = inner.push_recv_data(data);
+            let pushed = inner.push_recv_payload(payload);
             let local = inner.local_addr;
             let remote = inner.remote_addr;
             if pushed > 0 {
@@ -433,7 +409,7 @@ impl Endpoint {
                     tcp.stats.record_rx_segment(pushed);
                 }
             }
-            // 待機中のタスクを起こす準備 (push_recv_dataがwakeする場合もあるが、
+            // 待機中のタスクを起こす準備 (push_recv_payloadがwakeする場合もあるが、
             // ここでwakerを取り出すのは古いコードとの互換性/安全策)
             (pushed, local, remote, inner.recv_waker.take())
         };
@@ -452,12 +428,6 @@ impl Endpoint {
             w.wake();
         }
         pushed
-    }
-
-    /// UDPパケット追加（内部用）
-    /// プロトコルスタックから呼ばれる
-    pub fn push_packet(&self, if_id: NetIfId, addr: EndpointAddr, data: Vec<u8>) {
-        self.push_packet_payload(if_id, addr, PacketPayload::from_vec(data));
     }
 
     /// UDPパケット追加（内部用）
@@ -587,11 +557,8 @@ impl Endpoint {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
             // プロトコル状態のクリーンアップ
+            inner.clear_tcp_payload_queues();
             inner.clear_protocol();
-
-            // バッファクリア
-            inner.recv_buffer.clear();
-            inner.send_buffer.clear();
 
             // 待機中のタスクを起こす
             if let Some(waker) = inner.recv_waker.take() {
@@ -619,8 +586,7 @@ impl Endpoint {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .recv_buffer
-            .len()
+            .recv_payload_bytes()
     }
 
     /// 送信バッファのデータ量
@@ -629,8 +595,7 @@ impl Endpoint {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .send_buffer
-            .len()
+            .send_payload_bytes()
     }
 
     /// 受信データがあるか
@@ -639,9 +604,7 @@ impl Endpoint {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .recv_buffer
-            .len()
-            > 0
+            .has_recv_data()
     }
 
     /// TCP_NODELAY (Nagleアルゴリズム無効化) を設定
@@ -734,19 +697,6 @@ impl Endpoint {
     // 非同期データ送受信API（Async-First設計準拠）
     // =====================================================
 
-    /// 非同期データ送信（推奨API）
-    ///
-    /// Futureベースの送信。送信バッファに空きができるまで
-    /// 非同期に待機する。NETWORK_STACKロックの同期取得を回避。
-    ///
-    /// # 使用例
-    /// ```ignore
-    /// let n = endpoint.send(data).await?;
-    /// ```
-    pub fn send(&self, data: Vec<u8>) -> super::futures::SendFuture {
-        super::futures::SendFuture::new(self.clone(), data)
-    }
-
     /// 非同期データ受信（推奨API）
     ///
     /// Futureベースの受信。受信バッファにデータが到着するまで
@@ -768,8 +718,12 @@ impl Endpoint {
     /// ```ignore
     /// let n = endpoint.send_to(data, addr).await?;
     /// ```
-    pub fn send_to(&self, data: Vec<u8>, addr: EndpointAddr) -> super::futures::SendToFuture {
-        super::futures::SendToFuture::new(self.clone(), data, addr)
+    pub fn send_to(
+        &self,
+        payload: PacketPayload,
+        addr: EndpointAddr,
+    ) -> super::futures::SendToFuture {
+        super::futures::SendToFuture::new(self.clone(), payload, addr)
     }
 
     /// 非同期UDP受信（推奨API）
@@ -903,14 +857,6 @@ impl OwnedEndpoint {
         Ok((OwnedEndpoint::from_endpoint(ep), addr, if_id))
     }
 
-    /// 送信（同期）
-    pub fn send_sync(&self, data: &[u8]) -> EndpointResult<usize> {
-        self.endpoint
-            .as_ref()
-            .ok_or(EndpointError::NotFound)?
-            .send_sync(data)
-    }
-
     /// 受信（同期）
     pub fn recv_sync(&self, buf: &mut [u8]) -> EndpointResult<usize> {
         self.endpoint
@@ -920,11 +866,15 @@ impl OwnedEndpoint {
     }
 
     /// UDP送信（同期）
-    pub fn send_to_sync(&self, data: &[u8], addr: EndpointAddr) -> EndpointResult<usize> {
+    pub fn send_to_sync(
+        &self,
+        payload: PacketPayload,
+        addr: EndpointAddr,
+    ) -> EndpointResult<usize> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .send_to_sync(data, addr)
+            .send_to_sync(payload, addr)
     }
 
     /// UDP受信（同期）

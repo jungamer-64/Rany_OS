@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::net::l2::ethernet::MacAddress;
+use crate::net::payload::PacketPayloadView;
+use kernel_api::resource::net::PacketPayload;
 
 impl NdpProcessor {
     /// Create a new NDP processor
@@ -76,6 +78,31 @@ impl NdpProcessor {
                 // We don't process RS (we're not a router)
                 NdpResult::None
             }
+            _ => NdpResult::None,
+        }
+    }
+
+    pub fn process_payload(
+        &mut self,
+        msg_type: Icmpv6Type,
+        payload: &PacketPayload,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        src_mac: [u8; 6],
+        current_time: u64,
+    ) -> NdpResult {
+        match msg_type {
+            Icmpv6Type::NeighborSolicitation => {
+                self.process_ns_payload(payload, src, dst, src_mac, current_time)
+            }
+            Icmpv6Type::NeighborAdvertisement => {
+                self.process_na_payload(payload, src, dst, src_mac, current_time)
+            }
+            Icmpv6Type::RouterAdvertisement => {
+                self.process_ra_payload(payload, src, dst, current_time)
+            }
+            Icmpv6Type::Redirect => self.process_redirect_payload(payload, src, dst, current_time),
+            Icmpv6Type::RouterSolicitation => NdpResult::None,
             _ => NdpResult::None,
         }
     }
@@ -158,6 +185,78 @@ impl NdpProcessor {
                 target,
                 our_mac: self.our_mac,
                 solicited: true, // If it's not unspecified, it's a regular NS (usually)
+            }
+        }
+    }
+
+    pub(super) fn process_ns_payload(
+        &mut self,
+        payload: &PacketPayload,
+        src: Ipv6Address,
+        _dst: Ipv6Address,
+        src_mac: [u8; 6],
+        current_time: u64,
+    ) -> NdpResult {
+        let view = PacketPayloadView::new(payload);
+        if view.total_len() < NS_MIN_SIZE {
+            return NdpResult::Error;
+        }
+
+        self.stats.ns_received.fetch_add(1, Ordering::Relaxed);
+
+        let Some(target_bytes) = view.read_array::<16>(8) else {
+            return NdpResult::Error;
+        };
+        let target = Ipv6Address::new(target_bytes);
+
+        if !self.is_our_address(&target) {
+            return NdpResult::None;
+        }
+
+        let options = if view.total_len() > NS_MIN_SIZE {
+            parse_ndp_options(&view.read_vec(NS_MIN_SIZE, view.total_len() - NS_MIN_SIZE))
+        } else {
+            Vec::new()
+        };
+
+        for opt in &options {
+            if let NdpOption::LinkLayerAddress {
+                option_type: NdpOptionType::SourceLinkLayerAddress,
+                mac,
+            } = opt
+            {
+                if *mac != src_mac {
+                    log::warn!(
+                        "[NET-NDP] Possible NS spoofing: SLLA {} does not match Ethernet source MAC {}",
+                        MacAddress::from_octets(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]),
+                        MacAddress::from_octets(
+                            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]
+                        )
+                    );
+                    return NdpResult::Error;
+                }
+
+                if !src.is_unspecified() {
+                    self.cache.update_stale(&src, *mac, current_time);
+                }
+            }
+        }
+
+        if src.is_unspecified() {
+            log::info!(
+                "[NET-NDP] Received DAD probe for our address {} - defending (RFC 4862)",
+                target
+            );
+            NdpResult::SendNeighborAdvertisementMulticast {
+                target,
+                our_mac: self.our_mac,
+            }
+        } else {
+            NdpResult::SendNeighborAdvertisement {
+                dst: src,
+                target,
+                our_mac: self.our_mac,
+                solicited: true,
             }
         }
     }
@@ -262,6 +361,89 @@ impl NdpProcessor {
         NdpResult::None
     }
 
+    pub(super) fn process_na_payload(
+        &mut self,
+        payload: &PacketPayload,
+        _src: Ipv6Address,
+        _dst: Ipv6Address,
+        src_mac: [u8; 6],
+        current_time: u64,
+    ) -> NdpResult {
+        let view = PacketPayloadView::new(payload);
+        if view.total_len() < NA_MIN_SIZE {
+            return NdpResult::Error;
+        }
+
+        self.stats.na_received.fetch_add(1, Ordering::Relaxed);
+
+        let Some(flags) = view.read_array::<1>(4).map(|bytes| bytes[0]) else {
+            return NdpResult::Error;
+        };
+        let solicited = (flags & 0x40) != 0;
+        let override_flag = (flags & 0x20) != 0;
+
+        let Some(target_bytes) = view.read_array::<16>(8) else {
+            return NdpResult::Error;
+        };
+        let target = Ipv6Address::new(target_bytes);
+
+        if target.is_multicast() {
+            log::warn!(
+                "[NET-NDP] Dropping NA with multicast target address {}",
+                target
+            );
+            return NdpResult::Error;
+        }
+
+        let options = if view.total_len() > NA_MIN_SIZE {
+            parse_ndp_options(&view.read_vec(NA_MIN_SIZE, view.total_len() - NA_MIN_SIZE))
+        } else {
+            Vec::new()
+        };
+
+        let mut learned_mac = None;
+        for opt in &options {
+            if let NdpOption::LinkLayerAddress {
+                option_type: NdpOptionType::TargetLinkLayerAddress,
+                mac,
+            } = opt
+            {
+                if *mac != src_mac {
+                    log::warn!(
+                        "[NET-NDP] Possible NA spoofing: TLLA {} does not match Ethernet source MAC {}",
+                        MacAddress::from_octets(mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]),
+                        MacAddress::from_octets(
+                            src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5]
+                        )
+                    );
+                    return NdpResult::Error;
+                }
+                learned_mac = Some(*mac);
+            }
+        }
+
+        if let Some(mac) = learned_mac {
+            if let Some(entry) = self.cache.lookup_mut(&target) {
+                if solicited {
+                    entry.mac = mac;
+                    entry.state = NeighborState::Reachable;
+                    entry.timestamp = current_time;
+                    entry.probes_sent = 0;
+                } else if override_flag && entry.mac != mac {
+                    entry.mac = mac;
+                    entry.state = NeighborState::Stale;
+                    entry.timestamp = current_time;
+                }
+            } else {
+                return NdpResult::None;
+            }
+
+            return NdpResult::NeighborUpdated { ip: target, mac };
+        }
+
+        NdpResult::None
+    }
+
     /// Process Router Advertisement
     ///
     /// RA provides prefix info, gateway, and hop limit
@@ -304,6 +486,58 @@ impl NdpProcessor {
                 } => {
                     router_mac = Some(*mac);
                     // Update neighbor cache with router's MAC (RFC 4861: should be STALE)
+                    self.cache.update_stale(&src, *mac, current_time);
+                }
+                NdpOption::PrefixInfo { .. }
+                | NdpOption::Mtu(_)
+                | NdpOption::RecursiveDnsServer { .. } => {
+                    prefix_options.push(opt);
+                }
+                _ => {}
+            }
+        }
+
+        NdpResult::RouterAdvertisement {
+            router: src,
+            router_mac,
+            prefixes: prefix_options,
+        }
+    }
+
+    pub(super) fn process_ra_payload(
+        &mut self,
+        payload: &PacketPayload,
+        src: Ipv6Address,
+        _dst: Ipv6Address,
+        current_time: u64,
+    ) -> NdpResult {
+        if !src.is_link_local() {
+            log::warn!("NDP: Dropping RA from non-link-local address {}", src);
+            return NdpResult::Error;
+        }
+
+        let view = PacketPayloadView::new(payload);
+        if view.total_len() < 16 {
+            return NdpResult::Error;
+        }
+
+        self.stats.ra_received.fetch_add(1, Ordering::Relaxed);
+
+        let options = if view.total_len() > 16 {
+            parse_ndp_options(&view.read_vec(16, view.total_len() - 16))
+        } else {
+            Vec::new()
+        };
+
+        let mut router_mac = None;
+        let mut prefix_options = Vec::new();
+        for opt in options {
+            match &opt {
+                NdpOption::LinkLayerAddress {
+                    option_type: NdpOptionType::SourceLinkLayerAddress,
+                    mac,
+                } => {
+                    router_mac = Some(*mac);
                     self.cache.update_stale(&src, *mac, current_time);
                 }
                 NdpOption::PrefixInfo { .. }
@@ -396,6 +630,79 @@ impl NdpProcessor {
             } = opt
             {
                 // Update neighbor cache with target's MAC
+                self.cache.update_reachable(&target, mac, current_time);
+            }
+        }
+
+        NdpResult::Redirect {
+            target,
+            destination,
+        }
+    }
+
+    pub(super) fn process_redirect_payload(
+        &mut self,
+        payload: &PacketPayload,
+        src: Ipv6Address,
+        _dst: Ipv6Address,
+        current_time: u64,
+    ) -> NdpResult {
+        if !src.is_link_local() {
+            log::warn!("NDP: Dropping Redirect from non-link-local address {}", src);
+            return NdpResult::Error;
+        }
+
+        let view = PacketPayloadView::new(payload);
+        if view.total_len() < 40 {
+            return NdpResult::Error;
+        }
+
+        let Some(target_bytes) = view.read_array::<16>(8) else {
+            return NdpResult::Error;
+        };
+        let target = Ipv6Address::new(target_bytes);
+
+        let Some(dest_bytes) = view.read_array::<16>(24) else {
+            return NdpResult::Error;
+        };
+        let destination = Ipv6Address::new(dest_bytes);
+
+        let Some(code) = view.read_array::<1>(1).map(|bytes| bytes[0]) else {
+            return NdpResult::Error;
+        };
+        if code != 0 {
+            return NdpResult::Error;
+        }
+
+        if destination.is_multicast() {
+            log::warn!(
+                "NDP: Dropping Redirect with multicast destination {}",
+                destination
+            );
+            return NdpResult::Error;
+        }
+
+        if !target.is_link_local() && target != destination {
+            log::warn!(
+                "NDP: Dropping Redirect with invalid target {} for destination {}",
+                target,
+                destination
+            );
+            return NdpResult::Error;
+        }
+
+        let options = if view.total_len() > 40 {
+            parse_ndp_options(&view.read_vec(40, view.total_len() - 40))
+        } else {
+            Vec::new()
+        };
+
+        for opt in options {
+            if let NdpOption::LinkLayerAddress {
+                option_type: NdpOptionType::TargetLinkLayerAddress,
+                mac,
+            } = opt
+            {
                 self.cache.update_reachable(&target, mac, current_time);
             }
         }

@@ -3,7 +3,7 @@
 // ============================================================================
 //! # Async Futures - 非同期ソケット操作
 //!
-//! RecvFuture, SendFuture, AcceptFuture, RecvFromFuture
+//! RecvFuture, AcceptFuture, RecvFromFuture
 
 use alloc::vec::Vec;
 use core::future::Future;
@@ -18,6 +18,7 @@ use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::tcp::TcpStream;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
+use kernel_api::resource::net::PacketPayload;
 
 /// 非同期受信Future
 pub struct RecvFuture {
@@ -53,13 +54,8 @@ impl Future for RecvFuture {
         }
 
         // データがあれば即座に返す（O(1)）
-        if !inner.recv_buffer.is_empty() {
-            let len = this.buffer.len().min(inner.recv_buffer.len());
-            for i in 0..len {
-                if let Some(byte) = inner.recv_buffer.pop_front() {
-                    this.buffer[i] = byte;
-                }
-            }
+        if inner.has_recv_data() {
+            let len = inner.recv_from_buffer(&mut this.buffer);
             this.buffer.truncate(len);
             return Poll::Ready(Ok(core::mem::take(&mut this.buffer)));
         }
@@ -75,108 +71,24 @@ impl Future for RecvFuture {
     }
 }
 
-/// 非同期送信Future
-pub struct SendFuture {
-    endpoint: Endpoint,
-    data: Vec<u8>,
-    offset: usize,
-    dispatch: EventDispatch,
-    pending_notify: bool,
-}
-
-impl SendFuture {
-    /// 新規作成
-    pub fn new(endpoint: Endpoint, data: Vec<u8>) -> Self {
-        let runtime = endpoint.runtime();
-        Self {
-            endpoint,
-            data,
-            offset: 0,
-            dispatch: EventDispatch::new_in(runtime),
-            pending_notify: false,
-        }
-    }
-}
-
-impl Future for SendFuture {
-    type Output = EndpointResult<usize>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-
-        // LOOP_PROOF: mode=event; reason=Endpoint poll loop returns once readiness state stabilizes and otherwise re-evaluates after state transitions.;
-        loop {
-            if this.pending_notify {
-                match this
-                    .dispatch
-                    .poll(cx, || super::event::NetworkEvent::DataReady {
-                        fd: this.endpoint.fd(),
-                        endpoint_type: this.endpoint.socket_type(),
-                    }) {
-                    Poll::Ready(Ok(())) => {
-                        this.pending_notify = false;
-                        if this.offset >= this.data.len() {
-                            return Poll::Ready(Ok(this.offset));
-                        }
-                    }
-                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                    Poll::Pending => return Poll::Pending,
-                }
-            }
-
-            let mut inner = this
-                .endpoint
-                .inner()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-
-            if !inner.state.can_send() {
-                return Poll::Ready(Err(EndpointError::NotConnected));
-            }
-
-            if this.offset >= this.data.len() {
-                return Poll::Ready(Ok(this.offset));
-            }
-
-            let available = inner
-                .send_buffer_limit
-                .saturating_sub(inner.send_buffer.len());
-            if available == 0 {
-                inner.send_waker = Some(cx.waker().clone());
-                return Poll::Pending;
-            }
-
-            let remaining = &this.data[this.offset..];
-            let to_send = remaining.len().min(available);
-            inner
-                .send_buffer
-                .extend(remaining[..to_send].iter().copied());
-            this.offset += to_send;
-            if this.offset < this.data.len() {
-                inner.send_waker = Some(cx.waker().clone());
-            }
-            drop(inner);
-
-            this.pending_notify = true;
-        }
-    }
-}
-
 /// 非同期UDP送信Future
 pub struct SendToFuture {
     endpoint: Endpoint,
-    data: Vec<u8>,
+    payload: Option<PacketPayload>,
+    payload_len: usize,
     addr: EndpointAddr,
     dispatch: EventDispatch,
 }
 
 impl SendToFuture {
     /// 新規作成
-    pub fn new(endpoint: Endpoint, data: Vec<u8>, addr: EndpointAddr) -> Self {
+    pub fn new(endpoint: Endpoint, payload: PacketPayload, addr: EndpointAddr) -> Self {
         let runtime = endpoint.runtime();
+        let payload_len = payload.total_len();
         Self {
             endpoint,
-            data,
+            payload: Some(payload),
+            payload_len,
             addr,
             dispatch: EventDispatch::new_in(runtime),
         }
@@ -207,10 +119,13 @@ impl Future for SendToFuture {
             .dispatch
             .poll(cx, || super::event::NetworkEvent::SendTo {
                 fd: this.endpoint.fd(),
-                data: this.data.clone(),
+                payload: this
+                    .payload
+                    .take()
+                    .expect("SendToFuture payload already dispatched"),
                 remote: this.addr,
             }) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(this.data.len())),
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(this.payload_len)),
             Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
             Poll::Pending => Poll::Pending,
         }
@@ -357,15 +272,10 @@ impl OwnedEndpoint {
         self.endpoint().map(|s| RecvFuture::new(s.clone(), size))
     }
 
-    /// 非同期送信
-    pub fn send(&self, data: Vec<u8>) -> Option<SendFuture> {
-        self.endpoint().map(|s| SendFuture::new(s.clone(), data))
-    }
-
     /// 非同期UDP送信
-    pub fn send_to(&self, data: Vec<u8>, addr: EndpointAddr) -> Option<SendToFuture> {
+    pub fn send_to(&self, payload: PacketPayload, addr: EndpointAddr) -> Option<SendToFuture> {
         self.endpoint()
-            .map(|s| SendToFuture::new(s.clone(), data, addr))
+            .map(|s| SendToFuture::new(s.clone(), payload, addr))
     }
 
     /// 非同期接続受け入れ
@@ -678,9 +588,8 @@ impl Future for CloseFuture {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
 
+                inner.clear_tcp_payload_queues();
                 inner.clear_protocol();
-                inner.recv_buffer.clear();
-                inner.send_buffer.clear();
 
                 if let Some(waker) = inner.recv_waker.take() {
                     waker.wake();
@@ -945,7 +854,7 @@ impl Future for IcmpEchoFuture {
 }
 
 // ==========================
-// Tests for SendFuture
+// Tests for TCP write futures
 // ==========================
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -963,7 +872,7 @@ pub mod qemu_tests {
     use core::pin::Pin;
     use core::task::{Context, Poll, Waker};
 
-    pub fn sendfuture_wakes_on_send_smoke() -> bool {
+    pub fn write_future_wakes_on_send_smoke() -> bool {
         init_endpoint_manager();
 
         stack::init_default();
@@ -999,36 +908,16 @@ pub mod qemu_tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        let expected = alloc::vec![1u8, 2u8, 3u8, 4u8];
-        let Some(mut fut) = sock.send(expected.clone()) else {
+        let expected = [1u8, 2u8, 3u8, 4u8];
+        let Some(mut stream) = sock.tcp_stream() else {
             return false;
         };
+        let mut fut = stream.write(&expected);
         let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
         match pinned.as_mut().poll(&mut cx) {
             Poll::Ready(Ok(n)) => n == expected.len(),
-            Poll::Pending => {
-                let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
-                let _ = handler.handle_event(NetworkEvent::DataReady {
-                    fd,
-                    endpoint_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
-                });
-
-                match pinned.as_mut().poll(&mut cx) {
-                    Poll::Ready(Ok(n)) => n == expected.len(),
-                    Poll::Pending => {
-                        if let Some(s) = sock.endpoint() {
-                            let inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-                            let staged: alloc::vec::Vec<u8> =
-                                inner.send_buffer.iter().copied().collect();
-                            staged == expected
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                }
-            }
+            Poll::Pending => false,
             _ => false,
         }
     }

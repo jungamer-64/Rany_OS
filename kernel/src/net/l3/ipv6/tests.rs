@@ -1,6 +1,10 @@
 use super::*;
 use alloc::vec;
 
+fn test_packet(data: &[u8]) -> kernel_api::resource::net::PacketRef {
+    crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed test packet")
+}
+
 // --- Address tests ---
 
 #[cfg_attr(test, test_case)]
@@ -513,7 +517,7 @@ pub fn test_ipv6_fragment_reassembly_returns_payload_chain() {
         identification: id,
     };
     let payload1 = [0x13, 0x37, 0x00, 0x08, 0x99, 0x88, 0x77, 0x66];
-    let packet1 = kernel_api::resource::net::PacketRef::from_vec(payload1.to_vec());
+    let packet1 = test_packet(&payload1);
     let (res1, _) =
         reassembler.process_fragment(src, dst, &unfrag, &frag1_hdr, &payload1, Some(packet1), now);
     assert!(matches!(res1, Ok(None)));
@@ -525,7 +529,7 @@ pub fn test_ipv6_fragment_reassembly_returns_payload_chain() {
         identification: id,
     };
     let payload2 = [0x55, 0x44, 0x33, 0x22, 0x11, 0x00, 0xaa, 0xbb];
-    let packet2 = kernel_api::resource::net::PacketRef::from_vec(payload2.to_vec());
+    let packet2 = test_packet(&payload2);
     let (res2, _) =
         reassembler.process_fragment(src, dst, &unfrag, &frag2_hdr, &payload2, Some(packet2), now);
     let payload = res2

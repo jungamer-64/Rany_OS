@@ -46,7 +46,7 @@ impl NetworkStack {
         Some(self.resolve_ipv4_next_hop(dst_ip, current_time))
     }
 
-    pub(crate) fn send_udp_raw_with_config_and_if_ttl(
+    pub(crate) fn send_udp_raw_with_config_and_if_ttl_payload(
         &mut self,
         if_id: Option<super::NetIfId>,
         config: &NetworkConfig,
@@ -54,7 +54,7 @@ impl NetworkStack {
         src_port: u16,
         dst_ip: Ipv4Address,
         dst_port: u16,
-        data: &[u8],
+        payload: &crate::net::payload::PacketPayloadView<'_>,
         ttl: u8,
     ) -> bool {
         if !crate::net::security::firewall::check_egress_v4(
@@ -93,8 +93,8 @@ impl NetworkStack {
                     .set_ttl(ttl);
 
                 let ip_payload = ip_packet.payload_mut();
-                if let Some(udp_len) = crate::net::l4::udp::UdpProcessor::build_packet(
-                    ip_payload, src_ip, src_port, dst_ip, dst_port, data,
+                if let Some(udp_len) = crate::net::l4::udp::UdpProcessor::build_packet_view(
+                    ip_payload, src_ip, src_port, dst_ip, dst_port, payload,
                 ) {
                     ip_packet.finalize(udp_len);
 
@@ -111,59 +111,13 @@ impl NetworkStack {
         false
     }
 
-    /// Send a UDP packet (raw helper)
-    pub fn send_udp_raw(
-        &mut self,
-        src_port: u16,
-        dst_ip: Ipv4Address,
-        dst_port: u16,
-        data: &[u8],
-    ) -> bool {
-        self.send_udp_raw_scoped(
-            crate::net::types::InterfaceScope::Any,
-            src_port,
-            dst_ip,
-            dst_port,
-            data,
-        )
-    }
-
-    pub fn send_udp_raw_auto_ttl(
-        &mut self,
-        src_port: u16,
-        dst_ip: Ipv4Address,
-        dst_port: u16,
-        data: &[u8],
-        ttl: u8,
-    ) -> bool {
-        self.send_udp_raw_scoped_auto_ttl(
-            crate::net::types::InterfaceScope::Any,
-            src_port,
-            dst_ip,
-            dst_port,
-            data,
-            ttl,
-        )
-    }
-
-    pub fn send_udp_raw_scoped(
+    pub fn send_udp_raw_payload_scoped_auto_ttl(
         &mut self,
         scope: crate::net::types::InterfaceScope,
         src_port: u16,
         dst_ip: Ipv4Address,
         dst_port: u16,
-        data: &[u8],
-    ) -> bool {
-        self.send_udp_raw_scoped_auto_ttl(scope, src_port, dst_ip, dst_port, data, 64)
-    }
-
-    pub fn send_udp_raw_scoped_auto_ttl(
-        &mut self,
-        scope: crate::net::types::InterfaceScope,
-        src_port: u16,
-        dst_ip: Ipv4Address,
-        dst_port: u16,
-        data: &[u8],
+        payload: &crate::net::payload::PacketPayloadView<'_>,
         ttl: u8,
     ) -> bool {
         let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(scope, None, None, dst_ip)
@@ -172,40 +126,19 @@ impl NetworkStack {
             return false;
         };
 
-        self.send_udp_raw_with_config_and_if_ttl(
-            if_id, &config, src_ip, src_port, dst_ip, dst_port, data, ttl,
+        self.send_udp_raw_with_config_and_if_ttl_payload(
+            if_id, &config, src_ip, src_port, dst_ip, dst_port, payload, ttl,
         )
     }
 
-    /// Send a UDP packet with explicit IPv4 source address and TTL.
-    pub fn send_udp_raw_with_src_ttl(
-        &mut self,
-        src_ip: Ipv4Address,
-        src_port: u16,
-        dst_ip: Ipv4Address,
-        dst_port: u16,
-        data: &[u8],
-        ttl: u8,
-    ) -> bool {
-        self.send_udp_raw_scoped_with_src_ttl(
-            crate::net::types::InterfaceScope::Any,
-            src_ip,
-            src_port,
-            dst_ip,
-            dst_port,
-            data,
-            ttl,
-        )
-    }
-
-    pub fn send_udp_raw_scoped_with_src_ttl(
+    pub fn send_udp_raw_payload_scoped_with_src_ttl(
         &mut self,
         scope: crate::net::types::InterfaceScope,
         src_ip: Ipv4Address,
         src_port: u16,
         dst_ip: Ipv4Address,
         dst_port: u16,
-        data: &[u8],
+        payload: &crate::net::payload::PacketPayloadView<'_>,
         ttl: u8,
     ) -> bool {
         let Ok((if_id, config, resolved_src)) =
@@ -215,14 +148,14 @@ impl NetworkStack {
             return false;
         };
 
-        self.send_udp_raw_with_config_and_if_ttl(
+        self.send_udp_raw_with_config_and_if_ttl_payload(
             if_id,
             &config,
             resolved_src,
             src_port,
             dst_ip,
             dst_port,
-            data,
+            payload,
             ttl,
         )
     }
@@ -374,8 +307,13 @@ impl NetworkStack {
                     }
                 }
 
-                if self.send_udp_raw_with_config_and_if_ttl(
-                    if_id, &config, src_ip, s_port, d_ip, d_port, data, 64,
+                let Some(payload) = crate::net::payload::payload_from_bytes(data) else {
+                    return Err(crate::net::types::NetworkError::TransmitFailed);
+                };
+                let payload = crate::net::payload::PacketPayloadView::new(&payload);
+
+                if self.send_udp_raw_with_config_and_if_ttl_payload(
+                    if_id, &config, src_ip, s_port, d_ip, d_port, &payload, 64,
                 ) {
                     Ok(())
                 } else {
@@ -392,7 +330,19 @@ impl NetworkStack {
                     port: d_port,
                 },
             ) => {
-                if self.send_udp_v6_raw(s_port, s_ip, d_ip, d_port, data) {
+                let Some(payload) = crate::net::payload::payload_from_bytes(data) else {
+                    return Err(crate::net::types::NetworkError::TransmitFailed);
+                };
+                let payload = crate::net::payload::PacketPayloadView::new(&payload);
+                if self.send_udp_v6_payload_scoped_with_ttl(
+                    crate::net::types::InterfaceScope::Any,
+                    s_port,
+                    s_ip,
+                    d_ip,
+                    d_port,
+                    &payload,
+                    64,
+                ) {
                     Ok(())
                 } else {
                     Err(crate::net::types::NetworkError::TransmitFailed)

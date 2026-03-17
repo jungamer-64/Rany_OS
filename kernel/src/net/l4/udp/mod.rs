@@ -283,6 +283,17 @@ impl<'a> UdpPacketMut<'a> {
         len
     }
 
+    /// Write payload from a potentially chained packet payload view.
+    pub fn write_payload_view(&mut self, payload: &PacketPayloadView<'_>) -> usize {
+        let max_buffer = self.buffer.len() - UdpHeader::SIZE;
+        let max_udp = 65527;
+        let len = payload.total_len().min(max_buffer).min(max_udp);
+        let copied =
+            payload.copy_all_into(&mut self.buffer[UdpHeader::SIZE..UdpHeader::SIZE + len]);
+        self.payload_len = copied;
+        copied
+    }
+
     /// Set payload length
     pub fn set_payload_len(&mut self, len: usize) {
         let max_udp = 65527;
@@ -672,7 +683,11 @@ impl UdpEndpoint {
     /// deadlocks when called from async contexts (e.g., within DHCP, mDNS, DNS tasks).
     ///
     /// Returns the number of bytes sent, or an error.
-    pub fn send_to_sync(&self, data: &[u8], dst: UdpAddr) -> Result<usize, NetworkError> {
+    pub fn send_to_sync(
+        &self,
+        payload: PacketPayload,
+        dst: UdpAddr,
+    ) -> Result<usize, NetworkError> {
         let (local_port, ttl) = match self.inner.lock() {
             Ok(g) => {
                 if g.closed {
@@ -683,14 +698,15 @@ impl UdpEndpoint {
             Err(_) => return Err(NetworkError::LockPoisoned),
         };
         let scope = self.default_send_scope();
+        let payload_len = payload.total_len();
 
         // Send via async event queue to avoid synchronous NETWORK_STACK lock
         match dst {
             UdpAddr::V4 { ip, port } => {
                 if crate::net::runtime::stack::enqueue_udp_send_scoped(
-                    scope, local_port, ip, port, data, ttl,
+                    scope, local_port, ip, port, payload, ttl,
                 ) {
-                    Ok(data.len())
+                    Ok(payload_len)
                 } else {
                     Err(NetworkError::TransmitFailed)
                 }
@@ -702,10 +718,10 @@ impl UdpEndpoint {
                     Ipv6Address::UNSPECIFIED,
                     ip,
                     port,
-                    data,
+                    payload,
                     ttl,
                 ) {
-                    Ok(data.len())
+                    Ok(payload_len)
                 } else {
                     Err(NetworkError::TransmitFailed)
                 }
@@ -722,30 +738,10 @@ impl UdpEndpoint {
     /// ```ignore
     /// let sent = socket.send(data, dst).await?;
     /// ```
-    pub fn send<'a>(&'a self, data: &'a [u8], dst: UdpAddr) -> UdpSendFuture<'a> {
+    pub fn send(&self, payload: PacketPayload, dst: UdpAddr) -> UdpSendFuture {
         UdpSendFuture {
-            endpoint: self,
-            data,
-            dst,
-        }
-    }
-
-    /// 【設計書 6.2準拠】ゼロコピー非同期UDP送信
-    ///
-    /// PacketRefの所有権をスタックに移動して送信する。
-    /// コピーが発生しないため高スループットアプリケーションに推奨。
-    ///
-    /// # 使用例
-    /// ```ignore
-    /// let mut packet = mempool::alloc_packet().unwrap();
-    /// packet.data_mut()[..data.len()].copy_from_slice(data);
-    /// packet.set_len(data.len());
-    /// socket.send_zero_copy(packet, dst).await?;
-    /// ```
-    pub fn send_zero_copy(&self, packet: PacketRef, dst: UdpAddr) -> UdpSendZeroCopyFuture {
-        UdpSendZeroCopyFuture {
             inner: self.inner.clone(),
-            packet: Some(packet),
+            payload: Some(payload),
             dst,
         }
     }
@@ -787,34 +783,45 @@ impl Future for UdpRecvFuture {
 ///
 /// イベントキューが満杯の場合はバックプレッシャーを適用し、
 /// TxAvailableイベントで再ポーリングされるまで待機する。
-pub struct UdpSendFuture<'a> {
-    endpoint: &'a UdpEndpoint,
-    data: &'a [u8],
+pub struct UdpSendFuture {
+    inner: Arc<PoisonLock<UdpEndpointInner>>,
+    payload: Option<PacketPayload>,
     dst: UdpAddr,
 }
 
-impl<'a> Future for UdpSendFuture<'a> {
+impl Future for UdpSendFuture {
     type Output = Result<usize, NetworkError>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
 
         // まずエンドポイントの状態を確認
-        let (local_port, ttl) = match this.endpoint.inner.lock() {
+        let (local_port, ttl, scope) = match this.inner.lock() {
             Ok(g) => {
                 if g.closed {
                     return Poll::Ready(Err(NetworkError::ConnectionClosed));
                 }
-                (g.local_port, g.ttl)
+                let scope = match g.scope {
+                    InterfaceScope::Pinned(if_id) => InterfaceScope::Pinned(if_id),
+                    InterfaceScope::Any => g
+                        .last_ingress_if_id
+                        .map(InterfaceScope::Pinned)
+                        .unwrap_or(InterfaceScope::Any),
+                };
+                (g.local_port, g.ttl, scope)
             }
             Err(_) => return Poll::Ready(Err(NetworkError::LockPoisoned)),
         };
 
+        let Some(payload) = this.payload.take() else {
+            return Poll::Ready(Err(NetworkError::TransmitFailed));
+        };
+        let payload_len = payload.total_len();
+
         // イベントキュー経由で非同期送信を試行
-        let scope = this.endpoint.default_send_scope();
         let sent = match this.dst {
             UdpAddr::V4 { ip, port } => crate::net::runtime::stack::enqueue_udp_send_scoped(
-                scope, local_port, ip, port, this.data, ttl,
+                scope, local_port, ip, port, payload, ttl,
             ),
             UdpAddr::V6 { ip, port } => crate::net::runtime::stack::enqueue_udp_v6_send_scoped(
                 scope,
@@ -822,87 +829,13 @@ impl<'a> Future for UdpSendFuture<'a> {
                 Ipv6Address::UNSPECIFIED,
                 ip,
                 port,
-                this.data,
+                payload,
                 ttl,
             ),
         };
 
         if sent {
-            Poll::Ready(Ok(this.data.len()))
-        } else {
-            // イベントキュー満杯: Wakerを登録して待機
-            if let Ok(mut inner) = this.endpoint.inner.lock() {
-                inner.wakers.push(cx.waker().clone());
-            }
-            Poll::Pending
-        }
-    }
-}
-
-/// 【設計書 6.2準拠】ゼロコピー非同期UDP送信Future
-///
-/// PacketRefの所有権をスタックに移動して送信する。
-/// データコピーが発生しないため高スループットに推奨。
-pub struct UdpSendZeroCopyFuture {
-    inner: Arc<PoisonLock<UdpEndpointInner>>,
-    packet: Option<PacketRef>,
-    dst: UdpAddr,
-}
-
-impl Future for UdpSendZeroCopyFuture {
-    type Output = Result<(), NetworkError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = &mut *self;
-
-        let (local_port, ttl) = match this.inner.lock() {
-            Ok(g) => {
-                if g.closed {
-                    return Poll::Ready(Err(NetworkError::ConnectionClosed));
-                }
-                (g.local_port, g.ttl)
-            }
-            Err(_) => return Poll::Ready(Err(NetworkError::LockPoisoned)),
-        };
-
-        if let Some(packet) = this.packet.take() {
-            let data = packet.data();
-            let scope = match this.inner.lock() {
-                Ok(g) => match g.scope {
-                    InterfaceScope::Pinned(if_id) => InterfaceScope::Pinned(if_id),
-                    InterfaceScope::Any => g
-                        .last_ingress_if_id
-                        .map(InterfaceScope::Pinned)
-                        .unwrap_or(InterfaceScope::Any),
-                },
-                Err(_) => InterfaceScope::Any,
-            };
-            let sent = match this.dst {
-                UdpAddr::V4 { ip, port } => crate::net::runtime::stack::enqueue_udp_send_scoped(
-                    scope, local_port, ip, port, data, ttl,
-                ),
-                UdpAddr::V6 { ip, port } => crate::net::runtime::stack::enqueue_udp_v6_send_scoped(
-                    scope,
-                    local_port,
-                    Ipv6Address::UNSPECIFIED,
-                    ip,
-                    port,
-                    data,
-                    ttl,
-                ),
-            };
-
-            if sent {
-                // パケット所有権解放（Drop時にプールに自動返却）
-                Poll::Ready(Ok(()))
-            } else {
-                // イベントキュー満杯: パケットを戻して待機
-                this.packet = Some(packet);
-                if let Ok(mut inner) = this.inner.lock() {
-                    inner.wakers.push(cx.waker().clone());
-                }
-                Poll::Pending
-            }
+            Poll::Ready(Ok(payload_len))
         } else {
             Poll::Ready(Err(NetworkError::TransmitFailed))
         }

@@ -361,20 +361,29 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
     if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
         let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
         let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
+        let segment_len = segment.len();
+        let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
+            log::debug!(
+                "TCP TX enqueue failed: {} -> {} (packet alloc)",
+                local,
+                remote
+            );
+            return false;
+        };
 
         // 非同期イベントキュー経由で送信（ロック競合回避）
         let ok = match scoped_if {
             Some(if_id) => {
-                crate::net::runtime::stack::enqueue_tcp_send_on(if_id, src_ip, dst_ip, &segment)
+                crate::net::runtime::stack::enqueue_tcp_send_on(if_id, src_ip, dst_ip, payload)
             }
-            None => crate::net::runtime::stack::enqueue_tcp_send(src_ip, dst_ip, &segment),
+            None => crate::net::runtime::stack::enqueue_tcp_send(src_ip, dst_ip, payload),
         };
         if ok {
             log::debug!(
                 "TCP TX (async): {} -> {} ({} bytes)",
                 local,
                 remote,
-                segment.len()
+                segment_len
             );
         } else {
             log::debug!("TCP TX enqueue failed: {} -> {}", local, remote);
@@ -385,11 +394,22 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
     if endpoint_is_native_v6_pair(local, remote) {
         let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
+        let segment_len = segment.len();
+        let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
+            log::debug!(
+                "TCP TX enqueue failed (v6): [{}]:{} -> [{}]:{} (packet alloc)",
+                src_v6,
+                local.port(),
+                dst_v6,
+                remote.port()
+            );
+            return false;
+        };
         let ok = match scoped_if {
             Some(if_id) => {
-                crate::net::runtime::stack::enqueue_tcp_v6_send_on(if_id, src_v6, dst_v6, &segment)
+                crate::net::runtime::stack::enqueue_tcp_v6_send_on(if_id, src_v6, dst_v6, payload)
             }
-            None => crate::net::runtime::stack::enqueue_tcp_v6_send(src_v6, dst_v6, &segment),
+            None => crate::net::runtime::stack::enqueue_tcp_v6_send(src_v6, dst_v6, payload),
         };
         if ok {
             log::debug!(
@@ -398,7 +418,7 @@ pub fn send_tcp_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<
                 local.port(),
                 dst_v6,
                 remote.port(),
-                segment.len()
+                segment_len
             );
         } else {
             log::debug!(

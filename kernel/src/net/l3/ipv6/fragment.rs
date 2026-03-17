@@ -30,6 +30,7 @@ use alloc::vec::Vec;
 use super::Ipv6Address;
 use super::Ipv6ReassemblyError;
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::payload::packet_from_bytes;
 use kernel_api::resource::net::{PacketChain, PacketPayload};
 
 // =====================================================
@@ -139,6 +140,8 @@ pub struct Ipv6FragmentBuffer {
     created_at: u64,
     /// Original fragment ownership chain used to rebuild a packet-backed result.
     segments: Vec<FragmentSegment>,
+    /// Whether every fragment payload is still represented by packet-backed ownership.
+    segments_complete: bool,
 }
 
 impl Ipv6FragmentBuffer {
@@ -164,6 +167,7 @@ impl Ipv6FragmentBuffer {
             first_frag_header: None,
             created_at: timestamp,
             segments: Vec::new(),
+            segments_complete: true,
         }
     }
 
@@ -330,11 +334,22 @@ impl Ipv6FragmentBuffer {
 
         // Copy payload into buffer
         self.data[offset as usize..end as usize].copy_from_slice(payload);
-        if payload_len > 0 {
-            self.segments.push(FragmentSegment {
-                offset,
-                packet: payload_packet.unwrap_or_else(|| PacketRef::from_vec(payload.to_vec())),
-            });
+        if payload_len > 0 && self.segments_complete {
+            let Some(packet) = payload_packet.or_else(|| packet_from_bytes(payload)) else {
+                self.segments_complete = false;
+                self.segments.clear();
+                log::warn!(
+                    "[NET-IPV6] Falling back to scratch-buffer reassembly for fragment at offset {}",
+                    offset
+                );
+                self.update_holes(offset, end, frag.more_fragments);
+                if self.holes.len() > Self::MAX_HOLES {
+                    return Err(Ipv6ReassemblyError::Overlap);
+                }
+                self.trim_holes();
+                return Ok(());
+            };
+            self.segments.push(FragmentSegment { offset, packet });
         }
 
         // RFC 815 hole-list update
@@ -480,20 +495,21 @@ impl Ipv6FragmentBuffer {
         }
 
         let header_len = unfrag.len();
-        let mut header_packet = PacketRef::from_vec(packet[..header_len].to_vec());
+        let mut header_packet = packet_from_bytes(&packet[..header_len])?;
         header_packet.set_len(header_len);
-
-        if self.segments.is_empty() {
-            return Some(PacketPayload::from_vec(packet));
-        }
-
-        let mut segments = self.segments;
-        segments.sort_unstable_by_key(|segment| segment.offset);
 
         let mut chain = PacketChain::new();
         chain.push(header_packet);
-        for segment in segments {
-            chain.push(segment.packet);
+        if !self.segments_complete || self.segments.is_empty() {
+            if packet.len() > header_len {
+                chain.push(packet_from_bytes(&packet[header_len..])?);
+            }
+        } else {
+            let mut segments = self.segments;
+            segments.sort_unstable_by_key(|segment| segment.offset);
+            for segment in segments {
+                chain.push(segment.packet);
+            }
         }
         Some(PacketPayload::chain(chain))
     }

@@ -7,6 +7,14 @@ use kernel_api::resource::net::PacketPayload;
 
 static TEST_LAST_TX_IF: PoisonLock<Option<NetIfId>> = PoisonLock::new(None);
 
+fn test_payload(data: &[u8]) -> PacketPayload {
+    crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+}
+
+fn payload_bytes(payload: &PacketPayload) -> Vec<u8> {
+    crate::net::payload::PacketPayloadView::new(payload).read_vec(0, payload.total_len())
+}
+
 fn record_test_tx_if(
     if_id: Option<NetIfId>,
     _data: &[u8],
@@ -214,9 +222,22 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
 
     // Runtime APIs should fail conservatively when the global lock is poisoned
     // NOTE: These intentionally test the deprecated sync APIs for graceful failure.
-    assert!(run_with_event_task(send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0x1, 0x2],)).is_err());
     assert!(
-        run_with_event_task(send_tcp(Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, &[],)).is_err()
+        run_with_event_task(send_udp(
+            1234,
+            Ipv4Address::LOOPBACK,
+            80,
+            test_payload(&[0x1, 0x2]),
+        ))
+        .is_err()
+    );
+    assert!(
+        run_with_event_task(send_tcp(
+            Ipv4Address::LOOPBACK,
+            Ipv4Address::LOOPBACK,
+            test_payload(&[]),
+        ))
+        .is_err()
     );
     assert!(run_with_event_task(bind_udp(1234)).is_none());
 }
@@ -246,7 +267,7 @@ pub fn test_send_udp_event_task_zero_copy() {
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
         executor.spawn(crate::task::Task::new(async move {
-            let output = send_udp(1234, dst, 80, &[1, 2, 3]).await;
+            let output = send_udp(1234, dst, 80, test_payload(&[1, 2, 3])).await;
             let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(output);
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
@@ -624,7 +645,16 @@ pub fn test_send_udp_raw_uses_route_selected_interface() {
                 MacAddress::from_octets(0x52, 0x54, 0, 0x12, 0x34, 0x56),
                 now,
             );
-        assert!(stack.send_udp_raw(1234, Ipv4Address::new([10, 0, 1, 55]), 8080, b"hi"));
+        let payload = test_payload(b"hi");
+        let payload = crate::net::payload::PacketPayloadView::new(&payload);
+        assert!(stack.send_udp_raw_payload_scoped_auto_ttl(
+            crate::net::types::InterfaceScope::Any,
+            1234,
+            Ipv4Address::new([10, 0, 1, 55]),
+            8080,
+            &payload,
+            64,
+        ));
     } else {
         panic!("stack lock");
     }
@@ -656,7 +686,16 @@ pub fn test_send_udp_raw_without_route_does_not_fallback() {
         let stack = guard.as_mut().expect("stack");
         stack.set_transmit_fn(record_test_tx_if);
         stack.register_interface_state(if0, cfg0);
-        assert!(!stack.send_udp_raw(1234, Ipv4Address::new([203, 0, 113, 10]), 8080, b"hi"));
+        let payload = test_payload(b"hi");
+        let payload = crate::net::payload::PacketPayloadView::new(&payload);
+        assert!(!stack.send_udp_raw_payload_scoped_auto_ttl(
+            crate::net::types::InterfaceScope::Any,
+            1234,
+            Ipv4Address::new([203, 0, 113, 10]),
+            8080,
+            &payload,
+            64,
+        ));
     } else {
         panic!("stack lock");
     }
@@ -700,7 +739,7 @@ pub fn test_send_raw_ipv4_payload_rejects_bad_checksum() {
 
         let result = stack.send_raw_ip_payload_scoped(
             crate::net::types::InterfaceScope::Pinned(if0),
-            PacketPayload::from_vec(packet),
+            test_payload(&packet),
         );
         assert_eq!(result, Err(crate::net::types::NetworkError::InvalidAddress));
     } else {
@@ -758,7 +797,7 @@ pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
             stack
                 .send_raw_ip_payload_scoped(
                     crate::net::types::InterfaceScope::Pinned(if0),
-                    PacketPayload::from_vec(packet),
+                    test_payload(&packet),
                 )
                 .is_ok()
         );
@@ -805,7 +844,7 @@ pub fn test_send_raw_ipv6_payload_rejects_length_mismatch() {
 
         let result = stack.send_raw_ip_payload_scoped(
             crate::net::types::InterfaceScope::Pinned(if0),
-            PacketPayload::from_vec(packet),
+            test_payload(&packet),
         );
         assert_eq!(result, Err(crate::net::types::NetworkError::InvalidAddress));
     } else {
@@ -956,18 +995,18 @@ pub fn test_ndp_pending_queue_drain_for_preserves_order() {
     let target = Ipv6Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let other = Ipv6Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
 
-    queue.enqueue(src, target, &[1], 1);
-    queue.enqueue(src, other, &[9], 2);
-    queue.enqueue(src, target, &[2], 3);
+    queue.enqueue(src, target, test_payload(&[1]), 1);
+    queue.enqueue(src, other, test_payload(&[9]), 2);
+    queue.enqueue(src, target, test_payload(&[2]), 3);
 
     let drained = queue.drain_for(&target);
     assert_eq!(drained.len(), 2);
     match &drained[0].payload {
-        PendingIpv6Payload::Icmpv6(data) => assert_eq!(data.as_ref(), [1]),
+        PendingIpv6Payload::Icmpv6(data) => assert_eq!(payload_bytes(data), [1]),
         _ => panic!("expected icmpv6 payload"),
     }
     match &drained[1].payload {
-        PendingIpv6Payload::Icmpv6(data) => assert_eq!(data.as_ref(), [2]),
+        PendingIpv6Payload::Icmpv6(data) => assert_eq!(payload_bytes(data), [2]),
         _ => panic!("expected icmpv6 payload"),
     }
 
@@ -981,8 +1020,8 @@ pub fn test_ndp_pending_queue_retains_udp_and_tcp_variants() {
     let src = Ipv6Address::LOOPBACK;
     let dst = Ipv6Address::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]);
 
-    queue.enqueue_udp(src, dst, 1111, 2222, 32, b"udp", 1);
-    queue.enqueue_tcp(src, dst, b"tcp", 2);
+    queue.enqueue_udp(src, dst, 1111, 2222, 32, test_payload(b"udp"), 1);
+    queue.enqueue_tcp(src, dst, test_payload(b"tcp"), 2);
 
     let drained = queue.drain_for(&dst);
     assert_eq!(drained.len(), 2);
@@ -997,13 +1036,13 @@ pub fn test_ndp_pending_queue_retains_udp_and_tcp_variants() {
             assert_eq!(*src_port, 1111);
             assert_eq!(*dst_port, 2222);
             assert_eq!(*hop_limit, 32);
-            assert_eq!(data.as_ref(), b"udp");
+            assert_eq!(payload_bytes(data), b"udp");
         }
         _ => panic!("expected udp payload"),
     }
 
     match &drained[1].payload {
-        PendingIpv6Payload::Tcp { segment } => assert_eq!(segment.as_ref(), b"tcp"),
+        PendingIpv6Payload::Tcp { segment } => assert_eq!(payload_bytes(segment), b"tcp"),
         _ => panic!("expected tcp payload"),
     }
 }

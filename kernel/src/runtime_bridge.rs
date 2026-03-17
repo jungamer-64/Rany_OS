@@ -464,8 +464,7 @@ extern "C" fn runtime_log(runtime_cookie: u64, level: u32, msg_ptr: *const u8, m
 }
 
 struct NetdevPortAdapter {
-    registration: AbiNetPortRegistration,
-    set_interrupts_enabled: Option<extern "C" fn(opaque: u64, enabled: bool) -> i32>,
+    registration: kernel_api::abi::driver::AbiNetPortRegistrationV2,
     driver_name: &'static str,
     runtime_state: PoisonLock<Option<Box<NetRuntimeState>>>,
 }
@@ -474,13 +473,18 @@ unsafe impl Send for NetdevPortAdapter {}
 unsafe impl Sync for NetdevPortAdapter {}
 
 impl NetdevPortAdapter {
-    fn new(registration: &AbiNetPortRegistration, driver_name: &'static str) -> Self {
-        Self {
-            registration: *registration,
-            set_interrupts_enabled: registration.as_v2().map(|v2| v2.set_interrupts_enabled),
+    fn new(
+        registration: &AbiNetPortRegistration,
+        driver_name: &'static str,
+    ) -> Result<Self, AbiErrorCode> {
+        let Some(registration_v2) = registration.as_v2() else {
+            return Err(AbiErrorCode::NotSupported);
+        };
+        Ok(Self {
+            registration: *registration_v2,
             driver_name,
             runtime_state: PoisonLock::new(None),
-        }
+        })
     }
 }
 
@@ -562,14 +566,7 @@ impl NetDevicePort for NetdevPortAdapter {
     }
 
     fn set_interrupts_enabled(&self, enabled: bool) -> Result<(), &'static str> {
-        let Some(setter) = self.set_interrupts_enabled else {
-            return if enabled {
-                Ok(())
-            } else {
-                Err("standalone netdev interrupt suppression unsupported")
-            };
-        };
-        let status = setter(self.registration.opaque, enabled);
+        let status = (self.registration.set_interrupts_enabled)(self.registration.opaque, enabled);
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
@@ -669,9 +666,12 @@ impl NetdevBridgeRegistry {
             }
             _ => return Err(AbiErrorCode::NotSupported),
         };
+        if registration.as_v2().is_none() {
+            return Err(AbiErrorCode::NotSupported);
+        }
 
         let name = leak_driver_name(&registration.info);
-        let adapter: Arc<dyn NetDevicePort> = Arc::new(NetdevPortAdapter::new(registration, name));
+        let adapter: Arc<dyn NetDevicePort> = Arc::new(NetdevPortAdapter::new(registration, name)?);
         let if_id = net_device_runtime::register_port_with_default_config(key, adapter, true)
             .map_err(|_| AbiErrorCode::IoError)?;
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
@@ -1165,15 +1165,12 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn netdev_adapter_v1_rejects_interrupt_suppression() {
+    fn netdev_adapter_v1_is_rejected() {
         let registration = test_net_registration(1);
-        let adapter = NetdevPortAdapter::new(&registration, "test-net");
-
         assert_eq!(
-            adapter.set_interrupts_enabled(false),
-            Err("standalone netdev interrupt suppression unsupported")
+            NetdevPortAdapter::new(&registration, "test-net"),
+            Err(AbiErrorCode::NotSupported)
         );
-        assert_eq!(adapter.set_interrupts_enabled(true), Ok(()));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -1187,7 +1184,7 @@ mod tests {
             &*((&registration_v2 as *const kernel_api::abi::driver::AbiNetPortRegistrationV2)
                 .cast::<AbiNetPortRegistration>())
         };
-        let adapter = NetdevPortAdapter::new(registration, "test-net");
+        let adapter = NetdevPortAdapter::new(registration, "test-net").expect("v2 adapter");
 
         assert_eq!(adapter.set_interrupts_enabled(false), Ok(()));
         assert_eq!(TEST_NET_INTERRUPT_CALLS.load(Ordering::Relaxed), 1);

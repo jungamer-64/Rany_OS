@@ -680,13 +680,93 @@ impl NetworkStack {
         false
     }
 
-    pub fn send_tcp(
+    fn send_tcp_raw_scoped_with_ttl_payload(
+        &mut self,
+        scope: crate::net::types::InterfaceScope,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &PacketPayloadView<'_>,
+        ttl: u8,
+    ) -> bool {
+        let Some(header) = tcp_segment.read_array::<14>(0) else {
+            return false;
+        };
+        let src_port = u16::from_be_bytes([header[0], header[1]]);
+        let dst_port = u16::from_be_bytes([header[2], header[3]]);
+        let tcp_flags = header[13];
+
+        if !crate::net::security::firewall::check_egress_v4(
+            src_ip.octets(),
+            dst_ip.octets(),
+            6,
+            src_port,
+            dst_port,
+            tcp_flags,
+        ) {
+            self.stats.record_dropped();
+            return false;
+        }
+
+        let Ok((if_id, config, resolved_src)) =
+            self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)
+        else {
+            self.stats.record_dropped();
+            return false;
+        };
+
+        let dst_mac = if dst_ip.is_loopback() {
+            config.mac
+        } else {
+            match self.resolve_mac(if_id, dst_ip, &config, self.current_time()) {
+                Some(mac) => mac,
+                None => return false,
+            }
+        };
+
+        let segment_len = tcp_segment.total_len();
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                ip_packet
+                    .init_header()
+                    .set_source(resolved_src)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Tcp)
+                    .set_identification(self.ipv4.next_id(dst_ip))
+                    .set_ttl(ttl);
+
+                let payload_buf = ip_packet.payload_mut();
+                if payload_buf.len() < segment_len {
+                    return false;
+                }
+                if tcp_segment.copy_all_into(&mut payload_buf[..segment_len]) != segment_len {
+                    return false;
+                }
+
+                ip_packet.finalize(segment_len);
+                let total_len = ip_packet.total_len();
+                let _ = ip_packet;
+                frame.set_payload_len(total_len);
+                return self.transmit_on(if_id, frame.as_bytes());
+            }
+        }
+
+        false
+    }
+
+    pub fn send_tcp_payload(
         &mut self,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: &[u8],
+        tcp_segment: &PacketPayloadView<'_>,
     ) -> bool {
-        self.send_tcp_raw_scoped_with_ttl(
+        self.send_tcp_raw_scoped_with_ttl_payload(
             crate::net::types::InterfaceScope::Any,
             src_ip,
             dst_ip,
@@ -695,14 +775,14 @@ impl NetworkStack {
         )
     }
 
-    pub fn send_tcp_on(
+    pub fn send_tcp_payload_on(
         &mut self,
         if_id: NetIfId,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: &[u8],
+        tcp_segment: &PacketPayloadView<'_>,
     ) -> bool {
-        self.send_tcp_raw_scoped_with_ttl(
+        self.send_tcp_raw_scoped_with_ttl_payload(
             crate::net::types::InterfaceScope::Pinned(if_id),
             src_ip,
             dst_ip,
@@ -711,14 +791,14 @@ impl NetworkStack {
         )
     }
 
-    pub fn send_tcp_with_ttl(
+    pub fn send_tcp_payload_with_ttl(
         &mut self,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: &[u8],
+        tcp_segment: &PacketPayloadView<'_>,
         ttl: u8,
     ) -> bool {
-        self.send_tcp_raw_scoped_with_ttl(
+        self.send_tcp_raw_scoped_with_ttl_payload(
             crate::net::types::InterfaceScope::Any,
             src_ip,
             dst_ip,

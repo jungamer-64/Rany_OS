@@ -199,17 +199,11 @@ impl NetEventSink {
     pub fn push(&self, event: NetDriverEvent) -> bool {
         match self.queue.push(event) {
             Ok(()) => {
-                self.waker.wake();
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    pub fn push_from_isr(&self, event: NetDriverEvent) -> bool {
-        match self.queue.push(event) {
-            Ok(()) => {
-                self.waker.wake_from_isr();
+                if in_interrupt_context() {
+                    self.waker.wake_from_isr();
+                } else {
+                    self.waker.wake();
+                }
                 true
             }
             Err(_) => false,
@@ -514,7 +508,7 @@ impl NetDeviceHandle {
     }
 
     pub fn enqueue_event_from_isr(&self, event: NetDriverEvent) -> bool {
-        self.event_sink.push_from_isr(event)
+        self.event_sink.push(event)
     }
 
     pub fn start_workers(self: &Arc<Self>) {

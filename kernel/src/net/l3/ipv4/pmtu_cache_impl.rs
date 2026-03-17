@@ -1,5 +1,6 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::payload::packet_from_bytes;
 use kernel_api::resource::net::{PacketChain, PacketPayload};
 
 impl PmtuCache {
@@ -164,6 +165,8 @@ pub struct FragmentBuffer {
     last_update: u64,
     /// Original fragment payload ownership chain used to rebuild a packet-backed result.
     segments: Vec<FragmentSegment>,
+    /// Whether every fragment payload is still represented by packet-backed ownership.
+    segments_complete: bool,
 }
 
 impl FragmentBuffer {
@@ -192,6 +195,7 @@ impl FragmentBuffer {
             created_at: timestamp,
             last_update: timestamp,
             segments: Vec::new(),
+            segments_complete: true,
         }
     }
 
@@ -334,10 +338,24 @@ impl FragmentBuffer {
 
         // Copy fragment data
         self.data[fragment_offset as usize..fragment_end as usize].copy_from_slice(payload);
-        if fragment_len > 0 {
+        if fragment_len > 0 && self.segments_complete {
+            let Some(packet) = payload_packet.or_else(|| packet_from_bytes(payload)) else {
+                self.segments_complete = false;
+                self.segments.clear();
+                log::warn!(
+                    "[NET-IPV4] Falling back to scratch-buffer reassembly for fragment at offset {}",
+                    fragment_offset
+                );
+                self.update_holes(fragment_offset, fragment_end, header.more_fragments());
+                if self.holes.len() > Self::MAX_HOLES {
+                    return false;
+                }
+                self.trim_holes_to_total();
+                return true;
+            };
             self.segments.push(FragmentSegment {
                 offset: fragment_offset,
-                packet: payload_packet.unwrap_or_else(|| PacketRef::from_vec(payload.to_vec())),
+                packet,
             });
         }
 
@@ -449,20 +467,21 @@ impl FragmentBuffer {
         packet[10] = (checksum >> 8) as u8;
         packet[11] = (checksum & 0xff) as u8;
 
-        let mut header_packet = PacketRef::from_vec(packet[..header_len].to_vec());
+        let mut header_packet = packet_from_bytes(&packet[..header_len])?;
         header_packet.set_len(header_len);
-
-        if self.segments.is_empty() {
-            return Some(PacketPayload::from_vec(packet));
-        }
-
-        let mut segments = self.segments;
-        segments.sort_unstable_by_key(|segment| segment.offset);
 
         let mut chain = PacketChain::new();
         chain.push(header_packet);
-        for segment in segments {
-            chain.push(segment.packet);
+        if !self.segments_complete || self.segments.is_empty() {
+            if packet.len() > header_len {
+                chain.push(packet_from_bytes(&packet[header_len..])?);
+            }
+        } else {
+            let mut segments = self.segments;
+            segments.sort_unstable_by_key(|segment| segment.offset);
+            for segment in segments {
+                chain.push(segment.packet);
+            }
         }
         Some(PacketPayload::chain(chain))
     }

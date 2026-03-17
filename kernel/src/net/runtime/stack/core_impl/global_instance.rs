@@ -167,9 +167,9 @@ pub async fn send_udp(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> Result<(), crate::net::l4::endpoint::types::EndpointError> {
-    send_udp_in(default_runtime(), src_port, dst_ip, dst_port, data).await
+    send_udp_in(default_runtime(), src_port, dst_ip, dst_port, payload).await
 }
 
 pub async fn send_udp_in(
@@ -177,7 +177,7 @@ pub async fn send_udp_in(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> Result<(), crate::net::l4::endpoint::types::EndpointError> {
     let (completion_id, completion_future) =
         crate::net::runtime::device::register_tx_completion_in(runtime);
@@ -187,7 +187,7 @@ pub async fn send_udp_in(
         src_ip: None,
         dst_ip: *dst_ip.as_bytes(),
         dst_port,
-        data: Vec::from(data),
+        payload,
         ttl: 64,
         completion_id: Some(completion_id),
         result_slot,
@@ -223,7 +223,7 @@ pub fn enqueue_udp_send(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_send_scoped(
@@ -231,7 +231,7 @@ pub fn enqueue_udp_send(
         src_port,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -242,7 +242,7 @@ pub fn enqueue_udp_send_scoped(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_send_scoped_in(
@@ -251,7 +251,7 @@ pub fn enqueue_udp_send_scoped(
         src_port,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -262,12 +262,12 @@ pub fn enqueue_udp_send_scoped_in(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     if let Some(if_id) = scope.as_if_id() {
         return enqueue_udp_send_on_with_ttl_in(
-            runtime, if_id, src_port, dst_ip, dst_port, data, ttl,
+            runtime, if_id, src_port, dst_ip, dst_port, payload, ttl,
         );
     }
     let (result_slot, waker) = new_detached_command_channel();
@@ -278,7 +278,7 @@ pub fn enqueue_udp_send_scoped_in(
             src_ip: None,
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
-            data: Vec::from(data),
+            payload,
             ttl,
             completion_id: None,
             result_slot,
@@ -297,7 +297,7 @@ pub fn enqueue_udp_send_with_src(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_send_scoped_with_src(
@@ -306,7 +306,7 @@ pub fn enqueue_udp_send_with_src(
         src_port,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -318,7 +318,7 @@ pub fn enqueue_udp_send_scoped_with_src(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_send_scoped_with_src_in(
@@ -328,7 +328,7 @@ pub fn enqueue_udp_send_scoped_with_src(
         src_port,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -340,12 +340,12 @@ pub fn enqueue_udp_send_scoped_with_src_in(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     if let Some(if_id) = scope.as_if_id() {
         return enqueue_udp_send_on_with_src_in(
-            runtime, if_id, src_ip, src_port, dst_ip, dst_port, data, ttl,
+            runtime, if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
         );
     }
     let (result_slot, waker) = new_detached_command_channel();
@@ -356,7 +356,7 @@ pub fn enqueue_udp_send_scoped_with_src_in(
             src_ip: Some(*src_ip.as_bytes()),
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
-            data: Vec::from(data),
+            payload,
             ttl,
             completion_id: None,
             result_slot,
@@ -372,7 +372,7 @@ pub fn enqueue_udp_v6_send(
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_v6_send_scoped(
@@ -381,7 +381,7 @@ pub fn enqueue_udp_v6_send(
         src_ip,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -393,7 +393,7 @@ pub fn enqueue_udp_v6_send_scoped(
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_v6_send_scoped_in(
@@ -403,7 +403,7 @@ pub fn enqueue_udp_v6_send_scoped(
         src_ip,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -415,12 +415,12 @@ pub fn enqueue_udp_v6_send_scoped_in(
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     if let Some(if_id) = scope.as_if_id() {
         return enqueue_udp_v6_send_on_in(
-            runtime, if_id, src_port, src_ip, dst_ip, dst_port, data, ttl,
+            runtime, if_id, src_port, src_ip, dst_ip, dst_port, payload, ttl,
         );
     }
     let (result_slot, waker) = new_detached_command_channel();
@@ -431,7 +431,7 @@ pub fn enqueue_udp_v6_send_scoped_in(
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
             dst_port,
-            data: Vec::from(data),
+            payload,
             ttl,
             completion_id: None,
             result_slot,
@@ -447,16 +447,16 @@ pub fn enqueue_udp_v6_send_scoped_in(
 pub async fn send_tcp(
     src_ip: Ipv4Address,
     dst_ip: Ipv4Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> Result<(), crate::net::l4::endpoint::types::EndpointError> {
-    send_tcp_in(default_runtime(), src_ip, dst_ip, tcp_segment).await
+    send_tcp_in(default_runtime(), src_ip, dst_ip, payload).await
 }
 
 pub async fn send_tcp_in(
     runtime: NetRuntimeHandle,
     src_ip: Ipv4Address,
     dst_ip: Ipv4Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> Result<(), crate::net::l4::endpoint::types::EndpointError> {
     let (completion_id, completion_future) =
         crate::net::runtime::device::register_tx_completion_in(runtime);
@@ -464,7 +464,7 @@ pub async fn send_tcp_in(
     let event = crate::net::l4::endpoint::event::NetworkEvent::RawTcpSend {
         src_ip: *src_ip.as_bytes(),
         dst_ip: *dst_ip.as_bytes(),
-        segment: Vec::from(tcp_segment),
+        payload,
         completion_id: Some(completion_id),
         result_slot,
         waker,
@@ -488,15 +488,19 @@ pub async fn send_tcp_in(
 }
 
 /// Send a TCP segment (IPv4) via the async event queue (non-blocking).
-pub fn enqueue_tcp_send(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
-    enqueue_tcp_send_in(default_runtime(), src_ip, dst_ip, tcp_segment)
+pub fn enqueue_tcp_send(
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    payload: kernel_api::resource::net::PacketPayload,
+) -> bool {
+    enqueue_tcp_send_in(default_runtime(), src_ip, dst_ip, payload)
 }
 
 pub fn enqueue_tcp_send_in(
     runtime: NetRuntimeHandle,
     src_ip: Ipv4Address,
     dst_ip: Ipv4Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::enqueue_event_ignore_in(
@@ -504,7 +508,7 @@ pub fn enqueue_tcp_send_in(
         crate::net::l4::endpoint::event::NetworkEvent::RawTcpSend {
             src_ip: *src_ip.as_bytes(),
             dst_ip: *dst_ip.as_bytes(),
-            segment: Vec::from(tcp_segment),
+            payload,
             completion_id: None,
             result_slot,
             waker,
@@ -517,16 +521,16 @@ pub fn enqueue_tcp_send_in(
 pub fn enqueue_tcp_v6_send(
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
-    enqueue_tcp_v6_send_in(default_runtime(), src_ip, dst_ip, tcp_segment)
+    enqueue_tcp_v6_send_in(default_runtime(), src_ip, dst_ip, payload)
 }
 
 pub fn enqueue_tcp_v6_send_in(
     runtime: NetRuntimeHandle,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::enqueue_event_ignore_in(
@@ -534,7 +538,7 @@ pub fn enqueue_tcp_v6_send_in(
         crate::net::l4::endpoint::event::NetworkEvent::RawTcpV6Send {
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
-            segment: Vec::from(tcp_segment),
+            payload,
             completion_id: None,
             result_slot,
             waker,
@@ -1496,7 +1500,7 @@ pub fn enqueue_udp_send_on(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     enqueue_udp_send_on_with_ttl_in(
         default_runtime(),
@@ -1504,7 +1508,7 @@ pub fn enqueue_udp_send_on(
         src_port,
         dst_ip,
         dst_port,
-        data,
+        payload,
         64,
     )
 }
@@ -1515,7 +1519,7 @@ pub fn enqueue_udp_send_on_with_ttl(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_send_on_with_ttl_in(
@@ -1524,7 +1528,7 @@ pub fn enqueue_udp_send_on_with_ttl(
         src_port,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -1535,7 +1539,7 @@ pub fn enqueue_udp_send_on_with_ttl_in(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
@@ -1547,7 +1551,7 @@ pub fn enqueue_udp_send_on_with_ttl_in(
             src_ip: None,
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
-            data: Vec::from(data),
+            payload,
             ttl,
             completion_id: None,
             result_slot,
@@ -1563,7 +1567,7 @@ pub fn enqueue_udp_send_on_with_src(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_send_on_with_src_in(
@@ -1573,7 +1577,7 @@ pub fn enqueue_udp_send_on_with_src(
         src_port,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -1585,7 +1589,7 @@ pub fn enqueue_udp_send_on_with_src_in(
     src_port: u16,
     dst_ip: Ipv4Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
@@ -1597,7 +1601,7 @@ pub fn enqueue_udp_send_on_with_src_in(
             src_ip: Some(*src_ip.as_bytes()),
             dst_ip: *dst_ip.as_bytes(),
             dst_port,
-            data: Vec::from(data),
+            payload,
             ttl,
             completion_id: None,
             result_slot,
@@ -1612,9 +1616,9 @@ pub fn enqueue_tcp_send_on(
     _if_id: super::NetIfId,
     src_ip: Ipv4Address,
     dst_ip: Ipv4Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
-    enqueue_tcp_send_on_in(default_runtime(), _if_id, src_ip, dst_ip, tcp_segment)
+    enqueue_tcp_send_on_in(default_runtime(), _if_id, src_ip, dst_ip, payload)
 }
 
 pub fn enqueue_tcp_send_on_in(
@@ -1622,7 +1626,7 @@ pub fn enqueue_tcp_send_on_in(
     if_id: super::NetIfId,
     src_ip: Ipv4Address,
     dst_ip: Ipv4Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::enqueue_event_ignore_in(
@@ -1631,7 +1635,7 @@ pub fn enqueue_tcp_send_on_in(
             if_id: if_id.0,
             src_ip: *src_ip.as_bytes(),
             dst_ip: *dst_ip.as_bytes(),
-            segment: Vec::from(tcp_segment),
+            payload,
             completion_id: None,
             result_slot,
             waker,
@@ -1647,7 +1651,7 @@ pub fn enqueue_udp_v6_send_on(
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     enqueue_udp_v6_send_on_in(
@@ -1657,7 +1661,7 @@ pub fn enqueue_udp_v6_send_on(
         src_ip,
         dst_ip,
         dst_port,
-        data,
+        payload,
         ttl,
     )
 }
@@ -1669,7 +1673,7 @@ pub fn enqueue_udp_v6_send_on_in(
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_port: u16,
-    data: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
@@ -1681,7 +1685,7 @@ pub fn enqueue_udp_v6_send_on_in(
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
             dst_port,
-            data: Vec::from(data),
+            payload,
             ttl,
             completion_id: None,
             result_slot,
@@ -1696,9 +1700,9 @@ pub fn enqueue_tcp_v6_send_on(
     if_id: super::NetIfId,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
-    enqueue_tcp_v6_send_on_in(default_runtime(), if_id, src_ip, dst_ip, tcp_segment)
+    enqueue_tcp_v6_send_on_in(default_runtime(), if_id, src_ip, dst_ip, payload)
 }
 
 pub fn enqueue_tcp_v6_send_on_in(
@@ -1706,7 +1710,7 @@ pub fn enqueue_tcp_v6_send_on_in(
     if_id: super::NetIfId,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    tcp_segment: &[u8],
+    payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::l4::endpoint::event::enqueue_event_ignore_in(
@@ -1715,7 +1719,7 @@ pub fn enqueue_tcp_v6_send_on_in(
             if_id: if_id.0,
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
-            segment: Vec::from(tcp_segment),
+            payload,
             completion_id: None,
             result_slot,
             waker,

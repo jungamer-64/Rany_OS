@@ -1,14 +1,15 @@
 use super::*;
-use crate::net::datapath::mempool::{PacketRef, alloc_packet, packet_ref_from_dma_slice};
+use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::endpoint::endpoint_core::Endpoint;
 use crate::net::l4::endpoint::event::{NetworkEvent, enqueue_event_ignore_in};
 use crate::net::l4::endpoint::tcb::tcb_table;
 use crate::net::l4::endpoint::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
+use crate::net::payload::{packet_from_payload, payload_from_bytes};
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
-use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use kernel_api::resource::net::PacketPayload;
 
 /// Non-POSIX async read API for TCP streams.
 pub trait AsyncRead {
@@ -57,21 +58,6 @@ fn tcp_error_from_endpoint(error: EndpointError) -> TcpError {
         EndpointError::PermissionDenied => TcpError::PermissionDenied,
         _ => TcpError::InvalidState,
     }
-}
-
-fn packet_from_bytes(data: &[u8]) -> Option<PacketRef> {
-    if let Some(mut packet) = alloc_packet() {
-        let len = data.len().min(packet.data_mut().len());
-        packet.data_mut()[..len].copy_from_slice(&data[..len]);
-        packet.set_len(len);
-        return Some(packet);
-    }
-
-    let mut dma_buf = crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(data.len())?;
-    dma_buf.as_mut_slice().copy_from_slice(data);
-    let mut packet = packet_ref_from_dma_slice(dma_buf);
-    packet.set_len(data.len());
-    Some(packet)
 }
 
 fn endpoint_send_budget(
@@ -240,25 +226,20 @@ impl TcpStream {
             );
         }
 
-        if !inner.recv_buffer.is_empty() {
+        if inner.has_recv_data() {
             let local = inner.local_addr;
             let remote = inner.remote_addr;
-            let chunk_len = inner.recv_buffer.len().min(1500);
-            let mut bytes = Vec::with_capacity(chunk_len);
-            for _ in 0..chunk_len {
-                if let Some(byte) = inner.recv_buffer.pop_front() {
-                    bytes.push(byte);
-                }
-            }
-            if let Some(waker) = inner.send_waker.take() {
-                waker.wake();
-            }
+            let Some(payload) = inner.recv_payload(Some(1500)) else {
+                inner.recv_waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            };
+            let delivered_len = payload.total_len();
             if let Some(tcp) = inner.tcp_mut() {
-                tcp.stats.record_rx_delivered(bytes.len());
+                tcp.stats.record_rx_delivered(delivered_len);
             }
             drop(inner);
-            on_read_progress(local, remote, bytes.len());
-            return Poll::Ready(packet_from_bytes(&bytes));
+            on_read_progress(local, remote, delivered_len);
+            return Poll::Ready(packet_from_payload(&payload));
         }
 
         if matches!(inner.state, EndpointState::Closed | EndpointState::Closing) {
@@ -326,7 +307,7 @@ impl AsyncRead for TcpStream {
             return Poll::Ready(Err(tcp_error_from_endpoint(err)));
         }
 
-        if !inner.recv_buffer.is_empty() {
+        if inner.has_recv_data() {
             let local = inner.local_addr;
             let remote = inner.remote_addr;
             let len = inner.recv_from_buffer(buf);
@@ -377,11 +358,7 @@ impl AsyncWrite for TcpStream {
         }
 
         let send_buffer_limit = inner.send_buffer_limit;
-        let queued_bytes = inner.send_buffer.len()
-            + inner
-                .tcp()
-                .map(|tcp| tcp.send_zero_copy_bytes)
-                .unwrap_or_default();
+        let queued_bytes = inner.send_payload_bytes();
         let available = send_buffer_limit
             .saturating_sub(queued_bytes)
             .min(endpoint_send_budget(
@@ -396,9 +373,16 @@ impl AsyncWrite for TcpStream {
         }
 
         let len = available.min(buf.len());
-        inner.send_buffer.extend(buf[..len].iter().copied());
-        if let Some(tcp) = inner.tcp_mut() {
-            tcp.stats.record_tx_enqueued(len);
+        let Some(payload) = payload_from_bytes(&buf[..len]) else {
+            return Poll::Ready(Err(TcpError::BufferFull));
+        };
+        match inner.send_payload(payload) {
+            Ok(queued) => {
+                if let Some(tcp) = inner.tcp_mut() {
+                    tcp.stats.record_tx_enqueued(queued);
+                }
+            }
+            Err(err) => return Poll::Ready(Err(tcp_error_from_endpoint(err))),
         }
         drop(inner);
 
@@ -421,12 +405,7 @@ impl AsyncWrite for TcpStream {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
-        let pending_zero_copy = inner
-            .tcp()
-            .map(|tcp| !tcp.send_zero_copy_queue.is_empty())
-            .unwrap_or(false);
-
-        if inner.send_buffer.is_empty() && !pending_zero_copy {
+        if !inner.has_send_data() {
             return Poll::Ready(Ok(()));
         }
 
@@ -778,11 +757,7 @@ impl<'a> Future for ZeroCopyWriteFuture<'a> {
         }
 
         let send_buffer_limit = inner.send_buffer_limit;
-        let queued_bytes = inner.send_buffer.len()
-            + inner
-                .tcp()
-                .map(|tcp| tcp.send_zero_copy_bytes)
-                .unwrap_or_default();
+        let queued_bytes = inner.send_payload_bytes();
         let available = send_buffer_limit
             .saturating_sub(queued_bytes)
             .min(endpoint_send_budget(
@@ -798,10 +773,13 @@ impl<'a> Future for ZeroCopyWriteFuture<'a> {
             return Poll::Pending;
         }
 
-        if let Some(tcp) = inner.tcp_mut() {
-            tcp.send_zero_copy_bytes = tcp.send_zero_copy_bytes.saturating_add(len);
-            tcp.send_zero_copy_queue.push_back(packet);
-            tcp.stats.record_tx_enqueued(len);
+        match inner.send_payload(PacketPayload::single(packet)) {
+            Ok(queued) => {
+                if let Some(tcp) = inner.tcp_mut() {
+                    tcp.stats.record_tx_enqueued(queued);
+                }
+            }
+            Err(err) => return Poll::Ready(Err(tcp_error_from_endpoint(err))),
         }
         drop(inner);
 

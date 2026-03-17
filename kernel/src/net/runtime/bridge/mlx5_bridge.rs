@@ -1986,9 +1986,22 @@ mod tests {
     };
     use kernel_api::resource::net::PacketRef;
 
+    unsafe fn borrowed_test_packet(storage: &'static mut [u8], len: usize) -> PacketRef {
+        let bytes = storage[..len].to_vec();
+        let mut packet = crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
+            storage.as_mut_ptr(),
+            storage.len(),
+        )
+        .expect("create borrowed test packet");
+        packet.set_len(len);
+        packet.data_mut()[..len].copy_from_slice(&bytes);
+        packet
+    }
+
     #[test]
-    fn provenance_guard_rejects_heap_backed_packet_refs() {
-        let packet = PacketRef::from_vec(vec![1, 2, 3, 4]);
+    fn provenance_guard_rejects_non_dma_packet_refs() {
+        static mut STORAGE: [u8; 4] = [1, 2, 3, 4];
+        let packet = unsafe { borrowed_test_packet(&mut STORAGE, 4) };
         assert!(!packet_uses_device_visible_dma(&packet));
     }
 
@@ -2002,7 +2015,8 @@ mod tests {
     #[test]
     fn provenance_validation_requires_active_dma_device() {
         let state = Mlx5BridgeState::new(0);
-        let packet = PacketRef::from_vec(vec![9, 8, 7]);
+        static mut STORAGE: [u8; 3] = [9, 8, 7];
+        let packet = unsafe { borrowed_test_packet(&mut STORAGE, 3) };
         assert_eq!(
             validate_mlx5_tx_packet(&state, &packet),
             Err("mlx5 DMA device unavailable")
@@ -2011,19 +2025,21 @@ mod tests {
 
     #[test]
     fn l2_inline_header_len_uses_plain_ethernet_header_by_default() {
-        let packet = PacketRef::from_vec(vec![
+        static mut STORAGE: [u8; 18] = [
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x00, 0x5e, 0x00, 0x53, 0x01, 0x08, 0x00,
             0x45, 0x00, 0x00, 0x2e,
-        ]);
+        ];
+        let packet = unsafe { borrowed_test_packet(&mut STORAGE, 18) };
         assert_eq!(mlx5_l2_inline_header_len(&packet), 14);
     }
 
     #[test]
     fn l2_inline_header_len_expands_for_vlan_frames() {
-        let packet = PacketRef::from_vec(vec![
+        static mut STORAGE: [u8; 20] = [
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x00, 0x5e, 0x00, 0x53, 0x01, 0x81, 0x00,
             0x00, 0x01, 0x08, 0x00, 0x45, 0x00,
-        ]);
+        ];
+        let packet = unsafe { borrowed_test_packet(&mut STORAGE, 20) };
         assert_eq!(mlx5_l2_inline_header_len(&packet), 18);
     }
 

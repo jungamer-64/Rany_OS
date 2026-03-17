@@ -8,6 +8,11 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use kernel_api::resource::net::PacketPayload;
+
+fn test_payload(data: &[u8]) -> PacketPayload {
+    crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+}
 
 fn configure_connected_tcp_endpoint(
     sock: &crate::net::l4::endpoint::OwnedEndpoint,
@@ -25,13 +30,12 @@ fn configure_connected_tcp_endpoint(
 
 fn push_tcp_bytes(sock: &crate::net::l4::endpoint::OwnedEndpoint, data: &[u8]) {
     let endpoint = sock.endpoint().expect("tcp endpoint should exist");
-    assert_eq!(endpoint.push_data(data), data.len());
+    assert_eq!(endpoint.push_payload(test_payload(data)), data.len());
 }
 
-// Simple test that verifies SendFuture writes into endpoint buffer
-// and is woken when the DataReady event is processed successfully
+// Simple test that verifies TcpStream::write queues payload and posts DataReady.
 #[cfg_attr(test, test_case)]
-pub fn test_sendfuture_wakes_on_send() {
+pub fn test_write_future_wakes_on_send() {
     init_endpoint_manager();
 
     // Initialize stack and set a dummy transmit function that always succeeds
@@ -65,57 +69,44 @@ pub fn test_sendfuture_wakes_on_send() {
     tcb.state = TcpConnectionState::Established;
     crate::net::l4::endpoint::tcb::tcb_table().insert(tcb);
 
-    // Prepare a waker that increments a counter
-    static WAKE_COUNT: AtomicU32 = AtomicU32::new(0);
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |_| RawWaker::new(core::ptr::null(), &VTABLE),
-        |_| {
-            WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
-        },
-        |_| {
-            WAKE_COUNT.fetch_add(1, Ordering::SeqCst);
-        },
-        |_| {},
-    );
-    let raw = RawWaker::new(core::ptr::null(), &VTABLE);
-    let waker = unsafe { Waker::from_raw(raw) };
+    let waker = Waker::noop();
     let mut cx = Context::from_waker(&waker);
 
-    // Create SendFuture and poll once (should register waker and queue DataReady)
-    let data = alloc::vec![1u8, 2u8, 3u8, 4u8];
-    let mut fut = sock.send(data).expect("send should return future");
+    let Some(mut stream) = sock.tcp_stream() else {
+        panic!("tcp stream should exist");
+    };
+    let data = [1u8, 2u8, 3u8, 4u8];
+    let mut fut = stream.write(&data);
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
     match pinned.as_mut().poll(&mut cx) {
-        Poll::Pending => {}
-        Poll::Ready(_) => panic!("SendFuture should not complete immediately"),
+        Poll::Ready(Ok(n)) => assert_eq!(n, data.len()),
+        other => panic!("write future returned unexpected result: {:?}", other),
     }
 
-    // Now simulate the network task processing the DataReady event and sending
-    let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
-    let res = handler.handle_event(NetworkEvent::DataReady {
-        fd,
-        endpoint_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
-    });
-    // Should either succeed or ask for retry; for our test transmit succeeds so Success
+    let queued = sock
+        .endpoint()
+        .expect("endpoint")
+        .inner()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .send_payload_bytes();
+    assert_eq!(queued, data.len());
+
+    let Some(event) = crate::net::l4::endpoint::event::event_queue().recv() else {
+        panic!("expected queued DataReady event");
+    };
     assert!(matches!(
-        res,
-        crate::net::l4::endpoint::handler::EventHandleResult::Success
+        event,
+        NetworkEvent::DataReady {
+            fd: event_fd,
+            endpoint_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
+        } if event_fd.raw() == fd.raw()
     ));
-
-    // Waker should have been called
-    assert!(WAKE_COUNT.load(Ordering::SeqCst) > 0);
-
-    // Re-poll the future: it should now be Ready with the number of bytes sent
-    match pinned.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(n)) => assert_eq!(n, 4usize),
-        Poll::Ready(Err(e)) => panic!("SendFuture returned error: {:?}", e),
-        Poll::Pending => panic!("SendFuture still pending after send"),
-    }
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_sendfuture_wakes_on_send_v6() {
+pub fn test_write_future_wakes_on_send_v6() {
     init_endpoint_manager();
 
     // Initialize stack with IPv6 enabled and set transmit to always succeed
@@ -157,50 +148,40 @@ pub fn test_sendfuture_wakes_on_send_v6() {
     tcb.state = TcpConnectionState::Established;
     crate::net::l4::endpoint::tcb::tcb_table().insert(tcb);
 
-    // Prepare a waker that increments a counter
-    static WAKE_COUNT_V6: AtomicU32 = AtomicU32::new(0);
-    const VTABLE_V6: RawWakerVTable = RawWakerVTable::new(
-        |_| RawWaker::new(core::ptr::null(), &VTABLE_V6),
-        |_| {
-            WAKE_COUNT_V6.fetch_add(1, Ordering::SeqCst);
-        },
-        |_| {
-            WAKE_COUNT_V6.fetch_add(1, Ordering::SeqCst);
-        },
-        |_| {},
-    );
-    let raw = RawWaker::new(core::ptr::null(), &VTABLE_V6);
-    let waker = unsafe { Waker::from_raw(raw) };
+    let waker = Waker::noop();
     let mut cx = Context::from_waker(&waker);
 
-    // Create SendFuture and poll once (should register waker and queue DataReady)
-    let data = alloc::vec![9u8, 8u8, 7u8, 6u8];
-    let mut fut = sock.send(data).expect("send should return future");
+    let Some(mut stream) = sock.tcp_stream() else {
+        panic!("tcp stream should exist");
+    };
+    let data = [9u8, 8u8, 7u8, 6u8];
+    let mut fut = stream.write(&data);
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
     match pinned.as_mut().poll(&mut cx) {
-        Poll::Pending => {}
-        Poll::Ready(_) => panic!("SendFuture should not complete immediately"),
+        Poll::Ready(Ok(n)) => assert_eq!(n, data.len()),
+        other => panic!("write future returned unexpected result: {:?}", other),
     }
 
-    // Trigger DataReady event
-    let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
-    let res = handler.handle_event(NetworkEvent::DataReady {
-        fd,
-        endpoint_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
-    });
+    let queued = sock
+        .endpoint()
+        .expect("endpoint")
+        .inner()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .send_payload_bytes();
+    assert_eq!(queued, data.len());
 
+    let Some(event) = crate::net::l4::endpoint::event::event_queue().recv() else {
+        panic!("expected queued DataReady event");
+    };
     assert!(matches!(
-        res,
-        crate::net::l4::endpoint::handler::EventHandleResult::Success
+        event,
+        NetworkEvent::DataReady {
+            fd: event_fd,
+            endpoint_type: crate::net::l4::endpoint::types::EndpointType::Tcp,
+        } if event_fd.raw() == fd.raw()
     ));
-    assert!(WAKE_COUNT_V6.load(Ordering::SeqCst) > 0);
-
-    // Re-poll the future: it should now be Ready with the number of bytes sent
-    match pinned.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(n)) => assert_eq!(n, 4usize),
-        other => panic!("SendFuture returned unexpected result: {:?}", other),
-    }
 }
 
 #[cfg_attr(test, test_case)]
@@ -452,7 +433,7 @@ pub fn test_udp_packet_stream_delivered() {
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
     match pinned.as_mut().poll(&mut cx2) {
         Poll::Ready(Some((_if_id, addr, _ttl, pkt))) => {
-            assert_eq!(pkt.into_vec(), b"hello");
+            assert_eq!(pkt.data(), b"hello");
             assert_eq!(addr.port(), 12345);
         }
         _ => panic!("Expected UDP packet"),

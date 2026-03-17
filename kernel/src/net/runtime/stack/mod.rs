@@ -38,13 +38,13 @@ use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::timeouts::TimeoutWheel; // required for new transmit callback signature
 
 use crate::sync::PoisonLock;
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 #[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use kernel_api::resource::net::PacketPayload;
 use kernel_api::service::netdev::NetTxMeta;
 mod core_impl;
 pub use core_impl::*;
@@ -382,15 +382,15 @@ const NDP_PENDING_TIMEOUT_MS: u64 = 3000; // 3秒タイムアウト
 /// NDP解決待ちパケット
 #[derive(Clone)]
 pub(crate) enum PendingIpv6Payload {
-    Icmpv6(Box<[u8]>),
+    Icmpv6(PacketPayload),
     Udp {
         src_port: u16,
         dst_port: u16,
         hop_limit: u8,
-        data: Box<[u8]>,
+        data: PacketPayload,
     },
     Tcp {
-        segment: Box<[u8]>,
+        segment: PacketPayload,
     },
 }
 
@@ -424,7 +424,7 @@ impl NdpPendingQueue {
         &mut self,
         src: Ipv6Address,
         dst: Ipv6Address,
-        icmpv6_data: &[u8],
+        icmpv6_data: PacketPayload,
         current_time: u64,
     ) {
         if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
@@ -434,7 +434,7 @@ impl NdpPendingQueue {
         self.packets.push_back(PendingIpv6Packet {
             dst,
             src,
-            payload: PendingIpv6Payload::Icmpv6(Box::from(icmpv6_data)),
+            payload: PendingIpv6Payload::Icmpv6(icmpv6_data),
             queued_at: current_time,
         });
     }
@@ -446,7 +446,7 @@ impl NdpPendingQueue {
         src_port: u16,
         dst_port: u16,
         hop_limit: u8,
-        data: &[u8],
+        data: PacketPayload,
         current_time: u64,
     ) {
         if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
@@ -459,7 +459,7 @@ impl NdpPendingQueue {
                 src_port,
                 dst_port,
                 hop_limit,
-                data: Box::from(data),
+                data,
             },
             queued_at: current_time,
         });
@@ -469,7 +469,7 @@ impl NdpPendingQueue {
         &mut self,
         src: Ipv6Address,
         dst: Ipv6Address,
-        segment: &[u8],
+        segment: PacketPayload,
         current_time: u64,
     ) {
         if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
@@ -478,9 +478,7 @@ impl NdpPendingQueue {
         self.packets.push_back(PendingIpv6Packet {
             dst,
             src,
-            payload: PendingIpv6Payload::Tcp {
-                segment: Box::from(segment),
-            },
+            payload: PendingIpv6Payload::Tcp { segment },
             queued_at: current_time,
         });
     }

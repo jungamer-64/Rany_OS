@@ -779,7 +779,9 @@ fn try_fast_path(
     // データをソケットの受信バッファに追加
     let mut pushed = 0;
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        pushed = socket.push_data(data);
+        if let Some(payload) = crate::net::payload::payload_from_bytes(data) {
+            pushed = socket.push_payload(payload);
+        }
     }
 
     // もしバッファが満杯で全データを受け入れられなかった場合は
@@ -1186,7 +1188,9 @@ fn handle_data_received_with_delayed_ack(
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
         if payload_len > 0 {
-            let pushed = socket.push_data(data);
+            let pushed = crate::net::payload::payload_from_bytes(data)
+                .map(|payload| socket.push_payload(payload))
+                .unwrap_or(0);
             new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
 
             // RFC 1122: If some data could not be accepted, we MUST NOT advance
@@ -1207,7 +1211,9 @@ fn handle_data_received_with_delayed_ack(
         // OOOキューから連続セグメントをドレインしてバッファに追加
         let (drained_nxt, ooo_fin) =
             ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt, |_, seg_data| {
-                socket.push_data(seg_data);
+                if let Some(payload) = crate::net::payload::payload_from_bytes(seg_data) {
+                    let _ = socket.push_payload(payload);
+                }
             });
         new_rcv_nxt = drained_nxt;
         if ooo_fin || (payload_len == 0 && fin) {

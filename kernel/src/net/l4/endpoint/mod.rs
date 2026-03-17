@@ -6,7 +6,7 @@
 //! ## Design Philosophy
 //! - Fine-grained locking: Arc<Mutex<EndpointInner>> for per-socket locking
 //! - RAII resource management: OwnedEndpoint for automatic close
-//! - O(1) buffer operations: VecDeque for FIFO efficiency
+//! - Payload-backed FIFO queues: packet ownership moves without eager flattening
 //! - Read parallelization: RwLock for EndpointManager concurrent reads
 //! - State transition guards: Compile-time detection of invalid transitions
 //! - Event-driven: NetworkEvent for protocol stack coordination

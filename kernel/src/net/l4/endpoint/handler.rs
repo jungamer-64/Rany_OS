@@ -225,7 +225,11 @@ impl NetworkEventHandler {
             NetworkEvent::Connect { fd, local, remote } => self.handle_connect(fd, local, remote),
             NetworkEvent::Listen { fd, local, backlog } => self.handle_listen(fd, local, backlog),
             NetworkEvent::Close { fd } => self.handle_close(fd),
-            NetworkEvent::SendTo { fd, data, remote } => self.handle_send_to(fd, remote, data),
+            NetworkEvent::SendTo {
+                fd,
+                payload,
+                remote,
+            } => self.handle_send_to(fd, remote, payload),
             NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
             NetworkEvent::SetPriority { fd, priority } => self.handle_set_priority(fd, priority),
             NetworkEvent::IcmpEchoReply {
@@ -1065,11 +1069,10 @@ impl NetworkEventHandler {
                             }
                             crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
                                 if let Some(transport_payload) = transport_payload {
-                                    let transport = PacketPayloadView::new(&transport_payload)
-                                        .read_vec(0, transport_payload.total_len());
                                     stack.process_icmpv6_data(
                                         if_id,
-                                        &transport,
+                                        &[],
+                                        Some(transport_payload),
                                         src,
                                         dst,
                                         crate::net::l2::ethernet::MacAddress::ZERO,
@@ -1094,21 +1097,24 @@ impl NetworkEventHandler {
             NetworkEvent::Connect { fd, local, remote } => {
                 self.handle_connect_with_stack(fd, local, remote, stack)
             }
-            NetworkEvent::SendTo { fd, data, remote } => {
-                self.handle_send_to_with_stack(fd, remote, data, stack)
-            }
+            NetworkEvent::SendTo {
+                fd,
+                payload,
+                remote,
+            } => self.handle_send_to_with_stack(fd, remote, payload, stack),
             NetworkEvent::RawUdpSend {
                 src_port,
                 src_ip,
                 dst_ip,
                 dst_port,
-                data,
+                payload,
                 ttl,
                 completion_id,
                 result_slot,
                 waker,
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                let payload = PacketPayloadView::new(&payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -1116,26 +1122,42 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
-                        Some(ip) => stack.send_udp_raw_with_src_ttl(
+                        Some(ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
+                            crate::net::types::InterfaceScope::Any,
                             crate::net::l3::ipv4::Ipv4Address::new(ip),
                             src_port,
                             dst,
                             dst_port,
-                            &data,
+                            &payload,
                             ttl,
                         ),
-                        None => stack.send_udp_raw_auto_ttl(src_port, dst, dst_port, &data, ttl),
+                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
+                            crate::net::types::InterfaceScope::Any,
+                            src_port,
+                            dst,
+                            dst_port,
+                            &payload,
+                            ttl,
+                        ),
                     }),
                     None => match src_ip {
-                        Some(ip) => stack.send_udp_raw_with_src_ttl(
+                        Some(ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
+                            crate::net::types::InterfaceScope::Any,
                             crate::net::l3::ipv4::Ipv4Address::new(ip),
                             src_port,
                             dst,
                             dst_port,
-                            &data,
+                            &payload,
                             ttl,
                         ),
-                        None => stack.send_udp_raw_auto_ttl(src_port, dst, dst_port, &data, ttl),
+                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
+                            crate::net::types::InterfaceScope::Any,
+                            src_port,
+                            dst,
+                            dst_port,
+                            &payload,
+                            ttl,
+                        ),
                     },
                 };
                 let result = if sent {
@@ -1162,23 +1184,24 @@ impl NetworkEventHandler {
             NetworkEvent::RawTcpSend {
                 src_ip,
                 dst_ip,
-                segment,
+                payload,
                 completion_id,
                 result_slot,
                 waker,
             } => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
+                let payload = PacketPayloadView::new(&payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
                     ..NetTxMeta::default()
                 });
                 let sent = match tx_meta {
-                    Some(meta) => {
-                        stack.with_pending_tx_meta(meta, |stack| stack.send_tcp(src, dst, &segment))
-                    }
-                    None => stack.send_tcp(src, dst, &segment),
+                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
+                        stack.send_tcp_payload(src, dst, &payload)
+                    }),
+                    None => stack.send_tcp_payload(src, dst, &payload),
                 };
                 let result = if sent {
                     Ok(())
@@ -1206,7 +1229,7 @@ impl NetworkEventHandler {
                 src_ip,
                 dst_ip,
                 dst_port,
-                data,
+                payload,
                 ttl,
                 completion_id,
                 result_slot,
@@ -1214,6 +1237,7 @@ impl NetworkEventHandler {
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                let payload = PacketPayloadView::new(&payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -1221,11 +1245,25 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl)
+                        stack.send_udp_v6_payload_scoped_with_ttl(
+                            crate::net::types::InterfaceScope::Any,
+                            src_port,
+                            src,
+                            dst,
+                            dst_port,
+                            &payload,
+                            ttl,
+                        )
                     }),
-                    None => {
-                        stack.send_udp_v6_raw_with_ttl(src_port, src, dst, dst_port, &data, ttl)
-                    }
+                    None => stack.send_udp_v6_payload_scoped_with_ttl(
+                        crate::net::types::InterfaceScope::Any,
+                        src_port,
+                        src,
+                        dst,
+                        dst_port,
+                        &payload,
+                        ttl,
+                    ),
                 };
                 let result = if sent {
                     Ok(())
@@ -1251,13 +1289,14 @@ impl NetworkEventHandler {
             NetworkEvent::RawTcpV6Send {
                 src_ip,
                 dst_ip,
-                segment,
+                payload,
                 completion_id,
                 result_slot,
                 waker,
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
+                let payload = PacketPayloadView::new(&payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -1265,9 +1304,9 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_v6_raw(src, dst, &segment)
+                        stack.send_tcp_v6_payload(src, dst, &payload)
                     }),
-                    None => stack.send_tcp_v6_raw(src, dst, &segment),
+                    None => stack.send_tcp_v6_payload(src, dst, &payload),
                 };
                 let result = if sent {
                     Ok(())
@@ -1558,7 +1597,7 @@ impl NetworkEventHandler {
                 src_ip,
                 dst_ip,
                 dst_port,
-                data,
+                payload,
                 ttl,
                 completion_id,
                 result_slot,
@@ -1566,6 +1605,7 @@ impl NetworkEventHandler {
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                let payload = PacketPayloadView::new(&payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -1573,40 +1613,40 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
-                        Some(src_ip) => stack.send_udp_raw_scoped_with_src_ttl(
+                        Some(src_ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
                             crate::net::types::InterfaceScope::Pinned(net_if),
                             crate::net::l3::ipv4::Ipv4Address::new(src_ip),
                             src_port,
                             dst,
                             dst_port,
-                            &data,
+                            &payload,
                             ttl,
                         ),
-                        None => stack.send_udp_raw_scoped_auto_ttl(
+                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
                             crate::net::types::InterfaceScope::Pinned(net_if),
                             src_port,
                             dst,
                             dst_port,
-                            &data,
+                            &payload,
                             ttl,
                         ),
                     }),
                     None => match src_ip {
-                        Some(src_ip) => stack.send_udp_raw_scoped_with_src_ttl(
+                        Some(src_ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
                             crate::net::types::InterfaceScope::Pinned(net_if),
                             crate::net::l3::ipv4::Ipv4Address::new(src_ip),
                             src_port,
                             dst,
                             dst_port,
-                            &data,
+                            &payload,
                             ttl,
                         ),
-                        None => stack.send_udp_raw_scoped_auto_ttl(
+                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
                             crate::net::types::InterfaceScope::Pinned(net_if),
                             src_port,
                             dst,
                             dst_port,
-                            &data,
+                            &payload,
                             ttl,
                         ),
                     },
@@ -1636,7 +1676,7 @@ impl NetworkEventHandler {
                 if_id,
                 src_ip,
                 dst_ip,
-                segment,
+                payload,
                 completion_id,
                 result_slot,
                 waker,
@@ -1644,6 +1684,7 @@ impl NetworkEventHandler {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                let payload = PacketPayloadView::new(&payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -1651,9 +1692,9 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_on(net_if, src, dst, &segment)
+                        stack.send_tcp_payload_on(net_if, src, dst, &payload)
                     }),
-                    None => stack.send_tcp_on(net_if, src, dst, &segment),
+                    None => stack.send_tcp_payload_on(net_if, src, dst, &payload),
                 };
                 let result = if sent {
                     Ok(())
@@ -1682,7 +1723,7 @@ impl NetworkEventHandler {
                 src_ip,
                 dst_ip,
                 dst_port,
-                data,
+                payload,
                 ttl,
                 completion_id,
                 result_slot,
@@ -1691,6 +1732,7 @@ impl NetworkEventHandler {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                let payload = PacketPayloadView::new(&payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -1698,23 +1740,23 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_udp_v6_raw_scoped_with_ttl(
+                        stack.send_udp_v6_payload_scoped_with_ttl(
                             crate::net::types::InterfaceScope::Pinned(net_if),
                             src_port,
                             src,
                             dst,
                             dst_port,
-                            &data,
+                            &payload,
                             ttl,
                         )
                     }),
-                    None => stack.send_udp_v6_raw_scoped_with_ttl(
+                    None => stack.send_udp_v6_payload_scoped_with_ttl(
                         crate::net::types::InterfaceScope::Pinned(net_if),
                         src_port,
                         src,
                         dst,
                         dst_port,
-                        &data,
+                        &payload,
                         ttl,
                     ),
                 };
@@ -1743,7 +1785,7 @@ impl NetworkEventHandler {
                 if_id,
                 src_ip,
                 dst_ip,
-                segment,
+                payload,
                 completion_id,
                 result_slot,
                 waker,
@@ -1751,6 +1793,7 @@ impl NetworkEventHandler {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
+                let payload = PacketPayloadView::new(&payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -1758,9 +1801,9 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_v6_raw_on(net_if, src, dst, &segment)
+                        stack.send_tcp_v6_payload_on(net_if, src, dst, &payload)
                     }),
-                    None => stack.send_tcp_v6_raw_on(net_if, src, dst, &segment),
+                    None => stack.send_tcp_v6_payload_on(net_if, src, dst, &payload),
                 };
                 let result = if sent {
                     Ok(())
@@ -1828,7 +1871,8 @@ impl NetworkEventHandler {
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
                 let s = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let d = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                stack.send_udp_raw_scoped_with_src_ttl(
+                let payload = PacketPayloadView::new(&payload);
+                stack.send_udp_raw_payload_scoped_with_src_ttl(
                     crate::net::types::InterfaceScope::Pinned(net_if),
                     s,
                     src_port,
@@ -1842,12 +1886,13 @@ impl NetworkEventHandler {
             NetworkEvent::NatForwardTcp {
                 src_ip,
                 dst_ip,
-                segment,
+                payload,
                 ttl,
             } => {
                 let s = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let d = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                stack.send_tcp_with_ttl(s, d, &segment, ttl);
+                let payload = PacketPayloadView::new(&payload);
+                stack.send_tcp_payload_with_ttl(s, d, &payload, ttl);
                 EventHandleResult::Success
             }
 
@@ -2553,14 +2598,9 @@ impl NetworkEventHandler {
 
         let remote = EndpointAddr::new(src_ip, src_port);
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-        let mut udp_payload_packet = udp_segment_packet.and_then(|mut packet| {
-            if packet.len() < 8 || payload.len() < 8 {
-                return None;
-            }
-            packet.advance(8);
-            packet.set_len(payload.len() - 8);
-            Some(packet)
-        });
+        let udp_segment_payload = udp_segment_packet
+            .map(PacketPayload::single)
+            .or_else(|| crate::net::payload::payload_from_bytes(payload));
 
         let mut found = false;
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
@@ -2570,10 +2610,20 @@ impl NetworkEventHandler {
                 dst_port,
                 Some(ingress_if_id),
             ) {
-                if let Some(packet) = udp_payload_packet.take() {
-                    let _ = socket.deliver_udp_packet(ingress_if_id, remote, ttl, packet);
+                if let Some(payload) = udp_segment_payload
+                    .as_ref()
+                    .and_then(|segment| segment.slice(8, data.len()))
+                {
+                    socket.push_packet_payload(ingress_if_id, remote, payload);
                 } else {
-                    socket.push_packet(ingress_if_id, remote, data.to_vec());
+                    log::warn!(
+                        "[NET] UDP ingress payload allocation failed for {}:{} -> {}:{}",
+                        EndpointAddr::new(src_ip, src_port),
+                        src_port,
+                        EndpointAddr::new(dst_ip, dst_port),
+                        dst_port,
+                    );
+                    return EventHandleResult::Success;
                 }
                 found = true;
             }
@@ -2585,7 +2635,10 @@ impl NetworkEventHandler {
             use crate::net::l3::ipv4::Ipv4Address;
             let src_v4 = Ipv4Address::new(src_ip);
             let dst_v4 = Ipv4Address::new(dst_ip);
-            let result = stack.udp_process_raw(payload, src_v4, dst_v4, 64);
+            let result = match udp_segment_payload {
+                Some(payload) => stack.udp_process_raw_payload(payload, src_v4, dst_v4, ttl),
+                None => stack.udp_process_raw(payload, src_v4, dst_v4, ttl),
+            };
 
             if matches!(result, crate::net::l4::udp::UdpResult::Delivered) {
                 found = true;
@@ -2621,102 +2674,8 @@ impl NetworkEventHandler {
         fd: EndpointFd,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let (data, local, remote) = {
-            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-            if inner.send_buffer.is_empty() {
-                return EventHandleResult::Success;
-            }
-            let local = match inner.local_addr {
-                Some(addr) => addr,
-                None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
-            };
-            let remote = match inner.remote_addr {
-                Some(addr) => addr,
-                None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
-            };
-            (
-                inner.send_buffer.iter().copied().collect::<Vec<u8>>(),
-                local,
-                remote,
-            )
-        };
-
-        let data_len = data.len() as u32;
-        let (seq, ack, window, scope, ingress_if_id) = match tcb_table().lookup(local, remote) {
-            Some(tcb) => {
-                if tcb.state != TcpConnectionState::Established {
-                    return EventHandleResult::ProtocolError(EndpointError::NotConnected);
-                }
-                if tcb.should_delay_send(data.len()) {
-                    return EventHandleResult::Success;
-                }
-                (
-                    tcb.snd_nxt,
-                    tcb.rcv_nxt,
-                    tcb.rcv_wnd,
-                    tcb.scope,
-                    tcb.ingress_if_id,
-                )
-            }
-            None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
-        };
-
-        let mut segment = TcpSegmentBuilder::new(local.port(), remote.port())
-            .seq(seq)
-            .ack(ack)
-            .psh()
-            .window(window)
-            .payload(&data)
-            .build();
-
-        if let Err(e) = apply_tcp_checksum_for_addrs(&mut segment, local, remote) {
-            return EventHandleResult::ProtocolError(e);
-        }
-
-        let sent = if let (Some(lv4), Some(rv4)) = (local.as_ipv4(), remote.as_ipv4()) {
-            let src_ip = Ipv4Address::new(lv4);
-            let dst_ip = Ipv4Address::new(rv4);
-            match stack.resolve_ipv4_egress(scope, ingress_if_id, Some(src_ip), dst_ip) {
-                Ok((Some(if_id), _, _)) => stack.send_tcp_on(if_id, src_ip, dst_ip, &segment),
-                Ok((None, _, _)) => stack.send_tcp(src_ip, dst_ip, &segment),
-                Err(error) => {
-                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
-                }
-            }
-        } else if local.is_ipv6() && remote.is_ipv6() {
-            let lv6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
-            let rv6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-            match stack.resolve_ipv6_egress(scope, ingress_if_id, Some(lv6), rv6) {
-                Ok((Some(if_id), _, _)) => stack.send_tcp_v6_raw_on(if_id, lv6, rv6, &segment),
-                Ok((None, _, _)) => stack.send_tcp_v6_raw(lv6, rv6, &segment),
-                Err(error) => {
-                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
-                }
-            }
-        } else {
-            false
-        };
-
-        if sent {
-            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.send_buffer.drain(..data.len());
-
-            tcb_table().lookup_mut(local, remote, |tcb| {
-                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
-            });
-            EventHandleResult::Success
-        } else {
-            EventHandleResult::Retry
-        }
+        let _ = stack;
+        self.handle_data_ready(fd, EndpointType::Tcp)
     }
 
     /// SendToイベント処理 (UDP)
@@ -2724,7 +2683,7 @@ impl NetworkEventHandler {
         &self,
         fd: EndpointFd,
         remote: EndpointAddr,
-        data: Vec<u8>,
+        payload: PacketPayload,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
@@ -2761,36 +2720,52 @@ impl NetworkEventHandler {
                 .and_then(|addr| addr.as_ipv4())
                 .map(Ipv4Address::new)
                 .filter(|ip| !ip.is_any());
+            let payload_view = PacketPayloadView::new(&payload);
 
             match stack.resolve_ipv4_egress(scope, None, explicit_src, dst_ip) {
                 Ok((Some(if_id), _, _)) => {
                     let pinned = crate::net::types::InterfaceScope::Pinned(if_id);
                     if let Some(src_ip) = explicit_src {
-                        stack.send_udp_raw_scoped_with_src_ttl(
+                        stack.send_udp_raw_payload_scoped_with_src_ttl(
                             pinned,
                             src_ip,
                             local_port,
                             dst_ip,
                             remote.port(),
-                            &data,
+                            &payload_view,
                             64,
                         )
                     } else {
-                        stack.send_udp_raw_scoped(pinned, local_port, dst_ip, remote.port(), &data)
+                        stack.send_udp_raw_payload_scoped_auto_ttl(
+                            pinned,
+                            local_port,
+                            dst_ip,
+                            remote.port(),
+                            &payload_view,
+                            64,
+                        )
                     }
                 }
                 Ok((None, _, _)) => {
                     if let Some(src_ip) = explicit_src {
-                        stack.send_udp_raw_with_src_ttl(
+                        stack.send_udp_raw_payload_scoped_with_src_ttl(
+                            crate::net::types::InterfaceScope::Any,
                             src_ip,
                             local_port,
                             dst_ip,
                             remote.port(),
-                            &data,
+                            &payload_view,
                             64,
                         )
                     } else {
-                        stack.send_udp_raw(local_port, dst_ip, remote.port(), &data)
+                        stack.send_udp_raw_payload_scoped_auto_ttl(
+                            crate::net::types::InterfaceScope::Any,
+                            local_port,
+                            dst_ip,
+                            remote.port(),
+                            &payload_view,
+                            64,
+                        )
                     }
                 }
                 Err(error) => {
@@ -2802,23 +2777,25 @@ impl NetworkEventHandler {
                 .map(|addr| crate::net::l3::ipv6::Ipv6Address::new(addr.as_ipv6()))
                 .unwrap_or(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED);
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
+            let payload_view = PacketPayloadView::new(&payload);
 
             match stack.resolve_ipv6_egress(scope, None, Some(src_v6), dst_v6) {
-                Ok((Some(if_id), _, _)) => stack.send_udp_v6_raw_scoped_with_ttl(
+                Ok((Some(if_id), _, _)) => stack.send_udp_v6_payload_scoped_with_ttl(
                     crate::net::types::InterfaceScope::Pinned(if_id),
                     local_port,
                     src_v6,
                     dst_v6,
                     remote.port(),
-                    &data,
+                    &payload_view,
                     64,
                 ),
-                Ok((None, _, _)) => stack.send_udp_v6_raw_with_ttl(
+                Ok((None, _, _)) => stack.send_udp_v6_payload_scoped_with_ttl(
+                    crate::net::types::InterfaceScope::Any,
                     local_port,
                     src_v6,
                     dst_v6,
                     remote.port(),
-                    &data,
+                    &payload_view,
                     64,
                 ),
                 Err(error) => {
@@ -2903,11 +2880,6 @@ impl NetworkEventHandler {
     /// DataReadyイベント処理
     /// 送信バッファにデータがあるのでTCPで送信
     fn handle_data_ready(&self, fd: EndpointFd, _socket_type: EndpointType) -> EventHandleResult {
-        enum SendSource {
-            Buffered(usize),
-            ZeroCopy(usize),
-        }
-
         let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
@@ -2940,14 +2912,7 @@ impl NetworkEventHandler {
                 }
 
                 let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                let zero_copy_packet = inner
-                    .tcp()
-                    .and_then(|tcp| tcp.send_zero_copy_queue.front().cloned());
-                let buffer_len = inner.send_buffer.len();
-                let pending_len = zero_copy_packet
-                    .as_ref()
-                    .map(|packet| packet.data().len())
-                    .unwrap_or(buffer_len);
+                let pending_len = inner.send_payload_bytes();
                 if pending_len == 0 {
                     return None;
                 }
@@ -2971,30 +2936,21 @@ impl NetworkEventHandler {
                     return None;
                 }
 
-                if let Some(packet) = zero_copy_packet {
-                    Some((
-                        packet.data()[..len].to_vec(),
-                        tcb.snd_nxt,
-                        tcb.rcv_nxt,
-                        tcb.advertised_recv_window(),
-                        SendSource::ZeroCopy(len),
-                    ))
-                } else {
-                    Some((
-                        inner.send_buffer.iter().take(len).copied().collect(),
-                        tcb.snd_nxt,
-                        tcb.rcv_nxt,
-                        tcb.advertised_recv_window(),
-                        SendSource::Buffered(len),
-                    ))
-                }
+                let payload = inner.peek_send_payload_prefix(len)?;
+                Some((
+                    payload,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.advertised_recv_window(),
+                ))
             });
 
-            let Some((data, seq, ack, advertised_wnd, source)) = send_params else {
+            let Some((payload, seq, ack, advertised_wnd)) = send_params else {
                 break;
             };
 
-            let data_len = data.len() as u32;
+            let data_len = payload.total_len() as u32;
+            let data = PacketPayloadView::new(&payload).read_vec(0, payload.total_len());
 
             // TCPセグメントを構築
             let mut segment = TcpSegmentBuilder::new(local.port(), remote.port())
@@ -3008,6 +2964,7 @@ impl NetworkEventHandler {
             if let Err(e) = apply_tcp_checksum_for_addrs(&mut segment, local, remote) {
                 return EventHandleResult::ProtocolError(e);
             }
+            let retransmit_segment = segment.clone();
 
             // パケット送信を試みる
             match self.send_tcp_segment(local, remote, segment) {
@@ -3015,25 +2972,7 @@ impl NetworkEventHandler {
                     // 送信成功: endpointキューから削除し、TCB を更新
                     {
                         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                        match source {
-                            SendSource::Buffered(len) => {
-                                inner.send_buffer.drain(..len);
-                            }
-                            SendSource::ZeroCopy(len) => {
-                                if let Some(tcp) = inner.tcp_mut() {
-                                    if let Some(mut packet) = tcp.send_zero_copy_queue.pop_front() {
-                                        let original_len = packet.data().len();
-                                        if original_len > len {
-                                            packet.advance(len);
-                                            packet.set_len(original_len - len);
-                                            tcp.send_zero_copy_queue.push_front(packet);
-                                        }
-                                    }
-                                    tcp.send_zero_copy_bytes =
-                                        tcp.send_zero_copy_bytes.saturating_sub(len);
-                                }
-                            }
-                        }
+                        inner.consume_send_payload(data_len as usize);
                         // 送信可能になったため、待ちタスクを起こす
                         if let Some(w) = inner.send_waker.take() {
                             w.wake();
@@ -3048,7 +2987,7 @@ impl NetworkEventHandler {
                             local,
                             remote,
                             tcb.snd_nxt,
-                            data,
+                            retransmit_segment.clone(),
                         );
                         tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
                     });
@@ -3071,11 +3010,7 @@ impl NetworkEventHandler {
             mgr.for_each(|socket| {
                 let pending = {
                     let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                    !inner.send_buffer.is_empty()
-                        || inner
-                            .tcp()
-                            .map(|tcp| !tcp.send_zero_copy_queue.is_empty())
-                            .unwrap_or(false)
+                    inner.has_send_data()
                 };
                 if pending {
                     super::event::enqueue_event_ignore_in(
@@ -3087,7 +3022,7 @@ impl NetworkEventHandler {
                     );
                 } else {
                     // TCPバッファが空でも send_waker が設定されている場合（UDP の ResourceExhausted 待ち）
-                    // はここで直接起床させる。TCP の SendFuture も安全に再ポーリング可能。
+                    // はここで直接起床させる。TCP の write/poll_write 境界も安全に再ポーリング可能。
                     let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(w) = inner.send_waker.take() {
                         drop(inner); // ロック解放後に wake（デッドロック回避）
@@ -3187,8 +3122,7 @@ impl NetworkEventHandler {
 
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.clear_protocol();
-        inner.recv_buffer.clear();
-        inner.send_buffer.clear();
+        inner.clear_tcp_payload_queues();
         if let Some(waker) = inner.recv_waker.take() {
             waker.wake();
         }
@@ -3624,7 +3558,7 @@ impl NetworkEventHandler {
         &self,
         fd: EndpointFd,
         remote: EndpointAddr,
-        data: Vec<u8>,
+        payload: PacketPayload,
     ) -> EventHandleResult {
         let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
@@ -3648,40 +3582,13 @@ impl NetworkEventHandler {
         };
 
         if inner.udp().map_or(false, |u| u.socket.is_some()) {
-            // UDPパケットを構築
-            // UDPヘッダ: src_port(2) + dst_port(2) + length(2) + checksum(2) = 8バイト
-            let udp_len = 8 + data.len();
-            let mut udp_packet = Vec::with_capacity(udp_len);
-
-            // Source port (2バイト)
-            let lp = local.port();
-            udp_packet.push((lp >> 8) as u8);
-            udp_packet.push(lp as u8);
-
-            // Destination port (2バイト)
-            let rp = remote.port();
-            udp_packet.push((rp >> 8) as u8);
-            udp_packet.push(rp as u8);
-
-            // Length (2バイト) - ヘッダ + データ
-            udp_packet.push((udp_len >> 8) as u8);
-            udp_packet.push(udp_len as u8);
-
-            // Checksum (2バイト) - 0 = チェックサム無効
-            // 注: UDPでは計算してもオプション（IPv4の場合）
-            udp_packet.push(0);
-            udp_packet.push(0);
-
-            // データ
-            udp_packet.extend_from_slice(&data);
-
-            // UDPパケット送信（IPスタック経由）
             let ttl = inner
                 .udp()
                 .and_then(|u| u.socket.as_ref())
                 .map(|s| s.ttl())
                 .unwrap_or(64);
-            if let Err(e) = self.send_udp_packet(local, remote, udp_packet, ttl) {
+            let payload_len = payload.total_len();
+            if let Err(e) = self.send_udp_payload(local, remote, payload, ttl) {
                 log::info!("UDP: Failed to send packet: {:?}", e);
                 return EventHandleResult::ProtocolError(match e {
                     EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -3691,7 +3598,7 @@ impl NetworkEventHandler {
 
             log::info!(
                 "UDP: Sent {} bytes to {} from port {}",
-                data.len(),
+                payload_len,
                 remote,
                 local.port()
             );
@@ -3703,54 +3610,56 @@ impl NetworkEventHandler {
     }
 
     /// UDPパケット送信（非同期イベントキュー経由）
-    fn send_udp_packet(
+    fn send_udp_payload(
         &self,
         src: EndpointAddr,
         dst: EndpointAddr,
-        packet: Vec<u8>,
+        payload: PacketPayload,
         ttl: u8,
     ) -> EndpointResult<()> {
-        // The `packet` contains a UDP header followed by payload. Extract payload.
-        if packet.len() < 8 {
-            return Err(EndpointError::InvalidArgument);
-        }
-
-        let payload = &packet[8..];
+        let runtime = default_runtime();
+        let (result_slot, waker) = crate::net::runtime::stack::new_detached_command_channel();
 
         // IPv4パス
-        if let Some((_, dst_v4)) = endpoint_ipv4_pair(src, dst) {
+        if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(src, dst) {
+            let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
             let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
-            // 非同期イベントキュー経由で送信（ロック競合回避）
-            if crate::net::runtime::stack::enqueue_udp_send(
-                src.port(),
-                dst_ip,
-                dst.port(),
-                payload,
-                ttl,
-            ) {
-                return Ok(());
-            } else {
-                return Err(EndpointError::ResourceExhausted);
-            }
+            super::event::enqueue_event_ignore_in(
+                runtime,
+                NetworkEvent::RawUdpSend {
+                    src_port: src.port(),
+                    src_ip: (!src_ip.is_any()).then_some(src_ip.octets()),
+                    dst_ip: dst_ip.octets(),
+                    dst_port: dst.port(),
+                    payload,
+                    ttl,
+                    completion_id: None,
+                    result_slot,
+                    waker,
+                },
+            );
+            return Ok(());
         }
 
         // IPv6パス
         if endpoint_is_native_v6_pair(src, dst) {
             let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(src.as_ipv6());
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(dst.as_ipv6());
-            // 非同期イベントキュー経由で送信（ロック競合回避）
-            if crate::net::runtime::stack::enqueue_udp_v6_send(
-                src.port(),
-                src_v6,
-                dst_v6,
-                dst.port(),
-                payload,
-                ttl,
-            ) {
-                return Ok(());
-            } else {
-                return Err(EndpointError::ResourceExhausted);
-            }
+            super::event::enqueue_event_ignore_in(
+                runtime,
+                NetworkEvent::RawUdpV6Send {
+                    src_port: src.port(),
+                    src_ip: src_v6.octets(),
+                    dst_ip: dst_v6.octets(),
+                    dst_port: dst.port(),
+                    payload,
+                    ttl,
+                    completion_id: None,
+                    result_slot,
+                    waker,
+                },
+            );
+            return Ok(());
         }
 
         Err(EndpointError::InvalidArgument)
@@ -3787,6 +3696,14 @@ pub mod tests {
         EndpointAddr, EndpointError, EndpointState, create_raw_endpoint, create_tcp_endpoint,
         create_udp_endpoint,
     };
+
+    fn test_payload(data: &[u8]) -> PacketPayload {
+        crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+    }
+
+    fn test_packet(data: &[u8]) -> crate::net::datapath::mempool::PacketRef {
+        crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed test packet")
+    }
 
     fn build_ipv4_udp_frame(
         src_mac: crate::net::l2::ethernet::MacAddress,
@@ -3846,7 +3763,7 @@ pub mod tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
-            inner.send_buffer.extend(&[1, 2, 3]);
+            let _ = inner.send_payload(test_payload(&[1, 2, 3]));
         }
 
         let handler = NetworkEventHandler::new();
@@ -3878,7 +3795,7 @@ pub mod tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
-            inner.send_buffer.extend(&[1, 2, 3, 4]);
+            let _ = inner.send_payload(test_payload(&[1, 2, 3, 4]));
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Connected);
         }
@@ -3905,7 +3822,7 @@ pub mod tests {
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
 
         assert!(matches!(
-            handler.send_udp_packet(local, remote, alloc::vec![0u8; 8], 64),
+            handler.send_udp_payload(local, remote, test_payload(&[0u8; 8]), 64,),
             Err(EndpointError::InvalidArgument)
         ));
     }
@@ -3927,7 +3844,7 @@ pub mod tests {
         let remote =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
         let handler = NetworkEventHandler::new();
-        let res = handler.handle_send_to(fd, remote, alloc::vec![1, 2, 3]);
+        let res = handler.handle_send_to(fd, remote, test_payload(&[1, 2, 3]));
         assert!(matches!(
             res,
             EventHandleResult::ProtocolError(EndpointError::InvalidArgument)
@@ -3949,8 +3866,11 @@ pub mod tests {
         }
 
         let handler = NetworkEventHandler::new();
-        let res =
-            handler.handle_send_to(fd, EndpointAddr::new([127, 0, 0, 1], 8081), alloc::vec![9]);
+        let res = handler.handle_send_to(
+            fd,
+            EndpointAddr::new([127, 0, 0, 1], 8081),
+            test_payload(&[9]),
+        );
         assert!(!matches!(
             res,
             EventHandleResult::ProtocolError(EndpointError::InvalidArgument)
@@ -4004,7 +3924,7 @@ pub mod tests {
         let handler = NetworkEventHandler::new();
         let res = handler.handle_event(NetworkEvent::IngressPacket {
             if_id: Some(ingress_if),
-            packet: crate::net::datapath::mempool::PacketRef::from_vec(frame),
+            packet: test_packet(&frame),
         });
         assert!(matches!(res, EventHandleResult::Success));
 
@@ -4153,7 +4073,7 @@ pub mod qemu_tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
-            inner.send_buffer.extend(&[1, 2, 3]);
+            let _ = inner.send_payload(test_payload(&[1, 2, 3]));
         }
 
         let handler = NetworkEventHandler::new();
@@ -4186,7 +4106,7 @@ pub mod qemu_tests {
             let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
-            inner.send_buffer.extend(&[1, 2, 3, 4]);
+            let _ = inner.send_payload(test_payload(&[1, 2, 3, 4]));
             let _ = inner.transition_to(EndpointState::Bound);
             let _ = inner.transition_to(EndpointState::Connected);
         }
