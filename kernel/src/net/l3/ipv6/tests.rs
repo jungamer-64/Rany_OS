@@ -621,9 +621,12 @@ pub fn test_tcp_ipv6_invalid_header_offset() {
     // set data offset = 6 (24 bytes) in offset/flags field
     seg[12..14].copy_from_slice(&((6u16 << 12) | 0u16).to_be_bytes());
     // call the handler – should not panic
-    crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6(
+    let payload =
+        crate::net::payload::payload_from_bytes(&seg).expect("allocate packet-backed test payload");
+    crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_payload_on(
+        None,
         Ipv6Address::LOOPBACK,
         Ipv6Address::LOOPBACK,
-        &seg,
+        &payload,
     );
 }

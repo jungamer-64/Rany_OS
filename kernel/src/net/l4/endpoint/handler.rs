@@ -1066,8 +1066,7 @@ impl NetworkEventHandler {
                                 if let Some(transport_payload) = transport_payload {
                                     stack.process_icmpv6_data(
                                         if_id,
-                                        &[],
-                                        Some(transport_payload),
+                                        transport_payload,
                                         src,
                                         dst,
                                         crate::net::l2::ethernet::MacAddress::ZERO,
@@ -2448,7 +2447,12 @@ impl NetworkEventHandler {
                         return EventHandleResult::Success;
                     }
                 }
-                stack.process_icmp_data(payload, src_ip, dst_ip, ttl, current_time);
+                let Some(payload) = ip_packet.as_ref().and_then(|ip_packet| {
+                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
+                }) else {
+                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                };
+                stack.process_icmp_payload(&payload, src_ip, dst_ip, ttl, current_time);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 if let Some(packet) = ip_packet.clone() {
@@ -2459,7 +2463,12 @@ impl NetworkEventHandler {
                         return EventHandleResult::Success;
                     }
                 }
-                stack.process_igmp_data(payload, src_ip, ttl);
+                let Some(payload) = ip_packet.as_ref().and_then(|ip_packet| {
+                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
+                }) else {
+                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                };
+                stack.process_igmp_payload(&payload, src_ip, ttl);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip, orig) => {
                 if let Some(packet) = ip_packet.clone() {
@@ -2470,13 +2479,8 @@ impl NetworkEventHandler {
                         return EventHandleResult::Success;
                     }
                 }
-                let udp_segment_packet = ip_packet.as_ref().and_then(|ip_packet| {
-                    subslice_offset(data, payload).map(|offset| {
-                        let mut udp_packet = ip_packet.clone();
-                        udp_packet.advance(offset);
-                        udp_packet.set_len(payload.len());
-                        udp_packet
-                    })
+                let udp_segment_payload = ip_packet.as_ref().and_then(|ip_packet| {
+                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
                 });
                 self.handle_udp_ingress_with_stack(
                     runtime,
@@ -2484,7 +2488,7 @@ impl NetworkEventHandler {
                     src_ip.octets(),
                     dst_ip.octets(),
                     payload,
-                    udp_segment_packet,
+                    udp_segment_payload,
                     data.get(8).copied().unwrap_or(64),
                     stack,
                     orig,
@@ -2500,11 +2504,16 @@ impl NetworkEventHandler {
                         return EventHandleResult::Success;
                     }
                 }
-                super::tcp_rx::process_tcp_segment_on(
+                let Some(tcp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
+                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
+                }) else {
+                    return EventHandleResult::Success;
+                };
+                super::tcp_rx::process_tcp_segment_payload_on(
                     if_id,
                     src_ip.octets(),
                     dst_ip.octets(),
-                    payload,
+                    &tcp_segment_payload,
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Reassembled(payload) => {
@@ -2577,7 +2586,7 @@ impl NetworkEventHandler {
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
         payload: &[u8],
-        udp_segment_packet: Option<PacketRef>,
+        udp_segment_payload: Option<PacketPayload>,
         ttl: u8,
         stack: &mut crate::net::runtime::stack::NetworkStack,
         original_packet: &[u8],
@@ -2593,9 +2602,9 @@ impl NetworkEventHandler {
 
         let remote = EndpointAddr::new(src_ip, src_port);
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-        let udp_segment_payload = udp_segment_packet
-            .map(PacketPayload::single)
-            .or_else(|| crate::net::payload::payload_from_bytes(payload));
+        let Some(udp_segment_payload) = udp_segment_payload else {
+            return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+        };
 
         let mut found = false;
         if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
@@ -2605,10 +2614,7 @@ impl NetworkEventHandler {
                 dst_port,
                 Some(ingress_if_id),
             ) {
-                if let Some(payload) = udp_segment_payload
-                    .as_ref()
-                    .and_then(|segment| segment.slice(8, data.len()))
-                {
+                if let Some(payload) = udp_segment_payload.slice(8, data.len()) {
                     socket.push_packet_payload(ingress_if_id, remote, payload);
                 } else {
                     log::warn!(
@@ -2630,10 +2636,7 @@ impl NetworkEventHandler {
             use crate::net::l3::ipv4::Ipv4Address;
             let src_v4 = Ipv4Address::new(src_ip);
             let dst_v4 = Ipv4Address::new(dst_ip);
-            let result = match udp_segment_payload {
-                Some(payload) => stack.udp_process_raw_payload(payload, src_v4, dst_v4, ttl),
-                None => stack.udp_process_raw(payload, src_v4, dst_v4, ttl),
-            };
+            let result = stack.udp_process_raw_payload(udp_segment_payload, src_v4, dst_v4, ttl);
 
             if matches!(result, crate::net::l4::udp::UdpResult::Delivered) {
                 found = true;
@@ -3940,7 +3943,7 @@ pub mod tests {
             .recv_raw_payload_sync()
             .expect("raw payload");
         assert_eq!(if_id, ingress_if);
-        let mut actual = vec![0u8; payload.total_len()];
+        let mut actual = alloc::vec![0u8; payload.total_len()];
         let copied =
             crate::net::payload::PacketPayloadView::new(&payload).copy_all_into(&mut actual);
         actual.truncate(copied);
@@ -4064,6 +4067,10 @@ pub mod qemu_tests {
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
     use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
     use crate::net::l4::endpoint::{EndpointAddr, EndpointState, create_tcp_endpoint};
+
+    fn test_payload(data: &[u8]) -> PacketPayload {
+        crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+    }
 
     pub fn handle_tx_available_requeues_dataready_smoke() -> bool {
         init_endpoint_manager();

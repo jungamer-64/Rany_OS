@@ -253,18 +253,19 @@ pub fn register_stack_glue_interface_in(
 
 pub fn transmit_from_stack(
     if_id: Option<NetIfId>,
-    data: &[u8],
+    packet: crate::net::datapath::mempool::PacketRef,
     meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
     let resolved_if = if_id.or_else(primary_stack_glue_if);
-    let sent = device::transmit_bytes_with_meta_internal(if_id, data, meta);
+    let packet_len = packet.len();
+    let sent = device::transmit_packet(if_id, packet, meta);
 
     if sent {
         if let Some(if_id) = resolved_if {
             record_stack_glue_if_tx_in(default_runtime(), if_id);
         }
         runtime_state().tx_packets.fetch_add(1, Ordering::Relaxed);
-        counters::global().record_tx(data.len());
+        counters::global().record_tx(packet_len);
         trace::push_event(NetLayer::Driver, NetEventKind::Tx, "device queued tx");
         true
     } else {
@@ -278,10 +279,13 @@ pub fn transmit_from_stack(
     }
 }
 
-pub fn send_packet_on_interface(if_id: NetIfId, data: &[u8]) -> bool {
+pub fn send_packet_on_interface(
+    if_id: NetIfId,
+    packet: crate::net::datapath::mempool::PacketRef,
+) -> bool {
     transmit_from_stack(
         Some(if_id),
-        data,
+        packet,
         kernel_api::service::netdev::NetTxMeta::default(),
     )
 }

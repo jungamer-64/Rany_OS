@@ -369,22 +369,11 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
         match socket.recv().await {
             Some((_if_id, _src, _ttl, packet)) => {
                 let now = crate::task::current_tick();
-                let process = match &packet {
-                    kernel_api::resource::net::PacketPayload::Single(packet_ref) => {
-                        let data = packet_ref.data();
-                        find_runtime_for_v4_packet_in(runtime, data).map(|interface_runtime| {
-                            let result = interface_runtime.v4.process_response(data, now);
-                            (interface_runtime, result)
-                        })
-                    }
-                    kernel_api::resource::net::PacketPayload::Chain(_) => {
-                        find_runtime_for_v4_payload_in(runtime, &packet).map(|interface_runtime| {
-                            let result =
-                                interface_runtime.v4.process_response_payload(&packet, now);
-                            (interface_runtime, result)
-                        })
-                    }
-                };
+                let process =
+                    find_runtime_for_v4_payload_in(runtime, &packet).map(|interface_runtime| {
+                        let result = interface_runtime.v4.process_response_payload(&packet, now);
+                        (interface_runtime, result)
+                    });
                 let Some((interface_runtime, result)) = process else {
                     continue;
                 };

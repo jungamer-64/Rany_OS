@@ -220,53 +220,37 @@ pub fn packet_from_bytes(data: &[u8]) -> Option<PacketRef> {
     Some(packet)
 }
 
-pub fn packet_from_payload(payload: &PacketPayload) -> Option<PacketRef> {
-    match payload {
-        PacketPayload::Single(packet) => Some(packet.clone()),
-        PacketPayload::Chain(_) => {
-            let view = PacketPayloadView::new(payload);
-            let total_len = view.total_len();
-            let mut packet = alloc_packet_for_len(total_len)?;
-            if total_len == 0 {
-                return Some(packet);
-            }
-
-            let mut written = 0usize;
-            view.for_each_chunk(|chunk| {
-                let end = written + chunk.len();
-                packet.data_mut()[written..end].copy_from_slice(chunk);
-                written = end;
-            });
-            Some(packet)
-        }
-    }
+pub fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
+    let base = container.as_ptr() as usize;
+    let sub = subslice.as_ptr() as usize;
+    let end = base.checked_add(container.len())?;
+    let sub_end = sub.checked_add(subslice.len())?;
+    (sub >= base && sub_end <= end).then_some(sub - base)
 }
 
-pub fn packet_from_payload_prefix(payload: &PacketPayload, max_len: usize) -> Option<PacketRef> {
-    match payload {
-        PacketPayload::Single(packet) => {
-            if packet.len() <= max_len {
-                Some(packet.clone())
-            } else {
-                let mut prefix = alloc_packet_for_len(max_len)?;
-                prefix.data_mut()[..max_len].copy_from_slice(&packet.data()[..max_len]);
-                Some(prefix)
-            }
-        }
-        PacketPayload::Chain(_) => {
-            let view = PacketPayloadView::new(payload);
-            let total_len = view.total_len().min(max_len);
-            let mut packet = alloc_packet_for_len(total_len)?;
-            if total_len == 0 {
-                return Some(packet);
-            }
-            let copied = view.copy_all_into(&mut packet.data_mut()[..total_len]);
-            if copied != total_len {
-                return None;
-            }
-            Some(packet)
-        }
+pub fn payload_from_packet_range(
+    packet: &PacketRef,
+    offset: usize,
+    len: usize,
+) -> Option<PacketPayload> {
+    let packet_len = packet.data().len();
+    if offset.checked_add(len)? > packet_len {
+        return None;
     }
+
+    let mut packet = packet.clone();
+    packet.advance(offset);
+    packet.set_len(len);
+    Some(PacketPayload::single(packet))
+}
+
+pub fn payload_from_subslice(
+    packet: &PacketRef,
+    container: &[u8],
+    subslice: &[u8],
+) -> Option<PacketPayload> {
+    let offset = subslice_offset(container, subslice)?;
+    payload_from_packet_range(packet, offset, subslice.len())
 }
 
 pub fn payload_range(payload: &PacketPayload, offset: usize, len: usize) -> Option<PacketPayload> {

@@ -175,6 +175,10 @@ impl MdnsService {
 
     /// mDNSサービスのメインループ（非同期）
     pub async fn run(&mut self) -> Result<(), &'static str> {
+        log::info!(
+            "[NET][boot] mDNS task entered run loop on CPU {}",
+            crate::cpu::try_current_id().unwrap_or(0)
+        );
         // Create socket
         let socket = crate::net::runtime::stack::bind_udp_endpoint_in(self.runtime, MDNS_PORT)
             .await
@@ -360,10 +364,24 @@ impl MdnsService {
         ttl: u8,
         current_time: u64,
     ) -> MdnsResult {
-        let Some(packet) = crate::net::payload::packet_from_payload(payload) else {
-            return MdnsResult::InvalidPacket;
-        };
-        self.process_packet(packet.data(), src_ip, ttl, current_time)
+        match payload {
+            kernel_api::resource::net::PacketPayload::Single(packet) => {
+                self.process_packet(packet.data(), src_ip, ttl, current_time)
+            }
+            kernel_api::resource::net::PacketPayload::Chain(_) => {
+                let view = crate::net::payload::PacketPayloadView::new(payload);
+                let total_len = view.total_len();
+                let Some(mut packet) =
+                    crate::net::payload::alloc_packet_with_headroom(total_len, 0)
+                else {
+                    return MdnsResult::InvalidPacket;
+                };
+                if view.copy_all_into(&mut packet.data_mut()[..total_len]) != total_len {
+                    return MdnsResult::InvalidPacket;
+                }
+                self.process_packet(packet.data(), src_ip, ttl, current_time)
+            }
+        }
     }
 
     /// mDNSクエリを処理

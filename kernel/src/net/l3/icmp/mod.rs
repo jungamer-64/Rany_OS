@@ -457,6 +457,20 @@ impl<'a> IcmpEchoBuilder<'a> {
         len
     }
 
+    pub fn write_payload_view(
+        &mut self,
+        view: &crate::net::payload::PacketPayloadView<'_>,
+    ) -> usize {
+        let max = self.buffer.len() - IcmpEchoHeader::SIZE;
+        let len = view.total_len().min(max);
+        let copied = view.copy_range(
+            0,
+            &mut self.buffer[IcmpEchoHeader::SIZE..IcmpEchoHeader::SIZE + len],
+        );
+        self.data_len = copied;
+        copied
+    }
+
     /// Finalize the packet
     pub fn finalize(&mut self) -> usize {
         let total_len = IcmpEchoHeader::SIZE + self.data_len;

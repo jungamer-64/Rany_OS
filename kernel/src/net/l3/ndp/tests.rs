@@ -2,7 +2,7 @@ use super::processor_impl::ipv6_multicast_to_mac;
 use super::*;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
-    let mut out = vec![0u8; payload.total_len()];
+    let mut out = alloc::vec![0u8; payload.total_len()];
     let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
     out.truncate(copied);
     out
@@ -355,7 +355,7 @@ pub fn test_ra_processing() {
     let router_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
     // Build a simple RA with SLLA option
-    let mut ra = vec![0u8; 16];
+    let mut ra = alloc::vec![0u8; 16];
     ra[0] = u8::from(Icmpv6Type::RouterAdvertisement);
     ra[4] = 64; // Hop limit
     // bytes 8-23 are router info... for RA processing it's just raw bytes

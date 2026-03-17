@@ -676,6 +676,10 @@ pub mod tests {
 pub mod qemu_tests {
     use super::*;
 
+    fn test_payload(data: &[u8]) -> PacketPayload {
+        crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+    }
+
     pub fn endpoint_state_transitions_smoke() -> bool {
         let mut inner = EndpointInner::new();
 

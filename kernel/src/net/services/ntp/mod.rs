@@ -165,17 +165,10 @@ impl NtpClient {
 
         match with_timeout(socket.recv(), NTP_TIMEOUT_MS).await {
             TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
-                let resp_storage;
-                let resp = match &packet {
-                    kernel_api::resource::net::PacketPayload::Single(packet) => {
-                        NtpHeader::from_bytes(packet.data()).ok_or(EndpointError::Internal)?
-                    }
-                    kernel_api::resource::net::PacketPayload::Chain(_) => {
-                        resp_storage = crate::net::payload::PacketPayloadView::new(&packet)
-                            .read_vec(0, NtpHeader::SIZE);
-                        NtpHeader::from_bytes(&resp_storage).ok_or(EndpointError::Internal)?
-                    }
-                };
+                let header = crate::net::payload::PacketPayloadView::new(&packet)
+                    .read_array::<{ NtpHeader::SIZE }>(0)
+                    .ok_or(EndpointError::Internal)?;
+                let resp = NtpHeader::from_bytes(&header).ok_or(EndpointError::Internal)?;
 
                 // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
                 // in the response matches the transmit timestamp in the request.

@@ -229,10 +229,15 @@ impl NetworkStack {
 
         let dst_mac = MacAddress::new(dst_mac);
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let mut packet = match self.alloc_ethernet_frame_packet(
+            EthernetHeader::SIZE + IPV6_HEADER_SIZE + icmpv6_data.total_len(),
+        ) {
+            Some(packet) => packet,
+            None => return,
+        };
 
         // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -256,8 +261,10 @@ impl NetworkStack {
 
                     let total_len = IPV6_HEADER_SIZE + payload_len;
                     frame.set_payload_len(total_len);
-
-                    self.transmit(frame.as_bytes());
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    self.transmit_packet(packet);
                 }
             }
         }
@@ -323,8 +330,13 @@ impl NetworkStack {
             }
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        let mut packet = match self.alloc_ethernet_frame_packet(
+            EthernetHeader::SIZE + IPV6_HEADER_SIZE + icmpv6_data.total_len(),
+        ) {
+            Some(packet) => packet,
+            None => return,
+        };
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -345,8 +357,10 @@ impl NetworkStack {
 
                     let total_len = IPV6_HEADER_SIZE + payload_len;
                     frame.set_payload_len(total_len);
-
-                    let _ = self.transmit_on(resolved_if, frame.as_bytes());
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    let _ = self.transmit_packet_on(resolved_if, packet);
                 }
             }
         }
@@ -367,9 +381,14 @@ impl NetworkStack {
         // Multicast MAC resolution (no NDP needed)
         let dst_mac = MacAddress::new(dst.multicast_mac());
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let mut packet = match self.alloc_ethernet_frame_packet(
+            EthernetHeader::SIZE + IPV6_HEADER_SIZE + icmpv6_data.total_len(),
+        ) {
+            Some(packet) => packet,
+            None => return,
+        };
 
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -391,8 +410,10 @@ impl NetworkStack {
 
                     let total_len = IPV6_HEADER_SIZE + payload_len;
                     frame.set_payload_len(total_len);
-
-                    self.transmit(frame.as_bytes());
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    self.transmit_packet(packet);
                 }
             }
         }
@@ -409,9 +430,14 @@ impl NetworkStack {
             .interface_config_or_runtime(if_id)
             .unwrap_or_else(|| self.config());
         let dst_mac = MacAddress::new(dst.multicast_mac());
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let mut packet = match self.alloc_ethernet_frame_packet(
+            EthernetHeader::SIZE + IPV6_HEADER_SIZE + icmpv6_data.total_len(),
+        ) {
+            Some(packet) => packet,
+            None => return,
+        };
 
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -433,8 +459,10 @@ impl NetworkStack {
 
                     let total_len = IPV6_HEADER_SIZE + payload_len;
                     frame.set_payload_len(total_len);
-
-                    self.transmit_on(Some(if_id), frame.as_bytes());
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    self.transmit_packet_on(Some(if_id), packet);
                 }
             }
         }
@@ -541,8 +569,14 @@ impl NetworkStack {
             }
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        let udp_total_len = 8 + data.total_len();
+        let mut packet = match self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE + udp_total_len)
+        {
+            Some(packet) => packet,
+            None => return false,
+        };
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -570,8 +604,10 @@ impl NetworkStack {
                 ip_packet.finalize(udp_len);
                 let total_len = IPV6_HEADER_SIZE + udp_len;
                 frame.set_payload_len(total_len);
-
-                return self.transmit_on(if_id, frame.as_bytes());
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+                return self.transmit_packet_on(if_id, packet);
             }
         }
 
@@ -638,8 +674,13 @@ impl NetworkStack {
         };
 
         let segment_len = tcp_segment.total_len();
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        let mut packet = match self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE + segment_len)
+        {
+            Some(packet) => packet,
+            None => return false,
+        };
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -665,8 +706,10 @@ impl NetworkStack {
 
                 let total_len = IPV6_HEADER_SIZE + segment_len;
                 frame.set_payload_len(total_len);
-
-                return self.transmit_on(if_id, frame.as_bytes());
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+                return self.transmit_packet_on(if_id, packet);
             }
         }
 
@@ -827,11 +870,14 @@ impl NetworkStack {
             return;
         }
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
 
         // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             // Destination is the multicast MAC address for the group
             let dst_mac = multicast_ip_to_mac(group_addr);
             frame
@@ -861,13 +907,11 @@ impl NetworkStack {
                     {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
-
-                        let frame_len = 14 + total_len as usize;
-                        if let Some(tx_fn) = self.transmit_fn {
-                            if tx_fn(None, &buffer[..frame_len], Default::default()) {
-                                self.stats.record_tx(frame_len);
-                            }
-                        }
+                        frame.set_payload_len(total_len as usize);
+                        let frame_len = frame.as_bytes().len();
+                        drop(frame);
+                        packet.set_len(frame_len);
+                        let _ = self.transmit_packet(packet);
                     }
                 }
             }

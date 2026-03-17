@@ -18,7 +18,11 @@ impl DnsClient {
     ///
     /// キャッシュの定期的なクリーンアップなどを行います。
     pub async fn run(&self) -> Result<(), &'static str> {
-        log::info!("[NET] DNS client task started");
+        log::info!(
+            "[NET] DNS client task started on CPU {}",
+            crate::cpu::try_current_id().unwrap_or(0)
+        );
+        log::info!("[NET][boot] DNS client task stage: registering first cleanup timer");
 
         loop {
             // 5秒ごとにキャッシュをクリーンアップ
@@ -647,11 +651,37 @@ impl DnsClient {
         expected_name: &str,
         expected_type: DnsQueryType,
     ) -> Option<Result<Vec<DnsRecord>, DnsResponseCode>> {
-        let packet = crate::net::payload::packet_from_payload(payload)?;
-        if self.needs_tcp_fallback(packet.data()) {
-            None
-        } else {
-            Some(self.parse_response(packet.data(), current_tick, expected_name, expected_type))
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        match payload {
+            kernel_api::resource::net::PacketPayload::Single(packet) => {
+                if self.needs_tcp_fallback(packet.data()) {
+                    None
+                } else {
+                    Some(self.parse_response(
+                        packet.data(),
+                        current_tick,
+                        expected_name,
+                        expected_type,
+                    ))
+                }
+            }
+            kernel_api::resource::net::PacketPayload::Chain(_) => {
+                let total_len = view.total_len();
+                let mut packet = crate::net::payload::alloc_packet_with_headroom(total_len, 0)?;
+                if view.copy_all_into(&mut packet.data_mut()[..total_len]) != total_len {
+                    return None;
+                }
+                if self.needs_tcp_fallback(packet.data()) {
+                    None
+                } else {
+                    Some(self.parse_response(
+                        packet.data(),
+                        current_tick,
+                        expected_name,
+                        expected_type,
+                    ))
+                }
+            }
         }
     }
 

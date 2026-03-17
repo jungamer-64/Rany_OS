@@ -420,7 +420,7 @@ impl KernelServices for ExoKernel {
             let socket = lookup_endpoint(fd)?;
             let mut stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(socket, false);
             match stream.read_zero_copy().await {
-                Some(packet) => Ok(kernel_api::resource::net::PacketPayload::single(packet)),
+                Some(payload) => Ok(payload),
                 None => Ok(kernel_api::resource::net::PacketPayload::default()),
             }
         })

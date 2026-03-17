@@ -8,6 +8,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
 use crate::net::l4::endpoint::tcb_table;
@@ -19,6 +20,8 @@ use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
 
 extern crate alloc;
+
+static NET_BACKGROUND_TASKS_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// DHCP runtime state snapshot for v4/v6 clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,55 +141,93 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     // DHCPv4 is driven by the per-interface runtime registry; bootstrap only
     // ensures interface runtimes exist for already-registered interfaces.
 
-    if ipv6_enabled {
-        // Spawn DHCPv6 client task only when IPv6 is configured for the active stack.
-        crate::task::spawn_task(crate::task::Task::new(async move {
+    log::info!(
+        "[NET][boot] DHCP runtime initialized; background network service tasks deferred until runtime spawn"
+    );
+
+    Ok(())
+}
+
+pub(crate) fn start_background_service_tasks() {
+    let has_dhcpv6 = dhcp::primary_v6_client_lock_in(default_runtime())
+        .lock()
+        .ok()
+        .is_some_and(|guard| guard.is_some());
+    let has_mdns = crate::net::services::mdns::service()
+        .lock()
+        .ok()
+        .is_some_and(|guard| guard.is_some());
+    let has_dns = crate::net::services::dns::cloned_client().is_some();
+
+    if !has_dhcpv6 && !has_mdns && !has_dns {
+        log::info!("[NET][boot] network service tasks not started: runtime services unavailable");
+        return;
+    }
+
+    if NET_BACKGROUND_TASKS_STARTED.swap(true, Ordering::AcqRel) {
+        log::info!("[NET][boot] network service tasks already started; skipping");
+        return;
+    }
+
+    if has_dhcpv6 {
+        log::info!("[NET][boot] scheduling DHCPv6 client task on bootstrap CPU0");
+        crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
+            log::info!(
+                "[NET][boot] DHCPv6 client task running on CPU {}",
+                crate::cpu::try_current_id().unwrap_or(0)
+            );
             let client_ref: Option<&'static dhcp::DhcpV6Client> = {
                 let guard = match dhcp::primary_v6_client_lock_in(default_runtime()).lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };
-                guard.as_ref().map(|c| {
-                    // SAFETY: default runtime の DHCPv6 クライアントは init_v6_in() 後は
-                    // Some のまま変更されず、カーネル寿命と同等に存続する。
-                    unsafe { &*(c as *const dhcp::DhcpV6Client) }
-                })
-            }; // guard ドロップ → ロック解放
+                guard
+                    .as_ref()
+                    .map(|c| unsafe { &*(c as *const dhcp::DhcpV6Client) })
+            };
             if let Some(client6) = client_ref {
                 if let Err(e) = client6.run().await {
                     log::error!("[NET] DHCPv6 client task failed: {}", e);
                 }
             }
-        }));
+        });
     }
 
-    // Spawn mDNS service task
-    crate::task::spawn_task(crate::task::Task::new(async move {
-        let svc_ref: Option<&'static mut crate::net::services::mdns::MdnsService> = {
-            let mut guard = match crate::net::services::mdns::service().lock() {
-                Ok(g) => g,
-                Err(_) => return,
+    if has_mdns {
+        log::info!("[NET][boot] scheduling mDNS service task on bootstrap CPU0");
+        crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
+            log::info!(
+                "[NET][boot] mDNS service task running on CPU {}",
+                crate::cpu::try_current_id().unwrap_or(0)
+            );
+            let svc_ref: Option<&'static mut crate::net::services::mdns::MdnsService> = {
+                let mut guard = match crate::net::services::mdns::service().lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                guard
+                    .as_mut()
+                    .map(|s| unsafe { &mut *(s as *mut crate::net::services::mdns::MdnsService) })
             };
-            guard.as_mut().map(|s| {
-                // SAFETY: mDNS サービスはカーネル静的変数で init() 後は
-                // Some のまま変更されず、カーネル寿命と同等に存続する。
-                unsafe { &mut *(s as *mut crate::net::services::mdns::MdnsService) }
-            })
-        }; // guard ドロップ → ロック解放
-        if let Some(service) = svc_ref {
-            let _ = service.run().await;
-        }
-    }));
+            if let Some(service) = svc_ref {
+                let _ = service.run().await;
+            }
+        });
+    }
 
-    // Spawn DNS client task
-    crate::task::spawn_task(crate::task::Task::new(async move {
-        let client = crate::net::services::dns::cloned_client();
-        if let Some(client) = client {
-            let _ = client.run().await;
-        }
-    }));
-
-    Ok(())
+    if has_dns {
+        log::info!("[NET][boot] scheduling DNS client task on bootstrap CPU0");
+        crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
+            log::info!(
+                "[NET][boot] DNS client task running on CPU {}",
+                crate::cpu::try_current_id().unwrap_or(0)
+            );
+            let client = crate::net::services::dns::cloned_client();
+            if let Some(client) = client {
+                let _ = client.run().await;
+            }
+        });
+    }
 }
 
 fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {

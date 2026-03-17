@@ -39,7 +39,6 @@ pub struct TcpSegmentBuilder {
 
 enum TcpSegmentPayload {
     Empty,
-    Owned(Vec<u8>),
     Packet(PacketPayload),
 }
 
@@ -47,7 +46,6 @@ impl TcpSegmentPayload {
     fn len(&self) -> usize {
         match self {
             Self::Empty => 0,
-            Self::Owned(data) => data.len(),
             Self::Packet(payload) => payload.total_len(),
         }
     }
@@ -55,7 +53,6 @@ impl TcpSegmentPayload {
     fn copy_into(&self, dst: &mut [u8]) {
         match self {
             Self::Empty => {}
-            Self::Owned(data) => dst[..data.len()].copy_from_slice(data),
             Self::Packet(payload) => {
                 let view = PacketPayloadView::new(payload);
                 let copied = view.copy_all_into(dst);
@@ -160,26 +157,6 @@ impl TcpSegmentBuilder {
     /// ウィンドウサイズ設定
     pub fn window(mut self, window: u16) -> Self {
         self.window = window;
-        self
-    }
-
-    /// データ設定
-    pub fn data(mut self, data: Vec<u8>) -> Self {
-        self.data = if data.is_empty() {
-            TcpSegmentPayload::Empty
-        } else {
-            TcpSegmentPayload::Owned(data)
-        };
-        self
-    }
-
-    /// ペイロード設定（スライスから）
-    pub fn payload(mut self, data: &[u8]) -> Self {
-        self.data = if data.is_empty() {
-            TcpSegmentPayload::Empty
-        } else {
-            TcpSegmentPayload::Owned(data.to_vec())
-        };
         self
     }
 
@@ -544,6 +521,10 @@ pub fn send_tcp_segment_packet(
 pub mod tests {
     use super::*;
 
+    fn test_payload_bytes(data: &[u8]) -> PacketPayload {
+        crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+    }
+
     fn send_test_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<u8>) -> bool {
         let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
             return false;
@@ -586,7 +567,7 @@ pub mod tests {
             .seq(2000)
             .ack(3000)
             .ack_flag()
-            .data(data)
+            .payload_packet(test_payload_bytes(&data))
             .build();
 
         // ヘッダ20バイト + データ5バイト
@@ -641,7 +622,7 @@ pub mod tests {
             .seq(1)
             .ack(1)
             .ack_flag()
-            .payload(b"abc")
+            .payload_packet(test_payload_bytes(b"abc"))
             .build();
 
         TcpSegmentBuilder::calculate_checksum(&mut segment, [192, 168, 1, 10], [192, 168, 1, 20]);
@@ -701,6 +682,10 @@ pub mod tests {
 pub mod qemu_tests {
     use super::*;
 
+    fn test_payload_bytes(data: &[u8]) -> PacketPayload {
+        crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+    }
+
     pub fn tcp_segment_builder_smoke() -> bool {
         let segment = TcpSegmentBuilder::new(12345, 80)
             .seq(1000)
@@ -733,7 +718,7 @@ pub mod qemu_tests {
             .seq(2000)
             .ack(3000)
             .ack_flag()
-            .data(data)
+            .payload_packet(test_payload_bytes(&data))
             .build();
 
         segment.len() == 25 && &segment[20..] == b"Hello"
@@ -778,7 +763,7 @@ pub mod qemu_tests {
             .seq(1)
             .ack(1)
             .ack_flag()
-            .payload(b"abc")
+            .payload_packet(test_payload_bytes(b"abc"))
             .build();
 
         TcpSegmentBuilder::calculate_checksum(&mut segment, [192, 168, 1, 10], [192, 168, 1, 20]);

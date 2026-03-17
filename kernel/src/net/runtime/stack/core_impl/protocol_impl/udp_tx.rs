@@ -75,8 +75,13 @@ impl NetworkStack {
             None => return false,
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        let udp_total_len = 8 + payload.total_len();
+        let mut packet =
+            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + udp_total_len) {
+                Some(packet) => packet,
+                None => return false,
+            };
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -101,7 +106,10 @@ impl NetworkStack {
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
 
-                    if self.transmit_on(if_id, frame.as_bytes()) {
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    if self.transmit_packet_on(if_id, packet) {
                         return true;
                     }
                 }
@@ -307,7 +315,9 @@ impl NetworkStack {
                     }
                 }
 
-                let Some(payload) = crate::net::payload::payload_from_bytes(data) else {
+                let Some(payload) = crate::net::payload::packet_from_bytes(data)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                else {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
                 let payload = crate::net::payload::PacketPayloadView::new(&payload);
@@ -330,7 +340,9 @@ impl NetworkStack {
                     port: d_port,
                 },
             ) => {
-                let Some(payload) = crate::net::payload::payload_from_bytes(data) else {
+                let Some(payload) = crate::net::payload::packet_from_bytes(data)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                else {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
                 let payload = crate::net::payload::PacketPayloadView::new(&payload);

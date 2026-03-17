@@ -4,7 +4,7 @@ use crate::net::l4::endpoint::endpoint_core::Endpoint;
 use crate::net::l4::endpoint::event::{NetworkEvent, enqueue_event_ignore_in};
 use crate::net::l4::endpoint::tcb::tcb_table;
 use crate::net::l4::endpoint::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
-use crate::net::payload::{packet_from_payload, payload_from_bytes};
+use crate::net::payload::payload_from_bytes;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use core::future::Future;
 use core::pin::Pin;
@@ -208,11 +208,11 @@ impl TcpStream {
         ReadFuture { stream: self, buf }
     }
 
-    pub async fn read_zero_copy(&mut self) -> Option<PacketRef> {
+    pub async fn read_zero_copy(&mut self) -> Option<PacketPayload> {
         ZeroCopyReadFuture { stream: self }.await
     }
 
-    pub fn poll_recv_zero_copy(&self, cx: &mut Context<'_>) -> Poll<Option<PacketRef>> {
+    pub fn poll_recv_zero_copy(&self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
         let mut inner = self
             .endpoint
             .inner()
@@ -239,7 +239,7 @@ impl TcpStream {
             }
             drop(inner);
             on_read_progress(local, remote, delivered_len);
-            return Poll::Ready(packet_from_payload(&payload));
+            return Poll::Ready(Some(payload));
         }
 
         if matches!(inner.state, EndpointState::Closed | EndpointState::Closing) {
@@ -715,7 +715,7 @@ pub(crate) struct ZeroCopyReadFuture<'a> {
 }
 
 impl<'a> Future for ZeroCopyReadFuture<'a> {
-    type Output = Option<PacketRef>;
+    type Output = Option<PacketPayload>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.stream.poll_recv_zero_copy(cx)

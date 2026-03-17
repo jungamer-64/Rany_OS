@@ -56,14 +56,7 @@ impl DhcpClient {
             match task::with_timeout(socket.recv(), 1000).await {
                 TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
                     let now = crate::task::current_tick();
-                    let response = match &packet {
-                        kernel_api::resource::net::PacketPayload::Single(packet) => {
-                            self.process_response(packet.data(), now)
-                        }
-                        kernel_api::resource::net::PacketPayload::Chain(_) => {
-                            self.process_response_payload(&packet, now)
-                        }
-                    };
+                    let response = self.process_response_payload(&packet, now);
                     match response {
                         Ok(DhcpResponseResult::Ack(lease)) => {
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);

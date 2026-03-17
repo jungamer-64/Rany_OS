@@ -15,11 +15,11 @@
 // Building block: Out-of-order queue implementation
 
 use super::types::{EndpointAddr, conn_key_hash, seq_before};
-use crate::net::datapath::mempool::{PacketRef, alloc_packet};
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use kernel_api::resource::net::PacketPayload;
 
 /// OOOセグメントの最大保持数（接続あたり）
 const MAX_OOO_SEGMENTS: usize = 16;
@@ -37,7 +37,7 @@ static GLOBAL_OOO_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// 接続ごとのOOOキュー
 struct ConnectionOooQueue {
     /// シーケンス番号順（wrapping-aware）にソートされたセグメント
-    segments: Vec<(u32, PacketRef)>,
+    segments: Vec<(u32, PacketPayload)>,
     /// FINビットが設定されていたシーケンス番号（存在する場合）
     fin_seq: Option<u32>,
 }
@@ -51,13 +51,13 @@ impl ConnectionOooQueue {
     }
 
     /// セグメントを挿入
-    fn insert(&mut self, seq: u32, data: PacketRef, fin: bool) {
+    fn insert(&mut self, seq: u32, data: PacketPayload, fin: bool) {
         if fin {
-            let seg_end = seq.wrapping_add(data.len() as u32);
+            let seg_end = seq.wrapping_add(data.total_len() as u32);
             self.fin_seq = Some(seg_end);
         }
 
-        let fragment_len = data.len() as u32;
+        let fragment_len = data.total_len() as u32;
         let fragment_end = seq.wrapping_add(fragment_len);
 
         // Security: Check for overlapping segments in the OOO queue.
@@ -66,7 +66,7 @@ impl ConnectionOooQueue {
         // inconsistency. We apply this policy here to the OOO queue.
         for (s, p) in &self.segments {
             let existing_seq = *s;
-            let existing_end = existing_seq.wrapping_add(p.len() as u32);
+            let existing_end = existing_seq.wrapping_add(p.total_len() as u32);
 
             // Check if [seq, fragment_end) overlaps with [existing_seq, existing_end)
             let overlap = !seq_before(existing_end, seq) && !seq_before(fragment_end, existing_seq);
@@ -117,12 +117,15 @@ impl ConnectionOooQueue {
             let (seq, _packet) = &self.segments[i];
             if seq_before(*seq, rcv_nxt) {
                 let (seq, mut packet) = self.segments.remove(i);
-                let seg_end = seq.wrapping_add(packet.len() as u32);
+                let seg_end = seq.wrapping_add(packet.total_len() as u32);
 
                 if seq_before(rcv_nxt, seg_end) {
                     // 部分的な重複: rcv_nxtより前の部分をカットして再挿入候補にする
                     let overlap = rcv_nxt.wrapping_sub(seq) as usize;
-                    packet.advance(overlap);
+                    if packet.consume_prefix(overlap) != overlap {
+                        GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                        continue;
+                    }
                     to_reinsert.push((rcv_nxt, packet));
                     // Note: GLOBAL_OOO_COUNT remains the same because this segment is
                     // essentially replaced by a trimmed version.
@@ -158,7 +161,7 @@ impl ConnectionOooQueue {
     /// rcv_nxtから連続するデータをドレイン
     fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> (u32, bool)
     where
-        F: FnMut(u32, &[u8]),
+        F: FnMut(u32, PacketPayload) -> usize,
     {
         self.prune_outdated(rcv_nxt);
         let mut fin_encountered = false;
@@ -168,12 +171,28 @@ impl ConnectionOooQueue {
             // Find segment starting at rcv_nxt
             let pos = self.segments.iter().position(|(s, _)| *s == rcv_nxt);
             if let Some(i) = pos {
-                let (_, packet) = self.segments.remove(i);
+                let (_, mut payload) = self.segments.remove(i);
                 GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
-                let data = packet.data();
-                let data_len = data.len() as u32;
-                f(rcv_nxt, data);
-                rcv_nxt = rcv_nxt.wrapping_add(data_len);
+                let payload_len = payload.total_len();
+                let pushed = f(rcv_nxt, payload.clone()).min(payload_len);
+                if pushed < payload_len {
+                    if pushed > 0 {
+                        if payload.consume_prefix(pushed) != pushed {
+                            break;
+                        }
+                        rcv_nxt = rcv_nxt.wrapping_add(pushed as u32);
+                    }
+
+                    let pos = self
+                        .segments
+                        .iter()
+                        .position(|(s, _)| seq_before(rcv_nxt, *s))
+                        .unwrap_or(self.segments.len());
+                    self.segments.insert(pos, (rcv_nxt, payload));
+                    GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+                rcv_nxt = rcv_nxt.wrapping_add(payload_len as u32);
 
                 if let Some(fs) = self.fin_seq {
                     if fs == rcv_nxt {
@@ -203,7 +222,7 @@ impl ConnectionOooQueue {
 
         for (seq, packet) in &self.segments {
             let seq = *seq;
-            let seg_end = seq.wrapping_add(packet.len() as u32);
+            let seg_end = seq.wrapping_add(packet.total_len() as u32);
 
             match block_start {
                 None => {
@@ -332,7 +351,7 @@ pub fn insert_ooo_segment(
     local: EndpointAddr,
     remote: EndpointAddr,
     seq: u32,
-    data: &[u8],
+    data: PacketPayload,
     fin: bool,
 ) {
     if data.is_empty() && !fin {
@@ -343,15 +362,6 @@ pub fn insert_ooo_segment(
     if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
         return;
     }
-
-    let mut packet = match alloc_packet() {
-        Some(p) => p,
-        None => return, // Mempool枯渇
-    };
-
-    let len = data.len().min(packet.data_mut().len());
-    packet.data_mut()[..len].copy_from_slice(&data[..len]);
-    packet.set_len(len);
 
     let idx = ooo_shard_index(&local, &remote);
     let Ok(mut guard) = OOO_SHARDS[idx].lock() else {
@@ -369,7 +379,7 @@ pub fn insert_ooo_segment(
         .entry((local, remote))
         .or_insert_with(ConnectionOooQueue::new);
 
-    conn_queue.insert(seq, packet, fin);
+    conn_queue.insert(seq, data, fin);
 }
 
 /// OOOキューから連続データをクロージャにプッシュしてドレイン
@@ -381,7 +391,7 @@ pub fn drain_ooo_contiguous<F>(
     f: F,
 ) -> (u32, bool)
 where
-    F: FnMut(u32, &[u8]),
+    F: FnMut(u32, PacketPayload) -> usize,
 {
     let idx = ooo_shard_index(&local, &remote);
     let Ok(mut guard) = OOO_SHARDS[idx].lock() else {

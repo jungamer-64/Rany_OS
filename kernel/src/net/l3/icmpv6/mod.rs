@@ -952,7 +952,7 @@ pub mod tests {
         assert_eq!(msg[1], 0); // code
         assert_eq!(u16::from_be_bytes([msg[4], msg[5]]), 0x1234); // identifier
         assert_eq!(u16::from_be_bytes([msg[6], msg[7]]), 1); // sequence
-        assert_eq!(&msg[8..12], &payload);
+        assert_eq!(&msg[8..12], payload_bytes(&payload).as_slice());
 
         // Verify checksum
         let pseudo = ipv6_pseudo_header_checksum(&src, &dst, IpProtocol::Icmpv6, msg.len() as u32);

@@ -32,11 +32,14 @@ impl NetworkStack {
             return;
         }
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
         let config = self.config.clone();
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
 
         // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             // Leave messages are sent to all-routers group (224.0.0.2)
             let all_routers = Ipv4Address::new([224, 0, 0, 2]);
             let dst_mac = multicast_ip_to_mac(all_routers);
@@ -66,13 +69,11 @@ impl NetworkStack {
                     {
                         let total_len = (20 + len) as u16;
                         ip_pkt.set_total_length(total_len).update_checksum();
-
-                        let frame_len = 14 + total_len as usize;
-                        if let Some(tx_fn) = self.transmit_fn {
-                            if tx_fn(None, &buffer[..frame_len], Default::default()) {
-                                self.stats.record_tx(frame_len);
-                            }
-                        }
+                        frame.set_payload_len(total_len as usize);
+                        let frame_len = frame.as_bytes().len();
+                        drop(frame);
+                        packet.set_len(frame_len);
+                        let _ = self.transmit_packet(packet);
                     }
                 }
             }
@@ -158,48 +159,6 @@ impl NetworkStack {
         let _ = crate::net::runtime::manager::set_interface_config(if_id, iface_config);
     }
 
-    /// Process UDP data (for reassembled packets)
-    pub fn process_udp_data(
-        &mut self,
-        data: &[u8],
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        ttl: u8,
-        original_packet: &[u8],
-        current_time: u64,
-    ) {
-        let Some(payload) = crate::net::payload::payload_from_bytes(data) else {
-            self.stats.record_rx_error();
-            return;
-        };
-
-        let result = self
-            .udp
-            .process_payload_on(None, payload, src_ip, dst_ip, ttl);
-
-        match result {
-            UdpResult::Delivered => {}
-            UdpResult::NoEndpoint => {
-                self.stats.record_dropped();
-
-                // RFC 1122: Send ICMP Port Unreachable
-                // Only send if it wasn't broadcast/multicast
-                if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
-                    self.send_icmp_error(
-                        src_ip,
-                        DestUnreachCode::PortUnreachable,
-                        None,
-                        original_packet,
-                        current_time,
-                    );
-                }
-            }
-            UdpResult::ChecksumError | UdpResult::Invalid => {
-                self.stats.record_rx_error();
-            }
-        }
-    }
-
     pub fn process_udp_payload(
         &mut self,
         if_id: Option<crate::net::runtime::manager::NetIfId>,
@@ -238,19 +197,6 @@ impl NetworkStack {
     ///
     /// This is used as a fallback when ENDPOINT_MANAGER doesn't have a matching
     /// socket. Returns the UdpResult so the caller can decide what to do on miss.
-    pub fn udp_process_raw(
-        &self,
-        udp_segment: &[u8],
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        ttl: u8,
-    ) -> UdpResult {
-        let Some(payload) = crate::net::payload::payload_from_bytes(udp_segment) else {
-            return UdpResult::Invalid;
-        };
-        self.udp_process_raw_payload(payload, src_ip, dst_ip, ttl)
-    }
-
     pub fn udp_process_raw_payload(
         &self,
         udp_segment: PacketPayload,
@@ -261,44 +207,21 @@ impl NetworkStack {
         self.udp.process_payload(udp_segment, src_ip, dst_ip, ttl)
     }
 
-    /// Process TCP data (for reassembled packets)
-    pub fn process_tcp_data(
-        &mut self,
-        data: &[u8],
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        _current_time: u64,
-    ) {
-        crate::net::l4::endpoint::tcp_rx::process_tcp_segment(
-            src_ip.octets(),
-            dst_ip.octets(),
-            data,
-        );
-    }
-
-    /// Process UDP data over IPv6
-    ///
-    /// IPv6擬似ヘッダーでチェックサムを検証し、ポート番号ベースで
-    /// 既存のUDPソケットにデータグラムを配送する。
-    pub(crate) fn process_udp_data_v6(
+    pub(crate) fn process_udp_payload_v6(
         &mut self,
         if_id: Option<crate::net::runtime::manager::NetIfId>,
-        data: &[u8],
+        payload: PacketPayload,
         src: crate::net::l3::ipv6::Ipv6Address,
         dst: crate::net::l3::ipv6::Ipv6Address,
         hop_limit: u8,
-        original_packet: &[u8],
-        udp_segment_packet: Option<PacketRef>,
+        original_packet: &PacketPayload,
     ) {
         use crate::net::l4::udp::UdpResult;
 
-        let udp_segment_payload = udp_segment_packet
-            .map(PacketPayload::single)
-            .or_else(|| crate::net::payload::payload_from_bytes(data));
-
-        if data.len() >= 8 {
-            let src_port = u16::from_be_bytes([data[0], data[1]]);
-            let dst_port = u16::from_be_bytes([data[2], data[3]]);
+        let view = crate::net::payload::PacketPayloadView::new(&payload);
+        if let Some(header) = view.read_array::<4>(0) {
+            let src_port = u16::from_be_bytes([header[0], header[1]]);
+            let dst_port = u16::from_be_bytes([header[2], header[3]]);
             let remote =
                 crate::net::l4::endpoint::types::EndpointAddr::new_v6(src.octets(), src_port);
             let ingress_if_id = self.resolve_ingress_if(if_id);
@@ -313,10 +236,8 @@ impl NetworkStack {
                     dst_port,
                     Some(ingress_if_id),
                 ) {
-                    if let Some(payload) = udp_segment_payload
-                        .as_ref()
-                        .and_then(|segment| segment.slice(8, data.len() - 8))
-                    {
+                    let data_len = view.total_len().saturating_sub(8);
+                    if let Some(payload) = payload.slice(8, data_len) {
                         let _ =
                             socket.deliver_udp_payload(ingress_if_id, remote, hop_limit, payload);
                         return;
@@ -326,37 +247,6 @@ impl NetworkStack {
                 }
             }
         }
-
-        let Some(udp_segment_payload) = udp_segment_payload else {
-            self.stats.record_rx_error();
-            return;
-        };
-
-        match self
-            .udp
-            .process_payload_v6_on(if_id, udp_segment_payload, src, dst, hop_limit)
-        {
-            UdpResult::Delivered => {}
-            UdpResult::NoEndpoint => {
-                self.stats.record_dropped();
-                self.send_icmpv6_error(src, 4, original_packet);
-            }
-            UdpResult::ChecksumError | UdpResult::Invalid => {
-                self.stats.record_rx_error();
-            }
-        }
-    }
-
-    pub(crate) fn process_udp_payload_v6(
-        &mut self,
-        if_id: Option<crate::net::runtime::manager::NetIfId>,
-        payload: PacketPayload,
-        src: crate::net::l3::ipv6::Ipv6Address,
-        dst: crate::net::l3::ipv6::Ipv6Address,
-        hop_limit: u8,
-        original_packet: &PacketPayload,
-    ) {
-        use crate::net::l4::udp::UdpResult;
 
         match self
             .udp
@@ -371,21 +261,6 @@ impl NetworkStack {
                 self.stats.record_rx_error();
             }
         }
-    }
-
-    /// Process TCP data over IPv6
-    ///
-    /// IPv6擬似ヘッダーでチェックサムを検証する。
-    /// 現在のTCPプロセッサはIPv4専用のため、検証後にログ記録のみ行う。
-    /// 将来のデュアルスタック対応でフル処理を実装予定。
-    pub(crate) fn process_tcp_data_v6(
-        &mut self,
-        data: &[u8],
-        src: crate::net::l3::ipv6::Ipv6Address,
-        dst: crate::net::l3::ipv6::Ipv6Address,
-        _current_time: u64,
-    ) {
-        crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6(src, dst, data);
     }
 
     /// Process UDP packet
@@ -422,23 +297,6 @@ impl NetworkStack {
                 self.stats.record_rx_error();
             }
         }
-    }
-
-    /// Process TCP packet
-    pub fn process_tcp(
-        &mut self,
-        data: &[u8],
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        _packet: PacketRef,
-        _current_time: u64,
-    ) {
-        let _ = _packet;
-        crate::net::l4::endpoint::tcp_rx::process_tcp_segment(
-            src_ip.octets(),
-            dst_ip.octets(),
-            data,
-        );
     }
 
     /// Connect to a remote TCP address

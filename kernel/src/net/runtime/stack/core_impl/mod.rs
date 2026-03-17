@@ -277,8 +277,10 @@ impl NetworkStack {
                 .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        let Some(mut frame) = EthernetFrameMut::new(&mut buffer) else {
+        let mut packet = self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + total_len)
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
         frame
@@ -293,7 +295,10 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
         frame.set_payload_len(total_len);
-        if self.transmit_on(if_id, frame.as_bytes()) {
+        let frame_len = frame.as_bytes().len();
+        drop(frame);
+        packet.set_len(frame_len);
+        if self.transmit_packet_on(if_id, packet) {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -408,8 +413,10 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        let Some(mut frame) = EthernetFrameMut::new(&mut buffer) else {
+        let mut packet = self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + total_len)
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
         frame
@@ -424,7 +431,10 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
         frame.set_payload_len(total_len);
-        if self.transmit_on(if_id, frame.as_bytes()) {
+        let frame_len = frame.as_bytes().len();
+        drop(frame);
+        packet.set_len(frame_len);
+        if self.transmit_packet_on(if_id, packet) {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -562,10 +572,11 @@ impl NetworkStack {
         result
     }
 
-    pub fn transmit_on(&self, if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    pub fn transmit_packet_on(&self, if_id: Option<NetIfId>, packet: PacketRef) -> bool {
         if let Some(f) = self.transmit_fn {
             let meta = self.pending_tx_meta.unwrap_or_default();
-            if f(if_id, data, meta) {
+            let packet_len = packet.len();
+            if f(if_id, packet, meta) {
                 if !self.transmit_awaits_device_completion
                     && meta.completion_policy
                         == kernel_api::service::netdev::NetTxCompletionPolicy::DeviceCompletion
@@ -575,10 +586,10 @@ impl NetworkStack {
                             crate::net::runtime::device::complete_tx_request(completion_id, Ok(()));
                     }
                 }
-                self.stats.record_tx(data.len());
+                self.stats.record_tx(packet_len);
                 if let Some(if_id) = if_id {
                     if let Some(stats) = self.interface_stats(if_id) {
-                        stats.record_tx(data.len());
+                        stats.record_tx(packet_len);
                     }
                 }
                 return true;
@@ -597,88 +608,12 @@ impl NetworkStack {
     }
 
     /// Compatibility helper for callers that do not specify an interface.
-    pub fn transmit(&self, data: &[u8]) -> bool {
-        self.transmit_on(None, data)
+    pub fn transmit_packet(&self, packet: PacketRef) -> bool {
+        self.transmit_packet_on(None, packet)
     }
 
-    fn send_tcp_raw_scoped_with_ttl(
-        &mut self,
-        scope: crate::net::types::InterfaceScope,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        tcp_segment: &[u8],
-        ttl: u8,
-    ) -> bool {
-        let (src_port, dst_port, tcp_flags) = if tcp_segment.len() >= 14 {
-            (
-                u16::from_be_bytes([tcp_segment[0], tcp_segment[1]]),
-                u16::from_be_bytes([tcp_segment[2], tcp_segment[3]]),
-                tcp_segment[13],
-            )
-        } else {
-            (0, 0, 0)
-        };
-
-        if !crate::net::security::firewall::check_egress_v4(
-            src_ip.octets(),
-            dst_ip.octets(),
-            6,
-            src_port,
-            dst_port,
-            tcp_flags,
-        ) {
-            self.stats.record_dropped();
-            return false;
-        }
-
-        let Ok((if_id, config, resolved_src)) =
-            self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)
-        else {
-            self.stats.record_dropped();
-            return false;
-        };
-
-        let dst_mac = if dst_ip.is_loopback() {
-            config.mac
-        } else {
-            match self.resolve_mac(if_id, dst_ip, &config, self.current_time()) {
-                Some(mac) => mac,
-                None => return false,
-            }
-        };
-
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv4);
-
-            let eth_payload = frame.payload_mut();
-            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                ip_packet
-                    .init_header()
-                    .set_source(resolved_src)
-                    .set_destination(dst_ip)
-                    .set_protocol(IpProtocol::Tcp)
-                    .set_identification(self.ipv4.next_id(dst_ip))
-                    .set_ttl(ttl);
-
-                let payload_buf = ip_packet.payload_mut();
-                if payload_buf.len() < tcp_segment.len() {
-                    return false;
-                }
-
-                payload_buf[..tcp_segment.len()].copy_from_slice(tcp_segment);
-                ip_packet.finalize(tcp_segment.len());
-                let total_len = ip_packet.total_len();
-                let _ = ip_packet;
-                frame.set_payload_len(total_len);
-                return self.transmit_on(if_id, frame.as_bytes());
-            }
-        }
-
-        false
+    fn alloc_ethernet_frame_packet(&self, frame_len: usize) -> Option<PacketRef> {
+        crate::net::payload::alloc_packet_with_headroom(frame_len.max(60), 0)
     }
 
     fn send_tcp_raw_scoped_with_ttl_payload(
@@ -725,8 +660,12 @@ impl NetworkStack {
         };
 
         let segment_len = tcp_segment.total_len();
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        let mut packet =
+            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + segment_len) {
+                Some(packet) => packet,
+                None => return false,
+            };
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -754,7 +693,10 @@ impl NetworkStack {
                 let total_len = ip_packet.total_len();
                 let _ = ip_packet;
                 frame.set_payload_len(total_len);
-                return self.transmit_on(if_id, frame.as_bytes());
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+                return self.transmit_packet_on(if_id, packet);
             }
         }
 

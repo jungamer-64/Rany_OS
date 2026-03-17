@@ -8,15 +8,6 @@
 
 use super::*;
 
-#[inline]
-fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
-    let base = container.as_ptr() as usize;
-    let sub = subslice.as_ptr() as usize;
-    let end = base.checked_add(container.len())?;
-    let sub_end = sub.checked_add(subslice.len())?;
-    (sub >= base && sub_end <= end).then_some(sub - base)
-}
-
 impl NetworkStack {
     /// Process an incoming packet (main entry point)
     /// Receive a packet from the network
@@ -195,6 +186,12 @@ impl NetworkStack {
     ) {
         // Parse the reassembled packet
         if let Some(packet) = Ipv4Packet::parse(data) {
+            let Some(reassembled_packet) = crate::net::payload::packet_from_bytes(data) else {
+                self.stats.record_rx_error();
+                return;
+            };
+            let original_payload =
+                kernel_api::resource::net::PacketPayload::single(reassembled_packet.clone());
             let src = packet.source();
             let dst = packet.destination();
             let payload = packet.payload();
@@ -263,21 +260,51 @@ impl NetworkStack {
                         self.stats.record_dropped();
                         return;
                     }
-                    // Security Fix: Process TCP through the endpoint stack
-                    crate::net::l4::endpoint::tcp_rx::process_tcp_segment(
+                    let Some(tcp_payload) = crate::net::payload::payload_from_subslice(
+                        &reassembled_packet,
+                        data,
+                        payload,
+                    ) else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    crate::net::l4::endpoint::tcp_rx::process_tcp_segment_payload_on(
+                        None,
                         src.octets(),
                         dst.octets(),
-                        payload,
+                        &tcp_payload,
                     );
                 }
                 IpProtocol::Igmp => {
                     // Process IGMP for multicast group management
-                    self.process_igmp_data(payload, src, packet.ttl());
+                    let Some(igmp_payload) = crate::net::payload::payload_from_subslice(
+                        &reassembled_packet,
+                        data,
+                        payload,
+                    ) else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    self.process_igmp_payload(&igmp_payload, src, packet.ttl());
                 }
                 IpProtocol::Udp => {
-                    // Security Fix: Process UDP through the endpoint stack
-                    // Use process_udp_data instead of self.udp.process
-                    self.process_udp_data(payload, src, dst, packet.ttl(), data, current_time);
+                    let Some(udp_payload) = crate::net::payload::payload_from_subslice(
+                        &reassembled_packet,
+                        data,
+                        payload,
+                    ) else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    self.process_udp_payload(
+                        None,
+                        udp_payload,
+                        src,
+                        dst,
+                        packet.ttl(),
+                        &original_payload,
+                        current_time,
+                    );
                 }
                 _ => {
                     self.stats.record_dropped();
@@ -367,14 +394,96 @@ impl NetworkStack {
         payload: &kernel_api::resource::net::PacketPayload,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        ttl: u8,
+        _ttl: u8,
         current_time: u64,
     ) {
-        let Some(packet) = crate::net::payload::packet_from_payload(payload) else {
-            self.stats.record_rx_error();
+        if !self.icmp_echo_enabled() {
             return;
-        };
-        self.process_icmp_data(packet.data(), src_ip, dst_ip, ttl, current_time);
+        }
+
+        if dst_ip.is_broadcast()
+            || dst_ip.is_multicast()
+            || dst_ip == self.ipv4.config().broadcast_address()
+        {
+            return;
+        }
+
+        let result = self
+            .icmp
+            .process_payload(payload, src_ip, dst_ip, current_time);
+
+        match result {
+            IcmpResult::SendEchoReply {
+                src_ip,
+                identifier,
+                sequence,
+                data_offset,
+                data_len,
+            } => {
+                let Some(echo_data) =
+                    crate::net::payload::payload_range(payload, data_offset, data_len)
+                else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                self.send_icmp_echo_reply_payload(
+                    src_ip,
+                    identifier,
+                    sequence,
+                    &echo_data,
+                    current_time,
+                );
+            }
+            IcmpResult::EchoReplyReceived {
+                identifier,
+                sequence,
+            } => {
+                let _ = identifier;
+                let rtt_us = 0;
+                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(
+                    *src_ip.as_bytes(),
+                    sequence,
+                    rtt_us,
+                );
+                crate::net::l4::endpoint::event::enqueue_event_ignore(
+                    crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoReply {
+                        source: *src_ip.as_bytes(),
+                        sequence,
+                        rtt_us,
+                    },
+                );
+            }
+            IcmpResult::Error { icmp_type, code } => {
+                self.handle_icmp_error_payload(payload, icmp_type, code, current_time);
+            }
+            IcmpResult::Redirect {
+                code,
+                gateway,
+                destination,
+            } => {
+                self.handle_icmp_redirect(code, gateway, destination, src_ip);
+            }
+            IcmpResult::SendTimestampReply {
+                src_ip,
+                identifier,
+                sequence,
+                originate_ts,
+                receive_ts,
+                transmit_ts,
+            } => {
+                self.send_icmp_timestamp_reply(
+                    src_ip,
+                    identifier,
+                    sequence,
+                    originate_ts,
+                    receive_ts,
+                    transmit_ts,
+                    current_time,
+                );
+            }
+            IcmpResult::Invalid => self.stats.record_rx_error(),
+            IcmpResult::Ignored => {}
+        }
     }
 
     // =========================================================================
@@ -422,17 +531,14 @@ impl NetworkStack {
                         return;
                     }
                 }
-                let icmpv6_payload = ip_packet.as_ref().and_then(|ip_packet| {
-                    subslice_offset(data, payload).map(|offset| {
-                        let mut icmp_packet = ip_packet.clone();
-                        icmp_packet.advance(offset);
-                        icmp_packet.set_len(payload.len());
-                        kernel_api::resource::net::PacketPayload::single(icmp_packet)
-                    })
-                });
+                let Some(icmpv6_payload) = ip_packet.as_ref().and_then(|ip_packet| {
+                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
+                }) else {
+                    self.stats.record_rx_error();
+                    return;
+                };
                 self.process_icmpv6_data(
                     if_id,
-                    payload,
                     icmpv6_payload,
                     src,
                     dst,
@@ -451,8 +557,17 @@ impl NetworkStack {
                         return;
                     }
                 }
-                crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_on(
-                    if_id, src, dst, payload,
+                let Some(tcp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
+                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
+                }) else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_payload_on(
+                    if_id,
+                    src,
+                    dst,
+                    &tcp_segment_payload,
                 );
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
@@ -465,22 +580,25 @@ impl NetworkStack {
                         return;
                     }
                 }
-                let udp_segment_packet = ip_packet.as_ref().and_then(|ip_packet| {
-                    subslice_offset(data, payload).map(|offset| {
-                        let mut udp_packet = ip_packet.clone();
-                        udp_packet.advance(offset);
-                        udp_packet.set_len(payload.len());
-                        udp_packet
-                    })
-                });
-                self.process_udp_data_v6(
+                let Some(udp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
+                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
+                }) else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                let Some(original_packet) =
+                    ip_packet.map(kernel_api::resource::net::PacketPayload::single)
+                else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                self.process_udp_payload_v6(
                     if_id,
-                    payload,
+                    udp_segment_payload,
                     src,
                     dst,
                     hop_limit,
-                    data,
-                    udp_segment_packet,
+                    &original_packet,
                 );
             }
             Ipv6ProcessResult::Reassembled(payload) => {
@@ -506,7 +624,9 @@ impl NetworkStack {
                 if let Some(fh) = frag_header {
                     quoted.extend_from_slice(&fh);
                 }
-                if let Some(quoted) = crate::net::payload::payload_from_bytes(&quoted) {
+                if let Some(quoted) = crate::net::payload::packet_from_bytes(&quoted)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                {
                     let quoted = crate::net::payload::PacketPayloadView::new(&quoted);
                     self.send_icmpv6_time_exceeded(src, 1, &quoted);
                 }
@@ -571,7 +691,9 @@ impl NetworkStack {
                     "IPv6: Hop Limit exceeded from {} - sending ICMPv6 Time Exceeded",
                     src
                 );
-                if let Some(orig_packet) = crate::net::payload::payload_from_bytes(orig_packet) {
+                if let Some(orig_packet) = crate::net::payload::packet_from_bytes(orig_packet)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                {
                     let orig_packet = crate::net::payload::PacketPayloadView::new(&orig_packet);
                     self.send_icmpv6_time_exceeded(src, 0, &orig_packet);
                 }
@@ -589,21 +711,13 @@ impl NetworkStack {
     pub(crate) fn process_icmpv6_data(
         &mut self,
         if_id: Option<super::NetIfId>,
-        data: &[u8],
-        payload: Option<kernel_api::resource::net::PacketPayload>,
+        payload: kernel_api::resource::net::PacketPayload,
         src: Ipv6Address,
         dst: Ipv6Address,
         src_mac: MacAddress,
         hop_limit: u8,
         current_time: u64,
     ) {
-        let payload = match payload.or_else(|| crate::net::payload::payload_from_bytes(data)) {
-            Some(payload) => payload,
-            None => {
-                self.stats.record_rx_error();
-                return;
-            }
-        };
         let result = if let Some(if_id) = if_id {
             if let Some(state) = self.interfaces.get(&if_id) {
                 if let Some(ref icmpv6) = state.icmpv6 {
@@ -1318,10 +1432,37 @@ impl NetworkStack {
         src_ip: Ipv4Address,
         ttl: u8,
     ) {
-        let Some(packet) = crate::net::payload::packet_from_payload(payload) else {
-            self.stats.record_rx_error();
+        if ttl != 1 {
+            log::warn!("IGMP: Dropping packet with invalid TTL {}", ttl);
             return;
-        };
-        self.process_igmp_data(packet.data(), src_ip, ttl);
+        }
+
+        let local_ip = self.config.ipv4.address;
+        let subnet_mask = self.config.ipv4.subnet_mask;
+        if local_ip.apply_mask(subnet_mask) != src_ip.apply_mask(subnet_mask) {
+            log::warn!("IGMP: Dropping packet from different subnet {}", src_ip);
+            return;
+        }
+
+        let current_time = self.current_time();
+        self.igmp.update_time(current_time);
+
+        match self.igmp.process_payload(payload, src_ip) {
+            IgmpResult::GeneralQueryReceived { max_resp_time: _ } => {}
+            IgmpResult::GroupQueryReceived {
+                group: _,
+                max_resp_time: _,
+            } => {}
+            IgmpResult::ReportReceived { group: _ } => {}
+            IgmpResult::Ignored => {}
+            IgmpResult::InvalidPacket | IgmpResult::InvalidChecksum => {
+                self.stats.record_rx_error();
+            }
+            IgmpResult::UnknownType(_) => {
+                self.stats.record_dropped();
+            }
+        }
+
+        self.send_pending_igmp_reports();
     }
 }

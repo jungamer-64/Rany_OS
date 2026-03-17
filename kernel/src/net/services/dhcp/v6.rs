@@ -208,14 +208,7 @@ impl DhcpV6Client {
                         }
                     };
 
-                    let handled = match &packet {
-                        kernel_api::resource::net::PacketPayload::Single(packet) => {
-                            self.handle_packet(packet.data(), src_v6)
-                        }
-                        kernel_api::resource::net::PacketPayload::Chain(_) => {
-                            self.handle_packet_payload(&packet, src_v6)
-                        }
-                    };
+                    let handled = self.handle_packet_payload(&packet, src_v6);
                     if handled {
                         log::info!("[NET] DHCPv6 packet handled from {}", src_v6);
                     }

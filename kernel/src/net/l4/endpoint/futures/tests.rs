@@ -14,6 +14,13 @@ fn test_payload(data: &[u8]) -> PacketPayload {
     crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
 }
 
+fn payload_bytes(payload: &PacketPayload) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec![0u8; payload.total_len()];
+    let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+    out.truncate(copied);
+    out
+}
+
 fn configure_connected_tcp_endpoint(
     sock: &crate::net::l4::endpoint::OwnedEndpoint,
     local: EndpointAddr,
@@ -44,7 +51,7 @@ pub fn test_write_future_wakes_on_send() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if: Option<crate::net::runtime::manager::NetIfId>,
-                 _data: &[u8],
+                 _packet: crate::net::datapath::mempool::PacketRef,
                  _meta: kernel_api::service::netdev::NetTxMeta| {
                     assert!(_if.is_none());
                     true
@@ -120,7 +127,7 @@ pub fn test_write_future_wakes_on_send_v6() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if: Option<crate::net::runtime::manager::NetIfId>,
-                 _data: &[u8],
+                 _packet: crate::net::datapath::mempool::PacketRef,
                  _meta: kernel_api::service::netdev::NetTxMeta| {
                     assert!(_if.is_none());
                     true
@@ -221,7 +228,7 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint() {
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
     match pinned.as_mut().poll(&mut cx) {
-        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &data),
+        Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), data),
         Poll::Ready(None) => panic!("Expected packet, got None"),
         Poll::Pending => panic!("Future pending despite packet present"),
     }
@@ -264,7 +271,7 @@ pub fn test_recv_packet_zero_copy_via_owned_endpoint_v6() {
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
 
     match pinned.as_mut().poll(&mut cx) {
-        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &data),
+        Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), data),
         Poll::Ready(None) => panic!("Expected packet, got None"),
         Poll::Pending => panic!("Future pending despite packet present"),
     }
@@ -307,7 +314,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     let mut fut1 = stream_wrapper.next_packet();
     let mut pinned1 = unsafe { Pin::new_unchecked(&mut fut1) };
     match pinned1.as_mut().poll(&mut cx) {
-        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &d1),
+        Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), d1),
         _ => panic!("Expected first packet"),
     }
 
@@ -315,7 +322,7 @@ pub fn test_tcp_packet_stream_multiple_packets() {
     let mut fut2 = stream_wrapper.next_packet();
     let mut pinned2 = unsafe { Pin::new_unchecked(&mut fut2) };
     match pinned2.as_mut().poll(&mut cx) {
-        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &d2),
+        Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), d2),
         _ => panic!("Expected second packet"),
     }
 }
@@ -357,7 +364,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     let mut fut1 = stream_wrapper.next_packet();
     let mut pinned1 = unsafe { Pin::new_unchecked(&mut fut1) };
     match pinned1.as_mut().poll(&mut cx) {
-        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &d1),
+        Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), d1),
         _ => panic!("Expected first packet"),
     }
 
@@ -365,7 +372,7 @@ pub fn test_tcp_packet_stream_multiple_packets_v6() {
     let mut fut2 = stream_wrapper.next_packet();
     let mut pinned2 = unsafe { Pin::new_unchecked(&mut fut2) };
     match pinned2.as_mut().poll(&mut cx) {
-        Poll::Ready(Some(pkt)) => assert_eq!(pkt.data(), &d2),
+        Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), d2),
         _ => panic!("Expected second packet"),
     }
 }
@@ -433,7 +440,7 @@ pub fn test_udp_packet_stream_delivered() {
     let mut pinned = unsafe { Pin::new_unchecked(&mut fut) };
     match pinned.as_mut().poll(&mut cx2) {
         Poll::Ready(Some((_if_id, addr, _ttl, pkt))) => {
-            assert_eq!(pkt.data(), b"hello");
+            assert_eq!(payload_bytes(&pkt), b"hello");
             assert_eq!(addr.port(), 12345);
         }
         _ => panic!("Expected UDP packet"),

@@ -30,14 +30,14 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::v
 
 fn qemu_stack_record_tx_if(
     if_id: Option<crate::net::runtime::manager::NetIfId>,
-    data: &[u8],
+    packet: crate::net::datapath::mempool::PacketRef,
     _meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
     let mut guard = QEMU_STACK_LAST_TX_IF
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     *guard = if_id;
-    QEMU_STACK_LAST_TX_LEN.store(data.len(), Ordering::Release);
+    QEMU_STACK_LAST_TX_LEN.store(packet.len(), Ordering::Release);
     true
 }
 
@@ -297,7 +297,7 @@ pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
 
         match Pin::new(&mut fut1).poll(&mut cx) {
             Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
-                if if_id != NetIfId(7) || addr != src || packet.data() != b"abc" {
+                if if_id != NetIfId(7) || addr != src || payload_bytes(&packet) != b"abc" {
                     return false;
                 }
             }
@@ -481,7 +481,8 @@ pub fn stack_send_udp_event_task_zero_copy_smoke() -> bool {
                 src_ip: None,
                 dst_ip: [255, 255, 255, 255],
                 dst_port: 80,
-                data: alloc::vec![1, 2, 3],
+                payload: crate::net::payload::payload_from_bytes(&[1, 2, 3])
+                    .expect("allocate packet-backed payload"),
                 ttl: 64,
                 completion_id: None,
                 result_slot,

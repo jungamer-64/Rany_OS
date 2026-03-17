@@ -12,7 +12,7 @@ fn test_payload(data: &[u8]) -> PacketPayload {
 }
 
 fn payload_bytes(payload: &PacketPayload) -> Vec<u8> {
-    let mut out = vec![0u8; payload.total_len()];
+    let mut out = alloc::vec![0u8; payload.total_len()];
     let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
     out.truncate(copied);
     out
@@ -20,7 +20,7 @@ fn payload_bytes(payload: &PacketPayload) -> Vec<u8> {
 
 fn record_test_tx_if(
     if_id: Option<NetIfId>,
-    _data: &[u8],
+    _packet: crate::net::datapath::mempool::PacketRef,
     _meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
     let mut guard = TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
@@ -253,7 +253,7 @@ pub fn test_send_udp_event_task_zero_copy() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if_id: Option<super::NetIfId>,
-                 _data: &[u8],
+                 _packet: crate::net::datapath::mempool::PacketRef,
                  _meta: kernel_api::service::netdev::NetTxMeta| true,
             );
         }
@@ -302,7 +302,7 @@ pub fn test_send_icmp_event_dispatch_smoke() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if_id: Option<super::NetIfId>,
-                 _data: &[u8],
+                 _packet: crate::net::datapath::mempool::PacketRef,
                  _meta: kernel_api::service::netdev::NetTxMeta| true,
             );
             // Pre-populate ARP cache so ping will proceed
@@ -494,7 +494,18 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     ip.finalize(udp_len);
     eth.set_payload_len(crate::net::l3::ipv4::Ipv4Header::MIN_SIZE + udp_len);
 
-    receive(eth.as_bytes());
+    let packet = crate::net::payload::packet_from_bytes(eth.as_bytes()).expect("ingress packet");
+    let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
+    let result = handler.handle_event(
+        crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+            if_id: None,
+            packet,
+        },
+    );
+    assert!(matches!(
+        result,
+        crate::net::l4::endpoint::handler::EventHandleResult::Success
+    ));
 
     let guard = match stack().lock() {
         Ok(g) => g,

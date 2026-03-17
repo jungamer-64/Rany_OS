@@ -8,6 +8,17 @@ use super::{
     tests, types, window_scale,
 };
 
+fn test_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
+    crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
+}
+
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec![0u8; payload.total_len()];
+    let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+    out.truncate(copied);
+    out
+}
+
 macro_rules! run_case {
     ($func:path) => {{
         #[cfg(all(test, feature = "qemu-test-export"))]
@@ -306,14 +317,14 @@ pub fn retransmit_retransmit_queue_timeout_smoke() -> bool {
 
 pub fn retransmit_retransmit_queue_retransmit_smoke() -> bool {
     let mut queue = retransmit::RetransmitQueue::new();
-    let original_data = alloc::vec![1u8, 2, 3, 4, 5];
+    let original_data = [1u8, 2, 3, 4, 5];
 
-    queue.push(1000, original_data.clone(), 0);
+    queue.push(1000, test_payload(&original_data), 0);
 
     let Some(retransmitted) = queue.retransmit(1500) else {
         return false;
     };
-    if retransmitted != original_data {
+    if payload_bytes(&retransmitted) != original_data {
         return false;
     }
 

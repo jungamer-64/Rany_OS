@@ -24,6 +24,7 @@
 #![allow(dead_code)]
 
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::payload::PacketPayloadView;
 use alloc::vec::Vec;
 
 extern crate alloc;
@@ -294,6 +295,41 @@ impl IgmpProcessor {
                 // IGMPv3 report processing would go here
                 IgmpResult::Ignored
             }
+            None => IgmpResult::UnknownType(msg_type),
+        }
+    }
+
+    pub fn process_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        src_ip: Ipv4Address,
+    ) -> IgmpResult {
+        let view = PacketPayloadView::new(payload);
+        if view.total_len() < IGMP_HEADER_LEN {
+            return IgmpResult::InvalidPacket;
+        }
+
+        let Some(header) = view.read_array::<IGMP_HEADER_LEN>(0) else {
+            return IgmpResult::InvalidPacket;
+        };
+
+        let msg_type = header[0];
+        let max_resp_time = header[1];
+        let group_addr = Ipv4Address::new([header[4], header[5], header[6], header[7]]);
+
+        let mut bytes = [0u8; IGMP_HEADER_LEN];
+        let copied = view.copy_all_into(&mut bytes);
+        if copied != IGMP_HEADER_LEN || compute_igmp_checksum(&bytes) != 0 {
+            return IgmpResult::InvalidChecksum;
+        }
+
+        match IgmpType::from_u8(msg_type) {
+            Some(IgmpType::MembershipQuery) => self.handle_query(group_addr, max_resp_time, src_ip),
+            Some(IgmpType::V1MembershipReport) | Some(IgmpType::V2MembershipReport) => {
+                self.handle_report(group_addr, src_ip)
+            }
+            Some(IgmpType::LeaveGroup) => IgmpResult::Ignored,
+            Some(IgmpType::V3MembershipReport) => IgmpResult::Ignored,
             None => IgmpResult::UnknownType(msg_type),
         }
     }

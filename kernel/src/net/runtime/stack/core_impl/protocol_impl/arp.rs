@@ -74,10 +74,13 @@ impl NetworkStack {
 
     /// Send a gratuitous ARP to defend our address (RFC 5227)
     pub(crate) fn send_gratuitous_arp(&mut self) {
-        let mut buffer = [0u8; 64];
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
         let mac = self.mac_address();
 
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(MacAddress::BROADCAST)
                 .set_source(mac)
@@ -87,7 +90,10 @@ impl NetworkStack {
             if let Some(len) = self.arp.build_gratuitous(payload) {
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
-                self.transmit(frame.as_bytes());
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+                self.transmit_packet(packet);
             }
         }
     }
@@ -97,9 +103,12 @@ impl NetworkStack {
             self.send_gratuitous_arp();
             return;
         };
-        let mut buffer = [0u8; 64];
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
 
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(MacAddress::BROADCAST)
                 .set_source(config.mac)
@@ -110,7 +119,10 @@ impl NetworkStack {
                 if let Some(len) = state.arp.build_gratuitous(payload) {
                     frame.set_payload_len(len);
                     frame.pad_to_minimum();
-                    self.transmit_on(Some(if_id), frame.as_bytes());
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    self.transmit_packet_on(Some(if_id), packet);
                 }
             }
         }
@@ -118,11 +130,14 @@ impl NetworkStack {
 
     /// Send an ARP reply
     pub(crate) fn send_arp_reply(&mut self, target_mac: MacAddress, target_ip: Ipv4Address) {
-        let mut buffer = [0u8; 64];
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
         let mac = self.mac_address();
 
         // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(target_mac)
                 .set_source(mac)
@@ -132,8 +147,10 @@ impl NetworkStack {
             if let Some(len) = self.arp.build_reply(payload, target_mac, target_ip) {
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
-
-                self.transmit(frame.as_bytes());
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+                self.transmit_packet(packet);
             }
         }
     }
@@ -148,9 +165,12 @@ impl NetworkStack {
             self.send_arp_reply(target_mac, target_ip);
             return;
         };
-        let mut buffer = [0u8; 64];
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
 
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(target_mac)
                 .set_source(config.mac)
@@ -161,7 +181,10 @@ impl NetworkStack {
                 if let Some(len) = state.arp.build_reply(payload, target_mac, target_ip) {
                     frame.set_payload_len(len);
                     frame.pad_to_minimum();
-                    self.transmit_on(Some(if_id), frame.as_bytes());
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    self.transmit_packet_on(Some(if_id), packet);
                 }
             }
         }
@@ -169,7 +192,10 @@ impl NetworkStack {
 
     /// Send an ARP request
     pub fn send_arp_request(&mut self, target_ip: Ipv4Address) {
-        let mut buffer = [0u8; 64];
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
         let mac = self.mac_address();
         let current_time = self.current_time();
 
@@ -179,7 +205,7 @@ impl NetworkStack {
         }
 
         // Build Ethernet frame (broadcast)
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(MacAddress::BROADCAST)
                 .set_source(mac)
@@ -189,8 +215,10 @@ impl NetworkStack {
             if let Some(len) = self.arp.build_request(payload, target_ip) {
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
-
-                if self.transmit(frame.as_bytes()) {
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+                if self.transmit_packet(packet) {
                     // Mark request as sent only when TX succeeded.
                     self.arp.request_sent(target_ip, current_time);
                     log::info!(
@@ -227,7 +255,10 @@ impl NetworkStack {
         // We'll build the entire packet into a local buffer and remember its
         // length; the buffer itself lives for the duration of the function so we
         // can safely transmit it after dropping the mutable borrow of `state`.
-        let mut buffer = [0u8; 64];
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
         let mut packet_len: Option<usize> = None;
 
         {
@@ -236,7 +267,7 @@ impl NetworkStack {
                 return;
             }
 
-            if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
                 frame
                     .set_destination(MacAddress::BROADCAST)
                     .set_source(state.config.mac)
@@ -252,7 +283,8 @@ impl NetworkStack {
         }
 
         if let Some(len) = packet_len {
-            if self.transmit_on(Some(if_id), &buffer[..len]) {
+            packet.set_len(len);
+            if self.transmit_packet_on(Some(if_id), packet) {
                 if let Some(state) = self.interfaces.get_mut(&if_id) {
                     state.arp.request_sent(target_ip, current_time);
                 }
@@ -265,12 +297,15 @@ impl NetworkStack {
     /// Probes are sent with sender_ip = 0.0.0.0 to detect address conflicts
     /// without polluting other hosts' ARP caches with unverified information.
     pub fn send_arp_probe(&mut self, target_ip: Ipv4Address) {
-        let mut buffer = [0u8; 64];
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
         let mac = self.mac_address();
         let current_time = self.current_time();
 
         // Build Ethernet frame (broadcast)
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(MacAddress::BROADCAST)
                 .set_source(mac)
@@ -280,8 +315,10 @@ impl NetworkStack {
             if let Some(len) = self.arp.build_probe(payload, target_ip) {
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
-
-                if self.transmit(frame.as_bytes()) {
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+                if self.transmit_packet(packet) {
                     self.arp.request_sent(target_ip, current_time);
                     log::info!("[NET-ARP] ARP probe sent for {}", target_ip);
                 }

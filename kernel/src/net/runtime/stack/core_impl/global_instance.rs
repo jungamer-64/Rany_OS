@@ -560,7 +560,11 @@ pub async fn timeout_task() {
 }
 
 pub async fn timeout_task_in(runtime: NetRuntimeHandle) {
-    log::info!("[NET] timeout_task started (event-queue mode)");
+    log::info!(
+        "[NET] timeout_task started on CPU {} (event-queue mode)",
+        crate::cpu::try_current_id().unwrap_or(0)
+    );
+    log::info!("[NET][boot] timeout_task stage: registering first 100ms sleep");
     // LOOP_PROOF: mode=event; reason=Timeout task intentionally runs for system lifetime and sleeps between finite timeout-processing passes.;
     loop {
         // 100msごとにタイムアウトを処理

@@ -117,7 +117,7 @@ fn qemu_zero_copy_prereq_postcheck(
     check_batch_timeout(100_000, 1);
     let endpoint_ready = sock.endpoint().map_or(false, |endpoint| {
         let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.state == EndpointState::Connected && inner.recv_buffer.is_empty()
+        inner.state == EndpointState::Connected && inner.recv_payload_bytes() == 0
     });
     let tcb_ready = matches!(
         tcb_table().get(local, remote),
@@ -930,7 +930,7 @@ pub fn test_transmit_from_stack_interface_argument() {
     let dummy = NetIfId(7);
     assert!(!transmit_from_stack(
         Some(dummy),
-        b"hello",
+        crate::net::payload::packet_from_bytes(b"hello").expect("allocate test packet"),
         kernel_api::service::netdev::NetTxMeta::default(),
     ));
 }

@@ -3,7 +3,7 @@
 // ============================================================================
 //! # TCP受信処理 - 3ウェイハンドシェイク・データ受信
 //!
-//! process_tcp_segment, network_event_task
+//! process_tcp_segment_payload_on, network_event_task
 //!
 //! ## 最適化
 //! - **TCP Fast Path**: ESTABLISHED状態で期待通りのseq/ackを受信した場合、
@@ -29,8 +29,10 @@ use super::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
 };
 use super::window_scale::TcpOptionParser;
+use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
+use kernel_api::resource::net::PacketPayload;
 
 // ============================================================================
 // TCP Fast Path Statistics
@@ -253,8 +255,48 @@ fn send_control_segment(local: EndpointAddr, remote: EndpointAddr, builder: TcpS
 }
 
 /// TCPチェックサム検証（IPv4疑似ヘッダ込み）
-fn verify_tcp_checksum(segment: &[u8], src_ip: [u8; 4], dst_ip: [u8; 4]) -> bool {
-    if segment.len() < 20 {
+fn payload_checksum_fold(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
+    let mut sum = initial;
+    let mut trailing = None;
+
+    view.for_each_chunk(|chunk| {
+        let mut index = 0usize;
+        if let Some(prev) = trailing.take() {
+            if let Some((&first, rest)) = chunk.split_first() {
+                sum += u16::from_be_bytes([prev, first]) as u32;
+                index = 1;
+                if rest.is_empty() {
+                    return;
+                }
+            } else {
+                trailing = Some(prev);
+                return;
+            }
+        }
+
+        while index + 1 < chunk.len() {
+            sum += u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32;
+            index += 2;
+        }
+        if index < chunk.len() {
+            trailing = Some(chunk[index]);
+        }
+    });
+
+    if let Some(last) = trailing {
+        sum += u16::from_be_bytes([last, 0]) as u32;
+    }
+
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    sum as u16
+}
+
+fn verify_tcp_checksum(segment: &PacketPayload, src_ip: [u8; 4], dst_ip: [u8; 4]) -> bool {
+    let view = PacketPayloadView::new(segment);
+    if view.total_len() < 20 {
         return false;
     }
 
@@ -266,496 +308,284 @@ fn verify_tcp_checksum(segment: &[u8], src_ip: [u8; 4], dst_ip: [u8; 4]) -> bool
     sum += u16::from_be_bytes([dst_ip[0], dst_ip[1]]) as u32;
     sum += u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32;
     sum += 6u32; // Protocol (TCP)
-    sum += segment.len() as u32;
+    sum += view.total_len() as u32;
 
-    // TCPセグメント本体
-    let mut i = 0;
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while i + 1 < segment.len() {
-        sum += u16::from_be_bytes([segment[i], segment[i + 1]]) as u32;
-        i += 2;
-    }
-    if i < segment.len() {
-        sum += (segment[i] as u32) << 8;
-    }
-
-    // 1の補数
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while sum >> 16 != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    (sum as u16) == 0xFFFF
+    payload_checksum_fold(&view, sum) == 0xFFFF
 }
 
 /// TCPチェックサム検証（IPv6疑似ヘッダ込み）
 fn verify_tcp_checksum_v6(
-    segment: &[u8],
+    segment: &PacketPayload,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
 ) -> bool {
-    if segment.len() < 20 {
+    let view = PacketPayloadView::new(segment);
+    if view.total_len() < 20 {
         return false;
     }
 
-    use crate::net::l3::ipv4::{IpProtocol, data_checksum};
+    use crate::net::l3::ipv4::IpProtocol;
     use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
 
     let pseudo =
-        ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
-    let verify = data_checksum(segment, pseudo);
-    verify == 0
+        ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, view.total_len() as u32);
+    payload_checksum_fold(&view, pseudo) == 0xFFFF
 }
 
-/// IPv6 TCPセグメント受信処理
-///
-/// IPv6パケットから抽出されたTCPセグメントを、エンドポイント層の
-/// 完全なTCP状態マシン（Fast Path、Delayed ACK、OOOキュー等）で処理する。
-/// `process_tcp_segment` (IPv4) と同等の機能をIPv6上で提供する。
-pub fn process_tcp_segment_v6(
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    segment: &[u8],
+#[derive(Clone, Copy)]
+struct ParsedTcpHeader {
+    src_port: u16,
+    dst_port: u16,
+    seq_num: u32,
+    ack_num: u32,
+    flags: u8,
+    window: u16,
+    urgent_ptr: u16,
+}
+
+struct TcpOptionsScratch {
+    len: usize,
+    bytes: [u8; 40],
+}
+
+impl TcpOptionsScratch {
+    fn parse(segment: &PacketPayload) -> Option<(ParsedTcpHeader, Self, PacketPayload)> {
+        let view = PacketPayloadView::new(segment);
+        let header = view.read_array::<20>(0)?;
+        let data_off_flags = u16::from_be_bytes([header[12], header[13]]);
+        let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
+        if data_offset < 20 || data_offset > view.total_len() || data_offset > 60 {
+            return None;
+        }
+
+        let options_len = data_offset.saturating_sub(20);
+        let mut scratch = Self {
+            len: options_len,
+            bytes: [0u8; 40],
+        };
+        if options_len > 0 && view.copy_range(20, &mut scratch.bytes[..options_len]) != options_len
+        {
+            return None;
+        }
+
+        let payload_len = view.total_len().saturating_sub(data_offset);
+        let payload = segment.slice(data_offset, payload_len)?;
+
+        Some((
+            ParsedTcpHeader {
+                src_port: u16::from_be_bytes([header[0], header[1]]),
+                dst_port: u16::from_be_bytes([header[2], header[3]]),
+                seq_num: u32::from_be_bytes([header[4], header[5], header[6], header[7]]),
+                ack_num: u32::from_be_bytes([header[8], header[9], header[10], header[11]]),
+                flags: data_off_flags as u8,
+                window: u16::from_be_bytes([header[14], header[15]]),
+                urgent_ptr: u16::from_be_bytes([header[18], header[19]]),
+            },
+            scratch,
+            payload,
+        ))
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+fn process_parsed_tcp_segment(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    ingress_if_id: NetIfId,
+    header: ParsedTcpHeader,
+    options: &[u8],
+    data_payload: PacketPayload,
 ) {
-    process_tcp_segment_v6_on(None, src_ip, dst_ip, segment);
+    let _ = tcb_table().update(local, remote, |entry| {
+        entry.ingress_if_id = Some(ingress_if_id)
+    });
+
+    if let Some(tcb) = tcb_table().get(local, remote) {
+        tcb_table().update(local, remote, |entry| {
+            entry.update_peer_window(header.window);
+        });
+
+        let payload_len = data_payload.total_len();
+        let mut seg_len = payload_len;
+        if (header.flags & tcp_flags::SYN) != 0 {
+            seg_len += 1;
+        }
+        if (header.flags & tcp_flags::FIN) != 0 {
+            seg_len += 1;
+        }
+
+        if !is_acceptable_sequence(&tcb, header.seq_num, seg_len) {
+            if (header.flags & tcp_flags::RST) == 0 {
+                send_challenge_ack(&tcb);
+            }
+            return;
+        }
+
+        let base_flags = header.flags & !(tcp_flags::CWR | tcp_flags::ECE);
+        if tcb.state == TcpConnectionState::Established
+            && header.seq_num == tcb.rcv_nxt
+            && base_flags == tcp_flags::ACK
+            && payload_len > 0
+            && try_fast_path(&tcb, header.ack_num, options, &data_payload)
+        {
+            FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        if tcb.state == TcpConnectionState::Established
+            && header.seq_num == tcb.rcv_nxt
+            && base_flags == (tcp_flags::ACK | tcp_flags::PSH)
+            && payload_len > 0
+            && try_fast_path(&tcb, header.ack_num, options, &data_payload)
+        {
+            FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        SLOW_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+        process_tcp_with_tcb(
+            tcb,
+            header.flags,
+            header.seq_num,
+            header.ack_num,
+            header.urgent_ptr,
+            options,
+            data_payload,
+        );
+        return;
+    }
+
+    let is_syn = (header.flags & tcp_flags::SYN) != 0;
+    let is_ack = (header.flags & tcp_flags::ACK) != 0;
+    let is_rst = (header.flags & tcp_flags::RST) != 0;
+
+    if is_syn && !is_ack && !is_rst {
+        process_tcp_new_connection(
+            local,
+            remote,
+            ingress_if_id,
+            header.flags,
+            header.seq_num,
+            header.ack_num,
+            header.urgent_ptr,
+            options,
+            data_payload,
+        );
+    } else if is_ack && !is_rst {
+        let client_isn = header.seq_num.wrapping_sub(1);
+        if let Some(mss_idx) =
+            tcb_table().verify_syncookie(local, remote, header.ack_num, client_isn)
+        {
+            log::info!(
+                "[TCP] SYN Cookie verified for {}, creating connection",
+                remote
+            );
+
+            if let Some(socket) =
+                crate::net::l4::endpoint::manager::find_listening_socket(local, Some(ingress_if_id))
+            {
+                let mss = match mss_idx {
+                    2 => 1460,
+                    1 => 536,
+                    _ => 64,
+                };
+
+                let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
+                tcb.snd_una = header.ack_num.wrapping_sub(1);
+                tcb.snd_nxt = header.ack_num;
+                tcb.rcv_nxt = header.seq_num;
+                tcb.state = TcpConnectionState::Established;
+                tcb.mss = mss;
+
+                if let Err(e) = tcb_table().insert(tcb.clone()) {
+                    log::warn!(
+                        "[TCP] Failed to insert TCB after SYN Cookie verification: {}",
+                        e
+                    );
+                    return;
+                }
+
+                if let Some(accepted) = create_accepted_socket(&tcb, ingress_if_id) {
+                    let _ = push_to_accept_queue(local.port(), Some(ingress_if_id), accepted);
+                }
+
+                if !data_payload.is_empty() {
+                    process_tcp_with_tcb(
+                        tcb,
+                        header.flags,
+                        header.seq_num,
+                        header.ack_num,
+                        header.urgent_ptr,
+                        options,
+                        data_payload,
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub fn process_tcp_segment_v6_payload_on(
     if_id: Option<NetIfId>,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    segment: &kernel_api::resource::net::PacketPayload,
+    segment: &PacketPayload,
 ) {
-    let Some(packet) = crate::net::payload::packet_from_payload(segment) else {
+    let Some((header, options, data_payload)) = TcpOptionsScratch::parse(segment) else {
         return;
     };
-    process_tcp_segment_v6_on(if_id, src_ip, dst_ip, packet.data());
-}
 
-pub fn process_tcp_segment_v6_on(
-    if_id: Option<NetIfId>,
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    segment: &[u8],
-) {
-    if segment.len() < 20 {
-        return; // 最小ヘッダサイズ未満
-    }
-
-    // Security: チェックサム検証 (RFC 8200 / RFC 793)
-    // HWチェックサム検証済みの場合はソフトウェア検証をスキップ
-    if !crate::net::runtime::bridge::rx_csum_hw_verified() {
-        if !verify_tcp_checksum_v6(segment, src_ip, dst_ip) {
-            log::warn!("[TCP] IPv6 Checksum verification failed, dropping segment");
-            return;
-        }
-    }
-
-    // TCPヘッダ解析
-    let src_port = u16::from_be_bytes([segment[0], segment[1]]);
-    let dst_port = u16::from_be_bytes([segment[2], segment[3]]);
-    let seq_num = u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]);
-    let ack_num = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
-    let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
-    let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
-    // capture full flag byte (CWR/ECE/URG/ACK/PSH/RST/SYN/FIN)
-    let flags = data_off_flags as u8;
-    let window = u16::from_be_bytes([segment[14], segment[15]]);
-    let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
-
-    if data_offset < 20 || data_offset > segment.len() {
-        log::warn!(
-            "[TCP] Invalid data offset {} in IPv6 segment (len={}), dropping",
-            data_offset,
-            segment.len()
-        );
+    if !crate::net::runtime::bridge::rx_csum_hw_verified()
+        && !verify_tcp_checksum_v6(segment, src_ip, dst_ip)
+    {
+        log::warn!("[TCP] IPv6 Checksum verification failed, dropping segment");
         return;
     }
 
-    let remote = EndpointAddr::new_v6(src_ip.octets(), src_port);
-    let local = EndpointAddr::new_v6(dst_ip.octets(), dst_port);
+    let remote = EndpointAddr::new_v6(src_ip.octets(), header.src_port);
+    let local = EndpointAddr::new_v6(dst_ip.octets(), header.dst_port);
     let ingress_if_id = resolve_ingress_if_id(if_id);
-    let _ = tcb_table().update(local, remote, |entry| {
-        entry.ingress_if_id = Some(ingress_if_id)
-    });
-
-    // TCBを検索
-    if let Some(tcb) = tcb_table().get(local, remote) {
-        // RFC 793: Update peer window from the segment
-        tcb_table().update(local, remote, |entry| {
-            entry.update_peer_window(window);
-        });
-
-        // RFC 793 Step 1: Check sequence number acceptability
-        let payload_len = if segment.len() > data_offset {
-            segment.len() - data_offset
-        } else {
-            0
-        };
-        let mut seg_len = payload_len;
-        if (flags & tcp_flags::SYN) != 0 {
-            seg_len += 1;
-        }
-        if (flags & tcp_flags::FIN) != 0 {
-            seg_len += 1;
-        }
-
-        if !is_acceptable_sequence(&tcb, seq_num, seg_len) {
-            let is_rst = (flags & tcp_flags::RST) != 0;
-            if !is_rst {
-                send_challenge_ack(&tcb);
-            }
-            return;
-        }
-
-        // TCP Fast Path (ESTABLISHED状態の高速受信処理)
-        let base_flags = flags & !(tcp_flags::CWR | tcp_flags::ECE);
-        if tcb.state == TcpConnectionState::Established
-            && seq_num == tcb.rcv_nxt
-            && base_flags == tcp_flags::ACK
-            && payload_len > 0
-        {
-            if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
-                FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        }
-        // PSH|ACK もファストパス対象
-        if tcb.state == TcpConnectionState::Established
-            && seq_num == tcb.rcv_nxt
-            && (base_flags == (tcp_flags::ACK | tcp_flags::PSH))
-            && payload_len > 0
-        {
-            if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
-                FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        }
-
-        SLOW_PATH_HITS.fetch_add(1, Ordering::Relaxed);
-        process_tcp_with_tcb(
-            tcb,
-            flags,
-            seq_num,
-            ack_num,
-            urgent_ptr,
-            segment,
-            data_offset,
-        );
-    } else {
-        // TCB が見つからない場合:
-        // 1. 新規接続要求 (SYN)
-        // 2. SYN Cookie の検証 (ACK)
-
-        let is_syn = (flags & tcp_flags::SYN) != 0;
-        let is_ack = (flags & tcp_flags::ACK) != 0;
-        let is_rst = (flags & tcp_flags::RST) != 0;
-
-        if is_syn && !is_ack && !is_rst {
-            // 新規接続要求の可能性（LISTENソケット検索）
-            process_tcp_new_connection(
-                local,
-                remote,
-                ingress_if_id,
-                flags,
-                seq_num,
-                ack_num,
-                urgent_ptr,
-                segment,
-                data_offset,
-            );
-        } else if is_ack && !is_rst {
-            // SYN Cookie の検証を試みる
-            let client_isn = seq_num.wrapping_sub(1);
-            if let Some(mss_idx) = tcb_table().verify_syncookie(local, remote, ack_num, client_isn)
-            {
-                log::info!(
-                    "[TCP] SYN Cookie verified for {}, creating connection",
-                    remote
-                );
-
-                // 対応する LISTEN ソケットを探す
-                if let Some(socket) = crate::net::l4::endpoint::manager::find_listening_socket(
-                    local,
-                    Some(ingress_if_id),
-                ) {
-                    let mss = match mss_idx {
-                        2 => 1460,
-                        1 => 536,
-                        _ => 64,
-                    };
-
-                    let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
-                    tcb.snd_una = ack_num.wrapping_sub(1); // Cookie 値
-                    tcb.snd_nxt = ack_num;
-                    tcb.rcv_nxt = seq_num;
-                    tcb.state = TcpConnectionState::Established;
-                    tcb.mss = mss;
-
-                    // TCB を挿入
-                    if let Err(e) = tcb_table().insert(tcb.clone()) {
-                        log::warn!(
-                            "[TCP] Failed to insert TCB after SYN Cookie verification: {}",
-                            e
-                        );
-                        return;
-                    }
-
-                    // 接続完了イベントを通知
-                    if let Some(accepted) = create_accepted_socket(&tcb, ingress_if_id) {
-                        let _ = push_to_accept_queue(local.port(), Some(ingress_if_id), accepted);
-                    }
-
-                    // ACK 後のデータが含まれている場合は処理を継続
-                    let payload_len = if segment.len() > data_offset {
-                        segment.len() - data_offset
-                    } else {
-                        0
-                    };
-                    if payload_len > 0 {
-                        process_tcp_with_tcb(
-                            tcb,
-                            flags,
-                            seq_num,
-                            ack_num,
-                            urgent_ptr,
-                            segment,
-                            data_offset,
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// TCPセグメント受信処理
-/// プロトコルスタック（ipv4.rs）から呼ばれる
-pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
-    process_tcp_segment_on(None, src_ip, dst_ip, segment);
+    process_parsed_tcp_segment(
+        local,
+        remote,
+        ingress_if_id,
+        header,
+        options.as_slice(),
+        data_payload,
+    );
 }
 
 pub fn process_tcp_segment_payload_on(
     if_id: Option<NetIfId>,
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
-    segment: &kernel_api::resource::net::PacketPayload,
+    segment: &PacketPayload,
 ) {
-    let Some(packet) = crate::net::payload::packet_from_payload(segment) else {
+    let Some((header, options, data_payload)) = TcpOptionsScratch::parse(segment) else {
         return;
     };
-    process_tcp_segment_on(if_id, src_ip, dst_ip, packet.data());
-}
 
-pub fn process_tcp_segment_on(
-    if_id: Option<NetIfId>,
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
-    segment: &[u8],
-) {
-    if segment.len() < 20 {
-        return; // 最小ヘッダサイズ未満
-    }
-
-    // Security: チェックサム検証 (RFC 793)
-    // HWチェックサム検証済みの場合はソフトウェア検証をスキップ
-    if !crate::net::runtime::bridge::rx_csum_hw_verified() {
-        if !verify_tcp_checksum(segment, src_ip, dst_ip) {
-            log::warn!("[TCP] Checksum verification failed, dropping segment");
-            return;
-        }
-    }
-
-    // TCPヘッダ解析
-    let src_port = u16::from_be_bytes([segment[0], segment[1]]);
-    let dst_port = u16::from_be_bytes([segment[2], segment[3]]);
-    let seq_num = u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]);
-    let ack_num = u32::from_be_bytes([segment[8], segment[9], segment[10], segment[11]]);
-    let data_off_flags = u16::from_be_bytes([segment[12], segment[13]]);
-    let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
-
-    // Security: Check data offset validity (RFC 793)
-    if data_offset < 20 || data_offset > segment.len() {
-        log::warn!(
-            "[TCP] Invalid data offset {} in IPv4 segment (len={}), dropping",
-            data_offset,
-            segment.len()
-        );
+    if !crate::net::runtime::bridge::rx_csum_hw_verified()
+        && !verify_tcp_checksum(segment, src_ip, dst_ip)
+    {
+        log::warn!("[TCP] Checksum verification failed, dropping segment");
         return;
     }
 
-    // grab full low byte (includes CWR/ECE) rather than truncating to 6 bits
-    let flags = data_off_flags as u8;
-    let window = u16::from_be_bytes([segment[14], segment[15]]);
-    let urgent_ptr = u16::from_be_bytes([segment[18], segment[19]]);
-
-    let remote = EndpointAddr::new(src_ip, src_port);
-    let local = EndpointAddr::new(dst_ip, dst_port);
+    let remote = EndpointAddr::new(src_ip, header.src_port);
+    let local = EndpointAddr::new(dst_ip, header.dst_port);
     let ingress_if_id = resolve_ingress_if_id(if_id);
-    let _ = tcb_table().update(local, remote, |entry| {
-        entry.ingress_if_id = Some(ingress_if_id)
-    });
-
-    // TCBを検索
-    if let Some(tcb) = tcb_table().get(local, remote) {
-        // RFC 793: Update peer window from the segment
-        tcb_table().update(local, remote, |entry| {
-            entry.update_peer_window(window);
-        });
-
-        // RFC 793 Step 1: Check sequence number acceptability
-        let payload_len = if segment.len() > data_offset {
-            segment.len() - data_offset
-        } else {
-            0
-        };
-        let mut seg_len = payload_len;
-        if (flags & tcp_flags::SYN) != 0 {
-            seg_len += 1;
-        }
-        if (flags & tcp_flags::FIN) != 0 {
-            seg_len += 1;
-        }
-
-        if !is_acceptable_sequence(&tcb, seq_num, seg_len) {
-            let is_rst = (flags & tcp_flags::RST) != 0;
-            if !is_rst {
-                send_challenge_ack(&tcb);
-            }
-            return;
-        }
-
-        // =====================================================================
-        // TCP Fast Path (Linux tcp_rcv_established fast path 相当)
-        // =====================================================================
-        // ESTABLISHED状態で以下すべてを満たすとき、フルプロトコル処理をスキップ:
-        //   1. 期待通りのシーケンス番号 (seq == rcv_nxt)
-        //   2. ACKフラグのみ (FIN/SYN/RST/URG なし)
-        //   3. データペイロードが存在する
-        //   4. OOOキューが空（順序通り受信中）
-        //
-        // これにより、状態マシン遷移チェック、TCPオプション再解析等を省略し、
-        // 直接データを受信バッファへ投入する。
-        // compute base_flags with ECN bits masked off so that fast path still
-        // applies even if CWR/ECE are present (they shouldn't affect sequencing).
-        let base_flags = flags & !(tcp_flags::ECE | tcp_flags::CWR);
-        if tcb.state == TcpConnectionState::Established
-            && seq_num == tcb.rcv_nxt
-            && base_flags == tcp_flags::ACK  // ACKのみ (PSH|ACK は 0x18 なので除外)
-            && payload_len > 0
-        {
-            if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
-                FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        }
-        // PSH|ACK もファストパス対象 (最も一般的なデータパケット)
-        if tcb.state == TcpConnectionState::Established
-            && seq_num == tcb.rcv_nxt
-            && (flags == (tcp_flags::ACK | tcp_flags::PSH))
-            && payload_len > 0
-        {
-            if try_fast_path(&tcb, ack_num, segment, data_offset, payload_len) {
-                FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        }
-
-        SLOW_PATH_HITS.fetch_add(1, Ordering::Relaxed);
-        process_tcp_with_tcb(
-            tcb,
-            flags,
-            seq_num,
-            ack_num,
-            urgent_ptr,
-            segment,
-            data_offset,
-        );
-    } else {
-        // TCB が見つからない場合:
-        // 1. 新規接続要求 (SYN)
-        // 2. SYN Cookie の検証 (ACK)
-
-        let is_syn = (flags & tcp_flags::SYN) != 0;
-        let is_ack = (flags & tcp_flags::ACK) != 0;
-        let is_rst = (flags & tcp_flags::RST) != 0;
-
-        if is_syn && !is_ack && !is_rst {
-            // 新規接続要求の可能性（LISTENソケット検索）
-            process_tcp_new_connection(
-                local,
-                remote,
-                ingress_if_id,
-                flags,
-                seq_num,
-                ack_num,
-                urgent_ptr,
-                segment,
-                data_offset,
-            );
-        } else if is_ack && !is_rst {
-            // SYN Cookie の検証を試みる
-            let client_isn = seq_num.wrapping_sub(1);
-            if let Some(mss_idx) = tcb_table().verify_syncookie(local, remote, ack_num, client_isn)
-            {
-                log::info!(
-                    "[TCP] SYN Cookie verified for {}, creating connection",
-                    remote
-                );
-
-                // 対応する LISTEN ソケットを探す
-                if let Some(socket) = crate::net::l4::endpoint::manager::find_listening_socket(
-                    local,
-                    Some(ingress_if_id),
-                ) {
-                    let mss = match mss_idx {
-                        2 => 1460,
-                        1 => 536,
-                        _ => 64,
-                    };
-
-                    let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
-                    tcb.snd_una = ack_num.wrapping_sub(1); // Cookie 値
-                    tcb.snd_nxt = ack_num;
-                    tcb.rcv_nxt = seq_num;
-                    tcb.state = TcpConnectionState::Established;
-                    tcb.mss = mss;
-
-                    // TCB を挿入
-                    if let Err(e) = tcb_table().insert(tcb.clone()) {
-                        log::warn!(
-                            "[TCP] Failed to insert TCB after SYN Cookie verification: {}",
-                            e
-                        );
-                        return;
-                    }
-
-                    // 接続完了イベントを通知
-                    if let Some(accepted) = create_accepted_socket(&tcb, ingress_if_id) {
-                        let _ = push_to_accept_queue(local.port(), Some(ingress_if_id), accepted);
-                    }
-
-                    // ACK 後のデータが含まれている場合は処理を継続
-                    let payload_len = if segment.len() > data_offset {
-                        segment.len() - data_offset
-                    } else {
-                        0
-                    };
-                    if payload_len > 0 {
-                        process_tcp_with_tcb(
-                            tcb,
-                            flags,
-                            seq_num,
-                            ack_num,
-                            urgent_ptr,
-                            segment,
-                            data_offset,
-                        );
-                    }
-                }
-            }
-        }
-    }
+    process_parsed_tcp_segment(
+        local,
+        remote,
+        ingress_if_id,
+        header,
+        options.as_slice(),
+        data_payload,
+    );
 }
 
 /// TCP Fast Path - ESTABLISHED状態の高速受信処理
@@ -771,10 +601,14 @@ pub fn process_tcp_segment_on(
 fn try_fast_path(
     tcb: &TcpControlBlockEntry,
     ack_num: u32,
-    segment: &[u8],
-    data_offset: usize,
-    payload_len: usize,
+    options: &[u8],
+    data_payload: &PacketPayload,
 ) -> bool {
+    let payload_len = data_payload.total_len();
+    if payload_len == 0 {
+        return false;
+    }
+
     // ACK番号の簡易検証: snd_una <= ack_num <= snd_nxt
     let ack_diff_una = ack_num.wrapping_sub(tcb.snd_una) as i32;
     let ack_diff_nxt = tcb.snd_nxt.wrapping_sub(ack_num) as i32;
@@ -787,7 +621,6 @@ fn try_fast_path(
         return false;
     }
 
-    let data = &segment[data_offset..data_offset + payload_len];
     let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
 
     // ACK処理 (新規ACKならカウンタ更新)
@@ -803,9 +636,7 @@ fn try_fast_path(
     // データをソケットの受信バッファに追加
     let mut pushed = 0;
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        if let Some(payload) = crate::net::payload::payload_from_bytes(data) {
-            pushed = socket.push_payload(payload);
-        }
+        pushed = socket.push_payload(data_payload.clone());
     }
 
     // もしバッファが満杯で全データを受け入れられなかった場合は
@@ -825,8 +656,8 @@ fn try_fast_path(
         entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
 
         // RFC 7323: タイムスタンプ更新 (Fast Path)
-        if entry.ts_enabled && data_offset > 20 {
-            let mut parser = TcpOptionParser::new(&segment[20..data_offset]);
+        if entry.ts_enabled && !options.is_empty() {
+            let mut parser = TcpOptionParser::new(options);
             if let Some((peer_ts_val, _)) = parser.find_timestamps() {
                 entry.ts_ecr = peer_ts_val;
                 entry.ts_val = generate_tcp_timestamp();
@@ -930,19 +761,18 @@ fn handle_syn_sent_segment(
     flags: u8,
     seq_num: u32,
     ack_num: u32,
-    segment: &[u8],
-    data_offset: usize,
+    options: &[u8],
 ) {
     let is_syn = (flags & tcp_flags::SYN) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
     let is_rst = (flags & tcp_flags::RST) != 0;
 
     if is_syn && is_ack {
-        handle_syn_ack_received(tcb, seq_num, ack_num, segment, data_offset);
+        handle_syn_ack_received(tcb, seq_num, ack_num, options);
     } else if is_syn {
         // RFC 793: Simultaneous Open (双方からSYNを送信した場合)
         // SYN-SENT -> SYN-RECEIVED 遷移し、SYN-ACKを返送する。
-        handle_simultaneous_syn_received(tcb, seq_num, segment, data_offset);
+        handle_simultaneous_syn_received(tcb, seq_num, options);
     } else if is_rst {
         handle_rst_received(tcb, seq_num);
     } else if is_ack {
@@ -952,15 +782,9 @@ fn handle_syn_sent_segment(
 }
 
 /// 同時オープン(Simultaneous Open)時のSYN受信処理
-fn handle_simultaneous_syn_received(
-    tcb: TcpControlBlockEntry,
-    seq_num: u32,
-    segment: &[u8],
-    data_offset: usize,
-) {
+fn handle_simultaneous_syn_received(tcb: TcpControlBlockEntry, seq_num: u32, options: &[u8]) {
     // TCPオプション解析
-    let (peer_ts, sack_permitted) = if data_offset > 20 && data_offset <= segment.len() {
-        let options = &segment[20..data_offset];
+    let (peer_ts, sack_permitted) = if !options.is_empty() {
         let mut parser = TcpOptionParser::new(options);
         (parser.find_timestamps(), parser.find_sack_permitted())
     } else {
@@ -1014,19 +838,18 @@ fn handle_synchronized_segment(
     seq_num: u32,
     ack_num: u32,
     urgent_ptr: u16,
-    segment: &[u8],
-    data_offset: usize,
+    options: &[u8],
+    data_payload: PacketPayload,
 ) {
     let is_rst = (flags & tcp_flags::RST) != 0;
     let is_syn = (flags & tcp_flags::SYN) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
     let is_fin = (flags & tcp_flags::FIN) != 0;
     let is_urg = (flags & tcp_flags::URG) != 0;
-    let payload_len = segment.len().saturating_sub(data_offset);
+    let payload_len = data_payload.total_len();
 
     // 0. Parse TCP Options (SACK / Timestamps)
-    if data_offset > 20 && data_offset <= segment.len() {
-        let options = &segment[20..data_offset];
+    if !options.is_empty() {
         let mut parser = TcpOptionParser::new(options);
 
         // 受信SACKオプション（送信側の再送キューに反映）
@@ -1115,12 +938,7 @@ fn handle_synchronized_segment(
 
     // 5. Process segment data and FIN (RFC 793)
     if payload_len > 0 || is_fin {
-        handle_data_received_with_delayed_ack(
-            tcb.clone(),
-            seq_num,
-            &segment[data_offset..],
-            is_fin,
-        );
+        handle_data_received_with_delayed_ack(tcb.clone(), seq_num, data_payload, is_fin);
     }
 }
 
@@ -1128,10 +946,10 @@ fn handle_synchronized_segment(
 fn handle_data_received_with_delayed_ack(
     tcb: TcpControlBlockEntry,
     mut seq_num: u32,
-    mut data: &[u8],
+    mut data_payload: PacketPayload,
     fin: bool,
 ) {
-    let mut payload_len = data.len() as u32;
+    let mut payload_len = data_payload.total_len() as u32;
 
     // --- PARTIAL OVERLAP HANDLING (RFC 793) ---
     // If the segment starts before rcv_nxt but contains new data after it,
@@ -1144,7 +962,7 @@ fn handle_data_received_with_delayed_ack(
             if fin && skip == payload_len as usize {
                 seq_num = tcb.rcv_nxt;
                 payload_len = 0;
-                data = &[];
+                data_payload = PacketPayload::default();
             } else {
                 // Entirely old, just send ACK
                 send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
@@ -1152,7 +970,10 @@ fn handle_data_received_with_delayed_ack(
             }
         } else {
             // Trim prefix
-            data = &data[skip..];
+            if data_payload.consume_prefix(skip) != skip {
+                send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
+                return;
+            }
             payload_len -= skip as u32;
             seq_num = tcb.rcv_nxt;
         }
@@ -1160,7 +981,7 @@ fn handle_data_received_with_delayed_ack(
 
     if seq_num != tcb.rcv_nxt {
         // Out-of-order: OOOキューに追加して即座に重複ACKを送信 (RFC 5681)
-        ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data, fin);
+        ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data_payload, fin);
         send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
         return;
     }
@@ -1171,9 +992,7 @@ fn handle_data_received_with_delayed_ack(
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
         if payload_len > 0 {
-            let pushed = crate::net::payload::payload_from_bytes(data)
-                .map(|payload| socket.push_payload(payload))
-                .unwrap_or(0);
+            let pushed = socket.push_payload(data_payload.clone());
             new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
 
             // RFC 1122: If some data could not be accepted, we MUST NOT advance
@@ -1192,12 +1011,12 @@ fn handle_data_received_with_delayed_ack(
         }
 
         // OOOキューから連続セグメントをドレインしてバッファに追加
-        let (drained_nxt, ooo_fin) =
-            ooo_queue::drain_ooo_contiguous(tcb.local, tcb.remote, new_rcv_nxt, |_, seg_data| {
-                if let Some(payload) = crate::net::payload::payload_from_bytes(seg_data) {
-                    let _ = socket.push_payload(payload);
-                }
-            });
+        let (drained_nxt, ooo_fin) = ooo_queue::drain_ooo_contiguous(
+            tcb.local,
+            tcb.remote,
+            new_rcv_nxt,
+            |_, seg_payload| socket.push_payload(seg_payload),
+        );
         new_rcv_nxt = drained_nxt;
         if ooo_fin || (payload_len == 0 && fin) {
             fin_encountered = true;
@@ -1246,14 +1065,13 @@ fn process_tcp_with_tcb(
     seq_num: u32,
     ack_num: u32,
     urgent_ptr: u16,
-    segment: &[u8],
-    data_offset: usize,
+    options: &[u8],
+    data_payload: PacketPayload,
 ) {
-    let payload_len = segment.len().saturating_sub(data_offset);
+    let payload_len = data_payload.total_len();
 
     // RFC 7323 Section 5.8: PAWS (Protection Against Wrapped Sequence numbers)
-    if tcb.ts_enabled {
-        let options = &segment[20..data_offset];
+    if tcb.ts_enabled && !options.is_empty() {
         let mut parser = TcpOptionParser::new(options);
         if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
             if (flags & tcp_flags::RST) == 0 && peer_ts_val < tcb.ts_ecr {
@@ -1293,7 +1111,7 @@ fn process_tcp_with_tcb(
 
     match tcb.state {
         TcpConnectionState::SynSent => {
-            handle_syn_sent_segment(tcb, flags, seq_num, ack_num, segment, data_offset);
+            handle_syn_sent_segment(tcb, flags, seq_num, ack_num, options);
         }
         TcpConnectionState::SynReceived => {
             // RFC 793: If ACK bit is set, check if acceptable and transition to Established
@@ -1317,8 +1135,8 @@ fn process_tcp_with_tcb(
                         seq_num,
                         ack_num,
                         urgent_ptr,
-                        segment,
-                        data_offset,
+                        options,
+                        data_payload,
                     );
                 } else if (flags & tcp_flags::RST) == 0 {
                     send_rst_for_unexpected_ack(&tcb, ack_num);
@@ -1340,8 +1158,8 @@ fn process_tcp_with_tcb(
                 seq_num,
                 ack_num,
                 urgent_ptr,
-                segment,
-                data_offset,
+                options,
+                data_payload,
             );
         }
         _ => {}
@@ -1474,13 +1292,7 @@ pub fn handle_icmpv6_error(
     }
 }
 /// SYN-ACK受信処理（クライアント側3ウェイハンドシェイク）
-fn handle_syn_ack_received(
-    tcb: TcpControlBlockEntry,
-    seq_num: u32,
-    ack_num: u32,
-    segment: &[u8],
-    data_offset: usize,
-) {
+fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32, options: &[u8]) {
     // ACK番号を検証
     if ack_num != tcb.snd_nxt {
         log::info!(
@@ -1492,19 +1304,17 @@ fn handle_syn_ack_received(
     }
 
     // SYN-ACKのTCPオプションを解析（TSopt / SACK-Permitted / MSS / WSCALE検出）
-    let (peer_ts, sack_permitted, peer_mss, peer_ws) =
-        if data_offset > 20 && data_offset <= segment.len() {
-            let options = &segment[20..data_offset];
-            let mut parser = TcpOptionParser::new(options);
-            (
-                parser.find_timestamps(),
-                parser.find_sack_permitted(),
-                parser.find_mss(),
-                parser.find_window_scale(),
-            )
-        } else {
-            (None, false, None, None)
-        };
+    let (peer_ts, sack_permitted, peer_mss, peer_ws) = if !options.is_empty() {
+        let mut parser = TcpOptionParser::new(options);
+        (
+            parser.find_timestamps(),
+            parser.find_sack_permitted(),
+            parser.find_mss(),
+            parser.find_window_scale(),
+        )
+    } else {
+        (None, false, None, None)
+    };
 
     // TCB更新
     let updated = tcb_table().update(tcb.local, tcb.remote, |entry| {
@@ -1594,8 +1404,8 @@ fn process_tcp_new_connection(
     seq_num: u32,
     ack_num: u32,
     _urgent_ptr: u16,
-    segment: &[u8],
-    data_offset: usize,
+    options: &[u8],
+    data_payload: PacketPayload,
 ) {
     let is_syn = (flags & tcp_flags::SYN) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
@@ -1658,11 +1468,7 @@ fn process_tcp_new_connection(
             // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
             let is_syn = (flags & tcp_flags::SYN) != 0;
             let is_fin = (flags & tcp_flags::FIN) != 0;
-            let payload_len = if segment.len() > data_offset {
-                segment.len() - data_offset
-            } else {
-                0
-            };
+            let payload_len = data_payload.total_len();
             let seg_len = (if is_syn { 1 } else { 0 }) + (if is_fin { 1 } else { 0 });
             let ack = seq_num
                 .wrapping_add(seg_len as u32)
@@ -1684,19 +1490,17 @@ fn process_tcp_new_connection(
     drop(inner);
 
     // TCPオプション解析 (Timestamps / SACK Permitted / MSS / WSCALE)
-    let (peer_ts, sack_permitted, peer_mss, peer_ws) =
-        if data_offset > 20 && data_offset <= segment.len() {
-            let options = &segment[20..data_offset];
-            let mut parser = TcpOptionParser::new(options);
-            (
-                parser.find_timestamps(),
-                parser.find_sack_permitted(),
-                parser.find_mss(),
-                parser.find_window_scale(),
-            )
-        } else {
-            (None, false, None, None)
-        };
+    let (peer_ts, sack_permitted, peer_mss, peer_ws) = if !options.is_empty() {
+        let mut parser = TcpOptionParser::new(options);
+        (
+            parser.find_timestamps(),
+            parser.find_sack_permitted(),
+            parser.find_mss(),
+            parser.find_window_scale(),
+        )
+    } else {
+        (None, false, None, None)
+    };
 
     // TCB作成
     // Security: SYN Flood 対策として SYN Cookie を使用
@@ -2152,7 +1956,11 @@ pub async fn network_event_task() {
 }
 
 pub async fn network_event_task_in(runtime: NetRuntimeHandle) {
-    log::info!("[NET] network_event_task started (fully async)");
+    log::info!(
+        "[NET] network_event_task started on CPU {} (fully async)",
+        crate::cpu::try_current_id().unwrap_or(0)
+    );
+    log::info!("[NET][boot] network_event_task stage: awaiting first event batch");
     super::event::mark_event_task_running_in(runtime);
 
     /// 1回のバッチで処理するイベントの最大数

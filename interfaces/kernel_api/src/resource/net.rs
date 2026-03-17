@@ -26,10 +26,6 @@ pub fn packet_from_bytes(data: &[u8]) -> KapiResult<PacketRef> {
     Ok(packet)
 }
 
-pub fn payload_from_bytes(data: &[u8]) -> KapiResult<PacketPayload> {
-    packet_from_bytes(data).map(PacketPayload::single)
-}
-
 fn tcp_error_from_kapi(err: KapiError) -> TcpError {
     match err {
         KapiError::PermissionDenied => TcpError::PermissionDenied,
@@ -171,8 +167,8 @@ impl AsyncWrite for TcpStream {
         }
 
         if self.pending_send.is_none() {
-            let payload = match payload_from_bytes(buf) {
-                Ok(payload) => payload,
+            let payload = match packet_from_bytes(buf) {
+                Ok(packet) => PacketPayload::single(packet),
                 Err(err) => return Poll::Ready(Err(tcp_error_from_kapi(err))),
             };
             self.pending_send = Some(kernel::instance().net_tcp_stream_send_payload(

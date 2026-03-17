@@ -31,12 +31,20 @@ pub fn start_once() {
     }
 
     log::info!("[HOST-HTTP] scheduling host HTTP service on 0.0.0.0:80");
-    task::spawn_task(Task::new(async {
+    crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async {
+        log::info!(
+            "[HOST-HTTP] net poller running on CPU {}",
+            crate::cpu::try_current_id().unwrap_or(0)
+        );
         run_net_poller().await;
-    }));
-    task::spawn_task(Task::new(async {
+    });
+    crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async {
+        log::info!(
+            "[HOST-HTTP] supervisor running on CPU {}",
+            crate::cpu::try_current_id().unwrap_or(0)
+        );
         run_service_supervisor().await;
-    }));
+    });
 }
 
 /// 【設計書準拠】適応的ポーリングをHTTPサービスに適用

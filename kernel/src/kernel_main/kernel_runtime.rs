@@ -5,7 +5,7 @@
 //!! カーネルの初期化後、Executor上で動作するタスクをスポーンする関数や、システム統計を表示する関数などを定義する。
 use super::*;
 use alloc::sync::Arc;
-use core::future::poll_fn;
+use core::future::{Future, poll_fn};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use core::task::Poll;
 use log::debug;
@@ -159,16 +159,11 @@ impl AsyncBootCoordinator {
 }
 
 fn async_boot_stage_target_cpu(stage: AsyncBootStage, active_cpus: usize) -> usize {
-    let max_cpu = active_cpus.saturating_sub(1);
-    let preferred = match stage {
-        AsyncBootStage::Platform => 0,
-        AsyncBootStage::Graphics => 1,
-        AsyncBootStage::CoreServices => 2,
-        AsyncBootStage::Driver => 3,
-        AsyncBootStage::PostDriver => 3,
-        AsyncBootStage::Finalizer => 0,
-    };
-    preferred.min(max_cpu)
+    let _ = stage;
+    let _ = active_cpus;
+    // Keep early async boot orchestration on the bootstrap CPU until runtime
+    // interrupts and cross-CPU TLB shootdowns are known-good.
+    0
 }
 
 fn log_executor_interrupt_policy(allow_interrupts: bool) {
@@ -193,13 +188,17 @@ fn log_executor_interrupt_policy(allow_interrupts: bool) {
 
 async fn run_platform_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
     coordinator.mark_stage_running(AsyncBootStage::Platform);
+    info!(target: "init", "[async-boot] Platform stage starting on cpu={}", crate::cpu::current_id());
     phase_platform_and_security_base(&context);
+    info!(target: "init", "[async-boot] Platform stage completed on cpu={}", crate::cpu::current_id());
     coordinator.mark_stage_complete(AsyncBootStage::Platform);
 }
 
 async fn run_graphics_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
     coordinator.mark_stage_running(AsyncBootStage::Graphics);
+    info!(target: "init", "[async-boot] Graphics stage starting on cpu={}", crate::cpu::current_id());
     coordinator.set_graphics_console_ready(phase_graphics_console(&context));
+    info!(target: "init", "[async-boot] Graphics stage completed on cpu={}", crate::cpu::current_id());
     coordinator.mark_stage_complete(AsyncBootStage::Graphics);
 }
 
@@ -208,35 +207,46 @@ async fn run_core_services_stage(
     coordinator: Arc<AsyncBootCoordinator>,
 ) {
     coordinator.mark_stage_running(AsyncBootStage::CoreServices);
+    info!(target: "init", "[async-boot] CoreServices stage waiting for Platform on cpu={}", crate::cpu::current_id());
     coordinator.wait_for_stage(AsyncBootStage::Platform).await;
+    info!(target: "init", "[async-boot] CoreServices stage starting on cpu={}", crate::cpu::current_id());
     phase_core_services_base(&context);
+    info!(target: "init", "[async-boot] CoreServices stage completed on cpu={}", crate::cpu::current_id());
     coordinator.mark_stage_complete(AsyncBootStage::CoreServices);
 }
 
 async fn run_driver_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
     coordinator.mark_stage_running(AsyncBootStage::Driver);
+    info!(target: "init", "[async-boot] Driver stage waiting for CoreServices on cpu={}", crate::cpu::current_id());
     coordinator
         .wait_for_stage(AsyncBootStage::CoreServices)
         .await;
+    info!(target: "init", "[async-boot] Driver stage starting on cpu={}", crate::cpu::current_id());
     coordinator.set_integration_ready(phase_driver_bringup());
+    info!(target: "init", "[async-boot] Driver stage completed on cpu={}", crate::cpu::current_id());
     coordinator.mark_stage_complete(AsyncBootStage::Driver);
     let _ = context;
 }
 
 async fn run_post_driver_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
     coordinator.mark_stage_running(AsyncBootStage::PostDriver);
+    info!(target: "init", "[async-boot] PostDriver stage waiting for Driver on cpu={}", crate::cpu::current_id());
     coordinator.wait_for_stage(AsyncBootStage::Driver).await;
+    info!(target: "init", "[async-boot] PostDriver stage starting on cpu={}", crate::cpu::current_id());
     phase_post_driver_services(&context);
+    info!(target: "init", "[async-boot] PostDriver stage completed; publishing completion on cpu={}", crate::cpu::current_id());
     coordinator.mark_stage_complete(AsyncBootStage::PostDriver);
 }
 
 fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoordinator) {
-    debug!(
+    info!(
         target: "init",
         "Finalizing async boot after early executor handoff"
     );
-
-    io::io_scheduler::init_io_scheduler();
+    info!(
+        target: "init",
+        "Deferring I/O scheduler initialization until runtime tasks are active"
+    );
 
     // Aggregation is performed in the executor idle loop; explicit aggregator
     // spawn is not required in the normal runtime path.
@@ -317,8 +327,11 @@ fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoor
 
 async fn run_finalizer_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
     coordinator.mark_stage_running(AsyncBootStage::Finalizer);
+    info!(target: "init", "[async-boot] Finalizer stage waiting for Graphics on cpu={}", crate::cpu::current_id());
     coordinator.wait_for_stage(AsyncBootStage::Graphics).await;
+    info!(target: "init", "[async-boot] Finalizer stage waiting for PostDriver on cpu={}", crate::cpu::current_id());
     coordinator.wait_for_stage(AsyncBootStage::PostDriver).await;
+    info!(target: "init", "[async-boot] Finalizer stage starting on cpu={}", crate::cpu::current_id());
     finalize_runtime_boot(context, &coordinator);
     coordinator.mark_stage_complete(AsyncBootStage::Finalizer);
 }
@@ -757,15 +770,53 @@ fn spawn_shell_tasks(shell_mode: crate::shell::session::ShellLaunchMode) {
     }
 }
 
+fn spawn_early_network_task<F>(label: &'static str, priority: crate::task::Priority, future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    info!(
+        target: "net_boot",
+        "Scheduling {} on bootstrap CPU0 with priority {:?}",
+        label,
+        priority
+    );
+    crate::task::spawn_on_cpu_with_priority(0, priority, async move {
+        info!(
+            target: "net_boot",
+            "{} running on CPU {}",
+            label,
+            crate::cpu::try_current_id().unwrap_or(0)
+        );
+        future.await;
+    });
+}
+
 pub(crate) fn spawn_core_runtime_tasks() {
-    use task::Task;
+    spawn_early_network_task(
+        "io scheduler initialization task",
+        crate::task::Priority::Normal,
+        async {
+            info!(
+                target: "init",
+                "Initializing I/O scheduler on CPU {}",
+                crate::cpu::try_current_id().unwrap_or(0)
+            );
+            io::io_scheduler::init_io_scheduler();
+            info!(target: "init", "I/O scheduler initialized");
+        },
+    );
 
     // === ネットワークブートストラップ（完全非同期） ===
     // VirtIO-Netドライバ登録 → DHCP → ping をExecutor上で非同期実行
-    task::spawn_task(Task::new(network_bootstrap_task()));
-    info!(target: "init", "Network bootstrap task spawned (async)");
+    spawn_early_network_task(
+        "network bootstrap task",
+        crate::task::Priority::High,
+        network_bootstrap_task(),
+    );
+    info!(target: "init", "Network bootstrap task queued on CPU0");
 
     // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
+    info!(target: "net_boot", "Scheduling host HTTP service on bootstrap CPU0");
     crate::net::services::http::server::start_once();
 
     // [PR-COMPLIANCE] ICMP Responder activation log
@@ -773,14 +824,24 @@ pub(crate) fn spawn_core_runtime_tasks() {
 
     // Initialize network event handler and spawn the background task for async networking
     crate::net::l4::endpoint::handler::init_network_event_handler();
-    task::spawn_task(crate::task::Task::new(
+    spawn_early_network_task(
+        "network event task",
+        crate::task::Priority::High,
         crate::net::l4::endpoint::tcp_rx::network_event_task(),
-    ));
+    );
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)
-    task::spawn_task(crate::task::Task::new(
+    spawn_early_network_task(
+        "network timeout task",
+        crate::task::Priority::High,
         crate::net::runtime::stack::timeout_task(),
-    ));
+    );
+
+    info!(
+        target: "net_boot",
+        "Starting deferred DHCP/DNS/mDNS background service tasks on bootstrap CPU0"
+    );
+    crate::net::api::dhcp::start_background_service_tasks();
 }
 
 pub(crate) fn spawn_demo_runtime_tasks() {
@@ -1081,15 +1142,9 @@ mod tests {
     fn async_boot_stage_target_cpu_falls_back_to_bsp_on_low_core_counts() {
         assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Platform, 1), 0);
         assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Graphics, 1), 0);
-        assert_eq!(
-            async_boot_stage_target_cpu(AsyncBootStage::CoreServices, 2),
-            1
-        );
-        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Driver, 3), 2);
-        assert_eq!(
-            async_boot_stage_target_cpu(AsyncBootStage::PostDriver, 2),
-            1
-        );
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::CoreServices, 2), 0);
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Driver, 3), 0);
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::PostDriver, 2), 0);
         assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Finalizer, 4), 0);
     }
 

@@ -535,6 +535,39 @@ static mut TLB_FLUSH_PAYLOAD: TlbFlushIpiPayload = TlbFlushIpiPayload {
 /// IPIが完了したCPUのカウント
 static TLB_FLUSH_DONE_COUNT: AtomicUsize = AtomicUsize::new(0);
 static TLB_SEND_SEQ: AtomicUsize = AtomicUsize::new(0);
+static TLB_TRACE_BUDGET: AtomicUsize = AtomicUsize::new(8);
+
+fn log_tlb_flush_request(
+    kind: &'static str,
+    caller: &'static core::panic::Location<'static>,
+    page_count: usize,
+) {
+    if TLB_TRACE_BUDGET
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            remaining.checked_sub(1)
+        })
+        .is_err()
+    {
+        return;
+    }
+
+    log::info!(
+        target: "mm::tlb",
+        "[TLB][trace] {} requested by {}:{}:{} on cpu={} page_count={} workers_released={} interrupts_enabled={} phases=[cpu0:{:?} cpu1:{:?} cpu2:{:?} cpu3:{:?}]",
+        kind,
+        caller.file(),
+        caller.line(),
+        caller.column(),
+        crate::cpu::try_current_id().unwrap_or(0),
+        page_count,
+        crate::cpu::workers_released(),
+        crate::interrupts::are_interrupts_enabled(),
+        crate::task::current_executor_phase(0),
+        crate::task::current_executor_phase(1),
+        crate::task::current_executor_phase(2),
+        crate::task::current_executor_phase(3),
+    );
+}
 
 /// 全TLBフラッシュIPIを送信
 fn send_tlb_flush_ipi_all(cpu_mask: CpuMask) {
@@ -620,6 +653,22 @@ fn send_tlb_flush_ipi_internal(
     }
 
     let send_seq = TLB_SEND_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+
+    if send_seq <= 8 {
+        log::info!(
+            target: "mm::tlb",
+            "[TLB][trace] send_seq={} flush_type={:?} current_cpu={} target_count={} cpu_scan_limit={} remote_mask_cpu0={} cpu1={} cpu2={} cpu3={}",
+            send_seq,
+            flush_type,
+            current_cpu,
+            target_count,
+            cpu_scan_limit,
+            remote_mask.is_set(0),
+            remote_mask.is_set(1),
+            remote_mask.is_set(2),
+            remote_mask.is_set(3),
+        );
+    }
 
     let mut can_use_broadcast = true;
     for cpu_id in 0..cpu_scan_limit {
@@ -721,7 +770,9 @@ pub fn flush_tlb_batch(cpu_id: usize) {
 }
 
 /// 即時TLBフラッシュ（バッチ化なし）
+#[track_caller]
 pub fn flush_tlb_immediate(addr: VirtAddr) {
+    log_tlb_flush_request("flush_tlb_immediate", core::panic::Location::caller(), 1);
     unsafe {
         flush_tlb_page_local(addr);
     }
@@ -730,7 +781,9 @@ pub fn flush_tlb_immediate(addr: VirtAddr) {
 }
 
 /// 全TLBフラッシュ（全CPU）
+#[track_caller]
 pub fn flush_tlb_all() {
+    log_tlb_flush_request("flush_tlb_all", core::panic::Location::caller(), 0);
     unsafe {
         flush_tlb_all_local();
     }

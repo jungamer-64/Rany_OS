@@ -14,7 +14,6 @@ use super::endpoint_core::{Endpoint, OwnedEndpoint};
 use super::event::EventDispatch;
 use super::types::{EndpointAddr, EndpointError, EndpointResult, EndpointState, EndpointType};
 
-use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::tcp::TcpStream;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
@@ -205,8 +204,8 @@ impl Future for RecvFromFuture {
     }
 }
 
-/// 非同期ゼロコピー受信Future（TCP専用）
-/// 成功時に `Some(PacketRef)` を返す。接続クローズ時は `None`。
+/// 非同期payload zero-copy受信Future（TCP専用）
+/// 成功時に `Some(PacketPayload)` を返す。接続クローズ時は `None`。
 pub struct RecvPacketFuture {
     stream: TcpStream,
 }
@@ -219,7 +218,7 @@ impl RecvPacketFuture {
 }
 
 impl Future for RecvPacketFuture {
-    type Output = Option<PacketRef>;
+    type Output = Option<PacketPayload>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
@@ -228,7 +227,7 @@ impl Future for RecvPacketFuture {
     }
 }
 
-/// TCPゼロコピー用の小さなストリームラッパー（使いやすいヘルパ）
+/// TCP payload zero-copy用の小さなストリームラッパー（使いやすいヘルパ）
 pub struct TcpPacketStream {
     stream: TcpStream,
 }
@@ -880,7 +879,7 @@ pub mod qemu_tests {
             if let Some(ref mut s) = *guard {
                 s.set_transmit_fn(
                     |_if: Option<crate::net::runtime::manager::NetIfId>,
-                     _data: &[u8],
+                     _packet: crate::net::datapath::mempool::PacketRef,
                      _meta: kernel_api::service::netdev::NetTxMeta| {
                         assert!(_if.is_none());
                         true

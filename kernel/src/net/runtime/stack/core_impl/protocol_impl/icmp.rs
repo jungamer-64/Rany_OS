@@ -140,10 +140,13 @@ impl NetworkStack {
             }
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let mut packet = match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + 20) {
+            Some(packet) => packet,
+            None => return,
+        };
 
         // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -179,10 +182,12 @@ impl NetworkStack {
                     ip_packet.finalize(icmp_len);
 
                     let total_len = EthernetHeader::SIZE + ip_packet.total_len();
-                    if let Some(ref transmit) = self.transmit_fn {
-                        transmit(None, &buffer[..total_len], Default::default());
-                        self.stats.record_tx(total_len);
-                    }
+                    drop(ip_packet);
+                    frame.set_payload_len(total_len - EthernetHeader::SIZE);
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    let _ = self.transmit_packet(packet);
                 }
             }
         }
@@ -308,10 +313,16 @@ impl NetworkStack {
             }
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let quoted_len = original_packet.len().min(544);
+        let mut packet = match self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + 8 + 4 + quoted_len)
+        {
+            Some(packet) => packet,
+            None => return,
+        };
 
         // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -338,12 +349,12 @@ impl NetworkStack {
                     original_packet,
                 ) {
                     ip_packet.finalize(len);
-                    let total_len = EthernetHeader::SIZE + ip_packet.total_len();
-
-                    if let Some(ref transmit) = self.transmit_fn {
-                        transmit(None, &buffer[..total_len], Default::default());
-                        self.stats.record_tx(total_len);
-                    }
+                    let ip_len = ip_packet.total_len();
+                    frame.set_payload_len(ip_len);
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    self.transmit_packet(packet);
                 }
             }
         }
@@ -357,12 +368,20 @@ impl NetworkStack {
         original_packet: &kernel_api::resource::net::PacketPayload,
         current_time: u64,
     ) {
-        let Some(packet) = crate::net::payload::packet_from_payload_prefix(original_packet, 544)
-        else {
+        let view = crate::net::payload::PacketPayloadView::new(original_packet);
+        let copy_len = view.total_len().min(544);
+        let mut quoted = [0u8; 544];
+        if view.copy_range(0, &mut quoted[..copy_len]) != copy_len {
             self.stats.record_rx_error();
             return;
-        };
-        self.send_icmp_error(dst_ip, code, next_hop_mtu, packet.data(), current_time);
+        }
+        self.send_icmp_error(
+            dst_ip,
+            code,
+            next_hop_mtu,
+            &quoted[..copy_len],
+            current_time,
+        );
     }
 
     /// Send ICMP echo reply
@@ -406,10 +425,15 @@ impl NetworkStack {
             }
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        let mut packet = match self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + 8 + echo_data.len())
+        {
+            Some(packet) => packet,
+            None => return,
+        };
 
         // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -438,8 +462,86 @@ impl NetworkStack {
 
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    self.transmit_packet(packet);
+                }
+            }
+        }
+    }
 
-                    self.transmit(frame.as_bytes());
+    pub(crate) fn send_icmp_echo_reply_payload(
+        &mut self,
+        dst_ip: Ipv4Address,
+        identifier: u16,
+        sequence: u16,
+        echo_data: &kernel_api::resource::net::PacketPayload,
+        current_time: u64,
+    ) {
+        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+            return;
+        }
+
+        if !crate::net::security::firewall::check_egress_v4(
+            self.config.ipv4.address.octets(),
+            dst_ip.octets(),
+            1,
+            0,
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return;
+        }
+
+        let config = self.config.clone();
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+            Some(mac) => mac,
+            None => {
+                self.send_arp_request(next_hop);
+                return;
+            }
+        };
+
+        let echo_view = crate::net::payload::PacketPayloadView::new(echo_data);
+        let mut packet = match self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + 8 + echo_view.total_len())
+        {
+            Some(packet) => packet,
+            None => return,
+        };
+
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let eth_payload = frame.payload_mut();
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                ip_packet
+                    .init_header()
+                    .set_source(config.ipv4.address)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Icmp)
+                    .set_ttl(64);
+
+                let ip_payload = ip_packet.payload_mut();
+                if let Some(mut icmp) = IcmpEchoBuilder::new(ip_payload) {
+                    icmp.build_reply(identifier, sequence);
+                    icmp.write_payload_view(&echo_view);
+                    let icmp_len = icmp.finalize();
+
+                    ip_packet.finalize(icmp_len);
+
+                    let ip_len = ip_packet.total_len();
+                    frame.set_payload_len(ip_len);
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    self.transmit_packet(packet);
                 }
             }
         }
@@ -494,8 +596,14 @@ impl NetworkStack {
             }
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        let max_quoted = original_packet.len().min(544);
+        let mut packet = match self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + 8 + 4 + max_quoted)
+        {
+            Some(packet) => packet,
+            None => return false,
+        };
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -518,7 +626,10 @@ impl NetworkStack {
                     ip_packet.finalize(icmp_len);
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
-                    return self.transmit(frame.as_bytes());
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    return self.transmit_packet(packet);
                 }
             }
         }
@@ -571,8 +682,14 @@ impl NetworkStack {
             }
         };
 
-        let mut buffer = [0u8; MAX_PACKET_SIZE];
-        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+        let max_quoted = original_packet.len().min(544);
+        let mut packet = match self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + 8 + 4 + max_quoted)
+        {
+            Some(packet) => packet,
+            None => return false,
+        };
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
                 .set_source(config.mac)
@@ -595,7 +712,10 @@ impl NetworkStack {
                     ip_packet.finalize(icmp_len);
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
-                    return self.transmit(frame.as_bytes());
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    return self.transmit_packet(packet);
                 }
             }
         }
@@ -610,7 +730,9 @@ impl NetworkStack {
         code: u8,
         original_packet: &[u8],
     ) -> bool {
-        let Some(original_packet) = crate::net::payload::payload_from_bytes(original_packet) else {
+        let Some(original_packet) = crate::net::payload::packet_from_bytes(original_packet)
+            .map(kernel_api::resource::net::PacketPayload::single)
+        else {
             self.stats.record_dropped();
             return false;
         };
@@ -674,7 +796,9 @@ impl NetworkStack {
         pointer: u32,
         original_packet: &[u8],
     ) -> bool {
-        let Some(original_packet) = crate::net::payload::payload_from_bytes(original_packet) else {
+        let Some(original_packet) = crate::net::payload::packet_from_bytes(original_packet)
+            .map(kernel_api::resource::net::PacketPayload::single)
+        else {
             self.stats.record_dropped();
             return false;
         };
@@ -921,6 +1045,102 @@ impl NetworkStack {
         }
     }
 
+    pub(crate) fn handle_icmp_error_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        icmp_type: IcmpType,
+        code: u8,
+        current_time: u64,
+    ) {
+        match icmp_type {
+            IcmpType::DestinationUnreachable | IcmpType::SourceQuench => {}
+            _ => return,
+        }
+
+        const ORIGINAL_IP_OFFSET: usize = 8;
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let Some(original_ip) = view.read_array::<20>(ORIGINAL_IP_OFFSET) else {
+            return;
+        };
+
+        let original_src = Ipv4Address::from_octets(
+            original_ip[12],
+            original_ip[13],
+            original_ip[14],
+            original_ip[15],
+        );
+        let original_dst = Ipv4Address::from_octets(
+            original_ip[16],
+            original_ip[17],
+            original_ip[18],
+            original_ip[19],
+        );
+
+        if original_src != self.config.ipv4.address && !original_src.is_any() {
+            return;
+        }
+
+        let protocol = original_ip[9];
+        let ip_header_len = ((original_ip[0] & 0x0F) as usize) * 4;
+        let transport_offset = ORIGINAL_IP_OFFSET + ip_header_len;
+
+        let Some(ports) = view.read_array::<4>(transport_offset) else {
+            return;
+        };
+        let src_port = u16::from_be_bytes([ports[0], ports[1]]);
+        let dst_port = u16::from_be_bytes([ports[2], ports[3]]);
+
+        match protocol {
+            6 => {
+                let Some(seq_bytes) = view.read_array::<4>(transport_offset + 4) else {
+                    return;
+                };
+                let seq_num = u32::from_be_bytes(seq_bytes);
+                let local = TcpEndpointAddr::new(original_src.octets(), src_port);
+                let remote = TcpEndpointAddr::new(original_dst.octets(), dst_port);
+                let tcb_table = crate::net::l4::endpoint::tcb_table();
+                if tcb_table.validate_icmp_sequence(local, remote, seq_num) {
+                    if icmp_type == IcmpType::SourceQuench {
+                        crate::net::l4::endpoint::tcp_rx::handle_source_quench(local, remote);
+                    } else if icmp_type == IcmpType::DestinationUnreachable {
+                        crate::net::l4::endpoint::tcp_rx::handle_icmp_error(
+                            local, remote, icmp_type, code,
+                        );
+                    }
+                } else {
+                    log::warn!(
+                        "[NET] ICMP: error for {} rejected due to invalid TCP seq {} (RFC 5927)",
+                        original_dst,
+                        seq_num
+                    );
+                    return;
+                }
+            }
+            17 => {
+                if !self.udp.has_endpoint(src_port) {
+                    return;
+                }
+            }
+            _ => return,
+        }
+
+        if icmp_type == IcmpType::DestinationUnreachable
+            && code == DestUnreachCode::FragmentationNeeded as u8
+        {
+            let Some(next_hop_mtu_bytes) = view.read_array::<2>(6) else {
+                return;
+            };
+            let next_hop_mtu = u16::from_be_bytes(next_hop_mtu_bytes);
+            let mtu = if next_hop_mtu == 0 {
+                let current_mtu = self.ipv4.get_pmtu(original_dst, current_time);
+                crate::net::l3::ipv4::PmtuEntry::get_next_plateau(current_mtu)
+            } else {
+                next_hop_mtu
+            };
+            self.ipv4.update_pmtu(original_dst, mtu, current_time);
+        }
+    }
+
     /// Handle ICMP Redirect message (RFC 792)
     ///
     /// ICMP Redirect is sent by a router when it detects that a better route
@@ -997,43 +1217,48 @@ impl NetworkStack {
         identifier: u16,
         sequence: u16,
     ) -> Result<u64, ()> {
-        let mut buffer = self.tx_pool.alloc().ok_or(())?;
-        let buf = buffer.as_mut_slice();
+        let mut packet = self
+            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + 8)
+            .ok_or(())?;
+        let src_mac = self.mac_address();
+        let mut built = false;
 
-        let eth_hdr_len = 14;
-        let ip_hdr_len = 20;
-        let icmp_hdr_len = 8;
-        let total_len = eth_hdr_len + ip_hdr_len + icmp_hdr_len;
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
+            frame
+                .set_destination(dst_mac)
+                .set_source(src_mac)
+                .set_ether_type(EtherType::Ipv4);
 
-        if buf.len() < total_len {
-            return Err(());
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(frame.payload_mut()) {
+                ip_packet
+                    .init_header()
+                    .set_source(local_ip)
+                    .set_destination(target)
+                    .set_protocol(IpProtocol::Icmp)
+                    .set_ttl(64);
+
+                if let Some(mut icmp) = IcmpEchoBuilder::new(ip_packet.payload_mut()) {
+                    icmp.build_request(identifier, sequence).write_data(&[]);
+                    let icmp_len = icmp.finalize();
+                    ip_packet.finalize(icmp_len);
+
+                    let ip_len = ip_packet.total_len();
+                    frame.set_payload_len(ip_len);
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    built = true;
+                }
+            }
         }
 
-        let src_mac = self.mac_address();
-        buf[0..6].copy_from_slice(dst_mac.as_bytes());
-        buf[6..12].copy_from_slice(src_mac.as_bytes());
-        buf[12] = 0x08;
-        buf[13] = 0x00;
-
-        let ip_start = eth_hdr_len;
-        if let Some(mut ip_packet) = Ipv4PacketMut::new(&mut buf[ip_start..]) {
-            ip_packet
-                .init_header()
-                .set_source(local_ip)
-                .set_destination(target)
-                .set_protocol(IpProtocol::Icmp)
-                .set_ttl(64);
-
-            if let Some(mut icmp) = IcmpEchoBuilder::new(ip_packet.payload_mut()) {
-                icmp.build_request(identifier, sequence).write_data(&[]);
-                let icmp_len = icmp.finalize();
-                ip_packet.finalize(icmp_len);
-            }
+        if !built {
+            return Err(());
         }
 
         let send_time = self.current_time();
 
-        if self.transmit(&buf[..total_len]) {
+        if self.transmit_packet(packet) {
             log::info!("[NET-PING] Sent ICMP echo to {} seq={}", target, sequence);
             Ok(send_time)
         } else {
