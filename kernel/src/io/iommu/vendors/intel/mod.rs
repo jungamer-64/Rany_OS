@@ -129,27 +129,11 @@ unsafe fn apply_mapping_sync(
     write: bool,
 ) -> Result<u64, IommuError> {
     let domain_id = domain_arc.id();
-    if controller.command_queue_ref().is_some() {
-        let cmd = IommuCommandKind::MapRegion {
-            domain: domain_id,
-            iova,
-            phys,
-            size,
-            read,
-            write,
-        };
-        if controller.execute_sync_command(cmd).is_err() {
-            crate::io::log::early_print("[DMA] apply_mapping_sync: execute_sync_command FAILED\n");
-            if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {
-                // If the normal free fails because quarantine is full, we must
-                // force a global flush and do an immediate free to avoid leaking IOVA.
-                let _ = controller.invalidate_iotlb_global_sync();
-                let _ = controller.free_iova_fast(iova, size);
-            }
-            return Err(controller_cq_submit_error(controller));
-        }
-        return Ok(iova);
-    }
+    // Runtime command queues are useful for async/offloaded work, but the
+    // synchronous DMA allocation path proved much more reliable when it keeps
+    // the map + invalidate sequence on the caller's thread. This matches the
+    // early-boot path that successfully brings devices online before runtime
+    // services install the Intel CQ worker.
     if let Err(err) = domain_arc.map(iova, phys, size, read, write) {
         crate::io::log::early_print("[DMA] apply_mapping_sync: map FAILED\n");
         if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, size) {

@@ -294,13 +294,13 @@ impl IntelIommuDriver {
         Err(IommuError::DomainNotFound)
     }
 
-    /// Execute the actual unmap on a resolved domain, using CQ fast-path when available.
+    /// Execute the actual unmap on a resolved domain on the caller thread.
     pub(super) fn perform_unmap(
         controller: &controller::IommuController,
         device: &DeviceId,
         domain_arc: &Arc<IommuDomain>,
         iova: u64,
-        size: u64,
+        _size: u64,
     ) -> Result<(), IommuError> {
         // 1. Monitor page table releases to detect if paging-structure caches need clearing
         let pts_before = domain_arc
@@ -308,35 +308,6 @@ impl IntelIommuDriver {
             .lock()
             .map(|p| p.len())
             .unwrap_or(0);
-
-        if controller.command_queue_ref().is_some() {
-            let cmd = IommuCommandKind::UnmapRegionDevice {
-                device: *device,
-                iova,
-                size,
-            };
-            controller
-                .execute_sync_command(cmd)
-                .map_err(|_| controller_cq_submit_error(controller))?;
-
-            // Check if unmap removed a PT (via mapping lookups since CQ is used)
-            let pts_after = domain_arc
-                .pending_pt_release
-                .lock()
-                .map(|p| p.len())
-                .unwrap_or(0);
-            if pts_after > pts_before {
-                // SECURITY: If a page table was removed, we MUST perform a domain-wide
-                // invalidation. CQ UnmapRegionDevice only does page-level invalidation.
-                controller
-                    .execute_sync_command(IommuCommandKind::InvalidateIotlbDomain {
-                        domain: domain_arc.id(),
-                    })
-                    .map_err(|_| controller_cq_submit_error(controller))?;
-                let _ = domain_arc.flush(controller, controller);
-            }
-            return Ok(());
-        }
 
         let mapping = domain_arc.unmap(iova)?;
         let domain_id = domain_arc.id();
