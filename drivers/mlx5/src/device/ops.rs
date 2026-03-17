@@ -596,6 +596,22 @@ impl Mlx5Device {
         Ok(counters)
     }
 
+    pub unsafe fn query_nic_vport_promisc(&mut self) -> Mlx5Result<(bool, bool, bool)> {
+        let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        build_query_nic_vport_context_input(in_mbox, 0, false, None);
+        cmd.execute(
+            CmdOpcode::QueryNicVportContext,
+            self.cmd_in_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+            self.cmd_out_mbox_device,
+            MLX5_CMD_MBOX_SIZE as u32,
+        )?;
+
+        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        Ok(parse_query_nic_vport_context_promisc(out_mbox))
+    }
+
     pub(crate) unsafe fn query_port_mtu(&mut self, port_index: usize) -> Mlx5Result<u32> {
         self.ports
             .get(port_index)
@@ -821,6 +837,50 @@ impl Mlx5Device {
         if let Some(port) = self.ports.get_mut(port_index) {
             port.set_mtu(mtu).map_err(|_| Mlx5Error::InvalidParameter)?;
         }
+        Ok(())
+    }
+
+    pub fn set_nic_vport_promisc(
+        &mut self,
+        promisc_uc: bool,
+        promisc_mc: bool,
+        promisc_all: bool,
+    ) -> Mlx5Result<()> {
+        let in_mbox = unsafe { &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox) };
+        build_modify_nic_vport_promisc_input(
+            in_mbox,
+            0,
+            false,
+            promisc_uc,
+            promisc_mc,
+            promisc_all,
+        );
+
+        unsafe {
+            self.execute_cmd_with_uid_candidates(
+                CmdOpcode::ModifyNicVportContext,
+                self.cmd_in_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+                self.cmd_out_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+            )?;
+        }
+
+        match unsafe { self.query_nic_vport_promisc() } {
+            Ok((uc, mc, all)) => log::info!(
+                target: "mlx5",
+                "NIC vport promisc updated: uc={} mc={} all={}",
+                uc,
+                mc,
+                all
+            ),
+            Err(err) => log::warn!(
+                target: "mlx5",
+                "NIC vport promisc update applied but QUERY_NIC_VPORT_CONTEXT verify failed: {:?}",
+                err
+            ),
+        }
+
         Ok(())
     }
 

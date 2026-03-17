@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::l4::endpoint::types::EndpointFd;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::context::{default_runtime, default_runtime_context};
 
@@ -658,15 +659,15 @@ pub fn enqueue_unbind_tcp_in(
 }
 
 /// Unbind a TCP listener (fire-and-forget, event-queue based)
-pub fn enqueue_unbind_tcp_listener(local: TcpEndpointAddr) {
-    enqueue_unbind_tcp_listener_in(default_runtime(), local);
+pub fn enqueue_unbind_tcp_listener(fd: EndpointFd) {
+    enqueue_unbind_tcp_listener_in(default_runtime(), fd);
 }
 
-pub fn enqueue_unbind_tcp_listener_in(runtime: NetRuntimeHandle, local: TcpEndpointAddr) {
+pub fn enqueue_unbind_tcp_listener_in(runtime: NetRuntimeHandle, fd: EndpointFd) {
     crate::net::l4::endpoint::event::enqueue_event_ignore_in(
         runtime,
         crate::net::l4::endpoint::event::NetworkEvent::UnbindTcpListener {
-            local,
+            fd,
             result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
             waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         },
@@ -1370,7 +1371,7 @@ pub struct UnbindTcpListenerFuture {
     result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
     waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     sent: bool,
-    local: TcpEndpointAddr,
+    fd: EndpointFd,
 }
 
 impl core::future::Future for UnbindTcpListenerFuture {
@@ -1384,7 +1385,7 @@ impl core::future::Future for UnbindTcpListenerFuture {
             let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
                 self.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::UnbindTcpListener {
-                    local: self.local,
+                    fd: self.fd,
                     result_slot: self.result_slot.clone(),
                     waker: self.waker.clone(),
                 },
@@ -1403,20 +1404,20 @@ impl core::future::Future for UnbindTcpListenerFuture {
 }
 
 /// 非同期TCPリスナー unbind: イベントキュー経由でunbindリクエストを送信
-pub fn unbind_tcp_listener(local: TcpEndpointAddr) -> UnbindTcpListenerFuture {
-    unbind_tcp_listener_in(default_runtime(), local)
+pub fn unbind_tcp_listener(fd: EndpointFd) -> UnbindTcpListenerFuture {
+    unbind_tcp_listener_in(default_runtime(), fd)
 }
 
 pub fn unbind_tcp_listener_in(
     runtime: NetRuntimeHandle,
-    local: TcpEndpointAddr,
+    fd: EndpointFd,
 ) -> UnbindTcpListenerFuture {
     UnbindTcpListenerFuture {
         runtime,
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
         waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         sent: false,
-        local,
+        fd,
     }
 }
 

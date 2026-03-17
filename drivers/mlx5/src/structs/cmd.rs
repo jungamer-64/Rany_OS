@@ -279,6 +279,15 @@ impl<'a> QueryNicVportContextOutputLayout<'a> {
     pub fn mtu(&self) -> u16 {
         get_bits_u32(self.data, 432, 16) as u16
     }
+    pub fn promisc_uc(&self) -> bool {
+        get_bits_u32(self.data, 2048, 1) != 0
+    }
+    pub fn promisc_mc(&self) -> bool {
+        get_bits_u32(self.data, 2049, 1) != 0
+    }
+    pub fn promisc_all(&self) -> bool {
+        get_bits_u32(self.data, 2050, 1) != 0
+    }
     pub fn allowed_list_size(&self) -> u16 {
         get_bits_u32(self.data, 2068, 12) as u16
     }
@@ -312,12 +321,24 @@ impl<'a> ModifyNicVportContextInputLayout<'a> {
     pub fn set_field_select_mtu(&mut self, val: bool) {
         set_bits_u32(self.data, 121, 1, if val { 1 } else { 0 });
     }
+    pub fn set_field_select_promisc(&mut self, val: bool) {
+        set_bits_u32(self.data, 123, 1, if val { 1 } else { 0 });
+    }
     pub fn set_field_select_permanent_address(&mut self, val: bool) {
         set_bits_u32(self.data, 124, 1, if val { 1 } else { 0 });
     }
 
     pub fn set_mtu(&mut self, val: u16) {
         set_bits_u32(self.data, 2352, 16, val as u32);
+    }
+    pub fn set_promisc_uc(&mut self, val: bool) {
+        set_bits_u32(self.data, 3968, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_promisc_mc(&mut self, val: bool) {
+        set_bits_u32(self.data, 3969, 1, if val { 1 } else { 0 });
+    }
+    pub fn set_promisc_all(&mut self, val: bool) {
+        set_bits_u32(self.data, 3970, 1, if val { 1 } else { 0 });
     }
 
     pub fn permanent_address_mut(&mut self) -> &mut [u8] {

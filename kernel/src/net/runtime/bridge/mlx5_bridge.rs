@@ -75,6 +75,7 @@ struct Mlx5BridgeState {
     startup_tx_diag_frame_budget: AtomicU64,
     rx_debug_snapshot_budget: AtomicU64,
     rx_frame_log_budget: AtomicU64,
+    external_rx_gate_logged: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -113,6 +114,7 @@ impl Mlx5BridgeState {
             startup_tx_diag_frame_budget: AtomicU64::new(MLX5_STARTUP_TX_DIAG_FRAME_LOG_BUDGET),
             rx_debug_snapshot_budget: AtomicU64::new(MLX5_RX_DEBUG_SNAPSHOT_BUDGET),
             rx_frame_log_budget: AtomicU64::new(MLX5_RX_FRAME_LOG_BUDGET),
+            external_rx_gate_logged: AtomicBool::new(false),
         }
     }
 }
@@ -951,10 +953,11 @@ fn poll_mlx5_tx_cqs(
                 mlx5_driver::defs::CqeOpcode::ReqErr | mlx5_driver::defs::CqeOpcode::RespErr
             ) && device.mark_tx_runtime_probe_success()
             {
-                log::warn!(
+                log::info!(
                     target: "mlx5::bridge",
-                    "mlx5 TX fallback verified by first successful completion; restoring healthy TX state for port {}",
-                    state.index
+                    "mlx5 VF TX success gate satisfied by first {:?} CQE; restoring healthy TX state for port {}",
+                    cqe.opcode,
+                    state.index,
                 );
             }
             let infos = device.process_tx_completions(sq_index, cqe.wqe_counter);
@@ -1598,14 +1601,62 @@ unsafe fn mlx5_poll_rx(state: &Arc<Mlx5BridgeState>) -> u32 {
                     device.process_rx_completion(rq_index, wqe_counter, cqe.l3_ok, cqe.l4_ok)
                 {
                     let idx = rx_info.slot_index as usize;
+                    let port_mac = device.port(0).map(|port| port.mac_address().0);
                     state.rx_packets.fetch_add(1, Ordering::Relaxed);
                     counters::global().record_rx(byte_count);
                     trace::push_event(NetLayer::Driver, NetEventKind::Rx, "mlx5 rx");
 
                     if let Some(mut pkt) = rx_bufs_guard[rq_index][idx].take() {
                         pkt.set_len(byte_count);
+                        let frame = pkt.data();
+                        if device.is_vf()
+                            && !state.external_rx_gate_logged.load(Ordering::Relaxed)
+                            && frame.len() >= 12
+                        {
+                            let src =
+                                [frame[6], frame[7], frame[8], frame[9], frame[10], frame[11]];
+                            if port_mac.is_some_and(|mac| mac != src)
+                                && state
+                                    .external_rx_gate_logged
+                                    .compare_exchange(
+                                        false,
+                                        true,
+                                        Ordering::AcqRel,
+                                        Ordering::Acquire,
+                                    )
+                                    .is_ok()
+                            {
+                                let dst = if frame.len() >= 6 {
+                                    format!(
+                                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                        frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]
+                                    )
+                                } else {
+                                    String::from("--")
+                                };
+                                let src = format!(
+                                    "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                    src[0], src[1], src[2], src[3], src[4], src[5]
+                                );
+                                let ether_type = if frame.len() >= 14 {
+                                    u16::from_be_bytes([frame[12], frame[13]])
+                                } else {
+                                    0
+                                };
+                                log::info!(
+                                    target: "mlx5::bridge",
+                                    "mlx5 VF external RX success gate satisfied: dev={} rq={} idx={} len={} src={} dst={} ethertype={:#06x}",
+                                    state.index,
+                                    rq_index,
+                                    idx,
+                                    byte_count,
+                                    src,
+                                    dst,
+                                    ether_type,
+                                );
+                            }
+                        }
                         if state.rx_frame_log_budget.load(Ordering::Relaxed) > 0 {
-                            let frame = pkt.data();
                             let dst = if frame.len() >= 6 {
                                 format!(
                                     "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",

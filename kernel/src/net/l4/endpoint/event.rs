@@ -180,7 +180,7 @@ pub enum NetworkEvent {
     },
     /// 非同期TCPリスナー unbind（イベントキュー経由・ロック競合回避）
     UnbindTcpListener {
-        local: EndpointAddr,
+        fd: EndpointFd,
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },

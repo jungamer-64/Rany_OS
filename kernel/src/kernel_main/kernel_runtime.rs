@@ -11,6 +11,7 @@ use core::task::Poll;
 use log::debug;
 
 const ASYNC_BOOT_STAGE_COUNT: usize = 6;
+const NET_BOOT_PING_TIMEOUT_MS: u64 = 1_500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -437,6 +438,56 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
     (keys.len(), rx_packets, tx_packets, tx_errors, rx_errors)
 }
 
+fn log_mlx5_boot_snapshot(stage: &str) {
+    let key = crate::net::runtime::device::NetDeviceKey::Mlx5(0);
+    let Some(info) = crate::net::runtime::device::port_info(key) else {
+        return;
+    };
+
+    let runtime_stats = crate::net::runtime::device::port_stats(key).unwrap_or_default();
+    let stack_stats = crate::net::runtime::bridge::get_stack_glue_stats();
+    let link_up = info.flags & kernel_api::service::netdev::NETDEV_FLAG_LINK_UP != 0;
+    let healthy = info.flags & kernel_api::service::netdev::NETDEV_FLAG_HEALTHY != 0;
+    let mac = info.mac.as_bytes();
+    info!(
+        target: "net_boot",
+        "mlx5 boot snapshot [{}]: runtime_init={} link_up={} healthy={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} stack_init={} stack_rx={} stack_tx={} runtime_rx={} runtime_tx={} runtime_tx_err={} runtime_rx_err={}",
+        stage,
+        runtime_stats.initialized,
+        link_up,
+        healthy,
+        mac[0],
+        mac[1],
+        mac[2],
+        mac[3],
+        mac[4],
+        mac[5],
+        stack_stats.initialized,
+        stack_stats.rx_packets,
+        stack_stats.tx_packets,
+        runtime_stats.rx_packets,
+        runtime_stats.tx_packets,
+        runtime_stats.tx_errors,
+        runtime_stats.rx_errors,
+    );
+
+    if let Some(stats) = crate::net::runtime::bridge::mlx5_bridge::get_mlx5_port_stats(0, 0) {
+        info!(
+            target: "net_boot",
+            "mlx5 hw stats [{}]: rx_pkts={} rx_bytes={} rx_err={} rx_drop={} tx_pkts={} tx_bytes={} tx_err={} tx_drop={}",
+            stage,
+            stats.rx_packets,
+            stats.rx_bytes,
+            stats.rx_errors,
+            stats.rx_dropped,
+            stats.tx_packets,
+            stats.tx_bytes,
+            stats.tx_errors,
+            stats.tx_dropped
+        );
+    }
+}
+
 async fn network_bootstrap_task() {
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
@@ -602,6 +653,7 @@ async fn network_bootstrap_task() {
                     state.state.v4_assigned_ip
                 );
             }
+            log_mlx5_boot_snapshot("dhcp-bound");
             dhcp_bound = true;
             break;
         }
@@ -609,6 +661,7 @@ async fn network_bootstrap_task() {
 
     if !dhcp_bound {
         warn!(target: "net_boot", "DHCP did not reach Bound state within timeout; using default config");
+        log_mlx5_boot_snapshot("dhcp-timeout");
     }
 
     // 非同期ping: ゲートウェイへの接続性確認
@@ -630,6 +683,7 @@ async fn network_bootstrap_task() {
 
     if ping_targets.is_empty() {
         warn!(target: "net_boot", "No gateway available (DHCP not bound); skipping connectivity check");
+        log_mlx5_boot_snapshot("no-gateway");
         let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) =
             aggregate_port_runtime_stats();
         info!(
@@ -646,17 +700,33 @@ async fn network_bootstrap_task() {
 
     for (if_id, ping_target) in ping_targets {
         info!(target: "net_boot", "Async connectivity check if{} -> {:?}", if_id, ping_target);
-        match crate::net::api::icmp::ping_in(crate::net::runtime::default_runtime(), ping_target, 1)
-            .await
+        match crate::task::with_timeout(
+            crate::net::api::icmp::ping_in(crate::net::runtime::default_runtime(), ping_target, 1),
+            NET_BOOT_PING_TIMEOUT_MS,
+        )
+        .await
         {
-            Ok(echo) => info!(
+            crate::task::TimeoutResult::Completed(Ok(echo)) => info!(
                 target: "net_boot",
                 "Async ping success if{} rtt={} us",
                 if_id,
                 echo.rtt_us
             ),
-            Err(e) => warn!(target: "net_boot", "Async ping failed if{}: {:?}", if_id, e),
+            crate::task::TimeoutResult::Completed(Err(e)) => {
+                warn!(target: "net_boot", "Async ping failed if{}: {:?}", if_id, e)
+            }
+            crate::task::TimeoutResult::TimedOut => warn!(
+                target: "net_boot",
+                "Async ping timed out if{} after {} ms",
+                if_id,
+                NET_BOOT_PING_TIMEOUT_MS
+            ),
         }
+    }
+
+    if dhcp_bound {
+        task::sleep_ms(250).await;
+        log_mlx5_boot_snapshot("post-http-watch");
     }
 
     let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();

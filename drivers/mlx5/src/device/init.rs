@@ -1714,15 +1714,45 @@ impl Mlx5Device {
                 crate::boot_trace("[MLX5_STAGE] rx_flow_table_vf_failed\n");
             }
         }
-        if !self.is_vf() {
-            match self.set_promiscuous_mode(true) {
+        match self.set_promiscuous_mode(true) {
+            Ok(()) => {
+                if self.is_vf() {
+                    log::info!(
+                        target: "mlx5",
+                        "Enabled VF wildcard RX steering for bring-up diagnostics"
+                    );
+                } else {
+                    log::info!(
+                        target: "mlx5",
+                        "Enabled PF promiscuous RX steering for bring-up"
+                    );
+                }
+            }
+            Err(err) => {
+                if self.is_vf() {
+                    log::warn!(
+                        target: "mlx5",
+                        "Failed to enable VF wildcard RX steering: {:?}",
+                        err
+                    );
+                } else {
+                    log::warn!(
+                        target: "mlx5",
+                        "Failed to enable PF promiscuous RX steering: {:?}",
+                        err
+                    );
+                }
+            }
+        }
+        if self.is_vf() {
+            match self.set_nic_vport_promisc(true, true, true) {
                 Ok(()) => log::info!(
                     target: "mlx5",
-                    "Enabled PF promiscuous RX steering for bring-up"
+                    "Enabled VF NIC vport promisc (uc/mc/all) for bring-up diagnostics"
                 ),
                 Err(err) => log::warn!(
                     target: "mlx5",
-                    "Failed to enable PF promiscuous RX steering: {:?}",
+                    "Failed to enable VF NIC vport promisc: {:?}",
                     err
                 ),
             }

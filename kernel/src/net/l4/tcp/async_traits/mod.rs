@@ -565,7 +565,7 @@ impl Drop for TcpListener {
         enqueue_event_ignore_in(
             self.runtime,
             NetworkEvent::UnbindTcpListener {
-                local: self.local_addr(),
+                fd: self.endpoint.fd(),
                 result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
                 waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
             },

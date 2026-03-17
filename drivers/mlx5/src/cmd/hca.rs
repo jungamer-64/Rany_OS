@@ -254,6 +254,16 @@ pub fn parse_query_nic_vport_context_mtu(out_mbox: &CmdMailbox) -> u16 {
     QueryNicVportContextOutputLayout::new(&out_mbox.data[..]).mtu()
 }
 
+/// QUERY_NIC_VPORT_CONTEXT 出力から promisc 設定を取得
+pub fn parse_query_nic_vport_context_promisc(out_mbox: &CmdMailbox) -> (bool, bool, bool) {
+    let layout = QueryNicVportContextOutputLayout::new(&out_mbox.data[..]);
+    (
+        layout.promisc_uc(),
+        layout.promisc_mc(),
+        layout.promisc_all(),
+    )
+}
+
 /// QUERY_NIC_VPORT_CONTEXT 出力から最小インラインモードを取得
 pub fn parse_query_nic_vport_context_min_inline_mode(out_mbox: &CmdMailbox) -> u8 {
     QueryNicVportContextOutputLayout::new(&out_mbox.data[..]).min_wqe_inline_mode()
@@ -475,6 +485,25 @@ pub fn build_modify_nic_vport_mtu_input(
     layout.set_mtu(mtu);
 }
 
+/// NIC VPORT の promisc 設定を変更するコマンド入力の構築
+pub fn build_modify_nic_vport_promisc_input(
+    in_mbox: &mut CmdMailbox,
+    vport_number: u16,
+    other_vport: bool,
+    promisc_uc: bool,
+    promisc_mc: bool,
+    promisc_all: bool,
+) {
+    *in_mbox = CmdMailbox::zeroed();
+    let mut layout = ModifyNicVportContextInputLayout::new(&mut in_mbox.data[..]);
+    layout.set_other_vport(other_vport);
+    layout.set_vport_number(vport_number);
+    layout.set_field_select_promisc(true);
+    layout.set_promisc_uc(promisc_uc);
+    layout.set_promisc_mc(promisc_mc);
+    layout.set_promisc_all(promisc_all);
+}
+
 pub fn query_vport_state_op_mod_vnic_vport() -> u16 {
     QUERY_VPORT_STATE_OP_MOD_VNIC_VPORT
 }
@@ -522,6 +551,32 @@ mod tests {
 
         assert_eq!(get_bits_u32(&in_mbox.data[..], 121, 1), 1);
         assert_eq!(get_bits_u32(&in_mbox.data[..], 2352, 16), 4096);
+    }
+
+    #[test]
+    fn query_nic_vport_context_promisc_decode_matches_ifc_layout() {
+        let mut out_mbox = CmdMailbox::zeroed();
+        set_bits_u32(&mut out_mbox.data[..], 2048, 1, 1);
+        set_bits_u32(&mut out_mbox.data[..], 2049, 1, 0);
+        set_bits_u32(&mut out_mbox.data[..], 2050, 1, 1);
+
+        assert_eq!(
+            parse_query_nic_vport_context_promisc(&out_mbox),
+            (true, false, true)
+        );
+    }
+
+    #[test]
+    fn build_modify_nic_vport_promisc_input_sets_field_select_and_bits() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        build_modify_nic_vport_promisc_input(&mut in_mbox, 5, true, true, false, true);
+
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 64, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 5);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 123, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 3968, 1), 1);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 3969, 1), 0);
+        assert_eq!(get_bits_u32(&in_mbox.data[..], 3970, 1), 1);
     }
 
     #[test]

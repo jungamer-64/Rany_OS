@@ -1425,14 +1425,12 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::UnbindTcpListener {
-                local,
+                fd,
                 result_slot,
                 waker,
             } => {
-                if let Some(fd) = self.find_tcp_listener_fd_by_local(local) {
-                    let _ = tcb_table().remove_by_fd(fd);
-                    self.close_endpoint_for_unbind(fd);
-                }
+                let _ = tcb_table().remove_by_fd(fd);
+                self.close_endpoint_for_unbind(fd);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(true);
                 }
@@ -3158,7 +3156,9 @@ impl NetworkEventHandler {
             let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.ensure_tcp().accept_backlog = backlog as usize;
-            let _ = inner.transition_to(EndpointState::Listening);
+            inner
+                .transition_to(EndpointState::Bound)
+                .map_err(tcp_error_from_endpoint_error)?;
         }
 
         match self.handle_listen(endpoint.fd(), local, backlog) {
@@ -3202,22 +3202,6 @@ impl NetworkEventHandler {
             waker.wake();
         }
         let _ = inner.transition_to(EndpointState::Closed);
-    }
-
-    fn find_tcp_listener_fd_by_local(&self, local: EndpointAddr) -> Option<EndpointFd> {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let mgr = manager.as_ref()?;
-        let mut result = None;
-        mgr.for_each(|socket| {
-            if result.is_some() || socket.socket_type() != EndpointType::Tcp {
-                return;
-            }
-            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-            if inner.local_addr == Some(local) && inner.state == EndpointState::Listening {
-                result = Some(socket.fd());
-            }
-        });
-        result
     }
 
     /// Connectイベント処理
@@ -3496,7 +3480,11 @@ impl NetworkEventHandler {
             inner.local_addr = Some(local);
             inner.ensure_tcp().accept_backlog = backlog as usize;
             if inner.state.can_listen() {
-                let _ = inner.transition_to(EndpointState::Listening);
+                if let Err(err) = inner.transition_to(EndpointState::Listening) {
+                    return EventHandleResult::ProtocolError(err);
+                }
+            } else if inner.state != EndpointState::Listening {
+                return EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition);
             }
         }
 
@@ -3796,7 +3784,8 @@ pub mod tests {
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
     use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
     use crate::net::l4::endpoint::{
-        EndpointAddr, EndpointState, create_raw_endpoint, create_tcp_endpoint, create_udp_endpoint,
+        EndpointAddr, EndpointError, EndpointState, create_raw_endpoint, create_tcp_endpoint,
+        create_udp_endpoint,
     };
 
     fn build_ipv4_udp_frame(
@@ -4035,6 +4024,94 @@ pub mod tests {
             udp.endpoint()
                 .expect("udp endpoint")
                 .recv_from_sync(&mut buf),
+            Err(EndpointError::Timeout)
+        ));
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_unbind_tcp_listener_closes_exact_fd_only() {
+        init_endpoint_manager();
+
+        let local = EndpointAddr::new([127, 0, 0, 1], 18080);
+        let listener = create_tcp_endpoint();
+        let fd = listener.fd();
+        let handler = NetworkEventHandler::new();
+
+        assert!(matches!(
+            handler.handle_listen(fd, local, 16),
+            EventHandleResult::Success
+        ));
+
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
+        assert!(matches!(
+            handler.handle_event(NetworkEvent::UnbindTcpListener {
+                fd,
+                result_slot,
+                waker,
+            }),
+            EventHandleResult::Success
+        ));
+
+        let endpoint = listener.endpoint().expect("listener endpoint");
+        let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(inner.state, EndpointState::Closed);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_unbind_tcp_listener_does_not_close_rebound_listener() {
+        init_endpoint_manager();
+
+        let local = EndpointAddr::new([127, 0, 0, 1], 18081);
+        let stale = create_tcp_endpoint();
+        let stale_fd = stale.fd();
+        if let Some(endpoint) = stale.endpoint() {
+            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner.local_addr = Some(local);
+            let _ = inner.transition_to(EndpointState::Closed);
+        }
+
+        let rebound = create_tcp_endpoint();
+        let rebound_fd = rebound.fd();
+        let handler = NetworkEventHandler::new();
+
+        assert!(matches!(
+            handler.handle_listen(rebound_fd, local, 16),
+            EventHandleResult::Success
+        ));
+
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
+        assert!(matches!(
+            handler.handle_event(NetworkEvent::UnbindTcpListener {
+                fd: stale_fd,
+                result_slot,
+                waker,
+            }),
+            EventHandleResult::Success
+        ));
+
+        let endpoint = rebound.endpoint().expect("rebound endpoint");
+        let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(inner.state, EndpointState::Listening);
+        assert_eq!(inner.local_addr, Some(local));
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_make_tcp_listener_with_stack_returns_listening_listener() {
+        init_endpoint_manager();
+
+        let handler = NetworkEventHandler::new();
+        let local = EndpointAddr::new([127, 0, 0, 1], 18082);
+        let listener = handler
+            .make_tcp_listener_with_stack(crate::net::runtime::default_runtime(), local, 16)
+            .expect("listener should bind");
+
+        let endpoint = listener.endpoint();
+        assert_eq!(endpoint.state(), EndpointState::Listening);
+        assert_eq!(endpoint.local_addr(), Some(local));
+        assert!(matches!(
+            endpoint.next_incoming_sync(),
             Err(EndpointError::Timeout)
         ));
     }
