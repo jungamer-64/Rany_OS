@@ -213,9 +213,7 @@ impl DhcpV6Client {
                             self.handle_packet(packet.data(), src_v6)
                         }
                         kernel_api::resource::net::PacketPayload::Chain(_) => {
-                            let data = crate::net::payload::PacketPayloadView::new(&packet)
-                                .read_vec(0, packet.total_len());
-                            self.handle_packet(&data, src_v6)
+                            self.handle_packet_payload(&packet, src_v6)
                         }
                     };
                     if handled {
@@ -863,6 +861,170 @@ impl DhcpV6Client {
         }
     }
 
+    pub fn parse_reply_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        current_time: u64,
+    ) -> Result<Option<DhcpV6Lease>, &'static str> {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        if view.total_len() < 4 {
+            return Err("packet too small");
+        }
+
+        let msg_type = view.read_array::<1>(0).map(|bytes| bytes[0]).unwrap_or(0);
+        if msg_type != (DhcpV6MessageType::Advertise as u8)
+            && msg_type != (DhcpV6MessageType::Reply as u8)
+        {
+            return Err("not an advertise/reply");
+        }
+
+        let xid_suffix = view.read_array::<3>(1).ok_or("packet too small")?;
+        let xid = u32::from_be_bytes([0, xid_suffix[0], xid_suffix[1], xid_suffix[2]]);
+        if xid != self.xid.load(Ordering::SeqCst) {
+            log::warn!(
+                "[NET] DHCPv6: XID mismatch (expected 0x{:06x}, got 0x{:06x}) - possible spoofing",
+                self.xid.load(Ordering::SeqCst),
+                xid
+            );
+            return Err("XID mismatch");
+        }
+
+        let mut off = 4usize;
+        let mut found_addr: Option<(Ipv6Address, u32, u32)> = None;
+        let mut found_t1: u32 = 0;
+        let mut found_t2: u32 = 0;
+        let mut dns_servers: Vec<Ipv6Address> = Vec::new();
+        let mut domain_search: Vec<alloc::string::String> = Vec::new();
+        let mut status_code: Option<u16> = None;
+
+        while off + 4 <= view.total_len() {
+            let code = u16::from_be_bytes(view.read_array::<2>(off).ok_or("packet too small")?);
+            let len = u16::from_be_bytes(view.read_array::<2>(off + 2).ok_or("packet too small")?)
+                as usize;
+            off += 4;
+            if off + len > view.total_len() {
+                break;
+            }
+
+            match code {
+                2 => {
+                    if len > 0 {
+                        if let Ok(mut g) = self.server_duid.lock() {
+                            *g = Some(view.read_vec(off, len));
+                        }
+                    }
+                }
+                3 => {
+                    if len >= 12 {
+                        found_t1 = u32::from_be_bytes(
+                            view.read_array::<4>(off + 4).ok_or("packet too small")?,
+                        );
+                        found_t2 = u32::from_be_bytes(
+                            view.read_array::<4>(off + 8).ok_or("packet too small")?,
+                        );
+                        let mut sub_off = off + 12;
+                        while sub_off + 4 <= off + len {
+                            let sc = u16::from_be_bytes(
+                                view.read_array::<2>(sub_off).ok_or("packet too small")?,
+                            );
+                            let sl = u16::from_be_bytes(
+                                view.read_array::<2>(sub_off + 2)
+                                    .ok_or("packet too small")?,
+                            ) as usize;
+                            sub_off += 4;
+                            if sub_off + sl > off + len {
+                                break;
+                            }
+                            match sc {
+                                5 if sl >= 24 => {
+                                    let addr_bytes =
+                                        view.read_array::<16>(sub_off).ok_or("packet too small")?;
+                                    let pref = u32::from_be_bytes(
+                                        view.read_array::<4>(sub_off + 16)
+                                            .ok_or("packet too small")?,
+                                    );
+                                    let valid = u32::from_be_bytes(
+                                        view.read_array::<4>(sub_off + 20)
+                                            .ok_or("packet too small")?,
+                                    );
+                                    found_addr = Some((Ipv6Address::new(addr_bytes), pref, valid));
+                                }
+                                13 if sl >= 2 => {
+                                    status_code = Some(u16::from_be_bytes(
+                                        view.read_array::<2>(sub_off).ok_or("packet too small")?,
+                                    ));
+                                }
+                                _ => {}
+                            }
+                            sub_off += sl;
+                        }
+                    }
+                }
+                13 => {
+                    if len >= 2 {
+                        status_code = Some(u16::from_be_bytes(
+                            view.read_array::<2>(off).ok_or("packet too small")?,
+                        ));
+                    }
+                }
+                23 => {
+                    let count = len / 16;
+                    for i in 0..count {
+                        if dns_servers.len() >= 8 {
+                            break;
+                        }
+                        let start = off + i * 16;
+                        if start + 16 <= off + len {
+                            let addr_bytes =
+                                view.read_array::<16>(start).ok_or("packet too small")?;
+                            dns_servers.push(Ipv6Address::new(addr_bytes));
+                        }
+                    }
+                }
+                24 => {
+                    let domain_data = view.read_vec(off, len);
+                    Self::parse_domain_search_list(&domain_data, &mut domain_search);
+                }
+                _ => {}
+            }
+
+            off += len;
+        }
+
+        if let Some(sc) = status_code {
+            if sc != 0 {
+                log::warn!("[NET] DHCPv6: Received status code {} in reply", sc);
+                return Ok(None);
+            }
+        }
+
+        match found_addr {
+            Some((addr, pref, valid)) => {
+                let mut t1 = found_t1;
+                let mut t2 = found_t2;
+                if t1 == 0 {
+                    t1 = pref / 2;
+                }
+                if t2 == 0 {
+                    t2 = (pref as u64 * 8 / 10) as u32;
+                }
+
+                let lease = DhcpV6Lease {
+                    addr,
+                    preferred_lifetime: pref,
+                    valid_lifetime: valid,
+                    t1,
+                    t2,
+                    obtained_at: current_time,
+                    dns_servers,
+                    domain_search,
+                };
+                Ok(Some(lease))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// DNS エンコードされたドメインサーチリストをパースする (RFC 1035 Section 4.1.4 形式)
     /// Security: 圧縮ポインタの検出、ラベル長・合計長のバリデーション、無限ループ防止を追加。
     fn parse_domain_search_list(data: &[u8], out: &mut Vec<alloc::string::String>) {
@@ -1011,6 +1173,76 @@ impl DhcpV6Client {
             }
             Ok(None) => return false,
             Err(_) => return false,
+        }
+    }
+
+    pub fn handle_packet_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        src: Ipv6Address,
+    ) -> bool {
+        let now = crate::net::l4::endpoint::tcb_table().get_current_tick();
+        let msg_type = crate::net::payload::PacketPayloadView::new(payload)
+            .read_array::<1>(0)
+            .map(|bytes| bytes[0])
+            .unwrap_or(0);
+
+        let _ = self.parse_reply_payload(payload, now);
+
+        if msg_type == (DhcpV6MessageType::Advertise as u8) {
+            if let Ok(mut st) = self.state.lock() {
+                if *st == DhcpV6State::SolicitSent {
+                    if let Ok(mut sd) = self.server_addr.lock() {
+                        *sd = Some(src);
+                    }
+                    self.generate_secure_xid();
+
+                    *st = DhcpV6State::Requesting;
+                    self.state_time.store(now, Ordering::SeqCst);
+                    self.retry_count.store(0, Ordering::SeqCst);
+
+                    let mut buf = [0u8; 256];
+                    if let Ok(len) = self.build_request_from_advertise(&mut buf) {
+                        if let Some(src_ip) = self.get_link_local() {
+                            self.enqueue_v6_send_bytes(src_ip, src, &buf[..len]);
+                        }
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if msg_type != (DhcpV6MessageType::Reply as u8) {
+            return false;
+        }
+
+        match self.parse_reply_payload(payload, now) {
+            Ok(Some(lease)) => {
+                if let Ok(mut g) = self.lease.lock() {
+                    *g = Some(lease.clone());
+                }
+
+                if let Ok(mut sd) = self.server_addr.lock() {
+                    *sd = Some(src);
+                }
+
+                crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                    self.runtime,
+                    crate::net::l4::endpoint::event::NetworkEvent::ApplyIpv6Address {
+                        addr: lease.addr.octets(),
+                        result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
+                        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+                    },
+                );
+
+                if let Ok(mut st) = self.state.lock() {
+                    *st = DhcpV6State::Bound;
+                }
+                true
+            }
+            Ok(None) => false,
+            Err(_) => false,
         }
     }
 

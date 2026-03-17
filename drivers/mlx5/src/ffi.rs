@@ -20,8 +20,8 @@ use kernel_api::abi::driver::{
 };
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
-    AbiNetPortKind, AbiNetPortRegistration, AbiNetPortRuntimeV1, AbiNetPortStats, AbiNetRxMeta,
-    AbiNetTxMeta, DriverContext, KernelApiV3, PackedPciLocation,
+    AbiNetPortKind, AbiNetPortRegistrationV3, AbiNetPortRuntimeV2, AbiNetPortStats, AbiNetRxMeta,
+    AbiNetTxMeta, AbiPacketRefRaw, DriverContext, KernelApiV4, PackedPciLocation,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
@@ -42,7 +42,7 @@ use crate::wq::TxOptions;
 // ============================================================================
 
 #[inline]
-fn kernel_api() -> &'static KernelApiV3 {
+fn kernel_api() -> &'static KernelApiV4 {
     kernel_api::service::kernel::abi()
 }
 
@@ -120,7 +120,7 @@ extern "C" fn test_kernel_unregister_nvme_namespace(_handle: u64) -> i32 {
 
 #[cfg(test)]
 extern "C" fn test_kernel_register_netdev_port(
-    _reg: *const AbiNetPortRegistration,
+    _reg: *const AbiNetPortRegistrationV3,
     _out: *mut u64,
 ) -> i32 {
     -1
@@ -145,10 +145,73 @@ extern "C" fn test_kernel_unregister_audio_controller(_handle: u64) -> i32 {
 }
 
 #[cfg(test)]
+extern "C" fn test_kernel_current_domain_id() -> u64 {
+    0
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_exchange_alloc_raw(
+    _size: usize,
+    _align: usize,
+    _out_ptr: *mut *mut u8,
+    _out_owner: *mut u64,
+) -> i32 {
+    AbiError::NotSupported as i32
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_exchange_dealloc_raw(
+    _ptr: *mut u8,
+    _owner: u64,
+    _size: usize,
+    _align: usize,
+) -> i32 {
+    AbiError::NotSupported as i32
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_exchange_transfer_raw(
+    _ptr: *mut u8,
+    _from_owner: u64,
+    _to_owner: u64,
+) -> i32 {
+    AbiError::NotSupported as i32
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_ipc_create_channel_raw(
+    _out_sender: *mut u64,
+    _out_receiver: *mut u64,
+) -> i32 {
+    AbiError::NotSupported as i32
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_ipc_close_raw(_handle: u64) -> i32 {
+    AbiError::NotSupported as i32
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_ipc_send_raw(
+    _handle: u64,
+    _raw: *const kernel_api::abi::driver::AbiRRefRaw,
+) -> i32 {
+    AbiError::NotSupported as i32
+}
+
+#[cfg(test)]
+extern "C" fn test_kernel_ipc_recv_raw(
+    _handle: u64,
+    _out_raw: *mut kernel_api::abi::driver::AbiRRefRaw,
+) -> i32 {
+    AbiError::NotSupported as i32
+}
+
+#[cfg(test)]
 #[unsafe(no_mangle)]
-pub static __exorust_kernel_api_v3: KernelApiV3 = KernelApiV3 {
+pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     abi_version: kernel_api::abi::driver::KERNEL_API_ABI_VERSION,
-    abi_size: core::mem::size_of::<KernelApiV3>() as u32,
+    abi_size: core::mem::size_of::<KernelApiV4>() as u32,
     log: test_kernel_log,
     alloc_dma_for_device_raw: test_kernel_alloc_dma_for_device_raw,
     release_dma_raw: test_kernel_release_dma_raw,
@@ -161,6 +224,14 @@ pub static __exorust_kernel_api_v3: KernelApiV3 = KernelApiV3 {
     heap_alloc: None,
     heap_dealloc: None,
     panic_abort: None,
+    current_domain_id: test_kernel_current_domain_id,
+    exchange_alloc_raw: test_kernel_exchange_alloc_raw,
+    exchange_dealloc_raw: test_kernel_exchange_dealloc_raw,
+    exchange_transfer_raw: test_kernel_exchange_transfer_raw,
+    ipc_create_channel_raw: test_kernel_ipc_create_channel_raw,
+    ipc_close_raw: test_kernel_ipc_close_raw,
+    ipc_send_raw: test_kernel_ipc_send_raw,
+    ipc_recv_raw: test_kernel_ipc_recv_raw,
     register_block_device: test_kernel_register_block_device,
     unregister_block_device: test_kernel_unregister_block_device,
     register_nvme_namespace: test_kernel_register_nvme_namespace,
@@ -436,7 +507,7 @@ struct Mlx5StandaloneState {
     mmio: AbiMmioHandle,
     pci_locator: PackedPciLocation,
     registration_handle: Option<u64>,
-    runtime: Option<AbiNetPortRuntimeV1>,
+    runtime: Option<AbiNetPortRuntimeV2>,
     poll_generation: u64,
     next_sq: AtomicU32,
     last_link_up: bool,
@@ -444,8 +515,8 @@ struct Mlx5StandaloneState {
     rx_packets: u64,
     tx_errors: u64,
     rx_errors: u64,
-    tx_slots: Vec<Vec<Option<DmaSlice<CpuOwned>>>>,
-    rx_slots: Vec<Vec<Option<DmaSlice<CpuOwned>>>>,
+    tx_slots: Vec<Vec<Option<AbiPacketRefRaw>>>,
+    rx_slots: Vec<Vec<Option<AbiPacketRefRaw>>>,
 }
 
 static MLX5_STANDALONE_STATE: Mutex<Option<Mlx5StandaloneState>> = Mutex::new(None);
@@ -480,6 +551,19 @@ fn init_slot_ring<T>() -> Vec<Option<T>> {
     ring
 }
 
+fn allocate_runtime_packet(runtime: AbiNetPortRuntimeV2) -> Result<AbiPacketRefRaw, AbiError> {
+    let mut packet = AbiPacketRefRaw::default();
+    let status = (runtime.alloc_packet)(runtime.runtime_cookie, &mut packet);
+    let status = AbiError::from_raw(status);
+    if status.is_success() && !packet.is_null() {
+        Ok(packet)
+    } else if status.is_success() {
+        Err(AbiError::OutOfMemory)
+    } else {
+        Err(status)
+    }
+}
+
 fn schedule_runtime_poll_locked(state: &Mlx5StandaloneState) {
     let Some(runtime) = state.runtime else {
         return;
@@ -494,30 +578,31 @@ fn schedule_runtime_poll_locked(state: &Mlx5StandaloneState) {
     );
 }
 
-fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), kernel_api::error::KapiError> {
-    let buffer_size = cmp::max(
-        MLX5_RX_BUFFER_SIZE,
-        state
-            .device
-            .port(0)
-            .map(|port| port.mtu() as usize + 256)
-            .unwrap_or(MLX5_RX_BUFFER_SIZE),
-    );
+fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
+    let Some(runtime) = state.runtime else {
+        return Err(AbiError::NotInitialized);
+    };
 
     for rq_index in 0..state.rx_slots.len() {
         for slot in 0..MLX5_WQ_DEPTH as usize {
-            let dma = kernel_api::service::kernel::instance()
-                .alloc_dma_for_device(buffer_size, state.pci_locator)
-                .map_err(|_| kernel_api::error::KapiError::OutOfMemory)?;
-            let device_addr = dma.device_address();
-            let virt_addr = dma.as_ptr() as u64;
-            let size = dma.size() as u32;
+            if state.rx_slots[rq_index][slot].is_some() {
+                continue;
+            }
+            let mut packet = allocate_runtime_packet(runtime)?;
+            let buffer_size = packet.capacity().saturating_sub(packet.headroom());
+            if buffer_size == 0 {
+                return Err(AbiError::OutOfMemory);
+            }
+            packet.set_len(buffer_size);
+            let device_addr = packet.device_address();
+            let virt_addr = packet.data_mut().as_ptr() as u64;
+            let size = buffer_size as u32;
             match unsafe {
                 state
                     .device
                     .post_receive(rq_index, device_addr, virt_addr, size)
             } {
-                Ok(_) => state.rx_slots[rq_index][slot] = Some(dma),
+                Ok(_) => state.rx_slots[rq_index][slot] = Some(packet),
                 Err(err) => {
                     log::warn!(
                         target: "mlx5",
@@ -557,39 +642,39 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
             };
             let slot = rx_info.slot_index as usize;
 
-            let Some(buffer) = state.rx_slots[rq_index][slot].as_mut() else {
+            let Some(mut packet) = state.rx_slots[rq_index][slot].take() else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
-                let _ = unsafe {
-                    state.device.post_receive(
-                        rq_index,
-                        rx_info.device_addr,
-                        rx_info.virt_addr,
-                        rx_info.size,
-                    )
-                };
                 continue;
-            };
-
-            let mut repost = || unsafe {
-                state.device.post_receive(
-                    rq_index,
-                    buffer.device_address(),
-                    buffer.as_ptr() as u64,
-                    buffer.size() as u32,
-                )
             };
 
             if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
                 state.rx_errors = state.rx_errors.saturating_add(1);
-                let _ = repost();
+                if let Ok(mut replacement) = allocate_runtime_packet(runtime) {
+                    let len = replacement
+                        .capacity()
+                        .saturating_sub(replacement.headroom());
+                    replacement.set_len(len);
+                    let _ = unsafe {
+                        state.device.post_receive(
+                            rq_index,
+                            replacement.device_address(),
+                            replacement.data_mut().as_ptr() as u64,
+                            len as u32,
+                        )
+                    };
+                    state.rx_slots[rq_index][slot] = Some(replacement);
+                }
                 continue;
             }
 
-            let byte_count = cmp::min(cqe.byte_count as usize, buffer.size());
-            let status = (runtime.submit_rx_bytes)(
+            let byte_count = cmp::min(
+                cqe.byte_count as usize,
+                packet.capacity().saturating_sub(packet.headroom()),
+            );
+            packet.set_len(byte_count);
+            let status = (runtime.submit_rx_packet)(
                 runtime.runtime_cookie,
-                buffer.as_ptr(),
-                byte_count,
+                &mut packet,
                 AbiNetRxMeta {
                     queue_index: rq_index as u16,
                     header_len: 0,
@@ -602,7 +687,36 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
             } else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
             }
-            let _ = repost();
+
+            match allocate_runtime_packet(runtime) {
+                Ok(mut replacement) => {
+                    let len = replacement
+                        .capacity()
+                        .saturating_sub(replacement.headroom());
+                    replacement.set_len(len);
+                    match unsafe {
+                        state.device.post_receive(
+                            rq_index,
+                            replacement.device_address(),
+                            replacement.data_mut().as_ptr() as u64,
+                            len as u32,
+                        )
+                    } {
+                        Ok(_) => state.rx_slots[rq_index][slot] = Some(replacement),
+                        Err(err) => {
+                            state.rx_errors = state.rx_errors.saturating_add(1);
+                            log::warn!(
+                                target: "mlx5",
+                                "RX repost failed at rq={} slot={} with {:?}",
+                                rq_index,
+                                slot,
+                                err
+                            );
+                        }
+                    }
+                }
+                Err(_) => state.rx_errors = state.rx_errors.saturating_add(1),
+            }
         }
     }
 }
@@ -678,7 +792,7 @@ async fn mlx5_poll_kicker(generation: u64) {
     }
 }
 
-extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntimeV1) -> i32 {
+extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntimeV2) -> i32 {
     if runtime.is_null() {
         return AbiError::InvalidParam as i32;
     }
@@ -689,6 +803,10 @@ extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntimeV
             return AbiError::NotInitialized as i32;
         };
         state.runtime = Some(unsafe { *runtime });
+        if refill_rx_ring(state).is_err() {
+            state.runtime = None;
+            return AbiError::OutOfMemory as i32;
+        }
         state.poll_generation = state.poll_generation.wrapping_add(1);
         if let Some(runtime) = state.runtime {
             let _ = (runtime.update_link)(runtime.runtime_cookie, state.last_link_up);
@@ -709,15 +827,12 @@ extern "C" fn mlx5_netdev_bind(_opaque: u64, _if_id: u16) -> i32 {
 
 extern "C" fn mlx5_netdev_submit_tx(
     _opaque: u64,
-    data_ptr: *const u8,
-    data_len: usize,
+    packet: *mut AbiPacketRefRaw,
     meta: AbiNetTxMeta,
 ) -> i32 {
-    if data_ptr.is_null() || data_len == 0 {
+    let Some(mut packet) = AbiPacketRefRaw::take(packet) else {
         return AbiError::InvalidParam as i32;
-    }
-
-    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len) };
+    };
     let mut guard = MLX5_STANDALONE_STATE.lock();
     let Some(state) = guard.as_mut() else {
         return AbiError::NotInitialized as i32;
@@ -726,13 +841,16 @@ extern "C" fn mlx5_netdev_submit_tx(
         return AbiError::NotInitialized as i32;
     }
 
+    let data_len = packet.len();
+    if data_len == 0 {
+        return AbiError::InvalidParam as i32;
+    }
+
     let frame_len = cmp::max(data_len, 60);
-    let mut dma = match kernel_api::service::kernel::instance()
-        .alloc_dma_for_device(frame_len, state.pci_locator)
-    {
-        Ok(dma) => dma,
-        Err(_) => return AbiError::OutOfMemory as i32,
-    };
+    if frame_len > packet.capacity().saturating_sub(packet.headroom()) {
+        return AbiError::OutOfMemory as i32;
+    }
+    packet.set_len(frame_len);
     let inline_len = match state
         .device
         .port(0)
@@ -745,18 +863,16 @@ extern "C" fn mlx5_netdev_submit_tx(
     };
     let mut inline_hdr = [0u8; 18];
     {
-        let slice = dma.as_slice_mut();
-        slice[..data_len].copy_from_slice(data);
         if frame_len > data_len {
-            slice[data_len..frame_len].fill(0);
+            packet.data_mut()[data_len..frame_len].fill(0);
         }
         if inline_len > 0 {
-            inline_hdr[..inline_len].copy_from_slice(&slice[..inline_len]);
+            inline_hdr[..inline_len].copy_from_slice(&packet.data()[..inline_len]);
         }
     }
 
-    let data_device = dma.device_address();
-    let data_virt = dma.as_ptr() as u64;
+    let data_device = packet.device_address();
+    let data_virt = packet.data_mut().as_ptr() as u64;
     let sq_count = state.tx_slots.len().max(1) as u32;
     let sq_index = if meta.has_queue_index {
         (meta.queue_index as u32 % sq_count) as usize
@@ -781,7 +897,7 @@ extern "C" fn mlx5_netdev_submit_tx(
     } {
         Ok(wqe_idx) => {
             let slot = (wqe_idx as usize) % (MLX5_WQ_DEPTH as usize);
-            state.tx_slots[sq_index][slot] = Some(dma);
+            state.tx_slots[sq_index][slot] = Some(packet);
             state.tx_packets = state.tx_packets.saturating_add(1);
             schedule_runtime_poll_locked(state);
             AbiError::Success as i32
@@ -842,8 +958,12 @@ extern "C" fn mlx5_netdev_stop(_opaque: u64) {
     }
 }
 
-fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistration {
-    AbiNetPortRegistration::new(
+extern "C" fn mlx5_netdev_set_interrupts_enabled(_opaque: u64, _enabled: bool) -> i32 {
+    AbiError::Success as i32
+}
+
+fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistrationV3 {
+    AbiNetPortRegistrationV3::new(
         AbiNetPortInfo {
             port_id: 0x0002_0000,
             kind: AbiNetPortKind::Mlx5 as u32,
@@ -864,6 +984,7 @@ fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistration {
         mlx5_netdev_handle_event,
         mlx5_netdev_stats,
         mlx5_netdev_stop,
+        mlx5_netdev_set_interrupts_enabled,
     )
 }
 
@@ -959,9 +1080,9 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let _ = unsafe { device.refresh_port_runtime_state(0) };
 
             let mut tx_slots = Vec::with_capacity(device.num_sqs());
-            tx_slots.resize_with(device.num_sqs(), init_slot_ring::<DmaSlice<CpuOwned>>);
+            tx_slots.resize_with(device.num_sqs(), init_slot_ring::<AbiPacketRefRaw>);
             let mut rx_slots = Vec::with_capacity(device.num_rqs());
-            rx_slots.resize_with(device.num_rqs(), init_slot_ring::<DmaSlice<CpuOwned>>);
+            rx_slots.resize_with(device.num_rqs(), init_slot_ring::<AbiPacketRefRaw>);
 
             let last_link_up = device
                 .port(0)
@@ -984,7 +1105,6 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 tx_slots,
                 rx_slots,
             };
-            refill_rx_ring(&mut state)?;
             *MLX5_STANDALONE_STATE.lock() = Some(state);
             Ok(())
         })

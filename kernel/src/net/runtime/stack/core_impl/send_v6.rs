@@ -9,6 +9,18 @@
 use super::*;
 
 impl NetworkStack {
+    fn copy_payload_into_ipv6_frame(
+        payload: &crate::net::payload::PacketPayloadView<'_>,
+        dst: &mut [u8],
+    ) -> Option<usize> {
+        let len = payload.total_len();
+        if len > dst.len() {
+            return None;
+        }
+        let copied = payload.copy_all_into(&mut dst[..len]);
+        (copied == len).then_some(len)
+    }
+
     /// Send ICMPv6 Echo Reply with explicit source
     pub(crate) fn send_icmpv6_echo_reply_with_src(
         &mut self,
@@ -144,6 +156,23 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_data: &[u8],
     ) {
+        let Some(payload) = crate::net::payload::payload_from_bytes(icmpv6_data) else {
+            self.stats.record_dropped();
+            return;
+        };
+        self.send_ipv6_icmpv6_payload(
+            src,
+            dst,
+            &crate::net::payload::PacketPayloadView::new(&payload),
+        );
+    }
+
+    pub(crate) fn send_ipv6_icmpv6_payload(
+        &mut self,
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        icmpv6_data: &crate::net::payload::PacketPayloadView<'_>,
+    ) {
         let config = self.config;
         let current_time = self.current_time.load(Ordering::Relaxed);
 
@@ -157,15 +186,13 @@ impl NetworkStack {
                     match ndp.resolve(dst) {
                         Some(mac) => mac,
                         None => {
-                            let Some(payload) =
-                                crate::net::payload::payload_from_bytes(icmpv6_data)
-                            else {
-                                self.stats.record_dropped();
-                                return;
-                            };
                             // Queue packet for later delivery
-                            self.ndp_pending_queue
-                                .enqueue(*src, *dst, payload, current_time);
+                            self.ndp_pending_queue.enqueue(
+                                *src,
+                                *dst,
+                                icmpv6_data.payload().clone(),
+                                current_time,
+                            );
 
                             // Start NDP resolution (send NS)
                             let ns_msg = ndp.start_resolution(dst, current_time);
@@ -212,11 +239,11 @@ impl NetworkStack {
 
                 // Copy ICMPv6 payload
                 let payload = ip_packet.payload_mut();
-                if icmpv6_data.len() <= payload.len() {
-                    payload[..icmpv6_data.len()].copy_from_slice(icmpv6_data);
-                    ip_packet.finalize(icmpv6_data.len());
+                if let Some(payload_len) = Self::copy_payload_into_ipv6_frame(icmpv6_data, payload)
+                {
+                    ip_packet.finalize(payload_len);
 
-                    let total_len = IPV6_HEADER_SIZE + icmpv6_data.len();
+                    let total_len = IPV6_HEADER_SIZE + payload_len;
                     frame.set_payload_len(total_len);
 
                     self.transmit(frame.as_bytes());
@@ -231,6 +258,25 @@ impl NetworkStack {
         src: &Ipv6Address,
         dst: &Ipv6Address,
         icmpv6_data: &[u8],
+    ) {
+        let Some(payload) = crate::net::payload::payload_from_bytes(icmpv6_data) else {
+            self.stats.record_dropped();
+            return;
+        };
+        self.send_ipv6_icmpv6_payload_on(
+            if_id,
+            src,
+            dst,
+            &crate::net::payload::PacketPayloadView::new(&payload),
+        );
+    }
+
+    pub(crate) fn send_ipv6_icmpv6_payload_on(
+        &mut self,
+        if_id: super::NetIfId,
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        icmpv6_data: &crate::net::payload::PacketPayloadView<'_>,
     ) {
         let Ok((resolved_if, config, resolved_src)) = self.resolve_ipv6_egress(
             crate::net::types::InterfaceScope::Pinned(if_id),
@@ -248,10 +294,13 @@ impl NetworkStack {
         } else {
             let mut queued = false;
             match self.resolve_ndp_for_send(resolved_if, dst, current_time, |pending| {
-                if let Some(payload) = crate::net::payload::payload_from_bytes(icmpv6_data) {
-                    pending.enqueue(resolved_src, *dst, payload, current_time);
-                    queued = true;
-                }
+                pending.enqueue(
+                    resolved_src,
+                    *dst,
+                    icmpv6_data.payload().clone(),
+                    current_time,
+                );
+                queued = true;
             }) {
                 Some(Ok(mac)) => MacAddress::new(mac),
                 Some(Err(_)) if !queued => {
@@ -287,11 +336,11 @@ impl NetworkStack {
                 ip_packet.set_hop_limit(255);
 
                 let payload = ip_packet.payload_mut();
-                if icmpv6_data.len() <= payload.len() {
-                    payload[..icmpv6_data.len()].copy_from_slice(icmpv6_data);
-                    ip_packet.finalize(icmpv6_data.len());
+                if let Some(payload_len) = Self::copy_payload_into_ipv6_frame(icmpv6_data, payload)
+                {
+                    ip_packet.finalize(payload_len);
 
-                    let total_len = IPV6_HEADER_SIZE + icmpv6_data.len();
+                    let total_len = IPV6_HEADER_SIZE + payload_len;
                     frame.set_payload_len(total_len);
 
                     let _ = self.transmit_on(resolved_if, frame.as_bytes());
@@ -672,12 +721,11 @@ impl NetworkStack {
         for pkt in pending {
             match pkt.payload {
                 PendingIpv6Payload::Icmpv6(data) => {
-                    let data = crate::net::payload::PacketPayloadView::new(&data)
-                        .read_vec(0, data.total_len());
+                    let data = crate::net::payload::PacketPayloadView::new(&data);
                     if let Some(if_id) = if_id {
-                        self.send_ipv6_icmpv6_on(if_id, &pkt.src, &pkt.dst, &data);
+                        self.send_ipv6_icmpv6_payload_on(if_id, &pkt.src, &pkt.dst, &data);
                     } else {
-                        self.send_ipv6_icmpv6(&pkt.src, &pkt.dst, &data);
+                        self.send_ipv6_icmpv6_payload(&pkt.src, &pkt.dst, &data);
                     }
                 }
                 PendingIpv6Payload::Udp {

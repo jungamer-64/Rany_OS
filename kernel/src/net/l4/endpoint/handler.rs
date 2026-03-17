@@ -933,13 +933,11 @@ impl NetworkEventHandler {
                         match protocol {
                             crate::net::l3::ipv4::IpProtocol::Tcp => {
                                 if let Some(transport_payload) = transport_payload {
-                                    let transport = PacketPayloadView::new(&transport_payload)
-                                        .read_vec(0, transport_payload.total_len());
-                                    super::tcp_rx::process_tcp_segment_on(
+                                    super::tcp_rx::process_tcp_segment_payload_on(
                                         if_id,
                                         src_ip.octets(),
                                         dst_ip.octets(),
-                                        &transport,
+                                        &transport_payload,
                                     );
                                 }
                             }
@@ -958,10 +956,8 @@ impl NetworkEventHandler {
                             }
                             crate::net::l3::ipv4::IpProtocol::Icmp => {
                                 if let Some(transport_payload) = transport_payload {
-                                    let transport = PacketPayloadView::new(&transport_payload)
-                                        .read_vec(0, transport_payload.total_len());
-                                    stack.process_icmp_data(
-                                        &transport,
+                                    stack.process_icmp_payload(
+                                        &transport_payload,
                                         src_ip,
                                         dst_ip,
                                         ttl,
@@ -971,9 +967,7 @@ impl NetworkEventHandler {
                             }
                             crate::net::l3::ipv4::IpProtocol::Igmp => {
                                 if let Some(transport_payload) = transport_payload {
-                                    let transport = PacketPayloadView::new(&transport_payload)
-                                        .read_vec(0, transport_payload.total_len());
-                                    stack.process_igmp_data(&transport, src_ip, ttl);
+                                    stack.process_igmp_payload(&transport_payload, src_ip, ttl);
                                 }
                             }
                             _ => {}
@@ -1048,10 +1042,11 @@ impl NetworkEventHandler {
                         match protocol {
                             crate::net::l3::ipv4::IpProtocol::Tcp => {
                                 if let Some(transport_payload) = transport_payload {
-                                    let transport = PacketPayloadView::new(&transport_payload)
-                                        .read_vec(0, transport_payload.total_len());
-                                    super::tcp_rx::process_tcp_segment_v6_on(
-                                        if_id, src, dst, &transport,
+                                    super::tcp_rx::process_tcp_segment_v6_payload_on(
+                                        if_id,
+                                        src,
+                                        dst,
+                                        &transport_payload,
                                     );
                                 }
                             }
@@ -2950,7 +2945,9 @@ impl NetworkEventHandler {
             };
 
             let data_len = payload.total_len() as u32;
-            let data = PacketPayloadView::new(&payload).read_vec(0, payload.total_len());
+            let Some(payload_packet) = crate::net::payload::packet_from_payload(&payload) else {
+                return EventHandleResult::ProtocolError(EndpointError::Internal);
+            };
 
             // TCPセグメントを構築
             let mut segment = TcpSegmentBuilder::new(local.port(), remote.port())
@@ -2958,7 +2955,7 @@ impl NetworkEventHandler {
                 .ack(ack)
                 .psh()
                 .window(advertised_wnd)
-                .payload(&data)
+                .payload(payload_packet.data())
                 .build();
 
             if let Err(e) = apply_tcp_checksum_for_addrs(&mut segment, local, remote) {
@@ -3934,10 +3931,7 @@ pub mod tests {
             .recv_raw_payload_sync()
             .expect("raw payload");
         assert_eq!(if_id, ingress_if);
-        assert_eq!(
-            crate::net::payload::PacketPayloadView::new(&payload).read_vec(0, payload.total_len()),
-            ip_bytes
-        );
+        assert_eq!(crate::net::payload::payload_to_vec(&payload), ip_bytes);
 
         let mut buf = [0u8; 32];
         assert!(matches!(

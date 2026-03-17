@@ -678,12 +678,12 @@ impl Mlx5Device {
 }
 
 #[cfg(test)]
-mod tests {
+mod command_transport_tests {
     use super::Mlx5Device;
 
     #[test]
     fn tx_runtime_probe_requires_completion_before_healthy() {
-        let mut device = Mlx5Device::new(0, 0, 0x1013);
+        let mut device = Mlx5Device::new(0, 0, crate::defs::CONNECTX4_VF_DEVICE_ID);
         device.set_tx_runtime_state(true, true);
 
         assert!(device.tx_path_enabled());
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn tx_runtime_probe_failure_marks_path_unavailable() {
-        let mut device = Mlx5Device::new(0, 0, 0x1013);
+        let mut device = Mlx5Device::new(0, 0, crate::defs::CONNECTX4_VF_DEVICE_ID);
         device.set_tx_runtime_state(true, true);
 
         assert!(device.mark_tx_runtime_broken());

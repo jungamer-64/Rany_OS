@@ -210,24 +210,7 @@ impl DnsClient {
         }
 
         if let Some(data) = udp_response {
-            let parsed = match &data {
-                kernel_api::resource::net::PacketPayload::Single(packet) => {
-                    if self.needs_tcp_fallback(packet.data()) {
-                        None
-                    } else {
-                        Some(self.parse_response(packet.data(), tick, name, qtype))
-                    }
-                }
-                kernel_api::resource::net::PacketPayload::Chain(_) => {
-                    let bytes = crate::net::payload::PacketPayloadView::new(&data)
-                        .read_vec(0, data.total_len());
-                    if self.needs_tcp_fallback(&bytes) {
-                        None
-                    } else {
-                        Some(self.parse_response(&bytes, tick, name, qtype))
-                    }
-                }
-            };
+            let parsed = self.parse_response_payload(&data, tick, name, qtype);
 
             if let Some(parsed) = parsed {
                 return parsed.map_err(|_| "Parse error");
@@ -655,6 +638,21 @@ impl DnsClient {
         }
 
         Ok(records)
+    }
+
+    pub fn parse_response_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        current_tick: u64,
+        expected_name: &str,
+        expected_type: DnsQueryType,
+    ) -> Option<Result<Vec<DnsRecord>, DnsResponseCode>> {
+        let packet = crate::net::payload::packet_from_payload(payload)?;
+        if self.needs_tcp_fallback(packet.data()) {
+            None
+        } else {
+            Some(self.parse_response(packet.data(), current_tick, expected_name, expected_type))
+        }
     }
 
     /// 回答セクションをパースする

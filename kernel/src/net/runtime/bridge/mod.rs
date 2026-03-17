@@ -257,7 +257,7 @@ pub fn transmit_from_stack(
     meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
     let resolved_if = if_id.or_else(primary_stack_glue_if);
-    let sent = device::transmit_with_meta(if_id, data, meta);
+    let sent = device::transmit_bytes_with_meta_internal(if_id, data, meta);
 
     if sent {
         if let Some(if_id) = resolved_if {

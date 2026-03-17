@@ -566,8 +566,7 @@ pub mod tests {
             .expect("pinned delivery");
         assert_eq!(if_id, NetIfId(12));
         assert_eq!(
-            crate::net::payload::PacketPayloadView::new(&received_pinned)
-                .read_vec(0, received_pinned.total_len()),
+            crate::net::payload::payload_to_vec(&received_pinned),
             vec![1, 2, 3, 4]
         );
         assert!(matches!(
@@ -590,8 +589,7 @@ pub mod tests {
             .expect("wildcard delivery");
         assert_eq!(if_id, NetIfId(13));
         assert_eq!(
-            crate::net::payload::PacketPayloadView::new(&received_any)
-                .read_vec(0, received_any.total_len()),
+            crate::net::payload::payload_to_vec(&received_any),
             vec![9, 8, 7]
         );
     }

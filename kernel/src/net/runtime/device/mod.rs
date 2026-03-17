@@ -1244,11 +1244,15 @@ pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMet
     }
 }
 
-pub fn transmit(if_id: Option<NetIfId>, data: &[u8]) -> bool {
-    transmit_with_meta(if_id, data, NetTxMeta::default())
+pub(crate) fn transmit_bytes_internal(if_id: Option<NetIfId>, data: &[u8]) -> bool {
+    transmit_bytes_with_meta_internal(if_id, data, NetTxMeta::default())
 }
 
-pub fn transmit_with_meta(if_id: Option<NetIfId>, data: &[u8], meta: NetTxMeta) -> bool {
+pub(crate) fn transmit_bytes_with_meta_internal(
+    if_id: Option<NetIfId>,
+    data: &[u8],
+    meta: NetTxMeta,
+) -> bool {
     let resolved_if = if_id.or_else(primary_if);
     let Some(handle) = resolved_if.and_then(lookup_port) else {
         if let Some(completion_id) = meta.completion_id {

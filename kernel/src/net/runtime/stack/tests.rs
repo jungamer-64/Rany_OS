@@ -12,7 +12,7 @@ fn test_payload(data: &[u8]) -> PacketPayload {
 }
 
 fn payload_bytes(payload: &PacketPayload) -> Vec<u8> {
-    crate::net::payload::PacketPayloadView::new(payload).read_vec(0, payload.total_len())
+    crate::net::payload::payload_to_vec(payload)
 }
 
 fn record_test_tx_if(

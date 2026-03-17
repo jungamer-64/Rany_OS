@@ -122,26 +122,99 @@ impl<'a> PacketPayloadView<'a> {
     pub fn copy_all_into(&self, dst: &mut [u8]) -> usize {
         self.copy_range(0, dst)
     }
+
+    pub fn cursor(&self) -> PacketPayloadCursor<'_> {
+        PacketPayloadCursor {
+            view: PacketPayloadView::new(self.payload),
+            offset: 0,
+        }
+    }
 }
 
-fn alloc_packet_for_len(len: usize) -> Option<PacketRef> {
+pub struct PacketPayloadCursor<'a> {
+    view: PacketPayloadView<'a>,
+    offset: usize,
+}
+
+impl<'a> PacketPayloadCursor<'a> {
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.view.total_len().saturating_sub(self.offset)
+    }
+
+    pub fn skip(&mut self, len: usize) -> bool {
+        if len > self.remaining() {
+            return false;
+        }
+        self.offset += len;
+        true
+    }
+
+    pub fn read_array<const N: usize>(&mut self) -> Option<[u8; N]> {
+        let out = self.view.read_array::<N>(self.offset)?;
+        self.offset += N;
+        Some(out)
+    }
+
+    pub fn read_u8(&mut self) -> Option<u8> {
+        self.read_array::<1>().map(|bytes| bytes[0])
+    }
+
+    pub fn read_u16_be(&mut self) -> Option<u16> {
+        self.read_array::<2>().map(u16::from_be_bytes)
+    }
+
+    pub fn read_u32_be(&mut self) -> Option<u32> {
+        self.read_array::<4>().map(u32::from_be_bytes)
+    }
+
+    pub fn read_vec(&mut self, len: usize) -> Vec<u8> {
+        let bytes = self.view.read_vec(self.offset, len);
+        self.offset = self.offset.saturating_add(bytes.len());
+        bytes
+    }
+
+    pub fn copy_into(&mut self, dst: &mut [u8]) -> usize {
+        let copied = self.view.copy_range(self.offset, dst);
+        self.offset = self.offset.saturating_add(copied);
+        copied
+    }
+}
+
+pub fn payload_to_vec(payload: &PacketPayload) -> Vec<u8> {
+    let mut out = vec![0u8; payload.total_len()];
+    let written = PacketPayloadView::new(payload).copy_all_into(&mut out);
+    out.truncate(written);
+    out
+}
+
+pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketRef> {
     if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
-        let capacity = packet.capacity().saturating_sub(packet.headroom());
-        if len <= capacity {
+        let available_headroom = packet.headroom();
+        let capacity = packet.capacity().saturating_sub(available_headroom);
+        if headroom <= available_headroom && len <= capacity {
             packet.set_len(len);
             return Some(packet);
         }
     }
 
-    let dma_len = len.saturating_add(DEFAULT_PACKET_HEADROOM);
+    let dma_len = len.saturating_add(headroom.max(DEFAULT_PACKET_HEADROOM));
     let dma_buf = crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(dma_len)?;
     let mut packet = crate::net::datapath::mempool::packet_ref_from_dma_slice(dma_buf);
-    let capacity = packet.capacity().saturating_sub(packet.headroom());
-    if len > capacity {
+    let available_headroom = packet.headroom();
+    let capacity = packet.capacity().saturating_sub(available_headroom);
+    if headroom > available_headroom || len > capacity {
         return None;
     }
     packet.set_len(len);
     Some(packet)
+}
+
+fn alloc_packet_for_len(len: usize) -> Option<PacketRef> {
+    alloc_packet_with_headroom(len, DEFAULT_PACKET_HEADROOM)
 }
 
 pub fn packet_from_bytes(data: &[u8]) -> Option<PacketRef> {
@@ -170,6 +243,33 @@ pub fn packet_from_payload(payload: &PacketPayload) -> Option<PacketRef> {
                 packet.data_mut()[written..end].copy_from_slice(chunk);
                 written = end;
             });
+            Some(packet)
+        }
+    }
+}
+
+pub fn packet_from_payload_prefix(payload: &PacketPayload, max_len: usize) -> Option<PacketRef> {
+    match payload {
+        PacketPayload::Single(packet) => {
+            if packet.len() <= max_len {
+                Some(packet.clone())
+            } else {
+                let mut prefix = alloc_packet_for_len(max_len)?;
+                prefix.data_mut()[..max_len].copy_from_slice(&packet.data()[..max_len]);
+                Some(prefix)
+            }
+        }
+        PacketPayload::Chain(_) => {
+            let view = PacketPayloadView::new(payload);
+            let total_len = view.total_len().min(max_len);
+            let mut packet = alloc_packet_for_len(total_len)?;
+            if total_len == 0 {
+                return Some(packet);
+            }
+            let copied = view.copy_all_into(&mut packet.data_mut()[..total_len]);
+            if copied != total_len {
+                return None;
+            }
             Some(packet)
         }
     }

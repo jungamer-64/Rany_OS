@@ -120,6 +120,34 @@ impl DhcpClient {
         }
     }
 
+    pub fn process_response_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        current_tick: u64,
+    ) -> Result<DhcpResponseResult, &'static str> {
+        let header = self.validate_header_payload(payload)?;
+        let opts = Self::parse_options_payload(payload);
+        let msg_type = opts.message_type.ok_or("No message type in response")?;
+
+        if matches!(msg_type, DhcpMessageType::Offer | DhcpMessageType::Ack) {
+            let sid = opts.server_id.ok_or("No server identifier in response")?;
+            self.validate_offer_ack(msg_type, &header, sid)?;
+        }
+
+        match msg_type {
+            DhcpMessageType::Offer => {
+                let lease = Self::build_lease(&header, opts, current_tick);
+                Ok(self.apply_offer(lease, current_tick))
+            }
+            DhcpMessageType::Ack => {
+                let lease = Self::build_lease(&header, opts, current_tick);
+                Ok(self.apply_ack(lease, current_tick))
+            }
+            DhcpMessageType::Nak => Ok(self.apply_nak()),
+            _ => Err("Unexpected message type"),
+        }
+    }
+
     /// Build DHCPDECLINE packet for a conflicting IP
     pub fn build_decline(
         &self,

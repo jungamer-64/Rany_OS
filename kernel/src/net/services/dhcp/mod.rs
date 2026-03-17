@@ -273,8 +273,11 @@ pub(crate) fn primary_interface_if_id_in(runtime: NetRuntimeHandle) -> Option<Ne
     primary_interface_runtime_in(runtime).map(|runtime| runtime.if_id)
 }
 
-fn find_runtime_for_v4_packet(packet: &[u8]) -> Option<Arc<DhcpInterfaceRuntime>> {
-    let guard = runtime_state().interface_runtimes.lock().ok()?;
+fn find_runtime_for_v4_packet_in(
+    runtime: NetRuntimeHandle,
+    packet: &[u8],
+) -> Option<Arc<DhcpInterfaceRuntime>> {
+    let guard = runtime_state_for(runtime).interface_runtimes.lock().ok()?;
     for runtime in guard.values() {
         if runtime.active.load(Ordering::Acquire)
             && !runtime.suspended.load(Ordering::Acquire)
@@ -286,15 +289,15 @@ fn find_runtime_for_v4_packet(packet: &[u8]) -> Option<Arc<DhcpInterfaceRuntime>
     None
 }
 
-fn find_runtime_for_v4_packet_in(
+fn find_runtime_for_v4_payload_in(
     runtime: NetRuntimeHandle,
-    packet: &[u8],
+    packet: &kernel_api::resource::net::PacketPayload,
 ) -> Option<Arc<DhcpInterfaceRuntime>> {
     let guard = runtime_state_for(runtime).interface_runtimes.lock().ok()?;
     for runtime in guard.values() {
         if runtime.active.load(Ordering::Acquire)
             && !runtime.suspended.load(Ordering::Acquire)
-            && runtime.v4.matches_response(packet)
+            && runtime.v4.matches_response_payload(packet)
         {
             return Some(Arc::clone(runtime));
         }
@@ -367,18 +370,17 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
             Some((_if_id, _src, _ttl, packet)) => {
                 let now = crate::task::current_tick();
                 let process = match &packet {
-                    kernel_api::resource::net::PacketPayload::Single(packet) => {
-                        let data = packet.data();
+                    kernel_api::resource::net::PacketPayload::Single(packet_ref) => {
+                        let data = packet_ref.data();
                         find_runtime_for_v4_packet_in(runtime, data).map(|interface_runtime| {
                             let result = interface_runtime.v4.process_response(data, now);
                             (interface_runtime, result)
                         })
                     }
                     kernel_api::resource::net::PacketPayload::Chain(_) => {
-                        let data = crate::net::payload::PacketPayloadView::new(&packet)
-                            .read_vec(0, packet.total_len());
-                        find_runtime_for_v4_packet_in(runtime, &data).map(|interface_runtime| {
-                            let result = interface_runtime.v4.process_response(&data, now);
+                        find_runtime_for_v4_payload_in(runtime, &packet).map(|interface_runtime| {
+                            let result =
+                                interface_runtime.v4.process_response_payload(&packet, now);
                             (interface_runtime, result)
                         })
                     }
@@ -632,6 +634,69 @@ impl DhcpHeader {
 
         debug_assert_eq!(off, Self::SIZE);
         Ok(())
+    }
+
+    pub fn decode_from(src: &[u8]) -> Option<Self> {
+        if src.len() < Self::SIZE {
+            return None;
+        }
+
+        let mut off = 0usize;
+        let op = src[off];
+        off += 1;
+        let htype = src[off];
+        off += 1;
+        let hlen = src[off];
+        off += 1;
+        let hops = src[off];
+        off += 1;
+
+        let mut xid = [0u8; 4];
+        xid.copy_from_slice(&src[off..off + 4]);
+        off += 4;
+        let mut secs = [0u8; 2];
+        secs.copy_from_slice(&src[off..off + 2]);
+        off += 2;
+        let mut flags = [0u8; 2];
+        flags.copy_from_slice(&src[off..off + 2]);
+        off += 2;
+        let mut ciaddr = [0u8; 4];
+        ciaddr.copy_from_slice(&src[off..off + 4]);
+        off += 4;
+        let mut yiaddr = [0u8; 4];
+        yiaddr.copy_from_slice(&src[off..off + 4]);
+        off += 4;
+        let mut siaddr = [0u8; 4];
+        siaddr.copy_from_slice(&src[off..off + 4]);
+        off += 4;
+        let mut giaddr = [0u8; 4];
+        giaddr.copy_from_slice(&src[off..off + 4]);
+        off += 4;
+        let mut chaddr = [0u8; 16];
+        chaddr.copy_from_slice(&src[off..off + 16]);
+        off += 16;
+        let mut sname = [0u8; 64];
+        sname.copy_from_slice(&src[off..off + 64]);
+        off += 64;
+        let mut file = [0u8; 128];
+        file.copy_from_slice(&src[off..off + 128]);
+
+        Some(Self {
+            op,
+            htype,
+            hlen,
+            hops,
+            xid,
+            secs,
+            flags,
+            ciaddr,
+            yiaddr,
+            siaddr,
+            giaddr,
+            chaddr,
+            sname,
+            file,
+        })
     }
 
     /// トランザクションIDを取得

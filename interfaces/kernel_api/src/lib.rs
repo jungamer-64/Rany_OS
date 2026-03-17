@@ -273,7 +273,7 @@ pub mod __type_id {
     );
     pub const KERNEL_API_INTERFACE: DependencySpec = dependency(
         "KernelApiInterface",
-        fnv1a_hash(b"KernelApiInterface:v6:KernelApiV3+exchange_heap+ipc_raw+domain_id"),
+        fnv1a_hash(b"KernelApiInterface:v7:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet"),
         1,
         0,
         0,

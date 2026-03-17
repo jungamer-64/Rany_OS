@@ -19,7 +19,7 @@
 //! vtable to call driver functions.
 //!
 //! Newer drivers can export a `DRIVER_EXPORTS` symbol that provides
-//! a versioned `DriverExportsV1` header and a `KernelApiV3` function table
+//! a versioned `DriverExportsV1` header and a `KernelApiV4` function table
 //! for initialization, while keeping `_exorust_driver_entry` as a fallback.
 //!
 //! ## ABI Stability Guidelines
@@ -53,8 +53,11 @@
 /// Drivers compiled with a different ABI version will be rejected.
 #[path = "driver_abi/export_macro.rs"]
 mod export_macro;
+use alloc::boxed::Box;
+use core::mem::{MaybeUninit, align_of, size_of};
+use core::ptr;
 use core::sync::atomic::AtomicBool;
-pub const DRIVER_ABI_VERSION: u64 = 2;
+pub const DRIVER_ABI_VERSION: u64 = 3;
 
 // Include the generated type hash
 include!(concat!(env!("OUT_DIR"), "/abi_hash.rs"));
@@ -64,9 +67,9 @@ pub const DRIVER_ENTRY_SYMBOL: &str = "_exorust_driver_entry";
 /// The symbol name for the driver exports table.
 pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
-pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v3";
-/// ABI version for the KernelApiV3 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 6;
+pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v4";
+/// ABI version for the KernelApiV4 table.
+pub const KERNEL_API_ABI_VERSION: u32 = 7;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 2;
 
@@ -699,27 +702,114 @@ pub struct AbiNetPortInfo {
     pub name_len: usize,
 }
 
+pub const ABI_PACKET_REF_STORAGE_WORDS: usize = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct AbiPacketRefStorage {
+    pub words: [usize; ABI_PACKET_REF_STORAGE_WORDS],
+}
+
+impl AbiPacketRefStorage {
+    pub const fn zeroed() -> Self {
+        Self {
+            words: [0; ABI_PACKET_REF_STORAGE_WORDS],
+        }
+    }
+
+    /// # Safety
+    /// `T` must fit into the inline storage and not require stronger alignment.
+    pub unsafe fn from_state<T>(state: T) -> Self {
+        assert!(size_of::<T>() <= size_of::<Self>());
+        assert!(align_of::<T>() <= align_of::<Self>());
+        let mut storage = MaybeUninit::<Self>::zeroed();
+        unsafe {
+            storage.as_mut_ptr().cast::<T>().write(state);
+            storage.assume_init()
+        }
+    }
+
+    /// # Safety
+    /// The storage must currently contain a valid `T`.
+    pub unsafe fn as_state_ref<T>(&self) -> &T {
+        debug_assert!(size_of::<T>() <= size_of::<Self>());
+        debug_assert!(align_of::<T>() <= align_of::<Self>());
+        unsafe { &*ptr::from_ref(self).cast::<T>() }
+    }
+
+    /// # Safety
+    /// The storage must currently contain a valid `T`.
+    pub unsafe fn as_state_mut<T>(&mut self) -> &mut T {
+        debug_assert!(size_of::<T>() <= size_of::<Self>());
+        debug_assert!(align_of::<T>() <= align_of::<Self>());
+        unsafe { &mut *ptr::from_mut(self).cast::<T>() }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AbiNetPortRuntimeV1 {
-    pub abi_size: u32,
-    pub runtime_cookie: u64,
-    pub submit_rx_bytes: extern "C" fn(
-        runtime_cookie: u64,
-        data_ptr: *const u8,
-        data_len: usize,
-        meta: AbiNetRxMeta,
-    ) -> i32,
-    pub schedule_event: extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
-    pub update_link: extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
-    pub log: extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
+pub struct AbiPacketRefVTable {
+    pub data_ptr: extern "C" fn(storage: *const AbiPacketRefStorage) -> *const u8,
+    pub data_mut_ptr: extern "C" fn(storage: *mut AbiPacketRefStorage) -> *mut u8,
+    pub len: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
+    pub set_len: extern "C" fn(storage: *mut AbiPacketRefStorage, len: usize),
+    pub capacity: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
+    pub phys_addr: extern "C" fn(storage: *const AbiPacketRefStorage) -> u64,
+    pub device_address: extern "C" fn(storage: *const AbiPacketRefStorage) -> u64,
+    pub headroom: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
+    pub advance: extern "C" fn(storage: *mut AbiPacketRefStorage, size: usize),
+    pub retreat: extern "C" fn(storage: *mut AbiPacketRefStorage, size: usize) -> bool,
+    pub drop: extern "C" fn(storage: *mut AbiPacketRefStorage),
     pub reserved: [u64; 4],
 }
 
-impl AbiNetPortRuntimeV1 {
+#[repr(C)]
+pub struct AbiPacketRefRaw {
+    pub storage: AbiPacketRefStorage,
+    pub vtable: *const AbiPacketRefVTable,
+    pub reserved: [u64; 2],
+}
+
+impl Default for AbiPacketRefRaw {
+    fn default() -> Self {
+        Self {
+            storage: AbiPacketRefStorage::zeroed(),
+            vtable: ptr::null(),
+            reserved: [0; 2],
+        }
+    }
+}
+
+unsafe impl Send for AbiPacketRefRaw {}
+
+impl Drop for AbiPacketRefRaw {
+    fn drop(&mut self) {
+        if !self.vtable.is_null() {
+            unsafe { ((*self.vtable).drop)(&mut self.storage) };
+            self.vtable = ptr::null();
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AbiNetPortRuntimeV2 {
+    pub abi_size: u32,
+    pub runtime_cookie: u64,
+    pub alloc_packet: extern "C" fn(runtime_cookie: u64, out_packet: *mut AbiPacketRefRaw) -> i32,
+    pub submit_rx_packet:
+        extern "C" fn(runtime_cookie: u64, packet: *mut AbiPacketRefRaw, meta: AbiNetRxMeta) -> i32,
+    pub schedule_event: extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
+    pub update_link: extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
+    pub log: extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
+    pub reserved: [u64; 3],
+}
+
+impl AbiNetPortRuntimeV2 {
     pub const fn new(
         runtime_cookie: u64,
-        submit_rx_bytes: extern "C" fn(u64, *const u8, usize, AbiNetRxMeta) -> i32,
+        alloc_packet: extern "C" fn(u64, *mut AbiPacketRefRaw) -> i32,
+        submit_rx_packet: extern "C" fn(u64, *mut AbiPacketRefRaw, AbiNetRxMeta) -> i32,
         schedule_event: extern "C" fn(u64, AbiNetDriverEvent) -> i32,
         update_link: extern "C" fn(u64, bool) -> i32,
         log: extern "C" fn(u64, u32, *const u8, usize),
@@ -727,75 +817,26 @@ impl AbiNetPortRuntimeV1 {
         Self {
             abi_size: core::mem::size_of::<Self>() as u32,
             runtime_cookie,
-            submit_rx_bytes,
+            alloc_packet,
+            submit_rx_packet,
             schedule_event,
             update_link,
             log,
-            reserved: [0; 4],
+            reserved: [0; 3],
         }
     }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AbiNetPortRegistration {
+pub struct AbiNetPortRegistrationV3 {
     pub abi_size: u32,
     pub info: AbiNetPortInfo,
     pub opaque: u64,
-    pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV1) -> i32,
+    pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV2) -> i32,
     pub bind: extern "C" fn(opaque: u64, if_id: u16) -> i32,
-    pub submit_tx_bytes:
-        extern "C" fn(opaque: u64, data_ptr: *const u8, data_len: usize, meta: AbiNetTxMeta) -> i32,
-    pub poll: extern "C" fn(opaque: u64, if_id: u16) -> i32,
-    pub handle_event: extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
-    pub stats: extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
-    pub stop: extern "C" fn(opaque: u64),
-    pub reserved: [u64; 4],
-}
-
-impl AbiNetPortRegistration {
-    pub const fn new(
-        info: AbiNetPortInfo,
-        opaque: u64,
-        start: extern "C" fn(u64, *const AbiNetPortRuntimeV1) -> i32,
-        bind: extern "C" fn(u64, u16) -> i32,
-        submit_tx_bytes: extern "C" fn(u64, *const u8, usize, AbiNetTxMeta) -> i32,
-        poll: extern "C" fn(u64, u16) -> i32,
-        handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
-        stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
-        stop: extern "C" fn(u64),
-    ) -> Self {
-        Self {
-            abi_size: core::mem::size_of::<Self>() as u32,
-            info,
-            opaque,
-            start,
-            bind,
-            submit_tx_bytes,
-            poll,
-            handle_event,
-            stats,
-            stop,
-            reserved: [0; 4],
-        }
-    }
-
-    pub fn as_v2(&self) -> Option<&AbiNetPortRegistrationV2> {
-        (self.abi_size as usize >= core::mem::size_of::<AbiNetPortRegistrationV2>())
-            .then(|| unsafe { &*(self as *const Self).cast::<AbiNetPortRegistrationV2>() })
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AbiNetPortRegistrationV2 {
-    pub abi_size: u32,
-    pub info: AbiNetPortInfo,
-    pub opaque: u64,
-    pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV1) -> i32,
-    pub bind: extern "C" fn(opaque: u64, if_id: u16) -> i32,
-    pub submit_tx_bytes:
-        extern "C" fn(opaque: u64, data_ptr: *const u8, data_len: usize, meta: AbiNetTxMeta) -> i32,
+    pub submit_tx_packet:
+        extern "C" fn(opaque: u64, packet: *mut AbiPacketRefRaw, meta: AbiNetTxMeta) -> i32,
     pub poll: extern "C" fn(opaque: u64, if_id: u16) -> i32,
     pub handle_event: extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
     pub stats: extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
@@ -804,14 +845,14 @@ pub struct AbiNetPortRegistrationV2 {
     pub reserved: [u64; 3],
 }
 
-impl AbiNetPortRegistrationV2 {
+impl AbiNetPortRegistrationV3 {
     #[allow(clippy::too_many_arguments)]
     pub const fn new(
         info: AbiNetPortInfo,
         opaque: u64,
-        start: extern "C" fn(u64, *const AbiNetPortRuntimeV1) -> i32,
+        start: extern "C" fn(u64, *const AbiNetPortRuntimeV2) -> i32,
         bind: extern "C" fn(u64, u16) -> i32,
-        submit_tx_bytes: extern "C" fn(u64, *const u8, usize, AbiNetTxMeta) -> i32,
+        submit_tx_packet: extern "C" fn(u64, *mut AbiPacketRefRaw, AbiNetTxMeta) -> i32,
         poll: extern "C" fn(u64, u16) -> i32,
         handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
         stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
@@ -824,7 +865,7 @@ impl AbiNetPortRegistrationV2 {
             opaque,
             start,
             bind,
-            submit_tx_bytes,
+            submit_tx_packet,
             poll,
             handle_event,
             stats,
@@ -833,21 +874,219 @@ impl AbiNetPortRegistrationV2 {
             reserved: [0; 3],
         }
     }
+}
 
-    pub const fn as_v1(&self) -> AbiNetPortRegistration {
-        AbiNetPortRegistration {
-            abi_size: self.abi_size,
-            info: self.info,
-            opaque: self.opaque,
-            start: self.start,
-            bind: self.bind,
-            submit_tx_bytes: self.submit_tx_bytes,
-            poll: self.poll,
-            handle_event: self.handle_event,
-            stats: self.stats,
-            stop: self.stop,
-            reserved: [0; 4],
+struct AbiPacketBoxState {
+    packet: *mut crate::resource::net::PacketRef,
+}
+
+unsafe fn abi_packet_state_ref(storage: &AbiPacketRefStorage) -> &crate::resource::net::PacketRef {
+    let state = unsafe { storage.as_state_ref::<AbiPacketBoxState>() };
+    unsafe { &*state.packet }
+}
+
+unsafe fn abi_packet_state_mut(
+    storage: &mut AbiPacketRefStorage,
+) -> &mut crate::resource::net::PacketRef {
+    let state = unsafe { storage.as_state_mut::<AbiPacketBoxState>() };
+    unsafe { &mut *state.packet }
+}
+
+extern "C" fn abi_packet_data_ptr(storage: *const AbiPacketRefStorage) -> *const u8 {
+    if storage.is_null() {
+        return ptr::null();
+    }
+    unsafe { abi_packet_state_ref(&*storage).data().as_ptr() }
+}
+
+extern "C" fn abi_packet_data_mut_ptr(storage: *mut AbiPacketRefStorage) -> *mut u8 {
+    if storage.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe { abi_packet_state_mut(&mut *storage).data_mut().as_mut_ptr() }
+}
+
+extern "C" fn abi_packet_len(storage: *const AbiPacketRefStorage) -> usize {
+    if storage.is_null() {
+        return 0;
+    }
+    unsafe { abi_packet_state_ref(&*storage).len() }
+}
+
+extern "C" fn abi_packet_set_len(storage: *mut AbiPacketRefStorage, len: usize) {
+    if storage.is_null() {
+        return;
+    }
+    unsafe { abi_packet_state_mut(&mut *storage).set_len(len) };
+}
+
+extern "C" fn abi_packet_capacity(storage: *const AbiPacketRefStorage) -> usize {
+    if storage.is_null() {
+        return 0;
+    }
+    unsafe { abi_packet_state_ref(&*storage).capacity() }
+}
+
+extern "C" fn abi_packet_phys_addr(storage: *const AbiPacketRefStorage) -> u64 {
+    if storage.is_null() {
+        return 0;
+    }
+    unsafe { abi_packet_state_ref(&*storage).phys_addr().as_u64() }
+}
+
+extern "C" fn abi_packet_device_address(storage: *const AbiPacketRefStorage) -> u64 {
+    if storage.is_null() {
+        return 0;
+    }
+    unsafe { abi_packet_state_ref(&*storage).device_address() }
+}
+
+extern "C" fn abi_packet_headroom(storage: *const AbiPacketRefStorage) -> usize {
+    if storage.is_null() {
+        return 0;
+    }
+    unsafe { abi_packet_state_ref(&*storage).headroom() }
+}
+
+extern "C" fn abi_packet_advance(storage: *mut AbiPacketRefStorage, size: usize) {
+    if storage.is_null() {
+        return;
+    }
+    unsafe { abi_packet_state_mut(&mut *storage).advance(size) };
+}
+
+extern "C" fn abi_packet_retreat(storage: *mut AbiPacketRefStorage, size: usize) -> bool {
+    if storage.is_null() {
+        return false;
+    }
+    unsafe { abi_packet_state_mut(&mut *storage).retreat(size) }
+}
+
+extern "C" fn abi_packet_drop(storage: *mut AbiPacketRefStorage) {
+    if storage.is_null() {
+        return;
+    }
+    let state = unsafe { (&mut *storage).as_state_mut::<AbiPacketBoxState>() };
+    if !state.packet.is_null() {
+        unsafe {
+            drop(Box::from_raw(state.packet));
         }
+        state.packet = ptr::null_mut();
+    }
+}
+
+static ABI_PACKET_REF_VTABLE: AbiPacketRefVTable = AbiPacketRefVTable {
+    data_ptr: abi_packet_data_ptr,
+    data_mut_ptr: abi_packet_data_mut_ptr,
+    len: abi_packet_len,
+    set_len: abi_packet_set_len,
+    capacity: abi_packet_capacity,
+    phys_addr: abi_packet_phys_addr,
+    device_address: abi_packet_device_address,
+    headroom: abi_packet_headroom,
+    advance: abi_packet_advance,
+    retreat: abi_packet_retreat,
+    drop: abi_packet_drop,
+    reserved: [0; 4],
+};
+
+impl AbiPacketRefRaw {
+    pub fn is_null(&self) -> bool {
+        self.vtable.is_null()
+    }
+
+    pub fn from_packet(packet: crate::resource::net::PacketRef) -> Self {
+        let state = AbiPacketBoxState {
+            packet: Box::into_raw(Box::new(packet)),
+        };
+        Self {
+            storage: unsafe { AbiPacketRefStorage::from_state(state) },
+            vtable: &ABI_PACKET_REF_VTABLE,
+            reserved: [0; 2],
+        }
+    }
+
+    pub fn take(ptr: *mut Self) -> Option<Self> {
+        if ptr.is_null() {
+            return None;
+        }
+        let slot = unsafe { &mut *ptr };
+        if slot.is_null() {
+            None
+        } else {
+            Some(core::mem::take(slot))
+        }
+    }
+
+    pub fn into_packet(mut self) -> crate::resource::net::PacketRef {
+        let packet = unsafe {
+            let state = self.storage.as_state_mut::<AbiPacketBoxState>();
+            let packet = Box::from_raw(state.packet);
+            state.packet = ptr::null_mut();
+            *packet
+        };
+        self.vtable = ptr::null();
+        packet
+    }
+
+    pub fn len(&self) -> usize {
+        if self.vtable.is_null() {
+            0
+        } else {
+            unsafe { ((*self.vtable).len)(&self.storage) }
+        }
+    }
+
+    pub fn set_len(&mut self, len: usize) {
+        if !self.vtable.is_null() {
+            unsafe { ((*self.vtable).set_len)(&mut self.storage, len) };
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        if self.vtable.is_null() {
+            0
+        } else {
+            unsafe { ((*self.vtable).capacity)(&self.storage) }
+        }
+    }
+
+    pub fn headroom(&self) -> usize {
+        if self.vtable.is_null() {
+            0
+        } else {
+            unsafe { ((*self.vtable).headroom)(&self.storage) }
+        }
+    }
+
+    pub fn device_address(&self) -> u64 {
+        if self.vtable.is_null() {
+            0
+        } else {
+            unsafe { ((*self.vtable).device_address)(&self.storage) }
+        }
+    }
+
+    pub fn data(&self) -> &[u8] {
+        if self.vtable.is_null() {
+            return unsafe {
+                core::slice::from_raw_parts(core::ptr::NonNull::<u8>::dangling().as_ptr(), 0)
+            };
+        }
+        let ptr = unsafe { ((*self.vtable).data_ptr)(&self.storage) };
+        let len = unsafe { ((*self.vtable).len)(&self.storage) };
+        unsafe { core::slice::from_raw_parts(ptr, len) }
+    }
+
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        if self.vtable.is_null() {
+            return unsafe {
+                core::slice::from_raw_parts_mut(core::ptr::NonNull::<u8>::dangling().as_ptr(), 0)
+            };
+        }
+        let ptr = unsafe { ((*self.vtable).data_mut_ptr)(&mut self.storage) };
+        let len = unsafe { ((*self.vtable).len)(&self.storage) };
+        unsafe { core::slice::from_raw_parts_mut(ptr, len) }
     }
 }
 
@@ -950,7 +1189,7 @@ pub struct AbiExportedState {
 /// ignore optional tail entries introduced in later revisions.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct KernelApiV3 {
+pub struct KernelApiV4 {
     pub abi_version: u32,
     pub abi_size: u32,
 
@@ -997,7 +1236,7 @@ pub struct KernelApiV3 {
     pub unregister_nvme_namespace: extern "C" fn(handle: u64) -> i32,
 
     pub register_netdev_port:
-        extern "C" fn(registration: *const AbiNetPortRegistration, out_handle: *mut u64) -> i32,
+        extern "C" fn(registration: *const AbiNetPortRegistrationV3, out_handle: *mut u64) -> i32,
     pub unregister_netdev_port: extern "C" fn(handle: u64) -> i32,
 
     pub register_audio_controller: extern "C" fn(
@@ -1029,7 +1268,7 @@ pub struct DriverExportsV1 {
     pub name_len: usize,
 
     pub entry: DriverEntryFn,
-    pub init: Option<extern "C" fn(api: *const KernelApiV3) -> i32>,
+    pub init: Option<extern "C" fn(api: *const KernelApiV4) -> i32>,
     pub fini: Option<extern "C" fn() -> i32>,
     pub providers: Option<ProviderDescriptorsFn>,
     pub export_state: Option<DriverExportStateFn>,

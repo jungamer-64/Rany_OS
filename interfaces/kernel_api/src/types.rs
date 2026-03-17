@@ -333,6 +333,7 @@ impl PacketRef {
         self.clone()
     }
 
+    #[cfg(any(test, feature = "net-test-helpers"))]
     pub fn to_vec(&self) -> Vec<u8> {
         self.data().to_vec()
     }
@@ -477,6 +478,7 @@ static HEAP_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
 };
 
 impl PacketRef {
+    #[cfg(any(test, feature = "net-test-helpers"))]
     pub fn from_vec(data: Vec<u8>) -> Self {
         let mut backing = alloc::vec![0u8; DEFAULT_PACKET_HEADROOM + data.len()].into_boxed_slice();
         backing[DEFAULT_PACKET_HEADROOM..DEFAULT_PACKET_HEADROOM + data.len()]
@@ -587,6 +589,7 @@ impl PacketPayload {
         Self::Chain(chain)
     }
 
+    #[cfg(any(test, feature = "net-test-helpers"))]
     pub fn from_vec(data: Vec<u8>) -> Self {
         Self::Single(PacketRef::from_vec(data))
     }
@@ -748,6 +751,7 @@ impl PacketPayload {
         }
     }
 
+    #[cfg(any(test, feature = "net-test-helpers"))]
     pub fn into_vec(self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.total_len());
         match self {

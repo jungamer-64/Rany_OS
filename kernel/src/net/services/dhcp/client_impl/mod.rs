@@ -61,9 +61,7 @@ impl DhcpClient {
                             self.process_response(packet.data(), now)
                         }
                         kernel_api::resource::net::PacketPayload::Chain(_) => {
-                            let data = crate::net::payload::PacketPayloadView::new(&packet)
-                                .read_vec(0, packet.total_len());
-                            self.process_response(&data, now)
+                            self.process_response_payload(&packet, now)
                         }
                     };
                     match response {
@@ -244,7 +242,7 @@ impl DhcpClient {
         if data.len() < DhcpHeader::SIZE + 4 {
             return false;
         }
-        let Some(header) = crate::util::get_ref::<DhcpHeader>(data, 0) else {
+        let Some(header) = DhcpHeader::decode_from(data) else {
             return false;
         };
         if header.op != DhcpOperation::Reply as u8 {
@@ -260,6 +258,35 @@ impl DhcpClient {
             return false;
         }
         data[DhcpHeader::SIZE..DhcpHeader::SIZE + 4] == DHCP_MAGIC_COOKIE
+    }
+
+    pub fn matches_response_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+    ) -> bool {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        if view.total_len() < DhcpHeader::SIZE + 4 {
+            return false;
+        }
+        let Some(header_bytes) = view.read_array::<{ DhcpHeader::SIZE }>(0) else {
+            return false;
+        };
+        let Some(header) = DhcpHeader::decode_from(&header_bytes) else {
+            return false;
+        };
+        if header.op != DhcpOperation::Reply as u8 {
+            return false;
+        }
+        if header.xid() != self.xid.load(Ordering::SeqCst) {
+            return false;
+        }
+        if header.hlen < 6 {
+            return false;
+        }
+        if header.chaddr[0..6] != *self.mac_address.as_bytes() {
+            return false;
+        }
+        view.read_array::<4>(DhcpHeader::SIZE) == Some(DHCP_MAGIC_COOKIE)
     }
 
     /// DHCPDISCOVER メッセージを構築
@@ -553,6 +580,49 @@ impl DhcpClient {
         Ok(header)
     }
 
+    pub(super) fn validate_header_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+    ) -> Result<DhcpHeader, &'static str> {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        if view.total_len() < DhcpHeader::SIZE + 4 {
+            return Err("Packet too small");
+        }
+        let header_bytes = view
+            .read_array::<{ DhcpHeader::SIZE }>(0)
+            .ok_or("Dhcp header slice out of bounds")?;
+        let header = DhcpHeader::decode_from(&header_bytes).ok_or("Dhcp header decode failed")?;
+
+        if header.xid() != self.xid.load(Ordering::SeqCst) {
+            return Err("Transaction ID mismatch");
+        }
+
+        if header.op != DhcpOperation::Reply as u8 {
+            return Err("Not a DHCP reply");
+        }
+
+        let hlen = header.hlen as usize;
+        if hlen < 6 {
+            log::warn!("[NET] DHCP header hlen ({}) too small - rejecting", hlen);
+            return Err("Invalid hardware address length in DHCP header");
+        }
+
+        if header.chaddr[0..6] != *self.mac_address.as_bytes() {
+            log::warn!(
+                "[NET] DHCP CHADDR does not match client MAC - rejecting (chaddr={:?} expected={:?})",
+                &header.chaddr[0..6],
+                self.mac_address.as_bytes()
+            );
+            return Err("CHADDR does not match client MAC");
+        }
+
+        if view.read_array::<4>(DhcpHeader::SIZE) != Some(DHCP_MAGIC_COOKIE) {
+            return Err("Invalid magic cookie");
+        }
+
+        Ok(header)
+    }
+
     /// 単一のDHCPオプションを ParsedOptions に適用する
     pub(super) fn apply_option(opts: &mut ParsedOptions, opt: u8, opt_data: &[u8]) {
         match opt {
@@ -632,6 +702,64 @@ impl DhcpClient {
             }
 
             Self::apply_option(&mut opts, opt, &data[offset + 2..offset + 2 + len]);
+            offset += 2 + len;
+        }
+
+        opts
+    }
+
+    pub(super) fn parse_options_payload(
+        payload: &kernel_api::resource::net::PacketPayload,
+    ) -> ParsedOptions {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let mut opts = ParsedOptions {
+            message_type: None,
+            subnet_mask: None,
+            router: None,
+            dns_servers: Vec::new(),
+            lease_time: 86400u32,
+            renewal_time: None,
+            rebinding_time: None,
+            server_id: None,
+            hostname: None,
+            domain_name: None,
+        };
+
+        let mut offset = DhcpHeader::SIZE + 4;
+        while offset < view.total_len() {
+            let Some(opt) = view.read_array::<1>(offset).map(|bytes| bytes[0]) else {
+                break;
+            };
+
+            if opt == DhcpOption::Pad as u8 {
+                offset += 1;
+                continue;
+            }
+            if opt == DhcpOption::End as u8 {
+                break;
+            }
+            if offset + 1 >= view.total_len() {
+                break;
+            }
+
+            let Some(len) = view
+                .read_array::<1>(offset + 1)
+                .map(|bytes| bytes[0] as usize)
+            else {
+                break;
+            };
+            if offset + 2 + len > view.total_len() {
+                log::warn!(
+                    "[NET] DHCP option length {} at offset {} overruns packet (len {}) - stopping parse",
+                    len,
+                    offset,
+                    view.total_len()
+                );
+                break;
+            }
+
+            let opt_data = view.read_vec(offset + 2, len);
+            Self::apply_option(&mut opts, opt, &opt_data);
             offset += 2 + len;
         }
 

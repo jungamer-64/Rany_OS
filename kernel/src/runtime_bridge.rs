@@ -20,8 +20,8 @@ use kernel_api::abi::driver::{
     AbiAudioControllerRegistration, AbiAudioDeviceInfo, AbiBlockCommandKind, AbiBlockDeviceInfo,
     AbiBlockDeviceRegistration, AbiBlockTransport, AbiError as AbiErrorCode, AbiIoCompletion,
     AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo, AbiNetPortKind,
-    AbiNetPortRegistration, AbiNetPortRuntimeV1, AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta,
-    AbiNvmeNamespaceInfo, AbiNvmeNamespaceRegistration,
+    AbiNetPortRegistrationV3, AbiNetPortRuntimeV2, AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta,
+    AbiNvmeNamespaceInfo, AbiNvmeNamespaceRegistration, AbiPacketRefRaw,
 };
 use kernel_api::service::audio::AudioDeviceInfo;
 use kernel_api::service::netdev::{
@@ -385,36 +385,39 @@ fn leak_driver_name(info: &AbiNetPortInfo) -> &'static str {
 
 struct NetRuntimeState {
     runtime: Arc<dyn NetPortRuntime>,
-    table: AbiNetPortRuntimeV1,
+    table: AbiNetPortRuntimeV2,
 }
 
-extern "C" fn runtime_submit_rx_bytes(
-    runtime_cookie: u64,
-    data_ptr: *const u8,
-    data_len: usize,
-    meta: AbiNetRxMeta,
-) -> i32 {
-    if data_ptr.is_null() {
+extern "C" fn runtime_alloc_packet(runtime_cookie: u64, out_packet: *mut AbiPacketRefRaw) -> i32 {
+    if out_packet.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
     let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
-    let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() else {
+    let Some(packet) = state.runtime.alloc_packet() else {
         return AbiErrorCode::OutOfMemory as i32;
     };
-    if packet.data_mut().len() < data_len {
-        return AbiErrorCode::OutOfMemory as i32;
-    }
     unsafe {
-        core::ptr::copy_nonoverlapping(data_ptr, packet.data_mut().as_mut_ptr(), data_len);
+        *out_packet = AbiPacketRefRaw::from_packet(packet);
     }
-    packet.set_len(data_len);
+    AbiErrorCode::Success as i32
+}
+
+extern "C" fn runtime_submit_rx_packet(
+    runtime_cookie: u64,
+    packet: *mut AbiPacketRefRaw,
+    meta: AbiNetRxMeta,
+) -> i32 {
+    let Some(packet) = AbiPacketRefRaw::take(packet) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
     let rx_meta = NetRxMeta {
         queue_index: meta.queue_index,
         header_len: meta.header_len,
         payload_len: meta.payload_len,
         flags: meta.flags,
     };
-    match state.runtime.submit_rx(packet, rx_meta) {
+    match state.runtime.submit_rx(packet.into_packet(), rx_meta) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(_) => AbiErrorCode::IoError as i32,
     }
@@ -464,7 +467,7 @@ extern "C" fn runtime_log(runtime_cookie: u64, level: u32, msg_ptr: *const u8, m
 }
 
 struct NetdevPortAdapter {
-    registration: kernel_api::abi::driver::AbiNetPortRegistrationV2,
+    registration: AbiNetPortRegistrationV3,
     driver_name: &'static str,
     runtime_state: PoisonLock<Option<Box<NetRuntimeState>>>,
 }
@@ -474,14 +477,11 @@ unsafe impl Sync for NetdevPortAdapter {}
 
 impl NetdevPortAdapter {
     fn new(
-        registration: &AbiNetPortRegistration,
+        registration: &AbiNetPortRegistrationV3,
         driver_name: &'static str,
     ) -> Result<Self, AbiErrorCode> {
-        let Some(registration_v2) = registration.as_v2() else {
-            return Err(AbiErrorCode::NotSupported);
-        };
         Ok(Self {
-            registration: *registration_v2,
+            registration: *registration,
             driver_name,
             runtime_state: PoisonLock::new(None),
         })
@@ -510,9 +510,10 @@ impl NetDevicePort for NetdevPortAdapter {
     fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
         let mut state = Box::new(NetRuntimeState {
             runtime,
-            table: AbiNetPortRuntimeV1::new(
+            table: AbiNetPortRuntimeV2::new(
                 0,
-                runtime_submit_rx_bytes,
+                runtime_alloc_packet,
+                runtime_submit_rx_packet,
                 runtime_schedule_event,
                 runtime_update_link,
                 runtime_log,
@@ -520,7 +521,7 @@ impl NetDevicePort for NetdevPortAdapter {
         });
         let cookie = (&mut *state) as *mut NetRuntimeState as usize as u64;
         state.table.runtime_cookie = cookie;
-        let table_ptr = &state.table as *const AbiNetPortRuntimeV1;
+        let table_ptr = &state.table as *const AbiNetPortRuntimeV2;
         let status = (self.registration.start)(self.registration.opaque, table_ptr);
         if !AbiErrorCode::from_raw(status).is_success() {
             return Err("standalone netdev start failed");
@@ -543,6 +544,7 @@ impl NetDevicePort for NetdevPortAdapter {
         packet: kernel_api::resource::net::PacketRef,
         meta: NetTxMeta,
     ) -> Result<(), &'static str> {
+        let mut packet = AbiPacketRefRaw::from_packet(packet);
         let abi_meta = AbiNetTxMeta {
             queue_index: meta.queue_index.unwrap_or(0),
             has_queue_index: meta.queue_index.is_some(),
@@ -552,12 +554,8 @@ impl NetDevicePort for NetdevPortAdapter {
             vlan_tag: meta.vlan_tag.unwrap_or(0),
             _padding1: 0,
         };
-        let status = (self.registration.submit_tx_bytes)(
-            self.registration.opaque,
-            packet.data().as_ptr(),
-            packet.data().len(),
-            abi_meta,
-        );
+        let status =
+            (self.registration.submit_tx_packet)(self.registration.opaque, &mut packet, abi_meta);
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
@@ -655,7 +653,7 @@ impl NetdevBridgeRegistry {
     fn register(
         &self,
         owner: DomainId,
-        registration: &AbiNetPortRegistration,
+        registration: &AbiNetPortRegistrationV3,
     ) -> Result<u64, AbiErrorCode> {
         let key = match registration.info.kind {
             x if x == AbiNetPortKind::Virtio as u32 => {
@@ -666,10 +664,6 @@ impl NetdevBridgeRegistry {
             }
             _ => return Err(AbiErrorCode::NotSupported),
         };
-        if registration.as_v2().is_none() {
-            return Err(AbiErrorCode::NotSupported);
-        }
-
         let name = leak_driver_name(&registration.info);
         let adapter: Arc<dyn NetDevicePort> = Arc::new(NetdevPortAdapter::new(registration, name)?);
         let if_id = net_device_runtime::register_port_with_default_config(key, adapter, true)
@@ -832,7 +826,7 @@ pub fn unregister_nvme_namespace(handle: u64) -> Result<(), AbiErrorCode> {
     NVME_NAMESPACES.unregister(owner, handle)
 }
 
-pub fn register_netdev_port(registration: &AbiNetPortRegistration) -> Result<u64, AbiErrorCode> {
+pub fn register_netdev_port(registration: &AbiNetPortRegistrationV3) -> Result<u64, AbiErrorCode> {
     let owner = current_driver_domain()?;
     NETDEV_PORTS.register(owner, registration)
 }
@@ -956,7 +950,7 @@ mod tests {
     static TEST_NET_INTERRUPT_CALLS: AtomicUsize = AtomicUsize::new(0);
     static TEST_NET_INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
 
-    extern "C" fn test_net_start(_opaque: u64, _runtime: *const AbiNetPortRuntimeV1) -> i32 {
+    extern "C" fn test_net_start(_opaque: u64, _runtime: *const AbiNetPortRuntimeV2) -> i32 {
         AbiErrorCode::Success as i32
     }
 
@@ -966,10 +960,10 @@ mod tests {
 
     extern "C" fn test_net_submit_tx(
         _opaque: u64,
-        _data_ptr: *const u8,
-        _data_len: usize,
+        packet: *mut AbiPacketRefRaw,
         _meta: AbiNetTxMeta,
     ) -> i32 {
+        let _ = AbiPacketRefRaw::take(packet);
         AbiErrorCode::Success as i32
     }
 
@@ -1018,24 +1012,8 @@ mod tests {
         }
     }
 
-    fn test_net_registration(port_index: u16) -> AbiNetPortRegistration {
-        AbiNetPortRegistration::new(
-            test_net_info(AbiNetPortKind::Virtio, port_index),
-            0,
-            test_net_start,
-            test_net_bind,
-            test_net_submit_tx,
-            test_net_poll,
-            test_net_handle_event,
-            test_net_stats,
-            test_net_stop,
-        )
-    }
-
-    fn test_net_registration_v2(
-        port_index: u16,
-    ) -> kernel_api::abi::driver::AbiNetPortRegistrationV2 {
-        kernel_api::abi::driver::AbiNetPortRegistrationV2::new(
+    fn test_net_registration(port_index: u16) -> AbiNetPortRegistrationV3 {
+        AbiNetPortRegistrationV3::new(
             test_net_info(AbiNetPortKind::Virtio, port_index),
             0,
             test_net_start,
@@ -1165,26 +1143,12 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn netdev_adapter_v1_is_rejected() {
-        let registration = test_net_registration(1);
-        assert_eq!(
-            NetdevPortAdapter::new(&registration, "test-net"),
-            Err(AbiErrorCode::NotSupported)
-        );
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn netdev_adapter_v2_invokes_interrupt_toggle_callback() {
+    fn netdev_adapter_v3_invokes_interrupt_toggle_callback() {
         TEST_NET_INTERRUPT_CALLS.store(0, Ordering::Relaxed);
         TEST_NET_INTERRUPTS_ENABLED.store(true, Ordering::Release);
 
-        let registration_v2 = test_net_registration_v2(2);
-        let registration = unsafe {
-            &*((&registration_v2 as *const kernel_api::abi::driver::AbiNetPortRegistrationV2)
-                .cast::<AbiNetPortRegistration>())
-        };
-        let adapter = NetdevPortAdapter::new(registration, "test-net").expect("v2 adapter");
+        let registration = test_net_registration(2);
+        let adapter = NetdevPortAdapter::new(&registration, "test-net").expect("v3 adapter");
 
         assert_eq!(adapter.set_interrupts_enabled(false), Ok(()));
         assert_eq!(TEST_NET_INTERRUPT_CALLS.load(Ordering::Relaxed), 1);

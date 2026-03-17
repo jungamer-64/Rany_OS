@@ -481,8 +481,7 @@ pub fn test_ipv6_fragment_reassembly_success() {
     assert_eq!(reassembler.active_buffers(), 0);
 
     // Check reassembled packet
-    let packet_bytes =
-        crate::net::payload::PacketPayloadView::new(&packet).read_vec(0, packet.total_len());
+    let packet_bytes = crate::net::payload::payload_to_vec(&packet);
     assert_eq!(packet_bytes.len(), 40 + 16);
     assert_eq!(packet_bytes[6], 58); // Patched Next Header (ICMPv6)
     assert_eq!(u16::from_be_bytes([packet_bytes[4], packet_bytes[5]]), 16); // Patched Payload Length
@@ -549,8 +548,7 @@ pub fn test_ipv6_fragment_reassembly_returns_payload_chain() {
         ),
     }
 
-    let bytes =
-        crate::net::payload::PacketPayloadView::new(&payload).read_vec(0, payload.total_len());
+    let bytes = crate::net::payload::payload_to_vec(&payload);
     assert_eq!(bytes.len(), 40 + payload1.len() + payload2.len());
     assert_eq!(&bytes[40..48], &payload1);
     assert_eq!(&bytes[48..56], &payload2);

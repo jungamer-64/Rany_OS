@@ -214,7 +214,7 @@ impl NdpProcessor {
         }
 
         let options = if view.total_len() > NS_MIN_SIZE {
-            parse_ndp_options(&view.read_vec(NS_MIN_SIZE, view.total_len() - NS_MIN_SIZE))
+            parse_ndp_options_view(&view, NS_MIN_SIZE)
         } else {
             Vec::new()
         };
@@ -396,7 +396,7 @@ impl NdpProcessor {
         }
 
         let options = if view.total_len() > NA_MIN_SIZE {
-            parse_ndp_options(&view.read_vec(NA_MIN_SIZE, view.total_len() - NA_MIN_SIZE))
+            parse_ndp_options_view(&view, NA_MIN_SIZE)
         } else {
             Vec::new()
         };
@@ -524,7 +524,7 @@ impl NdpProcessor {
         self.stats.ra_received.fetch_add(1, Ordering::Relaxed);
 
         let options = if view.total_len() > 16 {
-            parse_ndp_options(&view.read_vec(16, view.total_len() - 16))
+            parse_ndp_options_view(&view, 16)
         } else {
             Vec::new()
         };
@@ -692,7 +692,7 @@ impl NdpProcessor {
         }
 
         let options = if view.total_len() > 40 {
-            parse_ndp_options(&view.read_vec(40, view.total_len() - 40))
+            parse_ndp_options_view(&view, 40)
         } else {
             Vec::new()
         };

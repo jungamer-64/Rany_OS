@@ -185,20 +185,13 @@ impl NetworkStack {
                 // RFC 1122: Send ICMP Port Unreachable
                 // Only send if it wasn't broadcast/multicast
                 if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
-                    if let Some(original_packet) =
-                        crate::net::payload::payload_from_bytes(original_packet)
-                    {
-                        let original_packet =
-                            crate::net::payload::PacketPayloadView::new(&original_packet)
-                                .read_vec(0, original_packet.total_len());
-                        self.send_icmp_error(
-                            src_ip,
-                            DestUnreachCode::PortUnreachable,
-                            None,
-                            &original_packet,
-                            current_time,
-                        );
-                    }
+                    self.send_icmp_error(
+                        src_ip,
+                        DestUnreachCode::PortUnreachable,
+                        None,
+                        original_packet,
+                        current_time,
+                    );
                 }
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
@@ -226,14 +219,11 @@ impl NetworkStack {
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
                 if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
-                    let original_packet =
-                        crate::net::payload::PacketPayloadView::new(original_packet)
-                            .read_vec(0, original_packet.total_len());
-                    self.send_icmp_error(
+                    self.send_icmp_error_payload(
                         src_ip,
                         DestUnreachCode::PortUnreachable,
                         None,
-                        &original_packet,
+                        original_packet,
                         current_time,
                     );
                 }
@@ -375,9 +365,7 @@ impl NetworkStack {
             UdpResult::Delivered => {}
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
-                let original_packet = crate::net::payload::PacketPayloadView::new(original_packet)
-                    .read_vec(0, original_packet.total_len());
-                self.send_icmpv6_error(src, 4, &original_packet);
+                self.send_icmpv6_error_payload(src, 4, original_packet);
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
                 self.stats.record_rx_error();

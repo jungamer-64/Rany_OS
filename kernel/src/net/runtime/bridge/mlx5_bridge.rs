@@ -1328,7 +1328,7 @@ pub fn mlx5_transmit(
     data: &[u8],
     meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
-    device::transmit_with_meta(if_id, data, meta)
+    device::transmit_bytes_with_meta_internal(if_id, data, meta)
 }
 
 // ============================================================================

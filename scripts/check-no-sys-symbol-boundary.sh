@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 SEARCH_DIRS=(kernel interfaces)
 FN_PATTERN='\bfn[[:space:]]+sys_(log|alloc|dealloc|sleep|panic)\b'
 SYM_PATTERN='"sys_(log|alloc|dealloc|sleep|panic)"'
-KAPI_PATTERN='__exorust_kernel_api_v3|KERNEL_API_SYMBOL'
+KAPI_PATTERN='__exorust_kernel_api_v4|KERNEL_API_SYMBOL'
 DMA_SEARCH_DIRS=(kernel interfaces drivers filesystems docs scripts)
 DMA_BANNED_PATTERN='map_for_dma\(|map_for_dma_with_perms|MappingKind::Global|get_global_map_count|allow_global_mappings|set_global_dma_mapping_allowed|is_global_dma_mapping_allowed|map_rref_for_domain|map_rref_slice_for_domain|GlobalDmaAllocator|global_dma_allocator\(|DeviceDmaContext::new\(|DmaHandle::map_rref\(|DmaHandle::map_rref_slice\(|\bunmap_dma\('
 REMOVED_IOMMU_KNOB_PATTERN='(^IOMMU[[:space:]]*\?=)|\bNoIommu\b|\bIOMMU=1\b'
@@ -43,7 +43,7 @@ if [ -n "$sym_hits" ]; then
 fi
 
 if [ -z "$kapi_hits" ]; then
-  echo "ERROR: Kernel API symbol bridge missing (__exorust_kernel_api_v3|KERNEL_API_SYMBOL)"
+  echo "ERROR: Kernel API symbol bridge missing (__exorust_kernel_api_v4|KERNEL_API_SYMBOL)"
   failed=1
 fi
 
@@ -69,4 +69,4 @@ if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 
-echo "PASS: no legacy sys_* boundary, KernelApi v3 symbol bridge detected, and removed global DMA surface is absent."
+echo "PASS: no legacy sys_* boundary, KernelApi v4 symbol bridge detected, and removed global DMA surface is absent."

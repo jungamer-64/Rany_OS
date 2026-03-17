@@ -222,16 +222,7 @@ impl MdnsService {
 
                 // 受信パケットを処理
                 let src_ip = src.ip_v4().unwrap_or(Ipv4Address::ANY);
-                let result = match &packet {
-                    kernel_api::resource::net::PacketPayload::Single(packet) => {
-                        self.process_packet(packet.data(), src_ip, ttl, now)
-                    }
-                    kernel_api::resource::net::PacketPayload::Chain(_) => {
-                        let data = crate::net::payload::PacketPayloadView::new(&packet)
-                            .read_vec(0, packet.total_len());
-                        self.process_packet(&data, src_ip, ttl, now)
-                    }
-                };
+                let result = self.process_packet_payload(&packet, src_ip, ttl, now);
 
                 match result {
                     MdnsResult::SendResponse { name, ip, ttl } => {
@@ -360,6 +351,19 @@ impl MdnsService {
         } else {
             self.process_query(data, qdcount, src_ip, current_time)
         }
+    }
+
+    pub fn process_packet_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        src_ip: Ipv4Address,
+        ttl: u8,
+        current_time: u64,
+    ) -> MdnsResult {
+        let Some(packet) = crate::net::payload::packet_from_payload(payload) else {
+            return MdnsResult::InvalidPacket;
+        };
+        self.process_packet(packet.data(), src_ip, ttl, current_time)
     }
 
     /// mDNSクエリを処理

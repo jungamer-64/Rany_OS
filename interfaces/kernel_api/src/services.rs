@@ -11,8 +11,8 @@ extern crate alloc;
 
 use crate::KapiResult;
 use crate::abi::driver::{
-    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistration,
-    AbiNvmeNamespaceRegistration, AbiRRefRaw, KernelApiV3, PackedPciLocation,
+    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistrationV3,
+    AbiNvmeNamespaceRegistration, AbiRRefRaw, KernelApiV4, PackedPciLocation,
 };
 use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::{ChannelHandle, DomainId};
@@ -100,6 +100,13 @@ pub trait KernelServices: Send + Sync {
     /// Disable MSI-X for a PCI device owned by the caller.
     fn disable_msix(&self, device_id: PackedPciLocation) -> KapiResult<()>;
 
+    /// Allocate a packet-backed network buffer owned by the kernel datapath.
+    fn net_alloc_packet(
+        &self,
+        len: usize,
+        headroom: usize,
+    ) -> KapiResult<crate::resource::net::PacketRef>;
+
     // ========================================================================
     // I/O Operations
     // ========================================================================
@@ -137,7 +144,7 @@ pub trait KernelServices: Send + Sync {
     fn unregister_nvme_namespace(&self, handle: u64) -> KapiResult<()>;
 
     /// Register a network port bridge owned by the current driver domain.
-    fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64>;
+    fn register_netdev_port(&self, registration: &AbiNetPortRegistrationV3) -> KapiResult<u64>;
 
     /// Unregister a previously registered network port bridge.
     fn unregister_netdev_port(&self, handle: u64) -> KapiResult<()>;
@@ -476,8 +483,8 @@ pub fn is_installed() -> bool {
 // ============================================================================
 
 unsafe extern "C" {
-    /// The global KernelApiV3 instance exported by the kernel.
-    static __exorust_kernel_api_v3: KernelApiV3;
+    /// The global KernelApiV4 instance exported by the kernel.
+    static __exorust_kernel_api_v4: KernelApiV4;
 }
 
 /// Get the stable ABI kernel API table
@@ -485,8 +492,8 @@ unsafe extern "C" {
 /// This is used by drivers and standalone cells to access kernel services
 /// through the ABI-stable interface.
 #[inline]
-pub fn abi() -> &'static KernelApiV3 {
-    unsafe { &__exorust_kernel_api_v3 }
+pub fn abi() -> &'static KernelApiV4 {
+    unsafe { &__exorust_kernel_api_v4 }
 }
 
 #[cfg(feature = "cell_runtime")]
@@ -570,7 +577,7 @@ mod standalone {
 
         let api = super::abi();
         if (api.abi_size as usize)
-            < core::mem::offset_of!(KernelApiV3, enable_msix_raw)
+            < core::mem::offset_of!(KernelApiV4, enable_msix_raw)
                 + core::mem::size_of::<Option<EnableMsixRaw>>()
         {
             return Err(KapiError::NotSupported);
@@ -607,7 +614,7 @@ mod standalone {
 
         let api = super::abi();
         if (api.abi_size as usize)
-            < core::mem::offset_of!(KernelApiV3, disable_msix_raw)
+            < core::mem::offset_of!(KernelApiV4, disable_msix_raw)
                 + core::mem::size_of::<Option<DisableMsixRaw>>()
         {
             return Err(KapiError::NotSupported);
@@ -624,9 +631,9 @@ mod standalone {
         }
     }
 
-    fn require_full_kernel_api() -> KapiResult<&'static KernelApiV3> {
+    fn require_full_kernel_api() -> KapiResult<&'static KernelApiV4> {
         let api = super::abi();
-        if (api.abi_size as usize) < core::mem::size_of::<KernelApiV3>() {
+        if (api.abi_size as usize) < core::mem::size_of::<KernelApiV4>() {
             Err(KapiError::NotSupported)
         } else {
             Ok(api)
@@ -760,6 +767,14 @@ mod standalone {
             disable_msix(device_id)
         }
 
+        fn net_alloc_packet(
+            &self,
+            _len: usize,
+            _headroom: usize,
+        ) -> KapiResult<crate::resource::net::PacketRef> {
+            Err(KapiError::NotSupported)
+        }
+
         fn port_read_u8(&self, port: u16) -> u8 {
             (super::abi().port_read_u8)(port)
         }
@@ -818,7 +833,7 @@ mod standalone {
             }
         }
 
-        fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64> {
+        fn register_netdev_port(&self, registration: &AbiNetPortRegistrationV3) -> KapiResult<u64> {
             let mut handle = 0u64;
             let status = (super::abi().register_netdev_port)(registration, &mut handle);
             if AbiError::from_raw(status).is_success() {

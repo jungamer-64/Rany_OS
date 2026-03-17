@@ -97,8 +97,7 @@ pub fn test_fragment_reassembly_simple() {
     assert!(result.0.is_some()); // Complete!
 
     let reassembled = result.0.unwrap();
-    let bytes = crate::net::payload::PacketPayloadView::new(&reassembled)
-        .read_vec(0, reassembled.total_len());
+    let bytes = crate::net::payload::payload_to_vec(&reassembled);
     assert!(bytes.len() >= 36); // 20 header + 16 payload
 }
 
@@ -155,8 +154,7 @@ pub fn test_fragment_reassembly_returns_payload_chain() {
         ),
     }
 
-    let bytes =
-        crate::net::payload::PacketPayloadView::new(&payload).read_vec(0, payload.total_len());
+    let bytes = crate::net::payload::payload_to_vec(&payload);
     assert_eq!(
         bytes.len(),
         Ipv4Header::MIN_SIZE + payload1.len() + payload2.len()
@@ -357,8 +355,7 @@ pub fn test_fragment_with_options_vulnerability_fixed() {
     let reassembled = result.0.unwrap();
 
     // Parse the reassembled packet
-    let reassembled_bytes = crate::net::payload::PacketPayloadView::new(&reassembled)
-        .read_vec(0, reassembled.total_len());
+    let reassembled_bytes = crate::net::payload::payload_to_vec(&reassembled);
     if let Some(packet) = Ipv4Packet::parse(&reassembled_bytes) {
         assert_eq!(packet.header().ihl(), 6);
         assert_eq!(packet.header().header_len(), 24);

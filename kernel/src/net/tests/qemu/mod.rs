@@ -339,9 +339,7 @@ pub fn udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
 
         return if_id == crate::net::runtime::manager::NetIfId::default()
             && addr == UdpAddr::new(src_ip, 1234)
-            && crate::net::payload::PacketPayloadView::new(&packet)
-                .read_vec(0, packet.total_len())
-                == payload;
+            && crate::net::payload::payload_to_vec(&packet) == payload;
     }
 
     #[cfg(not(feature = "qemu-test-export"))]

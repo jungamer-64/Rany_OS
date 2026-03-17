@@ -47,7 +47,12 @@ fn calculate_abi_hash(content: &str) -> u64 {
             "pub struct DriverCapabilities",
             "pub struct AbiDmaSlice",
             "pub struct AbiMmioHandle",
-            "pub struct KernelApiV3",
+            "pub struct AbiPacketRefStorage",
+            "pub struct AbiPacketRefVTable",
+            "pub struct AbiPacketRefRaw",
+            "pub struct AbiNetPortRuntimeV2",
+            "pub struct AbiNetPortRegistrationV3",
+            "pub struct KernelApiV4",
             "pub struct DriverExportsV1",
             "pub enum AbiDriverType",
             "pub enum AbiError",
@@ -62,7 +67,12 @@ fn calculate_abi_hash(content: &str) -> u64 {
     extract_and_hash_decl(content, "pub struct DriverCapabilities", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiDmaSlice", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiMmioHandle", &mut hasher);
-    extract_and_hash_decl(content, "pub struct KernelApiV3", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiPacketRefStorage", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiPacketRefVTable", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiPacketRefRaw", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiNetPortRuntimeV2", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiNetPortRegistrationV3", &mut hasher);
+    extract_and_hash_decl(content, "pub struct KernelApiV4", &mut hasher);
     extract_and_hash_decl(content, "pub struct DriverExportsV1", &mut hasher);
     extract_and_hash_decl(content, "pub enum AbiDriverType", &mut hasher);
     extract_and_hash_decl(content, "pub enum AbiError", &mut hasher);

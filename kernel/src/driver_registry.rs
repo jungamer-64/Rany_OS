@@ -33,11 +33,11 @@ use core::fmt;
 use core::sync::atomic::AtomicBool;
 use kernel_api::abi::driver::{
     AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType,
-    AbiError as AbiErrorCode, AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistration,
+    AbiError as AbiErrorCode, AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistrationV3,
     AbiNvmeNamespaceRegistration, AbiRRefRaw, DRIVER_EXPORTS_ABI_VERSION,
     DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
     DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
-    KERNEL_API_ABI_VERSION, KernelApiV3, PackedPciLocation,
+    KERNEL_API_ABI_VERSION, KernelApiV4, PackedPciLocation,
 };
 use kernel_api::driver::DriverStateBlob;
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
@@ -1014,7 +1014,7 @@ extern "C" fn kapi_unregister_nvme_namespace(handle: u64) -> i32 {
 }
 
 extern "C" fn kapi_register_netdev_port(
-    registration: *const AbiNetPortRegistration,
+    registration: *const AbiNetPortRegistrationV3,
     out_handle: *mut u64,
 ) -> i32 {
     if registration.is_null() || out_handle.is_null() {
@@ -1228,9 +1228,9 @@ extern "C" fn kapi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub static __exorust_kernel_api_v3: KernelApiV3 = KernelApiV3 {
+pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     abi_version: KERNEL_API_ABI_VERSION,
-    abi_size: core::mem::size_of::<KernelApiV3>() as u32,
+    abi_size: core::mem::size_of::<KernelApiV4>() as u32,
     log: kapi_log,
     alloc_dma_for_device_raw: kapi_alloc_dma_for_device_raw,
     release_dma_raw: kapi_release_dma_raw,
@@ -1264,8 +1264,8 @@ pub static __exorust_kernel_api_v3: KernelApiV3 = KernelApiV3 {
     disable_msix_raw: Some(kapi_disable_msix_raw),
 };
 
-pub(crate) fn kernel_api_v3() -> &'static KernelApiV3 {
-    &__exorust_kernel_api_v3
+pub(crate) fn kernel_api_v4() -> &'static KernelApiV4 {
+    &__exorust_kernel_api_v4
 }
 
 // ============================================================================
@@ -1476,7 +1476,7 @@ pub(crate) fn prepare_driver_exports(
         if let Some(init) = exports_ref.init {
             crate::io::log::early_print("[DRIVER] prepare_exports: init()\n");
             crate::io::log::early_print("[DRIVER] kernel_api_v1 ptr=");
-            crate::io::log::early_print_hex(kernel_api_v3() as *const KernelApiV3 as usize as u64);
+            crate::io::log::early_print_hex(kernel_api_v4() as *const KernelApiV4 as usize as u64);
             crate::io::log::early_print("\n");
             let init_addr = init as usize;
             let init_virt = crate::mm::virt::higher_half::VirtAddr::new(init_addr as u64);
@@ -1515,7 +1515,7 @@ pub(crate) fn prepare_driver_exports(
                 let _ = init_virt;
                 crate::io::log::early_print("[DRIVER] init pte lookup skipped in test shim\n");
             }
-            let res = init(kernel_api_v3() as *const KernelApiV3);
+            let res = init(kernel_api_v4() as *const KernelApiV4);
             crate::io::log::early_print("[DRIVER] prepare_exports: init done\n");
             if !AbiErrorCode::from_raw(res).is_success() {
                 log::error!("[DRIVER] DriverExports init failed: code={}", res);

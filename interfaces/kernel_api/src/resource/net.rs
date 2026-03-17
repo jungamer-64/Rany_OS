@@ -17,6 +17,19 @@ type PayloadFuture = Pin<Box<dyn Future<Output = KapiResult<PacketPayload>> + Se
 type PayloadSendFuture = Pin<Box<dyn Future<Output = KapiResult<usize>> + Send>>;
 type TcpAcceptFuture = Pin<Box<dyn Future<Output = KapiResult<TcpStream>> + Send>>;
 
+pub fn packet_from_bytes(data: &[u8]) -> KapiResult<PacketRef> {
+    let mut packet = kernel::instance().net_alloc_packet(data.len(), DEFAULT_PACKET_HEADROOM)?;
+    if !data.is_empty() {
+        packet.data_mut()[..data.len()].copy_from_slice(data);
+    }
+    packet.set_len(data.len());
+    Ok(packet)
+}
+
+pub fn payload_from_bytes(data: &[u8]) -> KapiResult<PacketPayload> {
+    packet_from_bytes(data).map(PacketPayload::single)
+}
+
 fn tcp_error_from_kapi(err: KapiError) -> TcpError {
     match err {
         KapiError::PermissionDenied => TcpError::PermissionDenied,
@@ -158,9 +171,13 @@ impl AsyncWrite for TcpStream {
         }
 
         if self.pending_send.is_none() {
+            let payload = match payload_from_bytes(buf) {
+                Ok(payload) => payload,
+                Err(err) => return Poll::Ready(Err(tcp_error_from_kapi(err))),
+            };
             self.pending_send = Some(kernel::instance().net_tcp_stream_send_payload(
                 Self::from_raw_parts(self.id, self.default_scope),
-                PacketPayload::from_vec(buf.to_vec()),
+                payload,
             ));
         }
 

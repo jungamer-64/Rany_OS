@@ -24,3 +24,4 @@ log = "0.4"
 export_driver_entry = []
 # Enable Cell runtime stubs (allocator, panic handler) for standalone cdylib builds
 cell_runtime = []
+net-test-helpers = []

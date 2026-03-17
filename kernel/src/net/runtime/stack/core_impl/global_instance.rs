@@ -101,38 +101,6 @@ pub fn is_initialized_in(runtime: NetRuntimeHandle) -> bool {
     }
 }
 
-/// Process a received packet
-pub fn receive(data: &[u8]) {
-    receive_on_in(crate::net::runtime::default_runtime(), None, data);
-}
-
-/// Process a received packet and preserve the ingress interface when known.
-pub fn receive_on(if_id: Option<super::NetIfId>, data: &[u8]) {
-    receive_on_in(crate::net::runtime::default_runtime(), if_id, data);
-}
-
-/// Process a received packet on a specific runtime and preserve the ingress interface when known.
-pub fn receive_on_in(runtime: NetRuntimeHandle, if_id: Option<super::NetIfId>, data: &[u8]) {
-    use crate::net::datapath::mempool::alloc_packet;
-
-    // Allocate PacketRef to bridge legacy driver to Zero-Copy stack
-    if let Some(mut packet) = alloc_packet() {
-        // Copy data (Bridge)
-        let len = data.len().min(packet.capacity());
-        packet.data_mut()[..len].copy_from_slice(&data[..len]);
-        packet.set_len(len);
-
-        // 非同期経路へオフロードして即時戻す（割り込み/ポーリングコンテキストでのロック取得を回避）
-        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-            runtime,
-            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { if_id, packet },
-        );
-    } else {
-        // Drop packet due to OOM
-        // Ideally record stats
-    }
-}
-
 /// Process a batch of received packets
 pub fn receive_batch(batch: PacketBatch) {
     receive_batch_on_in(crate::net::runtime::default_runtime(), None, batch);

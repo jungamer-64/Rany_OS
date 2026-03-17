@@ -19,6 +19,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::icmpv6::Icmpv6Type;
 use super::ipv4::{IpProtocol, data_checksum};
 use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
+use crate::net::payload::PacketPayloadView;
 
 // =====================================================
 // NDP Constants
@@ -209,6 +210,105 @@ pub fn parse_ndp_options(data: &[u8]) -> Vec<NdpOption> {
             _ => {
                 // Skip unknown options
             }
+        }
+
+        offset += opt_len;
+    }
+
+    options
+}
+
+pub fn parse_ndp_options_view(view: &PacketPayloadView<'_>, start_offset: usize) -> Vec<NdpOption> {
+    let mut options = Vec::new();
+    let mut offset = start_offset;
+    let total_len = view.total_len();
+
+    while offset + 2 <= total_len {
+        let Some(header) = view.read_array::<2>(offset) else {
+            break;
+        };
+        let opt_type = NdpOptionType::from(header[0]);
+        let opt_len_units = header[1] as usize;
+        if opt_len_units == 0 {
+            break;
+        }
+
+        let opt_len = opt_len_units * 8;
+        if offset + opt_len > total_len {
+            break;
+        }
+
+        match opt_type {
+            NdpOptionType::SourceLinkLayerAddress | NdpOptionType::TargetLinkLayerAddress => {
+                if opt_len >= 8 {
+                    if let Some(mac) = view.read_array::<6>(offset + 2) {
+                        options.push(NdpOption::LinkLayerAddress {
+                            option_type: opt_type,
+                            mac,
+                        });
+                    }
+                }
+            }
+            NdpOptionType::PrefixInformation => {
+                if opt_len >= 32 {
+                    let Some(prefix_header) = view.read_array::<10>(offset + 2) else {
+                        break;
+                    };
+                    let prefix_len = prefix_header[0];
+                    let flags = prefix_header[1];
+                    let on_link = (flags & 0x80) != 0;
+                    let autonomous = (flags & 0x40) != 0;
+                    let valid_lifetime = u32::from_be_bytes([
+                        prefix_header[2],
+                        prefix_header[3],
+                        prefix_header[4],
+                        prefix_header[5],
+                    ]);
+                    let preferred_lifetime = u32::from_be_bytes([
+                        prefix_header[6],
+                        prefix_header[7],
+                        prefix_header[8],
+                        prefix_header[9],
+                    ]);
+                    let Some(prefix_bytes) = view.read_array::<16>(offset + 16) else {
+                        break;
+                    };
+                    options.push(NdpOption::PrefixInfo {
+                        prefix_len,
+                        on_link,
+                        autonomous,
+                        valid_lifetime,
+                        preferred_lifetime,
+                        prefix: Ipv6Address::new(prefix_bytes),
+                    });
+                }
+            }
+            NdpOptionType::Mtu => {
+                if opt_len >= 8 {
+                    if let Some(mtu_bytes) = view.read_array::<4>(offset + 4) {
+                        options.push(NdpOption::Mtu(u32::from_be_bytes(mtu_bytes)));
+                    }
+                }
+            }
+            NdpOptionType::RecursiveDnsServer => {
+                if opt_len >= 24 {
+                    let Some(lifetime_bytes) = view.read_array::<4>(offset + 4) else {
+                        break;
+                    };
+                    let lifetime = u32::from_be_bytes(lifetime_bytes);
+                    let mut servers = Vec::new();
+                    let mut addr_offset = offset + 8;
+                    while addr_offset + 16 <= offset + opt_len {
+                        let Some(addr_bytes) = view.read_array::<16>(addr_offset) else {
+                            break;
+                        };
+                        servers.push(Ipv6Address::new(addr_bytes));
+                        addr_offset += 16;
+                    }
+                    options.push(NdpOption::RecursiveDnsServer { lifetime, servers });
+                }
+            }
+            _ => {}
         }
 
         offset += opt_len;

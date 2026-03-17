@@ -320,6 +320,18 @@ pub fn process_tcp_segment_v6(
     process_tcp_segment_v6_on(None, src_ip, dst_ip, segment);
 }
 
+pub fn process_tcp_segment_v6_payload_on(
+    if_id: Option<NetIfId>,
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    segment: &kernel_api::resource::net::PacketPayload,
+) {
+    let Some(packet) = crate::net::payload::packet_from_payload(segment) else {
+        return;
+    };
+    process_tcp_segment_v6_on(if_id, src_ip, dst_ip, packet.data());
+}
+
 pub fn process_tcp_segment_v6_on(
     if_id: Option<NetIfId>,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
@@ -521,6 +533,18 @@ pub fn process_tcp_segment_v6_on(
 /// プロトコルスタック（ipv4.rs）から呼ばれる
 pub fn process_tcp_segment(src_ip: [u8; 4], dst_ip: [u8; 4], segment: &[u8]) {
     process_tcp_segment_on(None, src_ip, dst_ip, segment);
+}
+
+pub fn process_tcp_segment_payload_on(
+    if_id: Option<NetIfId>,
+    src_ip: [u8; 4],
+    dst_ip: [u8; 4],
+    segment: &kernel_api::resource::net::PacketPayload,
+) {
+    let Some(packet) = crate::net::payload::packet_from_payload(segment) else {
+        return;
+    };
+    process_tcp_segment_on(if_id, src_ip, dst_ip, packet.data());
 }
 
 pub fn process_tcp_segment_on(

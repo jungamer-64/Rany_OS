@@ -362,6 +362,21 @@ impl NetworkStack {
         }
     }
 
+    pub fn process_icmp_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        ttl: u8,
+        current_time: u64,
+    ) {
+        let Some(packet) = crate::net::payload::packet_from_payload(payload) else {
+            self.stats.record_rx_error();
+            return;
+        };
+        self.process_icmp_data(packet.data(), src_ip, dst_ip, ttl, current_time);
+    }
+
     // =========================================================================
     // IPv6 Processing
     // =========================================================================
@@ -1277,5 +1292,18 @@ impl NetworkStack {
 
         // Process and send any pending IGMP reports
         self.send_pending_igmp_reports();
+    }
+
+    pub fn process_igmp_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        src_ip: Ipv4Address,
+        ttl: u8,
+    ) {
+        let Some(packet) = crate::net::payload::packet_from_payload(payload) else {
+            self.stats.record_rx_error();
+            return;
+        };
+        self.process_igmp_data(packet.data(), src_ip, ttl);
     }
 }

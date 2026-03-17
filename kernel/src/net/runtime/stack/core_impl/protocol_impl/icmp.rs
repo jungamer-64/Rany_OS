@@ -349,6 +349,22 @@ impl NetworkStack {
         }
     }
 
+    pub fn send_icmp_error_payload(
+        &mut self,
+        dst_ip: Ipv4Address,
+        code: DestUnreachCode,
+        next_hop_mtu: Option<u16>,
+        original_packet: &kernel_api::resource::net::PacketPayload,
+        current_time: u64,
+    ) {
+        let Some(packet) = crate::net::payload::packet_from_payload_prefix(original_packet, 544)
+        else {
+            self.stats.record_rx_error();
+            return;
+        };
+        self.send_icmp_error(dst_ip, code, next_hop_mtu, packet.data(), current_time);
+    }
+
     /// Send ICMP echo reply
     pub(crate) fn send_icmp_echo_reply(
         &mut self,
@@ -631,6 +647,20 @@ impl NetworkStack {
 
         self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
         true
+    }
+
+    pub fn send_icmpv6_error_payload(
+        &mut self,
+        dst_v6: Ipv6Address,
+        code: u8,
+        original_packet: &kernel_api::resource::net::PacketPayload,
+    ) -> bool {
+        let Some(packet) = crate::net::payload::packet_from_payload_prefix(original_packet, 1232)
+        else {
+            self.stats.record_rx_error();
+            return false;
+        };
+        self.send_icmpv6_error(dst_v6, code, packet.data())
     }
 
     /// Send an ICMPv6 Parameter Problem error (RFC 4443 Section 3.4).

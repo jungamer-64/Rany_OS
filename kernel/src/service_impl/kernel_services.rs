@@ -1,7 +1,7 @@
 use super::*;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use kernel_api::abi::driver::{
-    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistration,
+    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistrationV3,
     AbiNvmeNamespaceRegistration, AbiRRefRaw, PackedPciLocation,
 };
 use kernel_api::msix::MsixVectorInfo;
@@ -231,6 +231,14 @@ impl KernelServices for ExoKernel {
         crate::io::msix::disable_for_owner(owner, device_id)
     }
 
+    fn net_alloc_packet(
+        &self,
+        len: usize,
+        headroom: usize,
+    ) -> Result<kernel_api::resource::net::PacketRef, KapiError> {
+        crate::net::payload::alloc_packet_with_headroom(len, headroom).ok_or(KapiError::OutOfMemory)
+    }
+
     // ========================================================================
     // I/O Operations
     // ========================================================================
@@ -279,7 +287,7 @@ impl KernelServices for ExoKernel {
 
     fn register_netdev_port(
         &self,
-        registration: &AbiNetPortRegistration,
+        registration: &AbiNetPortRegistrationV3,
     ) -> Result<u64, KapiError> {
         crate::runtime_bridge::register_netdev_port(registration)
             .map_err(|_| KapiError::PermissionDenied)
