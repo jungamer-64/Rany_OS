@@ -9,7 +9,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use super::{BoxFuture, ShellNamespace, dynamic_driver};
+use super::{BoxFuture, ShellNamespace};
 use crate::driver_domain;
 #[cfg(feature = "qemu-test-export")]
 use crate::driver_domain::fault::{self, TestFaultKind};
@@ -930,10 +930,6 @@ impl CellNamespace {
                         |h| ExoValue::Int(core::cmp::min(h.index() as u64, i64::MAX as u64) as i64),
                     )
                     .collect::<Vec<_>>();
-                let namespace_list = dynamic_driver::register_namespaces(&name, &handles)
-                    .into_iter()
-                    .map(Self::vstr)
-                    .collect::<Vec<_>>();
                 let mut map = BTreeMap::new();
                 Self::map_insert(&mut map, "success", ExoValue::Bool(true));
                 Self::map_insert(
@@ -942,7 +938,7 @@ impl CellNamespace {
                     Self::vint_u64(driver_domain_id.as_u64()),
                 );
                 Self::map_insert(&mut map, "driver_handles", ExoValue::Array(handle_list));
-                Self::map_insert(&mut map, "namespaces", ExoValue::Array(namespace_list));
+                Self::map_insert(&mut map, "namespaces", ExoValue::Array(Vec::new()));
                 Self::map_insert(&mut map, "name", Self::vstr(name.clone()));
                 Self::map_insert(
                     &mut map,

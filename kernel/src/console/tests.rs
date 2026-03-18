@@ -1,5 +1,5 @@
 use super::*;
-use crate::io::hid::keyboard::{KeyCode, KeyEvent, KeyState, Modifiers};
+use crate::drivers::hid::keyboard::{KeyCode, KeyEvent, KeyState, Modifiers};
 
 fn key_event(key: KeyCode, state: KeyState, modifiers: Modifiers) -> KeyEvent {
     KeyEvent {

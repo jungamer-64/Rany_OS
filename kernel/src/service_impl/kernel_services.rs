@@ -755,7 +755,9 @@ impl KernelServices for ExoKernel {
         let nsid = if device_id == 0 { 1 } else { device_id as u32 };
         let block_size = crate::runtime_bridge::standalone_nvme_namespace_info(nsid)
             .map(|info| info.block_size)
-            .or_else(|| crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid)))
+            .or_else(|| {
+                crate::drivers::nvme::with_driver(|driver| driver.namespace_block_size(nsid))
+            })
             .unwrap_or(512);
 
         let caller = context::current_subject().domain.as_u64();
@@ -892,7 +894,7 @@ impl KernelServices for ExoKernel {
         crate::runtime_bridge::standalone_nvme_namespace_info(nsid)
             .map(|info| info.block_size as u64)
             .or_else(|| {
-                crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid) as u64)
+                crate::drivers::nvme::with_driver(|driver| driver.namespace_block_size(nsid) as u64)
             })
     }
 
@@ -901,8 +903,8 @@ impl KernelServices for ExoKernel {
         crate::runtime_bridge::standalone_nvme_namespace_info(nsid)
             .map(|info| info.max_sgl_entries as usize)
             .or_else(|| {
-                crate::io::nvme::global::with_driver(
-                    |driver: &crate::io::nvme::NvmePollingDriver| driver.sgl_max_entries(),
+                crate::drivers::nvme::global::with_driver(
+                    |driver: &crate::drivers::nvme::NvmePollingDriver| driver.sgl_max_entries(),
                 )
                 .flatten()
             })

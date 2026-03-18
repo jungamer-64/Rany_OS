@@ -101,14 +101,10 @@ impl ExoShell {
 
 [Namespaces and Methods]
 
-  fs.*  - Filesystem
-    fs.entries("/path")   - List directory contents
-    fs.read("/path")      - Read file contents
-    fs.stat("/path")      - Get file information
-    fs.mkdir("/path")     - Create directory
-    fs.remove("/path")    - Remove file/directory
-    fs.cd("/path")        - Change current directory
-    fs.pwd()              - Print working directory
+  domain.* - Domain Lifecycle
+    domain.list()         - List current domains
+    domain.info(id)       - Inspect one domain
+    domain.kill(id)       - Terminate a domain
 
   net.* - Network
     net.interfaces()      - List network interfaces
@@ -159,17 +155,11 @@ impl ExoShell {
     net.snapshot()        - Full network diagnostic snapshot
     net.events(limit?)    - Recent network events (default: 20)
 
-  cap.* - Capability (permissions)
-    cap.list()            - List current capabilities
-    cap.grant(...)        - Grant permission
-    cap.revoke(id)        - Revoke permission
-
   sys.* - System
     sys.info()            - System information
     sys.memory()          - Memory usage
     sys.time()            - Time information
     sys.monitor()         - System monitoring (CPU/Memory/Network)
-    sys.dashboard()       - Monitoring dashboard
     sys.thermal()         - Temperature/throttling status
     sys.watchdog()        - Watchdog status
     sys.power()           - Power state/CPU idle stats
@@ -213,16 +203,8 @@ impl ExoShell {
     log.warn("msg")       - Emit WARN log
     log.error("msg")      - Emit ERROR log
 
-  shell.* - Shell Control
-    shell.spawn()         - Spawn proxy shell
-    shell.spawn_with_caps(caps) - Spawn with specific capabilities
-    shell.with_cap(cap)   - Run with additional capability
-    shell.revoke(cap)     - Revoke capability
-    shell.list_caps()     - List requested capabilities
-    shell.run(cmd)        - Run command string
-
 [Method Chaining]
-  fs.entries("/").filter("|e| e.size > 1024").map("|e| e.name")
+  domain.list().filter("memory > 1024").map("name")
   domain.list().filter("memory > 1024").sort("tasks", "desc")
 
 [Array Methods]
@@ -327,7 +309,7 @@ impl ExoShell {
   .to_map()        - Convert to Map
 
 [Variables]
-  let x = fs.entries("/")   - Store result in variable
+  let x = domain.list()     - Store result in variable
   $x                        - Reference variable
   _                         - Last result
 
@@ -375,13 +357,11 @@ impl ExoShell {
 
         // 名前空間
         let namespaces = [
-            "fs", "net", "domain", "cap", "sys", "driver", "cell", "shell", "task", "log",
+            "sys", "log", "domain", "driver", "task", "cell", "net",
         ];
 
         // Unixエイリアス
-        let aliases = [
-            "ls", "cd", "pwd", "cat", "mkdir", "rm", "ifconfig", "ping", "netstat", "route",
-        ];
+        let aliases = ["cd", "pwd", "ifconfig", "ping", "netstat", "route"];
 
         if !input.contains('.') {
             let mut completions: Vec<String> = Vec::new();
@@ -457,9 +437,6 @@ impl ExoShell {
         let method_prefix = parts[1];
 
         let methods: &[&str] = match namespace {
-            "fs" => &[
-                "entries", "read", "stat", "mkdir", "remove", "cd", "pwd", "write",
-            ],
             "net" => &[
                 "config",
                 "stats",
@@ -499,13 +476,11 @@ impl ExoShell {
                 "events",
             ],
             "domain" => &["list", "info", "kill"],
-            "cap" => &["list", "grant", "revoke"],
             "sys" => &[
                 "info",
                 "memory",
                 "time",
                 "monitor",
-                "dashboard",
                 "thermal",
                 "watchdog",
                 "power",
@@ -527,14 +502,6 @@ impl ExoShell {
                 "commit",
                 "rollback",
                 "unload",
-            ],
-            "shell" => &[
-                "spawn",
-                "spawn_with_caps",
-                "with_cap",
-                "revoke",
-                "list_caps",
-                "run",
             ],
             "task" => &["stats", "fuel", "preemption", "tick", "yield"],
             "log" => &[

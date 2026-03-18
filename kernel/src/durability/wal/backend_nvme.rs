@@ -1,5 +1,5 @@
-use crate::io::nvme;
-use crate::io::nvme::dma::NvmeDmaRegion;
+use crate::drivers::nvme;
+use crate::drivers::nvme::dma::NvmeDmaRegion;
 
 use super::{WalBackend, WalError};
 

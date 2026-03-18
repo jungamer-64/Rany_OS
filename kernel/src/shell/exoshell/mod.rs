@@ -87,11 +87,12 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_namespace_registration() {
         let shell = ExoShell::new();
-        assert!(shell.is_namespace("fs"));
-        assert!(shell.is_namespace("cap"));
         assert!(shell.is_namespace("cell"));
+        assert!(shell.is_namespace("domain"));
         assert!(shell.is_namespace("net"));
         assert!(shell.is_namespace("sys"));
         assert!(shell.is_namespace("driver"));
+        assert!(shell.is_namespace("task"));
+        assert!(shell.is_namespace("log"));
     }
 }

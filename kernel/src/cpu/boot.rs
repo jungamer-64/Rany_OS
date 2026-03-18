@@ -9,7 +9,7 @@ pub fn initialize(boot_info: &ExoBootInfo) -> Result<CpuBootReport, &'static str
     crate::smp::reset_runtime_state();
 
     let lapic_base = crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000);
-    let bsp_apic_id = crate::io::apic::local_apic().id() as u32;
+    let bsp_apic_id = crate::drivers::apic::local_apic().id() as u32;
     let topology = directory::from_boot_info(boot_info, bsp_apic_id);
     directory::install(topology.clone());
     runtime::initialize_from_topology(&topology);

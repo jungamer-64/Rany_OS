@@ -69,7 +69,7 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v4";
 /// ABI version for the KernelApiV4 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 7;
+pub const KERNEL_API_ABI_VERSION: u32 = 8;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 2;
 
@@ -1092,55 +1092,6 @@ impl AbiPacketRefRaw {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AbiAudioDeviceInfo {
-    pub device_id: u64,
-    pub output_channels: u16,
-    pub input_channels: u16,
-    pub _padding0: u16,
-    pub sample_rate_hz: u32,
-    pub flags: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AbiAudioControllerRegistration {
-    pub abi_size: u32,
-    pub opaque: u64,
-    pub irq: u32,
-    pub is_initialized: extern "C" fn(opaque: u64) -> bool,
-    pub device_count: extern "C" fn(opaque: u64) -> u32,
-    pub device_info: extern "C" fn(opaque: u64, index: u32, out: *mut AbiAudioDeviceInfo) -> i32,
-    pub enable_irq: extern "C" fn(opaque: u64) -> i32,
-    pub disable_irq: extern "C" fn(opaque: u64) -> i32,
-    pub reserved: [u64; 4],
-}
-
-impl AbiAudioControllerRegistration {
-    pub const fn new(
-        opaque: u64,
-        irq: u32,
-        is_initialized: extern "C" fn(u64) -> bool,
-        device_count: extern "C" fn(u64) -> u32,
-        device_info: extern "C" fn(u64, u32, *mut AbiAudioDeviceInfo) -> i32,
-        enable_irq: extern "C" fn(u64) -> i32,
-        disable_irq: extern "C" fn(u64) -> i32,
-    ) -> Self {
-        Self {
-            abi_size: core::mem::size_of::<Self>() as u32,
-            opaque,
-            irq,
-            is_initialized,
-            device_count,
-            device_info,
-            enable_irq,
-            disable_irq,
-            reserved: [0; 4],
-        }
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
 pub struct AbiMsixVectorInfo {
     pub vector: u32,
     pub table_index: u16,
@@ -1238,12 +1189,6 @@ pub struct KernelApiV4 {
     pub register_netdev_port:
         extern "C" fn(registration: *const AbiNetPortRegistrationV3, out_handle: *mut u64) -> i32,
     pub unregister_netdev_port: extern "C" fn(handle: u64) -> i32,
-
-    pub register_audio_controller: extern "C" fn(
-        registration: *const AbiAudioControllerRegistration,
-        out_handle: *mut u64,
-    ) -> i32,
-    pub unregister_audio_controller: extern "C" fn(handle: u64) -> i32,
 
     pub reserved: [u64; 2],
     pub enable_msix_raw: Option<

@@ -77,7 +77,7 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
         }
     }
 
-    if let Some(Some(info)) = crate::io::nvme::with_driver(|driver| {
+    if let Some(Some(info)) = crate::drivers::nvme::with_driver(|driver| {
         if !driver.is_active() {
             return None;
         }
@@ -138,7 +138,7 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
             let info = StorageDeviceInfo {
                 device_id: provider_device_id(STORAGE_KIND_AHCI, port as u64),
                 namespace_id: 0,
-                block_size: crate::io::ahci::SECTOR_SIZE as u32,
+                block_size: crate::drivers::ahci::SECTOR_SIZE as u32,
                 max_transfer_blocks: 0,
                 transport: StorageTransport::Ahci,
                 flags: STORAGE_FLAG_ACTIVE,
@@ -199,8 +199,8 @@ impl GuiServices for ExoKernel {
 
         if let Some(hid_event) = hid_event_opt {
             let kapi_state = match hid_event.state {
-                crate::io::hid::KeyState::Pressed => KapiKeyState::Pressed,
-                crate::io::hid::KeyState::Released => KapiKeyState::Released,
+                crate::drivers::hid::KeyState::Pressed => KapiKeyState::Pressed,
+                crate::drivers::hid::KeyState::Released => KapiKeyState::Released,
             };
 
             // Encode modifiers as bitfield (branchless)
@@ -285,7 +285,7 @@ impl SerialServices for ExoKernel {
         }
 
         for &byte in bytes {
-            crate::io::serial::write_byte(byte);
+            crate::drivers::serial::write_byte(byte);
         }
 
         Ok(bytes.len())
@@ -307,7 +307,7 @@ impl NetDeviceServices for ExoKernel {
 #[cfg(test)]
 mod gui_input_queue_tests {
     use super::*;
-    use crate::io::hid::keyboard::{KeyCode, KeyEvent, KeyState, Modifiers};
+    use crate::drivers::hid::keyboard::{KeyCode, KeyEvent, KeyState, Modifiers};
     use kernel_api::gui::{GuiServices, InputEvent, KeyState as KapiKeyState};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

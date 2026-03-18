@@ -633,7 +633,7 @@ pub fn runtime_local_timers_enabled() -> bool {
 }
 
 pub fn ensure_runtime_local_timer_started() {
-    if !runtime_local_timers_enabled() || !crate::io::apic::is_apic_enabled() {
+    if !runtime_local_timers_enabled() || !crate::drivers::apic::is_apic_enabled() {
         return;
     }
 
@@ -642,12 +642,12 @@ pub fn ensure_runtime_local_timer_started() {
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        crate::io::apic::start_apic_timer_on_vector(APIC_TIMER_VECTOR, 1);
+        crate::drivers::apic::start_apic_timer_on_vector(APIC_TIMER_VECTOR, 1);
     }
 }
 
 pub fn transition_to_runtime_local_timers() -> bool {
-    if !crate::io::apic::is_apic_enabled() {
+    if !crate::drivers::apic::is_apic_enabled() {
         return false;
     }
 

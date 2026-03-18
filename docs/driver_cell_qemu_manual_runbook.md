@@ -55,7 +55,7 @@ Confirm startup logs mention:
 1. Preflight
 
 ```text
-fs.entries("/cells")
+cell.list()
 cell.list()
 cell.info(<dcell_id>)
 cell.graph()

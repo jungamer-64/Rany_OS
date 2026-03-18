@@ -122,4 +122,4 @@ MVP では `shell.spawn()` により**限定的な子シェル表現 (ShellProxy
 
 ---
 
-追記: 具体的な関数シグネチャとテスト骨子はリポジトリ内に追加します（`libs/security`, `kernel/src/security/capability.rs`, `kernel/src/shell/exoshell/namespaces/cap.rs`, `kernel/src/shell/exoshell/namespaces/shell.rs`）。
+追記: 具体的な関数シグネチャとテスト骨子はリポジトリ内に追加します（`libs/security`, `kernel/src/security/capability.rs`, `kernel/src/shell/runtime.rs`）。

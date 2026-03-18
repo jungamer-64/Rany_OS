@@ -29,7 +29,7 @@ impl SystemIntegration {
             if let Some(transport) =
                 try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Gpu)
             {
-                match crate::io::gpu::gpu_impl::init(
+                match crate::drivers::gpu::gpu_impl::init(
                     alloc::boxed::Box::new(transport),
                     iommu_device,
                 ) {

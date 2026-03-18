@@ -11,7 +11,7 @@ use crate::io::port_io::{PortU8, PortU16, PortU32};
 use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use crate::io::acpi::Fadt;
+use crate::drivers::acpi::Fadt;
 
 /// 電源状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -773,7 +773,7 @@ async fn network_bootstrap_task() {
     let staged_mlx5_started = {
         let mut started = false;
         for &(_vendor_id, device_id) in crate::net::drivers::mlx5_registry::SUPPORTED_DEVICE_IDS {
-            let pci_devices = crate::io::pci::find_by_id(
+            let pci_devices = crate::drivers::pci::find_by_id(
                 crate::net::drivers::mlx5_registry::MELLANOX_VENDOR_ID,
                 device_id,
             );

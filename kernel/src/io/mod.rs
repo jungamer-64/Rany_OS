@@ -8,32 +8,32 @@
 // - interrupt delivery and polling infrastructure
 // - logging and HAL access wrappers
 //
-// Device-facing modules remain here as compatibility shims, but new kernel
+// Device-facing modules remain crate-private implementation details. Kernel
 // code should use `crate::drivers::*` as the explicit kernel/driver boundary.
 
 // ============================================================================
 // Submodules
 // ============================================================================
 
-// Driver/bus compatibility shims. Prefer `crate::drivers::*` from new code.
-pub mod acpi;
-pub mod ahci;
-pub mod apic;
+// Driver/bus implementation modules. Prefer `crate::drivers::*`.
+pub(crate) mod acpi;
+pub(crate) mod ahci;
+pub(crate) mod apic;
 // Kernel-owned infrastructure.
 pub mod dma;
-pub mod gpu;
-pub mod hid;
-pub mod ide;
+pub(crate) mod gpu;
+pub(crate) mod hid;
+pub(crate) mod ide;
 pub mod interrupt_manager;
 pub mod io_scheduler;
 pub mod iommu;
 pub mod log;
 pub mod msix;
-pub mod nvme;
-pub mod pci;
-pub mod serial;
-pub mod usb;
-pub mod virtio;
+pub(crate) mod nvme;
+pub(crate) mod pci;
+pub(crate) mod serial;
+pub(crate) mod usb;
+pub(crate) mod virtio;
 
 // ============================================================================
 // HAL Re-exports (convenience)
@@ -85,11 +85,11 @@ pub use iommu::types::{DeviceId, IommuError};
 // - Interrupts:      `use crate::io::interrupt_manager;`
 // - Logging/HAL:     `use crate::io::{log, mmio, port_io};`
 //
-// Compatibility paths still exist:
-// - NVMe:        `use crate::io::nvme::{NvmePollingDriver, ...};`
-// - VirtIO:      `use crate::io::virtio::{VirtioBlkDevice, ...};`
-// - PCI:         `use crate::io::pci::{PciDeviceInfo, Bar, ...};`
-// - ACPI:        `use crate::io::acpi::{AcpiParser, ...};`
+// Driver paths:
+// - NVMe:        `use crate::drivers::nvme::{NvmePollingDriver, ...};`
+// - VirtIO:      `use crate::drivers::virtio::{VirtioBlkDevice, ...};`
+// - PCI:         `use crate::drivers::pci::{PciDeviceInfo, Bar, ...};`
+// - ACPI:        `use crate::drivers::acpi::{AcpiParser, ...};`
 // - I/O Sched:   `use crate::io::io_scheduler::{IoScheduler, ...};`
-// - HID:         `use crate::io::hid::{KeyCode, KeyEvent, ...};`
+// - HID:         `use crate::drivers::hid::{KeyCode, KeyEvent, ...};`
 // - ATAPI:       `use ahci_driver::atapi::{CdDvdDrive, ...};`

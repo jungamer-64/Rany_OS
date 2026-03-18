@@ -80,13 +80,6 @@ impl ExoShell {
         method: &str,
         args: &[ExoValue<'static>],
     ) -> ExoValue<'static> {
-        // ShellProxy handling
-        if let Some(ExoValue::String(t)) = map.get("__proxy_type") {
-            if t.as_ref() == "shell_proxy" {
-                return crate::shell::exoshell::namespaces::shell::ShellControlNamespace::proxy_dispatch(map, method, args);
-            }
-        }
-
         match method {
             "get" => {
                 let empty = String::new();
@@ -710,38 +703,11 @@ impl ExoShell {
         }
 
         match parts[0] {
-            "ls" => {
-                let path = parts.get(1).unwrap_or(&".");
-                let p = if *path == "." {
-                    self.cwd.clone()
-                } else {
-                    path.to_string()
-                };
-                FsNamespace::entries(&p).await
-            }
+            "ls" | "cat" | "mkdir" | "rm" => ExoValue::Error(String::from(
+                "Filesystem shell commands were removed. Use the diagnostic namespaces only.",
+            )),
             "cd" => self.eval_cd(&parts),
             "pwd" => ExoValue::String(Cow::Owned(self.cwd.clone())),
-            "cat" => {
-                if let Some(path) = parts.get(1) {
-                    FsNamespace::read(path).await
-                } else {
-                    ExoValue::Error(String::from("Usage: cat <file>"))
-                }
-            }
-            "mkdir" => {
-                if let Some(path) = parts.get(1) {
-                    FsNamespace::mkdir(path).await
-                } else {
-                    ExoValue::Error(String::from("Usage: mkdir <dir>"))
-                }
-            }
-            "rm" => {
-                if let Some(path) = parts.get(1) {
-                    FsNamespace::remove(path).await
-                } else {
-                    ExoValue::Error(String::from("Usage: rm <path>"))
-                }
-            }
             "ifconfig" => NetNamespace::interfaces().await,
             "arp" => NetNamespace::arp_cache().await,
             "ping" => self.eval_ping(&parts).await,
@@ -762,7 +728,7 @@ impl ExoShell {
             "net" => Self::dispatch_namespace_command(&parts, parts[0]).await,
             "uptime" => SysNamespace::time(),
             _ => ExoValue::Error(format!(
-                "Unknown: '{}'\nTry 'help' or use ExoShell syntax: fs.entries(), net.interfaces(), etc.",
+                "Unknown: '{}'\nTry 'help' or use ExoShell syntax: sys.info(), domain.list(), net.interfaces(), etc.",
                 cmd
             )),
         }

@@ -23,7 +23,7 @@ pub fn send_eoi_current_cpu() {
 }
 
 pub fn current_apic_id() -> u32 {
-    crate::io::apic::local_apic().id() as u32
+    crate::drivers::apic::local_apic().id() as u32
 }
 
 fn vector_for(kind: IpiKind) -> u8 {

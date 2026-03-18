@@ -474,9 +474,9 @@ impl From<crate::mm::cache::exchange_heap::ExchangeHeapError> for KernelError {
 // ===== ドライバ固有エラーから IoError への変換 =====
 
 // io::ahci::AhciError からの変換
-impl From<crate::io::ahci::AhciError> for IoError {
-    fn from(e: crate::io::ahci::AhciError) -> Self {
-        use crate::io::ahci::AhciError as AE;
+impl From<crate::drivers::ahci::AhciError> for IoError {
+    fn from(e: crate::drivers::ahci::AhciError) -> Self {
+        use crate::drivers::ahci::AhciError as AE;
         match e {
             AE::PortNotAvailable | AE::NoDevice => IoError::DeviceNotFound,
             AE::NoCommandSlot | AE::NoFreeSlot => IoError::NoResources,
@@ -493,16 +493,16 @@ impl From<crate::io::ahci::AhciError> for IoError {
 }
 
 // io::ahci::AhciError からの KernelError への変換
-impl From<crate::io::ahci::AhciError> for KernelError {
-    fn from(e: crate::io::ahci::AhciError) -> Self {
+impl From<crate::drivers::ahci::AhciError> for KernelError {
+    fn from(e: crate::drivers::ahci::AhciError) -> Self {
         KernelError::Io(e.into())
     }
 }
 
 // io::nvme::defs::NvmeError からの変換
-impl From<crate::io::nvme::defs::NvmeError> for IoError {
-    fn from(e: crate::io::nvme::defs::NvmeError) -> Self {
-        use crate::io::nvme::defs::NvmeError as NE;
+impl From<crate::drivers::nvme::defs::NvmeError> for IoError {
+    fn from(e: crate::drivers::nvme::defs::NvmeError) -> Self {
+        use crate::drivers::nvme::defs::NvmeError as NE;
         match e {
             NE::InitializationFailed(_) => IoError::DeviceNotFound,
             NE::Timeout => IoError::Timeout,
@@ -518,16 +518,16 @@ impl From<crate::io::nvme::defs::NvmeError> for IoError {
 }
 
 // io::nvme::defs::NvmeError から KernelError への変換
-impl From<crate::io::nvme::defs::NvmeError> for KernelError {
-    fn from(e: crate::io::nvme::defs::NvmeError) -> Self {
+impl From<crate::drivers::nvme::defs::NvmeError> for KernelError {
+    fn from(e: crate::drivers::nvme::defs::NvmeError) -> Self {
         KernelError::Io(e.into())
     }
 }
 
 // io::usb::UsbError からの変換
-impl From<crate::io::usb::UsbError> for IoError {
-    fn from(e: crate::io::usb::UsbError) -> Self {
-        use crate::io::usb::UsbError as UE;
+impl From<crate::drivers::usb::UsbError> for IoError {
+    fn from(e: crate::drivers::usb::UsbError) -> Self {
+        use crate::drivers::usb::UsbError as UE;
         match e {
             UE::DeviceNotFound => IoError::DeviceNotFound,
             UE::EndpointNotFound => IoError::DeviceNotFound,
@@ -546,16 +546,16 @@ impl From<crate::io::usb::UsbError> for IoError {
 }
 
 // io::usb::UsbError から KernelError への変換
-impl From<crate::io::usb::UsbError> for KernelError {
-    fn from(e: crate::io::usb::UsbError) -> Self {
+impl From<crate::drivers::usb::UsbError> for KernelError {
+    fn from(e: crate::drivers::usb::UsbError) -> Self {
         KernelError::Io(e.into())
     }
 }
 
 // io::virtio::net::VirtioNetError からの変換
-impl From<crate::io::virtio::net::VirtioNetError> for IoError {
-    fn from(e: crate::io::virtio::net::VirtioNetError) -> Self {
-        use crate::io::virtio::net::VirtioNetError as VE;
+impl From<crate::drivers::virtio::net::VirtioNetError> for IoError {
+    fn from(e: crate::drivers::virtio::net::VirtioNetError) -> Self {
+        use crate::drivers::virtio::net::VirtioNetError as VE;
         match e {
             VE::NotInitialized => IoError::DeviceNotFound,
             VE::QueueFull => IoError::NoResources,
@@ -567,8 +567,8 @@ impl From<crate::io::virtio::net::VirtioNetError> for IoError {
 }
 
 // io::virtio::net::VirtioNetError から KernelError への変換
-impl From<crate::io::virtio::net::VirtioNetError> for KernelError {
-    fn from(e: crate::io::virtio::net::VirtioNetError) -> Self {
+impl From<crate::drivers::virtio::net::VirtioNetError> for KernelError {
+    fn from(e: crate::drivers::virtio::net::VirtioNetError) -> Self {
         KernelError::Io(e.into())
     }
 }

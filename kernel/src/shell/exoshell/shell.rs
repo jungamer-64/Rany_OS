@@ -864,13 +864,7 @@ impl ExoShell {
         args: &[Expr<'_>],
     ) -> ExoValue<'static> {
         // Evaluate arguments first
-        let evaluated = self.evaluate_args(args).await;
-
-        // If FS.entries and no args were passed, default to shell cwd to preserve legacy behavior
-        let mut final_args = evaluated;
-        if namespace == "fs" && method == "entries" && final_args.is_empty() {
-            final_args.push(ExoValue::String(Cow::Owned(self.cwd.clone())));
-        }
+        let final_args = self.evaluate_args(args).await;
 
         match self.namespaces.get(namespace) {
             Some(ns) => ns.call(method, &final_args, &self.capabilities).await,

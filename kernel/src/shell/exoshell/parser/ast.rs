@@ -34,7 +34,7 @@ pub enum Stmt<'a> {
     Let { name: String, value: Box<Expr<'a>> },
     /// コマンド呼び出し: `help`, `exit`, `clear`
     Command { name: String, args: Vec<Expr<'a>> },
-    /// 式だけの文: `fs.list("/")`
+    /// 式だけの文: `domain.list()`
     Expr(Box<Expr<'a>>),
 
     /// Break文

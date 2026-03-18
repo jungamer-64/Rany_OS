@@ -5,7 +5,7 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 
-use crate::io::serial;
+use crate::drivers::serial;
 use crate::shell::exoshell::display;
 use crate::shell::exoshell::error::ExoResult;
 use crate::shell::exoshell::history::HistoryNavigator;

@@ -829,28 +829,6 @@ mod standalone {
             }
         }
 
-        fn register_audio_controller(
-            &self,
-            registration: &AbiAudioControllerRegistration,
-        ) -> KapiResult<u64> {
-            let mut handle = 0u64;
-            let status = (super::abi().register_audio_controller)(registration, &mut handle);
-            if AbiError::from_raw(status).is_success() {
-                Ok(handle)
-            } else {
-                Err(map_abi_error(status))
-            }
-        }
-
-        fn unregister_audio_controller(&self, handle: u64) -> KapiResult<()> {
-            let status = (super::abi().unregister_audio_controller)(handle);
-            if AbiError::from_raw(status).is_success() {
-                Ok(())
-            } else {
-                Err(map_abi_error(status))
-            }
-        }
-
         fn net_open_tcp_stream(
             &self,
             remote: NetSocketAddr,
@@ -1084,14 +1062,6 @@ mod standalone {
         }
 
         fn time_service(&self) -> Option<&dyn TimeService> {
-            None
-        }
-
-        fn gui(&self) -> Option<&dyn GuiServices> {
-            None
-        }
-
-        fn shell(&self) -> Option<&dyn ShellServices> {
             None
         }
     }

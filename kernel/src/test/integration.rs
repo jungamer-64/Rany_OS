@@ -264,11 +264,11 @@ use kernel_api::block_io::{
 };
 
 struct VirtioPageAdapter {
-    device: StdArc<crate::io::virtio::VirtioBlkDevice>,
+    device: StdArc<crate::drivers::virtio::VirtioBlkDevice>,
 }
 
 impl VirtioPageAdapter {
-    fn new(device: StdArc<crate::io::virtio::VirtioBlkDevice>) -> Self {
+    fn new(device: StdArc<crate::drivers::virtio::VirtioBlkDevice>) -> Self {
         Self { device }
     }
 }
@@ -343,7 +343,9 @@ pub fn test_storage() -> IntegrationTestSuite {
         // disabled to avoid unrelated flakes. In that mode, async mount futures can
         // stall forever because completion wakeups are interrupt-driven.
         if !crate::interrupts::are_interrupts_enabled() {
-            return if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device_at_index(0) {
+            return if let Some(dev) =
+                crate::drivers::virtio::blk::get_virtio_blk_device_at_index(0)
+            {
                 let info = dev.info();
                 if info.block_size > 0 && info.total_blocks > 0 {
                     Ok(alloc::format!(
@@ -362,7 +364,7 @@ pub fn test_storage() -> IntegrationTestSuite {
             };
         }
 
-        if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device_at_index(0) {
+        if let Some(dev) = crate::drivers::virtio::blk::get_virtio_blk_device_at_index(0) {
             // Wrap the global virtio device with a Page-backed adapter and mount
             let adapter = StdArc::new(VirtioPageAdapter::new(StdArc::clone(&dev)));
 
@@ -396,13 +398,13 @@ pub fn test_storage() -> IntegrationTestSuite {
     }));
 
     suite.add_result(run_test("nvme_polling_basic", || {
-        let active = crate::io::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
+        let active = crate::drivers::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
         if !active {
             return Ok(String::from("NVMe driver not initialized; skipped"));
         }
 
         let queue_ready =
-            crate::io::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
+            crate::drivers::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
         if !queue_ready {
             return Err(String::from("NVMe queue missing for core 0"));
         }
@@ -452,7 +454,7 @@ pub fn test_iommu() -> IntegrationTestSuite {
         // Test basic mapping through the public API
         let phys_addr = 0x2000_0000; // Assume this is safe in QEMU
         let size = 0x1000;
-        let virtio_blk = crate::io::pci::find_virtio_devices()
+        let virtio_blk = crate::drivers::pci::find_virtio_devices()
             .into_iter()
             .find(|dev| matches!(dev.device_id.0, 0x1001 | 0x1042));
 
@@ -534,13 +536,13 @@ pub fn test_iommu() -> IntegrationTestSuite {
     }));
 
     suite.add_result(run_test("iommu_nvme_block_io_path", || {
-        let active = crate::io::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
+        let active = crate::drivers::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
         if !active {
             return Ok(String::from("NVMe driver not initialized; skipped"));
         }
 
         let queue_ready =
-            crate::io::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
+            crate::drivers::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
         if !queue_ready {
             return Err(String::from("NVMe queue missing for core 0"));
         }

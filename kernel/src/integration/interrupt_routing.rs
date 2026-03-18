@@ -281,7 +281,7 @@ pub unsafe fn program_msi(bus: u8, device: u8, function: u8, msi_offset: u8, vec
     let message_data: u16 = vector as u16;
 
     // Read MSI control register
-    let control = crate::io::pci::legacy::pci_read16(bus, device, function, msi_offset + 2);
+    let control = crate::drivers::pci::legacy::pci_read16(bus, device, function, msi_offset + 2);
 
     // Check if 64-bit capable
     let is_64bit = (control & 0x80) != 0;
@@ -289,12 +289,19 @@ pub unsafe fn program_msi(bus: u8, device: u8, function: u8, msi_offset: u8, vec
     if is_64bit {
         // 64-bit MSI
         // Write lower address
-        crate::io::pci::legacy::pci_write(bus, device, function, msi_offset + 4, message_address);
+        crate::drivers::pci::legacy::pci_write(
+            bus,
+            device,
+            function,
+            msi_offset + 4,
+            message_address,
+        );
         // Write upper address (0 for x86)
-        crate::io::pci::legacy::pci_write(bus, device, function, msi_offset + 8, 0);
+        crate::drivers::pci::legacy::pci_write(bus, device, function, msi_offset + 8, 0);
         // Write message data
-        let data_reg = crate::io::pci::legacy::pci_read(bus, device, function, msi_offset + 12);
-        crate::io::pci::legacy::pci_write(
+        let data_reg =
+            crate::drivers::pci::legacy::pci_read(bus, device, function, msi_offset + 12);
+        crate::drivers::pci::legacy::pci_write(
             bus,
             device,
             function,
@@ -304,10 +311,17 @@ pub unsafe fn program_msi(bus: u8, device: u8, function: u8, msi_offset: u8, vec
     } else {
         // 32-bit MSI
         // Write address
-        crate::io::pci::legacy::pci_write(bus, device, function, msi_offset + 4, message_address);
+        crate::drivers::pci::legacy::pci_write(
+            bus,
+            device,
+            function,
+            msi_offset + 4,
+            message_address,
+        );
         // Write message data
-        let data_reg = crate::io::pci::legacy::pci_read(bus, device, function, msi_offset + 8);
-        crate::io::pci::legacy::pci_write(
+        let data_reg =
+            crate::drivers::pci::legacy::pci_read(bus, device, function, msi_offset + 8);
+        crate::drivers::pci::legacy::pci_write(
             bus,
             device,
             function,
@@ -318,8 +332,8 @@ pub unsafe fn program_msi(bus: u8, device: u8, function: u8, msi_offset: u8, vec
 
     // Enable MSI
     let new_control = control | 0x01;
-    let control_reg = crate::io::pci::legacy::pci_read(bus, device, function, msi_offset);
-    crate::io::pci::legacy::pci_write(
+    let control_reg = crate::drivers::pci::legacy::pci_read(bus, device, function, msi_offset);
+    crate::drivers::pci::legacy::pci_write(
         bus,
         device,
         function,

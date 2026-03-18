@@ -503,7 +503,7 @@ impl IommuMapping {
 }
 
 struct NvmeDmaContextEntry {
-    dma: crate::io::nvme::dma::NvmeDmaRegion,
+    dma: crate::drivers::nvme::dma::NvmeDmaRegion,
     owner: u64,
 }
 
@@ -575,7 +575,7 @@ fn map_for_iommu(
     if !crate::io::iommu::api::is_iommu_enabled() {
         return Err(KapiError::IoError);
     }
-    let map_len = crate::io::nvme::dma::align_up_page(size);
+    let map_len = crate::drivers::nvme::dma::align_up_page(size);
     let iova = unsafe {
         crate::io::iommu::api::map_for_device(&device, PhysAddr::new(phys_addr), map_len as u64)
     }

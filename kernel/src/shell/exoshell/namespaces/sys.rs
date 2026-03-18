@@ -362,61 +362,6 @@ impl SysNamespace {
         ExoValue::Map(map)
     }
 
-    /// モニターダッシュボードを表示
-    pub fn monitor_dashboard() -> ExoValue<'static> {
-        let info = crate::shell::runtime::monitor_info();
-
-        log::info!("\n");
-        log::info!("┌──────────────────────────────────────────────────────────────────────┐\n");
-        log::info!("│                    ExoRust System Monitor                            │\n");
-        log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
-        log::info!(
-            "│  Tick: {:>12}  │  CPU: {:>3}%                                   │\n",
-            info.timestamp,
-            info.cpu_usage
-        );
-        log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
-        log::info!("│  MEMORY                                                              │\n");
-        log::info!(
-            "│    Used:  {:>10} bytes ({:>2}%)                                  │\n",
-            info.memory.heap_used,
-            info.memory.usage_percent
-        );
-        log::info!(
-            "│    Free:  {:>10} bytes                                          │\n",
-            info.memory.heap_free
-        );
-        log::info!(
-            "│    Total: {:>10} bytes                                          │\n",
-            info.memory.heap_total
-        );
-        log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
-        log::info!("│  DOMAINS                                                             │\n");
-        log::info!(
-            "│    Total:   {:>6}  │  Running: {:>6}  │  Stopped: {:>6}         │\n",
-            info.domains.total,
-            info.domains.running,
-            info.domains.stopped
-        );
-        log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
-        log::info!("│  TASKS                                                               │\n");
-        log::info!(
-            "│    Context Switches: {:>10}                                     │\n",
-            info.tasks.context_switches
-        );
-        log::info!(
-            "│    Voluntary Yields: {:>10}                                     │\n",
-            info.tasks.voluntary_yields
-        );
-        log::info!(
-            "│    Forced Preempts:  {:>10}                                     │\n",
-            info.tasks.forced_preemptions
-        );
-        log::info!("└──────────────────────────────────────────────────────────────────────┘\n");
-
-        ExoValue::String(Cow::Borrowed("Dashboard displayed"))
-    }
-
     /// 温度情報
     pub fn thermal() -> ExoValue<'static> {
         let info = crate::shell::runtime::thermal_info();

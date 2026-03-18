@@ -2298,7 +2298,7 @@ pub mod io {
     }
 
     // Minimal PCI stub for test builds so IOMMU functions that reference
-    // `crate::io::pci::PciDeviceInfo` compile.
+    // `crate::drivers::pci::PciDeviceInfo` compile.
     pub mod pci {
         #[derive(Debug, Clone, Copy)]
         pub struct Bus(pub u8);
@@ -2329,7 +2329,7 @@ pub mod io {
 
     pub mod nvme {
         // Re-export the task-scoped NVMe driver for compatibility in test builds.
-        // Tests expect `crate::io::nvme::NvmePollingDriver` and driver-global helpers.
+        // Tests expect `crate::drivers::nvme::NvmePollingDriver` and driver-global helpers.
         pub use crate::task::io::nvme::NvmePollingDriver;
 
         pub mod global {
@@ -2385,7 +2385,7 @@ pub mod io {
     }
 
     // Expose a minimal ACPI module in tests so IOMMU init can call into
-    // `crate::io::acpi::dmar::parse_dmar` without pulling the full ACPI
+    // `crate::drivers::acpi::dmar::parse_dmar` without pulling the full ACPI
     // runtime dependencies into every unit test. This delegates only the
     // DMAR parsing API to the acpi driver crate.
     pub mod acpi {
@@ -2469,7 +2469,7 @@ pub mod util;
 
 #[cfg(any(test, feature = "bench"))]
 pub mod nvme {
-    pub use crate::io::nvme::*;
+    pub use crate::drivers::nvme::*;
 }
 
 // Re-export task-scoped shims at crate root so modules that reference

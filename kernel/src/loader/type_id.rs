@@ -632,7 +632,7 @@ pub struct KernelApiInterface;
 
 impl TypeIdHash for KernelApiInterface {
     fn type_id_hash() -> TypeHash {
-        const_hash(b"KernelApiInterface:v7:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet")
+        const_hash(b"KernelApiInterface:v8:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet")
     }
 
     fn type_name() -> &'static str {

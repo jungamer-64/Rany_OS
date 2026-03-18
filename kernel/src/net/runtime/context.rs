@@ -1,4 +1,4 @@
-use crate::io::virtio::net::device::VirtioNetRegistryState;
+use crate::drivers::virtio::net::device::VirtioNetRegistryState;
 use crate::net::l4::endpoint::event::NetworkEventQueue;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
 use crate::net::runtime::device::{NetDeviceManager, TxCompletionState};

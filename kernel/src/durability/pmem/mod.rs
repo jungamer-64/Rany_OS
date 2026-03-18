@@ -223,18 +223,20 @@ fn read_u64(ptr: usize) -> u64 {
 ///
 /// Returns `Ok(None)` when NFIT is absent or no suitable SPA range is found.
 pub fn init_from_nfit() -> Result<Option<PmemRegion>, PmemDiscoveryError> {
-    let nfit_addr = match crate::io::acpi::find_table_global(&crate::io::acpi::signature::NFIT) {
+    let nfit_addr = match crate::drivers::acpi::find_table_global(
+        &crate::drivers::acpi::signature::NFIT,
+    ) {
         Ok(v) => v,
         Err(_) => return Ok(None),
     };
 
-    let header = unsafe { &*(nfit_addr as *const crate::io::acpi::AcpiSdtHeader) };
+    let header = unsafe { &*(nfit_addr as *const crate::drivers::acpi::AcpiSdtHeader) };
     if !header.validate() {
         return Err(PmemDiscoveryError::InvalidTable);
     }
 
     let table_len = header.length as usize;
-    let mut offset = nfit_addr + core::mem::size_of::<crate::io::acpi::AcpiSdtHeader>();
+    let mut offset = nfit_addr + core::mem::size_of::<crate::drivers::acpi::AcpiSdtHeader>();
     let end = nfit_addr + table_len;
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;

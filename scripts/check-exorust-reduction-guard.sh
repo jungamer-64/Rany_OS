@@ -144,6 +144,30 @@ check_no_match \
   'BootShellMode::Both|ShellLaunchMode::Both' \
   kernel/src interfaces libs "${ACTIVE_DOCS[@]}"
 
+check_no_match \
+  "removed shell namespace modules referenced from code/docs" \
+  'namespaces/(cap|fs|mlx5|shell|dynamic_driver)\.rs|namespaces::(cap|fs|mlx5|shell|dynamic_driver)\b|is_namespace\("(fs|cap|mlx5|shell)"\)|String::from\("(fs|cap|mlx5|shell)"\)|Unknown namespace: (fs|cap|mlx5|shell)|有効な名前空間:.*\b(fs|cap|mlx5|shell)\b' \
+  kernel/src/shell/exoshell docs "${ACTIVE_DOCS[@]}"
+
+mapfile -t DEVICE_BOUNDARY_FILES < <(
+  rg --files kernel/src -g '*.rs' \
+    | grep -Ev '^kernel/src/io/' \
+    | grep -Ev '^kernel/src/drivers\.rs$' \
+    | grep -Ev '^kernel/src/lib\.rs$'
+)
+
+if [ "${#DEVICE_BOUNDARY_FILES[@]}" -gt 0 ]; then
+  check_no_match \
+    "device-facing crate::io::* references outside the I/O framework" \
+    'crate::io::(ahci|gpu|hid|ide|nvme|pci|serial|usb|virtio|acpi|apic)' \
+    "${DEVICE_BOUNDARY_FILES[@]}"
+fi
+
+check_no_match \
+  "crate root device reexports through crate::io::*" \
+  'crate::io::(nvme|pci|acpi|apic|ahci|gpu|hid|ide|serial|usb|virtio)' \
+  kernel/src/lib.rs
+
 check_path_absent kernel/src/mm/virt/address_space.rs
 check_path_absent kernel/src/mm/virt/cow.rs
 check_path_absent kernel/src/mm/reclaim/async_swapout.rs
@@ -155,6 +179,11 @@ check_path_absent kernel/src/mm/async_swapout/qemu_tests.rs
 check_path_absent kernel/src/mm/page_reclaim/qemu_tests.rs
 check_path_absent kernel/src/shell/exoshell/namespaces/async_swapout.rs
 check_path_absent kernel/src/shell/exoshell/namespaces/reclaim.rs
+check_path_absent kernel/src/shell/exoshell/namespaces/cap.rs
+check_path_absent kernel/src/shell/exoshell/namespaces/fs.rs
+check_path_absent kernel/src/shell/exoshell/namespaces/mlx5.rs
+check_path_absent kernel/src/shell/exoshell/namespaces/shell.rs
+check_path_absent kernel/src/shell/exoshell/namespaces/dynamic_driver.rs
 check_path_absent kernel/src/application/mod.rs
 check_path_absent filesystems/fat32
 check_path_absent filesystems/nvme_ns

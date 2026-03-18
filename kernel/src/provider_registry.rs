@@ -424,7 +424,6 @@ mod tests {
     use super::*;
     use alloc::vec;
     use core::task::Waker;
-    use kernel_api::audio::{AudioDeviceInfo, AudioServices};
     use kernel_api::service::netdev::{
         MacAddress, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDeviceServices,
         NetPortKind,
@@ -443,7 +442,6 @@ mod tests {
     struct FakeTime;
     struct FakeStorage;
     struct FakeNetdev;
-    struct FakeAudio;
 
     impl kernel_api::service::platform::AcpiServices for FakeAcpi {
         fn local_apics(&self) -> Vec<LocalApicInfo> {
@@ -600,25 +598,12 @@ mod tests {
         }
     }
 
-    impl AudioServices for FakeAudio {
-        fn devices(&self) -> Vec<AudioDeviceInfo> {
-            vec![AudioDeviceInfo {
-                device_id: 9,
-                output_channels: 2,
-                input_channels: 1,
-                sample_rate_hz: 48_000,
-                flags: 1,
-            }]
-        }
-    }
-
     static FAKE_ACPI: FakeAcpi = FakeAcpi;
     static FAKE_PCI: FakePci = FakePci;
     static FAKE_APIC: FakeApic = FakeApic;
     static FAKE_TIME: FakeTime = FakeTime;
     static FAKE_STORAGE: FakeStorage = FakeStorage;
     static FAKE_NETDEV: FakeNetdev = FakeNetdev;
-    static FAKE_AUDIO: FakeAudio = FakeAudio;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -643,17 +628,14 @@ mod tests {
         let registry = ProviderRegistry::new();
         let storage_handle = registry.register_builtin_storage(&FAKE_STORAGE);
         let netdev_handle = registry.register_builtin_netdev(&FAKE_NETDEV);
-        let audio_handle = registry.register_builtin_audio(&FAKE_AUDIO);
 
         assert!(registry.contains(storage_handle));
         assert!(registry.contains(netdev_handle));
-        assert!(registry.contains(audio_handle));
         assert_eq!(registry.storage().unwrap().devices().len(), 1);
         assert_eq!(
             registry.netdev().unwrap().primary_device().unwrap().mtu,
             1500
         );
-        assert_eq!(registry.audio().unwrap().devices()[0].device_id, 9);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

@@ -96,7 +96,7 @@ fn snapshot_local_apic_address() -> Option<u64> {
 impl AcpiServices for BuiltinAcpiProvider {
     fn local_apics(&self) -> Vec<LocalApicInfo> {
         snapshot_local_apics().unwrap_or_else(|| {
-            crate::io::acpi::local_apics()
+            crate::drivers::acpi::local_apics()
                 .iter()
                 .map(|entry| LocalApicInfo {
                     processor_id: entry.processor_id,
@@ -110,7 +110,7 @@ impl AcpiServices for BuiltinAcpiProvider {
 
     fn io_apics(&self) -> Vec<IoApicInfo> {
         snapshot_io_apics().unwrap_or_else(|| {
-            crate::io::acpi::io_apics()
+            crate::drivers::acpi::io_apics()
                 .iter()
                 .map(|entry| IoApicInfo {
                     id: entry.id,
@@ -123,7 +123,7 @@ impl AcpiServices for BuiltinAcpiProvider {
 
     fn interrupt_overrides(&self) -> Vec<InterruptOverrideInfo> {
         snapshot_interrupt_overrides().unwrap_or_else(|| {
-            crate::io::acpi::interrupt_overrides()
+            crate::drivers::acpi::interrupt_overrides()
                 .iter()
                 .map(|entry| InterruptOverrideInfo {
                     bus: entry.bus,
@@ -138,7 +138,7 @@ impl AcpiServices for BuiltinAcpiProvider {
 
     fn pcie_ecam_regions(&self) -> Vec<PcieEcamInfo> {
         snapshot_pcie_ecam_regions().unwrap_or_else(|| {
-            crate::io::acpi::pcie_ecam_regions()
+            crate::drivers::acpi::pcie_ecam_regions()
                 .iter()
                 .map(|entry| PcieEcamInfo {
                     base_address: entry.base_address,
@@ -151,7 +151,7 @@ impl AcpiServices for BuiltinAcpiProvider {
     }
 
     fn local_apic_address(&self) -> Option<u64> {
-        snapshot_local_apic_address().or_else(crate::io::acpi::local_apic_address)
+        snapshot_local_apic_address().or_else(crate::drivers::acpi::local_apic_address)
     }
 }
 

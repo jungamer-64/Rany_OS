@@ -236,7 +236,7 @@ pub fn resolve_current_cpu_id() -> Option<usize> {
 
     #[cfg(not(test))]
     {
-        let apic_id = crate::io::apic::local_apic().id() as u32;
+        let apic_id = crate::drivers::apic::local_apic().id() as u32;
         return cpu_for_apic_id(apic_id);
     }
 

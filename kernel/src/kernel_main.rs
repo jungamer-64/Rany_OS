@@ -104,7 +104,7 @@ pub(crate) fn init_hid_and_serial_drivers() {
     use driver_registry::register_driver;
 
     crate::drivers::usb::class::hid::set_keyboard_event_sink(Some(
-        crate::io::hid::keyboard::handle_key_event,
+        crate::drivers::hid::keyboard::handle_key_event,
     ));
 
     // PS/2 Keyboard

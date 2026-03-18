@@ -84,12 +84,6 @@ pub mod netdev {
 #[path = "platform.rs"]
 mod service_platform_impl;
 
-#[path = "audio.rs"]
-mod service_audio_impl;
-pub mod audio {
-    pub use crate::service_audio_impl::*;
-}
-
 #[path = "serial.rs"]
 mod service_serial_impl;
 
@@ -271,7 +265,7 @@ pub mod __type_id {
     );
     pub const KERNEL_API_INTERFACE: DependencySpec = dependency(
         "KernelApiInterface",
-        fnv1a_hash(b"KernelApiInterface:v7:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet"),
+        fnv1a_hash(b"KernelApiInterface:v8:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet"),
         1,
         0,
         0,

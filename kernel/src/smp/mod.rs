@@ -88,7 +88,7 @@ pub fn init_smp(boot_info: &ExoBootInfo) -> Result<SmpBootReport, &'static str> 
     // Get LAPIC address from ACPI
     let lapic_base = crate::platform::acpi::local_apic_address().unwrap_or(0xFEE00000); // Default LAPIC address
 
-    let bsp_apic_id = crate::io::apic::local_apic().id() as u32;
+    let bsp_apic_id = crate::drivers::apic::local_apic().id() as u32;
     let topology = topology::CpuTopology::from_boot_info(boot_info, bsp_apic_id);
     self::topology::install(topology.clone());
     routing::install_topology_routes(&topology);

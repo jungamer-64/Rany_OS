@@ -454,8 +454,8 @@ impl PerCoreExecutor {
         }
 
         crate::interrupts::poll_timer_events();
-        crate::io::hid::keyboard::process_pending_wakes();
-        crate::io::nvme::per_core::process_deferred_completions_for_core(self.core_id);
+        crate::drivers::hid::keyboard::process_pending_wakes();
+        crate::drivers::nvme::per_core::process_deferred_completions_for_core(self.core_id);
         crate::io::io_scheduler::hybrid_coordinator().tick(|| {
             crate::task::interrupt_waker::process_interrupt_events();
         });
@@ -1388,12 +1388,12 @@ impl TestExecutor {
 
     pub fn drive_once_for_test(&mut self) {
         crate::interrupts::poll_timer_events();
-        crate::io::hid::keyboard::process_pending_wakes();
+        crate::drivers::hid::keyboard::process_pending_wakes();
         crate::task::process_pending_timer_wakers();
         crate::task::interrupt_waker::process_interrupt_events();
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();
-        crate::io::nvme::per_core::process_deferred_completions_for_core(0);
+        crate::drivers::nvme::per_core::process_deferred_completions_for_core(0);
         crate::io::io_scheduler::hybrid_coordinator().tick(|| {
             crate::task::interrupt_waker::process_interrupt_events();
         });

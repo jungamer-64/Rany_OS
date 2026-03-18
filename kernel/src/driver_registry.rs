@@ -32,12 +32,11 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::AtomicBool;
 use kernel_api::abi::driver::{
-    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType,
-    AbiError as AbiErrorCode, AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistrationV3,
-    AbiNvmeNamespaceRegistration, AbiRRefRaw, DRIVER_EXPORTS_ABI_VERSION,
-    DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
-    DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
-    KERNEL_API_ABI_VERSION, KernelApiV4, PackedPciLocation,
+    AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType, AbiError as AbiErrorCode,
+    AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistrationV3, AbiNvmeNamespaceRegistration,
+    AbiRRefRaw, DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
+    DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
+    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV4, PackedPciLocation,
 };
 use kernel_api::driver::DriverStateBlob;
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
@@ -1053,21 +1052,6 @@ extern "C" fn kapi_unregister_netdev_port(handle: u64) -> i32 {
     }
 }
 
-extern "C" fn kapi_register_audio_controller(
-    registration: *const AbiAudioControllerRegistration,
-    out_handle: *mut u64,
-) -> i32 {
-    if registration.is_null() || out_handle.is_null() {
-        return AbiErrorCode::InvalidParam as i32;
-    }
-    AbiErrorCode::NotSupported as i32
-}
-
-extern "C" fn kapi_unregister_audio_controller(handle: u64) -> i32 {
-    let _ = handle;
-    AbiErrorCode::NotSupported as i32
-}
-
 extern "C" fn kapi_heap_alloc(size: usize) -> *mut u8 {
     use core::alloc::Layout;
 
@@ -1264,8 +1248,6 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     unregister_nvme_namespace: kapi_unregister_nvme_namespace,
     register_netdev_port: kapi_register_netdev_port,
     unregister_netdev_port: kapi_unregister_netdev_port,
-    register_audio_controller: kapi_register_audio_controller,
-    unregister_audio_controller: kapi_unregister_audio_controller,
     reserved: [0; 2],
     enable_msix_raw: Some(kapi_enable_msix_raw),
     disable_msix_raw: Some(kapi_disable_msix_raw),

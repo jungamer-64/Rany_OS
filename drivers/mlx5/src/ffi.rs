@@ -15,9 +15,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(test)]
 use kernel_api::abi::driver::AbiDmaSlice;
 #[cfg(test)]
-use kernel_api::abi::driver::{
-    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNvmeNamespaceRegistration,
-};
+use kernel_api::abi::driver::{AbiBlockDeviceRegistration, AbiNvmeNamespaceRegistration};
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
     AbiNetPortKind, AbiNetPortRegistrationV3, AbiNetPortRuntimeV2, AbiNetPortStats, AbiNetRxMeta,
@@ -132,19 +130,6 @@ extern "C" fn test_kernel_unregister_netdev_port(_handle: u64) -> i32 {
 }
 
 #[cfg(test)]
-extern "C" fn test_kernel_register_audio_controller(
-    _reg: *const AbiAudioControllerRegistration,
-    _out: *mut u64,
-) -> i32 {
-    -1
-}
-
-#[cfg(test)]
-extern "C" fn test_kernel_unregister_audio_controller(_handle: u64) -> i32 {
-    0
-}
-
-#[cfg(test)]
 extern "C" fn test_kernel_current_domain_id() -> u64 {
     0
 }
@@ -238,8 +223,6 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     unregister_nvme_namespace: test_kernel_unregister_nvme_namespace,
     register_netdev_port: test_kernel_register_netdev_port,
     unregister_netdev_port: test_kernel_unregister_netdev_port,
-    register_audio_controller: test_kernel_register_audio_controller,
-    unregister_audio_controller: test_kernel_unregister_audio_controller,
     reserved: [0; 2],
     enable_msix_raw: None,
     disable_msix_raw: None,

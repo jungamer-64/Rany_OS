@@ -15,7 +15,7 @@ pub use mlx5_driver::{MELLANOX_VENDOR_ID, SUPPORTED_DEVICE_IDS};
 
 type DmaBuffer = DmaSlice<CpuOwned>;
 
-use crate::io::pci::{PcieBdf, PcieError, SriovCapability, SriovController, pcie_ext_config};
+use crate::drivers::pci::{PcieBdf, PcieError, SriovCapability, SriovController, pcie_ext_config};
 use crate::sync::{PoisonLock, PoisonLockGuard};
 use mlx5_driver::{
     ConnectXVariant, Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5Device,
@@ -566,14 +566,14 @@ impl Mlx5AsyncDriver {
         }
     }
 
-    fn discover_pci_devices() -> Vec<(ConnectXVariant, crate::io::pci::PciDeviceInfo)> {
+    fn discover_pci_devices() -> Vec<(ConnectXVariant, crate::drivers::pci::PciDeviceInfo)> {
         let mut devices = alloc::collections::BTreeMap::<
             (u16, u8, u8, u8),
-            (ConnectXVariant, crate::io::pci::PciDeviceInfo),
+            (ConnectXVariant, crate::drivers::pci::PciDeviceInfo),
         >::new();
         for &(_vendor_id, device_id) in SUPPORTED_DEVICE_IDS {
             let variant = ConnectXVariant::from_device_id(device_id);
-            for pci_device in crate::io::pci::find_by_id(MELLANOX_VENDOR_ID, device_id) {
+            for pci_device in crate::drivers::pci::find_by_id(MELLANOX_VENDOR_ID, device_id) {
                 let key = (
                     pci_device.segment,
                     pci_device.bdf.bus(),
@@ -747,7 +747,7 @@ impl Mlx5AsyncDriver {
     fn probe_device(
         &mut self,
         index: u8,
-        pci_dev: &crate::io::pci::PciDeviceInfo,
+        pci_dev: &crate::drivers::pci::PciDeviceInfo,
     ) -> KapiResult<()> {
         let variant = ConnectXVariant::from_device_id(pci_dev.device_id.0);
         log::info!(
@@ -861,7 +861,7 @@ impl Mlx5AsyncDriver {
                             pci_dev.bdf.device(),
                             pci_dev.bdf.function(),
                         ),
-                        crate::io::pci::ext_cap_id::SRIOV,
+                        crate::drivers::pci::ext_cap_id::SRIOV,
                     )
                     .is_some()
             })
