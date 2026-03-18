@@ -1,5 +1,5 @@
 // ============================================================================
-// src/io/virtio/transport.rs - VirtIO Transport Layer Abstraction
+// drivers/virtio/src/transport.rs - VirtIO Transport Layer Abstraction
 // ============================================================================
 //!
 //! # VirtIO トランスポート層抽象化

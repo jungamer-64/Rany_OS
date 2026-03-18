@@ -1,14 +1,16 @@
 //! Kernel/driver boundary namespace.
 //!
 //! New kernel code should access device-facing functionality through
-//! `crate::drivers::*`.
+//! `crate::drivers::*` or the owning driver crate (for example
+//! `virtio_driver::*`).
 //!
 //! `crate::io::*` remains the home of kernel-owned I/O infrastructure:
 //! DMA/IOMMU services, interrupt routing, logging, and HAL convenience
 //! re-exports. Device-facing access for kernel code lives here.
 //!
 //! Ownership split:
-//! - `crate::drivers::*`: device/bus drivers and their kernel integration
+//! - `crate::drivers::*`: kernel-owned driver boundary shims and integration
+//! - external `*_driver` crates: device-family implementations such as VirtIO
 //! - `crate::io::*`: shared I/O runtime owned by the kernel framework
 
 pub mod acpi {
@@ -19,9 +21,6 @@ pub mod ahci {
 }
 pub mod apic {
     pub use crate::io::apic::*;
-}
-pub mod gpu {
-    pub use crate::io::gpu::*;
 }
 pub mod hid {
     pub use crate::io::hid::*;
@@ -40,8 +39,5 @@ pub mod serial {
 }
 pub mod usb {
     pub use crate::io::usb::*;
-}
-pub mod virtio {
-    pub use crate::io::virtio::*;
 }
 pub mod time;

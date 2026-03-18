@@ -374,6 +374,8 @@ pub mod drivers;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod error;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+pub mod integration;
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod interrupts;
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub mod io;

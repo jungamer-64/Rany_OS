@@ -1,4 +1,3 @@
-use crate::drivers::virtio::net::device::VirtioNetRegistryState;
 use crate::net::l4::endpoint::event::NetworkEventQueue;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
 use crate::net::runtime::device::{NetDeviceManager, TxCompletionState};
@@ -67,7 +66,6 @@ pub struct NetRuntimeContext {
     pub(crate) dhcp: DhcpRuntimeState,
     pub(crate) dns: DnsRuntimeState,
     pub(crate) mdns: MdnsRuntimeState,
-    pub(crate) virtio_net: VirtioNetRegistryState,
 }
 
 impl NetRuntimeContext {
@@ -88,7 +86,6 @@ impl NetRuntimeContext {
             dhcp: DhcpRuntimeState::new(),
             dns: DnsRuntimeState::new(),
             mdns: MdnsRuntimeState::new(),
-            virtio_net: VirtioNetRegistryState::new(),
         }
     }
 

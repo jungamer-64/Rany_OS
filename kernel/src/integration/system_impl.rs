@@ -1,4 +1,5 @@
 use super::*;
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::service::platform::PciDeviceInfo;
 
 mod global_init;
@@ -20,6 +21,10 @@ fn interrupt_capability_mode(dev: &PciDeviceInfo) -> InterruptCapabilityMode {
     } else {
         InterruptCapabilityMode::LegacyOnly
     }
+}
+
+fn pci_locator_from_iommu_device(device: crate::io::iommu::types::DeviceId) -> PackedPciLocation {
+    PackedPciLocation::new(device.segment, device.bus, device.device, device.function)
 }
 
 // We do not publicly re-export the contents of `virtio_gpu_init`; the
@@ -373,12 +378,7 @@ impl SystemIntegration {
         ));
         let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
         register_pci_dma_width(dev, dma_bits);
-        let iommu_device = crate::io::iommu::types::DeviceId::new(
-            dev.segment,
-            dev.bdf.bus(),
-            dev.bdf.device(),
-            dev.bdf.function(),
-        );
+        let pci_locator = dev.packed_locator();
         dev.enable_bus_master();
         dev.enable_memory_space();
 
@@ -390,20 +390,22 @@ impl SystemIntegration {
             // Attempt PCI transport first
             let mut initialized_via_pci = false;
             if let Some(transport) =
-                try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Block)
+                try_create_pci_transport(dev, virtio_driver::VirtioDeviceType::Block)
             {
                 match unsafe {
-                    crate::drivers::virtio::init_virtio_blk_with_transport_at_index(
+                    virtio_driver::blk::init_virtio_blk_with_transport_at_index(
                         0,
                         alloc::boxed::Box::new(transport),
-                        iommu_device,
+                        pci_locator,
                     )
                 } {
                     Ok(()) => {
                         self.log("    VirtIO-blk PCI transport initialized");
                         initialized_via_pci = true;
                         // IoScheduler に登録
-                        crate::drivers::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
+                        crate::io::io_scheduler::virtio_blk::register_virtio_blk_with_io_scheduler(
+                            0,
+                        );
                         self.log("    VirtIO-blk registered with IoScheduler");
                     }
                     Err(e) => {
@@ -417,10 +419,10 @@ impl SystemIntegration {
 
             if !initialized_via_pci {
                 use crate::driver_registry::{driver_registry, register_driver};
-                use crate::drivers::virtio::VirtioBlkDriver;
                 use alloc::boxed::Box;
+                use virtio_driver::blk::driver::VirtioBlkDriver;
 
-                let drv = Box::new(VirtioBlkDriver::new(bar0_virt, iommu_device));
+                let drv = Box::new(VirtioBlkDriver::new(bar0_virt, pci_locator));
                 match register_driver(drv) {
                     Ok(handle) => {
                         if let Err(e) = driver_registry().probe_and_start(handle) {
@@ -431,7 +433,7 @@ impl SystemIntegration {
                         } else {
                             self.log("    VirtIO-blk driver initialized via DriverRegistry");
                             // IoScheduler に登録
-                            crate::drivers::virtio::blk_scheduler::register_virtio_blk_with_io_scheduler(0);
+                            crate::io::io_scheduler::virtio_blk::register_virtio_blk_with_io_scheduler(0);
                             self.log("    VirtIO-blk registered with IoScheduler");
                         }
                     }
@@ -448,7 +450,7 @@ impl SystemIntegration {
 
     pub(super) fn register_and_start_virtio_net_driver(
         &mut self,
-        drv: alloc::boxed::Box<crate::net::drivers::virtio_registry::VirtioNetDriver>,
+        drv: alloc::boxed::Box<dyn kernel_api::driver::Driver>,
     ) {
         use crate::driver_registry::{driver_registry, register_driver};
 
@@ -480,12 +482,6 @@ impl SystemIntegration {
         let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
         register_pci_dma_width(dev, dma_bits);
         crate::io::log::early_print("[VIRTIO-DBG] DMA width registered\n");
-        let iommu_device = crate::io::iommu::types::DeviceId::new(
-            dev.segment,
-            dev.bdf.bus(),
-            dev.bdf.device(),
-            dev.bdf.function(),
-        );
         dev.enable_bus_master();
         dev.enable_memory_space();
         crate::io::log::early_print("[VIRTIO-DBG] bus master + mem space enabled\n");
@@ -495,14 +491,21 @@ impl SystemIntegration {
         let mut initialized_via_pci = false;
         crate::io::log::early_print("[VIRTIO-DBG] trying PCI transport...\n");
         if let Some(transport) =
-            try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Network)
+            try_create_pci_transport(dev, virtio_driver::VirtioDeviceType::Network)
         {
             crate::io::log::early_print("[VIRTIO-DBG] PCI transport created, init device...\n");
-            match crate::drivers::virtio::init_virtio_net_with_transport_at_index(
+            let runtime = crate::net::drivers::virtio_runtime::kernel_virtio_net_runtime_for_pci(
                 0,
-                alloc::boxed::Box::new(transport),
-                iommu_device,
-            ) {
+                dev.packed_locator(),
+            )
+            .expect("kernel virtio-net runtime creation should not fail");
+            match unsafe {
+                virtio_driver::net::init_virtio_net_with_transport_at_index(
+                    0,
+                    alloc::boxed::Box::new(transport),
+                    runtime,
+                )
+            } {
                 Ok(()) => {
                     crate::io::log::early_print("[VIRTIO-DBG] PCI transport init OK\n");
                     self.log("    VirtIO-net PCI transport initialized");
@@ -526,14 +529,21 @@ impl SystemIntegration {
         });
 
         // Register Driver via DriverRegistry
-        use crate::net::drivers::virtio_registry::VirtioNetDriver;
         use alloc::boxed::Box;
+        use virtio_driver::net::driver::VirtioNetDriver;
+
+        let hooks = crate::net::drivers::virtio_runtime::kernel_virtio_net_driver_hooks();
 
         if initialized_via_pci {
-            let drv = Box::new(VirtioNetDriver::new());
+            let drv = Box::new(VirtioNetDriver::new(0, hooks));
             self.register_and_start_virtio_net_driver(drv);
         } else if let Some(base) = bar0_virt_opt {
-            let drv = Box::new(VirtioNetDriver::new_with_device(base as u64, iommu_device));
+            let drv = Box::new(VirtioNetDriver::new_with_device(
+                0,
+                base,
+                dev.packed_locator(),
+                hooks,
+            ));
             self.register_and_start_virtio_net_driver(drv);
         } else {
             self.log(
@@ -557,6 +567,7 @@ impl SystemIntegration {
             dev.bdf.device(),
             dev.bdf.function(),
         );
+        let pci_locator = pci_locator_from_iommu_device(iommu_device);
         dev.enable_bus_master();
         dev.enable_memory_space();
 
@@ -567,13 +578,13 @@ impl SystemIntegration {
 
             let mut initialized_via_pci = false;
             if let Some(transport) =
-                try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Console)
+                try_create_pci_transport(dev, virtio_driver::VirtioDeviceType::Console)
             {
                 match unsafe {
-                    crate::drivers::virtio::init_virtio_console_with_transport_at_index(
+                    virtio_driver::console::init_virtio_console_with_transport_at_index(
                         0,
                         alloc::boxed::Box::new(transport),
-                        iommu_device,
+                        pci_locator,
                     )
                 } {
                     Ok(()) => {
@@ -591,10 +602,10 @@ impl SystemIntegration {
 
             if !initialized_via_pci {
                 use crate::driver_registry::{driver_registry, register_driver};
-                use crate::drivers::virtio::VirtioConsoleDriver;
                 use alloc::boxed::Box;
+                use virtio_driver::console::driver::VirtioConsoleDriver;
 
-                let drv = Box::new(VirtioConsoleDriver::new(bar0_virt, iommu_device));
+                let drv = Box::new(VirtioConsoleDriver::new(bar0_virt, pci_locator));
                 match register_driver(drv) {
                     Ok(handle) => {
                         if let Err(e) = driver_registry().probe_and_start(handle) {
@@ -632,6 +643,7 @@ impl SystemIntegration {
             dev.bdf.device(),
             dev.bdf.function(),
         );
+        let pci_locator = pci_locator_from_iommu_device(iommu_device);
         dev.enable_bus_master();
         dev.enable_memory_space();
 
@@ -642,13 +654,13 @@ impl SystemIntegration {
 
             let mut initialized_via_pci = false;
             if let Some(transport) =
-                try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Input)
+                try_create_pci_transport(dev, virtio_driver::VirtioDeviceType::Input)
             {
                 match unsafe {
-                    crate::drivers::virtio::init_virtio_input_with_transport_at_index(
+                    virtio_driver::input::init_virtio_input_with_transport_at_index(
                         0,
                         alloc::boxed::Box::new(transport),
-                        iommu_device,
+                        pci_locator,
                     )
                 } {
                     Ok(()) => {
@@ -666,10 +678,10 @@ impl SystemIntegration {
 
             if !initialized_via_pci {
                 use crate::driver_registry::{driver_registry, register_driver};
-                use crate::drivers::virtio::VirtioInputDriver;
                 use alloc::boxed::Box;
+                use virtio_driver::input::driver::VirtioInputDriver;
 
-                let drv = Box::new(VirtioInputDriver::new(bar0_virt, iommu_device));
+                let drv = Box::new(VirtioInputDriver::new(bar0_virt, pci_locator));
                 match register_driver(drv) {
                     Ok(handle) => {
                         if let Err(e) = driver_registry().probe_and_start(handle) {
@@ -707,6 +719,7 @@ impl SystemIntegration {
             dev.bdf.device(),
             dev.bdf.function(),
         );
+        let pci_locator = pci_locator_from_iommu_device(iommu_device);
         dev.enable_bus_master();
         dev.enable_memory_space();
 
@@ -717,13 +730,13 @@ impl SystemIntegration {
 
             let mut initialized_via_pci = false;
             if let Some(transport) =
-                try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Balloon)
+                try_create_pci_transport(dev, virtio_driver::VirtioDeviceType::Balloon)
             {
                 match unsafe {
-                    crate::drivers::virtio::init_virtio_balloon_with_transport_at_index(
+                    virtio_driver::balloon::init_virtio_balloon_with_transport_at_index(
                         0,
                         alloc::boxed::Box::new(transport),
-                        iommu_device,
+                        pci_locator,
                     )
                 } {
                     Ok(()) => {
@@ -741,10 +754,10 @@ impl SystemIntegration {
 
             if !initialized_via_pci {
                 use crate::driver_registry::{driver_registry, register_driver};
-                use crate::drivers::virtio::VirtioBalloonDriver;
                 use alloc::boxed::Box;
+                use virtio_driver::balloon::driver::VirtioBalloonDriver;
 
-                let drv = Box::new(VirtioBalloonDriver::new(bar0_virt, iommu_device));
+                let drv = Box::new(VirtioBalloonDriver::new(bar0_virt, pci_locator));
                 match register_driver(drv) {
                     Ok(handle) => {
                         if let Err(e) = driver_registry().probe_and_start(handle) {

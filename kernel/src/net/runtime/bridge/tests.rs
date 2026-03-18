@@ -280,7 +280,7 @@ pub fn test_zero_copy_via_bridge() {
         .expect("established TCP endpoint should be inserted");
 
     // Build packet: virtio header + ethernet + IPv4 + TCP + payload
-    let header_size = crate::drivers::virtio::net::VirtioNetHeader::SIZE;
+    let header_size = virtio_driver::net::VirtioNetHeader::SIZE;
     let payload = b"hello";
     let tcp_len = 20 + payload.len();
     let ip_total_len = 20 + tcp_len; // IP header + TCP + payload
@@ -407,7 +407,7 @@ pub fn test_routing_and_nat() {
     let _ = manager::add_ipv4_route(route);
 
     // craft a UDP packet from 10.0.0.2:1234 to 10.0.1.5:80 arriving on if1
-    let header_size = crate::drivers::virtio::net::VirtioNetHeader::SIZE;
+    let header_size = virtio_driver::net::VirtioNetHeader::SIZE;
     let mut packet = mempool::alloc_packet().unwrap();
     let buf = packet.data_mut();
     // build ethernet, ip, udp similar to earlier tests
@@ -790,7 +790,7 @@ pub fn test_zero_copy_via_bridge_v6() {
         .expect("established TCP endpoint should be inserted");
 
     // Build packet: virtio header + ethernet + IPv6 + TCP + payload
-    let header_size = crate::drivers::virtio::net::VirtioNetHeader::SIZE;
+    let header_size = virtio_driver::net::VirtioNetHeader::SIZE;
     let payload = b"hello-v6";
     let tcp_len = 20 + payload.len();
     let ipv6_total_len = 40 + tcp_len; // IPv6 header + TCP + payload

@@ -213,7 +213,7 @@ fn setup_dma(cap: &DmaCapability) -> DmaBuffer {
 #### VirtIO（所有権ベースのリングバッファ）
 
 ```rust
-use exorust::io::virtio::{VirtQueue, Descriptor};
+use virtio_driver::virtqueue::{VirtQueue, VringDesc};
 
 // バッファをキューに投入（所有権を放棄）
 virtqueue.submit(buffer);  // bufferは消費される

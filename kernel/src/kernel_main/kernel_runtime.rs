@@ -730,10 +730,7 @@ fn log_mlx5_boot_snapshot(stage: &str) {
 async fn network_bootstrap_task() {
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
-    let virtio_net_present = crate::drivers::virtio::virtio_net_driver_adapter(0)
-        .info()
-        .flags
-        != 0;
+    let virtio_net_present = virtio_driver::net::virtio_net_driver_adapter(0).info().flags != 0;
     if virtio_net_present {
         let virtio_port_registered = crate::net::runtime::device::port_info(
             crate::net::runtime::device::NetDeviceKey::Virtio(0),
@@ -748,11 +745,12 @@ async fn network_bootstrap_task() {
             // VirtIO-Net ドライバ登録と port runtime への接続。
             info!(target: "net_boot", "Registering VirtIO-Net driver via DriverRegistry");
             {
-                use crate::net::drivers::virtio_registry::VirtioNetDriver;
                 use alloc::boxed::Box;
                 use driver_registry::register_driver;
+                use virtio_driver::net::driver::VirtioNetDriver;
 
-                let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
+                let hooks = crate::net::drivers::virtio_runtime::kernel_virtio_net_driver_hooks();
+                let net_handle = register_driver(Box::new(VirtioNetDriver::new(0, hooks)));
                 if let Err(e) = driver_registry::driver_registry()
                     .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
                 {

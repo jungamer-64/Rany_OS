@@ -11,12 +11,7 @@ impl SystemIntegration {
         ));
         let dma_bits: u8 = 64;
         register_pci_dma_width(dev, dma_bits);
-        let iommu_device = crate::io::iommu::types::DeviceId::new(
-            dev.segment,
-            dev.bdf.bus(),
-            dev.bdf.device(),
-            dev.bdf.function(),
-        );
+        let pci_locator = dev.packed_locator();
         dev.enable_bus_master();
         dev.enable_memory_space();
 
@@ -27,12 +22,9 @@ impl SystemIntegration {
 
             let mut initialized_via_pci = false;
             if let Some(transport) =
-                try_create_pci_transport(dev, crate::drivers::virtio::VirtioDeviceType::Gpu)
+                try_create_pci_transport(dev, virtio_driver::VirtioDeviceType::Gpu)
             {
-                match crate::drivers::gpu::gpu_impl::init(
-                    alloc::boxed::Box::new(transport),
-                    iommu_device,
-                ) {
+                match virtio_driver::gpu::init(alloc::boxed::Box::new(transport), pci_locator) {
                     Ok(()) => {
                         self.log("    VirtIO-gpu PCI transport initialized");
                         initialized_via_pci = true;
@@ -48,10 +40,10 @@ impl SystemIntegration {
 
             if !initialized_via_pci {
                 use crate::driver_registry::{driver_registry, register_driver};
-                use crate::drivers::gpu::gpu_driver::VirtioGpuDriver;
                 use alloc::boxed::Box;
+                use virtio_driver::gpu::driver::VirtioGpuDriver;
 
-                let drv = Box::new(VirtioGpuDriver::new(bar0_virt, iommu_device));
+                let drv = Box::new(VirtioGpuDriver::new(bar0_virt, pci_locator));
                 match register_driver(drv) {
                     Ok(handle) => {
                         if let Err(e) = driver_registry().probe_and_start(handle) {

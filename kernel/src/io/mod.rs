@@ -21,7 +21,6 @@ pub(crate) mod ahci;
 pub(crate) mod apic;
 // Kernel-owned infrastructure.
 pub mod dma;
-pub(crate) mod gpu;
 pub(crate) mod hid;
 pub(crate) mod ide;
 pub mod interrupt_manager;
@@ -33,7 +32,6 @@ pub(crate) mod nvme;
 pub(crate) mod pci;
 pub(crate) mod serial;
 pub(crate) mod usb;
-pub(crate) mod virtio;
 
 // ============================================================================
 // HAL Re-exports (convenience)
@@ -80,14 +78,14 @@ pub use iommu::types::{DeviceId, IommuError};
 //
 // For specific subsystems, use direct module paths:
 //
-// - Driver boundary: `use crate::drivers::{nvme, virtio, pci, acpi, ...};`
+// - Driver boundary: `use crate::drivers::{nvme, pci, acpi, ...};`
 // - DMA/IOMMU:       `use crate::io::{dma, iommu};`
 // - Interrupts:      `use crate::io::interrupt_manager;`
 // - Logging/HAL:     `use crate::io::{log, mmio, port_io};`
 //
 // Driver paths:
 // - NVMe:        `use crate::drivers::nvme::{NvmePollingDriver, ...};`
-// - VirtIO:      `use crate::drivers::virtio::{VirtioBlkDevice, ...};`
+// - VirtIO:      `use virtio_driver::{blk, net, console, input, balloon, gpu};`
 // - PCI:         `use crate::drivers::pci::{PciDeviceInfo, Bar, ...};`
 // - ACPI:        `use crate::drivers::acpi::{AcpiParser, ...};`
 // - I/O Sched:   `use crate::io::io_scheduler::{IoScheduler, ...};`

@@ -107,13 +107,13 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
         }
     }
 
-    if let Some(device) = crate::drivers::virtio::blk::get_virtio_blk_device_at_index(0) {
+    if let Some(device) = virtio_driver::blk::get_virtio_blk_device_at_index(0) {
         let config = device.config();
         let mut flags = 0;
         if device.is_ready() {
             flags |= STORAGE_FLAG_ACTIVE;
         }
-        if (config.features & crate::drivers::virtio::blk_features::VIRTIO_BLK_F_RO) != 0 {
+        if (config.features & virtio_driver::blk::features::VIRTIO_BLK_F_RO) != 0 {
             flags |= STORAGE_FLAG_READ_ONLY;
         }
 

@@ -7,10 +7,17 @@ use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::resource::net::PacketRef;
 
 pub mod device;
+pub mod driver;
 pub mod features;
+mod global_init;
 pub mod inflight;
+pub mod managed;
 
+pub use global_init::*;
 pub use inflight::InflightTracker;
+pub use managed::{
+    ManagedNetVirtQueue, NetCompletionHandler, NetCompletionKind, VirtioNetDevice,
+};
 
 /// In-flight RX packet state.
 #[derive(Debug)]
@@ -121,7 +128,7 @@ pub trait NetRuntime: Send + Sync {
     );
 
     /// Called when a packet transmission is complete.
-    fn transmit_complete(&self, queue_index: u16, packet: PacketRef);
+    fn transmit_complete(&self, queue_index: u16, packet: PacketRef, completion_id: Option<u64>);
 
     /// Schedule a waker for a queue event.
     fn schedule_wake(&self, queue_index: u16);

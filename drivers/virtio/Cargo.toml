@@ -17,12 +17,15 @@ path = "src/lib.rs"
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
+graphic_types = { path = "../../libs/graphic_types" }
 spin = "0.10"
 exorust_sync = { path = "../../libs/sync" }
 log = "0.4"
 
 [features]
 default = []
+std = []
 # Build as a standalone cell with kernel-provided runtime stubs and exported ABI entry.
 standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
 export_driver_entry = ["kernel_api/export_driver_entry"]
+qemu-test-export = []

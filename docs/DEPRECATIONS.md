@@ -106,7 +106,7 @@ This document lists symbols that have been marked deprecated and recommended mig
   - Re-export of `ahci_driver::atapi` ✅ **deprecated** (marked deprecated in `drivers/ahci` on 2026-01-17)
     - Migration: Use `ahci_driver::atapi` directly.
 
-- `kernel/src/io/virtio/net/mod.rs`
+- `kernel/src/net/drivers/virtio/mod.rs`
   - `notify_addr` field ✅ **deprecated**
     - Migration: Prefer transport-level notify configuration and the `notify` methods on the virtio transport; use interrupt-driven notifications instead of per-queue MMIO `notify_addr` where possible.
 
@@ -139,11 +139,11 @@ This document lists symbols that have been marked deprecated and recommended mig
   - DHCPv6 accessor `legacy_v6_client_lock_in(runtime)` ❌ **renamed**
     - Migration: Use `primary_v6_client_lock_in(runtime)`.
 
-- `kernel/src/io/virtio/{net,blk,console,input,balloon}`
+- `kernel/src/{net/drivers/virtio,integration/virtio_blk,console/virtio_console,console/virtio_input,mm/virtio_balloon}`
   - Zero-index compatibility wrappers (`init_virtio_*()`, `init_virtio_*_for_device()`, `init_virtio_*_with_transport()`, `get_virtio_*_device()`, `handle_virtio_*_interrupt()`, `with_virtio_net()`) ❌ **removed**
     - Migration: Use the explicit multi-device variants `*_at_index(index)` / `*_for_device_at_index(index, ...)` / `*_with_transport_at_index(index, ...)` / `get_virtio_*_device_at_index(index)` / `handle_virtio_*_interrupt_for_index(index)` / `with_virtio_net_at_index(index, ...)`. For the former default behavior, pass `0`.
 
-- `kernel/src/io/gpu/gpu_impl/graphics_manager.rs`
+- `kernel/src/graphics/virtio_gpu/gpu_impl/graphics_manager.rs`
   - Global GPU convenience wrappers (`init_virtio_gpu()`, `init_virtio_gpu_for_device()`, `get_virtio_gpu_device()`, `handle_virtio_gpu_interrupt()`) ❌ **removed**
     - Migration: Use `gpu_impl::init(transport, iommu_device_id)` and interact through `graphics_manager()` / `GraphicsManager` APIs instead of the removed global singleton helpers.
 
@@ -181,9 +181,9 @@ This document lists symbols that have been marked deprecated and recommended mig
   - Top-level legacy config helpers (`io::pci::{pci_read, pci_read8, pci_read16, pci_write}`) ❌ **removed**
     - Migration: Use `crate::io::pci::legacy::{pci_read, pci_read8, pci_read16, pci_write}` explicitly, or migrate to ECAM-based accessors where possible.
 
-- `kernel/src/io/virtio/mod.rs`
+- `crate::drivers::virtio`
   - `BlkVringDesc` ❌ **removed**
-    - Migration: Use `VringDesc` directly.
+    - Migration: Use `virtio_driver::virtqueue::VringDesc` directly.
 
 - `kernel/src/mm/virt/address_space.rs`
   - `ProcessAddressSpace` / `fork()` / `exec()` / ASID 管理 ❌ **removed**
@@ -315,7 +315,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `io::hid::set_leds` top-level re-export — `io::hid::ps2::set_leds(...)` / `Ps2Controller::set_keyboard_leds(...)` に移行
 - `nvme_driver::driver` compatibility module — concrete NVMe submodules に移行
 - `kernel_api::resource::system::KernelSystemInfo` — `kernel_api::resource::system::SystemInfo` に移行
-- `io::virtio::BlkVringDesc` — `io::virtio::VringDesc` に移行
+- `io::virtio::BlkVringDesc` — `virtio_driver::virtqueue::VringDesc` に移行
 - `ProcessAddressSpace` / `fork()` / `exec()` / CoW path — `crate::sas::MemoryRegion` + `domain_system::create_domain()` に移行
 - `kernel_fs::VfsUnixFileMode` — `kernel_fs::FileMode` に移行
 - `xhci::CmdBuilder` — `xhci::command::CommandBuilder` / `xhci::CommandBuilder` に移行

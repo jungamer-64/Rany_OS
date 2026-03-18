@@ -16,14 +16,16 @@ pub mod balloon;
 pub mod blk;
 pub mod console;
 pub mod core;
+pub mod dma;
 pub mod defs;
 pub mod gpu;
 pub mod input;
 pub mod net;
 pub mod transport;
+pub mod virtqueue;
 
 // Re-export core types
-pub use crate::core::virtqueue::VirtQueue;
+pub use crate::core::{OwnedVirtQueue, virtqueue::VirtQueue};
 
 // Re-export transport types
 pub use transport::{

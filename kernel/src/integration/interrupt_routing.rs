@@ -319,8 +319,7 @@ pub unsafe fn program_msi(bus: u8, device: u8, function: u8, msi_offset: u8, vec
             message_address,
         );
         // Write message data
-        let data_reg =
-            crate::drivers::pci::legacy::pci_read(bus, device, function, msi_offset + 8);
+        let data_reg = crate::drivers::pci::legacy::pci_read(bus, device, function, msi_offset + 8);
         crate::drivers::pci::legacy::pci_write(
             bus,
             device,

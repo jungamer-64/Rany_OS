@@ -377,15 +377,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
-name = "gpu_driver"
-version = "0.1.0"
-dependencies = [
- "graphic_types",
- "hal",
- "kernel_api",
-]
-
-[[package]]
 name = "graphic_types"
 version = "0.1.0"
 
@@ -657,7 +648,6 @@ dependencies = [
  "criterion",
  "ed25519-compact",
  "gimli",
- "gpu_driver",
  "graphic_types",
  "hal",
  "hashbrown",
@@ -988,6 +978,7 @@ name = "virtio_driver"
 version = "0.1.0"
 dependencies = [
  "exorust_sync",
+ "graphic_types",
  "hal",
  "kernel_api",
  "log",

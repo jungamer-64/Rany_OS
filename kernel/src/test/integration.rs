@@ -264,11 +264,11 @@ use kernel_api::block_io::{
 };
 
 struct VirtioPageAdapter {
-    device: StdArc<crate::drivers::virtio::VirtioBlkDevice>,
+    device: StdArc<virtio_driver::blk::VirtioBlkDevice>,
 }
 
 impl VirtioPageAdapter {
-    fn new(device: StdArc<crate::drivers::virtio::VirtioBlkDevice>) -> Self {
+    fn new(device: StdArc<virtio_driver::blk::VirtioBlkDevice>) -> Self {
         Self { device }
     }
 }
@@ -344,7 +344,7 @@ pub fn test_storage() -> IntegrationTestSuite {
         // stall forever because completion wakeups are interrupt-driven.
         if !crate::interrupts::are_interrupts_enabled() {
             return if let Some(dev) =
-                crate::drivers::virtio::blk::get_virtio_blk_device_at_index(0)
+                virtio_driver::blk::get_virtio_blk_device_at_index(0)
             {
                 let info = dev.info();
                 if info.block_size > 0 && info.total_blocks > 0 {
@@ -364,7 +364,7 @@ pub fn test_storage() -> IntegrationTestSuite {
             };
         }
 
-        if let Some(dev) = crate::drivers::virtio::blk::get_virtio_blk_device_at_index(0) {
+        if let Some(dev) = virtio_driver::blk::get_virtio_blk_device_at_index(0) {
             // Wrap the global virtio device with a Page-backed adapter and mount
             let adapter = StdArc::new(VirtioPageAdapter::new(StdArc::clone(&dev)));
 

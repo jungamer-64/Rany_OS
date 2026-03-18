@@ -41,6 +41,45 @@ fn register_pci_dma_width(dev: &PciDeviceInfo, bits: u8) {
     }
 }
 
+fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
+    let base_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
+    let virt_start = crate::mm::virt::higher_half::VirtAddr::new(base_virt);
+    let phys_expected = crate::mm::virt::higher_half::PhysAddr::new(base_phys);
+
+    fn try_map_bar(base_phys: u64, base_virt: u64, bar_size: u64) -> bool {
+        if bar_size == 0 {
+            crate::io::log::early_print("[BAR] size 0 - skipping\n");
+            return false;
+        }
+
+        let page_size: u64 = 0x1000;
+        let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
+        let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
+        let mut manager =
+            unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
+        let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
+
+        match unsafe {
+            manager.map_range(
+                crate::mm::virt::higher_half::VirtAddr::new(base_virt),
+                crate::mm::virt::higher_half::PhysAddr::new(base_phys),
+                map_size,
+                flags,
+            )
+        } {
+            Ok(()) => true,
+            Err(crate::mm::virt::higher_half::MapError::AlreadyMapped) => true,
+            Err(_) => false,
+        }
+    }
+
+    match crate::mm::virt::higher_half::get_current_pte(virt_start) {
+        Some(pte) if pte.is_present() && pte.phys_addr() == phys_expected => Some(base_virt),
+        _ if try_map_bar(base_phys, base_virt, bar_size) => Some(base_virt),
+        _ => None,
+    }
+}
+
 /// VirtIO PCI capabilities の解析結果
 struct VirtioCapabilities {
     common_cfg: Option<(u8, u32, u32)>,
@@ -65,18 +104,15 @@ fn parse_virtio_capabilities(dev: &PciDeviceInfo) -> VirtioCapabilities {
     };
 
     for (_cap_id, cap_ptr) in &dev.capabilities {
-        let cap_id_raw =
-            crate::drivers::pci::legacy::pci_read8(bus, device, function, *cap_ptr);
+        let cap_id_raw = crate::drivers::pci::legacy::pci_read8(bus, device, function, *cap_ptr);
         if cap_id_raw != 0x09 {
             continue;
         }
         let ptr = *cap_ptr;
         let cfg_type = crate::drivers::pci::legacy::pci_read8(bus, device, function, ptr + 3);
         let bar = crate::drivers::pci::legacy::pci_read8(bus, device, function, ptr + 4);
-        let offset =
-            crate::drivers::pci::legacy::pci_read(bus, device, function, (ptr + 8) as u8);
-        let length =
-            crate::drivers::pci::legacy::pci_read(bus, device, function, (ptr + 12) as u8);
+        let offset = crate::drivers::pci::legacy::pci_read(bus, device, function, (ptr + 8) as u8);
+        let length = crate::drivers::pci::legacy::pci_read(bus, device, function, (ptr + 12) as u8);
 
         match cfg_type {
             1 => caps.common_cfg = Some((bar, offset, length)),
@@ -120,8 +156,8 @@ fn resolve_bar_virt_addr(dev: &PciDeviceInfo, cfg: Option<(u8, u32, u32)>) -> us
 /// are not present or if BAR resolution fails.
 fn try_create_pci_transport(
     dev: &PciDeviceInfo,
-    device_type: crate::drivers::virtio::VirtioDeviceType,
-) -> Option<crate::drivers::virtio::VirtioPciTransport> {
+    device_type: virtio_driver::VirtioDeviceType,
+) -> Option<virtio_driver::VirtioPciTransport> {
     let caps = parse_virtio_capabilities(dev);
 
     let (cbar, coff, _) = caps.common_cfg?;
@@ -136,16 +172,16 @@ fn try_create_pci_transport(
 
     // ensure the whole BARs are mapped so accesses to capability offsets work
     // map the BAR regions into the kernel page tables
-    let _ = crate::ensure_phys_bar_mapped(cbar_info.base(), cbar_info.size());
-    let _ = crate::ensure_phys_bar_mapped(dbar_info.base(), dbar_info.size());
+    let _ = ensure_phys_bar_mapped(cbar_info.base(), cbar_info.size());
+    let _ = ensure_phys_bar_mapped(dbar_info.base(), dbar_info.size());
     if let Some((nbar, _, _)) = caps.notify_cfg {
         if let Some(info) = dev.bars[nbar as usize] {
-            let _ = crate::ensure_phys_bar_mapped(info.base(), info.size());
+            let _ = ensure_phys_bar_mapped(info.base(), info.size());
         }
     }
     if let Some((ibar, _, _)) = caps.isr_cfg {
         if let Some(info) = dev.bars[ibar as usize] {
-            let _ = crate::ensure_phys_bar_mapped(info.base(), info.size());
+            let _ = ensure_phys_bar_mapped(info.base(), info.size());
         }
     }
 
@@ -161,7 +197,7 @@ fn try_create_pci_transport(
     let isr_virt = resolve_bar_virt_addr(dev, caps.isr_cfg);
 
     unsafe {
-        crate::drivers::virtio::VirtioPciTransport::new(
+        virtio_driver::VirtioPciTransport::new(
             dev.bdf.to_u16() as u32,
             common_virt,
             notify_virt,

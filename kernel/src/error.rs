@@ -553,9 +553,9 @@ impl From<crate::drivers::usb::UsbError> for KernelError {
 }
 
 // io::virtio::net::VirtioNetError からの変換
-impl From<crate::drivers::virtio::net::VirtioNetError> for IoError {
-    fn from(e: crate::drivers::virtio::net::VirtioNetError) -> Self {
-        use crate::drivers::virtio::net::VirtioNetError as VE;
+impl From<virtio_driver::net::VirtioNetError> for IoError {
+    fn from(e: virtio_driver::net::VirtioNetError) -> Self {
+        use virtio_driver::net::VirtioNetError as VE;
         match e {
             VE::NotInitialized => IoError::DeviceNotFound,
             VE::QueueFull => IoError::NoResources,
@@ -567,8 +567,8 @@ impl From<crate::drivers::virtio::net::VirtioNetError> for IoError {
 }
 
 // io::virtio::net::VirtioNetError から KernelError への変換
-impl From<crate::drivers::virtio::net::VirtioNetError> for KernelError {
-    fn from(e: crate::drivers::virtio::net::VirtioNetError) -> Self {
+impl From<virtio_driver::net::VirtioNetError> for KernelError {
+    fn from(e: virtio_driver::net::VirtioNetError) -> Self {
         KernelError::Io(e.into())
     }
 }
