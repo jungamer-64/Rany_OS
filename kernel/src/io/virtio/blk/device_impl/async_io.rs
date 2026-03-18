@@ -224,17 +224,17 @@ pub trait AsyncBlockDevice: Send + Sync {
 }
 
 // ============================================================================
-// VFS Zero-Copy Adapter (transitional: OwnedBytes + borrowed read)
+// Zero-Copy Block I/O Adapter
 // ============================================================================
 
 pub(crate) const SECTOR_SIZE: u32 = 512;
 
-pub(crate) fn map_vfs_block_error(err: BlockError) -> VfsBlockError {
+pub(crate) fn map_block_error(err: BlockError) -> IoBlockError {
     match err {
-        BlockError::NotReady => VfsBlockError::NotReady,
-        BlockError::IoError | BlockError::Unsupported => VfsBlockError::IoError,
-        BlockError::QueueFull => VfsBlockError::QueueFull,
-        BlockError::InvalidParam => VfsBlockError::InvalidBufferSize,
+        BlockError::NotReady => IoBlockError::NotReady,
+        BlockError::IoError | BlockError::Unsupported => IoBlockError::IoError,
+        BlockError::QueueFull => IoBlockError::QueueFull,
+        BlockError::InvalidParam => IoBlockError::InvalidBufferSize,
     }
 }
 
@@ -243,14 +243,14 @@ pub(crate) fn effective_block_size_from_core(_core: &CoreBlkDevice) -> u32 {
     SECTOR_SIZE
 }
 
-pub(crate) fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlockError> {
+pub(crate) fn block_to_sector(block: u64, block_size: u32) -> Result<u64, IoBlockError> {
     if block_size == 0 || (block_size % SECTOR_SIZE) != 0 {
-        return Err(VfsBlockError::InvalidBufferSize);
+        return Err(IoBlockError::InvalidBufferSize);
     }
     let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
     block
         .checked_mul(sectors_per_block)
-        .ok_or(VfsBlockError::InvalidBufferSize)
+        .ok_or(IoBlockError::InvalidBufferSize)
 }
 
 /// Validate block I/O parameters common to read/write.
@@ -258,37 +258,37 @@ pub(crate) fn validate_block_io_params_from_core(
     core: &CoreBlkDevice,
     block: u64,
     len: usize,
-) -> VfsBlockResult<Option<u64>> {
+) -> BlockResult<Option<u64>> {
     let block_size = effective_block_size_from_core(core) as usize;
     if block_size == 0 {
-        return Err(VfsBlockError::InvalidBufferSize);
+        return Err(IoBlockError::InvalidBufferSize);
     }
     if len == 0 {
         return Ok(None);
     }
     if (len % block_size) != 0 {
-        return Err(VfsBlockError::InvalidBufferSize);
+        return Err(IoBlockError::InvalidBufferSize);
     }
     let blocks = len / block_size;
     if blocks > (u32::MAX as usize) {
-        return Err(VfsBlockError::InvalidBufferSize);
+        return Err(IoBlockError::InvalidBufferSize);
     }
     let sector = block_to_sector(block, block_size as u32)?;
     Ok(Some(sector))
 }
 
 /// Allocate an IOMMU bounce buffer, mapping the error type for VFS.
-pub(crate) fn alloc_bounce_buffer(len: usize) -> VfsBlockResult<crate::ipc::RRef<[u8]>> {
+pub(crate) fn alloc_bounce_buffer(len: usize) -> BlockResult<crate::ipc::RRef<[u8]>> {
     allocate_iommu_bounce_bytes(len).map_err(|err| match err {
-        IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
-        IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
+        IommuBounceAllocError::InvalidLen => IoBlockError::InvalidBufferSize,
+        IommuBounceAllocError::AllocFailed => IoBlockError::IoError,
     })
 }
 
 impl ZeroCopyBlockDevice for VirtioBlkDevice {
     type Buffer = OwnedBytes;
 
-    fn info(&self) -> VfsBlockDeviceInfo {
+    fn info(&self) -> BlockDeviceInfo {
         let block_size = effective_block_size_from_core(&self.core);
         let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
         let total_blocks = if sectors_per_block == 0 {
@@ -297,7 +297,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
             self.core.capacity / sectors_per_block
         };
 
-        VfsBlockDeviceInfo {
+        BlockDeviceInfo {
             name: "virtio-blk",
             total_blocks,
             block_size,
@@ -307,26 +307,26 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         }
     }
 
-    fn flush(&self) -> VfsBlockResult<()> {
+    fn flush(&self) -> BlockResult<()> {
         match crate::task::block_on(self.flush_async()) {
             Ok(()) => Ok(()),
             Err(BlockError::Unsupported) => Ok(()),
-            Err(err) => Err(map_vfs_block_error(err)),
+            Err(err) => Err(map_block_error(err)),
         }
     }
 
-    fn alloc_buffer(&self, size: usize) -> VfsBlockResult<Self::Buffer> {
+    fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
         Ok(OwnedBytes::from_vec(vec![0u8; size]))
     }
 
-    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, VfsBlockResult<Self::Buffer>> {
+    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
         let block_size = effective_block_size_from_core(&self.core) as usize;
         if block_size == 0 {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+            return Box::pin(async { Err(IoBlockError::InvalidBufferSize) });
         }
         let size = match block_size.checked_mul(count as usize) {
             Some(size) => size,
-            None => return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) }),
+            None => return Box::pin(async { Err(IoBlockError::InvalidBufferSize) }),
         };
         let sector = match block_to_sector(block, block_size as u32) {
             Ok(sector) => sector,
@@ -340,7 +340,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
             }
             VirtioBlkDevice::read_async(self, sector, buf.as_mut())
                 .await
-                .map_err(map_vfs_block_error)?;
+                .map_err(map_block_error)?;
             Ok(buf)
         })
     }
@@ -349,17 +349,17 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         &self,
         block: u64,
         buffer: Self::Buffer,
-    ) -> ZcFuture<'_, VfsBlockResult<Self::Buffer>> {
+    ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
         let block_size = effective_block_size_from_core(&self.core) as usize;
         if block_size == 0 {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+            return Box::pin(async { Err(IoBlockError::InvalidBufferSize) });
         }
         let len = buffer.as_ref().len();
         if len == 0 {
             return Box::pin(async move { Ok(buffer) });
         }
         if (len % block_size) != 0 {
-            return Box::pin(async move { Err(VfsBlockError::InvalidBufferSize) });
+            return Box::pin(async move { Err(IoBlockError::InvalidBufferSize) });
         }
         let sector = match block_to_sector(block, block_size as u32) {
             Ok(sector) => sector,
@@ -369,7 +369,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         Box::pin(async move {
             VirtioBlkDevice::write_async(self, sector, buffer.as_ref())
                 .await
-                .map_err(map_vfs_block_error)?;
+                .map_err(map_block_error)?;
             Ok(buffer)
         })
     }
@@ -378,7 +378,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         &'a self,
         block: u64,
         dst: &'a mut dyn IoBufferMut,
-    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+    ) -> ZcFuture<'a, BlockResult<()>> {
         let dma = dst.dma_info();
         let buf = dst.as_mut_slice();
         let len = buf.len();
@@ -396,7 +396,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         Box::pin(async move {
             VirtioBlkDevice::read_async(self, sector, buf)
                 .await
-                .map_err(map_vfs_block_error)?;
+                .map_err(map_block_error)?;
             Ok(())
         })
     }
@@ -405,7 +405,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         &'a self,
         block: u64,
         src: &'a dyn IoBuffer,
-    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+    ) -> ZcFuture<'a, BlockResult<()>> {
         let dma = src.dma_info();
         let data = src.as_slice();
         let len = data.len();
@@ -423,7 +423,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         Box::pin(async move {
             VirtioBlkDevice::write_async(self, sector, data)
                 .await
-                .map_err(map_vfs_block_error)?;
+                .map_err(map_block_error)?;
             Ok(())
         })
     }

@@ -31,7 +31,7 @@ use x86_64::PhysAddr;
 use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice};
 
 use super::cache::{PAGE_SIZE as CACHE_PAGE_SIZE, page_cache};
-use super::fs_abstraction::{
+use super::fs_model::{
     FileAttr, FsError, FsResult, SeekFrom, read_inode_by_number, write_inode_by_number,
 };
 

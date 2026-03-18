@@ -38,8 +38,6 @@ impl FsNamespace {
                             kernel_api::service::shell::FileType::Symlink => FileType::Symlink,
                             kernel_api::service::shell::FileType::CharDevice
                             | kernel_api::service::shell::FileType::BlockDevice => FileType::Device,
-                            kernel_api::service::shell::FileType::Socket => FileType::Socket,
-                            kernel_api::service::shell::FileType::Fifo => FileType::Pipe,
                             _ => FileType::Regular,
                         };
                         ExoValue::FileEntry(FileEntry {

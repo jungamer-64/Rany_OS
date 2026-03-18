@@ -86,9 +86,8 @@ pub fn list_namespaces() -> alloc::vec::Vec<String> {
 /// ビルトイン名前空間を登録
 pub fn register_builtin_namespaces() {
     use super::{
-        AsyncSwapoutNamespace, CapNamespace, CellNamespace, DomainNamespace, DriverNamespace,
-        FsNamespace, LogNamespace, Mlx5Namespace, NetNamespace, ReclaimNamespace,
-        ShellControlNamespace, SysNamespace, TaskNamespace,
+        CapNamespace, CellNamespace, DomainNamespace, DriverNamespace, FsNamespace, LogNamespace,
+        Mlx5Namespace, NetNamespace, ShellControlNamespace, SysNamespace, TaskNamespace,
     };
 
     register_namespace(Arc::new(FsNamespace));
@@ -102,6 +101,4 @@ pub fn register_builtin_namespaces() {
     register_namespace(Arc::new(TaskNamespace));
     register_namespace(Arc::new(LogNamespace));
     register_namespace(Arc::new(Mlx5Namespace));
-    register_namespace(Arc::new(AsyncSwapoutNamespace));
-    register_namespace(Arc::new(ReclaimNamespace));
 }

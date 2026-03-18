@@ -4,8 +4,8 @@
 // 設計書 5: メモリ管理戦略 - 階層型アロケータ設計
 //
 // ■ 責務: 物理フレームアロケータ、ページテーブル(Lv4/Lv5)、
-//          NUMAアフィニティ、ページ回収、TLB Shootdown、
-//          Exchange Heap、メモリホットプラグ等
+//          NUMAアフィニティ、OOM対応、TLB Shootdown、
+//          Exchange Heap、最小限の huge page 支援
 //
 // ■ 注意: ヒープアロケータ(GlobalAlloc)、アドレス変換ユーティリティ等は
 //          memory.rs (トップレベル) にあります。
@@ -15,11 +15,11 @@
 //   mm/phys/       -- 物理フレームアロケータ群
 //   mm/virt/       -- 仮想メモリ管理
 //   mm/cache/      -- キャッシュ・最適化レイヤー
-//   mm/reclaim/    -- ページ回収・圧力管理
+//   mm/reclaim/    -- OOM / quota の最小面
 //   mm/sync/       -- MM同期プリミティブ
 //   mm/numa/       -- NUMAサポート
 //   mm/meta/       -- ページメタデータ・アカウンティング
-//   mm/advanced/   -- 高度な機能 (THP, Compaction, Hotplug等)
+//   mm/advanced/   -- 高度な機能のうち現行で維持する最小面
 // ============================================================================
 
 // === Foundation (共通型・ユーティリティ) ===
@@ -37,7 +37,7 @@ pub mod virt;
 // === Cache & Optimization (キャッシュ・最適化レイヤー) ===
 pub mod cache;
 
-// === Page Reclamation (ページ回収・圧力管理) ===
+// === OOM / Quota Backstop ===
 pub mod reclaim;
 
 // === Synchronization (同期プリミティブ) ===

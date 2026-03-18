@@ -1,6 +1,6 @@
 //! QEMU-exported Storage/FS deterministic checks.
 use super::{async_memfs, cache, memfs, page, page_cluster_buffer};
-use super::{async_ops, fs_abstraction};
+use super::{async_ops, fs_model};
 
 macro_rules! run_case {
     ($func:path) => {{
@@ -85,12 +85,12 @@ pub fn cache_block_block_cache_flush_smoke() -> bool {
     run_case!(cache::cached_block_impl::block_cache_tests::test_block_cache_flush)
 }
 
-pub fn fs_abstraction_file_mode_smoke() -> bool {
-    run_case!(fs_abstraction::tests::test_file_mode)
+pub fn fs_model_file_mode_smoke() -> bool {
+    run_case!(fs_model::tests::test_file_mode)
 }
 
-pub fn fs_abstraction_open_flags_smoke() -> bool {
-    run_case!(fs_abstraction::tests::test_open_flags)
+pub fn fs_model_open_flags_smoke() -> bool {
+    run_case!(fs_model::tests::test_open_flags)
 }
 
 pub fn memfs_paged_content_in_inode_smoke() -> bool {
@@ -159,8 +159,4 @@ pub fn page_cluster_buffer_page_cluster_buffer_dma_info_smoke() -> bool {
 
 pub fn page_cluster_buffer_page_cluster_buffer_physical_alloc_and_write_smoke() -> bool {
     run_case!(page_cluster_buffer::tests::test_page_cluster_buffer_physical_alloc_and_write)
-}
-
-pub fn page_cluster_buffer_fat_mount_with_page_allocator_zero_copy_smoke() -> bool {
-    run_case!(page_cluster_buffer::tests::test_fat_mount_with_page_allocator_zero_copy)
 }

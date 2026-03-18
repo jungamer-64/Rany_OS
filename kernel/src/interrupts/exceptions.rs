@@ -477,14 +477,7 @@ define_interrupt!(
         // 高度なページフォルトハンドラを呼び出し
         let res = crate::mm::virt::fault_handler::handle_page_fault(error_code.bits(), rsp);
 
-        if matches!(
-            res,
-            crate::mm::virt::fault_handler::FaultResult::Resolved
-                | crate::mm::virt::fault_handler::FaultResult::CowHandled
-                | crate::mm::virt::fault_handler::FaultResult::DemandPaged
-                | crate::mm::virt::fault_handler::FaultResult::StackGrown
-                | crate::mm::virt::fault_handler::FaultResult::FilePageLoaded
-        ) {
+        if matches!(res, crate::mm::virt::fault_handler::FaultResult::Resolved) {
             // 解決されたので例外から復帰
             return;
         }
@@ -505,7 +498,7 @@ define_interrupt!(
             crate::mm::virt::fault_handler::FaultResult::StackOverflow => "Stack Overflow",
             crate::mm::virt::fault_handler::FaultResult::KernelBug => "Kernel Bug",
             crate::mm::virt::fault_handler::FaultResult::IoError => "I/O Error",
-            _ => "Unknown Error",
+            crate::mm::virt::fault_handler::FaultResult::Resolved => "Resolved",
         });
         early_print("\n");
 

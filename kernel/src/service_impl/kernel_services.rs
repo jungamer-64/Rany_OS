@@ -65,7 +65,9 @@ fn authorize_dma_device_for_current_subject(
         };
         Some(
             manager
-                .with_cell(driver_domain_id, |cell| cell.abi_driver_context.pci_location())
+                .with_cell(driver_domain_id, |cell| {
+                    cell.abi_driver_context.pci_location()
+                })
                 .map_err(|err| {
                     log::error!(
                         "[KAPI][SECURITY] Failed to resolve PCI locator for domain {}: {:?}",
@@ -1288,8 +1290,7 @@ mod dma_tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn authorize_pci_locator_rejects_missing_driver_binding() {
         let locator = PackedPciLocation::new(0, 0, 2, 0);
-        let err =
-            authorize_pci_locator_for_domain(DomainId::new(800), locator, None).unwrap_err();
+        let err = authorize_pci_locator_for_domain(DomainId::new(800), locator, None).unwrap_err();
         assert!(matches!(err, KapiError::PermissionDenied));
     }
 
@@ -1307,8 +1308,9 @@ mod dma_tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn authorize_pci_locator_accepts_matching_driver_binding() {
         let locator = PackedPciLocation::new(0, 0, 5, 0);
-        assert!(authorize_pci_locator_for_domain(DomainId::new(802), locator, Some(locator))
-            .is_ok());
+        assert!(
+            authorize_pci_locator_for_domain(DomainId::new(802), locator, Some(locator)).is_ok()
+        );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

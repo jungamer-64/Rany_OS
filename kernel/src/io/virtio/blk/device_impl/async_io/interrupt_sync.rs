@@ -49,7 +49,7 @@ mod unit_tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_block_device_config_default() {
-        let config = VfsBlockDeviceInfo::default();
+        let config = BlockDeviceInfo::default();
         assert_eq!(config.total_blocks, 0);
         assert_eq!(config.block_size, 512);
         assert!(!config.read_only);

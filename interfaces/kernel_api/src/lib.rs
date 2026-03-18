@@ -22,6 +22,8 @@
 
 extern crate alloc;
 
+pub mod block_io;
+
 #[path = "application.rs"]
 pub mod app;
 

@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
-use super::fs_abstraction::InodeNum;
+use super::fs_model::InodeNum;
 
 // ============================================================================
 // Constants

@@ -15,12 +15,10 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use the canonical root-level task time APIs directly, e.g. `crate::task::current_tick()`, `crate::task::sleep_ms()`, `crate::task::handle_timer_interrupt()`, `crate::task::process_pending_timer_wakers()`.
 
 - `kernel/src/fs/mod.rs` (fs alias)
-  - `vfs` alias ❌ **removed**
-    - Replacement: Use `fs_abstraction` directly to make the optional layer explicit.
-  - `Fat32FileSystem` alias ❌ **removed**
-    - Replacement: Use `filesystems::fat32::Fat32FileSystem` or `fs_abstraction` directly.
-  - `filesystems/fat32` low-level helpers (`DirEntryRaw::from_bytes`, `LfnEntry::from_bytes`) ✅ **deprecated**
-    - Migration: Use `SafePackedRead::from_bytes_safe` or the high-level parser APIs in `filesystems::fat32`.
+  - Legacy filesystem aliases ❌ **removed**
+    - Replacement: Use `crate::fs::block::*` for shared block I/O or `crate::fs::{DirEntry, FileMode, FileType, OpenFlags}` for the local filesystem model.
+  - Legacy on-disk parser helpers ✅ **deprecated**
+    - Migration: Use the active parser APIs directly instead of compatibility aliases.
 
 - `kernel/src/io/log.rs`
   - `LOG_AGGREGATOR_PRIORITY`, `AGGREGATOR_STARTED`, `spawn_log_aggregator()` ❌ **removed**
@@ -187,9 +185,19 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `BlkVringDesc` ❌ **removed**
     - Migration: Use `VringDesc` directly.
 
+- `kernel/src/mm/virt/address_space.rs`
+  - `ProcessAddressSpace` / `fork()` / `exec()` / ASID 管理 ❌ **removed**
+    - Migration: Use `crate::sas::MemoryRegion`, global higher-half mappings, and `domain_system::create_domain()` + loader.
+
+- `kernel/src/mm/virt/cow.rs`
+  - Copy-on-write fault handling ❌ **removed**
+    - Migration: Active ExoRust memory management is SAS-only; no per-process CoW path is maintained.
+
 - `filesystems/kernel_fs/fs_abstraction.rs`
+  - Legacy filesystem model ❌ **removed**
+    - Migration: Use `filesystems/kernel_fs/fs_model.rs` and the `crate::fs::*` re-exports.
   - `VfsUnixFileMode` ❌ **removed**
-    - Migration: Use `vfs::UnixFileMode` directly.
+    - Migration: Use `kernel_fs::FileMode` directly.
 
 - `kernel/src/shell/graphical/render.rs`
   - `redraw_input_only()` ✅ **deprecated**
@@ -271,13 +279,9 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `ps2::{kbd_commands, mouse_commands}` re-exports ❌ **removed**
     - Migration: Prefer `Ps2Controller` helper methods over raw PS/2 keyboard/mouse command constants.
 
-- `filesystems/nvme_ns` (`filesystems/nvme_ns/src/lib.rs`)
-  - `NsDirEntry` ❌ **removed**
-    - Migration: Use `DirEntry` directly.
-
-- `filesystems/vfs` (`filesystems/vfs/src/lib.rs`)
-  - `InodeDirEntry` ❌ **removed**
-    - Migration: Use `vfs::types::DirEntry` directly.
+- Legacy filesystem crates
+  - Repository / workspace surface ❌ **removed**
+    - Migration: Use `kernel_api::block_io::*` for shared block transport and `kernel_fs::*` for local filesystem types.
 
 - `interfaces/kernel_api` (`interfaces/kernel_api/src/resource/system.rs`)
   - `KernelSystemInfo` ❌ **removed**
@@ -292,10 +296,6 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Import concrete modules directly (`nvme_driver::queue`, `nvme_driver::polling_driver`, `nvme_driver::async_io`, `nvme_driver::global`, `nvme_driver::commands`).
   - Re-exported convenience APIs (e.g., `queue::CompletionQueue`, `QueuePair`, `SubmissionQueue`, `per_core::NvmeQueueStats`, `per_core::PerCoreNvmeQueue`, `polling_driver::NvmeDriverStats`, `NvmePollingDriver`, `async_io::{async_read, async_write, ReadFuture, WriteFuture}`, `error::NvmeError`, `global::{get_stats, init, poll, poll_batch}`, `scheduler::{register_with_io_scheduler, NvmePollHandler}`, `commands::{NvmeCommand, NvmeCompletion}`) ❌ **removed**
     - Migration: Import the specific types from `nvme_driver` module paths directly (for example, `nvme_driver::queue::CompletionQueue`, `nvme_driver::async_io::ReadFuture`, `nvme_driver::global::init`). These re-exports are removed as of 2026-01-17; update any usage to import from `nvme_driver` directly.
-
-- `filesystems/fat32` (`filesystems/fat32/src/async_mutex.rs`)
-  - `AsyncMutex::lock()` ❌ **removed**
-    - Migration: Use `blocking_lock()` for synchronous critical sections or `lock_async()` in async contexts.
 
 ## Notes（全般）
 
@@ -313,13 +313,11 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `pci_driver::BdfAddress::legacy_address()` — `LegacyPciAccessor` / `ecam_offset()` に移行
 - `io::hid::{KeyCodeExt, KeyEventExt, StreamAlreadyTaken}` compatibility re-exports — canonical `hid_driver` paths に移行
 - `io::hid::set_leds` top-level re-export — `io::hid::ps2::set_leds(...)` / `Ps2Controller::set_keyboard_leds(...)` に移行
-- `fat32::AsyncMutex::lock()` — `blocking_lock()` / `lock_async()` に移行
 - `nvme_driver::driver` compatibility module — concrete NVMe submodules に移行
-- `nvme_ns::NsDirEntry` — `nvme_ns::DirEntry` に移行
 - `kernel_api::resource::system::KernelSystemInfo` — `kernel_api::resource::system::SystemInfo` に移行
 - `io::virtio::BlkVringDesc` — `io::virtio::VringDesc` に移行
-- `kernel_fs::VfsUnixFileMode` — `vfs::UnixFileMode` に移行
-- `vfs::InodeDirEntry` — `vfs::types::DirEntry` に移行
+- `ProcessAddressSpace` / `fork()` / `exec()` / CoW path — `crate::sas::MemoryRegion` + `domain_system::create_domain()` に移行
+- `kernel_fs::VfsUnixFileMode` — `kernel_fs::FileMode` に移行
 - `xhci::CmdBuilder` — `xhci::command::CommandBuilder` / `xhci::CommandBuilder` に移行
 - `memory::oom_killer::{DomainMemoryInfo, list_domains}` — `domain_system` + `quota_manager()` に移行
 - `net::services::dns::client()` — high-level DNS helpers / shared Arc-backed runtime access に移行

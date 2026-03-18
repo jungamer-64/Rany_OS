@@ -46,11 +46,6 @@ apic_driver = { path = "../drivers/apic" }
 time_driver = { path = "../drivers/time" }
 mlx5_driver = { path = "../drivers/mlx5" }
 
-# Filesystems
-fat32 = { path = "../filesystems/fat32" }
-nvme_ns = { path = "../filesystems/nvme_ns" }
-vfs = { path = "../filesystems/vfs" }
-
 # ブートローダーAPI（ExoLoader Protocol）
 boot_proto = { path = "../libs/boot_proto" }
 ap_trampoline = { path = "../libs/ap_trampoline" }

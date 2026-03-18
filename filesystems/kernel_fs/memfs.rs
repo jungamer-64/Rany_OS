@@ -18,7 +18,7 @@ mod shell_integration;
 #[allow(clippy::wildcard_imports)]
 pub use shell_integration::*;
 
-use super::fs_abstraction::{
+use super::fs_model::{
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     OpenFlags,
 };

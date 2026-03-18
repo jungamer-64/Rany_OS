@@ -1,14 +1,10 @@
-// Kernel-side Page-backed Cluster Buffer
-// Implements a Page-backed buffer that satisfies `fat32::ClusterBuffer` and
-// `vfs::block::IoBufferMut` for DMA-capable I/O.
-
-use alloc::boxed::Box;
+// Kernel-side Page-backed Block I/O Buffer
+// DMA-capable buffer backed by contiguous kernel pages.
 
 use core::ptr::NonNull;
 use core::slice;
 
-use fat32::{ClusterBuffer, ClusterBufferAllocator};
-use vfs::block::DmaInfo;
+use kernel_api::block_io::{DmaInfo, ZeroCopyBuffer, ZeroCopyBufferMut};
 use x86_64::PhysAddr;
 
 use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
@@ -30,7 +26,7 @@ unsafe impl Send for PageClusterBuffer {}
 unsafe impl Sync for PageClusterBuffer {}
 
 impl PageClusterBuffer {
-    /// Create a new PageClusterBuffer from a physical start address and length
+    /// Create a new PageClusterBuffer from a physical start address and length.
     pub fn new_from_phys(phys_start: u64, len: usize) -> Option<Self> {
         if len == 0 {
             return None;
@@ -45,28 +41,41 @@ impl PageClusterBuffer {
             frames,
         })
     }
-}
 
-impl ClusterBuffer for PageClusterBuffer {
+    /// Allocate a new contiguous page-backed buffer.
+    pub fn allocate(size: usize) -> Option<Self> {
+        if size == 0 {
+            return None;
+        }
+
+        let frames_needed = (size + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
+        let start_phys = alloc_contiguous_frames(frames_needed)?;
+        let real_size = frames_needed * (PAGE_SIZE_4K as usize);
+        match Self::new_from_phys(start_phys.as_u64(), real_size) {
+            Some(buf) => Some(buf),
+            None => {
+                dealloc_contiguous_frames(start_phys, frames_needed);
+                None
+            }
+        }
+    }
+
     fn len(&self) -> usize {
         self.len
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.virt_ptr.as_ptr(), self.len) }
     }
 
-    fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { slice::from_raw_parts_mut(self.virt_ptr.as_ptr(), self.len) }
     }
 }
 
-/// Implement `ZeroCopyBuffer`/`ZeroCopyBufferMut` so PageClusterBuffer can be used as
-/// an owned zero-copy buffer type by block devices (e.g., returned by `read_async`).
-impl vfs::block::ZeroCopyBuffer for PageClusterBuffer {
+impl ZeroCopyBuffer for PageClusterBuffer {
     fn as_slice(&self) -> &[u8] {
-        // Delegate to ClusterBuffer implementation
-        ClusterBuffer::as_slice(&*self)
+        self.as_slice()
     }
 
     fn dma_info(&self) -> Option<DmaInfo> {
@@ -77,9 +86,9 @@ impl vfs::block::ZeroCopyBuffer for PageClusterBuffer {
     }
 }
 
-impl vfs::block::ZeroCopyBufferMut for PageClusterBuffer {
+impl ZeroCopyBufferMut for PageClusterBuffer {
     fn as_mut_slice(&mut self) -> &mut [u8] {
-        ClusterBuffer::as_mut_slice(self)
+        self.as_mut_slice()
     }
 }
 
@@ -91,58 +100,23 @@ impl Drop for PageClusterBuffer {
     }
 }
 
-/// Kernel allocator that returns `Box<dyn ClusterBuffer>` for the FAT crate.
-pub struct PageClusterBufferAllocator;
-
-impl PageClusterBufferAllocator {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl ClusterBufferAllocator for PageClusterBufferAllocator {
-    fn alloc(&self, size: usize) -> Result<Box<dyn ClusterBuffer>, vfs::VfsError> {
-        if size == 0 {
-            return Err(vfs::VfsError::Other);
-        }
-        let frames_needed = (size + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
-
-        if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
-            // Use allocated contiguous region size = frames_needed * PAGE_SIZE_4K
-            let real_size = frames_needed * (PAGE_SIZE_4K as usize);
-            if let Some(buf) = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size) {
-                return Ok(Box::new(buf));
-            } else {
-                // Shouldn't happen, but if mapping failed, free and fall back
-                dealloc_contiguous_frames(start_phys, frames_needed);
-            }
-        }
-
-        // Fallback to heap-backed Vec buffer (compatibility)
-        Ok(Box::new(alloc::vec![0u8; size]))
-    }
-}
-
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::{
-        ClusterBuffer, PAGE_SIZE_4K, PageClusterBuffer, PageClusterBufferAllocator,
-        alloc_contiguous_frames, dealloc_contiguous_frames,
+        PAGE_SIZE_4K, PageClusterBuffer, alloc_contiguous_frames, dealloc_contiguous_frames,
     };
     use crate::mm::virt::mapping::phys_to_virt;
-    use alloc::boxed::Box;
-    use alloc::vec;
     use alloc::vec::Vec;
-    use fat32::ClusterBufferAllocator;
-    use vfs::block::{ZeroCopyBuffer, ZeroCopyBufferMut};
+    use kernel_api::block_io::{
+        BlockDeviceInfo, BlockError, BlockResult, ZcFuture, ZeroCopyBlockDevice, ZeroCopyBuffer,
+        ZeroCopyBufferMut,
+    };
     use x86_64::PhysAddr;
 
     #[cfg_attr(test, test_case)]
-    pub fn test_page_cluster_buffer_alloc_fallback_or_contig() {
-        let alloc = PageClusterBufferAllocator::new();
-        // Try small allocation
-        let b = alloc.alloc(4096).expect("alloc failed");
-        assert!(b.len() >= 4096);
+    pub fn test_page_cluster_buffer_alloc_or_contig() {
+        let buf = PageClusterBuffer::allocate(4096).expect("allocation failed");
+        assert!(buf.len() >= 4096);
     }
 
     #[cfg_attr(test, test_case)]
@@ -182,7 +156,7 @@ pub mod tests {
             let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), size)
                 .expect("new_from_phys failed");
             // Now we can safely read via as_slice because the memory is valid
-            let s = ClusterBuffer::as_slice(&buf);
+            let s = buf.as_slice();
             assert_eq!(s[0], 0u8);
             assert_eq!(s[1], 1u8);
             // Drop buf -> dealloc happens automatically
@@ -191,52 +165,19 @@ pub mod tests {
         }
     }
 
-    // Integration test: mount FAT using PageClusterBuffer-backed zero-copy device
     #[cfg_attr(test, test_case)]
-    pub fn test_fat_mount_with_page_allocator_zero_copy() {
-        use crate::mm::virt::mapping::phys_to_virt;
-        use crate::task::block_on;
-        use alloc::sync::Arc;
-        use core::slice;
-        use vfs::block::{BlockError, BlockResult, ZeroCopyBlockDevice};
-
-        // If the test environment cannot allocate contiguous frames, skip.
-        if alloc_contiguous_frames(1).is_none() {
-            eprintln!("Skipping FAT zero-copy integration test: contiguous frames not available");
-            return;
-        }
-
+    pub fn test_page_cluster_buffer_zero_copy_roundtrip() {
         struct TestZcDevice {
             storage: spin::Mutex<Vec<u8>>,
             block_size: u32,
             total_blocks: u64,
         }
 
-        impl TestZcDevice {
-            fn new(total_blocks: u64, block_size: u32) -> Self {
-                Self {
-                    storage: spin::Mutex::new(vec![
-                        0u8;
-                        (total_blocks as usize) * (block_size as usize)
-                    ]),
-                    block_size,
-                    total_blocks,
-                }
-            }
-
-            fn write_block(&self, block: u64, data: &[u8]) {
-                let mut st = self.storage.lock();
-                let start = (block as usize) * (self.block_size as usize);
-                let end = start + data.len();
-                st[start..end].copy_from_slice(data);
-            }
-        }
-
         impl ZeroCopyBlockDevice for TestZcDevice {
             type Buffer = PageClusterBuffer;
 
-            fn info(&self) -> vfs::block::BlockDeviceInfo {
-                vfs::block::BlockDeviceInfo {
+            fn info(&self) -> BlockDeviceInfo {
+                BlockDeviceInfo {
                     name: "testzc",
                     total_blocks: self.total_blocks,
                     block_size: self.block_size,
@@ -246,51 +187,27 @@ pub mod tests {
                 }
             }
 
-            fn flush(&self) -> Result<(), BlockError> {
+            fn flush(&self) -> BlockResult<()> {
                 Ok(())
             }
 
             fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
-                let frames_needed = (size + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
-                if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
-                    let real_size = frames_needed * (PAGE_SIZE_4K as usize);
-                    if let Some(buf) =
-                        PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size)
-                    {
-                        return Ok(buf);
-                    } else {
-                        dealloc_contiguous_frames(start_phys, frames_needed);
-                    }
-                }
-                Err(BlockError::NotReady)
+                PageClusterBuffer::allocate(size).ok_or(BlockError::NotReady)
             }
 
             fn read_async(
                 &self,
                 block: u64,
                 count: u32,
-            ) -> vfs::block::ZcFuture<'_, BlockResult<Self::Buffer>> {
-                let start_block = block as usize;
-                let len = (count as usize) * (self.block_size as usize);
+            ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+                let block_size = self.block_size as usize;
+                let len = count as usize * block_size;
                 let storage_ref = &self.storage;
                 Box::pin(async move {
-                    let frames_needed =
-                        (len + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
-                    let start_phys = match alloc_contiguous_frames(frames_needed) {
-                        Some(a) => a,
-                        None => return Err(BlockError::NotReady),
-                    };
-                    let real_size = frames_needed * (PAGE_SIZE_4K as usize);
-                    // Fill physical memory with contents from storage
-                    let virt = phys_to_virt(PhysAddr::new(start_phys.as_u64()));
-                    unsafe {
-                        let dest = slice::from_raw_parts_mut(virt.as_u64() as *mut u8, real_size);
-                        let st = storage_ref.lock();
-                        let offset = start_block * (self.block_size as usize);
-                        dest[..len].copy_from_slice(&st[offset..offset + len]);
-                    }
-                    let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size)
-                        .ok_or(BlockError::IoError)?;
+                    let mut buf = PageClusterBuffer::allocate(len).ok_or(BlockError::NotReady)?;
+                    let offset = block as usize * block_size;
+                    let st = storage_ref.lock();
+                    buf.as_mut_slice()[..len].copy_from_slice(&st[offset..offset + len]);
                     Ok(buf)
                 })
             }
@@ -299,56 +216,32 @@ pub mod tests {
                 &self,
                 block: u64,
                 buffer: Self::Buffer,
-            ) -> vfs::block::ZcFuture<'_, BlockResult<Self::Buffer>> {
-                let start_block = block as usize;
+            ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+                let block_size = self.block_size as usize;
                 let storage_ref = &self.storage;
                 Box::pin(async move {
-                    let data = ZeroCopyBuffer::as_slice(&buffer);
+                    let data = buffer.as_slice();
+                    let offset = block as usize * block_size;
                     let mut st = storage_ref.lock();
-                    let offset = start_block * (self.block_size as usize);
-                    st[offset..offset + data.len()].copy_from_slice(&data[..]);
+                    st[offset..offset + data.len()].copy_from_slice(data);
                     Ok(buffer)
                 })
             }
         }
 
-        // Initialize device and write a minimal boot sector
-        let dev = Arc::new(TestZcDevice::new(2048, 512));
-        let mut bs = [0u8; 512];
-        bs[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes per sector
-        bs[13] = 1; // sectors per cluster
-        bs[14..16].copy_from_slice(&32u16.to_le_bytes()); // reserved sectors
-        bs[16] = 2; // number of FATs
-        bs[32..36].copy_from_slice(&4096u32.to_le_bytes()); // total sectors
-        bs[36..40].copy_from_slice(&1u32.to_le_bytes()); // FAT size 32
-        bs[44..48].copy_from_slice(&2u32.to_le_bytes()); // root cluster
-        bs[82..90].copy_from_slice(b"FAT32   "); // fs type field
-        bs[510] = 0x55;
-        bs[511] = 0xAA;
+        let dev = TestZcDevice {
+            storage: spin::Mutex::new(vec![0u8; 2048 * 512]),
+            block_size: 512,
+            total_blocks: 2048,
+        };
 
-        dev.write_block(0, &bs);
+        let mut write_buf = PageClusterBuffer::allocate(512).expect("write buffer alloc failed");
+        write_buf.as_mut_slice()[0..4].copy_from_slice(b"Rany");
+        let _ = crate::task::block_on(dev.write_async(0, write_buf)).expect("write failed");
 
-        // Direct read_async -> should return page-backed buffer with DMA info
-        let read_buf = block_on(dev.read_async(0, 1)).expect("read_async failed");
+        let read_buf = crate::task::block_on(dev.read_async(0, 1)).expect("read failed");
         let info = read_buf.dma_info().expect("dma_info missing");
         assert_eq!(info.len, 512);
-        assert_eq!(
-            ZeroCopyBuffer::as_slice(&read_buf)[11..13],
-            512u16.to_le_bytes()
-        );
-
-        // Mount FAT using the PageClusterBuffer allocator
-        let alloc = Arc::new(PageClusterBufferAllocator::new());
-        let fs_res = block_on(
-            fat32::Fat32FileSystem::<PageClusterBuffer>::mount_zero_copy_with_allocator(
-                Arc::clone(&dev) as Arc<dyn ZeroCopyBlockDevice<Buffer = PageClusterBuffer>>,
-                alloc,
-            ),
-        );
-
-        let fs: Arc<fat32::Fat32FileSystem<PageClusterBuffer>> =
-            fs_res.expect("mount_zero_copy_with_allocator failed");
-        // Basic sanity check: total sectors should be non-zero
-        assert!((*fs).total_sectors() > 0);
+        assert_eq!(&read_buf.as_slice()[0..4], b"Rany");
     }
 }

@@ -66,12 +66,12 @@ pub fn storage_fs_cache_block_block_cache_flush_smoke() -> bool {
     crate::fs::qemu_tests::cache_block_block_cache_flush_smoke()
 }
 
-pub fn storage_fs_fs_abstraction_file_mode_smoke() -> bool {
-    crate::fs::qemu_tests::fs_abstraction_file_mode_smoke()
+pub fn storage_fs_fs_model_file_mode_smoke() -> bool {
+    crate::fs::qemu_tests::fs_model_file_mode_smoke()
 }
 
-pub fn storage_fs_fs_abstraction_open_flags_smoke() -> bool {
-    crate::fs::qemu_tests::fs_abstraction_open_flags_smoke()
+pub fn storage_fs_fs_model_open_flags_smoke() -> bool {
+    crate::fs::qemu_tests::fs_model_open_flags_smoke()
 }
 
 pub fn storage_fs_memfs_paged_content_in_inode_smoke() -> bool {
@@ -140,8 +140,4 @@ pub fn storage_fs_page_cluster_buffer_page_cluster_buffer_dma_info_smoke() -> bo
 
 pub fn storage_fs_page_cluster_buffer_page_cluster_buffer_physical_alloc_and_write_smoke() -> bool {
     crate::fs::qemu_tests::page_cluster_buffer_page_cluster_buffer_physical_alloc_and_write_smoke()
-}
-
-pub fn storage_fs_page_cluster_buffer_fat_mount_with_page_allocator_zero_copy_smoke() -> bool {
-    crate::fs::qemu_tests::page_cluster_buffer_fat_mount_with_page_allocator_zero_copy_smoke()
 }

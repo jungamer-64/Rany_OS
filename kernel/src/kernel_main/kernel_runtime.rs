@@ -120,17 +120,11 @@ fn reset_async_boot_stage_runtime_snapshot() {
 }
 
 fn record_async_boot_stage_assigned_cpu(stage: AsyncBootStage, cpu_id: usize) {
-    crate::async_boot_runtime_snapshot::record_async_boot_stage_assigned_cpu(
-        stage.index(),
-        cpu_id,
-    );
+    crate::async_boot_runtime_snapshot::record_async_boot_stage_assigned_cpu(stage.index(), cpu_id);
 }
 
 fn record_async_boot_stage_started_cpu(stage: AsyncBootStage, cpu_id: usize) {
-    crate::async_boot_runtime_snapshot::record_async_boot_stage_started_cpu(
-        stage.index(),
-        cpu_id,
-    );
+    crate::async_boot_runtime_snapshot::record_async_boot_stage_started_cpu(stage.index(), cpu_id);
 }
 
 fn record_async_boot_stage_completed_cpu(stage: AsyncBootStage, cpu_id: usize) {

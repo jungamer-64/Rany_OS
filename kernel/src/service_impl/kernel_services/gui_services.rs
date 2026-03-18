@@ -619,10 +619,6 @@ impl ShellServices for ExoKernel {
                             crate::fs::FileType::BlockDevice => {
                                 kernel_api::service::shell::FileType::BlockDevice
                             }
-                            crate::fs::FileType::Socket => {
-                                kernel_api::service::shell::FileType::Socket
-                            }
-                            crate::fs::FileType::Fifo => kernel_api::service::shell::FileType::Fifo,
                             _ => kernel_api::service::shell::FileType::File,
                         };
                         KapiDirEntry {
@@ -675,8 +671,6 @@ impl ShellServices for ExoKernel {
                     crate::fs::FileType::BlockDevice => {
                         kernel_api::service::shell::FileType::BlockDevice
                     }
-                    crate::fs::FileType::Socket => kernel_api::service::shell::FileType::Socket,
-                    crate::fs::FileType::Fifo => kernel_api::service::shell::FileType::Fifo,
                     _ => kernel_api::service::shell::FileType::File,
                 };
                 Ok(kernel_api::service::shell::FileAttributes {

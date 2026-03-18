@@ -1,32 +1,12 @@
 // ============================================================================
-// src/fs/fs_abstraction.rs - Filesystem Abstraction Layer
+// src/fs/fs_model.rs - Filesystem Model Layer
 // ============================================================================
 //!
-//! # ファイルシステム抽象化レイヤー
+//! # ファイルシステムモデル
 //!
 //! ## 設計思想
-//! ExoRustはNVMeポーリングによる直接ストレージアクセスを重視していますが、
-//! FAT32やext2などの既存ファイルシステムとの互換性のため、
-//! **オプショナルな**抽象化レイヤーを提供します。
-//!
-//! ## 高速パスとの関係
-//! - **高速パス**: `src/io/nvme_polling.rs` で直接ブロックアクセス（VFSバイパス）
-//! - **互換パス**: このモジュールを経由したファイルシステムアクセス
-//!
-//! アプリケーションは用途に応じてどちらを使用するか選択できます。
-//!
-//! ## 命名について
-//! - 旧称: "vfs" → 現称: "fs_abstraction"
-//! - 理由: 「VFSは必須」という誤解を避け、オプショナルな抽象化であることを明確化
-//!
-//! ## 機能
-//! - UNIX-like なinode/dentry構造
-//! - 非同期ファイル操作
-//! - マウントポイント管理
-//!
-//! ## VFSとの関係
-//! 基本型（`VfsError`, `FileAttr`, `FsStats`等）は `libs/vfs` から再エクスポートします。
-//! カーネル固有の機能（マウントテーブル、パス解決等）はこのモジュールで定義します。
+//! memfs とカーネル内ファイルサービスが共有する最小の型・トレイト群です。
+//! VFS や POSIX 互換 API は含めず、カーネル内で必要な操作だけを表現します。
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -39,15 +19,7 @@ use core::task::{Context, Poll, Waker};
 use spin::{Mutex, RwLock};
 
 // ============================================================================
-// Re-exports from VFS
-// ============================================================================
-// 基本型はvfsライブラリから再エクスポート。
-// 将来的にはより多くの型をvfsに移行予定。
-
-/// VFSエラー型（vfsから再エクスポート）
-pub use vfs::VfsError;
-// ============================================================================
-// Error Types (Kernel-specific, with VFS conversion)
+// Error Types
 // ============================================================================
 
 /// Filesystem error types
@@ -96,62 +68,6 @@ pub enum FsError {
 /// Result type for filesystem operations
 pub type FsResult<T> = Result<T, FsError>;
 
-// FsError <-> VfsError conversion
-impl From<VfsError> for FsError {
-    fn from(err: VfsError) -> Self {
-        match err {
-            VfsError::NotFound => FsError::NotFound,
-            VfsError::PermissionDenied => FsError::PermissionDenied,
-            VfsError::AlreadyExists => FsError::AlreadyExists,
-            VfsError::DirectoryNotEmpty => FsError::NotEmpty,
-            VfsError::NotADirectory => FsError::NotDirectory,
-            VfsError::IsADirectory => FsError::IsDirectory,
-            VfsError::InvalidInput => FsError::InvalidArgument,
-            VfsError::InvalidPath => FsError::InvalidPath,
-            VfsError::StorageFull => FsError::NoSpace,
-            VfsError::IoError => FsError::IoError,
-            VfsError::NotSupported => FsError::NotSupported,
-            VfsError::ReadOnly => FsError::ReadOnly,
-            VfsError::FileSystemCorrupted => FsError::CorruptedFs,
-            VfsError::CrossDeviceLink => FsError::CrossDeviceLink,
-            VfsError::TooManyOpenFiles => FsError::TooManyOpenFiles,
-            VfsError::BadFileDescriptor => FsError::BadFileDescriptor,
-            VfsError::NameTooLong => FsError::NameTooLong,
-            VfsError::Interrupted => FsError::Interrupted,
-            VfsError::Other => FsError::IoError,
-        }
-    }
-}
-
-impl From<FsError> for VfsError {
-    fn from(err: FsError) -> Self {
-        match err {
-            FsError::NotFound => VfsError::NotFound,
-            FsError::PermissionDenied => VfsError::PermissionDenied,
-            FsError::AlreadyExists => VfsError::AlreadyExists,
-            FsError::NotDirectory => VfsError::NotADirectory,
-            FsError::IsDirectory => VfsError::IsADirectory,
-            FsError::InvalidArgument => VfsError::InvalidInput,
-            FsError::NoSpace => VfsError::StorageFull,
-            FsError::ReadOnly => VfsError::ReadOnly,
-            FsError::IoError => VfsError::IoError,
-            FsError::NotSupported => VfsError::NotSupported,
-            FsError::InvalidPath => VfsError::InvalidPath,
-            FsError::NotEmpty => VfsError::DirectoryNotEmpty,
-            FsError::TooManyOpenFiles => VfsError::TooManyOpenFiles,
-            FsError::BadFileDescriptor => VfsError::BadFileDescriptor,
-            FsError::CrossDeviceLink => VfsError::CrossDeviceLink,
-            FsError::NameTooLong => VfsError::NameTooLong,
-            FsError::Interrupted => VfsError::Interrupted,
-            FsError::CorruptedFs => VfsError::FileSystemCorrupted,
-        }
-    }
-}
-
-// ============================================================================
-// File Types and Modes
-// ============================================================================
-
 /// File type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileType {
@@ -165,39 +81,6 @@ pub enum FileType {
     BlockDevice,
     /// Character device
     CharDevice,
-    /// Named pipe (FIFO)
-    Fifo,
-    /// Socket
-    Socket,
-}
-
-// FileType <-> vfs::FileType conversion
-impl From<vfs::FileType> for FileType {
-    fn from(ft: vfs::FileType) -> Self {
-        match ft {
-            vfs::FileType::File => FileType::Regular,
-            vfs::FileType::Directory => FileType::Directory,
-            vfs::FileType::Symlink => FileType::Symlink,
-            vfs::FileType::BlockDevice => FileType::BlockDevice,
-            vfs::FileType::CharDevice => FileType::CharDevice,
-            vfs::FileType::Pipe => FileType::Fifo,
-            vfs::FileType::Socket => FileType::Socket,
-        }
-    }
-}
-
-impl From<FileType> for vfs::FileType {
-    fn from(ft: FileType) -> Self {
-        match ft {
-            FileType::Regular => vfs::FileType::File,
-            FileType::Directory => vfs::FileType::Directory,
-            FileType::Symlink => vfs::FileType::Symlink,
-            FileType::BlockDevice => vfs::FileType::BlockDevice,
-            FileType::CharDevice => vfs::FileType::CharDevice,
-            FileType::Fifo => vfs::FileType::Pipe,
-            FileType::Socket => vfs::FileType::Socket,
-        }
-    }
 }
 
 /// File mode/permissions (UNIX-style)
@@ -250,19 +133,6 @@ impl FileMode {
 impl Default for FileMode {
     fn default() -> Self {
         Self::DEFAULT_FILE
-    }
-}
-
-// FileMode <-> vfs::UnixFileMode conversion
-impl From<vfs::UnixFileMode> for FileMode {
-    fn from(mode: vfs::UnixFileMode) -> Self {
-        FileMode(mode.bits())
-    }
-}
-
-impl From<FileMode> for vfs::UnixFileMode {
-    fn from(mode: FileMode) -> Self {
-        vfs::UnixFileMode::new(mode.0)
     }
 }
 

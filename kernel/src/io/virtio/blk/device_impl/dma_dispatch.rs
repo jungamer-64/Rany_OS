@@ -8,9 +8,9 @@ impl VirtioBlkDevice {
         dma: DmaInfo,
         buf: &'a mut [u8],
         len: usize,
-    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+    ) -> ZcFuture<'a, BlockResult<()>> {
         if dma.len != len {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+            return Box::pin(async { Err(IoBlockError::InvalidBufferSize) });
         }
         debug_assert!(
             is_iommu_enabled(),
@@ -28,7 +28,7 @@ impl VirtioBlkDevice {
         sector: u64,
         data: &'a [u8],
         len: usize,
-    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+    ) -> ZcFuture<'a, BlockResult<()>> {
         Box::pin(async move {
             let mut rref = alloc_bounce_buffer(len)?;
             rref[..len].copy_from_slice(data);
@@ -44,8 +44,8 @@ impl VirtioBlkDevice {
                 queue_idx: 0,
             }
             .await;
-            handle.unmap().map_err(|_| VfsBlockError::IoError)?;
-            result.map_err(map_vfs_block_error)?;
+            handle.unmap().map_err(|_| IoBlockError::IoError)?;
+            result.map_err(map_block_error)?;
             Ok(())
         })
     }
@@ -56,7 +56,7 @@ impl VirtioBlkDevice {
         sector: u64,
         data: &'a [u8],
         len: usize,
-    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+    ) -> ZcFuture<'a, BlockResult<()>> {
         let mut rref = match alloc_bounce_buffer(len) {
             Ok(r) => r,
             Err(e) => return Box::pin(async move { Err(e) }),
@@ -79,8 +79,8 @@ impl VirtioBlkDevice {
                 queue_idx: 0,
             }
             .await;
-            handle.unmap().map_err(|_| VfsBlockError::IoError)?;
-            result.map_err(map_vfs_block_error)?;
+            handle.unmap().map_err(|_| IoBlockError::IoError)?;
+            result.map_err(map_block_error)?;
             Ok(())
         })
     }
@@ -92,9 +92,9 @@ impl VirtioBlkDevice {
         dma: DmaInfo,
         data: &'a [u8],
         len: usize,
-    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+    ) -> ZcFuture<'a, BlockResult<()>> {
         if dma.len != len {
-            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+            return Box::pin(async { Err(IoBlockError::InvalidBufferSize) });
         }
         debug_assert!(
             is_iommu_enabled(),

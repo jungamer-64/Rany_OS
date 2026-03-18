@@ -23,12 +23,9 @@ spin = "0.10"
 log = "0.4"
 kernel_api = { path = "../../interfaces/kernel_api" }
 hid_driver = { path = "../hid" }
-vfs = { path = "../../filesystems/vfs", optional = true }
 
 [features]
 default = []
-# Enables VFS integration for block device support
-vfs_integration = ["vfs"]
 # Build as a standalone cell with kernel-provided runtime stubs and exported ABI entry.
 standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
 export_driver_entry = ["kernel_api/export_driver_entry"]

@@ -31,13 +31,12 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, Waker};
+use kernel_api::block_io::{
+    BlockDeviceInfo, BlockError as IoBlockError, BlockResult, DmaInfo, IoBuffer, IoBufferMut,
+    OwnedBytes, ZcFuture, ZeroCopyBlockDevice,
+};
 mod device_impl;
 pub use device_impl::*;
-use vfs::block::{
-    BlockDeviceInfo as VfsBlockDeviceInfo, BlockError as VfsBlockError,
-    BlockResult as VfsBlockResult, DmaInfo, IoBuffer, IoBufferMut, OwnedBytes, ZcFuture,
-    ZeroCopyBlockDevice,
-};
 
 // ============================================================================
 // VirtIO Common Definitions

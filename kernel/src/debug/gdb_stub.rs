@@ -33,8 +33,8 @@ pub trait GdbTarget {
     fn write_registers(&mut self, regs: &[u8]) -> Result<(), GdbStubError>;
     fn read_memory(&self, addr: u64, out: &mut [u8]) -> Result<(), GdbStubError>;
     fn write_memory(&mut self, addr: u64, data: &[u8]) -> Result<(), GdbStubError>;
-    fn continue_exec(&mut self);
-    fn step_exec(&mut self);
+    fn resume_run(&mut self);
+    fn single_step_run(&mut self);
     fn insert_sw_breakpoint(&mut self, _addr: u64, _kind: u8) -> Result<(), GdbStubError> {
         Err(GdbStubError::Unsupported)
     }
@@ -135,12 +135,12 @@ impl GdbTarget for KernelGdbTarget {
         Ok(())
     }
 
-    fn continue_exec(&mut self) {
+    fn resume_run(&mut self) {
         self.resume_requested = true;
         self.single_step = false;
     }
 
-    fn step_exec(&mut self) {
+    fn single_step_run(&mut self) {
         self.resume_requested = true;
         self.single_step = true;
     }
@@ -199,11 +199,11 @@ impl GdbStub {
                 Ok(Some(String::from("OK")))
             }
             b'c' => {
-                target.continue_exec();
+                target.resume_run();
                 Ok(Some(format!("S{:02x}", target.stop_signal())))
             }
             b's' => {
-                target.step_exec();
+                target.single_step_run();
                 Ok(Some(format!("S{:02x}", target.stop_signal())))
             }
             b'Z' => self.handle_breakpoint(true, &payload[1..], target),
@@ -652,11 +652,11 @@ mod tests {
             Ok(())
         }
 
-        fn continue_exec(&mut self) {
+        fn resume_run(&mut self) {
             self.continued.fetch_add(1, Ordering::Relaxed);
         }
 
-        fn step_exec(&mut self) {
+        fn single_step_run(&mut self) {
             self.stepped.fetch_add(1, Ordering::Relaxed);
         }
 

@@ -8,9 +8,6 @@ packages = [
   "interfaces/kernel_api",
   "libs/sync",
   "libs/graphic_types",
-  "filesystems/vfs",
-  "filesystems/fat32",
-  "filesystems/nvme_ns",
   "drivers/pci",
   "drivers/ahci",
   "drivers/usb",
@@ -154,33 +151,6 @@ serial = false
 features = ["alloc"]
 
 [[package]]
-name = "vfs"
-tier = "pr-required"
-root_default = true
-run_ignored = false
-test_filter = ""
-exact = false
-serial = false
-
-[[package]]
-name = "fat32"
-tier = "pr-required"
-root_default = true
-run_ignored = false
-test_filter = "tests::pr_required_smoke_suite"
-exact = true
-serial = false
-
-[[package]]
-name = "nvme_ns"
-tier = "pr-required"
-root_default = true
-run_ignored = false
-test_filter = ""
-exact = false
-serial = false
-
-[[package]]
 name = "cap_harness"
 tier = "pr-required"
 root_default = true
@@ -223,13 +193,4 @@ root_default = true
 run_ignored = false
 test_filter = ""
 exact = false
-serial = false
-
-[[package]]
-name = "fat32"
-tier = "nightly-required"
-root_default = true
-run_ignored = true
-test_filter = "tests::nightly_required_smoke_suite"
-exact = true
 serial = false

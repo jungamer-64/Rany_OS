@@ -14,11 +14,7 @@ members = [
     "libs/security",
     "libs/boot_config",
     "libs/graphic_types",
-    "filesystems/vfs",
     "libs/sync",
-    # Filesystems
-    "filesystems/fat32",
-    "filesystems/nvme_ns",
     # Drivers
     "drivers/pci",
     "drivers/ahci",
@@ -49,7 +45,11 @@ members = [
     # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues.
     # They are runnable via their manifest paths.
 ]
-exclude = ["tools/framebuffer_bench", "tools/signer", "tools/symlookup"]
+exclude = [
+    "tools/framebuffer_bench",
+    "tools/signer",
+    "tools/symlookup",
+]
 default-members = [
     "kernel",
     "libs/boot_config",
@@ -57,9 +57,6 @@ default-members = [
     "interfaces/kernel_api",
     "libs/sync",
     "libs/graphic_types",
-    "filesystems/vfs",
-    "filesystems/fat32",
-    "filesystems/nvme_ns",
     "drivers/pci",
     "drivers/ahci",
     "drivers/usb",

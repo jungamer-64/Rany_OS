@@ -216,35 +216,32 @@ destination.test_filter = ""
 [[case]]
 id = "fs.vfs_path"
 source = "qemu-suites/fs"
-classification = "pure"
-tier = "pr-required"
-root_default = true
-reason = "migrated to crate-local tests"
-destination.kind = "crate-test"
-destination.package = "vfs"
-destination.test_filter = ""
+classification = "qemu_fullboot"
+reason = "replaced by the storage full-boot profile built on block_io + kernel_fs"
+profiles = ["storage", "pr-required", "nightly-required"]
+destination.kind = "qemu-fullboot"
+destination.package = "qemu-tests"
+destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
 
 [[case]]
 id = "fs.fat32_types"
 source = "qemu-suites/fs"
-classification = "pure"
-tier = "pr-required"
-root_default = true
-reason = "migrated to crate-local tests"
-destination.kind = "crate-test"
-destination.package = "fat32"
-destination.test_filter = "tests::pr_required_smoke_suite"
+classification = "qemu_fullboot"
+reason = "replaced by the storage full-boot profile built on block_io + kernel_fs"
+profiles = ["storage", "pr-required", "nightly-required"]
+destination.kind = "qemu-fullboot"
+destination.package = "qemu-tests"
+destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
 
 [[case]]
 id = "fs.fat32_extended"
 source = "qemu-suites/fs"
-classification = "pure"
-tier = "nightly-required"
-root_default = true
-reason = "migrated to crate-local tests"
-destination.kind = "crate-test"
-destination.package = "fat32"
-destination.test_filter = "tests::nightly_required_smoke_suite"
+classification = "qemu_fullboot"
+reason = "replaced by the storage full-boot profile built on block_io + kernel_fs"
+profiles = ["storage", "pr-required", "nightly-required"]
+destination.kind = "qemu-fullboot"
+destination.package = "qemu-tests"
+destination.test_filter = "fullboot_pr_required/fullboot_nightly_required"
 
 [[case]]
 id = "graphics.types"

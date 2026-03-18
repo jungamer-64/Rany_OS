@@ -336,29 +336,25 @@ processor.process_batch(&mut batch);
 #### 非同期ブロックI/O
 
 ```rust
-use exorust::fs::block::{BlockDevice, BlockRequest};
+use exorust::fs::block::{BlockResult, OwnedBytes, ZeroCopyBlockDevice};
 
-// ブロック読み取りリクエスト
-let req = BlockRequest::read(sector, buffer);
-block_device.submit(req).await?;
-
-// バッファの所有権が返却される
-let data: Buffer = req.complete().await;
+async fn read_boot_sector(
+    dev: &impl ZeroCopyBlockDevice<Buffer = OwnedBytes>,
+) -> BlockResult<OwnedBytes> {
+    dev.read_async(0, 1).await
+}
 ```
 
-#### VFS（型付きハンドル）
+#### ローカルFS型（VFSなし）
+
+ExoRust は VFS レイヤーを公開せず、カーネル内の最小ファイルモデルだけを共有します。
 
 ```rust
-use exorust::fs::fs_abstraction::{File, OpenMode};
-use exorust::security::FsCapability;
+use exorust::fs::{FileMode, FileType, OpenFlags};
 
-// ファイルシステムケイパビリティが必要
-fn open_file(cap: &FsCapability, path: &Path) -> File {
-    File::open(cap, path, OpenMode::Read)?
-}
-
-// 非同期読み取り（所有権ベース）
-let buffer = file.read_owned(size).await?;
+let kind = FileType::Regular;
+let mode = FileMode::DEFAULT_FILE;
+let flags = OpenFlags(OpenFlags::O_RDONLY);
 ```
 
 ---

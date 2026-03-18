@@ -143,7 +143,8 @@ impl KernelServices for ExoKernel {
         let layout = core::alloc::Layout::from_size_align(size.max(1), align.max(1))
             .map_err(|_| KapiError::InvalidHandle)?;
         let owner = context::current_subject().domain;
-        let ptr = crate::mm::cache::exchange_heap::allocate_raw(layout).ok_or(KapiError::OutOfMemory)?;
+        let ptr =
+            crate::mm::cache::exchange_heap::allocate_raw(layout).ok_or(KapiError::OutOfMemory)?;
         crate::sas::register_object(ptr.as_ptr() as usize, layout.size(), owner);
         Ok((ptr, kernel_api::ipc::DomainId::new(owner.as_u64())))
     }

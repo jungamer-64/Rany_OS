@@ -594,9 +594,9 @@ impl VirtioBlkDevice {
         &self,
         rref: crate::ipc::RRef<[u8]>,
         direction: DmaDirection,
-    ) -> VfsBlockResult<DmaHandle<[u8]>> {
+    ) -> BlockResult<DmaHandle<[u8]>> {
         let handle = map_rref_slice_for_device(rref, &self.iommu_device_id, direction)
-            .map_err(|_| VfsBlockError::IoError)?;
+            .map_err(|_| IoBlockError::IoError)?;
         Ok(handle)
     }
 
@@ -606,7 +606,7 @@ impl VirtioBlkDevice {
         sector: u64,
         buf: &'a mut [u8],
         len: usize,
-    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+    ) -> ZcFuture<'a, BlockResult<()>> {
         Box::pin(async move {
             let rref = alloc_bounce_buffer(len)?;
             let handle = self.map_bounce_for_device(rref, DmaDirection::FromDevice)?;
@@ -621,8 +621,8 @@ impl VirtioBlkDevice {
                 queue_idx: 0,
             }
             .await;
-            let rref = handle.unmap().map_err(|_| VfsBlockError::IoError)?;
-            result.map_err(map_vfs_block_error)?;
+            let rref = handle.unmap().map_err(|_| IoBlockError::IoError)?;
+            result.map_err(map_block_error)?;
             buf.copy_from_slice(&rref[..len]);
             Ok(())
         })
@@ -634,7 +634,7 @@ impl VirtioBlkDevice {
         sector: u64,
         buf: &'a mut [u8],
         len: usize,
-    ) -> ZcFuture<'a, VfsBlockResult<()>> {
+    ) -> ZcFuture<'a, BlockResult<()>> {
         let rref = match alloc_bounce_buffer(len) {
             Ok(r) => r,
             Err(e) => return Box::pin(async move { Err(e) }),
@@ -655,8 +655,8 @@ impl VirtioBlkDevice {
                 queue_idx: 0,
             }
             .await;
-            let rref = handle.unmap().map_err(|_| VfsBlockError::IoError)?;
-            result.map_err(map_vfs_block_error)?;
+            let rref = handle.unmap().map_err(|_| IoBlockError::IoError)?;
+            result.map_err(map_block_error)?;
             buf.copy_from_slice(&rref[..len]);
             Ok(())
         })

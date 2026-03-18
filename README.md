@@ -267,18 +267,16 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 * Graphics/Framebuffer Wave6 Phase B required 実行対象（12件）: `write_bgr_run_large_mmio`, `write_bgr_run_large`, `draw_image_24bit_rgb888_backbuffer`, `draw_hline_24bit_rgb888_mmio`, `pack_rgba_to_bgra_ssse3_matches_scalar`, `pack_rgba_to_bgra_avx2_matches_scalar`, `pack_rgba_to_bgr24_avx2_matches_scalar`, `pack_rgba_to_bgr24_ssse3_matches_scalar`, `pack_rgba_to_bgra_neon_matches_scalar`, `pack_rgba_to_bgr24_neon_matches_scalar`, `pack_rgba_to_bgr24_neon_matches_scalar_rgb`, `packer_env_override_no_std`（ターゲット未対応SIMDは deterministic skip）
 
 * Graphics/Framebuffer Wave6 bench required 実行対象（5件）: `bench_draw_image_bulk`, `bench_draw_image_24bit_bulk`, `bench_draw_image_rgba_bulk`, `bench_draw_hline_bulk`, `bench_draw_text_bulk`（QEMU required では性能比較ではなく deterministic functional smoke として検証）
-* MM Wave7 async_swapout required 実行対象（9件）: `buffer_pool_4k_basic`, `buffer_pool_2m_basic`, `memcg_concurrent_swapout_canonical`, `async_swapout_concurrent_dedup_canonical`, `async_swapout_stress_concurrency_canonical`, `async_swapout_heavy_stress_canonical`, `bench_enqueue_pool_effect`, `bench_buffer_pool_2m_reuse`, `bench_buffer_pool_1g_reuse`（bench は性能比較ではなく deterministic functional smoke）
-* MM Wave7 required strict policy: allocation不足は required failure 扱い（OOM-pass fallback を許容しない）
-* MM Wave7 page_reclaim required 実行対象（8件）: `watermarks_calculation`, `pressure_level`, `mglru_list_add`, `blocked_unsafe_requeues_victim`, `blocked_unsafe_requeues_anonymous_dirty_victim`, `file_backed_clean_reclaims_with_unsafe_disabled`, `async_success_clears_pending_and_accounts_success`, `async_failure_requeues_and_clears_pending`
+* MM required 実行対象: SAS-only VM bootstrap + NUMA-aware allocation + huge page + page cache + domain quota + OOM killer。background reclaim / swap / async_swapout 系は削除済み。
 * Graphics/Framebuffer Wave6 residual: `none`（bench系5件は required で deterministic functional smoke 化済み）
 * MM Wave7 residual（監視）: `none`。
-* NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + socket + tcb + core(tests.rs) + types + window_scale。
+* NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + endpoint + tcb + core(tests.rs) + types + window_scale。
 * NET endpoint residual（監視）: `none`。
 * NET core stack required 実行対象（90件）: L2-L4中心（adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp）。
 * NET core stack residual（監視）: `none`。
 * NET peripheral required 実行対象（67件）: dhcp(v4+v6) + dns + mdns + igmp + driver_bridge。
 * NET peripheral residual（監視）: `none`。
-* Storage/FS required 実行対象（59件）: async_ops + async_memfs + cache(core+block) + devfs + ext2 + fs_abstraction + memfs + page + page_cluster_buffer + kernel_fs（legacy compatibility layer なし）。
+* Storage/FS required 実行対象: async_ops + async_memfs + cache(core+block) + devfs + ext2 + memfs + page + page_cluster_buffer + kernel_fs + block_io（VFSなし、legacy compatibility layer なし）。
 * Storage/FS residual（監視）: `none`。
 * 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、residual 監視へ戻す（pasid_table 3件は required 維持）。
 * IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。

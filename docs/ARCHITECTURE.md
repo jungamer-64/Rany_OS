@@ -405,13 +405,14 @@ cargo test -p qemu-tests fullboot_nightly_required -- --ignored --exact --nocapt
 - 移行棚卸しの真実源は `tests/migration_case_map.toml`。
 - `qemu-tests` の serial / QEMU stderr ログは `target/qemu-logs/` に出力される。
 - `fullboot_pr_required` の対象プロファイルは `boot-smoke`, `storage`, `driver_domain`, `iommu`, `network`。
-- NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + socket + tcb + core(tests.rs) + types + window_scale。
+- MM required 実行対象: SAS-only VM bootstrap + NUMA-aware allocation + huge page + page cache + domain quota + OOM killer。background reclaim / swap / async_swapout 系は削除済み。
+- NET endpoint required 実行対象（68件）: congestion(core/cubic/bbr/variant) + flow_control + futures + handler + inner + retransmit + segment + endpoint + tcb + core(tests.rs) + types + window_scale。
 - NET endpoint residual（監視）: `none`。
 - NET core stack required 実行対象（90件）: L2-L4中心（adaptive_polling, mempool, zero_copy, ethernet, arp, icmp, udp, ipv4, icmpv6, stack, ipv6, ndp, tcp）。
 - NET core stack residual（監視）: `none`。
 - NET peripheral required 実行対象（67件）: dhcp(v4+v6) + dns + mdns + igmp + driver_bridge。
 - NET peripheral residual（監視）: `none`。
-- Storage/FS required 実行対象: async_ops + async_memfs + cache(core+block) + fs_abstraction + memfs + page + page_cluster_buffer + kernel_fs（legacy compatibility layer は撤廃済み）。
+- Storage/FS required 実行対象: async_ops + async_memfs + cache(core+block) + memfs + page + page_cluster_buffer + kernel_fs + block_io（VFSなし、legacy compatibility layer は撤廃済み）。
 - Storage/FS residual（監視）: `none`。
 - 運用fallback: wave3の `detach/attach` 系で揺らぎが出た場合は当該2件のみ required から外し、residual 監視へ戻す（pasid_table 3件は required 維持）。
 - IOMMU Wave5 canonical 5件運用は fix-forward 方針を維持（不安定時も即 rollback せず、required 上で安定化修正）。
@@ -459,7 +460,7 @@ ExoRustでは、POSIX由来の命名を避け、SPL/SASアーキテクチャを�
 | syscall | kapi | SPLでは特権境界がないため「システムコール」は不適切。Kernel APIとして直接呼び出し |
 | userspace | application | Ring 3ユーザー空間は存在しない。Rust型システム+Capabilityで制約されたアプリ |
 | socket | endpoint | POSIXソケットのcopy semanticsではなく、所有権移動ベースのゼロコピーエンドポイント |
-| vfs | fs_abstraction | 必須レイヤーではなくオプション。高速パスはNVMeポーリングで直接アクセス |
+| virtual FS layer | block_io / fs_model | 仮想ファイル層は持たず、共有ブロックI/O境界とローカルFS型に分離 |
 
 ---
 

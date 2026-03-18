@@ -32,7 +32,7 @@ use core::ops::Deref;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use super::fs_abstraction::{DirEntry, FileAttr, FileMode, FsError, FsResult, Inode, OpenFlags};
+use super::fs_model::{DirEntry, FileAttr, FileMode, FsError, FsResult, Inode, OpenFlags};
 use super::memfs::{MemoryFs, MemoryInode};
 
 // ============================================================================
@@ -414,14 +414,14 @@ impl AsyncMemoryFs {
     pub fn root_async(
         &self,
     ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>> {
-        use super::fs_abstraction::FileSystem;
+        use super::fs_model::FileSystem;
         let wrapped = self.inner.root().and_then(wrap_memory_inode);
         Box::pin(ImmediateFuture::new(wrapped))
     }
 
     /// ファイルシステム名を取得
     pub fn name(&self) -> &str {
-        use super::fs_abstraction::FileSystem;
+        use super::fs_model::FileSystem;
         self.inner.name()
     }
 }
@@ -447,7 +447,7 @@ pub async fn list_directory_async(path: &str, cwd: &str) -> FsResult<Vec<DirEntr
 
 /// ファイルの内容を非同期に読み取り
 pub async fn read_file_content_async(path: &str, cwd: &str) -> FsResult<Vec<u8>> {
-    use super::fs_abstraction::FileType;
+    use super::fs_model::FileType;
 
     let inode = resolve_path_async(path, cwd).await?;
     let attr = inode.getattr_async().await?;
@@ -463,7 +463,7 @@ pub async fn read_file_content_async(path: &str, cwd: &str) -> FsResult<Vec<u8>>
 
 /// ファイルの内容をゼロコピーで非同期に読み取り
 pub async fn read_file_zero_copy_async(path: &str, cwd: &str) -> FsResult<Bytes> {
-    use super::fs_abstraction::FileType;
+    use super::fs_model::FileType;
 
     let inode = resolve_path_async(path, cwd).await?;
     let attr = inode.getattr_async().await?;

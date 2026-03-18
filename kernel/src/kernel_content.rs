@@ -9,6 +9,7 @@ use boot_proto::{EXO_BOOT_INFO_VERSION, ExoBootInfo};
 
 use log::{info, warn};
 
+mod async_boot_runtime_snapshot;
 mod crypto;
 mod debug;
 mod domain;
@@ -17,7 +18,6 @@ mod durability;
 mod error;
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 mod fs;
-mod async_boot_runtime_snapshot;
 mod kernel_main;
 pub use kernel_main::*;
 #[macro_use]

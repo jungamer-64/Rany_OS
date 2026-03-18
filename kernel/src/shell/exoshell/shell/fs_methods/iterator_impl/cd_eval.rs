@@ -221,14 +221,6 @@ impl ExoShell {
     shell.list_caps()     - List requested capabilities
     shell.run(cmd)        - Run command string
 
-  async_swapout.* - Async Swapout
-    async_swapout.status()    - Show async swapout status
-    async_swapout.set(params) - Configure async swapout
-
-  reclaim.* - Memory Reclaim
-    reclaim.status()      - Show reclaim status
-    reclaim.set(params)   - Configure reclaim parameters
-
 [Method Chaining]
   fs.entries("/").filter("|e| e.size > 1024").map("|e| e.name")
   domain.list().filter("memory > 1024").sort("tasks", "desc")
@@ -383,18 +375,7 @@ impl ExoShell {
 
         // 名前空間
         let namespaces = [
-            "fs",
-            "net",
-            "domain",
-            "cap",
-            "sys",
-            "driver",
-            "cell",
-            "shell",
-            "task",
-            "log",
-            "async_swapout",
-            "reclaim",
+            "fs", "net", "domain", "cap", "sys", "driver", "cell", "shell", "task", "log",
         ];
 
         // Unixエイリアス
@@ -568,8 +549,6 @@ impl ExoShell {
                 "warn",
                 "error",
             ],
-            "async_swapout" => &["status", "get", "set"],
-            "reclaim" => &["status", "get", "set"],
             _ => return Vec::new(),
         };
 

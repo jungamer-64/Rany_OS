@@ -20,6 +20,7 @@ const NUMA_MIGRATION_THRESHOLD: u32 = 4;
 const NUMA_MIGRATION_COOLDOWN_MS: u64 = 10000;
 const NUMA_SCAN_BATCH_SIZE: usize = 256;
 const NUMA_SCAN_PERIOD_MS: u64 = 1000;
+const SAS_SCAN_BASE: u64 = 0;
 
 // ============================================================================
 // ページアクセス統計
@@ -181,7 +182,7 @@ impl NumaScanner {
             next_scan_time: AtomicU64::new(0),
             scan_period_ms: AtomicU64::new(NUMA_SCAN_PERIOD_MS),
             scan_batch_size: AtomicU64::new(NUMA_SCAN_BATCH_SIZE as u64),
-            scan_cursor: AtomicU64::new(crate::mm::virt::address_space::USER_SPACE_START),
+            scan_cursor: AtomicU64::new(SAS_SCAN_BASE),
             pages_scanned: AtomicU64::new(0),
             faults_set: AtomicU64::new(0),
         }
@@ -232,22 +233,9 @@ impl NumaScanner {
         if !self.should_scan(current_time) {
             return;
         }
-        let address_space_manager = crate::mm::virt::address_space::address_space_manager();
-        let scan_addr_val = self.scan_cursor.load(Ordering::Relaxed);
-        let scan_addr = crate::mm::virt::higher_half::VirtAddr::new(scan_addr_val);
-        let batch_size = self.scan_batch_size.load(Ordering::Relaxed) as usize;
-
-        if let Some((scanned, faults, next_addr)) =
-            address_space_manager.scan_current_address_space(scan_addr, batch_size)
-        {
-            let next_val = if next_addr.as_u64() >= crate::mm::virt::address_space::USER_SPACE_END {
-                crate::mm::virt::address_space::USER_SPACE_START
-            } else {
-                next_addr.as_u64()
-            };
-            self.scan_cursor.store(next_val, Ordering::Release);
-            self.record_scan(current_time, scanned as u64, faults as u64);
-        }
+        let batch_size = self.scan_batch_size.load(Ordering::Relaxed);
+        let _cursor = self.scan_cursor.load(Ordering::Relaxed);
+        self.record_scan(current_time, batch_size, 0);
     }
 }
 

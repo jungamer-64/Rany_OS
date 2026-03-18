@@ -130,8 +130,6 @@ pub enum FileType {
     Directory,
     Symlink,
     Device,
-    Socket,
-    Pipe,
 }
 
 /// Capabilityベースのパーミッション

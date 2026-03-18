@@ -58,8 +58,6 @@ impl Display for FileEntry {
             FileType::Directory => 'd',
             FileType::Symlink => 'l',
             FileType::Device => 'c',
-            FileType::Socket => 's',
-            FileType::Pipe => 'p',
             FileType::Regular => '-',
         };
         let perm = format!(

@@ -76,8 +76,6 @@ pub enum FileType {
     Symlink,
     CharDevice,
     BlockDevice,
-    Socket,
-    Fifo,
     Unknown,
 }
 

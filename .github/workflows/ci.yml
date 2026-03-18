@@ -208,6 +208,9 @@ jobs:
     - name: Run loop boundary proof guard
       run: bash scripts/check-loop-boundary-proof.sh
 
+    - name: Run ExoRust reduction guard
+      run: bash scripts/check-exorust-reduction-guard.sh
+
   # ============================================================================
   # Documentation Job
   # ============================================================================

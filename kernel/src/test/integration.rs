@@ -254,12 +254,14 @@ pub fn test_network() -> IntegrationTestSuite {
 // Storage Test Suite (VirtIO-blk Zero-Copy E2E)
 // ============================================================================
 
-use crate::fs::page_cluster_buffer::{PageClusterBuffer, PageClusterBufferAllocator};
+use crate::fs::page_cluster_buffer::PageClusterBuffer;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::task::block_on;
 use alloc::sync::Arc as StdArc;
-use vfs::block::{BlockError, BlockResult, ZcFuture, ZeroCopyBlockDevice};
+use kernel_api::block_io::{
+    BlockDeviceInfo, BlockError, BlockResult, IoBuffer, IoBufferMut, ZcFuture, ZeroCopyBlockDevice,
+};
 
 struct VirtioPageAdapter {
     device: StdArc<crate::io::virtio::VirtioBlkDevice>,
@@ -274,7 +276,7 @@ impl VirtioPageAdapter {
 impl ZeroCopyBlockDevice for VirtioPageAdapter {
     type Buffer = PageClusterBuffer;
 
-    fn info(&self) -> vfs::block::BlockDeviceInfo {
+    fn info(&self) -> BlockDeviceInfo {
         self.device.info()
     }
 
@@ -283,19 +285,7 @@ impl ZeroCopyBlockDevice for VirtioPageAdapter {
     }
 
     fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
-        if size == 0 {
-            return Err(BlockError::InvalidBufferSize);
-        }
-        let frames_needed = (size + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
-        if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
-            let real_size = frames_needed * (PAGE_SIZE_4K as usize);
-            if let Some(buf) = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size) {
-                return Ok(buf);
-            }
-            // fallback: free & error
-            crate::mm::phys::frame_allocator::dealloc_contiguous_frames(start_phys, frames_needed);
-        }
-        Err(BlockError::NotReady)
+        PageClusterBuffer::allocate(size).ok_or(BlockError::NotReady)
     }
 
     fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
@@ -305,11 +295,7 @@ impl ZeroCopyBlockDevice for VirtioPageAdapter {
             let size = block_size
                 .checked_mul(count as usize)
                 .ok_or(BlockError::InvalidBufferSize)?;
-            let frames_needed = (size + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
-            let start_phys = alloc_contiguous_frames(frames_needed).ok_or(BlockError::NotReady)?;
-            let real_size = frames_needed * (PAGE_SIZE_4K as usize);
-            let mut buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size)
-                .ok_or(BlockError::IoError)?;
+            let mut buf = PageClusterBuffer::allocate(size).ok_or(BlockError::NotReady)?;
             // Use underlying device borrowed API to do zero-copy read
             device.read_into_buf(block, &mut buf).await.map_err(|e| e)?;
             Ok(buf)
@@ -331,7 +317,7 @@ impl ZeroCopyBlockDevice for VirtioPageAdapter {
     fn read_into_buf<'a>(
         &'a self,
         block: u64,
-        dst: &'a mut dyn vfs::block::IoBufferMut,
+        dst: &'a mut dyn IoBufferMut,
     ) -> ZcFuture<'a, BlockResult<()>> {
         self.device.read_into_buf(block, dst)
     }
@@ -339,7 +325,7 @@ impl ZeroCopyBlockDevice for VirtioPageAdapter {
     fn write_from_buf<'a>(
         &'a self,
         block: u64,
-        src: &'a dyn vfs::block::IoBuffer,
+        src: &'a dyn IoBuffer,
     ) -> ZcFuture<'a, BlockResult<()>> {
         self.device.write_from_buf(block, src)
     }
@@ -379,17 +365,16 @@ pub fn test_storage() -> IntegrationTestSuite {
         if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device_at_index(0) {
             // Wrap the global virtio device with a Page-backed adapter and mount
             let adapter = StdArc::new(VirtioPageAdapter::new(StdArc::clone(&dev)));
-            let alloc = StdArc::new(PageClusterBufferAllocator::new());
 
             // Reset IOMMU mapping counters for a clean test
             crate::io::iommu::api::reset_map_unmap_counts();
 
-            match block_on(
-                fat32::Fat32FileSystem::<PageClusterBuffer>::mount_zero_copy_with_allocator(
-                    adapter, alloc,
-                ),
-            ) {
-                Ok(_fs_arc) => {
+            match block_on(adapter.read_async(0, 1)) {
+                Ok(buf) => {
+                    let info = buf.dma_info().ok_or_else(|| String::from("dma_info missing"))?;
+                    if info.len < 512 {
+                        return Err(String::from("virtio-blk returned undersized DMA buffer"));
+                    }
                     if !crate::io::iommu::api::is_iommu_enabled() {
                         Err(String::from(
                             "IOMMU is mandatory but storage path ran without translated DMA",
@@ -399,11 +384,11 @@ pub fn test_storage() -> IntegrationTestSuite {
                         if maps == 0 {
                             Err(String::from("IOMMU enabled but no map calls recorded"))
                         } else {
-                            Ok(String::from("mount OK (translated DMA)"))
+                            Ok(String::from("virtio zero-copy read OK (translated DMA)"))
                         }
                     }
                 }
-                Err(e) => Err(alloc::format!("mount failed: {:?}", e)),
+                Err(e) => Err(alloc::format!("virtio zero-copy read failed: {:?}", e)),
             }
         } else {
             Err(String::from("No VirtIO-blk device found"))
@@ -560,30 +545,35 @@ pub fn test_iommu() -> IntegrationTestSuite {
             return Err(String::from("NVMe queue missing for core 0"));
         }
 
-        use nvme_ns::fs::BlockIo;
-
-        let adapter =
-            crate::io::nvme::NvmeBlockIoAdapter::from_driver().map_err(|e| String::from(e))?;
-        let mut buf = alloc::vec![0u8; adapter.block_size() as usize];
+        let handle = crate::fs::DirectBlockHandle::new(1, 0, 1, 512);
+        let mut buf = [0u8; 512];
 
         crate::io::iommu::api::reset_map_unmap_counts();
-        adapter
-            .read_block(0, &mut buf)
-            .map_err(|e| alloc::format!("NvmeBlockIo read failed: {:?}", e))?;
+        match crate::task::block_on(handle.read_blocks(0, &mut buf)) {
+            Ok(n) if n == buf.len() => {}
+            Ok(n) => {
+                return Err(alloc::format!(
+                    "NVMe direct block read size mismatch: expected {}, got {}",
+                    buf.len(),
+                    n
+                ));
+            }
+            Err(e) => return Err(alloc::format!("NVMe direct block read failed: {:?}", e)),
+        }
 
         if !crate::io::iommu::api::is_iommu_enabled() {
             Err(String::from(
-                "IOMMU is mandatory but NVMe BlockIo ran without IOMMU enabled",
+                "IOMMU is mandatory but NVMe direct block I/O ran without IOMMU enabled",
             ))
         } else {
             let maps = crate::io::iommu::api::get_map_count();
             if maps == 0 {
                 Err(String::from(
-                    "IOMMU enabled but NVMe BlockIo path recorded no map calls",
+                    "IOMMU enabled but NVMe direct block path recorded no map calls",
                 ))
             } else {
                 Ok(alloc::format!(
-                    "NVMe BlockIo read ok ({} IOMMU map calls)",
+                    "NVMe direct block read ok ({} IOMMU map calls)",
                     maps
                 ))
             }

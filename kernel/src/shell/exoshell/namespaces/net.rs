@@ -131,10 +131,9 @@ impl NetNamespace {
 
     /// ARPキャッシュ（非同期版）
     pub async fn arp_cache() -> ExoValue<'static> {
-        let entries = crate::net::api::connections::get_arp_cache_in(
-            crate::net::runtime::default_runtime(),
-        )
-        .await;
+        let entries =
+            crate::net::api::connections::get_arp_cache_in(crate::net::runtime::default_runtime())
+                .await;
         let values: Vec<ExoValue> = entries
             .into_iter()
             .map(|e| {
@@ -320,10 +319,7 @@ impl NetNamespace {
         match crate::net::api::dhcp::dhcp_last_declined_in(crate::net::runtime::default_runtime())
             .await
         {
-            Some(o) => ExoValue::String(Cow::Owned(format!(
-                "{}.{}.{}.{}",
-                o[0], o[1], o[2], o[3]
-            ))),
+            Some(o) => ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3]))),
             None => ExoValue::Nil,
         }
     }
@@ -333,10 +329,7 @@ impl NetNamespace {
         match crate::net::api::dhcp::dhcp_last_released_in(crate::net::runtime::default_runtime())
             .await
         {
-            Some(o) => ExoValue::String(Cow::Owned(format!(
-                "{}.{}.{}.{}",
-                o[0], o[1], o[2], o[3]
-            ))),
+            Some(o) => ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3]))),
             None => ExoValue::Nil,
         }
     }
@@ -364,12 +357,8 @@ impl NetNamespace {
             crate::task::yield_now().await;
 
             // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
-            match crate::net::api::icmp::ping_in(
-                crate::net::runtime::default_runtime(),
-                ip,
-                seq,
-            )
-            .await
+            match crate::net::api::icmp::ping_in(crate::net::runtime::default_runtime(), ip, seq)
+                .await
             {
                 Ok(echo) => {
                     let mut map = BTreeMap::new();
@@ -519,48 +508,47 @@ impl NetNamespace {
 
     /// ネットワークインターフェース一覧
     pub async fn interfaces() -> ExoValue<'static> {
-        let values: Vec<ExoValue> = crate::net::api::config::list_interfaces_in(
-            crate::net::runtime::default_runtime(),
-        )
-            .await
-            .into_iter()
-            .map(|iface| {
-                let mut map = BTreeMap::new();
-                map.insert(String::from("if_id"), ExoValue::Int(iface.if_id as i64));
-                map.insert(
-                    String::from("name"),
-                    ExoValue::String(Cow::Owned(iface.name)),
-                );
-                map.insert(String::from("admin_up"), ExoValue::Bool(iface.admin_up));
-                if let Some(ip) = iface.ip {
+        let values: Vec<ExoValue> =
+            crate::net::api::config::list_interfaces_in(crate::net::runtime::default_runtime())
+                .await
+                .into_iter()
+                .map(|iface| {
+                    let mut map = BTreeMap::new();
+                    map.insert(String::from("if_id"), ExoValue::Int(iface.if_id as i64));
                     map.insert(
-                        String::from("ip"),
-                        ExoValue::String(Cow::Owned(format!(
-                            "{}.{}.{}.{}",
-                            ip[0], ip[1], ip[2], ip[3]
-                        ))),
+                        String::from("name"),
+                        ExoValue::String(Cow::Owned(iface.name)),
                     );
-                } else {
-                    map.insert(String::from("ip"), ExoValue::Nil);
-                }
-                if let Some(mac) = iface.mac {
-                    map.insert(
-                        String::from("mac"),
-                        ExoValue::String(Cow::Owned(format!(
-                            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-                        ))),
-                    );
-                }
-                if let Some(virtio_index) = iface.virtio_index {
-                    map.insert(
-                        String::from("virtio_index"),
-                        ExoValue::Int(virtio_index as i64),
-                    );
-                }
-                ExoValue::Map(map)
-            })
-            .collect();
+                    map.insert(String::from("admin_up"), ExoValue::Bool(iface.admin_up));
+                    if let Some(ip) = iface.ip {
+                        map.insert(
+                            String::from("ip"),
+                            ExoValue::String(Cow::Owned(format!(
+                                "{}.{}.{}.{}",
+                                ip[0], ip[1], ip[2], ip[3]
+                            ))),
+                        );
+                    } else {
+                        map.insert(String::from("ip"), ExoValue::Nil);
+                    }
+                    if let Some(mac) = iface.mac {
+                        map.insert(
+                            String::from("mac"),
+                            ExoValue::String(Cow::Owned(format!(
+                                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+                            ))),
+                        );
+                    }
+                    if let Some(virtio_index) = iface.virtio_index {
+                        map.insert(
+                            String::from("virtio_index"),
+                            ExoValue::Int(virtio_index as i64),
+                        );
+                    }
+                    ExoValue::Map(map)
+                })
+                .collect();
         ExoValue::Array(values)
     }
 
@@ -811,10 +799,9 @@ impl NetNamespace {
 
     /// ファイアウォール状態表示
     pub async fn firewall_status() -> ExoValue<'static> {
-        let status = crate::net::api::firewall::firewall_status_in(
-            crate::net::runtime::default_runtime(),
-        )
-        .await;
+        let status =
+            crate::net::api::firewall::firewall_status_in(crate::net::runtime::default_runtime())
+                .await;
         ExoValue::String(Cow::Owned(status))
     }
 
@@ -844,10 +831,8 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        match crate::net::api::firewall::firewall_disable_in(
-            crate::net::runtime::default_runtime(),
-        )
-        .await
+        match crate::net::api::firewall::firewall_disable_in(crate::net::runtime::default_runtime())
+            .await
         {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(String::from(e)),
@@ -865,10 +850,9 @@ impl NetNamespace {
 
     /// ファイアウォール統計情報
     pub async fn firewall_stats() -> ExoValue<'static> {
-        let stats = crate::net::api::firewall::firewall_stats_in(
-            crate::net::runtime::default_runtime(),
-        )
-        .await;
+        let stats =
+            crate::net::api::firewall::firewall_stats_in(crate::net::runtime::default_runtime())
+                .await;
         ExoValue::String(Cow::Owned(stats))
     }
 
