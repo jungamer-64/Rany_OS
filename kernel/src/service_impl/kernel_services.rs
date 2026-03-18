@@ -117,30 +117,71 @@ unsafe impl Send for ExoKernel {}
 unsafe impl Sync for ExoKernel {}
 
 pub(crate) unsafe fn release_dma_buffer(dma_handle_id: u64) {
+    if let Err(err) = release_dma_buffer_checked(dma_handle_id) {
+        log::warn!(
+            "[KAPI] release_dma_buffer ignored invalid DMA release: handle={} err={:?}",
+            dma_handle_id,
+            err
+        );
+    }
+}
+
+pub(crate) fn release_dma_buffer_checked(dma_handle_id: u64) -> Result<(), KapiError> {
+    if dma_handle_id == 0 {
+        return Err(KapiError::InvalidHandle);
+    }
+
     let caller = context::current_subject().domain.as_u64();
     let dma_handle_id = dma_handle_id as usize;
 
-    if let Some(owner) = DMA_REGISTRY.get_owner(dma_handle_id) {
-        if owner != caller {
+    match DMA_REGISTRY.release_owned(dma_handle_id, caller) {
+        Ok(entry) => {
+            PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
+            Ok(())
+        }
+        Err(super::DmaReleaseError::ForeignOwner { owner }) => {
             log::error!(
                 "[KAPI][SECURITY] release_dma_buffer: Domain {} tried to drop DMA handle {} owned by Domain {}",
                 caller,
                 dma_handle_id,
                 owner
             );
-            return;
+            Err(KapiError::PermissionDenied)
+        }
+        Err(super::DmaReleaseError::UnknownHandle) => {
+            log::info!(
+                "[KAPI] release_dma_buffer: unknown DMA handle: {}\n",
+                dma_handle_id
+            );
+            Err(KapiError::InvalidHandle)
         }
     }
+}
 
-    if let Some(entry) = DMA_REGISTRY.unregister(dma_handle_id) {
-        PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
-        return;
+pub(crate) fn cleanup_dma_for_owner(owner: crate::domain_system::DomainId) -> DmaCleanupStats {
+    let reclaimed = DMA_REGISTRY.reclaim_owner(owner.as_u64());
+    if reclaimed.is_empty() {
+        return DmaCleanupStats::default();
     }
 
-    log::info!(
-        "[KAPI] release_dma_buffer: unknown DMA handle: {}\n",
-        dma_handle_id
+    let stats = DmaCleanupStats {
+        handles: reclaimed.len(),
+        bytes: reclaimed.iter().map(|entry| entry.size).sum(),
+    };
+
+    for entry in &reclaimed {
+        PHYS_OWNERSHIP_REGISTRY.unregister(entry.phys);
+    }
+    drop(reclaimed);
+
+    log::warn!(
+        "[KAPI][DMA] Reclaimed {} leaked DMA handles ({} bytes) for owner {} during teardown",
+        stats.handles,
+        stats.bytes,
+        owner
     );
+
+    stats
 }
 
 impl KernelServices for ExoKernel {
@@ -196,15 +237,19 @@ impl KernelServices for ExoKernel {
                 PHYS_OWNERSHIP_REGISTRY.register(phys, size, caller);
 
                 let boxed: Box<dyn core::any::Any + Send> = Box::new(region.into_inner());
-                let dma_handle_id = DMA_REGISTRY.register(boxed, phys, caller) as u64;
+                let dma_handle_id = DMA_REGISTRY.register(boxed, phys, size, caller) as u64;
                 Ok(unsafe {
-                    DmaBuffer::from_kernel_parts(
+                    // SAFETY: `virt_ptr`/`size` come from a live DMA region that remains owned by
+                    // the kernel registry until the exported handle releaser is invoked.
+                    DmaBuffer::from_internal_parts_unchecked(
                         phys,
-                        dma_handle_id,
                         dev_addr,
                         virt_ptr as *mut u8,
                         size,
-                        Some(release_dma_buffer),
+                        kernel_api::dma::InternalDmaReclaimer::KernelHandle {
+                            dma_handle_id,
+                            releaser: Some(release_dma_buffer),
+                        },
                     )
                 })
             }
@@ -1109,5 +1154,182 @@ impl KernelServices for ExoKernel {
     fn shell(&self) -> Option<&dyn kernel_api::service::shell::ShellServices> {
         // Shell services are always available
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod dma_tests {
+    use super::*;
+    use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
+    use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static DROP_COUNTER_A: AtomicUsize = AtomicUsize::new(0);
+    static DROP_COUNTER_B: AtomicUsize = AtomicUsize::new(0);
+    static DROP_COUNTER_C: AtomicUsize = AtomicUsize::new(0);
+
+    fn reset_drop_counters() {
+        DROP_COUNTER_A.store(0, Ordering::SeqCst);
+        DROP_COUNTER_B.store(0, Ordering::SeqCst);
+        DROP_COUNTER_C.store(0, Ordering::SeqCst);
+    }
+
+    fn idle_entry(_: u64) -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    struct CurrentTaskGuard {
+        prev: Option<*mut TaskControlBlock>,
+        current: *mut TaskControlBlock,
+    }
+
+    impl Drop for CurrentTaskGuard {
+        fn drop(&mut self) {
+            let cpu_id = crate::cpu::current_id();
+            let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
+            unsafe {
+                set_current_task(cpu_id, prev_ptr);
+                drop(Box::from_raw(self.current));
+            }
+        }
+    }
+
+    fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
+        let cpu_id = crate::cpu::current_id();
+        let prev = get_current_task(cpu_id);
+        let mut tcb =
+            TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
+        let caps = crate::security::capability::manager().get_capabilities(domain_id.as_u64());
+        tcb.security = Arc::new(DomainSecurity {
+            credentials: DomainCredentials::ROOT,
+            caps,
+        });
+        let boxed = Box::new(tcb);
+        let current = Box::into_raw(boxed);
+        unsafe {
+            set_current_task(cpu_id, current);
+        }
+        CurrentTaskGuard { prev, current }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn release_dma_buffer_checked_rejects_foreign_owner_and_keeps_entry() {
+        let _dma_guard = crate::service_impl::acquire_test_dma_state_guard();
+        reset_drop_counters();
+
+        let owner = DomainId::new(500);
+        let caller = DomainId::new(501);
+        let phys = 0x1000;
+        let size = 4096;
+        let handle = crate::service_impl::register_test_dma_entry(
+            owner.as_u64(),
+            phys,
+            size,
+            &DROP_COUNTER_A,
+        );
+
+        let _caller_guard = set_current_subject(caller);
+        let err = release_dma_buffer_checked(handle).unwrap_err();
+
+        assert!(matches!(err, KapiError::PermissionDenied));
+        assert!(crate::service_impl::test_dma_handle_exists(handle));
+        assert!(crate::service_impl::test_dma_phys_owned_by(
+            phys,
+            size,
+            owner.as_u64()
+        ));
+        assert_eq!(DROP_COUNTER_A.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn release_dma_buffer_checked_releases_owned_entry() {
+        let _dma_guard = crate::service_impl::acquire_test_dma_state_guard();
+        reset_drop_counters();
+
+        let owner = DomainId::new(600);
+        let phys = 0x2000;
+        let size = 2048;
+        let handle = crate::service_impl::register_test_dma_entry(
+            owner.as_u64(),
+            phys,
+            size,
+            &DROP_COUNTER_A,
+        );
+
+        let _owner_guard = set_current_subject(owner);
+        release_dma_buffer_checked(handle).expect("owned DMA handle release should succeed");
+
+        assert!(!crate::service_impl::test_dma_handle_exists(handle));
+        assert!(!crate::service_impl::test_dma_phys_owned_by(
+            phys,
+            size,
+            owner.as_u64()
+        ));
+        assert_eq!(DROP_COUNTER_A.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn cleanup_dma_for_owner_reclaims_only_target_owner_entries() {
+        let _dma_guard = crate::service_impl::acquire_test_dma_state_guard();
+        reset_drop_counters();
+
+        let owner = DomainId::new(700);
+        let other_owner = DomainId::new(701);
+        let handle_a = crate::service_impl::register_test_dma_entry(
+            owner.as_u64(),
+            0x3000,
+            4096,
+            &DROP_COUNTER_A,
+        );
+        let handle_b = crate::service_impl::register_test_dma_entry(
+            owner.as_u64(),
+            0x4000,
+            2048,
+            &DROP_COUNTER_B,
+        );
+        let handle_c = crate::service_impl::register_test_dma_entry(
+            other_owner.as_u64(),
+            0x5000,
+            1024,
+            &DROP_COUNTER_C,
+        );
+
+        let stats = cleanup_dma_for_owner(owner);
+
+        assert_eq!(
+            stats,
+            DmaCleanupStats {
+                handles: 2,
+                bytes: 4096 + 2048,
+            }
+        );
+        assert!(!crate::service_impl::test_dma_handle_exists(handle_a));
+        assert!(!crate::service_impl::test_dma_handle_exists(handle_b));
+        assert!(crate::service_impl::test_dma_handle_exists(handle_c));
+        assert!(!crate::service_impl::test_dma_phys_owned_by(
+            0x3000,
+            4096,
+            owner.as_u64()
+        ));
+        assert!(!crate::service_impl::test_dma_phys_owned_by(
+            0x4000,
+            2048,
+            owner.as_u64()
+        ));
+        assert!(crate::service_impl::test_dma_phys_owned_by(
+            0x5000,
+            1024,
+            other_owner.as_u64()
+        ));
+        assert_eq!(DROP_COUNTER_A.load(Ordering::SeqCst), 1);
+        assert_eq!(DROP_COUNTER_B.load(Ordering::SeqCst), 1);
+        assert_eq!(DROP_COUNTER_C.load(Ordering::SeqCst), 0);
     }
 }

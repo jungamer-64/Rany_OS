@@ -195,3 +195,47 @@ fn test_kernel_domain_is_runnable_before_registry_lookup() {
         "kernel boot tasks must stay runnable during early executor handoff"
     );
 }
+
+#[cfg(feature = "full_mm_tests")]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_reclaim_domain_resources_also_reclaims_dma_handles() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static DMA_DROP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    let _dma_guard = crate::service_impl::acquire_test_dma_state_guard();
+    DMA_DROP_COUNTER.store(0, Ordering::SeqCst);
+
+    let owner = create_domain(String::from("dma_reclaim")).expect("create_domain failed");
+    let other = create_domain(String::from("dma_other")).expect("create_domain failed");
+
+    let handle = crate::service_impl::register_test_dma_entry(
+        owner.as_u64(),
+        0x9000,
+        4096,
+        &DMA_DROP_COUNTER,
+    );
+    let other_handle = crate::service_impl::register_test_dma_entry(
+        other.as_u64(),
+        0xA000,
+        2048,
+        &DMA_DROP_COUNTER,
+    );
+
+    reclaim_domain_resources(owner);
+
+    assert!(!crate::service_impl::test_dma_handle_exists(handle));
+    assert!(!crate::service_impl::test_dma_phys_owned_by(
+        0x9000,
+        4096,
+        owner.as_u64()
+    ));
+    assert!(crate::service_impl::test_dma_handle_exists(other_handle));
+    assert!(crate::service_impl::test_dma_phys_owned_by(
+        0xA000,
+        2048,
+        other.as_u64()
+    ));
+    assert_eq!(DMA_DROP_COUNTER.load(Ordering::SeqCst), 1);
+}

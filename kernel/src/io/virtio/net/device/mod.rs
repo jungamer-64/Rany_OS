@@ -230,8 +230,10 @@ impl virtio_driver::net::NetRuntime for VirtioNetDevice {
         )
         .ok_or(VirtioNetError::DeviceError)?;
 
-        let (phys, iova, virt, len, releaser) = buffer.into_raw_parts();
-        Ok(unsafe { DmaSlice::from_internal_parts(phys, iova, virt, len, releaser) })
+        // The bridge boxes `CoherentDmaBuffer` ownership into an opaque token so
+        // dropping the exported `DmaSlice` re-runs the original RAII cleanup,
+        // including IOMMU unmap and backing-memory deallocation.
+        Ok(buffer.into_kernel_api_dma_slice())
     }
 
     fn alloc_packet(&self) -> Option<PacketRef> {
@@ -694,5 +696,32 @@ mod tests {
         )
         .expect("allocate overflow bounce buffer");
         assert!(device.tx_bounce_pool.push(overflow).is_err());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn alloc_dma_exports_kernel_owned_coherent_buffer() {
+        let device = VirtioNetDevice::new_at_index(0x32, Box::new(NoopTransport));
+
+        let mut dma = virtio_driver::net::NetRuntime::alloc_dma(
+            &device,
+            BOUNCE_BUFFER_SIZE,
+            virtio_driver::net::NetDmaPurpose::QueueMemory,
+        )
+        .expect("alloc dma");
+
+        assert_eq!(dma.dma_handle_id(), 0);
+        assert_eq!(dma.size(), BOUNCE_BUFFER_SIZE);
+        assert_ne!(dma.device_address(), 0);
+
+        dma.as_slice_mut()[0] = 0x33;
+        dma.as_slice_mut()[BOUNCE_BUFFER_SIZE - 1] = 0xCC;
+
+        let (device_owned, guard) = dma.start_dma();
+        assert_eq!(guard.size(), BOUNCE_BUFFER_SIZE);
+        let cpu_owned = guard.complete(device_owned);
+        assert_eq!(cpu_owned.as_slice()[0], 0x33);
+        assert_eq!(cpu_owned.as_slice()[BOUNCE_BUFFER_SIZE - 1], 0xCC);
+        drop(cpu_owned);
     }
 }

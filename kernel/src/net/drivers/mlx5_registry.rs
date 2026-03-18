@@ -1263,12 +1263,14 @@ mod tests {
         let ptr = unsafe { alloc(layout) };
         assert!(!ptr.is_null());
         unsafe {
-            DmaBuffer::from_internal_parts(
+            DmaBuffer::from_internal_parts_unchecked(
                 phys_addr,
                 device_addr,
                 ptr,
                 size,
-                Some(test_release_dma_buffer),
+                kernel_api::dma::InternalDmaReclaimer::KernelBuffer {
+                    releaser: Some(test_release_dma_buffer),
+                },
             )
         }
     }

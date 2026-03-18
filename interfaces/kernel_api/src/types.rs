@@ -1279,7 +1279,15 @@ mod packet_ref_tests {
         raw[..7].copy_from_slice(b"virtio!");
         let ptr = Box::into_raw(raw).cast::<u8>();
         let dma = unsafe {
-            crate::dma::DmaSlice::from_internal_parts(0x3000, 0x4000, ptr, 64, Some(dma_releaser))
+            crate::dma::DmaSlice::from_internal_parts_unchecked(
+                0x3000,
+                0x4000,
+                ptr,
+                64,
+                crate::dma::InternalDmaReclaimer::KernelBuffer {
+                    releaser: Some(dma_releaser),
+                },
+            )
         };
         let state = DmaPacketState {
             backing: Arc::new(SharedDmaBuffer {

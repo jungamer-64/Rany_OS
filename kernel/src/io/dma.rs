@@ -429,28 +429,6 @@ impl TypedDmaSlice<CpuOwned> {
         })
     }
 
-    /// 生ポインタ情報からTypedDmaSliceを再構築する（所有権回収用）
-    ///
-    /// # Safety
-    /// 呼び出し側は `ptr/size` が有効で、重複所有されていないことを保証すること。
-    pub unsafe fn from_raw_parts(
-        phys: u64,
-        device_addr: u64,
-        ptr: *mut u8,
-        size: usize,
-        _releaser: Option<fn(*mut u8, usize, u64)>,
-    ) -> Self {
-        let layout = Layout::from_size_align_unchecked(size, DMA_ALIGNMENT);
-        Self {
-            ptr: NonNull::new(ptr).expect("from_raw_parts: null pointer"),
-            phys_addr: PhysAddr::new(phys),
-            device_addr,
-            size,
-            layout,
-            _state: PhantomData,
-        }
-    }
-
     /// スライスとして取得（CPU所有時のみ）
     pub fn as_slice(&self) -> &[u8] {
         unsafe { crate::util::raw_ptr_as_slice(self.ptr.as_ptr(), self.size) }

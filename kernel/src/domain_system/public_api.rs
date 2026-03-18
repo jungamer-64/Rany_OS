@@ -161,6 +161,11 @@ pub fn reclaim_domain_resources(domain: DomainId) {
         m.reclaim_domain_resources(crate::sas::DomainId::new(domain.as_u64()))
     });
 
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    let dma_cleanup = crate::service_impl::cleanup_dma_for_owner(domain);
+    #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+    let dma_cleanup = (0usize, 0usize);
+
     // ドメインのリソースカウントをリセット
     match REGISTRY.lock() {
         Ok(mut guard) => {
@@ -174,8 +179,26 @@ pub fn reclaim_domain_resources(domain: DomainId) {
         }
     }
 
-    if count > 0 {
-        log::info!("[DOMAIN] Reclaimed {} resources from {}\n", count, domain);
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    if count > 0 || dma_cleanup.handles > 0 {
+        log::info!(
+            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes) from {}\n",
+            count,
+            dma_cleanup.handles,
+            dma_cleanup.bytes,
+            domain
+        );
+    }
+
+    #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+    if count > 0 || dma_cleanup.0 > 0 {
+        log::info!(
+            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes) from {}\n",
+            count,
+            dma_cleanup.0,
+            dma_cleanup.1,
+            domain
+        );
     }
 }
 

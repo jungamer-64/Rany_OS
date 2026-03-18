@@ -3,7 +3,8 @@ use crate::loader::{unload_cell, with_registry_mut};
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use kernel_api::abi::driver::{
-    AbiDriverType, DRIVER_ABI_VERSION, DriverContext, DriverVTable, PackedPciLocation,
+    AbiDmaSlice, AbiDriverType, AbiError, DRIVER_ABI_VERSION, DriverContext, DriverVTable,
+    PackedPciLocation,
 };
 use kernel_api::provider::{ProviderDescriptorV1, ProviderKind};
 
@@ -311,4 +312,70 @@ fn test_registry_poisoned_readers_return_defaults() {
     assert!(reg.list().is_empty());
     assert_eq!(reg.find_by_type(DriverType::Block).len(), 0);
     assert!(reg.name(DriverHandle(0)).is_none());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_kapi_alloc_dma_raw_rejects_invalid_requests() {
+    let _guard = reset_test_state();
+    let mut out = AbiDmaSlice {
+        dma_handle_id: 7,
+        device_addr: 8,
+        virt_addr: 9,
+        size: 10,
+    };
+
+    assert_eq!(
+        super::kapi_alloc_dma_for_device_raw(0, PackedPciLocation::NULL.raw(), 1, &mut out),
+        AbiError::InvalidParam as i32
+    );
+    assert_eq!(out.dma_handle_id, 0);
+    assert_eq!(out.device_addr, 0);
+    assert_eq!(out.virt_addr, 0);
+    assert_eq!(out.size, 0);
+
+    out = AbiDmaSlice {
+        dma_handle_id: 11,
+        device_addr: 12,
+        virt_addr: 13,
+        size: 14,
+    };
+    assert_eq!(
+        super::kapi_alloc_dma_for_device_raw(4096, PackedPciLocation::NULL.raw(), 3, &mut out),
+        AbiError::InvalidParam as i32
+    );
+    assert_eq!(out.dma_handle_id, 0);
+    assert_eq!(out.device_addr, 0);
+    assert_eq!(out.virt_addr, 0);
+    assert_eq!(out.size, 0);
+
+    out = AbiDmaSlice {
+        dma_handle_id: 15,
+        device_addr: 16,
+        virt_addr: 17,
+        size: 18,
+    };
+    assert_eq!(
+        super::kapi_alloc_dma_for_device_raw(
+            4096,
+            PackedPciLocation::NULL.raw(),
+            crate::mm::types::PAGE_SIZE_4K * 2,
+            &mut out,
+        ),
+        AbiError::NotSupported as i32
+    );
+    assert_eq!(out.dma_handle_id, 0);
+    assert_eq!(out.device_addr, 0);
+    assert_eq!(out.virt_addr, 0);
+    assert_eq!(out.size, 0);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_kapi_release_dma_raw_rejects_unknown_handle() {
+    let _guard = reset_test_state();
+    assert_eq!(
+        super::kapi_release_dma_raw(u64::MAX),
+        AbiError::InvalidParam as i32
+    );
 }

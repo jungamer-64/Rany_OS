@@ -803,11 +803,23 @@ extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
 extern "C" fn kapi_alloc_dma_for_device_raw(
     size: usize,
     device_id: u64,
-    _align: usize,
+    align: usize,
     out: *mut AbiDmaSlice,
 ) -> i32 {
     if out.is_null() {
         return AbiErrorCode::InvalidParam as i32;
+    }
+
+    unsafe {
+        *out = AbiDmaSlice::default();
+    }
+
+    if size == 0 || align == 0 || !align.is_power_of_two() {
+        return AbiErrorCode::InvalidParam as i32;
+    }
+
+    if align > crate::mm::types::PAGE_SIZE_4K {
+        return AbiErrorCode::NotSupported as i32;
     }
 
     match kernel_api::service::kernel::instance()
@@ -825,7 +837,7 @@ extern "C" fn kapi_alloc_dma_for_device_raw(
             core::mem::forget(buffer);
             AbiErrorCode::Success as i32
         }
-        Err(_) => AbiErrorCode::OutOfMemory as i32,
+        Err(err) => map_kapi_error_to_abi(err),
     }
 }
 
@@ -835,8 +847,11 @@ extern "C" fn kapi_release_dma_raw(dma_handle_id: u64) -> i32 {
     }
 
     #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-    unsafe {
-        crate::service_impl::release_dma_buffer(dma_handle_id);
+    {
+        match crate::service_impl::release_dma_buffer_checked(dma_handle_id) {
+            Ok(()) => return AbiErrorCode::Success as i32,
+            Err(err) => return map_kapi_error_to_abi(err),
+        }
     }
 
     #[cfg(all(
@@ -844,9 +859,10 @@ extern "C" fn kapi_release_dma_raw(dma_handle_id: u64) -> i32 {
         not(feature = "full_mm_tests"),
         not(feature = "qemu-test-export")
     ))]
-    let _ = dma_handle_id;
-
-    AbiErrorCode::Success as i32
+    {
+        let _ = dma_handle_id;
+        AbiErrorCode::InvalidParam as i32
+    }
 }
 
 extern "C" fn kapi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32 {

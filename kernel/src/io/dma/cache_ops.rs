@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+static BOXED_COHERENT_DMA_RELEASES: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
 // ============================================================================
 // Cache Range Operations
 // ============================================================================
@@ -642,37 +646,48 @@ impl CoherentDmaBuffer {
         self.size
     }
 
-    /// Convert to a DmaSlice for cross-layer ownership transfer.
-    pub fn into_dma_slice(self) -> crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned> {
-        let (phys, device_addr, ptr, size, releaser) = self.into_raw_parts();
+    /// Export this coherent DMA allocation into the public `kernel_api` DMA
+    /// typestate wrapper without losing the original RAII cleanup path.
+    pub(crate) fn into_kernel_api_dma_slice(
+        self,
+    ) -> kernel_api::dma::DmaSlice<kernel_api::dma::CpuOwned> {
+        let owner = alloc::boxed::Box::new(self);
+        let host_addr = owner.phys_addr.as_u64();
+        let device_addr = owner.device_addr();
+        let virt_addr = owner.ptr.as_ptr();
+        let size = owner.size;
+        let token = alloc::boxed::Box::into_raw(owner) as usize;
+
         unsafe {
-            crate::io::dma::TypedDmaSlice::from_raw_parts(phys, device_addr, ptr, size, releaser)
+            kernel_api::dma::DmaSlice::from_internal_parts_unchecked(
+                host_addr,
+                device_addr,
+                virt_addr,
+                size,
+                kernel_api::dma::InternalDmaReclaimer::KernelObject {
+                    token,
+                    releaser: Some(release_boxed_coherent_dma_buffer),
+                },
+            )
         }
-    }
-
-    /// Decompose into raw parts.
-    ///
-    /// WARNING: This leaks the buffer; the caller must ensure proper deallocation.
-    pub fn into_raw_parts(self) -> (u64, u64, *mut u8, usize, Option<fn(*mut u8, usize, u64)>) {
-        let phys = self.phys_addr.as_u64();
-        let device_addr = self.device_addr();
-        let ptr = self.ptr.as_ptr();
-        let size = self.size;
-
-        core::mem::forget(self);
-        (phys, device_addr, ptr, size, Some(release_dealloc_only))
     }
 }
 
-/// A DMA releaser that only performs deallocation.
-///
-/// Use this when IOMMU unmapping is handled elsewhere (e.g. by a side-band tracker).
-pub fn release_dealloc_only(ptr: *mut u8, size: usize, _phys: u64) {
-    unsafe {
-        // CoherentDmaBuffer always uses 4K alignment
-        let layout = core::alloc::Layout::from_size_align_unchecked(size, 4096);
-        alloc::alloc::dealloc(ptr, layout);
-    }
+fn release_boxed_coherent_dma_buffer(token: usize) {
+    #[cfg(test)]
+    BOXED_COHERENT_DMA_RELEASES.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+
+    let _ = unsafe { alloc::boxed::Box::from_raw(token as *mut CoherentDmaBuffer) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_coherent_dma_export_release_count() {
+    BOXED_COHERENT_DMA_RELEASES.store(0, core::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn coherent_dma_export_release_count() -> usize {
+    BOXED_COHERENT_DMA_RELEASES.load(core::sync::atomic::Ordering::SeqCst)
 }
 
 impl Drop for CoherentDmaBuffer {

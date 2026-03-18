@@ -496,6 +496,32 @@ pub fn abi() -> &'static KernelApiV4 {
     unsafe { &__exorust_kernel_api_v4 }
 }
 
+#[cfg(any(feature = "cell_runtime", test))]
+fn import_dma_slice_from_abi(
+    raw: crate::abi::driver::AbiDmaSlice,
+    releaser: unsafe fn(u64),
+) -> KapiResult<DmaSlice<CpuOwned>> {
+    if raw.dma_handle_id == 0
+        || raw.virt_addr == 0
+        || raw.size == 0
+        || raw.size > isize::MAX as usize
+    {
+        return Err(crate::error::KapiError::IoError);
+    }
+
+    // SAFETY: The ABI bridge validated that the raw pointer is non-null and
+    // sized, and the caller supplies the matching handle-based release hook.
+    Ok(unsafe {
+        DmaSlice::from_abi_parts_unchecked(
+            raw.dma_handle_id,
+            raw.device_addr,
+            raw.virt_addr as usize as *mut u8,
+            raw.size,
+            Some(releaser),
+        )
+    })
+}
+
 #[cfg(feature = "cell_runtime")]
 mod standalone {
     use super::*;
@@ -534,18 +560,6 @@ mod standalone {
         debug_assert_eq!(status, AbiError::Success as i32);
     }
 
-    fn alloc_from_raw(raw: AbiDmaSlice) -> DmaSlice<CpuOwned> {
-        unsafe {
-            DmaSlice::from_raw_parts(
-                raw.dma_handle_id,
-                raw.device_addr,
-                raw.virt_addr as usize as *mut u8,
-                raw.size,
-                Some(release_dma_from_abi),
-            )
-        }
-    }
-
     fn alloc_dma_for_device(
         size: usize,
         device_id: PackedPciLocation,
@@ -553,7 +567,7 @@ mod standalone {
         let mut raw = AbiDmaSlice::default();
         let status = (super::abi().alloc_dma_for_device_raw)(size, device_id.raw(), 1, &mut raw);
         if AbiError::from_raw(status).is_success() {
-            Ok(alloc_from_raw(raw))
+            super::import_dma_slice_from_abi(raw, release_dma_from_abi)
         } else {
             Err(map_abi_error(status))
         }
@@ -1117,5 +1131,65 @@ mod standalone {
         fn shell(&self) -> Option<&dyn ShellServices> {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod dma_bridge_tests {
+    use super::*;
+    use crate::abi::driver::AbiDmaSlice;
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    static RELEASED_DMA_HANDLE: AtomicU64 = AtomicU64::new(0);
+
+    unsafe fn record_dma_release(dma_handle_id: u64) {
+        RELEASED_DMA_HANDLE.store(dma_handle_id, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn abi_dma_bridge_rejects_zero_sized_buffer() {
+        let raw = AbiDmaSlice {
+            dma_handle_id: 1,
+            device_addr: 0x2000,
+            virt_addr: 0x1000,
+            size: 0,
+        };
+
+        let err = import_dma_slice_from_abi(raw, record_dma_release).unwrap_err();
+        assert!(matches!(err, crate::error::KapiError::IoError));
+    }
+
+    #[test]
+    fn abi_dma_bridge_rejects_null_pointer() {
+        let raw = AbiDmaSlice {
+            dma_handle_id: 1,
+            device_addr: 0x2000,
+            virt_addr: 0,
+            size: 64,
+        };
+
+        let err = import_dma_slice_from_abi(raw, record_dma_release).unwrap_err();
+        assert!(matches!(err, crate::error::KapiError::IoError));
+    }
+
+    #[test]
+    fn abi_dma_bridge_keeps_handle_release_local() {
+        RELEASED_DMA_HANDLE.store(0, Ordering::SeqCst);
+
+        let mut backing = [0u8; 8];
+        backing.copy_from_slice(b"dma-test");
+
+        let raw = AbiDmaSlice {
+            dma_handle_id: 42,
+            device_addr: 0x9000,
+            virt_addr: backing.as_mut_ptr() as usize as u64,
+            size: backing.len(),
+        };
+
+        let dma = import_dma_slice_from_abi(raw, record_dma_release).expect("valid ABI DMA slice");
+        assert_eq!(dma.as_slice(), b"dma-test");
+        drop(dma);
+
+        assert_eq!(RELEASED_DMA_HANDLE.load(Ordering::SeqCst), 42);
     }
 }
