@@ -19,8 +19,6 @@ pub enum ProviderKind {
     Netdev = 6,
     Input = 7,
     Serial = 8,
-    Graphics = 9,
-    Audio = 10,
 }
 
 /// Stable handle used by the kernel provider registry.

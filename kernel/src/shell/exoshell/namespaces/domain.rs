@@ -17,22 +17,17 @@ pub struct DomainNamespace;
 impl DomainNamespace {
     /// 実行中のタスク一覧
     pub fn list() -> ExoValue<'static> {
-        let domains = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.list_domains())
-            .unwrap_or_default();
+        let domains = crate::shell::runtime::list_domains();
 
         let result: Vec<ExoValue<'static>> = domains
             .into_iter()
             .map(|d| {
                 let state = match d.state {
-                    kernel_api::service::shell::DomainState::Initializing => {
-                        DomainState::Initializing
-                    }
-                    kernel_api::service::shell::DomainState::Running => DomainState::Running,
-                    kernel_api::service::shell::DomainState::Suspended => DomainState::Suspended,
-                    kernel_api::service::shell::DomainState::Stopped => DomainState::Stopped,
-                    kernel_api::service::shell::DomainState::Terminated => DomainState::Terminated,
+                    kernel_api::shell::DomainState::Initializing => DomainState::Initializing,
+                    kernel_api::shell::DomainState::Running => DomainState::Running,
+                    kernel_api::shell::DomainState::Suspended => DomainState::Suspended,
+                    kernel_api::shell::DomainState::Stopped => DomainState::Stopped,
+                    kernel_api::shell::DomainState::Terminated => DomainState::Terminated,
                 };
                 ExoValue::Domain(DomainInfo {
                     id: d.id,
@@ -51,17 +46,15 @@ impl DomainNamespace {
 
     /// 特定ドメインの情報
     pub fn info(id: u64) -> ExoValue<'static> {
-        let domain = kernel_api::service::kernel::instance()
-            .shell()
-            .and_then(|s| s.get_domain(id));
+        let domain = crate::shell::runtime::get_domain(id);
 
         if let Some(d) = domain {
             let state = match d.state {
-                kernel_api::service::shell::DomainState::Initializing => DomainState::Initializing,
-                kernel_api::service::shell::DomainState::Running => DomainState::Running,
-                kernel_api::service::shell::DomainState::Suspended => DomainState::Suspended,
-                kernel_api::service::shell::DomainState::Stopped => DomainState::Stopped,
-                kernel_api::service::shell::DomainState::Terminated => DomainState::Terminated,
+                kernel_api::shell::DomainState::Initializing => DomainState::Initializing,
+                kernel_api::shell::DomainState::Running => DomainState::Running,
+                kernel_api::shell::DomainState::Suspended => DomainState::Suspended,
+                kernel_api::shell::DomainState::Stopped => DomainState::Stopped,
+                kernel_api::shell::DomainState::Terminated => DomainState::Terminated,
             };
             ExoValue::Domain(DomainInfo {
                 id: d.id,
@@ -80,22 +73,18 @@ impl DomainNamespace {
     /// ドメインを終了
     /// Requires owner or CAP_KILL
     fn terminate_with_caps(id: u64, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
-        if let Some(shell) = kernel_api::service::kernel::instance().shell() {
-            let caller = shell.current_domain();
-            let has_cap_kill = caps.has_capability(CAP_KILL);
+        let caller = crate::shell::runtime::current_domain_id();
+        let has_cap_kill = caps.has_capability(CAP_KILL);
 
-            if caller != id && !has_cap_kill {
-                return ExoValue::Error(String::from(
-                    "Permission denied: owner or CAP_KILL required",
-                ));
-            }
+        if caller != id && !has_cap_kill {
+            return ExoValue::Error(String::from(
+                "Permission denied: owner or CAP_KILL required",
+            ));
+        }
 
-            match shell.terminate_domain(id) {
-                Ok(()) => ExoValue::Bool(true),
-                Err(e) => ExoValue::Error(String::from(e)),
-            }
-        } else {
-            ExoValue::Error(String::from("Shell services unavailable"))
+        match crate::shell::runtime::terminate_domain(id) {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(String::from(e)),
         }
     }
 }

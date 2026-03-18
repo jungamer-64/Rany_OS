@@ -22,11 +22,8 @@ pub trait AudioServices: Send + Sync {
 
 #[inline]
 pub fn try_instance() -> Option<&'static dyn AudioServices> {
-    if !kernel::is_installed() {
-        return None;
-    }
-
-    kernel::instance().audio()
+    let _ = kernel::is_installed();
+    None
 }
 
 #[inline]

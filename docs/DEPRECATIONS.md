@@ -4,7 +4,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 
 ## Kernel
 
-- `kernel/src/application/mod.rs`
+- Former kernel-side application lifecycle module
   - `AppHandle` ❌ **removed**
     - Migration: Use `crate::domain_system::DomainId` and the canonical domain APIs.
   - `app_count()` ❌ **removed**

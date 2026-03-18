@@ -61,9 +61,15 @@ mod service_kernel_impl;
 
 #[path = "gui.rs"]
 mod service_gui_impl;
+pub mod gui {
+    pub use crate::service_gui_impl::*;
+}
 
 #[path = "graphics.rs"]
 mod service_graphics_impl;
+pub mod graphics {
+    pub use crate::service_graphics_impl::*;
+}
 
 #[path = "input.rs"]
 mod service_input_impl;
@@ -80,12 +86,18 @@ mod service_platform_impl;
 
 #[path = "audio.rs"]
 mod service_audio_impl;
+pub mod audio {
+    pub use crate::service_audio_impl::*;
+}
 
 #[path = "serial.rs"]
 mod service_serial_impl;
 
 #[path = "shell.rs"]
 mod service_shell_impl;
+pub mod shell {
+    pub use crate::service_shell_impl::*;
+}
 
 #[path = "storage.rs"]
 mod service_storage_impl;
@@ -113,14 +125,6 @@ pub mod service {
         pub use crate::service_kernel_impl::*;
     }
 
-    pub mod gui {
-        pub use crate::service_gui_impl::*;
-    }
-
-    pub mod graphics {
-        pub use crate::service_graphics_impl::*;
-    }
-
     pub mod input {
         pub use crate::service_input_impl::*;
     }
@@ -133,16 +137,8 @@ pub mod service {
         pub use crate::service_platform_impl::*;
     }
 
-    pub mod audio {
-        pub use crate::service_audio_impl::*;
-    }
-
     pub mod serial {
         pub use crate::service_serial_impl::*;
-    }
-
-    pub mod shell {
-        pub use crate::service_shell_impl::*;
     }
 
     pub mod storage {

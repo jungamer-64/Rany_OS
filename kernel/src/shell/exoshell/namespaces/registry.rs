@@ -86,19 +86,15 @@ pub fn list_namespaces() -> alloc::vec::Vec<String> {
 /// ビルトイン名前空間を登録
 pub fn register_builtin_namespaces() {
     use super::{
-        CapNamespace, CellNamespace, DomainNamespace, DriverNamespace, FsNamespace, LogNamespace,
-        Mlx5Namespace, NetNamespace, ShellControlNamespace, SysNamespace, TaskNamespace,
+        CellNamespace, DomainNamespace, DriverNamespace, LogNamespace, NetNamespace, SysNamespace,
+        TaskNamespace,
     };
 
-    register_namespace(Arc::new(FsNamespace));
     register_namespace(Arc::new(NetNamespace));
     register_namespace(Arc::new(DomainNamespace));
     register_namespace(Arc::new(SysNamespace));
-    register_namespace(Arc::new(CapNamespace));
     register_namespace(Arc::new(CellNamespace));
     register_namespace(Arc::new(DriverNamespace));
-    register_namespace(Arc::new(ShellControlNamespace));
     register_namespace(Arc::new(TaskNamespace));
     register_namespace(Arc::new(LogNamespace));
-    register_namespace(Arc::new(Mlx5Namespace));
 }

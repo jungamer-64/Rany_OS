@@ -50,6 +50,7 @@ ACTIVE_CODE=(
   interfaces
   filesystems/kernel_fs
   drivers/usb
+  tools/standalone_driver_wrapper
 )
 
 check_no_match \
@@ -78,12 +79,18 @@ for item in data.get("workspace_members", []):
         or "/filesystems/nvme_ns#" in item
         or "/filesystems/nvme_ns@" in item
         or "/filesystems/nvme_ns" in item
+        or "/drivers/hda#" in item
+        or "/drivers/hda@" in item
+        or "/drivers/hda" in item
+        or "/apps#" in item
+        or "/apps@" in item
+        or "/apps" in item
     ):
         sys.exit(1)
 sys.exit(0)
 PY
 then
-  echo "ERROR: legacy filesystem crates are still part of the Cargo workspace"
+  echo "ERROR: removed filesystem/audio/app crates are still part of the Cargo workspace"
   failed=1
 fi
 
@@ -112,6 +119,31 @@ check_no_match \
   '\basync_swapout\.|\breclaim\.' \
   "${ACTIVE_DOCS[@]}" kernel/src/shell tests .github/workflows
 
+check_no_match \
+  "boot-time demo runtime tasks" \
+  '\bspawn_demo_runtime_tasks\b' \
+  kernel/src/kernel_main kernel/src/kernel_content.rs docs "${ACTIVE_DOCS[@]}"
+
+check_no_match \
+  "boot-time auto HTTP startup" \
+  'net::services::http::server::start_once\s*\(' \
+  kernel/src/kernel_main docs "${ACTIVE_DOCS[@]}"
+
+check_no_match \
+  "removed application module references" \
+  '\bmod application;|\bkernel/src/application\b|\bapplication/mod\.rs\b' \
+  kernel/src interfaces docs "${ACTIVE_DOCS[@]}"
+
+check_no_match \
+  "removed GUI/audio/shell service reexports" \
+  'service::(gui|graphics|audio|shell)\b' \
+  kernel/src interfaces docs "${ACTIVE_DOCS[@]}"
+
+check_no_match \
+  "removed dual shell mode" \
+  'BootShellMode::Both|ShellLaunchMode::Both' \
+  kernel/src interfaces libs "${ACTIVE_DOCS[@]}"
+
 check_path_absent kernel/src/mm/virt/address_space.rs
 check_path_absent kernel/src/mm/virt/cow.rs
 check_path_absent kernel/src/mm/reclaim/async_swapout.rs
@@ -123,12 +155,15 @@ check_path_absent kernel/src/mm/async_swapout/qemu_tests.rs
 check_path_absent kernel/src/mm/page_reclaim/qemu_tests.rs
 check_path_absent kernel/src/shell/exoshell/namespaces/async_swapout.rs
 check_path_absent kernel/src/shell/exoshell/namespaces/reclaim.rs
+check_path_absent kernel/src/application/mod.rs
 check_path_absent filesystems/fat32
 check_path_absent filesystems/nvme_ns
 check_path_absent filesystems/vfs
+check_path_absent drivers/hda
+check_path_absent kernel/src/io/audio
 
 if [ "$failed" -ne 0 ]; then
   exit 1
 fi
 
-echo "PASS: reduced ExoRust surface remains free of legacy VFS/VM/reclaim integrations."
+echo "PASS: reduced ExoRust surface remains aligned with the trimmed boot/runtime and API surface."

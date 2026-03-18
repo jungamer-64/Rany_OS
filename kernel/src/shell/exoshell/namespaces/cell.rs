@@ -678,12 +678,7 @@ impl CellNamespace {
             Err(e) => return e,
         };
 
-        let shell = match kernel_api::service::kernel::instance().shell() {
-            Some(s) => s,
-            None => return ExoValue::Error(String::from("Shell services unavailable")),
-        };
-
-        let content = match shell.read_file_zero_copy(&path) {
+        let content = match crate::shell::runtime::read_file_zero_copy(&path) {
             Ok(c) => c,
             Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
         };
@@ -922,12 +917,7 @@ impl CellNamespace {
             return ExoValue::Error(format!("DriverCell '{}' already exists", name));
         }
 
-        let shell = match kernel_api::service::kernel::instance().shell() {
-            Some(s) => s,
-            None => return ExoValue::Error(String::from("Shell services unavailable")),
-        };
-
-        let content = match shell.read_file_zero_copy(&path) {
+        let content = match crate::shell::runtime::read_file_zero_copy(&path) {
             Ok(c) => c,
             Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
         };
@@ -983,12 +973,7 @@ impl CellNamespace {
             Err(e) => return e,
         };
 
-        let shell = match kernel_api::service::kernel::instance().shell() {
-            Some(s) => s,
-            None => return ExoValue::Error(String::from("Shell services unavailable")),
-        };
-
-        let content = match shell.read_file_zero_copy(&path) {
+        let content = match crate::shell::runtime::read_file_zero_copy(&path) {
             Ok(c) => c,
             Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
         };

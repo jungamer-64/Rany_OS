@@ -274,35 +274,4 @@ impl KernelServices for ExoKernel {
     fn serial(&self) -> Option<&dyn kernel_api::service::serial::SerialServices> {
         crate::provider_registry::serial_service()
     }
-
-    fn graphics(&self) -> Option<&dyn kernel_api::service::graphics::GraphicsServices> {
-        crate::provider_registry::graphics_service()
-    }
-
-    fn audio(&self) -> Option<&dyn kernel_api::service::audio::AudioServices> {
-        crate::provider_registry::audio_service()
-    }
-
-    fn gui(&self) -> Option<&dyn kernel_api::service::gui::GuiServices> {
-        #[cfg(not(any(test, feature = "bench")))]
-        {
-            // GUI services are available only if framebuffer exists
-            if crate::graphics::framebuffer().is_some() {
-                Some(self)
-            } else {
-                None
-            }
-        }
-
-        #[cfg(any(test, feature = "bench"))]
-        {
-            // In test/bench builds, graphics subsystem is disabled
-            None
-        }
-    }
-
-    fn shell(&self) -> Option<&dyn kernel_api::service::shell::ShellServices> {
-        // Shell services are always available
-        Some(self)
-    }
 }

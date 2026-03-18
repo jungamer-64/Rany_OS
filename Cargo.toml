@@ -23,7 +23,6 @@ members = [
     "drivers/serial",
     "drivers/gpu",
     "drivers/hid",
-    "drivers/hda",
     "drivers/virtio",
     "drivers/acpi",
     "drivers/rtc",
@@ -34,8 +33,6 @@ members = [
     "tools/driver_cell_probe",
     "tools/driver_pack_builder",
     "tools/standalone_driver_wrapper",
-    # Apps
-    "apps",
     "libs/boot_proto",
     "bootloader",
     # dev tool: symbol lookup helper (not part of standard critical tools)
@@ -62,12 +59,10 @@ default-members = [
     "drivers/usb",
     "drivers/nvme",
     "drivers/hid",
-    "drivers/hda",
     "drivers/virtio",
     "drivers/acpi",
     "drivers/time",
     "drivers/mlx5",
-    "apps",
     "tools/cap_harness",
 ]
 

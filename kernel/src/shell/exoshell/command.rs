@@ -216,10 +216,7 @@ impl ShellCommand for WhoamiCommand {
         "whoami"
     }
     fn execute(&self, _shell: &mut ExoShell, _args: &[ExoValue]) -> ExoResult<ExoValue<'static>> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = crate::shell::runtime::current_domain_id();
         let mut map = alloc::collections::BTreeMap::new();
         map.insert(
             String::from("user"),

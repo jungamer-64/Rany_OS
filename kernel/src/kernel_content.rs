@@ -72,8 +72,7 @@ mod watchdog;
 mod monitor;
 mod test;
 
-// Phase 7: System Integration & Application Support
-mod application;
+// Phase 7: System Integration
 mod benchmark;
 mod driver_registry;
 // boot artifact loader は loader/boot_artifacts.rs に配置される。

@@ -8,8 +8,6 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use kernel_api::provider::{ProviderDescriptorV1, ProviderHandle, ProviderKind};
-use kernel_api::service::audio::AudioServices;
-use kernel_api::service::graphics::GraphicsServices;
 use kernel_api::service::input::InputServices;
 use kernel_api::service::netdev::NetDeviceServices;
 use kernel_api::service::platform::{AcpiServices, ApicServices, PciServices};
@@ -36,8 +34,6 @@ enum ProviderRef {
     Netdev(&'static dyn NetDeviceServices),
     Input(&'static dyn InputServices),
     Serial(&'static dyn SerialServices),
-    Graphics(&'static dyn GraphicsServices),
-    Audio(&'static dyn AudioServices),
 }
 
 struct ProviderEntry {
@@ -179,25 +175,6 @@ impl ProviderRegistry {
         )
     }
 
-    pub fn register_builtin_graphics(
-        &self,
-        provider: &'static dyn GraphicsServices,
-    ) -> ProviderHandle {
-        self.insert_or_replace(
-            ProviderOwner::KernelBuiltin,
-            ProviderKind::Graphics,
-            ProviderRef::Graphics(provider),
-        )
-    }
-
-    pub fn register_builtin_audio(&self, provider: &'static dyn AudioServices) -> ProviderHandle {
-        self.insert_or_replace(
-            ProviderOwner::KernelBuiltin,
-            ProviderKind::Audio,
-            ProviderRef::Audio(provider),
-        )
-    }
-
     pub fn register_driver_acpi(
         &self,
         owner: DriverHandle,
@@ -268,26 +245,6 @@ impl ProviderRegistry {
         provider: &'static dyn SerialServices,
     ) -> ProviderHandle {
         self.register_driver_provider(owner, ProviderKind::Serial, ProviderRef::Serial(provider))
-    }
-
-    pub fn register_driver_graphics(
-        &self,
-        owner: DriverHandle,
-        provider: &'static dyn GraphicsServices,
-    ) -> ProviderHandle {
-        self.register_driver_provider(
-            owner,
-            ProviderKind::Graphics,
-            ProviderRef::Graphics(provider),
-        )
-    }
-
-    pub fn register_driver_audio(
-        &self,
-        owner: DriverHandle,
-        provider: &'static dyn AudioServices,
-    ) -> ProviderHandle {
-        self.register_driver_provider(owner, ProviderKind::Audio, ProviderRef::Audio(provider))
     }
 
     pub fn register_driver_descriptors(
@@ -401,24 +358,6 @@ impl ProviderRegistry {
         })
     }
 
-    pub fn graphics(&self) -> Option<&'static dyn GraphicsServices> {
-        self.entries.lock().ok().and_then(|entries| {
-            entries.iter().rev().find_map(|entry| match entry.provider {
-                ProviderRef::Graphics(provider) => Some(provider),
-                _ => None,
-            })
-        })
-    }
-
-    pub fn audio(&self) -> Option<&'static dyn AudioServices> {
-        self.entries.lock().ok().and_then(|entries| {
-            entries.iter().rev().find_map(|entry| match entry.provider {
-                ProviderRef::Audio(provider) => Some(provider),
-                _ => None,
-            })
-        })
-    }
-
     pub fn descriptors_for_driver(&self, owner: DriverHandle) -> Vec<ProviderDescriptorV1> {
         self.entries
             .lock()
@@ -480,20 +419,12 @@ pub fn serial_service() -> Option<&'static dyn SerialServices> {
     provider_registry().serial()
 }
 
-pub fn graphics_service() -> Option<&'static dyn GraphicsServices> {
-    provider_registry().graphics()
-}
-
-pub fn audio_service() -> Option<&'static dyn AudioServices> {
-    provider_registry().audio()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec;
     use core::task::Waker;
-    use kernel_api::service::audio::{AudioDeviceInfo, AudioServices};
+    use kernel_api::audio::{AudioDeviceInfo, AudioServices};
     use kernel_api::service::netdev::{
         MacAddress, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDeviceServices,
         NetPortKind,

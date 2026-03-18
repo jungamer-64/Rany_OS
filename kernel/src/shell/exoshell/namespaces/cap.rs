@@ -30,10 +30,7 @@ impl CapNamespace {
     /// 現在のCapabilityを一覧
     pub fn list() -> ExoValue<'static> {
         // 現在のプロセス（ドメイン）の権限を取得
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = crate::shell::runtime::current_domain_id();
         let cap_set = manager().get_capabilities(domain_id);
 
         let mut caps = Vec::new();
@@ -170,10 +167,7 @@ impl CapNamespace {
         expires: Option<u64>,
         delegatable: bool,
     ) -> ExoValue<'static> {
-        let caller_domain = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let caller_domain = crate::shell::runtime::current_domain_id();
 
         // target_domainをu64に解析
         let domain_id: u64 = match target_domain.parse() {
@@ -226,10 +220,7 @@ impl CapNamespace {
 
     /// 自分の権限を放棄 (Revoke a grant by token id)
     pub fn revoke(cap_id: u64) -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = crate::shell::runtime::current_domain_id();
 
         // First, attempt to revoke a grant token with the given id.
         match manager().revoke_grant(domain_id, cap_id, false) {
@@ -257,10 +248,7 @@ impl CapNamespace {
 
     /// ドメインの権限を完全に剥奪 (Requires CAP_SYS_ADMIN)
     pub fn revoke_all(domain_id: u64) -> ExoValue<'static> {
-        let caller_domain = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let caller_domain = crate::shell::runtime::current_domain_id();
         if !manager().has_capability(caller_domain, CAP_SYS_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_ADMIN required"));
         }
@@ -272,10 +260,7 @@ impl CapNamespace {
 
     /// List active grant tokens for a domain
     pub fn tokens(domain: Option<u64>) -> ExoValue<'static> {
-        let caller_domain = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let caller_domain = crate::shell::runtime::current_domain_id();
         let target = domain.unwrap_or(caller_domain);
 
         // If requesting another domain's tokens, require CAP_SYS_ADMIN

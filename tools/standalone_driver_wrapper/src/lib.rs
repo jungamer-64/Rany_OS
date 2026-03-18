@@ -7,7 +7,6 @@ use kernel_api::abi::driver::DriverVTable;
 
 const SELECTED_DRIVER_COUNT: usize = (cfg!(feature = "driver-ahci") as usize)
     + (cfg!(feature = "driver-usb") as usize)
-    + (cfg!(feature = "driver-hda") as usize)
     + (cfg!(feature = "driver-nvme") as usize)
     + (cfg!(feature = "driver-mlx5") as usize);
 
@@ -24,11 +23,6 @@ fn selected_driver_vtable() -> *const DriverVTable {
     usb_driver::ffi::standalone_driver_vtable()
 }
 
-#[cfg(feature = "driver-hda")]
-fn selected_driver_vtable() -> *const DriverVTable {
-    hda_driver::ffi::standalone_driver_vtable()
-}
-
 #[cfg(feature = "driver-nvme")]
 fn selected_driver_vtable() -> *const DriverVTable {
     nvme_driver::standalone_driver_vtable()
@@ -43,7 +37,6 @@ fn selected_driver_vtable() -> *const DriverVTable {
     not(target_os = "none"),
     not(feature = "driver-ahci"),
     not(feature = "driver-usb"),
-    not(feature = "driver-hda"),
     not(feature = "driver-nvme"),
     not(feature = "driver-mlx5"),
 ))]

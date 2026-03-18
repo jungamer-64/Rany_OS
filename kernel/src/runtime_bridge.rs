@@ -17,13 +17,12 @@ use crate::net::runtime::device::{self as net_device_runtime, NetDeviceKey};
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use kernel_api::abi::driver::{
-    AbiAudioControllerRegistration, AbiAudioDeviceInfo, AbiBlockCommandKind, AbiBlockDeviceInfo,
-    AbiBlockDeviceRegistration, AbiBlockTransport, AbiError as AbiErrorCode, AbiIoCompletion,
-    AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo, AbiNetPortKind,
-    AbiNetPortRegistrationV3, AbiNetPortRuntimeV2, AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta,
-    AbiNvmeNamespaceInfo, AbiNvmeNamespaceRegistration, AbiPacketRefRaw,
+    AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
+    AbiError as AbiErrorCode, AbiIoCompletion, AbiNetDriverEvent, AbiNetDriverEventKind,
+    AbiNetPortInfo, AbiNetPortKind, AbiNetPortRegistrationV3, AbiNetPortRuntimeV2, AbiNetPortStats,
+    AbiNetRxMeta, AbiNetTxMeta, AbiNvmeNamespaceInfo, AbiNvmeNamespaceRegistration,
+    AbiPacketRefRaw,
 };
-use kernel_api::service::audio::AudioDeviceInfo;
 use kernel_api::service::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
     NetPortStats, NetRxMeta, NetTxMeta,
@@ -707,100 +706,9 @@ impl NetdevBridgeRegistry {
     }
 }
 
-struct AudioControllerEntry {
-    owner: DomainId,
-    registration: AbiAudioControllerRegistration,
-}
-
-struct AudioBridgeRegistry {
-    entries: PoisonRwLock<BTreeMap<u64, AudioControllerEntry>>,
-    next_handle: AtomicU64,
-}
-
-impl AudioBridgeRegistry {
-    const fn new() -> Self {
-        Self {
-            entries: PoisonRwLock::new(BTreeMap::new()),
-            next_handle: AtomicU64::new(1),
-        }
-    }
-
-    fn register(
-        &self,
-        owner: DomainId,
-        registration: &AbiAudioControllerRegistration,
-    ) -> Result<u64, AbiErrorCode> {
-        let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
-        self.entries
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                handle,
-                AudioControllerEntry {
-                    owner,
-                    registration: *registration,
-                },
-            );
-        Ok(handle)
-    }
-
-    fn unregister(&self, owner: DomainId, handle: u64) -> Result<(), AbiErrorCode> {
-        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
-        let Some(entry) = entries.get(&handle) else {
-            return Err(AbiErrorCode::DeviceNotFound);
-        };
-        if entry.owner != owner {
-            return Err(AbiErrorCode::PermissionDenied);
-        }
-        entries.remove(&handle);
-        Ok(())
-    }
-
-    fn cleanup_owner(&self, owner: DomainId) {
-        let handles: Vec<u64> = self
-            .entries
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter_map(|(handle, entry)| (entry.owner == owner).then_some(*handle))
-            .collect();
-        for handle in handles {
-            let _ = self.unregister(owner, handle);
-        }
-    }
-
-    fn devices(&self) -> Vec<AudioDeviceInfo> {
-        let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());
-        let mut devices = Vec::new();
-        for entry in entries.values() {
-            if !(entry.registration.is_initialized)(entry.registration.opaque) {
-                continue;
-            }
-            let count = (entry.registration.device_count)(entry.registration.opaque);
-            for index in 0..count {
-                let mut info = AbiAudioDeviceInfo::default();
-                let status =
-                    (entry.registration.device_info)(entry.registration.opaque, index, &mut info);
-                if !AbiErrorCode::from_raw(status).is_success() {
-                    continue;
-                }
-                devices.push(AudioDeviceInfo {
-                    device_id: info.device_id,
-                    output_channels: info.output_channels,
-                    input_channels: info.input_channels,
-                    sample_rate_hz: info.sample_rate_hz,
-                    flags: info.flags,
-                });
-            }
-        }
-        devices
-    }
-}
-
 static BLOCK_DEVICES: BlockBridgeRegistry = BlockBridgeRegistry::new();
 static NVME_NAMESPACES: NvmeNamespaceRegistry = NvmeNamespaceRegistry::new();
 static NETDEV_PORTS: NetdevBridgeRegistry = NetdevBridgeRegistry::new();
-static AUDIO_CONTROLLERS: AudioBridgeRegistry = AudioBridgeRegistry::new();
 
 pub fn register_block_device(
     registration: &AbiBlockDeviceRegistration,
@@ -836,23 +744,10 @@ pub fn unregister_netdev_port(handle: u64) -> Result<(), AbiErrorCode> {
     NETDEV_PORTS.unregister(owner, handle)
 }
 
-pub fn register_audio_controller(
-    registration: &AbiAudioControllerRegistration,
-) -> Result<u64, AbiErrorCode> {
-    let owner = current_driver_domain()?;
-    AUDIO_CONTROLLERS.register(owner, registration)
-}
-
-pub fn unregister_audio_controller(handle: u64) -> Result<(), AbiErrorCode> {
-    let owner = current_driver_domain()?;
-    AUDIO_CONTROLLERS.unregister(owner, handle)
-}
-
 pub fn cleanup_owner_domain(owner: DomainId) {
     BLOCK_DEVICES.cleanup_owner(owner);
     NVME_NAMESPACES.cleanup_owner(owner);
     NETDEV_PORTS.cleanup_owner(owner);
-    AUDIO_CONTROLLERS.cleanup_owner(owner);
 }
 
 pub fn cleanup_for_driver_handle(handle: DriverHandle) {
@@ -866,10 +761,6 @@ pub fn cleanup_for_driver_handle(handle: DriverHandle) {
 
 pub fn standalone_storage_devices() -> Vec<StorageDeviceInfo> {
     BLOCK_DEVICES.storage_devices()
-}
-
-pub fn standalone_audio_devices() -> Vec<AudioDeviceInfo> {
-    AUDIO_CONTROLLERS.devices()
 }
 
 pub fn standalone_nvme_namespace_info(namespace_id: u32) -> Option<AbiNvmeNamespaceInfo> {
@@ -908,43 +799,6 @@ mod tests {
 
     extern "C" fn test_block_ready(_opaque: u64) -> bool {
         true
-    }
-
-    extern "C" fn test_audio_initialized(_opaque: u64) -> bool {
-        true
-    }
-
-    extern "C" fn test_audio_device_count(_opaque: u64) -> u32 {
-        1
-    }
-
-    extern "C" fn test_audio_device_info(
-        _opaque: u64,
-        index: u32,
-        out: *mut AbiAudioDeviceInfo,
-    ) -> i32 {
-        if index != 0 || out.is_null() {
-            return AbiErrorCode::DeviceNotFound as i32;
-        }
-        unsafe {
-            *out = AbiAudioDeviceInfo {
-                device_id: 0xfeed,
-                output_channels: 2,
-                input_channels: 1,
-                _padding0: 0,
-                sample_rate_hz: 48_000,
-                flags: 7,
-            };
-        }
-        AbiErrorCode::Success as i32
-    }
-
-    extern "C" fn test_audio_enable_irq(_opaque: u64) -> i32 {
-        AbiErrorCode::Success as i32
-    }
-
-    extern "C" fn test_audio_disable_irq(_opaque: u64) -> i32 {
-        AbiErrorCode::Success as i32
     }
 
     static TEST_NET_INTERRUPT_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -1108,37 +962,6 @@ mod tests {
                 .unwrap_or_else(|e| e.into_inner())
                 .is_empty()
         );
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn audio_registry_surfaces_devices_and_cleans_owner() {
-        let registry = AudioBridgeRegistry::new();
-        let owner = DomainId::new(31);
-        let registration = AbiAudioControllerRegistration::new(
-            0,
-            42,
-            test_audio_initialized,
-            test_audio_device_count,
-            test_audio_device_info,
-            test_audio_enable_irq,
-            test_audio_disable_irq,
-        );
-
-        let handle = registry
-            .register(owner, &registration)
-            .expect("audio registration");
-        let devices = registry.devices();
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].device_id, 0xfeed);
-        assert_eq!(devices[0].sample_rate_hz, 48_000);
-
-        assert_eq!(
-            registry.unregister(DomainId::new(32), handle),
-            Err(AbiErrorCode::PermissionDenied)
-        );
-        registry.cleanup_owner(owner);
-        assert!(registry.devices().is_empty());
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

@@ -11,8 +11,8 @@ extern crate alloc;
 
 use crate::KapiResult;
 use crate::abi::driver::{
-    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistrationV3,
-    AbiNvmeNamespaceRegistration, AbiRRefRaw, KernelApiV4, PackedPciLocation,
+    AbiBlockDeviceRegistration, AbiNetPortRegistrationV3, AbiNvmeNamespaceRegistration, AbiRRefRaw,
+    KernelApiV4, PackedPciLocation,
 };
 use crate::dma::{CpuOwned, DmaSlice};
 use crate::ipc::{ChannelHandle, DomainId};
@@ -26,14 +26,10 @@ use crate::resource::storage::{
 };
 use crate::resource::task::TaskHandle;
 use crate::service::{
-    audio::AudioServices,
-    graphics::GraphicsServices,
-    gui::GuiServices,
     input::InputServices,
     netdev::NetDeviceServices,
     platform::{AcpiServices, ApicServices, PciServices},
     serial::SerialServices,
-    shell::ShellServices,
     storage::StorageServices,
     time::TimeService,
 };
@@ -148,15 +144,6 @@ pub trait KernelServices: Send + Sync {
 
     /// Unregister a previously registered network port bridge.
     fn unregister_netdev_port(&self, handle: u64) -> KapiResult<()>;
-
-    /// Register an audio controller bridge owned by the current driver domain.
-    fn register_audio_controller(
-        &self,
-        registration: &AbiAudioControllerRegistration,
-    ) -> KapiResult<u64>;
-
-    /// Unregister a previously registered audio controller bridge.
-    fn unregister_audio_controller(&self, handle: u64) -> KapiResult<()>;
 
     // ========================================================================
     // Network
@@ -372,10 +359,6 @@ pub trait KernelServices: Send + Sync {
     /// Receive a raw zero-copy payload from an IPC channel.
     fn ipc_recv_raw(&self, channel: ChannelHandle) -> KapiResult<AbiRRefRaw>;
 
-    // ========================================================================
-    // GUI Services (Optional)
-    // ========================================================================
-
     /// Access time management services
     fn time_service(&self) -> Option<&dyn TimeService>;
 
@@ -413,26 +396,6 @@ pub trait KernelServices: Send + Sync {
     fn serial(&self) -> Option<&dyn SerialServices> {
         None
     }
-
-    /// Access graphics services if available
-    fn graphics(&self) -> Option<&dyn GraphicsServices> {
-        None
-    }
-
-    /// Access audio services if available
-    fn audio(&self) -> Option<&dyn AudioServices> {
-        None
-    }
-
-    /// Access GUI services if available
-    fn gui(&self) -> Option<&dyn GuiServices>;
-
-    // ========================================================================
-    // Shell Services (Optional)
-    // ========================================================================
-
-    /// Access shell services if available
-    fn shell(&self) -> Option<&dyn ShellServices>;
 }
 
 // ============================================================================

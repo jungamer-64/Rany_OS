@@ -70,16 +70,14 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 
 ## Runtime Task Split
 
-`spawn_kernel_tasks()` は次の 3 グループを束ねる。
+`spawn_kernel_tasks()` は最小の runtime 起動責務だけを束ねる。
 
 - `spawn_shell_tasks()`
-  - console / serial shell の起動
+  - 既定は serial shell、`shell=console` 指定時のみ console shell を起動
 - `spawn_core_runtime_tasks()`
-  - network bootstrap、IOMMU fault handler、HTTP server、network event task、timeout task
-- `spawn_demo_runtime_tasks()`
-  - user_app_1、ipc_demo、preemption demo、memory monitor、waker test、ping demo
+  - I/O scheduler 初期化、network bootstrap、network event task、timeout task、DHCP/DNS/mDNS 背景タスク
 
-これにより、early executor handoff 後の async boot 完了点と、通常 runtime task の責務がコード上で分離される。
+デモ domain、ping demo、boot-time HTTP listener は通常ブートから外され、early executor handoff 後の async boot 完了点と通常 runtime task の責務がより小さく保たれる。
 
 ## Phase 1 Closure Validation
 

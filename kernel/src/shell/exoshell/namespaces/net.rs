@@ -18,6 +18,10 @@ use alloc::boxed::Box;
 pub struct NetNamespace;
 
 impl NetNamespace {
+    fn current_domain_id() -> u64 {
+        crate::shell::runtime::current_domain_id()
+    }
+
     fn parse_if_id_arg(
         args: &[ExoValue<'static>],
         method: &str,
@@ -341,10 +345,7 @@ impl NetNamespace {
     /// Requires CAP_NET_RAW
     pub async fn ping(ip: [u8; 4], count: u16) -> ExoValue<'static> {
         // セキュリティチェック
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         // Kernel domain(0) is trusted control plane; allow diagnostic ping
         // even when capability tables are not explicitly seeded yet.
         if domain_id != 0 && !manager().has_capability(domain_id, CAP_NET_RAW) {
@@ -554,10 +555,7 @@ impl NetNamespace {
 
     /// インターフェースを有効化（管理権限必要）
     pub async fn if_up(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -573,10 +571,7 @@ impl NetNamespace {
 
     /// インターフェースを無効化（管理権限必要）
     pub async fn if_down(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -690,10 +685,7 @@ impl NetNamespace {
     /// usage: net.route_add("192.168.1.0", 24, "10.0.2.1", 0, 100)
     ///        net.route_add(dest, prefix_len, gateway, if_id, metric)
     pub async fn route_add(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -751,10 +743,7 @@ impl NetNamespace {
     /// usage: net.route_del("192.168.1.0", 24, 0)
     ///        net.route_del(dest, prefix_len, if_id)
     pub async fn route_del(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -807,10 +796,7 @@ impl NetNamespace {
 
     /// ファイアウォール有効化 (管理権限必要)
     pub async fn firewall_enable() -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -824,10 +810,7 @@ impl NetNamespace {
 
     /// ファイアウォール無効化 (管理権限必要)
     pub async fn firewall_disable() -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -860,10 +843,7 @@ impl NetNamespace {
     ///
     /// usage: net.firewall_add("deny", "in", "10.0.0.0/8", "*", "tcp", "*", "22", 50, "block-ssh")
     pub async fn firewall_add(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -946,10 +926,7 @@ impl NetNamespace {
 
     /// ファイアウォールルール削除 (管理権限必要)
     pub async fn firewall_remove(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -970,10 +947,7 @@ impl NetNamespace {
 
     /// ファイアウォールルール全削除 (管理権限必要)
     pub async fn firewall_clear() -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -991,10 +965,7 @@ impl NetNamespace {
     ///
     /// usage: net.firewall_policy("in", "deny")
     pub async fn firewall_policy(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
@@ -1190,10 +1161,7 @@ impl NetNamespace {
                 _ => {}
             }
         }
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = Self::current_domain_id();
         if let Some(t) = token_opt {
             let grants = manager().list_grants(domain_id);
             if !grants.iter().any(|g| g.id == t) {

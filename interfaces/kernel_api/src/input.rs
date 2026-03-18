@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-use crate::service::{gui::InputEvent, kernel};
+use crate::{gui::InputEvent, service::kernel};
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

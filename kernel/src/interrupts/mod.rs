@@ -971,13 +971,7 @@ define_interrupt!(
 /// PCI 割り込みをディスパッチ
 ///
 /// 同じ IRQ を共有する可能性のある複数のデバイスをチェックする
-fn dispatch_pci_interrupt(irq: u8) {
-    // HDA ドライバをチェック
-    let hda_irq = crate::drivers::audio::hda::get_irq();
-    if hda_irq == irq {
-        crate::drivers::audio::hda::handle_interrupt();
-    }
-
+fn dispatch_pci_interrupt(_irq: u8) {
     // VirtIO shared IRQ work is deferred to non-ISR context to avoid lock inversion
     // with driver paths that may hold allocator/device locks while interrupts fire.
     dispatch_shared_pci_handlers();

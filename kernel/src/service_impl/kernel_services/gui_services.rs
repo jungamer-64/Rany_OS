@@ -12,9 +12,8 @@ mod nvme_tests;
 // ============================================================================
 
 use kernel_api::capability::DomainCapabilities;
-use kernel_api::service::audio::{AudioDeviceInfo, AudioServices};
-use kernel_api::service::graphics::{DisplayInfo, GraphicsServices};
-use kernel_api::service::gui::{
+use kernel_api::graphics::{DisplayInfo, GraphicsServices};
+use kernel_api::gui::{
     FramebufferInfo as KapiFramebufferInfo, GuiServices, InputStreamHandle,
     PixelFormat as KapiPixelFormat,
 };
@@ -25,11 +24,6 @@ use kernel_api::service::storage::{StorageDeviceInfo, StorageServices, StorageTr
 
 const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
 const STORAGE_FLAG_READ_ONLY: u32 = 1 << 1;
-
-const AUDIO_FLAG_INITIALIZED: u32 = 1 << 0;
-const AUDIO_FLAG_BEEP: u32 = 1 << 1;
-
-const DEFAULT_AUDIO_SAMPLE_RATE_HZ: u32 = 48_000;
 
 const STORAGE_KIND_NVME: u8 = 1;
 const STORAGE_KIND_VIRTIO_BLK: u8 = 2;
@@ -165,48 +159,6 @@ fn net_devices_snapshot() -> alloc::vec::Vec<NetDeviceInfo> {
     crate::net::runtime::device::list_port_infos()
 }
 
-fn audio_devices_snapshot() -> alloc::vec::Vec<AudioDeviceInfo> {
-    let mut devices = crate::runtime_bridge::standalone_audio_devices();
-    let builtin = crate::io::audio::with_driver(|controller| {
-        if !controller.is_initialized() {
-            return alloc::vec::Vec::new();
-        }
-
-        controller
-            .codecs()
-            .iter()
-            .map(|codec| {
-                let mut flags = AUDIO_FLAG_INITIALIZED;
-                if codec.beep_node.is_some() {
-                    flags |= AUDIO_FLAG_BEEP;
-                }
-
-                AudioDeviceInfo {
-                    device_id: ((codec.vendor_id as u64) << 32)
-                        | ((codec.device_id as u64) << 16)
-                        | codec.address as u64,
-                    output_channels: if codec.output_nodes.is_empty() { 0 } else { 2 },
-                    input_channels: if codec.input_nodes.is_empty() { 0 } else { 2 },
-                    sample_rate_hz: DEFAULT_AUDIO_SAMPLE_RATE_HZ,
-                    flags,
-                }
-            })
-            .collect()
-    })
-    .unwrap_or_default();
-
-    for device in builtin {
-        if !devices
-            .iter()
-            .any(|existing| existing.device_id == device.device_id)
-        {
-            devices.push(device);
-        }
-    }
-
-    devices
-}
-
 impl GuiServices for ExoKernel {
     fn request_framebuffer(
         &self,
@@ -239,11 +191,9 @@ impl GuiServices for ExoKernel {
         crate::task::current_tick()
     }
 
-    fn poll_input_event(&self) -> Option<kernel_api::service::gui::InputEvent> {
+    fn poll_input_event(&self) -> Option<kernel_api::gui::InputEvent> {
         use crate::drivers::hid::keyboard::KeyEventExt;
-        use kernel_api::service::gui::{
-            InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState,
-        };
+        use kernel_api::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState};
         crate::console::install_keyboard_tap();
         let hid_event_opt = crate::console::try_pop_key_event();
 
@@ -314,7 +264,7 @@ impl InputServices for ExoKernel {
         }]
     }
 
-    fn poll_event(&self) -> Option<kernel_api::service::gui::InputEvent> {
+    fn poll_event(&self) -> Option<kernel_api::gui::InputEvent> {
         GuiServices::poll_input_event(self)
     }
 }
@@ -354,17 +304,11 @@ impl NetDeviceServices for ExoKernel {
     }
 }
 
-impl AudioServices for ExoKernel {
-    fn devices(&self) -> alloc::vec::Vec<AudioDeviceInfo> {
-        audio_devices_snapshot()
-    }
-}
-
 #[cfg(test)]
 mod gui_input_queue_tests {
     use super::*;
     use crate::io::hid::keyboard::{KeyCode, KeyEvent, KeyState, Modifiers};
-    use kernel_api::service::gui::{GuiServices, InputEvent, KeyState as KapiKeyState};
+    use kernel_api::gui::{GuiServices, InputEvent, KeyState as KapiKeyState};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -393,7 +337,7 @@ mod gui_input_queue_tests {
 // ShellServices Implementation
 // ============================================================================
 
-use kernel_api::service::shell::{
+use kernel_api::shell::{
     DirEntry as KapiDirEntry, DomainInfo, DomainState as KapiDomainState, MemoryStats,
     ShellServices, ShellSystemInfo as KapiSystemInfo,
 };
@@ -495,28 +439,28 @@ impl ShellServices for ExoKernel {
         }
     }
 
-    fn monitor_info(&self) -> kernel_api::service::shell::MonitorInfo {
+    fn monitor_info(&self) -> kernel_api::shell::MonitorInfo {
         let snap = crate::monitor::snapshot();
-        kernel_api::service::shell::MonitorInfo {
+        kernel_api::shell::MonitorInfo {
             timestamp: snap.timestamp,
             cpu_usage: snap.cpu_usage,
-            memory: kernel_api::service::shell::MemoryMonitorInfo {
+            memory: kernel_api::shell::MemoryMonitorInfo {
                 heap_used: snap.memory.heap_used,
                 heap_free: snap.memory.heap_free,
                 heap_total: snap.memory.heap_total,
                 usage_percent: snap.memory.usage_percent,
             },
-            domains: kernel_api::service::shell::DomainMonitorInfo {
+            domains: kernel_api::shell::DomainMonitorInfo {
                 total: snap.domains.total,
                 running: snap.domains.running,
                 stopped: snap.domains.stopped,
             },
-            tasks: kernel_api::service::shell::TaskMonitorInfo {
+            tasks: kernel_api::shell::TaskMonitorInfo {
                 context_switches: snap.tasks.context_switches,
                 voluntary_yields: snap.tasks.voluntary_yields,
                 forced_preemptions: snap.tasks.forced_preemptions,
             },
-            network: kernel_api::service::shell::NetworkMonitorInfo {
+            network: kernel_api::shell::NetworkMonitorInfo {
                 rx_packets: snap.network.rx_packets,
                 tx_packets: snap.network.tx_packets,
                 rx_bytes: snap.network.rx_bytes,
@@ -525,14 +469,14 @@ impl ShellServices for ExoKernel {
         }
     }
 
-    fn thermal_info(&self) -> kernel_api::service::shell::ThermalInfo {
+    fn thermal_info(&self) -> kernel_api::shell::ThermalInfo {
         let tm = crate::thermal::thermal_manager();
         let (polling_count, trip_events) = tm.stats();
         let throttle = tm.throttle_controller();
         let sensors = tm
             .sensors()
             .iter()
-            .map(|s| kernel_api::service::shell::ThermalSensorInfo {
+            .map(|s| kernel_api::shell::ThermalSensorInfo {
                 id: s.id as usize,
                 name: s.name.clone(),
                 current_c: if s.current.is_valid() {
@@ -545,7 +489,7 @@ impl ShellServices for ExoKernel {
             })
             .collect();
 
-        kernel_api::service::shell::ThermalInfo {
+        kernel_api::shell::ThermalInfo {
             cpu_celsius: crate::thermal::cpu_temperature().map(|t| t.celsius() as f32),
             polling_count,
             trip_events,
@@ -555,10 +499,10 @@ impl ShellServices for ExoKernel {
         }
     }
 
-    fn watchdog_info(&self) -> kernel_api::service::shell::WatchdogInfo {
+    fn watchdog_info(&self) -> kernel_api::shell::WatchdogInfo {
         let wm = crate::watchdog::watchdog_manager();
         let (heartbeats, timeouts, checks) = wm.software().stats();
-        kernel_api::service::shell::WatchdogInfo {
+        kernel_api::shell::WatchdogInfo {
             heartbeats,
             timeouts,
             checks,
@@ -566,13 +510,13 @@ impl ShellServices for ExoKernel {
         }
     }
 
-    fn power_info(&self) -> kernel_api::service::shell::PowerInfo {
+    fn power_info(&self) -> kernel_api::shell::PowerInfo {
         let pm = crate::power::power_manager();
         let idle = crate::power::cpu_idle();
         let (c1, c2, c3) = idle.stats();
         let stats = pm.stats();
 
-        kernel_api::service::shell::PowerInfo {
+        kernel_api::shell::PowerInfo {
             state: alloc::format!("{:?}", pm.current_state()),
             power_button_presses: stats
                 .power_button_presses
@@ -580,7 +524,7 @@ impl ShellServices for ExoKernel {
             sleep_button_presses: stats
                 .sleep_button_presses
                 .load(core::sync::atomic::Ordering::Relaxed),
-            cpu_idle: kernel_api::service::shell::CpuIdleInfo {
+            cpu_idle: kernel_api::shell::CpuIdleInfo {
                 c1_count: c1,
                 c2_count: c2,
                 c3_count: c3,
@@ -608,18 +552,16 @@ impl ShellServices for ExoKernel {
                     .map(|e| {
                         let file_type = match e.file_type {
                             crate::fs::FileType::Directory => {
-                                kernel_api::service::shell::FileType::Directory
+                                kernel_api::shell::FileType::Directory
                             }
-                            crate::fs::FileType::Symlink => {
-                                kernel_api::service::shell::FileType::Symlink
-                            }
+                            crate::fs::FileType::Symlink => kernel_api::shell::FileType::Symlink,
                             crate::fs::FileType::CharDevice => {
-                                kernel_api::service::shell::FileType::CharDevice
+                                kernel_api::shell::FileType::CharDevice
                             }
                             crate::fs::FileType::BlockDevice => {
-                                kernel_api::service::shell::FileType::BlockDevice
+                                kernel_api::shell::FileType::BlockDevice
                             }
-                            _ => kernel_api::service::shell::FileType::File,
+                            _ => kernel_api::shell::FileType::File,
                         };
                         KapiDirEntry {
                             name: e.name,
@@ -654,26 +596,17 @@ impl ShellServices for ExoKernel {
         crate::fs::write_file_content(path, "/", data).map_err(|_| "Failed to write file")
     }
 
-    fn stat_file(
-        &self,
-        path: &str,
-    ) -> Result<kernel_api::service::shell::FileAttributes, &'static str> {
+    fn stat_file(&self, path: &str) -> Result<kernel_api::shell::FileAttributes, &'static str> {
         match crate::fs::stat_file(path, "/") {
             Ok(attr) => {
                 let file_type = match attr.file_type {
-                    crate::fs::FileType::Directory => {
-                        kernel_api::service::shell::FileType::Directory
-                    }
-                    crate::fs::FileType::Symlink => kernel_api::service::shell::FileType::Symlink,
-                    crate::fs::FileType::CharDevice => {
-                        kernel_api::service::shell::FileType::CharDevice
-                    }
-                    crate::fs::FileType::BlockDevice => {
-                        kernel_api::service::shell::FileType::BlockDevice
-                    }
-                    _ => kernel_api::service::shell::FileType::File,
+                    crate::fs::FileType::Directory => kernel_api::shell::FileType::Directory,
+                    crate::fs::FileType::Symlink => kernel_api::shell::FileType::Symlink,
+                    crate::fs::FileType::CharDevice => kernel_api::shell::FileType::CharDevice,
+                    crate::fs::FileType::BlockDevice => kernel_api::shell::FileType::BlockDevice,
+                    _ => kernel_api::shell::FileType::File,
                 };
-                Ok(kernel_api::service::shell::FileAttributes {
+                Ok(kernel_api::shell::FileAttributes {
                     size: attr.size,
                     ino: attr.ino,
                     nlink: attr.nlink as u64,
@@ -704,10 +637,8 @@ pub(crate) fn register_builtin_service_providers() {
     let registry = crate::provider_registry::provider_registry();
     registry.register_builtin_storage(&EXOKERNEL);
     registry.register_builtin_netdev(&EXOKERNEL);
-    registry.register_builtin_graphics(&EXOKERNEL);
     registry.register_builtin_input(&EXOKERNEL);
     registry.register_builtin_serial(&EXOKERNEL);
-    registry.register_builtin_audio(&EXOKERNEL);
 }
 
 /// Register the kernel services (call from kmain early in boot)

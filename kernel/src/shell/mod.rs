@@ -26,6 +26,7 @@
 pub mod exoshell;
 pub mod frontend;
 pub mod line_buffer;
+pub mod runtime;
 pub mod session;
 
 // ============================================================================

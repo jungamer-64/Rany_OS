@@ -986,10 +986,6 @@ fn spawn_shell_tasks(shell_mode: crate::shell::session::ShellLaunchMode) {
     match shell_mode {
         ShellLaunchMode::Console => spawn_console_shell(),
         ShellLaunchMode::Serial => spawn_serial_shell(),
-        ShellLaunchMode::Both => {
-            spawn_serial_shell();
-            spawn_console_shell();
-        }
         ShellLaunchMode::Off => {
             info!(target: "init", "Shell launch disabled by boot policy (shell=off)");
         }
@@ -1033,17 +1029,12 @@ pub(crate) fn spawn_core_runtime_tasks() {
     );
 
     // === ネットワークブートストラップ（完全非同期） ===
-    // VirtIO-Netドライバ登録 → DHCP → ping をExecutor上で非同期実行
     spawn_early_network_task(
         "network bootstrap task",
         crate::task::Priority::High,
         network_bootstrap_task(),
     );
     info!(target: "init", "Network bootstrap task queued on CPU0");
-
-    // Host-to-guest communication endpoint for QEMU hostfwd (tcp:5555 -> guest:80).
-    info!(target: "net_boot", "Scheduling host HTTP service on bootstrap CPU0");
-    crate::net::services::http::server::start_once();
 
     // [PR-COMPLIANCE] ICMP Responder activation log
     info!(target: "init", "ICMP responder server active");
@@ -1070,218 +1061,10 @@ pub(crate) fn spawn_core_runtime_tasks() {
     crate::net::api::dhcp::start_background_service_tasks();
 }
 
-pub(crate) fn spawn_demo_runtime_tasks() {
-    use ipc::RRef;
-    use task::Task;
-
-    // ドメイン1を作成：ユーザーアプリケーション
-    let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))
-        .expect("create_domain failed");
-
-    // SAS統計をログ
-    let sas_stats = sas::stats();
-    info!(target: "init", "SAS Stats: {} regions, {} objects, {} domains",
-        sas_stats.total_regions,
-        sas_stats.total_objects,
-        sas_stats.domains
-    );
-    domain_system::start_domain(domain1).ok();
-
-    // タスク1: ドメイン1のメインタスク
-    task::spawn_task(Task::new(async move {
-        info!(target: "task1", "User application domain started (ID: {})", domain1.as_u64());
-
-        // シミュレーション: データ処理
-        for i in 0..5 {
-            debug!(target: "task1", "Processing iteration {}", i);
-            task::sleep_ms(100).await;
-
-            // Yield point（プリエンプション対策）
-            task::yield_point();
-        }
-
-        info!(target: "task1", "User application completed");
-    }));
-
-    // タスク2: ゼロコピー通信デモ
-    let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo"))
-        .expect("create_domain failed");
-    domain_system::start_domain(domain2).ok();
-
-    task::spawn_task(Task::new(async move {
-        info!(target: "task2", "IPC demonstration started");
-        // RRefを使用したゼロコピーデータ転送
-        let data = RRef::new(
-            ipc::DomainId::new(domain1.as_u64()),
-            alloc::vec![0xDE, 0xAD, 0xBE, 0xEF],
-        );
-        debug!(target: "task2", "Created RRef in domain {}", domain1.as_u64());
-
-        // 所有権を domain2 に移動
-        let data = data.move_to(ipc::DomainId::new(domain2.as_u64()));
-        debug!(target: "task2", "Transferred ownership to domain {} (zero-copy)", data.owner().as_u64());
-
-        debug!(target: "task2", "Data: {:?}", &data[..]);
-        info!(target: "task2", "IPC demo completed");
-    }));
-
-    // タスク3: プリエンプション統計デモ
-    task::spawn_task(Task::new(async {
-        info!(target: "task3", "Preemption stats demo started");
-
-        for i in 0..3 {
-            debug!(target: "task3", "Iteration {}", i);
-            task::sleep_ms(200).await;
-
-            let stats = task::aggregate_preemption_stats();
-            debug!(target: "task3", "Preemption Stats - Forced: {}, Voluntary: {}",
-                stats.forced_preemptions,
-                stats.voluntary_yields
-            );
-        }
-
-        info!(target: "task3", "Preemption demo completed");
-    }));
-
-    // タスク4: メモリ統計モニタリング
-    task::spawn_task(Task::new(async {
-        info!(target: "task4", "Memory monitor started");
-
-        for _ in 0..3 {
-            task::sleep_ms(500).await;
-
-            let (used, free) = memory::heap_stats();
-            debug!(target: "task4", "Heap: Used={} bytes, Free={} bytes", used, free);
-
-            // ドメイン統計
-            let domain_stats = domain_system::get_domain_stats();
-            debug!(target: "task4", "Domains: {} total, {} running",
-                domain_stats.total,
-                domain_stats.running
-            );
-        }
-
-        info!(target: "task4", "Memory monitor completed");
-    }));
-
-    // タスク5: Wakerのテスト
-    task::spawn_task(Task::new(async {
-        info!(target: "task5", "Waker test started");
-
-        use core::future::poll_fn;
-        use core::task::Poll;
-
-        let mut counter = 0;
-        poll_fn(|_cx| {
-            counter += 1;
-            if counter >= 3 {
-                debug!(target: "task5", "Polled {} times, completing", counter);
-                Poll::Ready(())
-            } else {
-                debug!(target: "task5", "Polled {} times, pending", counter);
-                Poll::Pending
-            }
-        })
-        .await;
-
-        info!(target: "task5", "Completed");
-    }));
-
-    // タスク6: ベンチマーク実行（オプション）
-    // 注意: 大量メモリ割り当てでパニックするため一時的に無効化
-    // シェルから sys.benchmark() で手動実行可能
-    // executor.spawn(Task::new(async {
-    //     info!(target: "task6", "Benchmark task started");
-    //     task::sleep_ms(1000).await;
-    //
-    //     // ベンチマーク結果を取得
-    //     let results = benchmark::run_all_benchmarks();
-    //     info!(target: "task6", "Ran {} benchmarks", results.len());
-    //     info!(target: "task6", "Benchmark task completed");
-    // }));
-
-    // タスク (ネットワーク ping テスト): ゲートウェイへの ICMP を試して結果をログ出力
-    task::spawn_task(Task::new(async {
-        info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
-
-        // DHCP/スタックからゲートウェイを取得
-        let gw_opt = crate::net::api::config::list_interface_configs_in(
-            crate::net::runtime::default_runtime(),
-        )
-        .await
-        .into_iter()
-        .map(|cfg| cfg.gateway)
-        .find(|gw| *gw != [0, 0, 0, 0]);
-        let Some(gw) = gw_opt else {
-            warn!(target: "net_test", "No gateway configured yet; skipping ping test");
-            return;
-        };
-        info!(target: "net_test", "Sending ICMP echo to {}.{}.{}.{} seq=1", gw[0], gw[1], gw[2], gw[3]);
-        // 完全非同期: IcmpEchoFuture 経由で送信 + 応答待機
-        match crate::net::api::icmp::ping_in(crate::net::runtime::default_runtime(), gw, 1).await {
-            Ok(echo) => info!(target: "net_test", "Ping success rtt={} us", echo.rtt_us),
-            Err(e) => warn!(target: "net_test", "Ping failed: {:?}", e),
-        }
-
-        let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) =
-            aggregate_port_runtime_stats();
-        info!(
-            target: "net_test",
-            "Port runtime stats after ping: ports={} rx={} tx={} tx_err={} rx_err={}",
-            port_count,
-            rx_packets,
-            tx_packets,
-            tx_errors,
-            rx_errors
-        );
-    }));
-
-    // タスク7: 統合テスト実行
-    // 注意: 大量メモリ割り当てでパニックする可能性があるため一時的に無効化
-    // シェルから sys.test() で手動実行可能
-    // executor.spawn(Task::new(async {
-    //     info!(target: "task7", "Integration test task started");
-    //     task::sleep_ms(2000).await;
-    //
-    //     let (passed, failed) = test::integration::run_all_integration_tests();
-    //     info!(target: "task7", "Integration tests: {} passed, {} failed", passed, failed);
-    //     info!(target: "task7", "Integration test task completed");
-    // }));
-
-    // タスク8: 非同期シリアルシェル（IRQ4駆動）
-    // タスク8: 非同期シリアルシェル（IRQ4駆動）
-    // Serial Shell spawned above
-    /*
-    task::spawn_task(Task::new(async {
-        info!(target: "task8", "Async serial shell task starting...");
-        // シェルをすぐに開始（デバッグ用）
-        shell::async_shell::run_async_shell().await;
-    }));
-    */
-
-    // タスク9: グラフィカルシェル（フレームバッファ描画）
-    // タスク9: グラフィカルシェル（フレームバッファ描画）
-    // Console Shell spawned above
-    /*
-    executor.spawn(Task::new(async {
-        info!(target: "task9", "Graphical shell task starting...");
-
-        // グラフィカルシェルを開始 (initはkmainで完了と想定)
-        shell::graphical::start();
-
-        info!(target: "task9", "Graphical shell started - running async...");
-
-        // 非同期メインループ（完全async版）
-        shell::graphical::run_async_shell().await;
-    }));
-    */
-}
-
 /// カーネルタスクをスポーン
 pub(crate) fn spawn_kernel_tasks(shell_mode: crate::shell::session::ShellLaunchMode) {
     spawn_shell_tasks(shell_mode);
     spawn_core_runtime_tasks();
-    spawn_demo_runtime_tasks();
 }
 
 /// システム統計を表示

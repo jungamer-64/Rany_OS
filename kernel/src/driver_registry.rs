@@ -1060,21 +1060,12 @@ extern "C" fn kapi_register_audio_controller(
     if registration.is_null() || out_handle.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
-    let registration = unsafe { &*registration };
-    match kernel_api::service::kernel::instance().register_audio_controller(registration) {
-        Ok(handle) => {
-            unsafe { *out_handle = handle };
-            AbiErrorCode::Success as i32
-        }
-        Err(err) => map_kapi_error_to_abi(err),
-    }
+    AbiErrorCode::NotSupported as i32
 }
 
 extern "C" fn kapi_unregister_audio_controller(handle: u64) -> i32 {
-    match kernel_api::service::kernel::instance().unregister_audio_controller(handle) {
-        Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
-    }
+    let _ = handle;
+    AbiErrorCode::NotSupported as i32
 }
 
 extern "C" fn kapi_heap_alloc(size: usize) -> *mut u8 {

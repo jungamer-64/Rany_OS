@@ -360,9 +360,6 @@ impl SystemIntegration {
         // Initialize NVMe controllers
         self.init_nvme_devices();
 
-        // Initialize HDA Audio
-        self.init_hda_devices();
-
         self.status = IntegrationStatus::DevicesInitialized;
         Ok(())
     }

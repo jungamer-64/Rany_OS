@@ -16,7 +16,6 @@
 pub use crate::io::acpi;
 pub use crate::io::ahci;
 pub use crate::io::apic;
-pub use crate::io::audio;
 pub use crate::io::gpu;
 pub use crate::io::hid;
 pub use crate::io::ide;

@@ -348,14 +348,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exorust_apps"
-version = "0.1.0"
-dependencies = [
- "app_sdk",
- "graphic_types",
-]
-
-[[package]]
 name = "exorust_sync"
 version = "0.1.0"
 dependencies = [
@@ -424,16 +416,6 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash",
-]
-
-[[package]]
-name = "hda_driver"
-version = "0.1.0"
-dependencies = [
- "hal",
- "kernel_api",
- "log",
- "spin",
 ]
 
 [[package]]
@@ -679,7 +661,6 @@ dependencies = [
  "graphic_types",
  "hal",
  "hashbrown",
- "hda_driver",
  "hid_driver",
  "ide_driver",
  "kernel_api",
@@ -874,7 +855,6 @@ name = "standalone_driver_wrapper"
 version = "0.1.0"
 dependencies = [
  "ahci_driver",
- "hda_driver",
  "kernel_api",
  "mlx5_driver",
  "nvme_driver",

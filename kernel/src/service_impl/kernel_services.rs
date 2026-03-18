@@ -1,8 +1,8 @@
 use super::*;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use kernel_api::abi::driver::{
-    AbiAudioControllerRegistration, AbiBlockDeviceRegistration, AbiNetPortRegistrationV3,
-    AbiNvmeNamespaceRegistration, AbiRRefRaw, PackedPciLocation,
+    AbiBlockDeviceRegistration, AbiNetPortRegistrationV3, AbiNvmeNamespaceRegistration, AbiRRefRaw,
+    PackedPciLocation,
 };
 use kernel_api::msix::MsixVectorInfo;
 
@@ -403,19 +403,6 @@ impl KernelServices for ExoKernel {
 
     fn unregister_netdev_port(&self, handle: u64) -> Result<(), KapiError> {
         crate::runtime_bridge::unregister_netdev_port(handle)
-            .map_err(|_| KapiError::PermissionDenied)
-    }
-
-    fn register_audio_controller(
-        &self,
-        registration: &AbiAudioControllerRegistration,
-    ) -> Result<u64, KapiError> {
-        crate::runtime_bridge::register_audio_controller(registration)
-            .map_err(|_| KapiError::PermissionDenied)
-    }
-
-    fn unregister_audio_controller(&self, handle: u64) -> Result<(), KapiError> {
-        crate::runtime_bridge::unregister_audio_controller(handle)
             .map_err(|_| KapiError::PermissionDenied)
     }
 
@@ -1186,37 +1173,6 @@ impl KernelServices for ExoKernel {
 
     fn serial(&self) -> Option<&dyn kernel_api::service::serial::SerialServices> {
         crate::provider_registry::serial_service()
-    }
-
-    fn graphics(&self) -> Option<&dyn kernel_api::service::graphics::GraphicsServices> {
-        crate::provider_registry::graphics_service()
-    }
-
-    fn audio(&self) -> Option<&dyn kernel_api::service::audio::AudioServices> {
-        crate::provider_registry::audio_service()
-    }
-
-    fn gui(&self) -> Option<&dyn kernel_api::service::gui::GuiServices> {
-        #[cfg(not(any(test, feature = "bench")))]
-        {
-            // GUI services are available only if framebuffer exists
-            if crate::graphics::framebuffer().is_some() {
-                Some(self)
-            } else {
-                None
-            }
-        }
-
-        #[cfg(any(test, feature = "bench"))]
-        {
-            // In test/bench builds, graphics subsystem is disabled
-            None
-        }
-    }
-
-    fn shell(&self) -> Option<&dyn kernel_api::service::shell::ShellServices> {
-        // Shell services are always available
-        Some(self)
     }
 }
 

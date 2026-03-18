@@ -772,6 +772,14 @@ fn phase_platform_and_security_base(context: &KernelBootContext) {
 }
 
 fn phase_graphics_console(context: &KernelBootContext) -> bool {
+    if context.boot_info().boot_policy.shell_mode != boot_proto::BootShellMode::Console {
+        info!(
+            target: "init",
+            "Skipping graphics console init; enable with shell=console"
+        );
+        return false;
+    }
+
     init_graphics_console(context)
 }
 

@@ -19,7 +19,6 @@
 pub mod acpi;
 pub mod ahci;
 pub mod apic;
-pub mod audio;
 // Kernel-owned infrastructure.
 pub mod dma;
 pub mod gpu;

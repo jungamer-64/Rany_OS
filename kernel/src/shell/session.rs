@@ -18,23 +18,21 @@ use crate::util;
 /// Shell launch mode selected from kernel command line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellLaunchMode {
-    Console,
     Serial,
-    Both,
+    Console,
     Off,
 }
 
 impl Default for ShellLaunchMode {
     fn default() -> Self {
-        Self::Console
+        Self::Serial
     }
 }
 
 pub fn shell_launch_mode_from_boot_policy(policy: &BootPolicy) -> ShellLaunchMode {
     match policy.shell_mode {
-        BootShellMode::Console => ShellLaunchMode::Console,
         BootShellMode::Serial => ShellLaunchMode::Serial,
-        BootShellMode::Both => ShellLaunchMode::Both,
+        BootShellMode::Console => ShellLaunchMode::Console,
         BootShellMode::Off => ShellLaunchMode::Off,
     }
 }
@@ -50,9 +48,8 @@ pub fn parse_shell_launch_mode(cmdline: Option<&str>) -> ShellLaunchMode {
 
     if let Some(shell) = util::get_cmdline_option(cmdline, "shell") {
         return match shell {
-            "console" => ShellLaunchMode::Console,
             "serial" => ShellLaunchMode::Serial,
-            "both" => ShellLaunchMode::Both,
+            "console" => ShellLaunchMode::Console,
             "off" => ShellLaunchMode::Off,
             _ => ShellLaunchMode::default(),
         };
@@ -71,7 +68,7 @@ pub fn adjust_shell_launch_mode_for_console_availability(
     }
 
     match mode {
-        ShellLaunchMode::Console | ShellLaunchMode::Both => ShellLaunchMode::Serial,
+        ShellLaunchMode::Console => ShellLaunchMode::Serial,
         ShellLaunchMode::Serial | ShellLaunchMode::Off => mode,
     }
 }
@@ -194,9 +191,9 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn parse_shell_mode_defaults_to_console() {
-        assert_eq!(parse_shell_launch_mode(None), ShellLaunchMode::Console);
-        assert_eq!(parse_shell_launch_mode(Some("")), ShellLaunchMode::Console);
+    fn parse_shell_mode_defaults_to_serial() {
+        assert_eq!(parse_shell_launch_mode(None), ShellLaunchMode::Serial);
+        assert_eq!(parse_shell_launch_mode(Some("")), ShellLaunchMode::Serial);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -207,8 +204,8 @@ mod tests {
             ShellLaunchMode::Serial
         );
         assert_eq!(
-            parse_shell_launch_mode(Some("shell=both")),
-            ShellLaunchMode::Both
+            parse_shell_launch_mode(Some("shell=console")),
+            ShellLaunchMode::Console
         );
         assert_eq!(
             parse_shell_launch_mode(Some("shell=off")),
@@ -221,11 +218,11 @@ mod tests {
     fn parse_shell_mode_ignores_legacy_console_key() {
         assert_eq!(
             parse_shell_launch_mode(Some("console=serial")),
-            ShellLaunchMode::Console
+            ShellLaunchMode::Serial
         );
         assert_eq!(
-            parse_shell_launch_mode(Some("console=both")),
-            ShellLaunchMode::Console
+            parse_shell_launch_mode(Some("console=tty0")),
+            ShellLaunchMode::Serial
         );
     }
 

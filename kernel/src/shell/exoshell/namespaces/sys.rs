@@ -57,10 +57,7 @@ impl SysNamespace {
             s("kernel"),
             ExoValue::String(Cow::Borrowed(si::kernel_name())),
         );
-        let ticks = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|sh| sh.current_tick())
-            .unwrap_or(0);
+        let ticks = crate::shell::runtime::current_tick();
         map.insert(s("uptime_ms"), ExoValue::Int(ticks as i64));
         ExoValue::Map(map)
     }
@@ -286,10 +283,7 @@ impl SysNamespace {
 
     /// システムモニター情報
     pub fn monitor() -> ExoValue<'static> {
-        let info = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.monitor_info())
-            .unwrap_or_default();
+        let info = crate::shell::runtime::monitor_info();
 
         let mut map = BTreeMap::new();
 
@@ -370,10 +364,7 @@ impl SysNamespace {
 
     /// モニターダッシュボードを表示
     pub fn monitor_dashboard() -> ExoValue<'static> {
-        let info = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.monitor_info())
-            .unwrap_or_default();
+        let info = crate::shell::runtime::monitor_info();
 
         log::info!("\n");
         log::info!("┌──────────────────────────────────────────────────────────────────────┐\n");
@@ -428,17 +419,7 @@ impl SysNamespace {
 
     /// 温度情報
     pub fn thermal() -> ExoValue<'static> {
-        let info = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.thermal_info())
-            .unwrap_or(kernel_api::service::shell::ThermalInfo {
-                cpu_celsius: None,
-                polling_count: 0,
-                trip_events: 0,
-                throttle_policy: String::from("Unknown"),
-                throttle_count: 0,
-                sensors: Vec::new(),
-            });
+        let info = crate::shell::runtime::thermal_info();
 
         let mut map = BTreeMap::new();
 
@@ -491,10 +472,7 @@ impl SysNamespace {
 
     /// ウォッチドッグ情報
     pub fn watchdog() -> ExoValue<'static> {
-        let info = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.watchdog_info())
-            .unwrap_or_default();
+        let info = crate::shell::runtime::watchdog_info();
 
         let mut map = BTreeMap::new();
         map.insert(
@@ -516,15 +494,7 @@ impl SysNamespace {
 
     /// 電源情報
     pub fn power() -> ExoValue<'static> {
-        let info = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.power_info())
-            .unwrap_or(kernel_api::service::shell::PowerInfo {
-                state: String::from("Unknown"),
-                power_button_presses: 0,
-                sleep_button_presses: 0,
-                cpu_idle: kernel_api::service::shell::CpuIdleInfo::default(),
-            });
+        let info = crate::shell::runtime::power_info();
 
         let mut map = BTreeMap::new();
         map.insert(
@@ -593,12 +563,7 @@ impl SysNamespace {
         }
 
         log::info!("[SYS] Shutdown requested via shell\n");
-
-        if let Some(shell) = kernel_api::service::kernel::instance().shell() {
-            shell.shutdown();
-        }
-
-        ExoValue::Nil
+        crate::shell::runtime::shutdown()
     }
 
     /// システムリブート
@@ -609,12 +574,7 @@ impl SysNamespace {
         }
 
         log::info!("[SYS] Reboot requested via shell\n");
-
-        if let Some(shell) = kernel_api::service::kernel::instance().shell() {
-            shell.reboot();
-        }
-
-        ExoValue::Nil
+        crate::shell::runtime::reboot()
     }
 }
 
@@ -642,7 +602,6 @@ impl ShellNamespace for SysNamespace {
                 "net" | "network" => Self::net(),
                 "load" | "loadavg" => Self::load(),
                 "monitor" => Self::monitor(),
-                "dashboard" => Self::monitor_dashboard(),
                 "thermal" | "temp" => Self::thermal(),
                 "watchdog" | "wd" => Self::watchdog(),
                 "power" => Self::power(),
@@ -650,7 +609,7 @@ impl ShellNamespace for SysNamespace {
                 "shutdown" => Self::shutdown_with_caps(caps),
                 "reboot" => Self::reboot_with_caps(caps),
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, cpu, stat, kernel, cells, cell, net, load, monitor, dashboard, thermal, watchdog, power, panic_record, shutdown, reboot",
+                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, cpu, stat, kernel, cells, cell, net, load, monitor, thermal, watchdog, power, panic_record, shutdown, reboot",
                     method
                 )),
             }

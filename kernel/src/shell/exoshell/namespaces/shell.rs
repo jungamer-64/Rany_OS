@@ -21,10 +21,7 @@ pub struct ShellControlNamespace;
 impl ShellControlNamespace {
     /// Create a new ShellProxy map
     pub fn spawn_proxy() -> ExoValue<'static> {
-        let domain_id = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let domain_id = crate::shell::runtime::current_domain_id();
 
         let mut map = BTreeMap::new();
         map.insert(
@@ -316,10 +313,7 @@ impl ShellControlNamespace {
             _ => return ExoValue::Error(String::from("Invalid proxy parent")),
         };
 
-        let cur = kernel_api::service::kernel::instance()
-            .shell()
-            .map(|s| s.current_domain())
-            .unwrap_or(0);
+        let cur = crate::shell::runtime::current_domain_id();
         if cur != parent
             && !crate::security::capability::manager()
                 .has_capability(cur, crate::security::capability::CAP_SYS_ADMIN)

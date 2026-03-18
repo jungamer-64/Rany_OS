@@ -29,10 +29,9 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BootShellMode {
     #[default]
-    Console = 0,
-    Serial = 1,
-    Both = 2,
-    Off = 3,
+    Serial = 0,
+    Console = 1,
+    Off = 2,
 }
 
 /// Boot-critical policy normalized by the bootloader.
@@ -82,14 +81,12 @@ pub fn parse_boot_policy(cmdline: &str) -> Result<BootPolicy, BootPolicyError> {
         policy.shell_mode = match shell {
             "console" => BootShellMode::Console,
             "serial" => BootShellMode::Serial,
-            "both" => BootShellMode::Both,
             "off" => BootShellMode::Off,
-            _ => BootShellMode::Console,
+            _ => BootShellMode::Serial,
         };
     } else if let Some(console) = get_cmdline_option(cmdline, "console") {
         policy.shell_mode = match console {
             "serial" => BootShellMode::Serial,
-            "both" => BootShellMode::Both,
             _ => BootShellMode::Console,
         };
     }
@@ -332,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn boot_policy_defaults_to_console_and_iommu_defaults() {
+    fn boot_policy_defaults_to_serial_and_iommu_defaults() {
         assert_eq!(
             parse_boot_policy("").expect("empty cmdline is valid"),
             BootPolicy::default()
@@ -354,12 +351,6 @@ mod tests {
             BootShellMode::Serial
         );
         assert_eq!(
-            parse_boot_policy("shell=both")
-                .expect("shell=both should parse")
-                .shell_mode,
-            BootShellMode::Both
-        );
-        assert_eq!(
             parse_boot_policy("shell=off")
                 .expect("shell=off should parse")
                 .shell_mode,
@@ -376,10 +367,10 @@ mod tests {
             BootShellMode::Serial
         );
         assert_eq!(
-            parse_boot_policy("console=both")
-                .expect("console=both should parse")
+            parse_boot_policy("console=tty0")
+                .expect("console=tty0 should parse")
                 .shell_mode,
-            BootShellMode::Both
+            BootShellMode::Console
         );
     }
 
