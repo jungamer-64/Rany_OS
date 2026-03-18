@@ -21,7 +21,6 @@ members = [
     "drivers/usb",
     "drivers/nvme",
     "drivers/serial",
-    "drivers/gpu",
     "drivers/hid",
     "drivers/virtio",
     "drivers/acpi",
