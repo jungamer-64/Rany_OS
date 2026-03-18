@@ -17,6 +17,7 @@ mod durability;
 mod error;
 #[path = "../../filesystems/kernel_fs/mod.rs"]
 mod fs;
+mod async_boot_runtime_snapshot;
 mod kernel_main;
 pub use kernel_main::*;
 #[macro_use]

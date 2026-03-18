@@ -62,6 +62,10 @@ static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
     ("smp_workers_online", case_smp_workers_online),
     ("per_core_workers_running", case_per_core_workers_running),
     (
+        "async_boot_stages_distributed",
+        case_async_boot_stages_distributed,
+    ),
+    (
         "runtime_local_timers_enabled",
         case_runtime_local_timers_enabled,
     ),
@@ -244,6 +248,50 @@ fn case_per_core_workers_running() -> Result<(), BootCaseError> {
     }
 
     Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_async_boot_stages_distributed() -> Result<(), BootCaseError> {
+    let cpu_count = crate::cpu::count() as usize;
+    if cpu_count <= 1 {
+        return Err(BootCaseError::blocked(
+            "async_boot_stages_distributed requires a multi-core QEMU configuration",
+        ));
+    }
+
+    let snapshot = crate::async_boot_stage_runtime_snapshot();
+    if snapshot.platform.started_cpu != Some(0) {
+        return Err(BootCaseError::failed(format!(
+            "platform stage did not start on BSP: snapshot={:?}",
+            snapshot
+        )));
+    }
+
+    let non_bsp_stage_seen = [
+        snapshot.graphics.started_cpu,
+        snapshot.core_services.started_cpu,
+        snapshot.driver.started_cpu,
+        snapshot.post_driver.started_cpu,
+        snapshot.finalizer.started_cpu,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|cpu_id| cpu_id != 0);
+    if !non_bsp_stage_seen {
+        return Err(BootCaseError::failed(format!(
+            "no async boot stage started on an AP: snapshot={:?}",
+            snapshot
+        )));
+    }
+
+    if snapshot.finalizer.started_cpu != Some(0) && snapshot.finalizer.started_cpu.is_some() {
+        return Ok(());
+    }
+
+    Err(BootCaseError::failed(format!(
+        "finalizer stage did not start on an AP: snapshot={:?}",
+        snapshot
+    )))
 }
 
 #[cfg(feature = "qemu-test-export")]

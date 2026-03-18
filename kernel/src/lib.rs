@@ -308,6 +308,15 @@ pub mod security;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 
+#[cfg(feature = "qemu-test-export")]
+mod async_boot_runtime_snapshot;
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn async_boot_stage_runtime_snapshot()
+-> async_boot_runtime_snapshot::AsyncBootStageRuntimeSnapshot {
+    async_boot_runtime_snapshot::async_boot_stage_runtime_snapshot()
+}
+
 // Expose additional modules when building tests so unit tests inside those
 // modules can be executed via `cargo test --lib`.
 // Also expose the `graphics` module when compiling benches via the

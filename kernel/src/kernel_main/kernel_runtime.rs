@@ -5,6 +5,7 @@
 //!! カーネルの初期化後、Executor上で動作するタスクをスポーンする関数や、システム統計を表示する関数などを定義する。
 use super::*;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::future::{Future, poll_fn};
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use core::task::Poll;
@@ -28,6 +29,28 @@ impl AsyncBootStage {
     const fn index(self) -> usize {
         self as usize
     }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Platform => "platform",
+            Self::Graphics => "graphics",
+            Self::CoreServices => "core_services",
+            Self::Driver => "driver",
+            Self::PostDriver => "post_driver",
+            Self::Finalizer => "finalizer",
+        }
+    }
+
+    const fn ap_round_robin_slot(self) -> Option<usize> {
+        match self {
+            Self::Platform => None,
+            Self::Graphics => Some(0),
+            Self::CoreServices => Some(1),
+            Self::Driver => Some(2),
+            Self::PostDriver => Some(3),
+            Self::Finalizer => Some(4),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +59,85 @@ enum AsyncBootStageStatus {
     Pending = 0,
     Running = 1,
     Complete = 2,
+}
+
+fn normalized_async_boot_ap_candidates(
+    active_cpus: usize,
+    topology_candidates: &[usize],
+) -> Vec<usize> {
+    let active_cpus = active_cpus.max(1).min(crate::per_cpu::MAX_CPUS);
+    let mut normalized = Vec::new();
+
+    if active_cpus <= 1 {
+        return normalized;
+    }
+
+    for &candidate in topology_candidates {
+        if candidate == 0 || candidate >= active_cpus || normalized.contains(&candidate) {
+            continue;
+        }
+        normalized.push(candidate);
+    }
+
+    for candidate in 1..active_cpus {
+        if !normalized.contains(&candidate) {
+            normalized.push(candidate);
+        }
+    }
+
+    normalized
+}
+
+fn async_boot_stage_target_cpu_with_candidates(
+    stage: AsyncBootStage,
+    active_cpus: usize,
+    topology_candidates: &[usize],
+) -> usize {
+    let active_cpus = active_cpus.max(1).min(crate::per_cpu::MAX_CPUS);
+    if active_cpus <= 1 || matches!(stage, AsyncBootStage::Platform) {
+        return 0;
+    }
+
+    let ap_candidates = normalized_async_boot_ap_candidates(active_cpus, topology_candidates);
+    let Some(slot) = stage.ap_round_robin_slot() else {
+        return 0;
+    };
+
+    ap_candidates
+        .get(slot % ap_candidates.len().max(1))
+        .copied()
+        .unwrap_or(0)
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) fn async_boot_stage_runtime_snapshot()
+-> crate::async_boot_runtime_snapshot::AsyncBootStageRuntimeSnapshot {
+    crate::async_boot_runtime_snapshot::async_boot_stage_runtime_snapshot()
+}
+
+fn reset_async_boot_stage_runtime_snapshot() {
+    crate::async_boot_runtime_snapshot::reset_async_boot_stage_runtime_snapshot();
+}
+
+fn record_async_boot_stage_assigned_cpu(stage: AsyncBootStage, cpu_id: usize) {
+    crate::async_boot_runtime_snapshot::record_async_boot_stage_assigned_cpu(
+        stage.index(),
+        cpu_id,
+    );
+}
+
+fn record_async_boot_stage_started_cpu(stage: AsyncBootStage, cpu_id: usize) {
+    crate::async_boot_runtime_snapshot::record_async_boot_stage_started_cpu(
+        stage.index(),
+        cpu_id,
+    );
+}
+
+fn record_async_boot_stage_completed_cpu(stage: AsyncBootStage, cpu_id: usize) {
+    crate::async_boot_runtime_snapshot::record_async_boot_stage_completed_cpu(
+        stage.index(),
+        cpu_id,
+    );
 }
 
 struct BootStageLatch {
@@ -159,11 +261,8 @@ impl AsyncBootCoordinator {
 }
 
 fn async_boot_stage_target_cpu(stage: AsyncBootStage, active_cpus: usize) -> usize {
-    let _ = stage;
-    let _ = active_cpus;
-    // Keep early async boot orchestration on the bootstrap CPU until runtime
-    // interrupts and cross-CPU TLB shootdowns are known-good.
-    0
+    let topology_candidates = crate::mm::numa::topology::steal_candidates_for_cpu(0);
+    async_boot_stage_target_cpu_with_candidates(stage, active_cpus, &topology_candidates)
 }
 
 fn log_executor_interrupt_policy(allow_interrupts: bool) {
@@ -186,55 +285,160 @@ fn log_executor_interrupt_policy(allow_interrupts: bool) {
     }
 }
 
-async fn run_platform_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+async fn run_platform_stage(
+    context: KernelBootContext,
+    coordinator: Arc<AsyncBootCoordinator>,
+    assigned_cpu: usize,
+) {
     coordinator.mark_stage_running(AsyncBootStage::Platform);
-    info!(target: "init", "[async-boot] Platform stage starting on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_started_cpu(AsyncBootStage::Platform, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] Platform stage starting on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     phase_platform_and_security_base(&context);
-    info!(target: "init", "[async-boot] Platform stage completed on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_completed_cpu(AsyncBootStage::Platform, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] Platform stage completed on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.mark_stage_complete(AsyncBootStage::Platform);
 }
 
-async fn run_graphics_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+async fn run_graphics_stage(
+    context: KernelBootContext,
+    coordinator: Arc<AsyncBootCoordinator>,
+    assigned_cpu: usize,
+) {
     coordinator.mark_stage_running(AsyncBootStage::Graphics);
-    info!(target: "init", "[async-boot] Graphics stage starting on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_started_cpu(AsyncBootStage::Graphics, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] Graphics stage starting on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.set_graphics_console_ready(phase_graphics_console(&context));
-    info!(target: "init", "[async-boot] Graphics stage completed on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_completed_cpu(AsyncBootStage::Graphics, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] Graphics stage completed on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.mark_stage_complete(AsyncBootStage::Graphics);
 }
 
 async fn run_core_services_stage(
     context: KernelBootContext,
     coordinator: Arc<AsyncBootCoordinator>,
+    assigned_cpu: usize,
 ) {
     coordinator.mark_stage_running(AsyncBootStage::CoreServices);
-    info!(target: "init", "[async-boot] CoreServices stage waiting for Platform on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_started_cpu(AsyncBootStage::CoreServices, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] CoreServices stage waiting for Platform on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.wait_for_stage(AsyncBootStage::Platform).await;
-    info!(target: "init", "[async-boot] CoreServices stage starting on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    info!(
+        target: "init",
+        "[async-boot] CoreServices stage starting on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     phase_core_services_base(&context);
-    info!(target: "init", "[async-boot] CoreServices stage completed on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_completed_cpu(AsyncBootStage::CoreServices, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] CoreServices stage completed on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.mark_stage_complete(AsyncBootStage::CoreServices);
 }
 
-async fn run_driver_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+async fn run_driver_stage(
+    context: KernelBootContext,
+    coordinator: Arc<AsyncBootCoordinator>,
+    assigned_cpu: usize,
+) {
     coordinator.mark_stage_running(AsyncBootStage::Driver);
-    info!(target: "init", "[async-boot] Driver stage waiting for CoreServices on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_started_cpu(AsyncBootStage::Driver, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] Driver stage waiting for CoreServices on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator
         .wait_for_stage(AsyncBootStage::CoreServices)
         .await;
-    info!(target: "init", "[async-boot] Driver stage starting on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    info!(
+        target: "init",
+        "[async-boot] Driver stage starting on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.set_integration_ready(phase_driver_bringup());
-    info!(target: "init", "[async-boot] Driver stage completed on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_completed_cpu(AsyncBootStage::Driver, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] Driver stage completed on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.mark_stage_complete(AsyncBootStage::Driver);
     let _ = context;
 }
 
-async fn run_post_driver_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+async fn run_post_driver_stage(
+    context: KernelBootContext,
+    coordinator: Arc<AsyncBootCoordinator>,
+    assigned_cpu: usize,
+) {
     coordinator.mark_stage_running(AsyncBootStage::PostDriver);
-    info!(target: "init", "[async-boot] PostDriver stage waiting for Driver on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_started_cpu(AsyncBootStage::PostDriver, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] PostDriver stage waiting for Driver on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.wait_for_stage(AsyncBootStage::Driver).await;
-    info!(target: "init", "[async-boot] PostDriver stage starting on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    info!(
+        target: "init",
+        "[async-boot] PostDriver stage starting on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     phase_post_driver_services(&context);
-    info!(target: "init", "[async-boot] PostDriver stage completed; publishing completion on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_completed_cpu(AsyncBootStage::PostDriver, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] PostDriver stage completed; publishing completion on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.mark_stage_complete(AsyncBootStage::PostDriver);
 }
 
@@ -325,15 +529,60 @@ fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoor
     schedule_runtime_tests_if_requested(&context);
 }
 
-async fn run_finalizer_stage(context: KernelBootContext, coordinator: Arc<AsyncBootCoordinator>) {
+async fn run_finalizer_stage(
+    context: KernelBootContext,
+    coordinator: Arc<AsyncBootCoordinator>,
+    assigned_cpu: usize,
+) {
     coordinator.mark_stage_running(AsyncBootStage::Finalizer);
-    info!(target: "init", "[async-boot] Finalizer stage waiting for Graphics on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_started_cpu(AsyncBootStage::Finalizer, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] Finalizer stage waiting for Graphics on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.wait_for_stage(AsyncBootStage::Graphics).await;
-    info!(target: "init", "[async-boot] Finalizer stage waiting for PostDriver on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    info!(
+        target: "init",
+        "[async-boot] Finalizer stage waiting for PostDriver on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.wait_for_stage(AsyncBootStage::PostDriver).await;
-    info!(target: "init", "[async-boot] Finalizer stage starting on cpu={}", crate::cpu::current_id());
+    let current_cpu = crate::cpu::current_id();
+    info!(
+        target: "init",
+        "[async-boot] Finalizer stage starting on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     finalize_runtime_boot(context, &coordinator);
+    let current_cpu = crate::cpu::current_id();
+    record_async_boot_stage_completed_cpu(AsyncBootStage::Finalizer, current_cpu);
+    info!(
+        target: "init",
+        "[async-boot] Finalizer stage completed on cpu={} assigned_cpu={}",
+        current_cpu,
+        assigned_cpu
+    );
     coordinator.mark_stage_complete(AsyncBootStage::Finalizer);
+}
+
+fn spawn_async_boot_stage<F>(stage: AsyncBootStage, target_cpu: usize, future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    record_async_boot_stage_assigned_cpu(stage, target_cpu);
+    info!(
+        target: "init",
+        "[async-boot] scheduling stage={} target_cpu={}",
+        stage.label(),
+        target_cpu
+    );
+    crate::task::spawn_on_cpu_with_priority(target_cpu, crate::task::Priority::High, future);
 }
 
 fn spawn_async_boot_orchestrator(
@@ -343,57 +592,39 @@ fn spawn_async_boot_orchestrator(
     let active_cpus = crate::task::executor_slot_count().max(1);
 
     let platform = coordinator.clone();
-    crate::task::spawn_on_cpu_with_priority(
-        async_boot_stage_target_cpu(AsyncBootStage::Platform, active_cpus),
-        crate::task::Priority::High,
-        async move {
-            run_platform_stage(context, platform).await;
-        },
-    );
+    let platform_cpu = async_boot_stage_target_cpu(AsyncBootStage::Platform, active_cpus);
+    spawn_async_boot_stage(AsyncBootStage::Platform, platform_cpu, async move {
+        run_platform_stage(context, platform, platform_cpu).await;
+    });
 
     let graphics = coordinator.clone();
-    crate::task::spawn_on_cpu_with_priority(
-        async_boot_stage_target_cpu(AsyncBootStage::Graphics, active_cpus),
-        crate::task::Priority::High,
-        async move {
-            run_graphics_stage(context, graphics).await;
-        },
-    );
+    let graphics_cpu = async_boot_stage_target_cpu(AsyncBootStage::Graphics, active_cpus);
+    spawn_async_boot_stage(AsyncBootStage::Graphics, graphics_cpu, async move {
+        run_graphics_stage(context, graphics, graphics_cpu).await;
+    });
 
     let core = coordinator.clone();
-    crate::task::spawn_on_cpu_with_priority(
-        async_boot_stage_target_cpu(AsyncBootStage::CoreServices, active_cpus),
-        crate::task::Priority::High,
-        async move {
-            run_core_services_stage(context, core).await;
-        },
-    );
+    let core_cpu = async_boot_stage_target_cpu(AsyncBootStage::CoreServices, active_cpus);
+    spawn_async_boot_stage(AsyncBootStage::CoreServices, core_cpu, async move {
+        run_core_services_stage(context, core, core_cpu).await;
+    });
 
     let driver = coordinator.clone();
-    crate::task::spawn_on_cpu_with_priority(
-        async_boot_stage_target_cpu(AsyncBootStage::Driver, active_cpus),
-        crate::task::Priority::High,
-        async move {
-            run_driver_stage(context, driver).await;
-        },
-    );
+    let driver_cpu = async_boot_stage_target_cpu(AsyncBootStage::Driver, active_cpus);
+    spawn_async_boot_stage(AsyncBootStage::Driver, driver_cpu, async move {
+        run_driver_stage(context, driver, driver_cpu).await;
+    });
 
     let post_driver = coordinator.clone();
-    crate::task::spawn_on_cpu_with_priority(
-        async_boot_stage_target_cpu(AsyncBootStage::PostDriver, active_cpus),
-        crate::task::Priority::High,
-        async move {
-            run_post_driver_stage(context, post_driver).await;
-        },
-    );
+    let post_driver_cpu = async_boot_stage_target_cpu(AsyncBootStage::PostDriver, active_cpus);
+    spawn_async_boot_stage(AsyncBootStage::PostDriver, post_driver_cpu, async move {
+        run_post_driver_stage(context, post_driver, post_driver_cpu).await;
+    });
 
-    crate::task::spawn_on_cpu_with_priority(
-        async_boot_stage_target_cpu(AsyncBootStage::Finalizer, active_cpus),
-        crate::task::Priority::High,
-        async move {
-            run_finalizer_stage(context, coordinator).await;
-        },
-    );
+    let finalizer_cpu = async_boot_stage_target_cpu(AsyncBootStage::Finalizer, active_cpus);
+    spawn_async_boot_stage(AsyncBootStage::Finalizer, finalizer_cpu, async move {
+        run_finalizer_stage(context, coordinator, finalizer_cpu).await;
+    });
 }
 
 pub(crate) fn start_async_boot_runtime(context: KernelBootContext) -> ! {
@@ -401,6 +632,7 @@ pub(crate) fn start_async_boot_runtime(context: KernelBootContext) -> ! {
         target: "init",
         "Phase-4 early executor handoff entering the per-core executor path"
     );
+    reset_async_boot_stage_runtime_snapshot();
 
     let allow_interrupts = runtime_interrupts_enabled(&context);
     for_each_executor_online_milestone(|step| match step {
@@ -979,12 +1211,13 @@ pub(crate) fn spawn_demo_runtime_tasks() {
         info!(target: "net_test", "Network ping test: waiting for stack to be ready...");
 
         // DHCP/スタックからゲートウェイを取得
-        let gw_opt =
-            crate::net::api::config::list_interface_configs_in(crate::net::runtime::default_runtime())
-            .await
-            .into_iter()
-            .map(|cfg| cfg.gateway)
-            .find(|gw| *gw != [0, 0, 0, 0]);
+        let gw_opt = crate::net::api::config::list_interface_configs_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .await
+        .into_iter()
+        .map(|cfg| cfg.gateway)
+        .find(|gw| *gw != [0, 0, 0, 0]);
         let Some(gw) = gw_opt else {
             warn!(target: "net_test", "No gateway configured yet; skipping ping test");
             return;
@@ -1139,13 +1372,126 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn async_boot_stage_target_cpu_falls_back_to_bsp_on_low_core_counts() {
+    fn async_boot_stage_target_cpu_keeps_all_stages_on_cpu0_for_uniprocessor() {
         assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Platform, 1), 0);
         assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Graphics, 1), 0);
-        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::CoreServices, 2), 0);
-        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Driver, 3), 0);
-        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::PostDriver, 2), 0);
-        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Finalizer, 4), 0);
+        assert_eq!(
+            async_boot_stage_target_cpu(AsyncBootStage::CoreServices, 1),
+            0
+        );
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Driver, 1), 0);
+        assert_eq!(
+            async_boot_stage_target_cpu(AsyncBootStage::PostDriver, 1),
+            0
+        );
+        assert_eq!(async_boot_stage_target_cpu(AsyncBootStage::Finalizer, 1), 0);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn async_boot_stage_target_cpu_uses_topology_candidates_round_robin() {
+        let topology_candidates = [2usize, 1, 3];
+
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::Platform,
+                4,
+                &topology_candidates,
+            ),
+            0
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::Graphics,
+                4,
+                &topology_candidates,
+            ),
+            2
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::CoreServices,
+                4,
+                &topology_candidates,
+            ),
+            1
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::Driver,
+                4,
+                &topology_candidates,
+            ),
+            3
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::PostDriver,
+                4,
+                &topology_candidates,
+            ),
+            2
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::Finalizer,
+                4,
+                &topology_candidates,
+            ),
+            1
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn async_boot_stage_target_cpu_backfills_missing_ap_candidates() {
+        let topology_candidates = [3usize];
+
+        assert_eq!(
+            normalized_async_boot_ap_candidates(4, &topology_candidates),
+            alloc::vec![3, 1, 2]
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::Graphics,
+                4,
+                &topology_candidates,
+            ),
+            3
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::CoreServices,
+                4,
+                &topology_candidates,
+            ),
+            1
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::Driver,
+                4,
+                &topology_candidates,
+            ),
+            2
+        );
+        assert_eq!(
+            async_boot_stage_target_cpu_with_candidates(
+                AsyncBootStage::Finalizer,
+                4,
+                &topology_candidates,
+            ),
+            1
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn async_boot_stage_target_cpu_keeps_finalizer_off_bsp_when_aps_exist() {
+        assert_ne!(
+            async_boot_stage_target_cpu_with_candidates(AsyncBootStage::Finalizer, 2, &[]),
+            0
+        );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -1190,6 +1536,31 @@ mod tests {
         coordinator.mark_stage_complete(AsyncBootStage::Graphics);
         executor.drive_once_for_test();
         assert!(completed.load(Ordering::Acquire));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn async_boot_stage_runtime_snapshot_resets_and_records_cpu_transitions() {
+        reset_async_boot_stage_runtime_snapshot();
+        let snapshot = async_boot_stage_runtime_snapshot();
+        assert_eq!(snapshot.platform.assigned_cpu, None);
+        assert_eq!(snapshot.graphics.started_cpu, None);
+        assert_eq!(snapshot.finalizer.completed_cpu, None);
+
+        record_async_boot_stage_assigned_cpu(AsyncBootStage::Platform, 0);
+        record_async_boot_stage_started_cpu(AsyncBootStage::Graphics, 2);
+        record_async_boot_stage_completed_cpu(AsyncBootStage::Finalizer, 3);
+
+        let snapshot = async_boot_stage_runtime_snapshot();
+        assert_eq!(snapshot.platform.assigned_cpu, Some(0));
+        assert_eq!(snapshot.graphics.started_cpu, Some(2));
+        assert_eq!(snapshot.finalizer.completed_cpu, Some(3));
+
+        reset_async_boot_stage_runtime_snapshot();
+        let snapshot = async_boot_stage_runtime_snapshot();
+        assert_eq!(snapshot.platform.assigned_cpu, None);
+        assert_eq!(snapshot.graphics.started_cpu, None);
+        assert_eq!(snapshot.finalizer.completed_cpu, None);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
