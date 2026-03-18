@@ -15,6 +15,72 @@ fn unpack_device_id(locator: PackedPciLocation) -> IommuDeviceId {
     }
 }
 
+fn authorize_pci_locator_for_domain(
+    caller: crate::domain_system::DomainId,
+    requested: PackedPciLocation,
+    bound_locator: Option<PackedPciLocation>,
+) -> Result<(), KapiError> {
+    if requested.is_null() {
+        log::warn!("[KAPI] alloc_dma_for_device rejected null PCI locator");
+        return Err(KapiError::NotSupported);
+    }
+
+    if caller == crate::domain_system::DomainId::KERNEL {
+        return Ok(());
+    }
+
+    let Some(bound_locator) = bound_locator else {
+        log::error!(
+            "[KAPI][SECURITY] Domain {} requested DMA for PCI locator 0x{:x} without a bound driver device",
+            caller,
+            requested.raw()
+        );
+        return Err(KapiError::PermissionDenied);
+    };
+
+    if bound_locator.is_null() || bound_locator != requested {
+        log::error!(
+            "[KAPI][SECURITY] Domain {} requested DMA for PCI locator 0x{:x} but owns 0x{:x}",
+            caller,
+            requested.raw(),
+            bound_locator.raw()
+        );
+        return Err(KapiError::PermissionDenied);
+    }
+
+    Ok(())
+}
+
+fn authorize_dma_device_for_current_subject(
+    device_id: PackedPciLocation,
+) -> Result<IommuDeviceId, KapiError> {
+    let caller = context::current_subject().domain;
+    let bound_locator = if caller == crate::domain_system::DomainId::KERNEL {
+        None
+    } else {
+        let manager = crate::driver_domain::driver_domain_manager();
+        let Some(driver_domain_id) = manager.find_by_domain(caller) else {
+            authorize_pci_locator_for_domain(caller, device_id, None)?;
+            unreachable!("non-kernel domains without a bound driver device must be rejected");
+        };
+        Some(
+            manager
+                .with_cell(driver_domain_id, |cell| cell.abi_driver_context.pci_location())
+                .map_err(|err| {
+                    log::error!(
+                        "[KAPI][SECURITY] Failed to resolve PCI locator for domain {}: {:?}",
+                        caller,
+                        err
+                    );
+                    KapiError::PermissionDenied
+                })?,
+        )
+    };
+
+    authorize_pci_locator_for_domain(caller, device_id, bound_locator)?;
+    Ok(unpack_device_id(device_id))
+}
+
 fn stack_scope(
     scope: kernel_api::resource::net::InterfaceScope,
 ) -> crate::net::types::InterfaceScope {
@@ -218,13 +284,8 @@ impl KernelServices for ExoKernel {
         size: usize,
         device_id: PackedPciLocation,
     ) -> Result<DmaBuffer, KapiError> {
-        if device_id.is_null() {
-            log::warn!("[KAPI] alloc_dma_for_device rejected null PCI locator");
-            return Err(KapiError::NotSupported);
-        }
-
         let caller = context::current_subject().domain.as_u64();
-        let dev_id = unpack_device_id(device_id);
+        let dev_id = authorize_dma_device_for_current_subject(device_id)?;
         let ctx = dma::DeviceDmaContext::for_attached_device(dev_id);
         match ctx.alloc_region(size, dma::DmaMemoryAttributes::MMIO) {
             Ok(region) => {
@@ -1214,6 +1275,63 @@ mod dma_tests {
             set_current_task(cpu_id, current);
         }
         CurrentTaskGuard { prev, current }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn authorize_pci_locator_allows_kernel_domain() {
+        let locator = PackedPciLocation::new(0, 0, 1, 0);
+        assert!(authorize_pci_locator_for_domain(DomainId::KERNEL, locator, None).is_ok());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn authorize_pci_locator_rejects_missing_driver_binding() {
+        let locator = PackedPciLocation::new(0, 0, 2, 0);
+        let err =
+            authorize_pci_locator_for_domain(DomainId::new(800), locator, None).unwrap_err();
+        assert!(matches!(err, KapiError::PermissionDenied));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn authorize_pci_locator_rejects_mismatched_driver_binding() {
+        let bound = PackedPciLocation::new(0, 0, 3, 0);
+        let requested = PackedPciLocation::new(0, 0, 4, 0);
+        let err = authorize_pci_locator_for_domain(DomainId::new(801), requested, Some(bound))
+            .unwrap_err();
+        assert!(matches!(err, KapiError::PermissionDenied));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn authorize_pci_locator_accepts_matching_driver_binding() {
+        let locator = PackedPciLocation::new(0, 0, 5, 0);
+        assert!(authorize_pci_locator_for_domain(DomainId::new(802), locator, Some(locator))
+            .is_ok());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn authorize_dma_device_for_current_subject_rejects_unbound_domain() {
+        let _subject_guard = set_current_subject(DomainId::new(803));
+        let locator = PackedPciLocation::new(0, 0, 6, 0);
+        let err = authorize_dma_device_for_current_subject(locator).unwrap_err();
+        assert!(matches!(err, KapiError::PermissionDenied));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn authorize_dma_device_for_current_subject_allows_kernel_domain() {
+        let _subject_guard = set_current_subject(DomainId::KERNEL);
+        let locator = PackedPciLocation::new(0x1234, 0x56, 0x07, 0x01);
+        let device = authorize_dma_device_for_current_subject(locator)
+            .expect("kernel domain should bypass driver binding lookup");
+
+        assert_eq!(device.segment, 0x1234);
+        assert_eq!(device.bus, 0x56);
+        assert_eq!(device.device, 0x07);
+        assert_eq!(device.function, 0x01);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
