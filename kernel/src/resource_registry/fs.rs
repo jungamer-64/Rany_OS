@@ -14,6 +14,12 @@ pub(crate) struct FileHandleEntry {
     pub(crate) owner: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileHandleError {
+    InvalidHandle,
+    PermissionDenied,
+}
+
 struct FileHandleRegistry {
     handles: PoisonLock<BTreeMap<u64, FileHandleEntry>>,
     next_id: AtomicU64,
@@ -36,11 +42,15 @@ impl FileHandleRegistry {
         id
     }
 
-    fn unregister(&self, id: u64) -> Option<FileHandleEntry> {
-        self.handles
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id)
+    fn unregister_owned(&self, id: u64, caller: u64) -> Result<FileHandleEntry, FileHandleError> {
+        let mut handles = self.handles.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = handles.get(&id) else {
+            return Err(FileHandleError::InvalidHandle);
+        };
+        if entry.owner != caller {
+            return Err(FileHandleError::PermissionDenied);
+        }
+        handles.remove(&id).ok_or(FileHandleError::InvalidHandle)
     }
 }
 
@@ -50,8 +60,11 @@ pub(crate) fn register_handle(entry: FileHandleEntry) -> u64 {
     FILE_HANDLE_REGISTRY.register(entry)
 }
 
-pub(crate) fn unregister_handle(id: u64) -> Option<FileHandleEntry> {
-    FILE_HANDLE_REGISTRY.unregister(id)
+pub(crate) fn unregister_handle_owned(
+    id: u64,
+    caller: u64,
+) -> Result<FileHandleEntry, FileHandleError> {
+    FILE_HANDLE_REGISTRY.unregister_owned(id, caller)
 }
 
 pub(crate) fn cleanup_owner(owner: u64) -> usize {

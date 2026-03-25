@@ -606,6 +606,8 @@ mod dma_tests {
     use alloc::boxed::Box;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
+    use kernel_api::ipc::{RRef, RRefError};
+    use kernel_api::service::kernel::KernelServices;
 
     static DROP_COUNTER_A: AtomicUsize = AtomicUsize::new(0);
     static DROP_COUNTER_B: AtomicUsize = AtomicUsize::new(0);
@@ -839,5 +841,174 @@ mod dma_tests {
         assert_eq!(DROP_COUNTER_A.load(Ordering::SeqCst), 1);
         assert_eq!(DROP_COUNTER_B.load(Ordering::SeqCst), 1);
         assert_eq!(DROP_COUNTER_C.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn fs_close_rejects_foreign_owner() {
+        let owner = DomainId::new(900);
+        let caller = DomainId::new(901);
+
+        let handle = {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .fs_open_with_token("foreign-close-test", OpenMode::Write, None)
+                .expect("owner should open file")
+        };
+        let handle_id = handle.id();
+        let mode = handle.mode();
+
+        {
+            let _caller_guard = set_current_subject(caller);
+            let err = EXOKERNEL.fs_close(handle).unwrap_err();
+            assert!(matches!(err, KapiError::PermissionDenied));
+        }
+
+        {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .fs_close(FileHandle::new(handle_id, mode))
+                .expect("owner should still be able to close file");
+        }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn nvme_direct_handle_rejects_use_after_close() {
+        let owner = DomainId::new(910);
+        let handle = {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .nvme_open_direct_with_token(0, 0, 1, None)
+                .expect("owner should open direct handle")
+        };
+
+        {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .nvme_close_direct(handle)
+                .expect("owner should close direct handle");
+        }
+
+        {
+            let _owner_guard = set_current_subject(owner);
+            let err = crate::task::block_on(EXOKERNEL.nvme_flush_direct(handle)).unwrap_err();
+            assert!(matches!(err, KapiError::InvalidHandle));
+        }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn nvme_direct_handle_rejects_foreign_domain_use() {
+        let owner = DomainId::new(911);
+        let caller = DomainId::new(912);
+        let handle = {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .nvme_open_direct_with_token(0, 0, 1, None)
+                .expect("owner should open direct handle")
+        };
+
+        {
+            let _caller_guard = set_current_subject(caller);
+            let err = crate::task::block_on(EXOKERNEL.nvme_flush_direct(handle)).unwrap_err();
+            assert!(matches!(err, KapiError::PermissionDenied));
+        }
+
+        {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .nvme_close_direct(handle)
+                .expect("owner should still be able to close direct handle");
+        }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn ipc_close_rejects_foreign_owner() {
+        let owner = DomainId::new(920);
+        let caller = DomainId::new(921);
+
+        let (sender, receiver) = {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .ipc_create_channel()
+                .expect("owner should create channel")
+        };
+        let sender_id = sender.id();
+
+        {
+            let _caller_guard = set_current_subject(caller);
+            let err = EXOKERNEL.ipc_close(sender).unwrap_err();
+            assert!(matches!(err, KapiError::PermissionDenied));
+        }
+
+        {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .ipc_close(ChannelHandle::new(sender_id))
+                .expect("owner should close sender");
+            EXOKERNEL
+                .ipc_close(receiver)
+                .expect("owner should close receiver");
+        }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn ipc_send_and_recv_reject_foreign_owner() {
+        let owner = DomainId::new(930);
+        let caller = DomainId::new(931);
+
+        let (sender, receiver) = {
+            let _owner_guard = set_current_subject(owner);
+            EXOKERNEL
+                .ipc_create_channel()
+                .expect("owner should create channel")
+        };
+        let sender_id = sender.id();
+        let receiver_id = receiver.id();
+
+        {
+            let _caller_guard = set_current_subject(caller);
+            let err = RRef::<u64>::new(7)
+                .expect("caller should allocate exchange object")
+                .send(ChannelHandle::new(sender_id))
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                RRefError::Kernel(KapiError::PermissionDenied)
+            ));
+        }
+
+        {
+            let _owner_guard = set_current_subject(owner);
+            RRef::<u64>::new(42)
+                .expect("owner should allocate exchange object")
+                .send(ChannelHandle::new(sender_id))
+                .expect("owner should send on owned channel");
+        }
+
+        {
+            let _caller_guard = set_current_subject(caller);
+            let err = RRef::<u64>::recv(ChannelHandle::new(receiver_id)).unwrap_err();
+            assert!(matches!(
+                err,
+                RRefError::Kernel(KapiError::PermissionDenied)
+            ));
+        }
+
+        {
+            let _owner_guard = set_current_subject(owner);
+            let value = RRef::<u64>::recv(ChannelHandle::new(receiver_id))
+                .expect("owner should still receive queued value");
+            assert_eq!(*value, 42);
+            EXOKERNEL
+                .ipc_close(ChannelHandle::new(sender_id))
+                .expect("owner should close sender");
+            EXOKERNEL
+                .ipc_close(ChannelHandle::new(receiver_id))
+                .expect("owner should close receiver");
+        }
     }
 }

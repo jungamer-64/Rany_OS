@@ -101,6 +101,14 @@ impl ChannelRegistry {
             .copied()
     }
 
+    fn entry_for_caller(&self, id: u64, caller: u64) -> Result<ChannelEntry, KapiError> {
+        let entry = self.entry(id).ok_or(KapiError::InvalidHandle)?;
+        if entry.owner != caller {
+            return Err(KapiError::PermissionDenied);
+        }
+        Ok(entry)
+    }
+
     fn unregister(&self, id: u64) -> Option<ChannelEntry> {
         let entry = self
             .handles
@@ -145,7 +153,7 @@ impl ChannelRegistry {
         caller: u64,
         raw: AbiRRefRaw,
     ) -> Result<(), KapiError> {
-        let entry = self.entry(handle.id()).ok_or(KapiError::InvalidHandle)?;
+        let entry = self.entry_for_caller(handle.id(), caller)?;
         if entry.role != ChannelRole::Sender {
             drop_abi_rref_raw(raw);
             return Err(KapiError::PermissionDenied);
@@ -154,7 +162,6 @@ impl ChannelRegistry {
             drop_abi_rref_raw(raw);
             return Err(KapiError::PermissionDenied);
         }
-        let _ = caller;
 
         let mut channels = self.channels.lock().unwrap_or_else(|e| e.into_inner());
         let Some(channel) = channels.get_mut(&entry.channel_id) else {
@@ -170,7 +177,7 @@ impl ChannelRegistry {
     }
 
     fn recv_raw(&self, handle: ChannelHandle, caller: u64) -> Result<AbiRRefRaw, KapiError> {
-        let entry = self.entry(handle.id()).ok_or(KapiError::InvalidHandle)?;
+        let entry = self.entry_for_caller(handle.id(), caller)?;
         if entry.role != ChannelRole::Receiver {
             return Err(KapiError::PermissionDenied);
         }
@@ -186,8 +193,13 @@ impl ChannelRegistry {
                 KapiError::ResourceExhausted
             });
         };
-        let _ = caller;
         Ok(raw)
+    }
+
+    fn unregister_owned(&self, id: u64, caller: u64) -> Result<(), KapiError> {
+        self.entry_for_caller(id, caller)?;
+        self.unregister(id).ok_or(KapiError::InvalidHandle)?;
+        Ok(())
     }
 }
 
@@ -197,8 +209,8 @@ pub(crate) fn create_channel(owner: u64) -> (u64, u64) {
     CHANNEL_REGISTRY.create_channel(owner)
 }
 
-pub(crate) fn unregister_channel(id: u64) -> bool {
-    CHANNEL_REGISTRY.unregister(id).is_some()
+pub(crate) fn unregister_channel_owned(id: u64, caller: u64) -> Result<(), KapiError> {
+    CHANNEL_REGISTRY.unregister_owned(id, caller)
 }
 
 pub(crate) fn send_raw(

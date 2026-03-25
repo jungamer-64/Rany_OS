@@ -57,12 +57,19 @@ pub(crate) fn open_with_token(
 
 pub(crate) fn close(handle: FileHandle) -> Result<(), KapiError> {
     let handle_id = handle.id();
-    if let Some(entry) = crate::resource_registry::fs::unregister_handle(handle_id) {
-        if let Some(t) = entry.token {
-            let _ = crate::security::capability::manager().decrement_in_flight(t);
+    let caller = context::current_subject().domain.as_u64();
+    match crate::resource_registry::fs::unregister_handle_owned(handle_id, caller) {
+        Ok(entry) => {
+            if let Some(t) = entry.token {
+                let _ = crate::security::capability::manager().decrement_in_flight(t);
+            }
+            Ok(())
         }
-        Ok(())
-    } else {
-        Err(KapiError::InvalidHandle)
+        Err(crate::resource_registry::fs::FileHandleError::InvalidHandle) => {
+            Err(KapiError::InvalidHandle)
+        }
+        Err(crate::resource_registry::fs::FileHandleError::PermissionDenied) => {
+            Err(KapiError::PermissionDenied)
+        }
     }
 }

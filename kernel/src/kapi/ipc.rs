@@ -7,11 +7,8 @@ pub(crate) fn create_channel() -> Result<(ChannelHandle, ChannelHandle), KapiErr
 }
 
 pub(crate) fn close(channel: ChannelHandle) -> Result<(), KapiError> {
-    if crate::resource_registry::ipc::unregister_channel(channel.id()) {
-        Ok(())
-    } else {
-        Err(KapiError::InvalidHandle)
-    }
+    let caller = context::current_subject().domain.as_u64();
+    crate::resource_registry::ipc::unregister_channel_owned(channel.id(), caller)
 }
 
 pub(crate) fn current_domain() -> kernel_api::ipc::DomainId {

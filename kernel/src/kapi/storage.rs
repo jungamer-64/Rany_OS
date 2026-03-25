@@ -1,5 +1,44 @@
 use super::*;
 
+fn map_open_error(error: crate::resource_registry::direct_block::NvmeOpenError) -> KapiError {
+    match error {
+        crate::resource_registry::direct_block::NvmeOpenError::InvalidHandle => {
+            KapiError::InvalidHandle
+        }
+        crate::resource_registry::direct_block::NvmeOpenError::PermissionDenied => {
+            KapiError::PermissionDenied
+        }
+    }
+}
+
+fn resolve_direct_handle(
+    handle: DirectBlockHandle,
+) -> Result<crate::fs::DirectBlockHandle, KapiError> {
+    let open_id = handle.open_id();
+    if open_id == 0 {
+        return Err(KapiError::InvalidHandle);
+    }
+
+    let caller = context::current_subject().domain.as_u64();
+    let entry = crate::resource_registry::direct_block::lookup_open_owned(open_id, caller)
+        .map_err(map_open_error)?;
+
+    if entry.device_id != handle.device_id()
+        || entry.start_block != handle.start_block()
+        || entry.block_count != handle.block_count()
+        || entry.block_size != handle.block_size()
+    {
+        return Err(KapiError::InvalidHandle);
+    }
+
+    Ok(crate::fs::DirectBlockHandle::new(
+        entry.device_id,
+        entry.start_block,
+        entry.block_count,
+        entry.block_size,
+    ))
+}
+
 pub(crate) fn open_direct_with_token(
     device_id: u64,
     start_block: u64,
@@ -58,13 +97,13 @@ pub(crate) fn close_direct(handle: DirectBlockHandle) -> Result<(), KapiError> {
 
     let caller = context::current_subject().domain.as_u64();
     match crate::resource_registry::direct_block::unregister_if_owner_or_admin(id, caller) {
-        Some(entry) => {
+        Ok(entry) => {
             if let Some(t) = entry.token {
                 let _ = crate::security::capability::manager().decrement_in_flight(t);
             }
             Ok(())
         }
-        None => Err(KapiError::InvalidHandle),
+        Err(err) => Err(map_open_error(err)),
     }
 }
 
@@ -74,12 +113,7 @@ pub(crate) fn read_blocks_dma(
     buffer: DmaBuffer,
 ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>> {
     Box::pin(async move {
-        let direct = crate::fs::DirectBlockHandle::new(
-            handle.device_id(),
-            handle.start_block(),
-            handle.block_count(),
-            handle.block_size(),
-        );
+        let direct = resolve_direct_handle(handle)?;
         direct
             .read_blocks_dma(block_offset, buffer)
             .await
@@ -93,12 +127,7 @@ pub(crate) fn write_blocks_dma(
     buffer: DmaBuffer,
 ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>> {
     Box::pin(async move {
-        let direct = crate::fs::DirectBlockHandle::new(
-            handle.device_id(),
-            handle.start_block(),
-            handle.block_count(),
-            handle.block_size(),
-        );
+        let direct = resolve_direct_handle(handle)?;
         direct
             .write_blocks_dma(block_offset, buffer)
             .await
@@ -110,12 +139,7 @@ pub(crate) fn flush_direct(
     handle: DirectBlockHandle,
 ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
     Box::pin(async move {
-        let direct = crate::fs::DirectBlockHandle::new(
-            handle.device_id(),
-            handle.start_block(),
-            handle.block_count(),
-            handle.block_size(),
-        );
+        let direct = resolve_direct_handle(handle)?;
         direct.flush().await.map_err(|_| KapiError::IoError)
     })
 }
@@ -126,12 +150,7 @@ pub(crate) fn discard_direct(
     block_count: u64,
 ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
     Box::pin(async move {
-        let direct = crate::fs::DirectBlockHandle::new(
-            handle.device_id(),
-            handle.start_block(),
-            handle.block_count(),
-            handle.block_size(),
-        );
+        let direct = resolve_direct_handle(handle)?;
         direct
             .discard(block_offset, block_count)
             .await
