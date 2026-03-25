@@ -348,7 +348,7 @@ pub fn check_domain_quota(elapsed_ns: u64) -> bool {
 
     // ドメインクォータマネージャにCPU時間を記録
     let exceeded = crate::domain::quota::quota_manager().consume_cpu_time(
-        crate::domain_system::DomainId::new(domain_id),
+        crate::domain::DomainId::new(domain_id),
         elapsed_ns,
         current_time_ns,
     );

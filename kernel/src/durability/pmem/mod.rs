@@ -223,12 +223,11 @@ fn read_u64(ptr: usize) -> u64 {
 ///
 /// Returns `Ok(None)` when NFIT is absent or no suitable SPA range is found.
 pub fn init_from_nfit() -> Result<Option<PmemRegion>, PmemDiscoveryError> {
-    let nfit_addr = match crate::drivers::acpi::find_table_global(
-        &crate::drivers::acpi::signature::NFIT,
-    ) {
-        Ok(v) => v,
-        Err(_) => return Ok(None),
-    };
+    let nfit_addr =
+        match crate::drivers::acpi::find_table_global(&crate::drivers::acpi::signature::NFIT) {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
 
     let header = unsafe { &*(nfit_addr as *const crate::drivers::acpi::AcpiSdtHeader) };
     if !header.validate() {
@@ -252,7 +251,7 @@ pub fn init_from_nfit() -> Result<Option<PmemRegion>, PmemDiscoveryError> {
             let spa_base = read_u64(offset + 32);
             let spa_len = read_u64(offset + 40);
             if spa_base != 0 && spa_len != 0 {
-                let virt = crate::memory::phys_to_virt(PhysAddr::new(spa_base));
+                let virt = crate::mm::virt::mapping::phys_to_virt(PhysAddr::new(spa_base));
                 register_region(virt.as_u64() as *mut u8, spa_len as usize)
                     .map_err(PmemDiscoveryError::RegisterFailed)?;
                 return Ok(current_region());

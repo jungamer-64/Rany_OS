@@ -20,6 +20,10 @@
     any(not(test), feature = "full_mm_tests"),
     allow(unsafe_op_in_unsafe_fn)
 )]
+#![cfg_attr(
+    any(not(test), feature = "full_mm_tests"),
+    feature(alloc_error_handler)
+)]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
 #![feature(format_args_nl)]
 #![feature(ptr_metadata)]
@@ -308,7 +312,7 @@ pub mod security;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 mod async_boot_runtime_snapshot;
 
 #[cfg(feature = "qemu-test-export")]
@@ -337,58 +341,181 @@ pub static __tls_start: u8 = 0;
 #[unsafe(no_mangle)]
 pub static __tls_end: u8 = 0;
 
-// Minimal test/bench `mm::numa` shim to satisfy IOMMU tests and benchmark builds
-// without pulling in the full memory subsystem and its heavy dependencies.
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-#[path = "../../filesystems/kernel_fs/mod.rs"]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod boot;
+
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod fs;
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod durability;
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod debug;
 
 // Intrusive collections for kernel use (always available)
 pub mod collections;
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod mm;
 // The real `per_cpu` module is not compiled when running tests or benches
 // because we provide a lightweight stub later in this file that satisfies
 // the few symbols needed by unit tests.  Without this guard the crate ends up
 // defining `per_cpu` twice during `cargo test`, which triggers a compile
 // error.
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+mod benchmark;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod console;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod cpu;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod crypto;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod diag;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod domain;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
+#[path = "host_support/domain.rs"]
+pub mod domain;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod driver_domain;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod drivers;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod error;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod heap;
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
+#[path = "host_support/heap.rs"]
+pub mod heap;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod integration;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod interrupts;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod io;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod ipc;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod kapi;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod loader;
-pub mod memory;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod monitor;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod net;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod panic_handler;
 #[cfg(any(
     not(any(test, feature = "bench")),
@@ -396,1122 +523,128 @@ pub mod panic_handler;
     feature = "qemu-test-export"
 ))]
 pub mod per_cpu;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod platform;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod power;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod profiler;
+#[cfg(not(feature = "bench"))]
 pub mod provider_registry;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod sas;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod security;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-pub mod service_impl;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod shell;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 mod smp;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod sync;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod system_info;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod task;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+mod test;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod thermal;
 #[cfg(any(not(test), test, feature = "full_mm_tests"))]
 pub mod time;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod unwind;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod util;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
 pub mod watchdog;
 
-#[cfg(not(feature = "full_mm_tests"))]
-#[cfg(any(test, feature = "bench"))]
-#[cfg(not(feature = "qemu-test-export"))]
-pub mod mm {
-    use alloc::alloc::{Layout, alloc_zeroed, dealloc};
-    use core::ptr::NonNull;
-    use x86_64::PhysAddr;
-    use x86_64::VirtAddr;
-    use x86_64::structures::paging::{PhysFrame, Size4KiB};
-
-    pub mod magazine {
-        pub struct Magazine<T, const N: usize> {
-            _marker: core::marker::PhantomData<T>,
-        }
-        impl<T, const N: usize> Magazine<T, N> {
-            pub fn new() -> Self {
-                Self {
-                    _marker: core::marker::PhantomData,
-                }
-            }
-        }
-        // Clone implementation might be needed if IovaMagazine is cloned in tests
-        impl<T, const N: usize> Clone for Magazine<T, N> {
-            fn clone(&self) -> Self {
-                Self::new()
-            }
-        }
-        impl<T, const N: usize> Copy for Magazine<T, N> {}
-    }
-
-    pub mod memcg {
-        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-        pub struct MemcgId;
-        impl MemcgId {
-            pub const ROOT: Self = Self;
-        }
-    }
-
-    // Minimal fast allocator shim used by IOMMU tests
-    pub mod fast_allocator {
-
-        pub const PAGE_SIZE_4K: u64 = 4096;
-        pub const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
-        pub const PAGE_SIZE_1G: u64 = 1024 * 1024 * 1024;
-
-        #[derive(Clone, Copy, Debug)]
-        pub enum PageGranularity {
-            Page4K,
-            Page2M,
-            Page1G,
-        }
-
-        impl PageGranularity {
-            pub fn size_bytes(&self) -> u64 {
-                match self {
-                    PageGranularity::Page4K => PAGE_SIZE_4K,
-                    PageGranularity::Page2M => PAGE_SIZE_2M,
-                    PageGranularity::Page1G => PAGE_SIZE_1G,
-                }
-            }
-        }
-
-        use core::sync::atomic::{AtomicU64, Ordering};
-
-        #[derive(Debug)]
-        pub struct FastBitmapAllocator {
-            base: u64,
-            size: u64,
-            next: AtomicU64,
-        }
-
-        impl FastBitmapAllocator {
-            pub fn new(base: u64, size: u64) -> Self {
-                Self {
-                    base,
-                    size,
-                    next: AtomicU64::new(0),
-                }
-            }
-
-            pub fn allocate_4k(&self) -> Option<u64> {
-                self.allocate_with_size(PAGE_SIZE_4K)
-            }
-            pub fn allocate_2m(&self) -> Option<u64> {
-                self.allocate_with_size(PAGE_SIZE_2M)
-            }
-            pub fn allocate_1g(&self) -> Option<u64> {
-                self.allocate_with_size(PAGE_SIZE_1G)
-            }
-
-            fn allocate_with_size(&self, sz: u64) -> Option<u64> {
-                // Simple atomic bump allocator
-                // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-                loop {
-                    let cur = self.next.load(Ordering::Relaxed);
-                    if cur + sz > self.size {
-                        return None;
-                    }
-                    if self
-                        .next
-                        .compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed)
-                        .is_ok()
-                    {
-                        return Some(self.base + cur);
-                    }
-                }
-            }
-
-            pub fn allocate_4k_below(&self, limit: u64) -> Option<u64> {
-                self.allocate_below(PAGE_SIZE_4K, limit)
-            }
-            pub fn allocate_2m_below(&self, limit: u64) -> Option<u64> {
-                self.allocate_below(PAGE_SIZE_2M, limit)
-            }
-            pub fn allocate_1g_below(&self, limit: u64) -> Option<u64> {
-                self.allocate_below(PAGE_SIZE_1G, limit)
-            }
-
-            fn allocate_below(&self, sz: u64, limit: u64) -> Option<u64> {
-                // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-                loop {
-                    let cur = self.next.load(Ordering::Relaxed);
-                    if cur + sz > self.size || self.base + cur + sz > limit {
-                        return None;
-                    }
-                    if self
-                        .next
-                        .compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed)
-                        .is_ok()
-                    {
-                        return Some(self.base + cur);
-                    }
-                }
-            }
-
-            pub fn allocate_contiguous(&self, _size: u64, _align: u64) -> Option<u64> {
-                // Align up current pointer and allocate
-                // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-                loop {
-                    let cur = self.next.load(Ordering::Relaxed);
-                    let aligned = ((cur + (_align - 1)) / _align) * _align;
-                    if aligned + _size > self.size {
-                        return None;
-                    }
-                    if self
-                        .next
-                        .compare_exchange(cur, aligned + _size, Ordering::AcqRel, Ordering::Relaxed)
-                        .is_ok()
-                    {
-                        return Some(self.base + aligned);
-                    }
-                }
-            }
-
-            pub fn free_immediate(&self, _addr: u64, _gran: PageGranularity) -> Result<(), ()> {
-                Ok(())
-            }
-
-            pub fn reserve(&self, _start: u64, _size: u64) -> Result<(), ()> {
-                Ok(())
-            }
-
-            pub fn reconfigure_for_cpu_ids(&mut self, _cpu_ids: &[usize]) {}
-
-            pub fn enable_single_writer_arenas(&self) {}
-
-            pub fn drain_remote_frees(&self) {}
-            pub fn base(&self) -> u64 {
-                self.base
-            }
-            pub fn size(&self) -> u64 {
-                self.size
-            }
-        }
-    }
-
-    // Minimal remote-free / quarantine shim used by IOVA allocator
-    pub mod remote_free {
-        use alloc::collections::VecDeque;
-
-        #[derive(Debug, Clone, Copy, Default)]
-        pub struct QuarantineEntry {
-            pub addr: u64,
-            pub epoch: u32,
-            pub size_class: u8,
-        }
-
-        #[derive(Debug)]
-        pub struct QuarantineRing<const CAP: usize> {
-            buf: VecDeque<QuarantineEntry>,
-        }
-
-        impl<const CAP: usize> QuarantineRing<CAP> {
-            pub const fn new() -> Self {
-                Self {
-                    buf: VecDeque::new(),
-                }
-            }
-
-            pub fn push(&mut self, addr: u64, size_class: u8, epoch: u32) -> bool {
-                if self.buf.len() >= CAP {
-                    false
-                } else {
-                    self.buf.push_back(QuarantineEntry {
-                        addr,
-                        epoch,
-                        size_class,
-                    });
-                    true
-                }
-            }
-
-            pub fn push_entry(&mut self, entry: QuarantineEntry) -> bool {
-                self.push(entry.addr, entry.size_class, entry.epoch)
-            }
-
-            pub fn drain_older_than(
-                &mut self,
-                completed_epoch: u32,
-                limit: usize,
-                out: &mut [QuarantineEntry],
-            ) -> usize {
-                let mut count = 0usize;
-                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-                while count < limit {
-                    if let Some(front) = self.buf.front() {
-                        if front.epoch <= completed_epoch {
-                            let e = self.buf.pop_front().unwrap();
-                            out[count] = e;
-                            count += 1;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                count
-            }
-
-            pub fn drain_all(&mut self, out: &mut [QuarantineEntry]) -> usize {
-                let mut count = 0usize;
-                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-                while count < out.len() {
-                    if let Some(e) = self.buf.pop_front() {
-                        out[count] = e;
-                        count += 1;
-                    } else {
-                        break;
-                    }
-                }
-                count
-            }
-        }
-    }
-
-    pub mod types {
-        #[derive(Clone, Copy)]
-        pub struct NumaNodeId(pub u8);
-        impl NumaNodeId {
-            pub fn new(n: u8) -> Self {
-                Self(n)
-            }
-            pub fn as_usize(&self) -> usize {
-                self.0 as usize
-            }
-        }
-        pub const PAGE_SIZE_4K: usize = 4096;
-        pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024;
-        pub const PAGE_SIZE_1G: usize = 1024 * 1024 * 1024;
-    }
-
-    pub mod frame_allocator {
-        use x86_64::PhysAddr;
-        use x86_64::structures::paging::{PhysFrame, Size4KiB};
-
-        pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
-            super::buddy_alloc_frame()
-        }
-
-        pub fn alloc_frame_on_numa_node(
-            node: super::types::NumaNodeId,
-        ) -> Option<PhysFrame<Size4KiB>> {
-            super::buddy_alloc_frame_on_node(node)
-        }
-
-        pub fn alloc_contiguous_frames(frames: usize) -> Option<PhysAddr> {
-            super::buddy_alloc_contiguous_frames(frames)
-        }
-
-        pub fn dealloc_contiguous_frames(_phys: PhysAddr, _frames: usize) {
-            // No-op in test shim
-        }
-
-        pub fn pmm_managed_end() -> Option<u64> {
-            None
-        }
-
-        pub fn is_range_managed_by_pmm(_addr: PhysAddr, _size: u64) -> bool {
-            true
-        }
-
-        pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
-            super::buddy_dealloc_frame(frame);
-        }
-
-        /// Memory pressure hint for tests (0 = no pressure)
-        pub fn memory_pressure_level() -> u8 {
-            0
-        }
-    }
-
-    // Re-export frame allocator helpers at `crate::mm::phys::frame_allocator::dealloc_frame` etc.
-    pub use frame_allocator::dealloc_frame;
-    pub use frame_allocator::memory_pressure_level;
-
-    // Minimal `higher_half` shim (for tests): small wrappers around u64 addresses
-    pub mod higher_half {
-        #[derive(Clone, Copy, Debug)]
-        pub struct VirtAddr(u64);
-        impl VirtAddr {
-            pub const fn new(addr: u64) -> Self {
-                Self(addr)
-            }
-            pub const fn as_u64(&self) -> u64 {
-                self.0
-            }
-        }
-
-        #[derive(Clone, Copy, Debug)]
-        pub struct PhysAddr(u64);
-        impl PhysAddr {
-            pub const fn new(addr: u64) -> Self {
-                Self(addr)
-            }
-            pub const fn as_u64(&self) -> u64 {
-                self.0
-            }
-        }
-    }
-
-    // Global translate helper for tests (use kernel `higher_half` types)
-    pub fn global_translate(
-        virt: crate::mm::virt::higher_half::VirtAddr,
-    ) -> Option<crate::mm::virt::higher_half::PhysAddr> {
-        let v = x86_64::VirtAddr::new(virt.as_u64());
-        let p = mapping::virt_to_phys(v);
-        Some(crate::mm::virt::higher_half::PhysAddr::new(p.as_u64()))
-    }
-
-    // Minimal address translation helpers for tests/benches.
-    pub mod mapping {
-        use x86_64::{PhysAddr, VirtAddr};
-
-        pub fn virt_to_phys(addr: VirtAddr) -> PhysAddr {
-            PhysAddr::new(addr.as_u64())
-        }
-
-        pub fn phys_to_virt(addr: PhysAddr) -> VirtAddr {
-            VirtAddr::new(addr.as_u64())
-        }
-    }
-
-    pub fn buddy_alloc_frame() -> Option<PhysFrame<Size4KiB>> {
-        let layout = Layout::from_size_align(4096, 4096).ok()?;
-        let ptr = unsafe { alloc_zeroed(layout) };
-        let ptr = NonNull::new(ptr)?;
-        let phys = PhysAddr::new(ptr.as_ptr() as u64);
-        match PhysFrame::from_start_address(phys) {
-            Ok(frame) => Some(frame),
-            Err(_) => {
-                unsafe { dealloc(ptr.as_ptr(), layout) };
-                None
-            }
-        }
-    }
-
-    pub fn buddy_alloc_frame_on_node(_node: types::NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
-        buddy_alloc_frame()
-    }
-
-    pub fn buddy_alloc_contiguous_frames(frame_count: usize) -> Option<PhysAddr> {
-        if frame_count == 0 {
-            return None;
-        }
-        let bytes = frame_count.checked_mul(4096)?;
-        let layout = Layout::from_size_align(bytes, 4096).ok()?;
-        let ptr = unsafe { alloc_zeroed(layout) };
-        let ptr = NonNull::new(ptr)?;
-        Some(PhysAddr::new(ptr.as_ptr() as u64))
-    }
-
-    pub fn buddy_dealloc_frame(frame: PhysFrame<Size4KiB>) {
-        let layout = Layout::from_size_align(4096, 4096).expect("buddy layout");
-        let ptr = frame.start_address().as_u64() as *mut u8;
-        unsafe { dealloc(ptr, layout) };
-    }
-
-    // Convenience wrappers for IOMMU/legacy APIs used in some modules/tests
-    pub fn alloc_contiguous_frames(frames: usize) -> Option<PhysAddr> {
-        buddy_alloc_contiguous_frames(frames)
-    }
-
-    pub fn dealloc_contiguous_frames(_phys: PhysAddr, _frames: usize) {
-        // Test shim: no-op - memory will be reclaimed when the test process exits.
-    }
-
-    pub fn mapping_phys_to_virt(phys: PhysAddr) -> VirtAddr {
-        VirtAddr::new(phys.as_u64())
-    }
-
-    /// 4K page size constant for compatibility with drivers/tests
-    pub const PAGE_SIZE_4K: usize = 4096;
-
-    // ======================================================================
-    // Wrapper sub-modules mirroring the new directory-based module hierarchy
-    // ======================================================================
-    pub mod phys {
-        pub mod fast_allocator {
-            #[allow(clippy::wildcard_imports)]
-            pub use super::super::fast_allocator::*;
-        }
-        pub mod frame_allocator {
-            #[allow(clippy::wildcard_imports)]
-            pub use super::super::frame_allocator::*;
-        }
-        pub mod buddy_allocator {
-            /// Stub for buddy_allocator_stats (test shim)
-            pub struct BuddyAllocatorStats {
-                pub total_frames: usize,
-                pub free_frames: usize,
-                pub split_count: u64,
-                pub coalesce_count: u64,
-                pub order_stats: [(usize, usize); 19],
-            }
-            pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
-                BuddyAllocatorStats {
-                    total_frames: 0,
-                    free_frames: 0,
-                    split_count: 0,
-                    coalesce_count: 0,
-                    order_stats: [(0, 0); 19],
-                }
-            }
-        }
-        pub mod unified_alloc {
-            pub fn memory_pressure_level() -> u8 {
-                0
-            }
-        }
-    }
-
-    pub mod virt {
-        pub mod higher_half {
-            #[allow(clippy::wildcard_imports)]
-            pub use super::super::higher_half::*;
-        }
-        pub mod mapping {
-            #[allow(clippy::wildcard_imports)]
-            pub use super::super::mapping::*;
-        }
-    }
-
-    pub mod cache {
-        pub mod magazine {
-            #[allow(clippy::wildcard_imports)]
-            pub use super::super::magazine::*;
-        }
-    }
-
-    pub mod numa {
-        pub mod topology {
-            use alloc::alloc::{alloc_zeroed, dealloc};
-            use core::alloc::Layout;
-            use core::ptr::NonNull;
-
-            pub const MAX_NUMA_NODES: usize = 8;
-
-            pub fn num_nodes() -> usize {
-                1
-            }
-            pub fn current_node() -> usize {
-                0
-            }
-
-            pub fn allocate_zeroed_on_node(
-                layout: Layout,
-                _node: Option<usize>,
-            ) -> Option<NonNull<u8>> {
-                unsafe {
-                    let ptr = alloc_zeroed(layout);
-                    NonNull::new(ptr)
-                }
-            }
-
-            pub fn allocate_zeroed_on_node_with_info(
-                layout: Layout,
-                _node: Option<usize>,
-            ) -> Option<(NonNull<u8>, usize)> {
-                unsafe {
-                    let ptr = alloc_zeroed(layout);
-                    NonNull::new(ptr).map(|p| (p, 0))
-                }
-            }
-
-            pub unsafe fn deallocate_on_node(
-                ptr: NonNull<u8>,
-                layout: Layout,
-                _node: Option<usize>,
-            ) {
-                unsafe {
-                    dealloc(ptr.as_ptr(), layout);
-                }
-            }
-        }
-    }
-
-    pub mod meta {
-        pub mod memcg {
-            #[allow(wildcard_imports)]
-            pub use super::super::memcg::*;
-        }
-    }
-}
-
-// Minimal per-CPU stubs for tests (crate-root level to match new module hierarchy).
-#[cfg(not(feature = "full_mm_tests"))]
-#[cfg(any(test, feature = "bench"))]
-#[cfg(not(feature = "qemu-test-export"))]
-pub mod per_cpu {
-    use core::array;
-    use core::ptr::NonNull;
-    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-
-    #[derive(Clone, Copy, Default)]
-    pub struct DomainCacheEntry {
-        pub device_id: u16,
-        pub domain_id: u16,
-        pub controller_idx: u8,
-        pub valid: bool,
-    }
-
-    pub struct PerCpuDomainCache {
-        pub entries: [DomainCacheEntry; Self::CACHE_SIZE],
-    }
-
-    impl PerCpuDomainCache {
-        pub const CACHE_SIZE: usize = 64;
-
-        pub fn new() -> Self {
-            Self {
-                entries: [DomainCacheEntry {
-                    device_id: 0,
-                    domain_id: 0,
-                    controller_idx: 0,
-                    valid: false,
-                }; Self::CACHE_SIZE],
-            }
-        }
-
-        pub fn lookup(&self, device_id: u16) -> Option<(u16, u8)> {
-            let idx = (device_id as usize) % Self::CACHE_SIZE;
-            let entry = self.entries[idx];
-            if entry.valid && entry.device_id == device_id {
-                Some((entry.domain_id, entry.controller_idx))
-            } else {
-                None
-            }
-        }
-
-        pub fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: u8) {
-            let idx = (device_id as usize) % Self::CACHE_SIZE;
-            self.entries[idx] = DomainCacheEntry {
-                device_id,
-                domain_id,
-                controller_idx,
-                valid: true,
-            };
-        }
-
-        pub fn invalidate(&mut self, device_id: u16) {
-            let idx = (device_id as usize) % Self::CACHE_SIZE;
-            if self.entries[idx].device_id == device_id {
-                self.entries[idx].valid = false;
-            }
-        }
-    }
-
-    pub const IOVA_MAG_CAPACITY: usize = 256;
-    pub const MAX_IOMMU_CONTROLLERS: usize = 8;
-
-    use crate::mm::cache::magazine::Magazine;
-    pub type IovaMagazine = Magazine<u64, IOVA_MAG_CAPACITY>;
-
-    pub const PT_MAG_CAPACITY: usize = 8;
-
-    #[derive(Clone, Copy)]
-    pub struct PtMagEntry {
-        pub phys: u64,
-        pub virt: usize,
-        pub node: u8,
-    }
-
-    impl PtMagEntry {
-        pub const fn empty() -> Self {
-            Self {
-                phys: 0,
-                virt: 0,
-                node: 0,
-            }
-        }
-        pub const fn is_valid(&self) -> bool {
-            self.phys != 0
-        }
-    }
-
-    pub struct PtMagazine {
-        entries: [PtMagEntry; PT_MAG_CAPACITY],
-        len: usize,
-        preferred_node: u8,
-    }
-
-    impl PtMagazine {
-        pub fn new() -> Self {
-            Self {
-                entries: [PtMagEntry::empty(); PT_MAG_CAPACITY],
-                len: 0,
-                preferred_node: 0,
-            }
-        }
-
-        pub fn pop(&mut self) -> Option<PtMagEntry> {
-            if self.len == 0 {
-                None
-            } else {
-                self.len -= 1;
-                let entry = self.entries[self.len];
-                self.entries[self.len] = PtMagEntry::empty();
-                Some(entry)
-            }
-        }
-
-        pub fn push(&mut self, entry: PtMagEntry) -> bool {
-            if self.len >= PT_MAG_CAPACITY {
-                false
-            } else {
-                self.entries[self.len] = entry;
-                self.len += 1;
-                true
-            }
-        }
-
-        pub fn available(&self) -> usize {
-            PT_MAG_CAPACITY - self.len
-        }
-
-        pub fn len(&self) -> usize {
-            self.len
-        }
-
-        pub fn set_preferred_node(&mut self, node: u8) {
-            self.preferred_node = node;
-        }
-
-        pub fn preferred_node(&self) -> u8 {
-            self.preferred_node
-        }
-    }
-
-    #[repr(C, align(64))]
-    pub struct PerCpuHot {
-        pub self_ptr: usize,
-        pub cpu_id: usize,
-        pub interrupt_depth: AtomicU32,
-        pub preempt_disable_count: AtomicU32,
-        pub in_page_fault: AtomicBool,
-        pub current_task_ptr: AtomicU64,
-        pub current_task_id: AtomicU64,
-        cold: Option<NonNull<PerCpuCold>>,
-    }
-
-    impl PerCpuHot {
-        pub fn new(cpu_id: usize) -> Self {
-            Self {
-                self_ptr: 0,
-                cpu_id,
-                interrupt_depth: AtomicU32::new(0),
-                preempt_disable_count: AtomicU32::new(0),
-                in_page_fault: AtomicBool::new(false),
-                current_task_ptr: AtomicU64::new(0),
-                current_task_id: AtomicU64::new(0),
-                cold: None,
-            }
-        }
-
-        pub fn set_cold(&mut self, cold_ptr: *mut PerCpuCold) {
-            self.cold = NonNull::new(cold_ptr);
-        }
-
-        pub fn cold(&self) -> &PerCpuCold {
-            self.cold_opt().expect("PerCpuHot.cold not initialized")
-        }
-
-        pub fn cold_opt(&self) -> Option<&PerCpuCold> {
-            self.cold.map(|ptr| unsafe { ptr.as_ref() })
-        }
-
-        pub fn current_task_ptr(&self) -> u64 {
-            self.current_task_ptr.load(Ordering::Acquire)
-        }
-
-        pub fn current_task_id(&self) -> u64 {
-            self.current_task_id.load(Ordering::Acquire)
-        }
-
-        pub fn set_current_task(&self, task_ptr: u64, task_id: u64) {
-            self.current_task_ptr.store(task_ptr, Ordering::Release);
-            self.current_task_id.store(task_id, Ordering::Release);
-        }
-
-        pub fn clear_current_task(&self) {
-            self.set_current_task(0, 0);
-        }
-
-        pub fn enter_page_fault(&self) -> bool {
-            self.in_page_fault.swap(true, Ordering::SeqCst)
-        }
-
-        pub fn exit_page_fault(&self) {
-            self.in_page_fault.store(false, Ordering::SeqCst);
-        }
-
-        pub fn in_interrupt(&self) -> bool {
-            self.interrupt_depth.load(Ordering::Relaxed) > 0
-        }
-
-        pub fn preempt_disable(&self) {
-            self.preempt_disable_count.fetch_add(1, Ordering::Relaxed);
-        }
-
-        pub fn preempt_enable(&self) {
-            let _ = self.preempt_disable_count.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-
-    pub struct PerCpuRcuState {
-        pub read_depth: AtomicU32,
-    }
-
-    impl PerCpuRcuState {
-        pub const fn new() -> Self {
-            Self {
-                read_depth: AtomicU32::new(0),
-            }
-        }
-    }
-
-    pub struct PerCpuCold {
-        pub iommu_domain_cache: PerCpuDomainCache,
-        pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
-        pub pt_magazine: PtMagazine,
-        pub numa_zonelist:
-            [crate::mm::types::NumaNodeId; crate::mm::numa::topology::MAX_NUMA_NODES],
-        pub numa_zonelist_len: u8,
-        pub local_numa_node: crate::mm::types::NumaNodeId,
-        pub rcu_state: PerCpuRcuState,
-    }
-
-    impl PerCpuCold {
-        pub fn new() -> Self {
-            Self {
-                iommu_domain_cache: PerCpuDomainCache::new(),
-                iova_magazines: array::from_fn(|_| IovaMagazine::new()),
-                pt_magazine: PtMagazine::new(),
-                numa_zonelist: [crate::mm::types::NumaNodeId::new(0);
-                    crate::mm::numa::topology::MAX_NUMA_NODES],
-                numa_zonelist_len: 1,
-                local_numa_node: crate::mm::types::NumaNodeId::new(0),
-                rcu_state: PerCpuRcuState::new(),
-            }
-        }
-
-        pub fn setup_numa_zonelist(
-            &mut self,
-            local_node: crate::mm::types::NumaNodeId,
-            sorted_nodes: &[crate::mm::types::NumaNodeId;
-                 crate::mm::numa::topology::MAX_NUMA_NODES],
-            node_count: usize,
-        ) {
-            self.local_numa_node = local_node;
-            self.numa_zonelist_len =
-                (node_count as u8).min(crate::mm::numa::topology::MAX_NUMA_NODES as u8);
-            for i in 0..self.numa_zonelist_len as usize {
-                self.numa_zonelist[i] = sorted_nodes[i];
-            }
-        }
-
-        pub fn get_local_numa_node(&self) -> crate::mm::types::NumaNodeId {
-            self.local_numa_node
-        }
-    }
-
-    pub fn try_current_cpu_id() -> Option<usize> {
-        Some(0)
-    }
-
-    pub fn in_interrupt_context() -> bool {
-        false
-    }
-
-    pub const MAX_CPUS: usize = 8;
-
-    use alloc::boxed::Box;
-
-    static PER_CPU_INIT: AtomicBool = AtomicBool::new(false);
-    static mut PER_CPU_HOT_PTR: *mut PerCpuHot = core::ptr::null_mut();
-    static mut PER_CPU_COLD_PTR: *mut PerCpuCold = core::ptr::null_mut();
-
-    fn ensure_test_per_cpu() {
-        unsafe {
-            if !PER_CPU_INIT.load(Ordering::SeqCst) {
-                let mut hot = Box::new(PerCpuHot::new(0));
-                let cold = Box::new(PerCpuCold::new());
-                let cold_ptr = Box::into_raw(cold);
-                hot.set_cold(cold_ptr);
-                hot.self_ptr = hot.as_ref() as *const _ as usize;
-                PER_CPU_HOT_PTR = Box::into_raw(hot);
-                PER_CPU_COLD_PTR = cold_ptr;
-                PER_CPU_INIT.store(true, Ordering::SeqCst);
-            }
-        }
-    }
-
-    pub fn hot_for_cpu(cpu_id: usize) -> Option<&'static PerCpuHot> {
-        if cpu_id >= MAX_CPUS {
-            return None;
-        }
-        ensure_test_per_cpu();
-        unsafe { PER_CPU_HOT_PTR.as_ref() }
-    }
-
-    pub fn cold_for_cpu(cpu_id: usize) -> Option<&'static PerCpuCold> {
-        if cpu_id >= MAX_CPUS {
-            return None;
-        }
-        ensure_test_per_cpu();
-        unsafe { PER_CPU_COLD_PTR.as_ref() }
-    }
-
-    pub fn with_cpu_hot<R>(cpu_id: usize, f: impl FnOnce(&PerCpuHot) -> R) -> Option<R> {
-        hot_for_cpu(cpu_id).map(f)
-    }
-
-    pub fn with_cpu_cold<R>(cpu_id: usize, f: impl FnOnce(&PerCpuCold) -> R) -> Option<R> {
-        cold_for_cpu(cpu_id).map(f)
-    }
-
-    pub fn current_hot() -> Option<&'static PerCpuHot> {
-        hot_for_cpu(0)
-    }
-
-    pub fn current_cold() -> Option<&'static PerCpuCold> {
-        cold_for_cpu(0)
-    }
-
-    pub fn with_current_hot<R>(f: impl FnOnce(&PerCpuHot) -> R) -> Option<R> {
-        with_cpu_hot(0, f)
-    }
-
-    pub fn with_current_cold<R>(f: impl FnOnce(&PerCpuCold) -> R) -> Option<R> {
-        with_cpu_cold(0, f)
-    }
-
-    pub fn with_current_hot_mut<R>(f: impl FnOnce(&mut PerCpuHot) -> R) -> Option<R> {
-        ensure_test_per_cpu();
-        unsafe { PER_CPU_HOT_PTR.as_mut().map(f) }
-    }
-
-    pub fn with_current_cold_mut<R>(f: impl FnOnce(&mut PerCpuCold) -> R) -> Option<R> {
-        ensure_test_per_cpu();
-        unsafe { PER_CPU_COLD_PTR.as_mut().map(f) }
-    }
-}
-
-// Minimal IPC/RRef shims for tests (avoid pulling full IPC/SAS stack).
+#[cfg(any(
+    all(
+        test,
+        not(feature = "full_mm_tests"),
+        not(feature = "qemu-test-export")
+    ),
+    feature = "bench"
+))]
+#[path = "host_support/cpu.rs"]
+pub mod cpu;
 #[cfg(all(
     test,
     not(feature = "full_mm_tests"),
     not(feature = "qemu-test-export")
 ))]
-pub mod ipc {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    #[repr(transparent)]
-    pub struct DomainId(u64);
-
-    impl DomainId {
-        pub const fn new(id: u64) -> Self {
-            Self(id)
-        }
-
-        pub const fn as_u64(self) -> u64 {
-            self.0
-        }
-
-        pub const KERNEL: DomainId = DomainId(0);
-    }
-
-    pub mod rref {
-        use alloc::boxed::Box;
-        use core::ops::{Deref, DerefMut};
-        use core::ptr::NonNull;
-
-        use super::DomainId;
-
-        #[derive(Debug)]
-        pub struct RRef<T: ?Sized> {
-            ptr: NonNull<T>,
-            owner: DomainId,
-        }
-
-        impl<T> RRef<T> {
-            pub fn new(owner: DomainId, val: T) -> Self {
-                let boxed = Box::new(val);
-                let ptr = NonNull::new(Box::into_raw(boxed)).expect("RRef Box pointer is null");
-                Self { ptr, owner }
-            }
-
-            pub fn into_raw_parts(self) -> RRefRawParts {
-                RRefRawParts::from_rref(self)
-            }
-
-            pub unsafe fn from_raw_parts_for_zombie(parts: RRefRawParts) -> Self {
-                // Test shim only supports sized types; panic on mismatch in debug mode.
-                unsafe {
-                    parts
-                        .into_rref::<T>()
-                        .expect("RRefRawParts type mismatch in test shim")
-                }
-            }
-        }
-
-        impl<T: ?Sized> RRef<T> {
-            pub unsafe fn from_raw(ptr: NonNull<T>, owner: DomainId) -> Self {
-                Self { ptr, owner }
-            }
-
-            pub fn into_raw(self) -> (NonNull<T>, DomainId) {
-                let ptr = self.ptr;
-                let owner = self.owner;
-                core::mem::forget(self);
-                (ptr, owner)
-            }
-        }
-
-        impl<T: ?Sized> Deref for RRef<T> {
-            type Target = T;
-
-            fn deref(&self) -> &Self::Target {
-                unsafe { self.ptr.as_ref() }
-            }
-        }
-
-        impl<T: ?Sized> DerefMut for RRef<T> {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                unsafe { self.ptr.as_mut() }
-            }
-        }
-
-        impl<T: ?Sized> Drop for RRef<T> {
-            fn drop(&mut self) {
-                unsafe {
-                    drop(Box::from_raw(self.ptr.as_ptr()));
-                }
-            }
-        }
-
-        unsafe impl<T: ?Sized + Send> Send for RRef<T> {}
-        unsafe impl<T: ?Sized + Sync> Sync for RRef<T> {}
-
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum RawPartsError {
-            TypeMismatch,
-            SizeMismatch,
-        }
-
-        #[derive(Debug)]
-        pub struct RRefRawParts {
-            ptr: NonNull<u8>,
-            owner: DomainId,
-            meta: usize,
-            #[cfg(debug_assertions)]
-            size: usize,
-            #[cfg(debug_assertions)]
-            type_hash: u64,
-            drop_fn: unsafe fn(NonNull<u8>, DomainId, usize),
-        }
-
-        unsafe impl Send for RRefRawParts {}
-        unsafe impl Sync for RRefRawParts {}
-
-        impl RRefRawParts {
-            pub fn from_rref<T: Sized>(rref: RRef<T>) -> Self {
-                #[cfg(debug_assertions)]
-                let size = core::mem::size_of_val(&*rref);
-                #[cfg(debug_assertions)]
-                let type_hash = debug_type_hash(&*rref);
-                let (ptr, owner) = rref.into_raw();
-                // Simplified: avoid unstable ptr::metadata / ptr::from_raw_parts usage by
-                // only supporting sized `RRef<T>` in the test shim. Store meta as zero.
-                let meta = 0usize;
-
-                // Embed type-specific drop function (Sized-only for test shim)
-                unsafe fn drop_impl<T: Sized>(ptr: NonNull<u8>, owner: DomainId, _meta: usize) {
-                    // For sized types we can reconstruct the typed pointer directly.
-                    let data_ptr = ptr.as_ptr() as *mut T;
-                    let rref: RRef<T> =
-                        unsafe { RRef::from_raw(NonNull::new_unchecked(data_ptr), owner) };
-                    drop(rref);
-                }
-
-                Self {
-                    ptr: ptr.cast(),
-                    owner,
-                    meta,
-                    #[cfg(debug_assertions)]
-                    size,
-                    #[cfg(debug_assertions)]
-                    type_hash,
-                    drop_fn: drop_impl::<T>,
-                }
-            }
-
-            pub unsafe fn into_rref<T: Sized>(self) -> Result<RRef<T>, RawPartsError> {
-                // Reconstruct typed pointer - test shim assumes sized T.
-                let typed_ptr = self.ptr.as_ptr() as *mut T;
-
-                #[cfg(debug_assertions)]
-                {
-                    let typed_ref: &T = unsafe { &*typed_ptr };
-                    let actual_size = core::mem::size_of_val(typed_ref);
-                    let actual_hash = debug_type_hash(typed_ref);
-                    if self.type_hash != actual_hash {
-                        return Err(RawPartsError::TypeMismatch);
-                    }
-                    if self.size != actual_size {
-                        return Err(RawPartsError::SizeMismatch);
-                    }
-                }
-
-                Ok(unsafe { RRef::from_raw(NonNull::new_unchecked(typed_ptr), self.owner) })
-            }
-
-            pub unsafe fn drop_erased(self) {
-                unsafe { (self.drop_fn)(self.ptr, self.owner, self.meta) };
-            }
-
-            pub(crate) fn into_components(
-                self,
-            ) -> (
-                NonNull<u8>,
-                DomainId,
-                usize,
-                unsafe fn(NonNull<u8>, DomainId, usize),
-            ) {
-                (self.ptr, self.owner, self.meta, self.drop_fn)
-            }
-
-            pub fn owner(&self) -> DomainId {
-                self.owner
-            }
-        }
-
-        #[cfg(debug_assertions)]
-        fn debug_type_hash<T: ?Sized>(val: &T) -> u64 {
-            crate::util::compute_type_hash(
-                core::any::type_name::<T>(),
-                core::mem::size_of_val(val),
-                core::mem::align_of_val(val),
-            )
-        }
-    }
-
-    pub use rref::RRef;
-}
-
-// Minimal task/time shims for tests and benches
+#[path = "host_support/ipc.rs"]
+pub mod ipc;
+#[cfg(not(feature = "full_mm_tests"))]
+#[cfg(any(test, feature = "bench"))]
+#[cfg(not(feature = "qemu-test-export"))]
+#[path = "host_support/mm.rs"]
+pub mod mm;
+#[cfg(not(feature = "full_mm_tests"))]
+#[cfg(any(test, feature = "bench"))]
+#[cfg(not(feature = "qemu-test-export"))]
+#[path = "host_support/per_cpu.rs"]
+pub mod per_cpu;
 #[cfg(any(
     all(
         test,
@@ -1520,35 +653,8 @@ pub mod ipc {
     ),
     feature = "bench"
 ))]
-pub mod smp {
-    pub fn current_cpu() -> u32 {
-        0
-    }
-    pub fn cpu_count() -> usize {
-        1
-    }
-    pub fn cpu_index() -> usize {
-        0
-    }
-    pub fn try_current_cpu_id() -> Option<u32> {
-        Some(0)
-    }
-    pub fn apic_id_for_cpu(cpu_id: usize) -> Option<u32> {
-        Some(cpu_id as u32)
-    }
-    pub fn cpu_for_apic_id(apic_id: u32) -> Option<usize> {
-        Some(apic_id as usize)
-    }
-    pub fn runtime_workers_released() -> bool {
-        false
-    }
-    pub fn release_runtime_workers() {}
-    pub fn wait_for_runtime_workers() {}
-    pub fn register_cpu_apic_mapping(_cpu_id: usize, _apic_id: u32) {}
-    pub fn reset_cpu_routing_for_tests() {}
-    pub fn reset_runtime_workers_for_tests() {}
-}
-
+#[path = "host_support/smp.rs"]
+pub mod smp;
 #[cfg(any(
     all(
         test,
@@ -1557,674 +663,8 @@ pub mod smp {
     ),
     feature = "bench"
 ))]
-pub mod cpu {
-    pub use crate::smp::{apic_id_for_cpu as apic_id, cpu_for_apic_id as cpu_for_apic};
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub struct CpuBootReport {
-        pub detected: u32,
-        pub started: u32,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum CpuStage {
-        Detected,
-        BootPrepared,
-        Launching,
-        PerCpuReady,
-        Parked,
-        Released,
-        LazyTlbExited,
-        ExecutorRunning,
-        Failed,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct CpuSnapshot {
-        pub detected_cpu_count: usize,
-        pub bootable_cpu_count: usize,
-        pub online_cpu_count: usize,
-        pub online_cpu_mask: u64,
-        pub runtime_workers_released: bool,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum IpiKind {
-        ExecutorWake,
-        TlbFlush,
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct CpuRecord {
-        pub logical_cpu_id: usize,
-        pub apic_id: u32,
-        pub is_bsp: bool,
-        pub numa_node: Option<usize>,
-        pub boot_slot: Option<usize>,
-        pub bootable: bool,
-    }
-
-    pub fn initialize(_boot_info: &boot_proto::ExoBootInfo) -> Result<CpuBootReport, &'static str> {
-        Ok(CpuBootReport::default())
-    }
-
-    pub fn count() -> usize {
-        1
-    }
-
-    pub fn detected_count() -> usize {
-        1
-    }
-
-    pub fn bootable_count() -> usize {
-        1
-    }
-
-    pub fn current_id() -> usize {
-        0
-    }
-
-    pub fn try_current_id() -> Option<usize> {
-        Some(0)
-    }
-
-    pub fn active_ids() -> alloc::vec::Vec<usize> {
-        alloc::vec![0]
-    }
-
-    pub fn snapshot() -> CpuSnapshot {
-        CpuSnapshot {
-            detected_cpu_count: 1,
-            bootable_cpu_count: 1,
-            online_cpu_count: 1,
-            online_cpu_mask: 1,
-            runtime_workers_released: false,
-        }
-    }
-
-    pub fn stage(_cpu_id: usize) -> Option<CpuStage> {
-        Some(CpuStage::PerCpuReady)
-    }
-
-    pub fn stage_name(_cpu_id: usize) -> Option<&'static str> {
-        Some("per_cpu_ready")
-    }
-
-    pub fn numa_node(_cpu_id: usize) -> Option<usize> {
-        Some(0)
-    }
-
-    pub fn workers_released() -> bool {
-        false
-    }
-
-    pub fn release_workers() {}
-
-    pub fn send_ipi(_cpu_id: usize, _kind: IpiKind) {}
-
-    pub fn broadcast_ipi(_kind: IpiKind) {}
-
-    pub fn send_eoi_current_cpu() {}
-
-    pub fn current_apic_id() -> u32 {
-        0
-    }
-}
-
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub mod task {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-    pub struct TaskId(u64);
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct PendingTimerWakerStats {
-        pub pending: usize,
-        pub capacity: usize,
-    }
-
-    impl TaskId {
-        pub const fn from_raw(id: u64) -> Self {
-            Self(id)
-        }
-
-        pub const fn as_u64(self) -> u64 {
-            self.0
-        }
-    }
-
-    pub mod per_core_executor {
-        pub fn spawn<F>(_future: F)
-        where
-            F: core::future::Future<Output = ()> + 'static,
-        {
-        }
-    }
-
-    pub async fn sleep_ms(_ms: u64) {}
-
-    pub fn current_tick() -> u64 {
-        0
-    }
-
-    pub fn handle_timer_interrupt() {}
-
-    pub fn process_pending_timer_wakers() {}
-
-    pub fn pending_timer_waker_count() -> usize {
-        0
-    }
-
-    pub fn pending_waker_stats() -> PendingTimerWakerStats {
-        PendingTimerWakerStats {
-            pending: 0,
-            capacity: 0,
-        }
-    }
-
-    pub fn spawn_detached<F>(_future: F) -> TaskId
-    where
-        F: core::future::Future<Output = ()> + 'static,
-    {
-        TaskId::from_raw(0)
-    }
-
-    pub fn spawn_detached_in_domain<F>(
-        _future: F,
-        _domain: crate::domain_system::DomainId,
-    ) -> TaskId
-    where
-        F: core::future::Future<Output = ()> + 'static,
-    {
-        TaskId::from_raw(0)
-    }
-
-    /// Synchronous helper to drive a Future to completion in tests
-    pub fn block_on<F: core::future::Future>(future: F) -> F::Output {
-        use alloc::sync::Arc;
-
-        use core::sync::atomic::{AtomicBool, Ordering};
-        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-        use alloc::boxed::Box;
-        let flag = Arc::new(AtomicBool::new(false));
-
-        unsafe fn clone_data(data: *const ()) -> RawWaker {
-            let arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
-            let cloned = arc.clone();
-            let _ = Arc::into_raw(arc);
-            RawWaker::new(Arc::into_raw(cloned) as *const (), &VTABLE)
-        }
-
-        unsafe fn wake_data(data: *const ()) {
-            let arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
-            arc.store(true, Ordering::SeqCst);
-        }
-
-        unsafe fn wake_by_ref_data(data: *const ()) {
-            let arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
-            arc.store(true, Ordering::SeqCst);
-            let _ = Arc::into_raw(arc);
-        }
-
-        unsafe fn drop_data(data: *const ()) {
-            let _arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
-        }
-
-        const VTABLE: RawWakerVTable =
-            RawWakerVTable::new(clone_data, wake_data, wake_by_ref_data, drop_data);
-
-        let raw = RawWaker::new(Arc::into_raw(flag.clone()) as *const (), &VTABLE);
-        let waker = unsafe { Waker::from_raw(raw) };
-        let mut cx = Context::from_waker(&waker);
-
-        // Pin the future on the heap and poll a Pin<&mut F>
-        let mut boxed = Box::pin(future);
-
-        // LOOP_PROOF: mode=event; reason=Polling loop returns once the future resolves and otherwise waits for the wake flag before polling again.;
-        loop {
-            match core::pin::Pin::new(&mut boxed).poll(&mut cx) {
-                Poll::Ready(v) => return v,
-                Poll::Pending => {
-                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-                    while !flag.load(Ordering::SeqCst) {
-                        core::hint::spin_loop();
-                    }
-                    flag.store(false, Ordering::SeqCst);
-                }
-            }
-        }
-    }
-
-    #[cfg(all(test, not(feature = "std")))]
-    pub mod fuel {
-        use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-        static CURRENT_FUEL: AtomicU64 = AtomicU64::new(0);
-        static FUEL_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-        pub struct Fuel;
-
-        impl Fuel {
-            pub fn refill(amount: u64) {
-                FUEL_ACTIVE.store(amount > 0, Ordering::Relaxed);
-                CURRENT_FUEL.store(amount, Ordering::Relaxed);
-            }
-
-            pub fn consume(amount: u64) -> bool {
-                if !FUEL_ACTIVE.load(Ordering::Relaxed) {
-                    return true;
-                }
-
-                let mut current = CURRENT_FUEL.load(Ordering::Relaxed);
-                // LOOP_PROOF: mode=event; reason=CAS retry loop exits once fuel is successfully decremented or when the available budget is insufficient.;
-                loop {
-                    if let Some(remaining) = current.checked_sub(amount) {
-                        match CURRENT_FUEL.compare_exchange_weak(
-                            current,
-                            remaining,
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        ) {
-                            Ok(_) => return true,
-                            Err(v) => current = v,
-                        }
-                    } else {
-                        match CURRENT_FUEL.compare_exchange_weak(
-                            current,
-                            0,
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        ) {
-                            Ok(_) => return false,
-                            Err(v) => current = v,
-                        }
-                    }
-                }
-            }
-
-            pub fn is_active() -> bool {
-                FUEL_ACTIVE.load(Ordering::Relaxed)
-            }
-
-            pub fn remaining() -> u64 {
-                CURRENT_FUEL.load(Ordering::Relaxed)
-            }
-
-            pub fn exhaust() {
-                FUEL_ACTIVE.store(false, Ordering::Relaxed);
-                CURRENT_FUEL.store(0, Ordering::Relaxed);
-            }
-        }
-
-        pub struct FuelConfig {
-            pub default_fuel: u64,
-        }
-
-        impl FuelConfig {
-            pub fn new() -> Self {
-                Self { default_fuel: 0 }
-            }
-        }
-    }
-
-    #[cfg(all(test, feature = "std"))]
-    pub mod fuel {
-        use core::cell::Cell;
-
-        thread_local! {
-            static CURRENT_FUEL: Cell<u64> = Cell::new(0);
-            static FUEL_ACTIVE: Cell<bool> = Cell::new(false);
-        }
-
-        pub struct Fuel;
-
-        impl Fuel {
-            pub fn refill(amount: u64) {
-                FUEL_ACTIVE.with(|a| a.set(amount > 0));
-                CURRENT_FUEL.with(|c| c.set(amount));
-            }
-
-            pub fn consume(amount: u64) -> bool {
-                // If fuel is not active (amount==0 at refill), treat as unlimited and always allow
-                let active = FUEL_ACTIVE.with(|a| a.get());
-                if !active {
-                    return true;
-                }
-                CURRENT_FUEL.with(|c| {
-                    let current = c.get();
-                    if let Some(remaining) = current.checked_sub(amount) {
-                        c.set(remaining);
-                        true
-                    } else {
-                        c.set(0);
-                        false
-                    }
-                })
-            }
-
-            pub fn remaining() -> u64 {
-                CURRENT_FUEL.with(|c| c.get())
-            }
-
-            pub fn is_active() -> bool {
-                FUEL_ACTIVE.with(|a| a.get())
-            }
-
-            pub fn exhaust() {
-                FUEL_ACTIVE.with(|a| a.set(false));
-                CURRENT_FUEL.with(|c| c.set(0))
-            }
-        }
-
-        pub struct FuelConfig {
-            pub default_fuel: u64,
-        }
-
-        impl FuelConfig {
-            pub const DEFAULT: Self = Self {
-                default_fuel: 10_000,
-            };
-        }
-    }
-
-    // Minimal preemption shim used by unit tests to avoid pulling the full
-    // preemption implementation into every test build while keeping the API
-    // expected by I/O modules and interrupts.
-    pub mod preemption {
-        /// Lightweight stats struct mirroring the real implementation used by monitors.
-        #[derive(Debug, Clone)]
-        pub struct PreemptionStats {
-            pub forced_preemptions: u64,
-            pub voluntary_yields: u64,
-            pub current_time_slice: u64,
-            pub enabled: bool,
-        }
-
-        /// Minimal controller stub that exposes only `stats()` for tests.
-        pub struct PreemptionController;
-
-        impl PreemptionController {
-            pub fn stats(&self) -> PreemptionStats {
-                PreemptionStats {
-                    forced_preemptions: 0,
-                    voluntary_yields: 0,
-                    current_time_slice: 0,
-                    enabled: false,
-                }
-            }
-        }
-
-        /// Return a static reference to the stub controller.
-        pub fn preemption_controller() -> &'static PreemptionController {
-            static CTRL: PreemptionController = PreemptionController;
-            &CTRL
-        }
-
-        pub fn aggregate_preemption_stats() -> PreemptionStats {
-            preemption_controller().stats()
-        }
-
-        /// No-op stubs used by code paths that call into preemption during tests.
-        pub fn voluntary_yield() {}
-        pub fn yield_point() {}
-        pub fn is_preemption_pending() -> bool {
-            false
-        }
-        pub fn clear_preemption_pending() {}
-        pub fn check_and_clear_yield_request() -> bool {
-            false
-        }
-        pub fn handle_timer_tick(_tick: u64) {}
-        pub fn set_preemption_pending() {}
-        pub fn request_yield() {}
-        pub fn decrement_time_slice() {}
-        pub fn notify_task_started(_tick: u64) {}
-    }
-
-    // Minimal memory helpers for tests
-    pub mod memory {
-        pub fn physical_memory_offset() -> u64 {
-            0
-        }
-        pub fn total_memory_kb() -> u64 {
-            1024 * 1024
-        }
-        pub fn free_memory_kb() -> u64 {
-            512 * 1024
-        }
-    }
-
-    // Minimal interrupts shim
-    pub mod interrupts {
-        use core::sync::atomic::{AtomicBool, Ordering};
-
-        static INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
-
-        pub fn get_timer_ticks() -> u64 {
-            0
-        }
-
-        pub fn runtime_local_timers_enabled() -> bool {
-            false
-        }
-
-        pub fn ensure_runtime_local_timer_started() {}
-
-        pub fn transition_to_runtime_local_timers() -> bool {
-            false
-        }
-
-        pub fn enable_interrupts() {
-            INTERRUPTS_ENABLED.store(true, Ordering::Release);
-        }
-
-        pub fn disable_interrupts() {
-            INTERRUPTS_ENABLED.store(false, Ordering::Release);
-        }
-
-        pub fn are_interrupts_enabled() -> bool {
-            INTERRUPTS_ENABLED.load(Ordering::Acquire)
-        }
-    }
-
-    // Minimal domain system stub (正規版 domain_system.rs と互換)
-    pub mod domain_system {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        #[repr(transparent)]
-        pub struct DomainId(pub u64);
-
-        impl DomainId {
-            pub const fn new(v: u64) -> Self {
-                DomainId(v)
-            }
-
-            pub const fn as_u64(&self) -> u64 {
-                self.0
-            }
-
-            pub const KERNEL: DomainId = DomainId(0);
-        }
-
-        impl core::fmt::Display for DomainId {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                write!(f, "Domain({})", self.0)
-            }
-        }
-
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum DomainState {
-            Initializing,
-            Running,
-            Suspended,
-            Stopped,
-            Terminated,
-        }
-
-        #[derive(Debug, Clone, Default)]
-        pub struct DomainStats {
-            pub total: usize,
-            pub running: usize,
-            pub stopped: usize,
-            pub terminated: usize,
-            pub memory_used: u64,
-            pub total_rrefs: u64,
-        }
-
-        pub fn init() {}
-        pub fn create_domain(_name: alloc::string::String) -> Option<DomainId> {
-            static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-            let id = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            Some(DomainId(id))
-        }
-        pub fn set_domain_state(_id: DomainId, _state: DomainState) {}
-        pub fn get_domain_stats() -> DomainStats {
-            DomainStats::default()
-        }
-        pub fn get_stats() -> DomainStats {
-            DomainStats::default()
-        }
-        pub fn handle_domain_panic(_id: DomainId, _msg: alloc::string::String) {}
-        pub fn start_domain(_id: DomainId) -> Result<(), &'static str> {
-            Ok(())
-        }
-        pub fn stop_domain(_id: DomainId) -> Result<(), &'static str> {
-            Ok(())
-        }
-        pub fn resume_domain(_id: DomainId) -> Result<(), &'static str> {
-            Ok(())
-        }
-        pub fn terminate_domain(_id: DomainId) -> Result<(), &'static str> {
-            Ok(())
-        }
-        pub fn set_domain_numa(_id: DomainId, _node: usize) {}
-        pub fn get_domain_numa(_id: DomainId) -> Option<usize> {
-            None
-        }
-        pub fn add_task_to_domain(_domain_id: DomainId, _task_id: u64) {}
-    }
-
-    // Task context counters used by legacy management tests
-    pub mod context {
-        use core::sync::atomic::AtomicU64;
-        pub static CONTEXT_SWITCH_COUNT: AtomicU64 = AtomicU64::new(0);
-    }
-
-    // Minimal IO shims for tests
-    pub mod io {
-        pub mod log {
-            pub fn early_print_char(_c: u8) {}
-        }
-
-        pub mod interrupt_manager {
-            pub fn send_ipi(_apic_id: u32, _vector: u8) {}
-            pub fn broadcast_ipi(_vector: u8) {}
-        }
-
-        pub mod nvme {
-            /// Minimal NVMe completion type for tests
-            #[derive(Clone, Copy, Debug)]
-            pub struct NvmeCompletion {
-                pub cid: u16,
-                pub status: u16,
-            }
-
-            impl NvmeCompletion {
-                pub fn is_success(&self) -> bool {
-                    (self.status & 0x1) != 0
-                }
-                pub fn command_id(&self) -> u16 {
-                    self.cid
-                }
-            }
-
-            /// Minimal driver handle stub used in `with_driver` closures.
-            #[derive(Debug)]
-            pub struct NvmePollingDriver;
-
-            impl NvmePollingDriver {
-                pub fn new() -> Self {
-                    NvmePollingDriver
-                }
-
-                /// Submit a read command (test stub)
-                pub unsafe fn submit_read(
-                    &self,
-                    _core_id: u32,
-                    _nsid: u32,
-                    _lba: u64,
-                    _blocks: u16,
-                    _prp1: u64,
-                    _prp2: u64,
-                ) -> Result<u16, &'static str> {
-                    Err("no-driver")
-                }
-
-                /// Submit a write command (test stub)
-                pub unsafe fn submit_write(
-                    &self,
-                    _core_id: u32,
-                    _nsid: u32,
-                    _lba: u64,
-                    _blocks: u16,
-                    _prp1: u64,
-                    _prp2: u64,
-                ) -> Result<u16, &'static str> {
-                    Err("no-driver")
-                }
-
-                pub fn check_completion(&self, _core_id: u32, _cid: u16) -> Option<NvmeCompletion> {
-                    None
-                }
-                pub fn register_waker(&self, _core_id: u32, _cid: u16, _waker: core::task::Waker) {}
-                pub fn namespace_block_size(&self, _nsid: u32) -> u32 {
-                    512
-                }
-            }
-
-            pub mod global {
-                use crate::task::io::nvme::NvmePollingDriver;
-
-                pub fn with_driver<F, R>(_f: F) -> Option<R>
-                where
-                    F: FnOnce(&NvmePollingDriver) -> R,
-                {
-                    None
-                }
-
-                pub fn with_driver_mut<F, R>(_f: F) -> Option<R>
-                where
-                    F: FnOnce(&mut NvmePollingDriver) -> R,
-                {
-                    None
-                }
-            }
-        }
-    }
-    // Test shim removed: tests and benches should use the canonical
-    // `crate::task::TaskId` directly. If you see failures related to TaskId
-    // field access, please update tests to use `as_u64()` accessor.
-
-    /// Minimal interrupt_waker shim used by some I/O drivers in tests and benches.
-    pub mod interrupt_waker {
-        #[derive(Clone, Copy)]
-        pub enum InterruptSource {
-            VirtioBlk(u8),
-            VirtioNet(u8),
-            Other(u8),
-        }
-
-        pub fn wake_from_interrupt(_src: InterruptSource) {
-            // No-op in tests/bench harness
-        }
-    }
-}
+#[path = "host_support/task.rs"]
+pub mod task;
 
 // time shim removed
 
@@ -2236,169 +676,8 @@ pub mod task {
     not(feature = "full_mm_tests"),
     not(feature = "qemu-test-export")
 ))]
-pub mod io {
-    // Include only the IOMMU implementation for test builds to avoid
-    // pulling in the whole I/O subsystem and its wide dependency graph.
-    #[path = "iommu/mod.rs"]
-    pub mod iommu;
-
-    /// Minimal logger shim for test builds. Kernel code calls `io::log::early_print`,
-    /// `io::log::init()` and `io::log::notify_heap_available()` during early boot. We
-    /// provide lightweight no-op implementations here so unit tests can run without
-    /// pulling the full I/O logging subsystem into the test build.
-    pub mod log {
-        /// Early boot serial-like print used before the full logger is initialized.
-        pub fn early_print(s: &str) {
-            std::print!("{}", s);
-        }
-
-        pub fn early_print_dec(n: u64) {
-            std::print!("{}", n);
-        }
-
-        pub fn early_print_hex(n: u64) {
-            std::print!("0x{:016x}", n);
-        }
-
-        /// Early boot single-character print used by low-level routines.
-        pub fn early_print_char(c: u8) {
-            std::print!("{}", c as char);
-        }
-
-        /// Initialize the logger. Returns Ok(()) for the test shim.
-        pub fn init() -> Result<(), ()> {
-            Ok(())
-        }
-
-        /// Notify the logging subsystem that the heap is now available.
-        pub fn notify_heap_available() {}
-
-        /// Print formatted arguments (test stub delegates to early_print).
-        pub fn print(args: core::fmt::Arguments) {
-            #[cfg(feature = "std")]
-            {
-                std::print!("{}", args);
-            }
-            #[cfg(not(feature = "std"))]
-            {
-                use core::fmt::Write;
-                struct SerialWriter;
-                impl core::fmt::Write for SerialWriter {
-                    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                        early_print(s);
-                        Ok(())
-                    }
-                }
-                let _ = SerialWriter.write_fmt(args);
-            }
-        }
-    }
-
-    pub mod interrupt_manager {
-        pub fn send_ipi(_apic_id: u32, _vector: u8) {}
-        pub fn broadcast_ipi(_vector: u8) {}
-    }
-
-    // Minimal PCI stub for test builds so IOMMU functions that reference
-    // `crate::drivers::pci::PciDeviceInfo` compile.
-    pub mod pci {
-        #[derive(Debug, Clone, Copy)]
-        pub struct Bus(pub u8);
-        #[derive(Debug, Clone, Copy)]
-        pub struct Device(pub u8);
-        #[derive(Debug, Clone, Copy)]
-        pub struct Function(pub u8);
-
-        #[derive(Debug, Clone, Copy)]
-        pub struct Bdf {
-            pub bus: Bus,
-            pub device: Device,
-            pub function: Function,
-        }
-
-        #[derive(Debug)]
-        pub struct PciDeviceInfo {
-            pub bdf: Bdf,
-            pub iommu_domain_id: Option<u16>,
-        }
-
-        impl PciDeviceInfo {
-            pub fn is_pci_bridge(&self) -> bool {
-                false
-            }
-        }
-    }
-
-    pub mod nvme {
-        // Re-export the task-scoped NVMe driver for compatibility in test builds.
-        // Tests expect `crate::drivers::nvme::NvmePollingDriver` and driver-global helpers.
-        pub use crate::task::io::nvme::NvmePollingDriver;
-
-        pub mod global {
-            use crate::task::io::nvme::NvmePollingDriver;
-
-            pub fn with_driver<F, R>(_f: F) -> Option<R>
-            where
-                F: FnOnce(&NvmePollingDriver) -> R,
-            {
-                None
-            }
-
-            pub fn with_driver_mut<F, R>(_f: F) -> Option<R>
-            where
-                F: FnOnce(&mut NvmePollingDriver) -> R,
-            {
-                None
-            }
-        }
-    }
-
-    // Minimal MMIO stubs used by the IOMMU unit tests. These provide
-    // deterministic behavior suitable for unit testing.
-    pub mod mmio {
-        pub fn mmio_read_u8(_addr: usize) -> u8 {
-            0
-        }
-        pub fn mmio_read_u16(_addr: usize) -> u16 {
-            0
-        }
-        pub fn mmio_read_u32(_addr: usize) -> u32 {
-            0
-        }
-        pub fn mmio_read_u64(_addr: usize) -> u64 {
-            0
-        }
-        pub fn mmio_write_u8(_addr: usize, _v: u8) {}
-        pub fn mmio_write_u16(_addr: usize, _v: u16) {}
-        pub fn mmio_write_u32(_addr: usize, _v: u32) {}
-        pub fn mmio_write_u64(_addr: usize, _v: u64) {}
-
-        /// Generic volatile read for test builds.
-        pub fn volatile_read<T: Copy>(addr: usize) -> T {
-            unsafe { core::ptr::read_volatile(addr as *const T) }
-        }
-
-        /// Generic volatile write for test builds.
-        pub fn volatile_write<T>(addr: usize, val: T) {
-            unsafe {
-                core::ptr::write_volatile(addr as *mut T, val);
-            }
-        }
-    }
-
-    // Expose a minimal ACPI module in tests so IOMMU init can call into
-    // `crate::drivers::acpi::dmar::parse_dmar` without pulling the full ACPI
-    // runtime dependencies into every unit test. This delegates only the
-    // DMAR parsing API to the acpi driver crate.
-    pub mod acpi {
-        pub mod dmar {
-            pub use acpi_driver::dmar::*;
-        }
-        pub mod ivrs {
-            pub use acpi_driver::ivrs::*;
-        }
-    }
-}
+#[path = "host_support/io.rs"]
+pub mod io;
 
 // When building benches enable a *minimal* I/O module that only includes
 // `crate::io::log` so benchmark harnesses can access logging helpers while
@@ -2411,34 +690,32 @@ pub mod io;
 pub use hal;
 
 #[cfg(all(
-    test,
+    any(test, feature = "bench"),
     not(feature = "full_mm_tests"),
     not(feature = "qemu-test-export")
 ))]
 pub mod unwind;
 
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
 ))]
 pub mod crypto;
-#[cfg(any(not(test), test, feature = "bench", feature = "full_mm_tests"))]
+#[cfg(any(not(any(test, feature = "bench")), test, feature = "full_mm_tests"))]
 pub mod driver_registry;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
 ))]
 pub mod loader;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-pub mod runtime_bridge;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod resource_registry;
 #[cfg(any(
     all(
         test,
@@ -2449,13 +726,10 @@ pub mod runtime_bridge;
 ))]
 pub mod sync;
 
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
+#[cfg(all(
+    test,
+    not(feature = "full_mm_tests"),
+    not(feature = "qemu-test-export")
 ))]
 pub mod sas;
 
@@ -2469,23 +743,23 @@ pub mod sas;
 ))]
 pub mod util;
 
-#[cfg(any(test, feature = "bench"))]
+#[cfg(test)]
 pub mod nvme {
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
     pub use crate::drivers::nvme::*;
+    #[cfg(any(
+        all(
+            test,
+            not(feature = "full_mm_tests"),
+            not(feature = "qemu-test-export")
+        ),
+        feature = "bench"
+    ))]
+    pub use crate::task::io::nvme::*;
 }
 
 // Re-export task-scoped shims at crate root so modules that reference
-// `crate::memory`, `crate::smp`, `crate::interrupts`, and
-// `crate::domain_system` compile in test builds without changes.
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub use crate::task::domain_system;
+// `crate::smp` and `crate::interrupts` compile in lightweight test builds.
 #[cfg(any(
     all(
         test,
@@ -2495,5 +769,3 @@ pub use crate::task::domain_system;
     feature = "bench"
 ))]
 pub use crate::task::interrupts;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-pub mod domain_system;

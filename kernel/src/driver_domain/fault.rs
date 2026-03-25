@@ -30,7 +30,7 @@
 use alloc::format;
 use alloc::string::String;
 
-use crate::domain_system::DomainId;
+use crate::domain::DomainId;
 
 use super::{
     DriverDomainError, DriverDomainId, DriverDomainState, HotSwapState, driver_domain_manager,
@@ -233,10 +233,7 @@ pub fn handle_fault(
     // ドメインのリソースを回収
     if let Some(did) = domain_id {
         crate::io::log::early_print("[DCF] handle_fault: domain panic begin\n");
-        crate::domain_system::handle_domain_panic(
-            did,
-            format!("DriverDomain fault: {}", fault_kind),
-        );
+        crate::domain::handle_domain_panic(did, format!("DriverDomain fault: {}", fault_kind));
         crate::io::log::early_print("[DCF] handle_fault: domain panic done\n");
     }
 
@@ -394,7 +391,7 @@ fn attempt_restart(id: DriverDomainId) -> Result<(), DriverDomainError> {
     // Domainの状態をリセット
     let domain_id = manager.with_cell(id, |cell| cell.domain_id)?;
     if let Some(did) = domain_id {
-        crate::domain_system::resume_domain(did).ok();
+        crate::domain::resume_domain(did).ok();
     }
 
     // セルからドライバを再登録
@@ -435,7 +432,7 @@ fn attempt_restart(id: DriverDomainId) -> Result<(), DriverDomainError> {
 
     // DomainをRunningに
     if let Some(did) = domain_id {
-        crate::domain_system::start_domain(did).ok();
+        crate::domain::start_domain(did).ok();
     }
 
     // DriverCellをRunningに

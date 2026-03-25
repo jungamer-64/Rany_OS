@@ -8,17 +8,17 @@ use kernel_api::shell::{
     TaskMonitorInfo, ThermalInfo, ThermalSensorInfo, WatchdogInfo,
 };
 
-fn map_domain_state(state: crate::domain_system::DomainState) -> DomainState {
+fn map_domain_state(state: crate::domain::DomainState) -> DomainState {
     match state {
-        crate::domain_system::DomainState::Initializing => DomainState::Initializing,
-        crate::domain_system::DomainState::Running => DomainState::Running,
-        crate::domain_system::DomainState::Suspended => DomainState::Suspended,
-        crate::domain_system::DomainState::Stopped => DomainState::Stopped,
-        crate::domain_system::DomainState::Terminated => DomainState::Terminated,
+        crate::domain::DomainState::Initializing => DomainState::Initializing,
+        crate::domain::DomainState::Running => DomainState::Running,
+        crate::domain::DomainState::Suspended => DomainState::Suspended,
+        crate::domain::DomainState::Stopped => DomainState::Stopped,
+        crate::domain::DomainState::Terminated => DomainState::Terminated,
     }
 }
 
-fn ensure_domain_control(target: crate::domain_system::DomainId) -> Result<(), &'static str> {
+fn ensure_domain_control(target: crate::domain::DomainId) -> Result<(), &'static str> {
     let subject = crate::task::current_subject();
     if subject.domain == target {
         return Ok(());
@@ -34,9 +34,9 @@ fn ensure_domain_control(target: crate::domain_system::DomainId) -> Result<(), &
 
 pub fn memory_stats() -> MemoryStats {
     MemoryStats {
-        total_kb: crate::memory::total_memory_kb() as usize,
-        free_kb: crate::memory::free_memory_kb() as usize,
-        used_kb: crate::memory::used_memory_kb() as usize,
+        total_kb: crate::heap::total_memory_kb() as usize,
+        free_kb: crate::heap::free_memory_kb() as usize,
+        used_kb: crate::heap::used_memory_kb() as usize,
     }
 }
 
@@ -49,7 +49,7 @@ pub fn current_domain_id() -> u64 {
 }
 
 pub fn list_domains() -> Vec<DomainInfo> {
-    crate::domain_system::list_domain_snapshots()
+    crate::domain::list_domain_snapshots()
         .into_iter()
         .map(|snap| DomainInfo {
             id: snap.id.as_u64(),
@@ -64,35 +64,33 @@ pub fn list_domains() -> Vec<DomainInfo> {
 }
 
 pub fn get_domain(id: u64) -> Option<DomainInfo> {
-    crate::domain_system::get_domain_snapshot(crate::domain_system::DomainId::new(id)).map(|snap| {
-        DomainInfo {
-            id: snap.id.as_u64(),
-            name: snap.name,
-            state: map_domain_state(snap.state),
-            tasks: snap.tasks,
-            memory_kb: (snap.memory_bytes / 1024) as usize,
-            rrefs: snap.rrefs,
-            last_error: snap.last_error,
-        }
+    crate::domain::get_domain_snapshot(crate::domain::DomainId::new(id)).map(|snap| DomainInfo {
+        id: snap.id.as_u64(),
+        name: snap.name,
+        state: map_domain_state(snap.state),
+        tasks: snap.tasks,
+        memory_kb: (snap.memory_bytes / 1024) as usize,
+        rrefs: snap.rrefs,
+        last_error: snap.last_error,
     })
 }
 
 pub fn terminate_domain(id: u64) -> Result<(), &'static str> {
-    let target = crate::domain_system::DomainId::new(id);
+    let target = crate::domain::DomainId::new(id);
     ensure_domain_control(target)?;
-    crate::domain_system::terminate_domain(target)
+    crate::domain::terminate_domain(target)
 }
 
 pub fn stop_domain(id: u64) -> Result<(), &'static str> {
-    let target = crate::domain_system::DomainId::new(id);
+    let target = crate::domain::DomainId::new(id);
     ensure_domain_control(target)?;
-    crate::domain_system::stop_domain(target)
+    crate::domain::stop_domain(target)
 }
 
 pub fn resume_domain(id: u64) -> Result<(), &'static str> {
-    let target = crate::domain_system::DomainId::new(id);
+    let target = crate::domain::DomainId::new(id);
     ensure_domain_control(target)?;
-    crate::domain_system::resume_domain(target)
+    crate::domain::resume_domain(target)
 }
 
 pub fn system_info() -> ShellSystemInfo {

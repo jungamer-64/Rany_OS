@@ -12,8 +12,8 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 pub use kernel_api::ipc::{TypeHash, TypeIdHash, compute_simple_type_hash};
 
-// DomainIdはdomain_system.rsから使用
-pub use crate::domain_system::DomainId;
+// DomainId は canonical domain module から使用
+pub use crate::domain::DomainId;
 
 // ============================================================================
 // Heap Registry - Uses Global SAS Registry

@@ -14,5 +14,7 @@ pub fn alloc_dma_buffer(size: usize, device_id: PackedPciLocation) -> Option<Vir
         return None;
     }
 
-    kernel::instance().alloc_dma_for_device(size, device_id).ok()
+    kernel::instance()
+        .alloc_dma_for_device(size, device_id)
+        .ok()
 }

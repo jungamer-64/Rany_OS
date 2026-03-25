@@ -64,13 +64,13 @@ pub fn test_rref_ownership_transfer() -> TestResult {
 
 /// Test domain isolation
 pub fn test_domain_isolation() -> TestResult {
-    use crate::domain_system;
+    use crate::domain;
 
     // Create two domains
     let domain1 =
-        domain_system::create_domain(String::from("test_domain_1")).expect("create_domain failed");
+        domain::create_domain(String::from("test_domain_1")).expect("create_domain failed");
     let domain2 =
-        domain_system::create_domain(String::from("test_domain_2")).expect("create_domain failed");
+        domain::create_domain(String::from("test_domain_2")).expect("create_domain failed");
 
     // Verify domains have different IDs
     if domain1 == domain2 {
@@ -78,16 +78,16 @@ pub fn test_domain_isolation() -> TestResult {
     }
 
     // Start domains
-    if domain_system::start_domain(domain1).is_err() {
+    if domain::start_domain(domain1).is_err() {
         return TestResult::Failed(String::from("Failed to start domain1"));
     }
 
-    if domain_system::start_domain(domain2).is_err() {
+    if domain::start_domain(domain2).is_err() {
         return TestResult::Failed(String::from("Failed to start domain2"));
     }
 
     // Verify domain stats
-    let stats = domain_system::get_domain_stats();
+    let stats = domain::get_domain_stats();
     if stats.running < 2 {
         return TestResult::Failed(alloc::format!(
             "Expected at least 2 running domains, got {}",
@@ -96,8 +96,8 @@ pub fn test_domain_isolation() -> TestResult {
     }
 
     // Stop domains
-    domain_system::stop_domain(domain1);
-    domain_system::stop_domain(domain2);
+    domain::stop_domain(domain1);
+    domain::stop_domain(domain2);
 
     TestResult::Passed
 }
@@ -176,7 +176,7 @@ pub fn test_exchange_heap() -> TestResult {
 /// Test domain lifecycle
 pub fn test_domain_lifecycle() -> TestResult {
     use crate::domain::lifecycle::terminate_domain;
-    use crate::domain_system::{DomainState, create_domain, set_domain_state, with_domain};
+    use crate::domain::{DomainState, create_domain, set_domain_state, with_domain};
 
     // ドメインを作成
     let domain_id = match create_domain("test_lifecycle".into()) {

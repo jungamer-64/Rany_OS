@@ -697,7 +697,7 @@ pub fn memcg_root() -> MemcgId {
 ///
 /// Current migration default keeps all domains on `ROOT` until domain-specific
 /// memcg registration is introduced.
-pub fn memcg_for_domain(_domain: crate::domain_system::DomainId) -> MemcgId {
+pub fn memcg_for_domain(_domain: crate::domain::DomainId) -> MemcgId {
     MemcgId::ROOT
 }
 

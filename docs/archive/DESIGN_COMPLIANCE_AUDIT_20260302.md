@@ -169,7 +169,7 @@
 | PoisonLock<T> | ✅ | `sync/poison_lock.rs` — PoisonLock + IrqPoisonLock |
 | PoisonLock使用箇所 | ✅ | Executor、Exchange Heap、FAT32キャッシュ等 |
 | リソースクォータ | ✅ | `domain/quota.rs` — CPU時間/メモリ/I/O帯域 |
-| ドメインレジストリ | ✅ | `domain/registry.rs` + `domain_system.rs` |
+| ドメインレジストリ | ✅ | `domain/registry.rs` + `domain/api.rs` |
 | Result伝播 | ✅ | 1,363箇所のResult返却関数 |
 | panic!最小化 | ⚠️ | 80箇所（テスト・パニックハンドラ除く）— 改善余地 |
 
@@ -177,7 +177,7 @@
 
 - [kernel/src/domain/](kernel/src/domain/) — ドメイン管理
 - [kernel/src/sync/poison_lock.rs](kernel/src/sync/poison_lock.rs)
-- [kernel/src/domain_system.rs](kernel/src/domain_system.rs)
+- [kernel/src/domain/registry.rs](kernel/src/domain/registry.rs)
 
 ---
 

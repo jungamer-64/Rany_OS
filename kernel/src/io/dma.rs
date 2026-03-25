@@ -161,7 +161,7 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
         crate::util::write_to_addr(ptr as usize, value);
 
         // 仮想アドレスを物理アドレスに変換
-        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
+        let phys_addr = crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
         let res = Some(Self {
             ptr: NonNull::new(ptr as *mut T).expect("alloc returned null pointer"),
@@ -171,7 +171,7 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
         });
 
         #[cfg(debug_assertions)]
-        crate::memory::verify_buddy_integrity();
+        crate::heap::verify_buddy_integrity();
 
         res
     }
@@ -417,7 +417,7 @@ impl TypedDmaSlice<CpuOwned> {
         let ptr = non_null.as_ptr();
 
         // 仮想アドレスを物理アドレスに変換
-        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
+        let phys_addr = crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
         Some(Self {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),

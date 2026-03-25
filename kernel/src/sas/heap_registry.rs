@@ -13,7 +13,7 @@ mod error_and_tests;
 pub use error_and_tests::*;
 mod reclaim_impl;
 #[cfg(not(any(test, feature = "bench")))]
-use crate::domain_system::DomainId;
+use crate::domain::DomainId;
 
 // In lib test builds we prefer a lightweight `DomainId` provided by the
 // parent `sas` module (a test-only fallback is defined in `sas::mod`).
@@ -240,7 +240,7 @@ impl HeapRegistry {
 
         #[cfg(not(any(test, feature = "bench")))]
         {
-            if let Some(owner_node) = crate::domain_system::get_domain_numa(owner) {
+            if let Some(owner_node) = crate::domain::get_domain_numa(owner) {
                 idxs.sort_by_key(|i| {
                     if let Some(node) = self.shard_nodes.get(*i).copied().unwrap_or(None) {
                         if node == owner_node { 0usize } else { 1usize }

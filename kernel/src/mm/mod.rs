@@ -7,8 +7,8 @@
 //          NUMAアフィニティ、OOM対応、TLB Shootdown、
 //          Exchange Heap、最小限の huge page 支援
 //
-// ■ 注意: ヒープアロケータ(GlobalAlloc)、アドレス変換ユーティリティ等は
-//          memory.rs (トップレベル) にあります。
+// ■ 注意: ヒープアロケータ(GlobalAlloc) は heap/ にあり、
+//          物理↔仮想アドレス変換は mm/virt/mapping.rs が正規面です。
 //
 // ディレクトリ構造:
 //   mm/types.rs, atomic_utils.rs, bitmap/, remote_free/  -- Foundation

@@ -4,6 +4,7 @@
 //! カーネルのランタイム機能（タスクスポーン、統計表示、シンボル登録など）
 //!! カーネルの初期化後、Executor上で動作するタスクをスポーンする関数や、システム統計を表示する関数などを定義する。
 use super::*;
+use crate::{domain, heap, interrupts, io, task, unwind};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::{Future, poll_fn};
@@ -730,7 +731,10 @@ fn log_mlx5_boot_snapshot(stage: &str) {
 async fn network_bootstrap_task() {
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
-    let virtio_net_present = virtio_driver::net::virtio_net_driver_adapter(0).info().flags != 0;
+    let virtio_net_present = virtio_driver::net::virtio_net_driver_adapter(0)
+        .info()
+        .flags
+        != 0;
     if virtio_net_present {
         let virtio_port_registered = crate::net::runtime::device::port_info(
             crate::net::runtime::device::NetDeviceKey::Virtio(0),
@@ -1070,11 +1074,11 @@ pub(crate) fn print_system_stats() {
     info!(target: "stats", "=== System Statistics ===");
 
     // メモリ統計
-    let (used, free) = memory::heap_stats();
+    let (used, free) = heap::heap_stats();
     info!(target: "stats", "Heap: {} bytes used / {} bytes free", used, free);
 
     // ドメイン統計
-    let domain_stats = domain_system::get_domain_stats();
+    let domain_stats = domain::get_domain_stats();
     info!(target: "stats", "Domains: {} total, {} running, {} stopped",
         domain_stats.total,
         domain_stats.running,
@@ -1380,16 +1384,16 @@ pub(crate) fn panic(info: &core::panic::PanicInfo) -> ! {
 // ============================================================================
 // Defined here to avoid conflict with the library crate `rany_os` which
 // may also define an allocator for tests.
-// Wrapper to delegate to memory::ALLOCATOR
+// Wrapper to delegate to heap::ALLOCATOR
 pub(crate) struct GlobalAllocatorWrapper;
 
 #[cfg(not(test))]
 unsafe impl core::alloc::GlobalAlloc for GlobalAllocatorWrapper {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        crate::memory::ALLOCATOR.alloc(layout)
+        crate::heap::ALLOCATOR.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        crate::memory::ALLOCATOR.dealloc(ptr, layout)
+        crate::heap::ALLOCATOR.dealloc(ptr, layout)
     }
 }
 
@@ -1406,7 +1410,7 @@ pub(crate) fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
     crate::io::log::early_print("\nLayout Align: ");
     crate::io::log::early_print_dec(layout.align() as u64);
     crate::io::log::early_print("\n");
-    let recovered = crate::memory::oom_killer::try_free_memory();
+    let recovered = crate::heap::oom::try_free_memory();
     crate::io::log::early_print("OOM recovery attempt: ");
     crate::io::log::early_print(if recovered { "success\n" } else { "failed\n" });
     panic!(

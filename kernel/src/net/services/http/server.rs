@@ -640,7 +640,7 @@ fn build_memory_info_response(keep_alive: bool) -> Vec<u8> {
     let free_kb = (stats.free_frames as u64) * 4;
     let used_kb = total_kb.saturating_sub(free_kb);
 
-    let (heap_used, heap_free) = crate::memory::heap_stats();
+    let (heap_used, heap_free) = crate::heap::heap_stats();
 
     let mut json = format!(
         r#"{{
@@ -679,7 +679,7 @@ fn build_stats_response(keep_alive: bool) -> Vec<u8> {
     let bytes_tx = BYTES_TX.load(Ordering::Relaxed);
     let connections = ACTIVE_CONNECTIONS.load(Ordering::Relaxed);
 
-    let (heap_used, heap_free) = crate::memory::heap_stats();
+    let (heap_used, heap_free) = crate::heap::heap_stats();
     let timer_ticks = crate::interrupts::get_timer_ticks();
 
     let json = format!(
@@ -705,7 +705,7 @@ fn build_stats_response(keep_alive: bool) -> Vec<u8> {
 }
 
 fn build_info_response(keep_alive: bool) -> Vec<u8> {
-    let domain_stats = crate::domain_system::get_domain_stats();
+    let domain_stats = crate::domain::get_domain_stats();
     let sas_stats = crate::sas::stats();
     let spectre = crate::security::spectre::status_summary();
 

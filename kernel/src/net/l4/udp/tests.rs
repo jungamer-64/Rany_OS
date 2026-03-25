@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain_system::{DomainCredentials, DomainId, DomainSecurity};
+use crate::domain::{DomainCredentials, DomainId, DomainSecurity};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::security::capability::{CAP_NET_BIND, CapabilitySet, manager};

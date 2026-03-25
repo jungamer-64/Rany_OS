@@ -77,7 +77,7 @@ let shared = Arc::new(PoisonLock::new(data));
 
 ### 優先度: 高（ドメイン間境界）
 
-- `domain_system.rs` — ドメインレジストリ (PoisonLock使用済み)
+- `domain/registry.rs` — ドメインレジストリ (PoisonLock使用済み)
 - `sas/` — ヒープレジストリ、所有権管理
 - `ipc/proxy.rs` — プロキシマネージャ
 - `net/` — TCP/UDP ソケットテーブル、イベントキュー

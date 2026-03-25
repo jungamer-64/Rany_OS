@@ -61,7 +61,7 @@ impl MemoryCollector {
 
     /// Collect memory statistics
     pub fn collect(&self) -> super::MemoryStats {
-        let (used, free) = crate::memory::heap_stats();
+        let (used, free) = crate::heap::heap_stats();
         let total = used + free;
 
         // Update peak
@@ -198,7 +198,7 @@ impl DomainCollector {
 
     /// Collect domain statistics
     pub fn collect(&self) -> super::DomainStats {
-        let stats = crate::domain_system::get_domain_stats();
+        let stats = crate::domain::get_domain_stats();
 
         super::DomainStats {
             total: stats.total,

@@ -82,6 +82,20 @@ Traditional OS                    ExoRust (SPL)
 
 ---
 
+## 1.4 カーネルモジュール境界
+
+現行カーネルの正規モジュールグラフは `kernel/src/lib.rs` を起点に管理する。
+
+- バイナリエントリは `kernel/src/main.rs` のみに残し、`_start` から `kernel_boot_entry` を経て `rany_os::boot::kmain()` に入る。
+- 共有ブート処理は `kernel/src/boot/` に集約し、最終的な正規エントリは `boot::enter(&'static ExoBootInfo) -> !` とする。
+- ブートフェーズ本体は `boot` モジュール配下から `kernel_main.rs` / `kernel_main/kernel_runtime.rs` を呼び出す構成に整理し、`include!("kernel_content.rs")` には戻さない。
+- ファイルシステム実装の正規パスは `kernel/src/fs/` とし、`filesystems/kernel_fs` を `#[path = "../../..."]` で横断参照しない。
+- host test / bench 用の軽量差し替えは `kernel/src/host_support/` に置き、crate root の公開パスは `cfg(path = ...)` で維持する。
+
+この構成により、本番ブート経路と host-support 経路の責務を分離しつつ、`rany_os::graphics`、`rany_os::mm`、`rany_os::task`、`rany_os::io::log` などの in-tree 利用パスを安定させる。
+
+---
+
 ## 2. メモリ管理アーキテクチャ
 
 ### 2.1 階層型アロケータ
@@ -444,6 +458,7 @@ RanyOS/
 │   ├── domain/              # ドメイン管理
 │   ├── sync/                # 同期プリミティブ
 │   ├── kapi/                # カーネルAPI (SPL直接呼び出し、非syscall)
+│   ├── resource_registry/   # runtime-owned handle/owner/cleanup state
 │   ├── application/         # アプリケーションAPI (Ring 0制約付き、非userspace)
 │   └── interrupts/          # 割り込み処理
 ├── scripts/                 # ビルド・実行スクリプト
@@ -461,6 +476,8 @@ ExoRustでは、POSIX由来の命名を避け、SPL/SASアーキテクチャを�
 | userspace | application | Ring 3ユーザー空間は存在しない。Rust型システム+Capabilityで制約されたアプリ |
 | socket | endpoint | POSIXソケットのcopy semanticsではなく、所有権移動ベースのゼロコピーエンドポイント |
 | virtual FS layer | block_io / fs_model | 仮想ファイル層は持たず、共有ブロックI/O境界とローカルFS型に分離 |
+
+`kapi/` は `interfaces/kernel_api::KernelServices` の実装と認可・公開面だけを持ち、runtime-owned なハンドル状態や owner cleanup は `resource_registry/` に集約する。旧来の monolithic service/bridge 実装は正規境界として扱わない。
 
 ---
 

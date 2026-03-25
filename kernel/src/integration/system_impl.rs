@@ -385,7 +385,8 @@ impl SystemIntegration {
         if let Some(bar0) = dev.bars[0] {
             let bar0_phys = bar0.base();
             let bar0_virt =
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
 
             // Attempt PCI transport first
             let mut initialized_via_pci = false;
@@ -525,7 +526,7 @@ impl SystemIntegration {
         // Determine legacy MMIO base from BAR0 if available
         let bar0_virt_opt = dev.bars[0].map(|bar0| {
             let phys = bar0.base();
-            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(phys)).as_u64()
+            crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(phys)).as_u64()
         });
 
         // Register Driver via DriverRegistry
@@ -574,7 +575,8 @@ impl SystemIntegration {
         if let Some(bar0) = dev.bars[0] {
             let bar0_phys = bar0.base();
             let bar0_virt =
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
 
             let mut initialized_via_pci = false;
             if let Some(transport) =
@@ -650,7 +652,8 @@ impl SystemIntegration {
         if let Some(bar0) = dev.bars[0] {
             let bar0_phys = bar0.base();
             let bar0_virt =
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
 
             let mut initialized_via_pci = false;
             if let Some(transport) =
@@ -726,7 +729,8 @@ impl SystemIntegration {
         if let Some(bar0) = dev.bars[0] {
             let bar0_phys = bar0.base();
             let bar0_virt =
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
 
             let mut initialized_via_pci = false;
             if let Some(transport) =

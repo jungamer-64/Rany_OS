@@ -42,7 +42,8 @@ fn register_pci_dma_width(dev: &PciDeviceInfo, bits: u8) {
 }
 
 fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
-    let base_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
+    let base_virt =
+        crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
     let virt_start = crate::mm::virt::higher_half::VirtAddr::new(base_virt);
     let phys_expected = crate::mm::virt::higher_half::PhysAddr::new(base_phys);
 
@@ -143,7 +144,8 @@ fn resolve_bar_virt_addr(dev: &PciDeviceInfo, cfg: Option<(u8, u32, u32)>) -> us
     match dev.bars[bar as usize] {
         Some(bar_info) => {
             let phys = bar_info.base() + (offset as u64);
-            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(phys)).as_u64() as usize
+            crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(phys)).as_u64()
+                as usize
         }
         None => 0,
     }
@@ -188,10 +190,14 @@ fn try_create_pci_transport(
     let common_phys = cbar_info.base() + (coff as u64);
     let device_phys = dbar_info.base() + (doff as u64);
 
-    let common_virt =
-        crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(common_phys)).as_u64() as usize;
-    let device_virt =
-        crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(device_phys)).as_u64() as usize;
+    let common_virt = crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(
+        common_phys,
+    ))
+    .as_u64() as usize;
+    let device_virt = crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(
+        device_phys,
+    ))
+    .as_u64() as usize;
 
     let notify_virt = resolve_bar_virt_addr(dev, caps.notify_cfg);
     let isr_virt = resolve_bar_virt_addr(dev, caps.isr_cfg);

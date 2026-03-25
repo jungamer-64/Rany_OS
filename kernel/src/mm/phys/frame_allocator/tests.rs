@@ -58,7 +58,7 @@ fn test_alloc_dealloc_contiguous_wrapper() {
     // Try to allocate a single contiguous 4KiB frame; if not available, test is a no-op
     if let Some(start) = alloc_contiguous_frames(1) {
         // Map to virtual address using HHDM offset
-        let virt = crate::memory::physical_memory_offset() + start.as_u64();
+        let virt = crate::mm::virt::mapping::physical_memory_offset() + start.as_u64();
         let ptr = virt as *mut u8;
         unsafe {
             core::ptr::write_volatile(ptr, 0xA5u8);

@@ -16,7 +16,10 @@ pub struct VirtioNetDriverHooks {
 }
 
 impl VirtioNetDriverHooks {
-    pub const fn new(runtime_factory: VirtioNetRuntimeFactory, post_probe: VirtioNetPostProbe) -> Self {
+    pub const fn new(
+        runtime_factory: VirtioNetRuntimeFactory,
+        post_probe: VirtioNetPostProbe,
+    ) -> Self {
         Self {
             runtime_factory,
             post_probe,

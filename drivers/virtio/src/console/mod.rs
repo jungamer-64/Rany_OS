@@ -182,7 +182,8 @@ impl VirtioConsoleDevice {
             VirtQueue::calculate_layout(queue_size);
 
         // Use a device-scoped DMA buffer for shared queue memory
-        let buffer = alloc_dma_buffer(total_size, self.pci_locator).ok_or(ConsoleError::NotReady)?;
+        let buffer =
+            alloc_dma_buffer(total_size, self.pci_locator).ok_or(ConsoleError::NotReady)?;
 
         let dev_base = buffer.device_address();
         let ptr = buffer.as_ptr();
@@ -285,7 +286,8 @@ impl VirtioConsoleDevice {
         let mut queue_guard = tx_queue.lock().unwrap_or_else(|e| e.into_inner());
 
         // Allocate a DMA buffer and copy the data (IOMMU-aware)
-        let mut buffer = alloc_dma_buffer(data.len(), self.pci_locator).ok_or(ConsoleError::NotReady)?;
+        let mut buffer =
+            alloc_dma_buffer(data.len(), self.pci_locator).ok_or(ConsoleError::NotReady)?;
         let phys_addr = buffer.device_address();
 
         let dst = buffer.as_slice_mut();

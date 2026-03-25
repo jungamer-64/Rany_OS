@@ -34,10 +34,10 @@ search_show() {
 }
 
 echo "[M05-GUARD] Checking for stale future-hook markers..."
-future_hits=$(search_count "future quota enforcement hook|future scheduler/QoS hook|将来のQoS enforcement|将来のquota enforcement" kernel/src/domain_system.rs)
+future_hits=$(search_count "future quota enforcement hook|future scheduler/QoS hook|将来のQoS enforcement|将来のquota enforcement" kernel/src/domain/registry.rs)
 if [[ "$future_hits" -ne 0 ]]; then
-  echo "[M05-GUARD] FAIL: future-hook markers remain in domain_system.rs"
-  search_show "future quota enforcement hook|future scheduler/QoS hook|将来のQoS enforcement|将来のquota enforcement" kernel/src/domain_system.rs
+  echo "[M05-GUARD] FAIL: future-hook markers remain in domain/registry.rs"
+  search_show "future quota enforcement hook|future scheduler/QoS hook|将来のQoS enforcement|将来のquota enforcement" kernel/src/domain/registry.rs
   fail=1
 fi
 
@@ -57,10 +57,10 @@ if [[ "$reclaim_struct_hits" -ne 0 ]]; then
   fail=1
 fi
 
-echo "[M05-GUARD] Checking quota victim selection in memory OOM path..."
-quota_path_hits=$(search_count "select_oom_victim" kernel/src/memory/oom_killer.rs)
+echo "[M05-GUARD] Checking quota victim selection in heap OOM path..."
+quota_path_hits=$(search_count "select_oom_victim" kernel/src/heap/oom.rs)
 if [[ "$quota_path_hits" -eq 0 ]]; then
-  echo "[M05-GUARD] FAIL: select_oom_victim path missing in memory/oom_killer.rs"
+  echo "[M05-GUARD] FAIL: select_oom_victim path missing in heap/oom.rs"
   fail=1
 fi
 

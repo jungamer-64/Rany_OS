@@ -163,7 +163,11 @@ impl PciServices for BuiltinPciProvider {
     }
 
     fn set_memory_space(&self, bdf: BdfAddress, enabled: bool) -> kernel_api::KapiResult<()> {
-        update_command_bit(bdf, crate::drivers::pci::command_bits::MEMORY_SPACE, enabled);
+        update_command_bit(
+            bdf,
+            crate::drivers::pci::command_bits::MEMORY_SPACE,
+            enabled,
+        );
         Ok(())
     }
 
@@ -173,7 +177,11 @@ impl PciServices for BuiltinPciProvider {
     }
 
     fn disable_intx(&self, bdf: BdfAddress) -> kernel_api::KapiResult<()> {
-        update_command_bit(bdf, crate::drivers::pci::command_bits::INTERRUPT_DISABLE, true);
+        update_command_bit(
+            bdf,
+            crate::drivers::pci::command_bits::INTERRUPT_DISABLE,
+            true,
+        );
         Ok(())
     }
 }

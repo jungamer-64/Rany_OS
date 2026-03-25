@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 #[cfg(not(any(test, feature = "bench")))]
-use crate::domain_system::DomainId;
+use crate::domain::DomainId;
 
 #[cfg(any(test, feature = "bench"))]
 use super::DomainId;

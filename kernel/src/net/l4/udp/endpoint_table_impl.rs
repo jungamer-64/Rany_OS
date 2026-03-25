@@ -98,8 +98,7 @@ impl UdpEndpointTable {
                         let subject = crate::task::context::current_subject();
                         let caller = subject.domain.as_u64();
                         // Kernel domain always has full privilege
-                        let mut permitted =
-                            subject.domain == crate::domain_system::DomainId::KERNEL;
+                        let mut permitted = subject.domain == crate::domain::DomainId::KERNEL;
 
                         if !permitted {
                             if let Some(t) = token {
@@ -214,8 +213,7 @@ impl UdpEndpointTable {
                     if port < 1024 {
                         let subject = crate::task::context::current_subject();
                         let caller = subject.domain.as_u64();
-                        let mut permitted =
-                            subject.domain == crate::domain_system::DomainId::KERNEL;
+                        let mut permitted = subject.domain == crate::domain::DomainId::KERNEL;
 
                         if !permitted {
                             if let Some(t) = token {

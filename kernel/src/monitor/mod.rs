@@ -149,7 +149,7 @@ pub fn is_running() -> bool {
 
 /// Collect current system snapshot
 pub fn snapshot() -> SystemSnapshot {
-    let (heap_used, heap_free) = crate::memory::heap_stats();
+    let (heap_used, heap_free) = crate::heap::heap_stats();
     let heap_total = heap_used + heap_free;
     let usage_percent = if heap_total > 0 {
         ((heap_used * 100) / heap_total) as u8
@@ -157,7 +157,7 @@ pub fn snapshot() -> SystemSnapshot {
         0
     };
 
-    let domain_stats = crate::domain_system::get_domain_stats();
+    let domain_stats = crate::domain::get_domain_stats();
 
     let preempt_stats = crate::task::aggregate_preemption_stats();
 

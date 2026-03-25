@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
-use crate::domain_system::DomainId;
+use crate::domain::DomainId;
 
 /// アロケーション情報
 #[derive(Debug, Clone, Copy)]

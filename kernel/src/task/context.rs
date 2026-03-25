@@ -290,9 +290,9 @@ pub struct TaskControlBlock {
     /// タスクID
     pub id: super::TaskId,
     /// ドメインID（権限主体）
-    pub domain_id: crate::domain_system::DomainId,
+    pub domain_id: crate::domain::DomainId,
     /// ドメインセキュリティ（資格情報/ケイパビリティ）
-    pub security: Arc<crate::domain_system::DomainSecurity>,
+    pub security: Arc<crate::domain::DomainSecurity>,
     /// タスク状態
     pub state: TaskState,
     /// CPUコンテキスト
@@ -315,13 +315,13 @@ impl TaskControlBlock {
         entry_point: fn(u64) -> !,
         arg: u64,
         priority: u8,
-        domain_id: crate::domain_system::DomainId,
+        domain_id: crate::domain::DomainId,
     ) -> Option<Self> {
         let kernel_stack = KernelStack::new()?;
         let stack_top = kernel_stack.top();
 
         let context = CpuContext::new_task(entry_point, stack_top, arg);
-        let security = crate::domain_system::domain_security_handle(domain_id);
+        let security = crate::domain::domain_security_handle(domain_id);
 
         Some(Self {
             id: super::TaskId::new(),
@@ -339,8 +339,8 @@ impl TaskControlBlock {
 
     /// アイドルタスク用のTCBを作成
     pub fn idle(cpu_id: usize) -> Self {
-        let domain_id = crate::domain_system::DomainId::KERNEL;
-        let security = crate::domain_system::domain_security_handle(domain_id);
+        let domain_id = crate::domain::DomainId::KERNEL;
+        let security = crate::domain::domain_security_handle(domain_id);
         Self {
             id: super::TaskId::new(),
             domain_id,
@@ -429,18 +429,17 @@ pub fn current_task_id() -> u64 {
 /// 権限主体（Task -> Domain）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Subject {
-    pub domain: crate::domain_system::DomainId,
+    pub domain: crate::domain::DomainId,
     pub task: super::TaskId,
-    pub cred: crate::domain_system::DomainCredentials,
+    pub cred: crate::domain::DomainCredentials,
     pub caps: crate::security::CapabilitySet,
 }
 
 impl Subject {
     pub fn kernel() -> Self {
-        let security =
-            crate::domain_system::domain_security_handle(crate::domain_system::DomainId::KERNEL);
+        let security = crate::domain::domain_security_handle(crate::domain::DomainId::KERNEL);
         Self {
-            domain: crate::domain_system::DomainId::KERNEL,
+            domain: crate::domain::DomainId::KERNEL,
             // current_task_id() falls back to 0 when no task is active
             task: super::TaskId::from_raw(0),
             cred: security.credentials,

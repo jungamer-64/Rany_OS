@@ -207,7 +207,7 @@ impl SysNamespace {
     // ---- ヘルパー ----
 
     /// DomainSnapshot → ExoValue::Map
-    fn snap_to_value(snap: &crate::domain_system::DomainSnapshot) -> ExoValue<'static> {
+    fn snap_to_value(snap: &crate::domain::DomainSnapshot) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         map.insert(s("id"), ExoValue::Int(snap.id.as_u64() as i64));
         map.insert(s("name"), ExoValue::String(Cow::Owned(snap.name.clone())));

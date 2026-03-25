@@ -1,12 +1,18 @@
 // ============================================================================
 // kernel_main.rs - カーネルメインエントリポイント (kmain) とシステム初期化
 // ============================================================================
-// 旧名: ahci_and_init.rs
 // 責務: kmain_inner()、デバイス検出、ドライバ初期化、Executorループ
 // ============================================================================
 use super::*;
-use log::{debug, error};
+use crate::{
+    benchmark, console, cpu, debug, domain, driver_domain, driver_registry, drivers, durability,
+    error, fs, graphics, heap, integration, interrupts, io, ipc, kapi, loader, mm, monitor, net,
+    panic_handler, per_cpu, platform, power, profiler, provider_registry, sas, security, shell,
+    smp, sync, system_info, task, test, thermal, time, unwind, util, watchdog,
+};
+use log::{debug, error, info, warn};
 
+#[path = "kernel_main/kernel_runtime.rs"]
 mod kernel_runtime;
 use self::kernel_runtime::{print_logo, register_kernel_symbols, start_async_boot_runtime};
 
@@ -100,8 +106,8 @@ pub(crate) fn ahci_ensure_mapping(
 
 /// Initialize HID (keyboard) and serial port drivers via DriverRegistry.
 pub(crate) fn init_hid_and_serial_drivers() {
+    use crate::driver_registry::register_driver;
     use alloc::boxed::Box;
-    use driver_registry::register_driver;
 
     crate::drivers::usb::class::hid::set_keyboard_event_sink(Some(
         crate::drivers::hid::keyboard::handle_key_event,
@@ -210,7 +216,10 @@ pub(crate) fn init_network_infra() {
     crate::net::l4::endpoint::retransmit::init_timer_wheel();
     info!(target: "init", "OOO queues and retransmit timer wheel initialized");
 
-    let virtio_net_present = virtio_driver::net::virtio_net_driver_adapter(0).info().flags != 0;
+    let virtio_net_present = virtio_driver::net::virtio_net_driver_adapter(0)
+        .info()
+        .flags
+        != 0;
     info!(target: "init", "Global VirtIO-Net device present: {} (driver init deferred to async)", virtio_net_present);
 }
 
@@ -353,7 +362,7 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
 
     // 物理メモリオフセットを設定
     info!(target: "init", "Setting physical memory offset...");
-    memory::set_physical_memory_offset(context.phys_mem_offset);
+    heap::set_physical_memory_offset(context.phys_mem_offset);
     info!(target: "init", "Physical memory offset set");
     debug!(
         target: "boot",
@@ -401,8 +410,8 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
 
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    memory::init(context.numa_info(), Some(context.boot_info_view()));
-    memory::ensure_global_heap_ready();
+    heap::init(context.numa_info(), Some(context.boot_info_view()));
+    heap::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
     // Heap-backed task runtime primitives are available at this point, so
@@ -653,7 +662,7 @@ fn register_spl_kernel_services() {
     // a buggy ISR might be corrupting the stack pointer.  Disable them to
     // diagnose and (temporarily) avoid the issue.
     interrupts::without_interrupts(|| unsafe {
-        service_impl::register_kernel_services();
+        kapi::register_kernel_services();
     });
     log_stack_free_space("after register_kernel_services call");
 
@@ -677,7 +686,7 @@ fn register_runtime_service_boundary() {
         RuntimeRegistrationStep::KernelServices => {
             log_stack_free_space("runtime registration: kernel services");
             info!(target: "init", "Registering builtin kernel service providers...");
-            crate::service_impl::register_builtin_service_providers();
+            crate::kapi::register_builtin_service_providers();
             info!(target: "init", "Builtin kernel service providers registered");
             info!(target: "init", "Publishing kernel services...");
             register_spl_kernel_services();
@@ -927,9 +936,9 @@ fn init_durability_and_kgdb(context: &KernelBootContext) {
 fn phase_core_services_base(context: &KernelBootContext) {
     // 2. ドメイン管理システムの初期化
     info!(target: "init", "Initializing domain system");
-    domain_system::init();
+    domain::init();
     info!(target: "init", "Domain system initialized");
-    crate::memory::verify_buddy_integrity();
+    crate::heap::verify_buddy_integrity();
 
     // 2.5. SAS（単一アドレス空間）の初期化
     info!(target: "init", "Initializing SAS");
@@ -1125,9 +1134,9 @@ fn resolve_shell_mode(
 pub(crate) fn init_usb_controllers() {
     info!(target: "init", "Scanning for USB xHCI controllers...");
 
+    use crate::driver_registry::register_driver;
     use crate::drivers::usb::UsbDriverWrapper;
     use alloc::boxed::Box;
-    use driver_registry::register_driver;
 
     let devices = crate::platform::pci::find_by_class(0x0C, 0x03);
     for device_info in devices.iter().filter(|d| d.class_code.is_xhci()) {

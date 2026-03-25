@@ -47,8 +47,8 @@ mod registration_api;
 pub use registration_api::*;
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-fn cleanup_runtime_bridges_for_driver_handle(handle: DriverHandle) {
-    crate::runtime_bridge::cleanup_for_driver_handle(handle);
+fn cleanup_runtime_resources_for_driver_handle(handle: DriverHandle) {
+    crate::resource_registry::cleanup_for_driver_handle(handle);
 }
 
 #[cfg(all(
@@ -56,11 +56,11 @@ fn cleanup_runtime_bridges_for_driver_handle(handle: DriverHandle) {
     not(feature = "full_mm_tests"),
     not(feature = "qemu-test-export")
 ))]
-fn cleanup_runtime_bridges_for_driver_handle(_handle: DriverHandle) {}
+fn cleanup_runtime_resources_for_driver_handle(_handle: DriverHandle) {}
 
 #[derive(Clone)]
 struct IrqBinding {
-    owner: crate::domain_system::DomainId,
+    owner: crate::domain::DomainId,
     handle: DriverHandle,
     stop: Arc<AtomicBool>,
     cookie: u64,
@@ -70,7 +70,7 @@ static IRQ_BINDINGS: PoisonLock<BTreeMap<u8, IrqBinding>> = PoisonLock::new(BTre
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 fn resolve_single_driver_handle_for_domain(
-    domain: crate::domain_system::DomainId,
+    domain: crate::domain::DomainId,
 ) -> Result<DriverHandle, KapiError> {
     let manager = crate::driver_domain::driver_domain_manager();
     let Some(id) = manager.find_by_domain(domain) else {
@@ -88,7 +88,7 @@ fn resolve_single_driver_handle_for_domain(
 
 #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
 fn resolve_single_driver_handle_for_domain(
-    _domain: crate::domain_system::DomainId,
+    _domain: crate::domain::DomainId,
 ) -> Result<DriverHandle, KapiError> {
     Err(KapiError::NotSupported)
 }
@@ -207,7 +207,7 @@ fn unbind_irq_for_current_domain(_irq: u32) -> KapiResult<()> {
 }
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-pub(crate) fn unbind_irqs_for_owner(owner: crate::domain_system::DomainId, vectors: &[u8]) {
+pub(crate) fn unbind_irqs_for_owner(owner: crate::domain::DomainId, vectors: &[u8]) {
     for &vector in vectors {
         let should_unbind = IRQ_BINDINGS
             .lock()
@@ -222,7 +222,7 @@ pub(crate) fn unbind_irqs_for_owner(owner: crate::domain_system::DomainId, vecto
 }
 
 #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-pub(crate) fn unbind_irqs_for_owner(_owner: crate::domain_system::DomainId, _vectors: &[u8]) {}
+pub(crate) fn unbind_irqs_for_owner(_owner: crate::domain::DomainId, _vectors: &[u8]) {}
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 fn cleanup_msix_for_driver_handle(handle: DriverHandle) {
@@ -406,7 +406,7 @@ impl DriverRegistry {
 
         if result.is_ok() {
             cleanup_msix_for_driver_handle(handle);
-            cleanup_runtime_bridges_for_driver_handle(handle);
+            cleanup_runtime_resources_for_driver_handle(handle);
             crate::provider_registry::provider_registry().unregister_driver(handle);
         }
 
@@ -605,7 +605,7 @@ impl DriverRegistry {
         let old_ty = entry.driver.driver_type();
 
         cleanup_msix_for_driver_handle(handle);
-        cleanup_runtime_bridges_for_driver_handle(handle);
+        cleanup_runtime_resources_for_driver_handle(handle);
         crate::provider_registry::provider_registry().unregister_driver(handle);
 
         // Try to remove driver resources first
@@ -695,7 +695,7 @@ impl DriverRegistry {
         );
 
         cleanup_msix_for_driver_handle(handle);
-        cleanup_runtime_bridges_for_driver_handle(handle);
+        cleanup_runtime_resources_for_driver_handle(handle);
         crate::provider_registry::provider_registry().unregister_driver(handle);
 
         // We assume the new driver is in Registered state initially?
@@ -847,7 +847,7 @@ extern "C" fn kapi_release_dma_raw(dma_handle_id: u64) -> i32 {
 
     #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
     {
-        match crate::service_impl::release_dma_buffer_checked(dma_handle_id) {
+        match crate::kapi::memory::release_dma_buffer_checked(dma_handle_id) {
             Ok(()) => return AbiErrorCode::Success as i32,
             Err(err) => return map_kapi_error_to_abi(err),
         }
@@ -880,7 +880,8 @@ extern "C" fn kapi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) ->
         return AbiErrorCode::PermissionDenied as i32;
     }
 
-    let virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(paddr)).as_u64();
+    let virt =
+        crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(paddr)).as_u64();
     unsafe {
         *out = AbiMmioHandle { base: virt, size };
     }
@@ -1101,7 +1102,7 @@ extern "C" fn kapi_current_domain_id() -> u64 {
         not(feature = "qemu-test-export")
     ))]
     {
-        crate::domain_system::DomainId::KERNEL.as_u64()
+        crate::domain::DomainId::KERNEL.as_u64()
     }
 
     #[cfg(not(all(

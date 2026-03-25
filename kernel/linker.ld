@@ -71,6 +71,13 @@ SECTIONS
 
     __kernel_end = .;
 
+    /* The unwind subsystem probes these linker symbols and gracefully treats
+       zero-valued bounds as "eh_frame unavailable". Keep the section discarded
+       for the kernel image, but always provide the symbols so full-boot/test
+       links do not fail when Rust emits unwind references. */
+    PROVIDE(__eh_frame_start = 0);
+    PROVIDE(__eh_frame_end = 0);
+
     /* Discard unnecessary sections (includes DWARF/debug sections to avoid placing
        large debug segments inside loadable ranges and causing overlapping ranges in the final
        kernel image). */

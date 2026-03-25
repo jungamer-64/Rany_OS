@@ -143,8 +143,10 @@ impl VirtioNetDriverAdapter {
 
 impl NetDevicePort for VirtioNetDriverAdapter {
     fn info(&self) -> NetDeviceInfo {
-        with_virtio_net_at_index(self.index, |device| device.info_snapshot(virtio_port_id(self.index)))
-            .unwrap_or_else(|| self.default_info())
+        with_virtio_net_at_index(self.index, |device| {
+            device.info_snapshot(virtio_port_id(self.index))
+        })
+        .unwrap_or_else(|| self.default_info())
     }
 
     fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
@@ -269,33 +271,57 @@ mod tests {
             VirtioDeviceType::Network
         }
 
-        fn get_status(&self) -> u8 { 0 }
+        fn get_status(&self) -> u8 {
+            0
+        }
         fn set_status(&self, _status: u8) {}
-        fn get_device_features_low(&self) -> u32 { 0 }
-        fn get_device_features_high(&self) -> u32 { 0 }
+        fn get_device_features_low(&self) -> u32 {
+            0
+        }
+        fn get_device_features_high(&self) -> u32 {
+            0
+        }
         fn set_driver_features_low(&self, _features: u32) {}
         fn set_driver_features_high(&self, _features: u32) {}
-        fn get_num_queues(&self) -> u16 { 2 }
+        fn get_num_queues(&self) -> u16 {
+            2
+        }
         fn select_queue(&self, _queue_index: u16) {}
-        fn get_queue_max_size(&self) -> u16 { crate::VIRTQUEUE_MAX_SIZE }
+        fn get_queue_max_size(&self) -> u16 {
+            crate::VIRTQUEUE_MAX_SIZE
+        }
         fn set_queue_size(&self, _size: u16) {}
-        fn is_queue_ready(&self) -> bool { false }
+        fn is_queue_ready(&self) -> bool {
+            false
+        }
         fn enable_queue(&self) {}
         fn disable_queue(&self) {}
         fn set_queue_desc_addr(&self, _addr: u64) {}
         fn set_queue_avail_addr(&self, _addr: u64) {}
         fn set_queue_used_addr(&self, _addr: u64) {}
         fn notify_queue(&self, _queue_index: u16) {}
-        fn get_notify_addr(&self, _queue_index: u16) -> Option<u64> { None }
-        fn get_interrupt_status(&self) -> u32 { 0 }
+        fn get_notify_addr(&self, _queue_index: u16) -> Option<u64> {
+            None
+        }
+        fn get_interrupt_status(&self) -> u32 {
+            0
+        }
         fn ack_interrupt(&self, _status: u32) {}
-        fn read_config_u8(&self, _offset: usize) -> u8 { 0 }
-        fn read_config_u16(&self, _offset: usize) -> u16 { 0 }
-        fn read_config_u32(&self, _offset: usize) -> u32 { 0 }
+        fn read_config_u8(&self, _offset: usize) -> u8 {
+            0
+        }
+        fn read_config_u16(&self, _offset: usize) -> u16 {
+            0
+        }
+        fn read_config_u32(&self, _offset: usize) -> u32 {
+            0
+        }
         fn write_config_u8(&self, _offset: usize, _value: u8) {}
         fn write_config_u16(&self, _offset: usize, _value: u16) {}
         fn write_config_u32(&self, _offset: usize, _value: u32) {}
-        fn transport_type(&self) -> TransportType { TransportType::Mmio }
+        fn transport_type(&self) -> TransportType {
+            TransportType::Mmio
+        }
     }
 
     fn release_test_dma_buffer(ptr: *mut u8, size: usize, _host_addr: u64) {
@@ -332,7 +358,9 @@ mod tests {
             })
         }
 
-        fn alloc_packet(&self) -> Option<PacketRef> { None }
+        fn alloc_packet(&self) -> Option<PacketRef> {
+            None
+        }
         fn map_packet(
             &self,
             _packet: &PacketRef,
@@ -347,13 +375,15 @@ mod tests {
             _packet: PacketRef,
             _header_len: usize,
             _payload_len: usize,
-        ) {}
+        ) {
+        }
         fn transmit_complete(
             &self,
             _queue_index: u16,
             _packet: PacketRef,
             _completion_id: Option<u64>,
-        ) {}
+        ) {
+        }
         fn schedule_wake(&self, _queue_index: u16) {}
         fn log(&self, _level: log::Level, _msg: core::fmt::Arguments) {}
     }
@@ -365,7 +395,11 @@ mod tests {
         let runtime: Arc<dyn NetRuntime> = Arc::new(NoopRuntime);
         install_virtio_net_device(
             0,
-            Arc::new(VirtioNetDevice::new(0, Box::new(NoopTransport), runtime.clone())),
+            Arc::new(VirtioNetDevice::new(
+                0,
+                Box::new(NoopTransport),
+                runtime.clone(),
+            )),
         );
         install_virtio_net_device(
             3,

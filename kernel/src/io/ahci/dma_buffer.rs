@@ -59,7 +59,7 @@ impl AhciDmaReadBuffer {
         crate::io::log::early_print_dec(self.size() as u64);
         crate::io::log::early_print("\n");
         #[cfg(debug_assertions)]
-        crate::memory::verify_buddy_integrity();
+        crate::heap::verify_buddy_integrity();
         let (dev, guard) = buffer.start_dma();
         self.inflight = Some((dev, guard));
         Ok(phys)
@@ -131,7 +131,7 @@ impl AhciDmaWriteBuffer {
         crate::io::log::early_print_dec((self.sector_count * SECTOR_SIZE) as u64);
         crate::io::log::early_print("\n");
         #[cfg(debug_assertions)]
-        crate::memory::verify_buddy_integrity();
+        crate::heap::verify_buddy_integrity();
         let (dev, guard) = buffer.start_dma();
         self.inflight = Some((dev, guard));
         Ok(phys)

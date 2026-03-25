@@ -537,7 +537,7 @@ impl CoherentDmaBuffer {
             core::ptr::write_bytes(ptr, 0, size);
         }
         // 仮想アドレスを物理アドレスに変換
-        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
+        let phys_addr = crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
         // Device-bound DMA buffers require translated IOMMU mappings.
         let (iova, iommu_device) = if let Some(dev) = device {
@@ -742,7 +742,8 @@ impl<'a> StreamingDmaMapping<'a> {
     ///
     /// Use `DmaHandle` instead for IOMMU-enabled DMA.
     pub unsafe fn map(buffer: &'a [u8], direction: DmaDirection) -> Self {
-        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(buffer.as_ptr() as u64));
+        let phys_addr =
+            crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::new(buffer.as_ptr() as u64));
         let phys = phys_addr.as_u64();
         let size = buffer.len() as u64;
 

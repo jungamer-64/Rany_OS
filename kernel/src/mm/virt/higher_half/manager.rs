@@ -97,7 +97,7 @@ pub fn physical_memory_offset() -> u64 {
         manager.physical_memory_offset()
     } else {
         // Early bootstrap callers may run before higher-half manager init.
-        crate::memory::physical_memory_offset()
+        crate::heap::physical_memory_offset()
     }
 }
 
@@ -125,7 +125,7 @@ pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
     } else {
         VirtAddr::new(
             phys.as_u64()
-                .wrapping_add(crate::memory::physical_memory_offset()),
+                .wrapping_add(crate::heap::physical_memory_offset()),
         )
     }
 }
@@ -137,7 +137,7 @@ pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
             if let Some(manager) = guard.as_ref() {
                 manager.mapper.virt_to_phys(virt)
             } else {
-                let offset = crate::memory::physical_memory_offset();
+                let offset = crate::heap::physical_memory_offset();
                 let v = virt.as_u64();
                 if v >= offset {
                     Some(PhysAddr::new(v - offset))

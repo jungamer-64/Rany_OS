@@ -152,7 +152,8 @@ impl VirtioBalloonDevice {
         let (desc_size, _avail_size, used_offset, total_size) =
             VirtQueue::calculate_layout(queue_size);
 
-        let buffer = alloc_dma_buffer(total_size, self.pci_locator).ok_or(BalloonError::NotReady)?;
+        let buffer =
+            alloc_dma_buffer(total_size, self.pci_locator).ok_or(BalloonError::NotReady)?;
 
         let dev_base = buffer.device_address();
         let ptr = buffer.as_ptr();

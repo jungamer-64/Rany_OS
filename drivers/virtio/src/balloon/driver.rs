@@ -5,9 +5,9 @@
 //! Driver trait implementation for VirtIO Balloon Device.
 //! This wrapper allows the driver to be managed by the DriverRegistry.
 
+use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
-use kernel_api::abi::driver::PackedPciLocation;
 
 use super::init_virtio_balloon_for_device_at_index;
 

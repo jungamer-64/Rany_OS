@@ -91,7 +91,7 @@ impl SegregatedFreeListHeap {
 
         unsafe {
             // Set header (use checked store for debug)
-            crate::memory::checked_store_usize(
+            crate::heap::checked_store_usize(
                 block_ptr as usize,
                 final_size,
                 "ExHeap header size store",
@@ -104,7 +104,7 @@ impl SegregatedFreeListHeap {
                     Some(nn) => nn.as_ptr() as usize,
                     None => 0usize,
                 };
-                if next_val == crate::memory::EXCHANGE_HEAP_SIZE {
+                if next_val == crate::heap::EXCHANGE_HEAP_SIZE {
                     crate::io::log::early_print(
                         "[ExHeap] WARNING: next pointer equal to EXCHANGE_HEAP_SIZE!\n",
                     );
@@ -119,7 +119,7 @@ impl SegregatedFreeListHeap {
 
             // Set footer (boundary tag) using checked store for its size
             let footer_addr = final_addr + final_size - core::mem::size_of::<BlockFooter>();
-            crate::memory::checked_store_usize(footer_addr, final_size, "ExHeap footer size store");
+            crate::heap::checked_store_usize(footer_addr, final_size, "ExHeap footer size store");
             let footer_ptr = footer_addr as *mut BlockFooter;
             (*footer_ptr).is_free = true;
         }

@@ -300,7 +300,7 @@ fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
 
     let id = DomainId::new(domain_id);
     let sas_domain_id = crate::sas::DomainId::new(domain_id);
-    let target_domain_id = crate::domain_system::DomainId::new(domain_id);
+    let target_domain_id = crate::domain::DomainId::new(domain_id);
 
     // 【設計書 8.4】ドメインが所有する全オブジェクトをポイズニング
     let poisoned_count = crate::sas::poison_domain_objects(sas_domain_id);

@@ -6,7 +6,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 
 - Former kernel-side application lifecycle module
   - `AppHandle` ❌ **removed**
-    - Migration: Use `crate::domain_system::DomainId` and the canonical domain APIs.
+    - Migration: Use `crate::domain::DomainId` and the canonical domain APIs.
   - `app_count()` ❌ **removed**
     - Migration: Use `domain_count()`.
 
@@ -187,7 +187,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 
 - `kernel/src/mm/virt/address_space.rs`
   - `ProcessAddressSpace` / `fork()` / `exec()` / ASID 管理 ❌ **removed**
-    - Migration: Use `crate::sas::MemoryRegion`, global higher-half mappings, and `domain_system::create_domain()` + loader.
+    - Migration: Use `crate::sas::MemoryRegion`, global higher-half mappings, and `domain::create_domain()` + loader.
 
 - `kernel/src/mm/virt/cow.rs`
   - Copy-on-write fault handling ❌ **removed**
@@ -219,11 +219,11 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `with_profiler()` ❌ **removed** (was deprecated)
     - Migration: Use `crate::profiler::profiler().cpu` instead.
 
-- `kernel/src/memory/oom_killer.rs`
+- `kernel/src/heap/oom.rs`
   - `register_domain()`, `unregister_domain()`, `update_memory_usage()`, `register_simple()` ❌ **removed** (were deprecated stubs)
     - Migration: Use `crate::domain::quota::quota_manager()` directly. The quota manager is the authoritative source for domain memory tracking.
   - `DomainMemoryInfo` / `list_domains()` ❌ **removed**
-    - Migration: Use `crate::domain_system::list_domain_snapshots()` plus `crate::domain::quota::quota_manager().get_stats(...)` when you need per-domain memory data.
+    - Migration: Use `crate::domain::list_domain_snapshots()` plus `crate::domain::quota::quota_manager().get_stats(...)` when you need per-domain memory data.
 
 - `kernel/src/net/services/dns/mod.rs`
   - `client()` ❌ **removed**
@@ -307,6 +307,8 @@ This document lists symbols that have been marked deprecated and recommended mig
 ### 削除済み（呼び出し元なしのため完全削除）
 - `KernelServices::fs_open()` — `fs_open_with_token(path, mode, None)` に移行
 - `KernelServices::nvme_open_direct()` — `nvme_open_direct_with_token(device_id, start_block, block_count, None)` に移行
+- 旧 service 実装 root は `crate::kapi::*` に移行
+- 旧 runtime bridge root は `crate::resource_registry::*` に移行
 - `drivers::hid::KeyEvent` compatibility getters — public fields / `Modifiers` fields に移行
 - `pci_driver::{pci_read, pci_read8, pci_read16, pci_write}` top-level legacy config helpers — `pci_driver::legacy::*` に移行
 - `io::pci::{pci_read, pci_read8, pci_read16, pci_write}` top-level legacy config helpers — `io::pci::legacy::*` に移行
@@ -316,10 +318,10 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `nvme_driver::driver` compatibility module — concrete NVMe submodules に移行
 - `kernel_api::resource::system::KernelSystemInfo` — `kernel_api::resource::system::SystemInfo` に移行
 - `io::virtio::BlkVringDesc` — `virtio_driver::virtqueue::VringDesc` に移行
-- `ProcessAddressSpace` / `fork()` / `exec()` / CoW path — `crate::sas::MemoryRegion` + `domain_system::create_domain()` に移行
+- `ProcessAddressSpace` / `fork()` / `exec()` / CoW path — `crate::sas::MemoryRegion` + `domain::create_domain()` に移行
 - `kernel_fs::VfsUnixFileMode` — `kernel_fs::FileMode` に移行
 - `xhci::CmdBuilder` — `xhci::command::CommandBuilder` / `xhci::CommandBuilder` に移行
-- `memory::oom_killer::{DomainMemoryInfo, list_domains}` — `domain_system` + `quota_manager()` に移行
+- `heap::oom::{DomainMemoryInfo, list_domains}` legacy compatibility path — `crate::domain` + `quota_manager()` に移行
 - `net::services::dns::client()` — high-level DNS helpers / shared Arc-backed runtime access に移行
 - `iommu::runtime::command::CommandQueue::submit_sync()` — `submit(...).wait_blocking()` / `submit_sync_with_worker()` に移行
 - `io::virtio::net::VirtioNetDevice::submit_tx()` — `send_async()` / `enqueue_send_zero_copy()` / `NetDevicePort::submit_tx()` に移行

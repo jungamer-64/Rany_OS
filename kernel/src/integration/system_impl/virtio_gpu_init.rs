@@ -18,7 +18,8 @@ impl SystemIntegration {
         if let Some(bar0) = dev.bars[0] {
             let bar0_phys = bar0.base();
             let bar0_virt =
-                crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                    .as_u64();
 
             let mut initialized_via_pci = false;
             if let Some(transport) =
@@ -95,8 +96,10 @@ impl SystemIntegration {
 
             if let Some(bar0) = dev.bars[0] {
                 let bar0_phys = bar0.base();
-                let bar0_virt =
-                    crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                let bar0_virt = crate::mm::virt::mapping::phys_to_virt(
+                    x86_64::PhysAddr::new_truncate(bar0_phys),
+                )
+                .as_u64();
                 let num_cores = crate::cpu::count() as u32;
                 let packed_device_id = dev.packed_locator();
 

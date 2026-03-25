@@ -1211,7 +1211,8 @@ fn ensure_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u64> {
         return None;
     }
 
-    let base_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
+    let base_virt =
+        crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
     let page_size = 0x1000u64;
     let map_size = crate::util::align_up_u64(bar_size, page_size);
     let virt_start = crate::mm::virt::higher_half::VirtAddr::new(base_virt);

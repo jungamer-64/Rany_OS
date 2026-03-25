@@ -1,5 +1,5 @@
-use alloc::boxed::Box;
 use crate::sync::{PoisonLock, PoisonRwLock};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -139,7 +139,8 @@ impl VirtioNetOps {
         code: u32,
         buf: crate::io::io_scheduler::DmaBufHandle,
     ) -> Result<(), IoError> {
-        let device = get_virtio_net_device_at_index(self.device_index).ok_or(IoError::NoResources)?;
+        let device =
+            get_virtio_net_device_at_index(self.device_index).ok_or(IoError::NoResources)?;
 
         match code {
             VIRTIO_NET_IOCTL_TX => {
@@ -222,10 +223,9 @@ fn handle_scheduler_completion(index: u8, kind: NetCompletionKind, desc_id: u16,
         return false;
     };
 
-    hybrid_coordinator().interrupt_bridge().handle_interrupt(
-        DeviceId::VirtioNet { index },
-        &[(io_id, io_result)],
-    );
+    hybrid_coordinator()
+        .interrupt_bridge()
+        .handle_interrupt(DeviceId::VirtioNet { index }, &[(io_id, io_result)]);
     true
 }
 

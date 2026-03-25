@@ -14,24 +14,7 @@
 #![allow(unsafe_op_in_unsafe_fn)] // Transitional: allows unsafe calls in unsafe fn without block
 
 #[cfg(not(feature = "bench"))]
-macro_rules! println {
-    () => (print!("\n"));
-    ($($arg:tt)*) => ({
-        crate::io::log::print(format_args!("{}\n", format_args!($($arg)*)));
-    });
-}
-
-#[cfg(not(feature = "bench"))]
-macro_rules! eprintln {
-    () => (eprint!("\n"));
-    ($($arg:tt)*) => ({
-        crate::io::log::print(format_args!("{}\n", format_args!($($arg)*)));
-    });
-}
-
-// Include the actual kernel logic only when NOT benchmarking
-#[cfg(not(feature = "bench"))]
-include!("kernel_content.rs");
+use boot_proto::ExoBootInfo;
 
 // Provide fallback TLS symbols for binary builds on Windows hosts
 // when the kernel linker script is not applied (test runner builds).
@@ -48,17 +31,24 @@ pub static __tls_end: u8 = 0;
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub unsafe extern "C" fn _start() -> ! {
-    // Output 'K!' to COM1 (0x3F8) to verify kernel entry, then jump to kmain
+    // Output 'K!' to COM1 (0x3F8) to verify kernel entry, then jump into the
+    // canonical library-side boot entry.
     // RDI already contains boot_info pointer from bootloader
     core::arch::naked_asm!(
-        // Output 'K' to COM1 serial port to verify we reached kernel
-        "mov dx, 0x3F8", // COM1 port
-        "mov al, 0x4B",  // 'K' character
-        "out dx, al",    // Send to serial
-        "mov al, 0x21",  // '!' character
-        "out dx, al",    // Send to serial
-        "jmp kmain"      // Jump to main kernel entry
+        "mov dx, 0x3F8",
+        "mov al, 0x4B",
+        "out dx, al",
+        "mov al, 0x21",
+        "out dx, al",
+        "jmp {entry}",
+        entry = sym kernel_boot_entry,
     )
+}
+
+#[cfg(all(not(any(test, feature = "std", feature = "bench")), target_os = "none"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_boot_entry(boot_info: &'static ExoBootInfo) -> ! {
+    rany_os::boot::kmain(boot_info)
 }
 
 #[cfg(all(
@@ -87,6 +77,5 @@ pub extern "C" fn mainCRTStartup() {}
 #[cfg(all(test, not(feature = "std")))]
 fn main() {}
 
-// Time helpers are implemented in `kernel/src/time.rs`.
-// Test/bench shims and production fallbacks live there;
-// keep this file minimal to avoid duplicate module definitions.
+// Keep this file limited to binary entry glue; the library owns the kernel
+// module graph and runtime boot implementation.

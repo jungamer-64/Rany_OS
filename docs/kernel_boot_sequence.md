@@ -2,17 +2,26 @@
 
 RanyOS のカーネル初期化は、実装上 6 フェーズに分割されている。大枠の制御遷移は次のとおり。
 
-`ExoLoader -> _start -> kmain -> kmain_inner -> Executor runtime tasks`
+`ExoLoader -> _start -> kernel_boot_entry -> boot::kmain -> boot::enter -> kmain_inner -> Executor runtime tasks`
 
 この文書は、現行コードの責務境界と依存関係を明示するための整理資料であり、外部 ABI や boot handoff の仕様を変更するものではない。
 
 ## Phase 1: Bootloader Handoff
 
-- 実装起点: `bootloader/src/main.rs`, `kernel/src/main.rs`, `kernel/src/kernel_content.rs`
+- 実装起点: `bootloader/src/main.rs`, `kernel/src/main.rs`, `kernel/src/boot/mod.rs`, `kernel/src/boot/entry.rs`
 - ExoLoader が署名検証、ELF ロード、HHDM マッピング、`ExoBootInfo` 構築を完了し、`RDI` に boot info を載せてカーネルへ制御を渡す。
 - `ExoBootInfo` には raw `memory_map` / raw `rsdp_addr` / raw `cmdline` に加えて、bootloader が正規化した `usable_memory`、immutable `acpi_snapshot`、boot-critical `boot_policy` が含まれる。
-- カーネル側では `_start -> kmain -> kmain_inner` の順に入る。
+- カーネル側では `_start -> kernel_boot_entry -> boot::kmain -> boot::enter -> kmain_inner` の順に入る。
 - この段階では ExoLoader が構築したページテーブルと `ExoBootInfo` ABI が前提になる。
+
+## Canonical Paths
+
+- `kernel/src/lib.rs` はカーネルの正規 module graph 定義点とし、大きな inline shim や `include!` による合成は行わない。
+- `kernel/src/boot/` はエントリとブート配線のみを持ち、サブシステム実装詳細を抱え込まない。
+- `kernel/src/fs/` はカーネル内ファイルシステム実装の正規配置とし、旧 `filesystems/kernel_fs` への cross-tree path include は使わない。
+- `kernel/src/host_support/` は unit test / bench 専用の軽量差し替え面であり、本番ブート経路とは明確に分離する。
+- `kernel/src/kapi/` は `KernelServices` の正規実装境界であり、boot からは `kapi::register_kernel_services()` / `kapi::register_builtin_service_providers()` のみを呼ぶ。
+- `kernel/src/resource_registry/` は runtime-owned resource state の唯一の所有者であり、domain/driver teardown はここ経由で handle cleanup を行う。
 
 ## Phase 2: Entry / Early CPU
 
@@ -27,9 +36,9 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 
 - 実装関数: `phase_early_kernel_substrate()`
 - 例外/割り込み基盤、PIT、メモリ管理、BSP スタックガード、interrupt waker の事前確保を行う。
-- `memory::init()` 完了直後に BSP 用の per-core executor slot を先行確保し、その後の `bootstrap_smp_early()` で online CPU 数まで拡張する。これにより、以後の同期初期化中に発生する async task 登録を bootstrap queue ではなく実 executor に受けられるようにする。
-- `memory::init()` は `usable_memory` handoff を優先して allocator を起動し、handoff が無効な場合のみ raw `memory_map` を使う。
-- `memory::init()` が完了して初めて、ページテーブル操作や後続の割り当て依存サブシステムを安全に呼べる。
+- `heap::init()` 完了直後に BSP 用の per-core executor slot を先行確保し、その後の `bootstrap_smp_early()` で online CPU 数まで拡張する。これにより、以後の同期初期化中に発生する async task 登録を bootstrap queue ではなく実 executor に受けられるようにする。
+- `heap::init()` は `usable_memory` handoff を優先して allocator を起動し、handoff が無効な場合のみ raw `memory_map` を使う。
+- `heap::init()` が完了して初めて、ページテーブル操作や後続の割り当て依存サブシステムを安全に呼べる。
 - 依存:
   - Phase 2 で `physical_memory_offset` が設定済みであること
   - ISR 側の lazy init を避けるため、waker registry は割り込み有効化前に確保すること
@@ -49,7 +58,7 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 - 実装単位: `AsyncBootCoordinator` と stage task 群
 - Phase 4 で動き始めた executor 上に、残りの boot を高優先度 task 群として展開する。
 - stage 構成:
-  - `platform_task`: ACPI/IOMMU、NUMA apply、heap available 通知、kernel services 登録、async logging 切替
+  - `platform_task`: ACPI/IOMMU、NUMA apply、heap available 通知、`kapi::bootstrap` 経由の kernel services/provider 登録、async logging 切替
   - `graphics_task`: framebuffer/text console 初期化
   - `core_services_task`: domain/SAS/security/MPK、loader/live update/driver domain、boot artifact cell load
   - `driver_task`: HID/serial/NVMe/AHCI/USB、system integration

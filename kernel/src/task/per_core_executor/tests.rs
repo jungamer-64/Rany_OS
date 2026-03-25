@@ -64,7 +64,7 @@ fn polled_task_context_round_trips() {
     mark_current_polled_task(
         2,
         crate::task::TaskId::from_raw(77),
-        crate::domain_system::DomainId::new(9),
+        crate::domain::DomainId::new(9),
     );
     let context = current_polled_task_context().expect("missing polled task context");
     assert_eq!(context.cpu_id, 2);

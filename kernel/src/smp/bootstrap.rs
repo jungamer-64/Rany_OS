@@ -37,7 +37,7 @@ struct ApRuntimeStack {
 
 fn log_ap_mapping_probe(label: &str, virt: u64) {
     let mapper = crate::mm::virt::higher_half::PhysicalMemoryMapper::new(
-        crate::memory::physical_memory_offset(),
+        crate::mm::virt::mapping::physical_memory_offset(),
     );
     let walker =
         unsafe { crate::mm::virt::higher_half::PageTableWalker::from_current_cr3(&mapper) };
@@ -158,8 +158,8 @@ impl ApBootstrap {
         let boot_layout = boot_info.ap_boot.layout()?;
         let trampoline_base = boot_layout.trampoline_base();
         let trampoline_virt = TrampolineVirtAddr::new(
-            crate::memory::phys_to_virt(x86_64::PhysAddr::new(trampoline_base.as_u64())).as_u64()
-                as usize,
+            crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(trampoline_base.as_u64()))
+                .as_u64() as usize,
         )?;
         let mailbox = unsafe { TrampolineMailboxHandle::from_trampoline_virt(trampoline_virt) }?;
         let current_page_table = crate::mm::virt::higher_half::get_cr3().as_u64();

@@ -45,7 +45,7 @@ impl HeapRegistry {
     pub fn preferred_shards_for_owner(&self, owner: DomainId) -> alloc::vec::Vec<usize> {
         #[cfg(not(any(test, feature = "bench")))]
         {
-            if let Some(node) = crate::domain_system::get_domain_numa(owner) {
+            if let Some(node) = crate::domain::get_domain_numa(owner) {
                 let mut out = alloc::vec::Vec::new();
                 for (i, n) in self.shard_nodes.iter().enumerate() {
                     if let Some(snode) = n {

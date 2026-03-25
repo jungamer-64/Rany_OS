@@ -415,8 +415,8 @@ impl RRefPool {
         // Security Check: Pointer range validation
         // RRef blocks must be within the Exchange Heap
         let addr = header as usize;
-        let ex_start = crate::memory::exchange_heap_start() as usize;
-        let ex_end = ex_start + crate::memory::EXCHANGE_HEAP_SIZE;
+        let ex_start = crate::heap::exchange_heap_start() as usize;
+        let ex_end = ex_start + crate::heap::EXCHANGE_HEAP_SIZE;
         if addr < ex_start || addr >= ex_end {
             // In a real system we might panic here, but as it's unsafe deallocate,
             // we'll just ignore for now to avoid crashing on every minor bug.

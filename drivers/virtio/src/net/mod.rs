@@ -15,9 +15,7 @@ pub mod managed;
 
 pub use global_init::*;
 pub use inflight::InflightTracker;
-pub use managed::{
-    ManagedNetVirtQueue, NetCompletionHandler, NetCompletionKind, VirtioNetDevice,
-};
+pub use managed::{ManagedNetVirtQueue, NetCompletionHandler, NetCompletionKind, VirtioNetDevice};
 
 /// In-flight RX packet state.
 #[derive(Debug)]

@@ -380,7 +380,7 @@ pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
     #[cfg(not(test))]
     {
         let virt = ptr as u64;
-        let hhdm_base = crate::memory::physical_memory_offset();
+        let hhdm_base = crate::mm::virt::mapping::physical_memory_offset();
         // Most IOMMU structures are allocated from HHDM-backed kernel memory.
         // Fast-path this region to avoid taking higher-half manager locks.
         const HHDM_FAST_WINDOW: u64 = 1u64 << 46; // 64 TiB window

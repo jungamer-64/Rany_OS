@@ -170,7 +170,7 @@ impl<T> Default for WorkStealingQueue<T> {
 struct ScheduledTask {
     task: PoisonLock<super::Task>,
     priority: Priority,
-    domain_id: crate::domain_system::DomainId,
+    domain_id: crate::domain::DomainId,
     state: AtomicU8,
     queued: AtomicBool,
     affinity_mask: AtomicU64,
@@ -492,7 +492,7 @@ impl PerCoreExecutor {
                 let mut pending = VecDeque::with_capacity(queue.len());
                 while let Some((deadline, task)) = queue.pop_front() {
                     if now_ns >= deadline
-                        && crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns)
+                        && crate::domain::is_domain_runnable_now(task.domain_id, now_ns)
                     {
                         task.clear_suspended_until_ns();
                         ready.push_back(task);
@@ -558,10 +558,10 @@ impl PerCoreExecutor {
             };
 
             let now_ns = crate::time::precise_time_nanos();
-            if !crate::domain_system::is_domain_runnable_now(task.domain_id, now_ns) {
-                let deadline = crate::domain_system::quota_suspend_deadline_ns(task.domain_id)
+            if !crate::domain::is_domain_runnable_now(task.domain_id, now_ns) {
+                let deadline = crate::domain::quota_suspend_deadline_ns(task.domain_id)
                     .unwrap_or_else(|| {
-                        now_ns.saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
+                        now_ns.saturating_add(crate::domain::CPU_QUOTA_SUSPEND_WINDOW_NS)
                     });
                 self.push_suspended_task(deadline, task);
                 continue;
@@ -598,7 +598,7 @@ impl PerCoreExecutor {
         let start_ns = crate::time::precise_time_nanos();
 
         crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
-        crate::domain_system::set_current_domain(task.domain_id);
+        crate::domain::set_current_domain(task.domain_id);
         crate::task::preemption::set_current_task_domain(task.domain_id.as_u64());
         crate::task::notify_task_started(crate::task::current_tick());
         mark_current_polled_task(self.core_id as usize, task.id(), task.domain_id);
@@ -610,7 +610,7 @@ impl PerCoreExecutor {
 
         clear_current_polled_task();
         crate::task::preemption::set_current_task_domain(0);
-        crate::domain_system::set_current_domain(crate::domain_system::DomainId::KERNEL);
+        crate::domain::set_current_domain(crate::domain::DomainId::KERNEL);
 
         let end_cycles = read_tsc();
         let end_ns = crate::time::precise_time_nanos();
@@ -619,18 +619,17 @@ impl PerCoreExecutor {
         task.total_run_time
             .fetch_add(elapsed_cycles, Ordering::Relaxed);
 
-        let mut quota_action = crate::domain_system::CpuQuotaAction::None;
-        if task.domain_id != crate::domain_system::DomainId::KERNEL {
+        let mut quota_action = crate::domain::CpuQuotaAction::None;
+        if task.domain_id != crate::domain::DomainId::KERNEL {
             let exceeded = crate::domain::quota::quota_manager().consume_cpu_time(
                 task.domain_id,
                 elapsed_ns,
                 end_ns,
             );
             if exceeded {
-                quota_action =
-                    crate::domain_system::report_cpu_quota_exceeded(task.domain_id, end_ns);
+                quota_action = crate::domain::report_cpu_quota_exceeded(task.domain_id, end_ns);
             } else {
-                crate::domain_system::report_cpu_quota_ok(task.domain_id);
+                crate::domain::report_cpu_quota_ok(task.domain_id);
             }
         }
 
@@ -640,7 +639,7 @@ impl PerCoreExecutor {
                 task.clear_suspended_until_ns();
             }
             Poll::Pending => match quota_action {
-                crate::domain_system::CpuQuotaAction::Suspend { until_ns } => {
+                crate::domain::CpuQuotaAction::Suspend { until_ns } => {
                     task.set_state(ScheduledTaskState::Blocked);
                     if !task.is_queued() {
                         self.push_suspended_task(until_ns, task.clone());
@@ -649,11 +648,11 @@ impl PerCoreExecutor {
                     }
                     crate::task::preemption::request_yield();
                 }
-                crate::domain_system::CpuQuotaAction::YieldDemote => {
+                crate::domain::CpuQuotaAction::YieldDemote => {
                     task.set_state(ScheduledTaskState::Blocked);
                     crate::task::preemption::request_yield();
                 }
-                crate::domain_system::CpuQuotaAction::None => {
+                crate::domain::CpuQuotaAction::None => {
                     task.set_state(ScheduledTaskState::Blocked);
                 }
             },
@@ -1194,7 +1193,7 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let mut task = super::Task::new(future);
-    task.domain_id = crate::domain_system::current_domain();
+    task.domain_id = crate::domain::current_domain();
     EXECUTOR_MANAGER.spawn_task(task, Priority::Normal)
 }
 
@@ -1208,7 +1207,7 @@ where
 {
     let mut task = super::Task::new(future);
     if let Some(domain) = domain_id {
-        task.domain_id = crate::domain_system::DomainId::new(domain);
+        task.domain_id = crate::domain::DomainId::new(domain);
     }
     EXECUTOR_MANAGER.spawn_task(task, priority)
 }
@@ -1226,7 +1225,7 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let mut task = super::Task::new(future);
-    task.domain_id = crate::domain_system::current_domain();
+    task.domain_id = crate::domain::current_domain();
 
     let max_cpu = EXECUTOR_MANAGER.active_cpu_count().saturating_sub(1);
     let target_cpu = cpu_id.min(max_cpu);
@@ -1280,7 +1279,7 @@ pub(crate) fn current_core_id() -> usize {
 fn mark_current_polled_task(
     cpu_id: usize,
     task_id: super::TaskId,
-    domain_id: crate::domain_system::DomainId,
+    domain_id: crate::domain::DomainId,
 ) {
     CURRENT_POLLED_TASK_CPU.store(cpu_id, Ordering::Release);
     CURRENT_POLLED_TASK_DOMAIN.store(domain_id.as_u64(), Ordering::Release);
@@ -1423,8 +1422,7 @@ impl TestExecutor {
                 Err(poisoned) => poisoned.into_inner().domain_id,
             };
 
-            if now_ns >= deadline && crate::domain_system::is_domain_runnable_now(domain_id, now_ns)
-            {
+            if now_ns >= deadline && crate::domain::is_domain_runnable_now(domain_id, now_ns) {
                 self.local_queue.push_back(task);
             } else {
                 pending.push_back((deadline, task));
@@ -1447,10 +1445,10 @@ impl TestExecutor {
                 Err(poisoned) => poisoned.into_inner().domain_id,
             };
             let now_ns = crate::time::precise_time_nanos();
-            if !crate::domain_system::is_domain_runnable_now(domain_id, now_ns) {
-                let deadline = crate::domain_system::quota_suspend_deadline_ns(domain_id)
-                    .unwrap_or_else(|| {
-                        now_ns.saturating_add(crate::domain_system::CPU_QUOTA_SUSPEND_WINDOW_NS)
+            if !crate::domain::is_domain_runnable_now(domain_id, now_ns) {
+                let deadline =
+                    crate::domain::quota_suspend_deadline_ns(domain_id).unwrap_or_else(|| {
+                        now_ns.saturating_add(crate::domain::CPU_QUOTA_SUSPEND_WINDOW_NS)
                     });
                 self.suspended_queue.push_back((deadline, task));
                 continue;
@@ -1465,35 +1463,35 @@ impl TestExecutor {
 
             let poll_result = match task.lock() {
                 Ok(mut guard) => {
-                    crate::domain_system::set_current_domain(guard.domain_id);
+                    crate::domain::set_current_domain(guard.domain_id);
                     crate::task::preemption::set_current_task_domain(guard.domain_id.as_u64());
                     guard.poll(&mut context)
                 }
                 Err(poisoned) => {
                     let mut guard = poisoned.into_inner();
-                    crate::domain_system::set_current_domain(guard.domain_id);
+                    crate::domain::set_current_domain(guard.domain_id);
                     crate::task::preemption::set_current_task_domain(guard.domain_id.as_u64());
                     guard.poll(&mut context)
                 }
             };
 
             crate::task::preemption::set_current_task_domain(0);
-            crate::domain_system::set_current_domain(crate::domain_system::DomainId::KERNEL);
+            crate::domain::set_current_domain(crate::domain::DomainId::KERNEL);
 
             if let Poll::Pending = poll_result {
                 let end_ns = crate::time::precise_time_nanos();
                 let elapsed_ns = end_ns.saturating_sub(start_ns);
-                if domain_id != crate::domain_system::DomainId::KERNEL {
+                if domain_id != crate::domain::DomainId::KERNEL {
                     let exceeded = crate::domain::quota::quota_manager()
                         .consume_cpu_time(domain_id, elapsed_ns, end_ns);
                     if exceeded {
-                        if let crate::domain_system::CpuQuotaAction::Suspend { until_ns } =
-                            crate::domain_system::report_cpu_quota_exceeded(domain_id, end_ns)
+                        if let crate::domain::CpuQuotaAction::Suspend { until_ns } =
+                            crate::domain::report_cpu_quota_exceeded(domain_id, end_ns)
                         {
                             self.suspended_queue.push_back((until_ns, task));
                         }
                     } else {
-                        crate::domain_system::report_cpu_quota_ok(domain_id);
+                        crate::domain::report_cpu_quota_ok(domain_id);
                     }
                 }
             }

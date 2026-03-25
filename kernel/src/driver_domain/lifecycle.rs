@@ -22,8 +22,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::domain::DomainId;
 use crate::domain::quota::DomainPriority;
-use crate::domain_system::DomainId;
 use crate::driver_registry::DriverHandle;
 use crate::loader::CellId;
 use crate::security::CapabilitySet;
@@ -200,7 +200,7 @@ pub fn load(
 
     // 2. 対応するDomainを作成
     let domain_name = format!("drv:{}", name);
-    let domain_id = match crate::domain_system::create_domain(domain_name) {
+    let domain_id = match crate::domain::create_domain(domain_name) {
         Ok(did) => did,
         Err(e) => {
             // ロールバック: セルをアンロード
@@ -228,14 +228,13 @@ pub fn load(
             )
         })?;
 
-    let _ = crate::domain_system::set_domain_capabilities(domain_id, caps);
-    let _ = crate::domain_system::set_domain_priority(domain_id, priority);
-    let _ =
-        crate::domain_system::set_domain_resource_limits(domain_id, cpu_limit, mem_limit, io_limit);
+    let _ = crate::domain::set_domain_capabilities(domain_id, caps);
+    let _ = crate::domain::set_domain_priority(domain_id, priority);
+    let _ = crate::domain::set_domain_resource_limits(domain_id, cpu_limit, mem_limit, io_limit);
 
     // 4. NUMAアフィニティを設定
     if let Some(node) = numa_node {
-        crate::domain_system::set_domain_numa(domain_id, node);
+        crate::domain::set_domain_numa(domain_id, node);
     }
 
     // 5. DriverCellに紐付け
@@ -322,7 +321,7 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
     let domain_id = manager.with_cell(id, |cell| cell.domain_id)?;
     if let Some(did) = domain_id {
         crate::io::log::early_print("[DCELL] start: domain start begin\n");
-        crate::domain_system::start_domain(did).ok();
+        crate::domain::start_domain(did).ok();
         crate::io::log::early_print("[DCELL] start: domain start done\n");
     }
 
@@ -382,7 +381,7 @@ pub fn stop(id: DriverDomainId) -> Result<(), DriverDomainError> {
 
     // Domainを停止
     if let Some(did) = domain_id {
-        crate::domain_system::stop_domain(did).ok();
+        crate::domain::stop_domain(did).ok();
     }
 
     // Stopped状態に遷移
@@ -446,7 +445,7 @@ pub fn unload(id: DriverDomainId) -> Result<(), DriverDomainError> {
 
     // Domainを終了
     if let Some(did) = domain_id {
-        if let Err(e) = crate::domain_system::terminate_domain(did) {
+        if let Err(e) = crate::domain::terminate_domain(did) {
             log::warn!("[DriverDomain] Failed to terminate domain {}: {}\n", did, e);
         }
     }

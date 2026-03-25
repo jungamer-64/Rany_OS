@@ -242,7 +242,8 @@ impl VirtioInputDevice {
                 None => break,
             };
 
-            let dma_buf = alloc_dma_buffer(event_size, self.pci_locator).ok_or(InputError::IoError)?;
+            let dma_buf =
+                alloc_dma_buffer(event_size, self.pci_locator).ok_or(InputError::IoError)?;
             let phys_addr = dma_buf.device_address();
 
             unsafe {

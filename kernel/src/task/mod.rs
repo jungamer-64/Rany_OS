@@ -134,7 +134,7 @@ impl Default for TaskId {
 /// 設計書 4.1: スタックレスコルーチンとしてのタスク
 pub struct Task {
     pub id: TaskId,
-    pub domain_id: crate::domain_system::DomainId,
+    pub domain_id: crate::domain::DomainId,
     pub future: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
@@ -142,7 +142,7 @@ impl Task {
     pub fn new(future: impl Future<Output = ()> + Send + 'static) -> Task {
         Task {
             id: TaskId::new(),
-            domain_id: crate::domain_system::current_domain(),
+            domain_id: crate::domain::current_domain(),
             future: Box::pin(future),
         }
     }
@@ -160,13 +160,13 @@ mod raw;
 /// This is the canonical runtime spawn helper for normal boot and background
 /// workers. Experimental per-core executors are intentionally excluded here.
 pub fn spawn_detached(future: impl Future<Output = ()> + Send + 'static) -> TaskId {
-    spawn_detached_in_domain(future, crate::domain_system::current_domain())
+    spawn_detached_in_domain(future, crate::domain::current_domain())
 }
 
 /// Spawn a detached task while explicitly preserving the owning domain.
 pub fn spawn_detached_in_domain(
     future: impl Future<Output = ()> + Send + 'static,
-    domain_id: crate::domain_system::DomainId,
+    domain_id: crate::domain::DomainId,
 ) -> TaskId {
     let mut task = Task::new(future);
     task.domain_id = domain_id;

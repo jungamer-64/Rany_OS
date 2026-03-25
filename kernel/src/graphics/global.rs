@@ -13,8 +13,8 @@ use crate::sync::PoisonLock;
 use super::console::TextConsole;
 use super::framebuffer::Framebuffer;
 use super::{Color, FramebufferInfo, PixelFormat};
-use crate::memory::physical_memory_offset;
 use crate::mm::virt::higher_half::{PageFlags, PageTableManager, VirtAddr};
+use crate::mm::virt::mapping::physical_memory_offset;
 use core::fmt::{self, Write};
 
 // Simple buffer for formatting - safe enough for single threaded boot

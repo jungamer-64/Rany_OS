@@ -78,10 +78,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use crate::domain::DomainId;
 use crate::domain::quota::DomainPriority;
 #[allow(unused_imports)]
 use crate::domain::quota::DomainQuota;
-use crate::domain_system::DomainId;
 use crate::driver_registry::DriverHandle;
 use crate::loader::CellId;
 use crate::security::CapabilitySet;

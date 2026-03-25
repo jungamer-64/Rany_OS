@@ -277,7 +277,9 @@ impl VirtioGpu {
         let used_offset = align_up(desc_size + avail_size, VRING_USED_ALIGN);
         let total_size = used_offset + used_size;
 
-        let buffer = self.alloc_coherent(total_size).ok_or(GpuError::OutOfMemory)?;
+        let buffer = self
+            .alloc_coherent(total_size)
+            .ok_or(GpuError::OutOfMemory)?;
         let dev_base = buffer.device_address();
         let ptr = buffer.as_ptr();
         let desc_table = ptr as *mut VringDesc;
@@ -321,7 +323,9 @@ impl VirtioGpu {
         let mut req_buf = self
             .alloc_coherent(req_bytes.len())
             .ok_or(GpuError::OutOfMemory)?;
-        let resp_buf = self.alloc_coherent(resp_size).ok_or(GpuError::OutOfMemory)?;
+        let resp_buf = self
+            .alloc_coherent(resp_size)
+            .ok_or(GpuError::OutOfMemory)?;
         req_buf.as_slice_mut()[..req_bytes.len()].copy_from_slice(req_bytes);
 
         let desc0 = queue_guard.alloc_desc().ok_or(GpuError::OutOfMemory)?;
@@ -362,7 +366,8 @@ impl VirtioGpu {
             core::slice::from_raw_parts(req as *const Req as *const u8, core::mem::size_of::<Req>())
         };
         let resp_buf = self.send_command_raw(req_bytes, core::mem::size_of::<GpuCtrlHdr>())?;
-        let hdr = unsafe { core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr) };
+        let hdr =
+            unsafe { core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr) };
         if hdr.cmd_type >= GpuCmd::RespErrUnspec as u32 {
             return Err(GpuError::DeviceError);
         }
@@ -411,7 +416,9 @@ impl VirtioGpu {
         let mut data_buf = self
             .alloc_coherent(data_bytes.len())
             .ok_or(GpuError::OutOfMemory)?;
-        let resp_buf = self.alloc_coherent(resp_size).ok_or(GpuError::OutOfMemory)?;
+        let resp_buf = self
+            .alloc_coherent(resp_size)
+            .ok_or(GpuError::OutOfMemory)?;
         req_buf.as_slice_mut()[..req_bytes.len()].copy_from_slice(req_bytes);
         data_buf.as_slice_mut()[..data_bytes.len()].copy_from_slice(data_bytes);
         Ok((req_buf, data_buf, resp_buf))
@@ -491,10 +498,12 @@ impl VirtioGpu {
             )
         };
 
-        let resp_size = core::mem::size_of::<GpuCtrlHdr>() + core::mem::size_of::<defs::DisplayInfo>();
+        let resp_size =
+            core::mem::size_of::<GpuCtrlHdr>() + core::mem::size_of::<defs::DisplayInfo>();
         let resp_buf = self.send_command_raw(hdr_bytes, resp_size)?;
         let resp_slice = resp_buf.as_slice();
-        let resp_hdr = unsafe { core::ptr::read_volatile(resp_slice.as_ptr() as *const GpuCtrlHdr) };
+        let resp_hdr =
+            unsafe { core::ptr::read_volatile(resp_slice.as_ptr() as *const GpuCtrlHdr) };
         if resp_hdr.cmd_type != GpuCmd::RespOkDisplayInfo as u32 {
             return Err(GpuError::DeviceError);
         }
@@ -503,7 +512,7 @@ impl VirtioGpu {
         if resp_slice.len() >= info_offset + core::mem::size_of::<defs::DisplayInfo>() {
             let info = unsafe {
                 core::ptr::read_volatile(
-                    resp_slice.as_ptr().add(info_offset) as *const defs::DisplayInfo,
+                    resp_slice.as_ptr().add(info_offset) as *const defs::DisplayInfo
                 )
             };
             *self.display_info.write() = Some(info);
@@ -581,19 +590,15 @@ impl VirtioGpu {
             entry_bytes,
             core::mem::size_of::<GpuCtrlHdr>(),
         )?;
-        let hdr = unsafe { core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr) };
+        let hdr =
+            unsafe { core::ptr::read_volatile(resp_buf.as_slice().as_ptr() as *const GpuCtrlHdr) };
         if hdr.cmd_type >= GpuCmd::RespErrUnspec as u32 {
             return Err(GpuError::DeviceError);
         }
         Ok(())
     }
 
-    pub fn transfer_to_host_2d(
-        &self,
-        resource_id: u32,
-        rect: &Rect,
-        offset: u64,
-    ) -> GpuResult<()> {
+    pub fn transfer_to_host_2d(&self, resource_id: u32, rect: &Rect, offset: u64) -> GpuResult<()> {
         let req = TransferToHost2D {
             hdr: GpuCtrlHdr::new(GpuCmd::TransferToHost2D),
             rect: *rect,
@@ -631,14 +636,8 @@ impl VirtioGpu {
     pub fn create_framebuffer(&self, width: u32, height: u32) -> GpuResult<u32> {
         let format = PixelFormat::B8G8R8A8Unorm;
         let resource_id = self.create_resource_2d(width, height, format)?;
-        let fb = Framebuffer::new_for_device(
-            resource_id,
-            width,
-            height,
-            format,
-            self.pci_locator,
-        )
-        .ok_or(GpuError::OutOfMemory)?;
+        let fb = Framebuffer::new_for_device(resource_id, width, height, format, self.pci_locator)
+            .ok_or(GpuError::OutOfMemory)?;
 
         self.attach_backing(resource_id, fb.device_addr(), fb.size() as u32)?;
         self.framebuffers.write().push(fb);
@@ -786,7 +785,9 @@ pub fn init(transport: Box<dyn VirtioTransport>, pci_locator: PackedPciLocation)
 
 #[cfg(test)]
 pub unsafe fn init_virtio_gpu_at_index(index: u8, mmio_base: u64) -> GpuResult<()> {
-    let transport =
-        unsafe { crate::transport::VirtioMmioTransport::new(mmio_base as usize).map_err(|_| GpuError::InitFailed)? };
+    let transport = unsafe {
+        crate::transport::VirtioMmioTransport::new(mmio_base as usize)
+            .map_err(|_| GpuError::InitFailed)?
+    };
     init(Box::new(transport), PackedPciLocation::new(0, 0, index, 0))
 }

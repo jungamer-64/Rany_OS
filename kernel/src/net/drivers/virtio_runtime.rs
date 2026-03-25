@@ -38,9 +38,7 @@ fn dma_direction_for_net(
 ) -> crate::io::dma::DmaDirection {
     match direction {
         virtio_driver::net::NetDmaDirection::ToDevice => crate::io::dma::DmaDirection::ToDevice,
-        virtio_driver::net::NetDmaDirection::FromDevice => {
-            crate::io::dma::DmaDirection::FromDevice
-        }
+        virtio_driver::net::NetDmaDirection::FromDevice => crate::io::dma::DmaDirection::FromDevice,
         virtio_driver::net::NetDmaDirection::Bidirectional => {
             crate::io::dma::DmaDirection::Bidirectional
         }
@@ -104,8 +102,15 @@ impl virtio_driver::net::NetRuntime for KernelVirtioNetRuntime {
         release_net_dma_mapping(self.iommu_device_id, mapping);
     }
 
-    fn receive_packet(&self, _queue_index: u16, packet: PacketRef, header_len: usize, payload_len: usize) {
-        if let Some(if_id) = crate::net::runtime::bridge::lookup_if_by_virtio_index(self.device_index)
+    fn receive_packet(
+        &self,
+        _queue_index: u16,
+        packet: PacketRef,
+        header_len: usize,
+        payload_len: usize,
+    ) {
+        if let Some(if_id) =
+            crate::net::runtime::bridge::lookup_if_by_virtio_index(self.device_index)
         {
             crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
                 if_id,
@@ -122,12 +127,7 @@ impl virtio_driver::net::NetRuntime for KernelVirtioNetRuntime {
         }
     }
 
-    fn transmit_complete(
-        &self,
-        _queue_index: u16,
-        _packet: PacketRef,
-        completion_id: Option<u64>,
-    ) {
+    fn transmit_complete(&self, _queue_index: u16, _packet: PacketRef, completion_id: Option<u64>) {
         if let Some(completion_id) = completion_id {
             let _ = crate::net::runtime::device::complete_tx_request(completion_id, Ok(()));
         }
@@ -153,7 +153,10 @@ pub fn kernel_virtio_net_runtime_for_pci(
     device_index: u8,
     pci_locator: PackedPciLocation,
 ) -> KapiResult<Arc<dyn virtio_driver::net::NetRuntime>> {
-    Ok(Arc::new(KernelVirtioNetRuntime::new(device_index, pci_locator)))
+    Ok(Arc::new(KernelVirtioNetRuntime::new(
+        device_index,
+        pci_locator,
+    )))
 }
 
 pub fn register_kernel_virtio_net_port(

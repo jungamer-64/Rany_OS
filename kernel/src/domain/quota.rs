@@ -18,7 +18,7 @@
 
 #![allow(dead_code)]
 
-use crate::domain_system::DomainId;
+use crate::domain::DomainId;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};

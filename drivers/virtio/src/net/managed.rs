@@ -50,18 +50,12 @@ impl ManagedNetVirtQueue {
         features: u64,
     ) -> Self {
         let vq_inner = unsafe {
-            crate::core::VirtQueue::new(
-            index,
-            size,
-            desc_table,
-            avail_ring,
-            used_ring,
-            features,
-        )
+            crate::core::VirtQueue::new(index, size, desc_table, avail_ring, used_ring, features)
         }
         .expect("[VIRTIO-NET] failed to init core virtqueue");
 
-        let net_vq_core = unsafe { CoreNetVirtQueue::new(vq_inner, tx_header_dma_base, tx_headers) };
+        let net_vq_core =
+            unsafe { CoreNetVirtQueue::new(vq_inner, tx_header_dma_base, tx_headers) };
 
         Self {
             inner: IrqPoisonLock::new(net_vq_core),
@@ -147,7 +141,10 @@ impl ManagedNetVirtQueue {
     }
 
     pub fn register_waker(&self, waker: Waker) {
-        let mut pending = self.pending_wakers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .pending_wakers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if pending.iter().any(|existing| existing.will_wake(&waker)) {
             return;
         }
@@ -189,7 +186,10 @@ impl ManagedNetVirtQueue {
 
     fn wake_all(&self) {
         let waiters = {
-            let mut pending = self.pending_wakers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .pending_wakers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             core::mem::take(&mut *pending)
         };
 
@@ -331,7 +331,9 @@ impl VirtioNetDevice {
             return Err(VirtioNetError::NotInitialized);
         };
 
-        let dma_mapping = self.runtime.map_packet(&packet, super::NetDmaDirection::ToDevice)?;
+        let dma_mapping = self
+            .runtime
+            .map_packet(&packet, super::NetDmaDirection::ToDevice)?;
         let device_addr = dma_mapping.device_address();
         let inflight_mapping = dma_mapping.requires_unmap().then_some(dma_mapping);
 
@@ -413,8 +415,13 @@ impl VirtioNetDevice {
         Ok(())
     }
 
-    fn setup_single_queue(&mut self, queue_index: u16) -> Result<ManagedNetVirtQueue, VirtioNetError> {
-        let (queue_size, layout) = self.core.prepare_queue(self.transport.as_ref(), queue_index)?;
+    fn setup_single_queue(
+        &mut self,
+        queue_index: u16,
+    ) -> Result<ManagedNetVirtQueue, VirtioNetError> {
+        let (queue_size, layout) = self
+            .core
+            .prepare_queue(self.transport.as_ref(), queue_index)?;
         let buffer = self
             .runtime
             .alloc_dma(layout.total_size, NetDmaPurpose::QueueMemory)?;
@@ -506,7 +513,7 @@ impl VirtioNetDevice {
                 if inflight.packet.data().len() >= header_len {
                     let header = unsafe {
                         core::ptr::read_unaligned(
-                            inflight.packet.data().as_ptr() as *const VirtioNetHeader,
+                            inflight.packet.data().as_ptr() as *const VirtioNetHeader
                         )
                     };
                     if (header.flags & VirtioNetHeader::F_DATA_VALID) != 0 {
@@ -538,9 +545,9 @@ impl VirtioNetDevice {
 
                 rx_queue.free_desc_chain(desc_idx);
                 rx_queue.with_core(|inner| {
-                    let _ = self
-                        .core
-                        .try_post_rx_packet(self.runtime.as_ref(), pair_idx as u16, inner);
+                    let _ =
+                        self.core
+                            .try_post_rx_packet(self.runtime.as_ref(), pair_idx as u16, inner);
                 });
             }
         }
@@ -572,8 +579,11 @@ impl VirtioNetDevice {
 
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes.fetch_add(len, Ordering::Relaxed);
-                self.runtime
-                    .transmit_complete(queue_index, inflight.packet, inflight.completion_id);
+                self.runtime.transmit_complete(
+                    queue_index,
+                    inflight.packet,
+                    inflight.completion_id,
+                );
 
                 tx_queue.free_desc_chain(desc_idx);
             }

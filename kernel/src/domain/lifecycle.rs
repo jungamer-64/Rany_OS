@@ -7,20 +7,20 @@
 //! # 責務
 //!
 //! このモジュールは、ドメイン境界でのタスクラッピングとライフサイクル操作を提供する。
-//! ドメインのコア管理（作成・レジストリ・状態遷移）は `crate::domain_system` が担当し、
+//! ドメインのコア管理（作成・レジストリ・状態遷移）は `crate::domain` が担当し、
 //! 本モジュールはその上に構築された高レベルライフサイクル操作を提供する。
 //!
-//! ## `domain_system` との関係
+//! ## `domain` との関係
 //!
-//! - `terminate_domain()` → `domain_system::terminate_domain()` に委譲
-//! - `handle_domain_panic()` → `domain_system::handle_domain_panic()` に委譲
+//! - `terminate_domain()` → `domain::terminate_domain()` に委譲
+//! - `handle_domain_panic()` → `domain::handle_domain_panic()` に委譲
 //! - `spawn_domain_task()` — 本モジュール固有（ドメイン境界Future）
 //! - `restart_domain()` — 本モジュール固有（再起動ロジック）
 //! - `add_domain_dependency()` — 本モジュール固有（依存関係グラフ操作）
 //!
 #![allow(dead_code)]
 
-use crate::domain_system::{
+use crate::domain::{
     DomainId, DomainState, create_domain, set_domain_state, with_domain, with_domain_mut,
 };
 use crate::task::Task;
@@ -133,17 +133,17 @@ where
 /// ドメインを終了させる
 /// 設計書 8.1: リソース回収
 ///
-/// `domain_system::terminate_domain()` に委譲し、エラー型を変換する。
+/// `domain::terminate_domain()` に委譲し、エラー型を変換する。
 pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
-    crate::domain_system::terminate_domain(domain_id).map_err(|_| DomainError::NotFound)
+    crate::domain::terminate_domain(domain_id).map_err(|_| DomainError::NotFound)
 }
 
 /// ドメインがパニックした場合の処理
 /// カスタムパニックハンドラから呼ばれる
 ///
-/// `domain_system::handle_domain_panic()` に委譲する。
+/// `domain::handle_domain_panic()` に委譲する。
 pub fn handle_domain_panic(domain_id: DomainId, message: String) {
-    crate::domain_system::handle_domain_panic(domain_id, message);
+    crate::domain::handle_domain_panic(domain_id, message);
 }
 
 /// ドメインを再起動

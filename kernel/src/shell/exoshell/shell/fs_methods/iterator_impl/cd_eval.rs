@@ -356,9 +356,7 @@ impl ExoShell {
         ];
 
         // 名前空間
-        let namespaces = [
-            "sys", "log", "domain", "driver", "task", "cell", "net",
-        ];
+        let namespaces = ["sys", "log", "domain", "driver", "task", "cell", "net"];
 
         // Unixエイリアス
         let aliases = ["cd", "pwd", "ifconfig", "ping", "netstat", "route"];

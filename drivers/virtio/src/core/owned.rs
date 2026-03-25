@@ -2,9 +2,7 @@
 // drivers/virtio/src/core/owned.rs - Keepalive-backed VirtQueue wrapper
 // ============================================================================
 
-use crate::defs::{
-    VringAvailHeader as VringAvail, VringDesc, VringUsedHeader as VringUsed,
-};
+use crate::defs::{VringAvailHeader as VringAvail, VringDesc, VringUsedHeader as VringUsed};
 use crate::transport::VirtioTransport;
 
 /// VirtQueue wrapper that keeps the queue backing allocation alive.

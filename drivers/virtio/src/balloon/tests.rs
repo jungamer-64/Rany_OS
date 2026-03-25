@@ -195,9 +195,18 @@ fn make_test_device(transport: NoopTransport) -> (VirtioBalloonDevice, TestQueue
     let mut inflate_used_mem = vec![0u8; inflate_used_bytes];
     let inflate_used_ptr = inflate_used_mem.as_mut_ptr() as *mut VringUsed;
 
-    let inflate_vq =
-        unsafe { VirtQueue::new(0, queue_size, inflate_desc_ptr, inflate_avail_ptr, inflate_used_ptr, None, 0) }
-            .expect("inflate_vq");
+    let inflate_vq = unsafe {
+        VirtQueue::new(
+            0,
+            queue_size,
+            inflate_desc_ptr,
+            inflate_avail_ptr,
+            inflate_used_ptr,
+            None,
+            0,
+        )
+    }
+    .expect("inflate_vq");
 
     // Deflate queue memory
     let mut deflate_descs = vec![VringDesc::default(); queue_size as usize];
@@ -209,9 +218,18 @@ fn make_test_device(transport: NoopTransport) -> (VirtioBalloonDevice, TestQueue
     let mut deflate_used_mem = vec![0u8; deflate_used_bytes];
     let deflate_used_ptr = deflate_used_mem.as_mut_ptr() as *mut VringUsed;
 
-    let deflate_vq =
-        unsafe { VirtQueue::new(1, queue_size, deflate_desc_ptr, deflate_avail_ptr, deflate_used_ptr, None, 0) }
-            .expect("deflate_vq");
+    let deflate_vq = unsafe {
+        VirtQueue::new(
+            1,
+            queue_size,
+            deflate_desc_ptr,
+            deflate_avail_ptr,
+            deflate_used_ptr,
+            None,
+            0,
+        )
+    }
+    .expect("deflate_vq");
 
     let mut dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
     dev.inflate_queue = Some(Arc::new(PoisonLock::new(inflate_vq)));

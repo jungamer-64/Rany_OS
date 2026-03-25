@@ -595,7 +595,8 @@ fn case_staged_pci_probe_receives_real_driver_context(
     let bar0 =
         expected_dev.bars[0].ok_or_else(|| RuntimeCaseError::failed("intel-hda BAR0 missing"))?;
     let expected_mmio =
-        crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0.base())).as_u64();
+        crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0.base()))
+            .as_u64();
     let expected_ctx = kernel_api::abi::driver::DriverContext::for_pci(
         expected_mmio,
         expected_dev.interrupt_line as u32,

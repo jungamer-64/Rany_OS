@@ -13,7 +13,7 @@
 //! - `ExoValue` への依存を持たない（shellモジュール非依存）
 //! - 上位層（SysNamespace）がExoValueラッピングを担当
 
-use crate::domain_system::{DomainId, DomainState, get_domain_snapshot, list_domain_snapshots};
+use crate::domain::{DomainId, DomainState, get_domain_snapshot, list_domain_snapshots};
 use alloc::vec::Vec;
 
 mod cpuinfo_gen;
@@ -45,12 +45,12 @@ pub fn kernel_name() -> &'static str {
 
 /// 合計メモリ (KB)
 pub fn memory_total_kb() -> u64 {
-    crate::memory::total_memory_kb()
+    crate::heap::total_memory_kb()
 }
 
 /// 空きメモリ (KB)
 pub fn memory_free_kb() -> u64 {
-    crate::memory::free_memory_kb()
+    crate::heap::free_memory_kb()
 }
 
 /// アップタイム (tick単位、1tick = 1ms)
@@ -89,14 +89,14 @@ pub fn boot_time_secs() -> u64 {
 }
 
 /// ドメインスナップショット一覧
-pub fn domain_snapshots() -> Vec<crate::domain_system::DomainSnapshot> {
+pub fn domain_snapshots() -> Vec<crate::domain::DomainSnapshot> {
     let mut snaps = list_domain_snapshots();
     snaps.sort_by_key(|s| s.id.as_u64());
     snaps
 }
 
 /// 指定ドメインのスナップショット
-pub fn domain_snapshot(id: u64) -> Option<crate::domain_system::DomainSnapshot> {
+pub fn domain_snapshot(id: u64) -> Option<crate::domain::DomainSnapshot> {
     get_domain_snapshot(DomainId::new(id))
 }
 

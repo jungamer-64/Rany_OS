@@ -211,6 +211,9 @@ jobs:
     - name: Run ExoRust reduction guard
       run: bash scripts/check-exorust-reduction-guard.sh
 
+    - name: Run kernel structure guard
+      run: bash scripts/check-kernel-structure-guard.sh
+
   # ============================================================================
   # Documentation Job
   # ============================================================================

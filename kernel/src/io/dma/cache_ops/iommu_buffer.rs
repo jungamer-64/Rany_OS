@@ -202,7 +202,7 @@ impl DeviceDmaAllocator {
             }
 
             let bounce_phys =
-                crate::memory::virt_to_phys(x86_64::VirtAddr::new(rref.as_ptr() as u64));
+                crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::new(rref.as_ptr() as u64));
             let mapped_len = rref.len();
             Ok((bounce_phys, mapped_len, Some(rref)))
         } else {
@@ -261,7 +261,7 @@ impl DmaAllocator for DeviceDmaAllocator {
         }
 
         // 仮想アドレスを物理アドレスに変換
-        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
+        let phys_addr = crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
         // Resolve the hardware-visible translated DMA address via the IOMMU.
         let (device_addr, iova_mapped) = match self.resolve_iommu_device_addr(phys_addr, size) {
@@ -295,7 +295,8 @@ impl DmaAllocator for DeviceDmaAllocator {
         if size == 0 {
             return Err(DmaError::InvalidSize);
         }
-        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(host_addr as u64));
+        let phys_addr =
+            crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::new(host_addr as u64));
 
         let (final_phys, mapped_len, bounce) =
             Self::prepare_streaming_buffer(buffer, phys_addr, direction)?;

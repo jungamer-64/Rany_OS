@@ -592,6 +592,16 @@ impl CommandQueue {
         SubmitFuture::new(self as *const CommandQueue, kind)
     }
 
+    /// Synchronous submit for environments that already have a worker draining the queue.
+    pub fn submit_sync(&self, kind: IommuCommandKind) -> Result<(), ()> {
+        let completion = self.submit(kind)?;
+        if completion.wait_blocking() == RESULT_OK {
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+
     /// Synchronous submit with polling worker implementation to prevent deadlocks
     pub fn submit_sync_with_worker<F>(
         &self,

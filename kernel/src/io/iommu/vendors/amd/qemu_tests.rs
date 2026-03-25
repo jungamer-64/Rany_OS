@@ -414,7 +414,7 @@ fn wave1_security_notifier_dispatch_fallback_smoke() -> bool {
 
 /// CQ submit MapRegionDevice / UnmapRegionDevice with custom handler.
 pub fn wave1_cmdqueue_map_unmap_with_domain_smoke() -> bool {
-    if !crate::memory::is_initialized() {
+    if !crate::heap::is_initialized() {
         return wave1_cmdqueue_map_unmap_with_domain_fallback_smoke();
     }
 
@@ -519,7 +519,7 @@ pub fn wave1_cmdqueue_map_unmap_with_domain_smoke() -> bool {
 
 /// IOVA allocate + domain map/unmap without CQ (direct path).
 pub fn wave1_map_device_nonblocking_smoke() -> bool {
-    if !crate::memory::is_initialized() {
+    if !crate::heap::is_initialized() {
         return wave1_map_device_nonblocking_fallback_smoke();
     }
 
@@ -569,7 +569,7 @@ pub fn wave1_map_device_nonblocking_smoke() -> bool {
 
 /// IOVA allocation with 32-bit DMA mask stays below 4 GB.
 pub fn wave1_dma_mask_respects_32bit_limit_smoke() -> bool {
-    if !crate::memory::is_initialized() {
+    if !crate::heap::is_initialized() {
         return wave1_dma_mask_respects_32bit_limit_fallback_smoke();
     }
 
@@ -592,7 +592,7 @@ pub fn wave1_dma_mask_respects_32bit_limit_smoke() -> bool {
 
 /// set_security_notifier returns true first, false second; new domains inherit.
 pub fn wave1_security_notifier_dispatch_smoke() -> bool {
-    if !crate::memory::is_initialized() {
+    if !crate::heap::is_initialized() {
         return wave1_security_notifier_dispatch_fallback_smoke();
     }
 
@@ -796,7 +796,7 @@ pub fn wave5_irt_invalidation_cmd_format_smoke() -> bool {
 
 /// map_interrupt returns a valid handle via IRT allocation.
 pub fn wave5_map_interrupt_returns_handle_smoke() -> bool {
-    if !crate::memory::is_initialized() {
+    if !crate::heap::is_initialized() {
         // Runtime-pending preflight can be false; keep this smoke deterministic
         // by validating handle allocation semantics without full driver wiring.
         let mut irt = match AmdInterruptRemapTable::new(4) {
