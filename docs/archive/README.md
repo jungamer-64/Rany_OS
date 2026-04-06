@@ -8,9 +8,9 @@
 
 ## 読み方
 
-- 現行仕様や現在の推奨実装を確認したい場合は、まず [../README.md](../README.md) と [../ARCHITECTURE.md](../ARCHITECTURE.md) を参照してください。
+- 現行仕様や現在の推奨実装を確認したい場合は、まず [../README.md](../README.md)、[../ARCHITECTURE.md](../ARCHITECTURE.md)、[../decisions/README.md](../decisions/README.md) を参照してください。
 - archive 文書内のコードパスやモジュール名は、執筆当時の構成を記録したものです。現行 tree と一致しない場合があります。
-- 旧計画書は「なぜその判断に至ったか」を追うための資料として読み、現行の正規ルールとは切り分けて扱ってください。
+- 旧計画書は「なぜその判断に至ったか」を追うための資料として読み、現行の正規ルール（Canonical 文書 + Accepted ADR）とは切り分けて扱ってください。
 
 ## 収録文書
 
@@ -27,8 +27,10 @@
 - [fat32_page_backed_buffers_plan.md](fat32_page_backed_buffers_plan.md)
 - [migration_from_posix.md](migration_from_posix.md)
 - [network-compliance-fix-plan.md](network-compliance-fix-plan.md)
+- [Rustカーネル設計案.md](Rustカーネル設計案.md)
 
 ## 関連文書
 
 - [../README.md](../README.md)
 - [../design-hub.md](../design-hub.md)
+- [../decisions/README.md](../decisions/README.md)

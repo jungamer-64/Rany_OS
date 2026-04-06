@@ -26,6 +26,18 @@
 - ISR では `wake()` を直接呼ばず、deferred wake で通常コンテキストへ橋渡しする。
 - 通常の障害通知は `Result` ベースとし、panic は最終封じ込め手段として扱う。
 
+## 意思決定記録（ADR）
+
+設計判断の採択理由・代替案・影響範囲は [ADR Index](decisions/README.md) で追跡します。
+
+- [ADR-0001: SAS/SPL Foundation](decisions/ADR-0001-sas-spl-foundation.md)
+- [ADR-0002: Async-First Execution Model](decisions/ADR-0002-async-first-execution-model.md)
+- [ADR-0003: Capability-First Authority Model](decisions/ADR-0003-capability-first-authority-model.md)
+- [ADR-0004: Unsafe Confined to Framework Boundary](decisions/ADR-0004-unsafe-confined-to-framework-boundary.md)
+- [ADR-0005: Exchange Heap + RRef Domain Transfer](decisions/ADR-0005-exchange-heap-rref-domain-transfer.md)
+- [ADR-0006: IOMMU Mandatory for DMA](decisions/ADR-0006-iommu-mandatory-for-dma.md)
+- [ADR-0007: Variant A as Canonical Baseline](decisions/ADR-0007-variant-a-as-canonical-baseline.md)
+
 ## 推奨案
 
 既定案は [Variant A](design_variants/variant-a-capability-first.md) です。

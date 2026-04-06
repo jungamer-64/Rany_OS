@@ -1,5 +1,7 @@
 # **次世代高性能x86\_64 Rustカーネルアーキテクチャ：Linux/POSIX互換を排除した極限効率の追求**
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 > **📁 実装サンプルコード**: 本設計書で参照されるコードサンプルは [docs/exorust_design/](docs/exorust_design/) に整理されています。
 >
 > | カテゴリ | ディレクトリ | 主な内容 |

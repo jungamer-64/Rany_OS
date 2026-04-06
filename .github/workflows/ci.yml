@@ -214,6 +214,9 @@ jobs:
     - name: Run kernel structure guard
       run: bash scripts/check-kernel-structure-guard.sh
 
+    - name: Run ADR structure guard
+      run: bash scripts/check-adr-structure-guard.sh
+
   # ============================================================================
   # Documentation Job
   # ============================================================================

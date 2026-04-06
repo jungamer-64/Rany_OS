@@ -24,6 +24,12 @@
 - [design_variants/variant-c-pks-mandatory.md](design_variants/variant-c-pks-mandatory.md): 高保証 SKU 向け研究案
 - [exorust_design/README.md](exorust_design/README.md): 設計サンプルコードの位置付け
 
+## Decisions
+
+- [decisions/README.md](decisions/README.md): Architecture Decision Record（ADR）索引
+- [decisions/ADR-0007-variant-a-as-canonical-baseline.md](decisions/ADR-0007-variant-a-as-canonical-baseline.md): 既定案（Variant A）採択記録
+- [decisions/archive/README.md](decisions/archive/README.md): superseded / archived ADR 履歴
+
 ## Reference
 
 - [reference/api-reference.md](reference/api-reference.md): 公開 API と設計意図
