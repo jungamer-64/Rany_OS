@@ -449,10 +449,19 @@ pub fn send_tcp_segment_payload(
 
         // 非同期イベントキュー経由で送信（ロック競合回避）
         let ok = match scoped_if {
-            Some(if_id) => {
-                crate::net::runtime::stack::enqueue_tcp_send_on(if_id, src_ip, dst_ip, segment)
-            }
-            None => crate::net::runtime::stack::enqueue_tcp_send(src_ip, dst_ip, segment),
+            Some(if_id) => crate::net::runtime::stack::enqueue_tcp_send_on_in(
+                crate::net::runtime::default_runtime(),
+                if_id,
+                src_ip,
+                dst_ip,
+                segment,
+            ),
+            None => crate::net::runtime::stack::enqueue_tcp_send_in(
+                crate::net::runtime::default_runtime(),
+                src_ip,
+                dst_ip,
+                segment,
+            ),
         };
         if ok {
             log::debug!(
@@ -471,10 +480,19 @@ pub fn send_tcp_segment_payload(
         let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
         let ok = match scoped_if {
-            Some(if_id) => {
-                crate::net::runtime::stack::enqueue_tcp_v6_send_on(if_id, src_v6, dst_v6, segment)
-            }
-            None => crate::net::runtime::stack::enqueue_tcp_v6_send(src_v6, dst_v6, segment),
+            Some(if_id) => crate::net::runtime::stack::enqueue_tcp_v6_send_on_in(
+                crate::net::runtime::default_runtime(),
+                if_id,
+                src_v6,
+                dst_v6,
+                segment,
+            ),
+            None => crate::net::runtime::stack::enqueue_tcp_v6_send_in(
+                crate::net::runtime::default_runtime(),
+                src_v6,
+                dst_v6,
+                segment,
+            ),
         };
         if ok {
             log::debug!(

@@ -152,11 +152,12 @@ impl NtpClient {
         let sent_ts = req.transmit_timestamp;
 
         socket
-            .send_to_sync(
+            .send(
                 crate::net::payload::payload_from_bytes(req.as_bytes())
                     .ok_or(EndpointError::Internal)?,
                 remote,
             )
+            .await
             .map_err(|_| EndpointError::Internal)?;
 
         // 非同期受信: UdpRecvFuture経由（タイムアウト付き）

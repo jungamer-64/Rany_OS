@@ -179,26 +179,6 @@ pub async fn send_udp_in(
         .map_err(|_| crate::net::l4::endpoint::types::EndpointError::ResourceExhausted)
 }
 
-/// Send a UDP datagram via the async event queue with an explicit interface scope.
-pub fn enqueue_udp_send_scoped(
-    scope: crate::net::types::InterfaceScope,
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_send_scoped_in(
-        default_runtime(),
-        scope,
-        src_port,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
-}
-
 pub fn enqueue_udp_send_scoped_in(
     runtime: NetRuntimeHandle,
     scope: crate::net::types::InterfaceScope,
@@ -229,51 +209,6 @@ pub fn enqueue_udp_send_scoped_in(
         },
     );
     true
-}
-
-/// Send a UDP datagram with explicit source IP via the async event queue.
-///
-/// RFC 2131 準拠: DHCP DISCOVER/初期REQUEST では src_ip = 0.0.0.0 を指定する。
-/// リニューアルでは取得済みIPを指定する。
-pub fn enqueue_udp_send_with_src(
-    src_ip: Ipv4Address,
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_send_scoped_with_src(
-        crate::net::types::InterfaceScope::Any,
-        src_ip,
-        src_port,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
-}
-
-/// Send a UDP datagram with explicit source IP and interface scope.
-pub fn enqueue_udp_send_scoped_with_src(
-    scope: crate::net::types::InterfaceScope,
-    src_ip: Ipv4Address,
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_send_scoped_with_src_in(
-        default_runtime(),
-        scope,
-        src_ip,
-        src_port,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
 }
 
 pub fn enqueue_udp_send_scoped_with_src_in(
@@ -307,48 +242,6 @@ pub fn enqueue_udp_send_scoped_with_src_in(
         },
     );
     true
-}
-
-/// Send a UDP datagram over IPv6 via the async event queue (non-blocking).
-pub fn enqueue_udp_v6_send(
-    src_port: u16,
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_v6_send_scoped(
-        crate::net::types::InterfaceScope::Any,
-        src_port,
-        src_ip,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
-}
-
-/// Send a UDP datagram over IPv6 via the async event queue with an explicit scope.
-pub fn enqueue_udp_v6_send_scoped(
-    scope: crate::net::types::InterfaceScope,
-    src_port: u16,
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_v6_send_scoped_in(
-        default_runtime(),
-        scope,
-        src_port,
-        src_ip,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
 }
 
 pub fn enqueue_udp_v6_send_scoped_in(
@@ -430,15 +323,6 @@ pub async fn send_tcp_in(
         .map_err(|_| crate::net::l4::endpoint::types::EndpointError::ResourceExhausted)
 }
 
-/// Send a TCP segment (IPv4) via the async event queue (non-blocking).
-pub fn enqueue_tcp_send(
-    src_ip: Ipv4Address,
-    dst_ip: Ipv4Address,
-    payload: kernel_api::resource::net::PacketPayload,
-) -> bool {
-    enqueue_tcp_send_in(default_runtime(), src_ip, dst_ip, payload)
-}
-
 pub fn enqueue_tcp_send_in(
     runtime: NetRuntimeHandle,
     src_ip: Ipv4Address,
@@ -458,15 +342,6 @@ pub fn enqueue_tcp_send_in(
         },
     );
     true
-}
-
-/// Send a TCP segment over IPv6 via the async event queue (non-blocking).
-pub fn enqueue_tcp_v6_send(
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    payload: kernel_api::resource::net::PacketPayload,
-) -> bool {
-    enqueue_tcp_v6_send_in(default_runtime(), src_ip, dst_ip, payload)
 }
 
 pub fn enqueue_tcp_v6_send_in(
@@ -1475,16 +1350,6 @@ pub fn enqueue_udp_send_on_with_src_in(
     true
 }
 
-/// インターフェース指定TCP送信（非同期版・イベントキュー経由）
-pub fn enqueue_tcp_send_on(
-    _if_id: super::NetIfId,
-    src_ip: Ipv4Address,
-    dst_ip: Ipv4Address,
-    payload: kernel_api::resource::net::PacketPayload,
-) -> bool {
-    enqueue_tcp_send_on_in(default_runtime(), _if_id, src_ip, dst_ip, payload)
-}
-
 pub fn enqueue_tcp_send_on_in(
     runtime: NetRuntimeHandle,
     if_id: super::NetIfId,
@@ -1535,16 +1400,6 @@ pub fn enqueue_udp_v6_send_on_in(
         },
     );
     true
-}
-
-/// インターフェース指定IPv6 TCP送信（非同期版・イベントキュー経由）
-pub fn enqueue_tcp_v6_send_on(
-    if_id: super::NetIfId,
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    payload: kernel_api::resource::net::PacketPayload,
-) -> bool {
-    enqueue_tcp_v6_send_on_in(default_runtime(), if_id, src_ip, dst_ip, payload)
 }
 
 pub fn enqueue_tcp_v6_send_on_in(

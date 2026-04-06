@@ -183,7 +183,7 @@ impl DnsClient {
         let dest = UdpAddr::new(server, DNS_PORT);
         let query_payload = crate::net::payload::payload_from_bytes(&buffer[..query_len])
             .ok_or("UDP send failed")?;
-        if socket.send_to_sync(query_payload, dest).is_err() {
+        if socket.send(query_payload, dest).await.is_err() {
             return Err("UDP send failed");
         }
 
@@ -206,7 +206,7 @@ impl DnsClient {
                         if let Some(query_payload) =
                             crate::net::payload::payload_from_bytes(&buffer[..query_len])
                         {
-                            let _ = socket.send_to_sync(query_payload, dest);
+                            let _ = socket.send(query_payload, dest).await;
                         }
                     }
                 }

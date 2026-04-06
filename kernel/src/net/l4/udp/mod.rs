@@ -676,63 +676,9 @@ impl UdpEndpoint {
         }
     }
 
-    /// Send a datagram to the specified address (async-friendly, non-blocking)
-    ///
-    /// The send request is posted to the async event queue instead of synchronously
-    /// locking the global network stack. This avoids lock contention and potential
-    /// deadlocks when called from async contexts (e.g., within DHCP, mDNS, DNS tasks).
-    ///
-    /// Returns the number of bytes sent, or an error.
-    pub fn send_to_sync(
-        &self,
-        payload: PacketPayload,
-        dst: UdpAddr,
-    ) -> Result<usize, NetworkError> {
-        let (local_port, ttl) = match self.inner.lock() {
-            Ok(g) => {
-                if g.closed {
-                    return Err(NetworkError::ConnectionClosed);
-                }
-                (g.local_port, g.ttl)
-            }
-            Err(_) => return Err(NetworkError::LockPoisoned),
-        };
-        let scope = self.default_send_scope();
-        let payload_len = payload.total_len();
-
-        // Send via async event queue to avoid synchronous NETWORK_STACK lock
-        match dst {
-            UdpAddr::V4 { ip, port } => {
-                if crate::net::runtime::stack::enqueue_udp_send_scoped(
-                    scope, local_port, ip, port, payload, ttl,
-                ) {
-                    Ok(payload_len)
-                } else {
-                    Err(NetworkError::TransmitFailed)
-                }
-            }
-            UdpAddr::V6 { ip, port } => {
-                if crate::net::runtime::stack::enqueue_udp_v6_send_scoped(
-                    scope,
-                    local_port,
-                    Ipv6Address::UNSPECIFIED,
-                    ip,
-                    port,
-                    payload,
-                    ttl,
-                ) {
-                    Ok(payload_len)
-                } else {
-                    Err(NetworkError::TransmitFailed)
-                }
-            }
-        }
-    }
-
     /// 【設計書 6.2準拠】非同期UDP送信 (async/await対応)
     ///
-    /// `send_to_sync` のFutureラッパー。async/await構文で利用できる。
-    /// イベントキューが満杯の場合は自動的にリトライする。
+    /// イベントキュー経由で送信を試みる。async/await構文で利用できる。
     ///
     /// # 使用例
     /// ```ignore
@@ -820,18 +766,27 @@ impl Future for UdpSendFuture {
 
         // イベントキュー経由で非同期送信を試行
         let sent = match this.dst {
-            UdpAddr::V4 { ip, port } => crate::net::runtime::stack::enqueue_udp_send_scoped(
-                scope, local_port, ip, port, payload, ttl,
-            ),
-            UdpAddr::V6 { ip, port } => crate::net::runtime::stack::enqueue_udp_v6_send_scoped(
+            UdpAddr::V4 { ip, port } => crate::net::runtime::stack::enqueue_udp_send_scoped_in(
+                crate::net::runtime::default_runtime(),
                 scope,
                 local_port,
-                Ipv6Address::UNSPECIFIED,
                 ip,
                 port,
                 payload,
                 ttl,
             ),
+            UdpAddr::V6 { ip, port } => {
+                crate::net::runtime::stack::enqueue_udp_v6_send_scoped_in(
+                    crate::net::runtime::default_runtime(),
+                    scope,
+                    local_port,
+                    Ipv6Address::UNSPECIFIED,
+                    ip,
+                    port,
+                    payload,
+                    ttl,
+                )
+            }
         };
 
         if sent {

@@ -320,41 +320,6 @@ impl Endpoint {
         }
     }
 
-    /// UDP送信（イベントキュー経由）
-    ///
-    /// SendToイベントを発火して送信を委任する。
-    pub fn send_to_sync(
-        &self,
-        payload: PacketPayload,
-        addr: EndpointAddr,
-    ) -> EndpointResult<usize> {
-        if self.endpoint_type != EndpointType::Udp {
-            return Err(EndpointError::InvalidArgument);
-        }
-
-        {
-            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-            if !matches!(inner.state, EndpointState::Bound | EndpointState::Connected) {
-                return Err(EndpointError::NotConnected);
-            }
-        }
-
-        let payload_len = payload.total_len();
-
-        // UDPパケット送信イベント（バックプレッシャー対応）
-        enqueue_event_in(
-            self.runtime,
-            NetworkEvent::SendTo {
-                fd: self.fd,
-                payload,
-                remote: addr,
-            },
-        )?;
-
-        Ok(payload_len)
-    }
-
     /// UDP受信（同期バッファ読み取り）
     ///
     /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
@@ -863,18 +828,6 @@ impl OwnedEndpoint {
             .as_ref()
             .ok_or(EndpointError::NotFound)?
             .recv_sync(buf)
-    }
-
-    /// UDP送信（同期）
-    pub fn send_to_sync(
-        &self,
-        payload: PacketPayload,
-        addr: EndpointAddr,
-    ) -> EndpointResult<usize> {
-        self.endpoint
-            .as_ref()
-            .ok_or(EndpointError::NotFound)?
-            .send_to_sync(payload, addr)
     }
 
     /// UDP受信（同期）

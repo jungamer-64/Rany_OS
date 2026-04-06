@@ -236,7 +236,7 @@ impl MdnsService {
                             if let Some(payload) =
                                 crate::net::payload::payload_from_bytes(&buffer[..len])
                             {
-                                let _ = socket.send_to_sync(payload, dst);
+                                let _ = socket.send(payload, dst).await;
                             }
                         }
                     }
@@ -256,7 +256,7 @@ impl MdnsService {
                                 if let Some(payload) =
                                     crate::net::payload::payload_from_bytes(&buffer[..len])
                                 {
-                                    let _ = socket.send_to_sync(payload, dst);
+                                    let _ = socket.send(payload, dst).await;
                                 }
                             }
                         }
@@ -266,7 +266,7 @@ impl MdnsService {
                             if let Some(payload) =
                                 crate::net::payload::payload_from_bytes(&buffer[..len])
                             {
-                                let _ = socket.send_to_sync(payload, dst);
+                                let _ = socket.send(payload, dst).await;
                             }
                         }
                     }
