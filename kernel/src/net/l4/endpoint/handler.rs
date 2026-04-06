@@ -1571,6 +1571,12 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::ProcessTimeouts => {
+                // NetworkStack内部タイマーの基準時刻を同期する。
+                // IGMP/ARP/NDP等が `NetworkStack::current_time()` を参照するため、
+                // timeoutイベントごとに必ず更新しておく。
+                let now = crate::task::current_tick();
+                stack.update_time(now);
+
                 stack.process_timeouts();
 
                 // --- RFC Compliance: Process TCP periodic tasks ---

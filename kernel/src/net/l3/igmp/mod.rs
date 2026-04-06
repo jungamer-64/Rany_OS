@@ -200,6 +200,19 @@ impl IgmpProcessor {
                     group.state = GroupState::IdleMember;
                 }
             }
+
+            // Unsolicited report retransmission (IGMPv2 host behavior).
+            // Join直後の初回Reportは join_group() でキュー済みのため、
+            // ここでは残り回数分のみ一定間隔で追加送信をスケジュールする。
+            if group.unsolicited_reports_remaining > 0
+                && self.current_time.saturating_sub(group.last_report_time)
+                    >= UNSOLICITED_REPORT_INTERVAL
+            {
+                self.pending_reports.push((group.address, false));
+                group.unsolicited_reports_remaining =
+                    group.unsolicited_reports_remaining.saturating_sub(1);
+                group.last_report_time = self.current_time;
+            }
         }
     }
 
@@ -222,7 +235,10 @@ impl IgmpProcessor {
 
         // Add new group
         let mut group = MulticastGroup::new(group_addr);
-        group.unsolicited_reports_remaining = UNSOLICITED_REPORT_COUNT;
+        // First unsolicited report is queued immediately below.
+        // Remaining reports are driven by update_time() interval handling.
+        group.unsolicited_reports_remaining = UNSOLICITED_REPORT_COUNT.saturating_sub(1);
+        group.last_report_time = self.current_time;
         self.groups.push(group);
 
         // Schedule unsolicited report
@@ -292,8 +308,11 @@ impl IgmpProcessor {
                 IgmpResult::Ignored
             }
             Some(IgmpType::V3MembershipReport) => {
-                // IGMPv3 report processing would go here
-                IgmpResult::Ignored
+                if Self::validate_v3_membership_report(data) {
+                    IgmpResult::Ignored
+                } else {
+                    IgmpResult::InvalidPacket
+                }
             }
             None => IgmpResult::UnknownType(msg_type),
         }
@@ -305,7 +324,8 @@ impl IgmpProcessor {
         src_ip: Ipv4Address,
     ) -> IgmpResult {
         let view = PacketPayloadView::new(payload);
-        if view.total_len() < IGMP_HEADER_LEN {
+        let total_len = view.total_len();
+        if total_len < IGMP_HEADER_LEN {
             return IgmpResult::InvalidPacket;
         }
 
@@ -317,9 +337,8 @@ impl IgmpProcessor {
         let max_resp_time = header[1];
         let group_addr = Ipv4Address::new([header[4], header[5], header[6], header[7]]);
 
-        let mut bytes = [0u8; IGMP_HEADER_LEN];
-        let copied = view.copy_all_into(&mut bytes);
-        if copied != IGMP_HEADER_LEN || compute_igmp_checksum(&bytes) != 0 {
+        let bytes = view.read_vec(0, total_len);
+        if bytes.len() != total_len || compute_igmp_checksum(&bytes) != 0 {
             return IgmpResult::InvalidChecksum;
         }
 
@@ -329,9 +348,65 @@ impl IgmpProcessor {
                 self.handle_report(group_addr, src_ip)
             }
             Some(IgmpType::LeaveGroup) => IgmpResult::Ignored,
-            Some(IgmpType::V3MembershipReport) => IgmpResult::Ignored,
+            Some(IgmpType::V3MembershipReport) => {
+                if Self::validate_v3_membership_report(&bytes) {
+                    IgmpResult::Ignored
+                } else {
+                    IgmpResult::InvalidPacket
+                }
+            }
             None => IgmpResult::UnknownType(msg_type),
         }
+    }
+
+    /// Validate IGMPv3 Membership Report (RFC 3376) layout.
+    ///
+    /// This parser intentionally validates record boundaries only.
+    /// Full source-filter state transitions are handled in a later phase.
+    fn validate_v3_membership_report(data: &[u8]) -> bool {
+        if data.len() < IGMP_HEADER_LEN {
+            return false;
+        }
+
+        // IGMPv3 report header (8 bytes):
+        // 0:type, 1:reserved, 2..=3:checksum, 4..=5:reserved, 6..=7:num_group_records
+        let group_records = u16::from_be_bytes([data[6], data[7]]) as usize;
+        let mut offset = IGMP_HEADER_LEN;
+
+        for _ in 0..group_records {
+            // Group Record fixed header length:
+            // 0:record_type, 1:aux_data_len(32-bit words), 2..=3:num_sources,
+            // 4..=7:multicast_address
+            if offset + 8 > data.len() {
+                return false;
+            }
+
+            let aux_words = data[offset + 1] as usize;
+            let num_sources = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
+
+            let Some(sources_bytes) = num_sources.checked_mul(4) else {
+                return false;
+            };
+            let Some(aux_bytes) = aux_words.checked_mul(4) else {
+                return false;
+            };
+            let Some(record_len) = 8usize
+                .checked_add(sources_bytes)
+                .and_then(|value| value.checked_add(aux_bytes))
+            else {
+                return false;
+            };
+
+            let Some(next_offset) = offset.checked_add(record_len) else {
+                return false;
+            };
+            if next_offset > data.len() {
+                return false;
+            }
+            offset = next_offset;
+        }
+
+        offset == data.len()
     }
 
     /// Handle a Membership Query
@@ -741,5 +816,65 @@ pub(crate) mod tests {
 
         // Pending report should be removed
         assert!(processor.pending_reports.is_empty());
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_join_group_unsolicited_followup() {
+        let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
+        let group = Ipv4Address::new([224, 10, 20, 30]);
+
+        processor.join_group(group).unwrap();
+
+        let first = processor.take_pending_reports();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0], (group, false));
+        assert_eq!(
+            processor.groups[0].unsolicited_reports_remaining,
+            UNSOLICITED_REPORT_COUNT.saturating_sub(1)
+        );
+
+        processor.update_time(UNSOLICITED_REPORT_INTERVAL - 1);
+        assert!(processor.take_pending_reports().is_empty());
+
+        processor.update_time(UNSOLICITED_REPORT_INTERVAL);
+        let followup = processor.take_pending_reports();
+        assert_eq!(followup.len(), 1);
+        assert_eq!(followup[0], (group, false));
+        assert_eq!(processor.groups[0].unsolicited_reports_remaining, 0);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_v3_report_minimal_layout_accepted() {
+        let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
+        let src = Ipv4Address::new([192, 168, 1, 1]);
+
+        // Minimal IGMPv3 Membership Report with 0 group records.
+        let mut report = [0u8; IGMP_HEADER_LEN];
+        report[0] = IgmpType::V3MembershipReport as u8;
+        // [1] reserved, [4..=5] reserved, [6..=7] num_group_records = 0
+
+        let checksum = compute_igmp_checksum(&report);
+        report[2] = (checksum >> 8) as u8;
+        report[3] = (checksum & 0xff) as u8;
+
+        assert_eq!(processor.process(&report, src), IgmpResult::Ignored);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_v3_report_invalid_layout_rejected() {
+        let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
+        let src = Ipv4Address::new([192, 168, 1, 1]);
+
+        // Header claims 1 group record but no record bytes follow.
+        let mut report = [0u8; IGMP_HEADER_LEN];
+        report[0] = IgmpType::V3MembershipReport as u8;
+        report[6] = 0;
+        report[7] = 1;
+
+        let checksum = compute_igmp_checksum(&report);
+        report[2] = (checksum >> 8) as u8;
+        report[3] = (checksum & 0xff) as u8;
+
+        assert_eq!(processor.process(&report, src), IgmpResult::InvalidPacket);
     }
 }

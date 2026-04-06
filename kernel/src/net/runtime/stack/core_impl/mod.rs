@@ -802,6 +802,12 @@ impl NetworkStack {
     /// Process periodic timeouts (call periodically, e.g., every 100ms)
     pub fn process_timeouts(&mut self) {
         let now = self.current_time();
+
+        // IGMPタイマー進行とpending送信を周期処理に接続する。
+        // これにより受信イベントが無い期間でもMembership Report/Leaveを排出できる。
+        self.igmp.update_time(now);
+        self.send_pending_igmp_reports();
+
         // Endpoint-owned TCP timers/retransmits are driven from the endpoint event
         // task via `tcb_table().tick()`. The integrated stack keeps only generic
         // timeout-wheel work here.

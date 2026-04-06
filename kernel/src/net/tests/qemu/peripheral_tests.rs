@@ -411,6 +411,10 @@ pub fn igmp_join_group_smoke() -> bool {
     run_case!(igmp::tests::test_join_group)
 }
 
+pub fn igmp_join_group_unsolicited_followup_smoke() -> bool {
+    run_case!(igmp::tests::test_join_group_unsolicited_followup)
+}
+
 pub fn igmp_join_invalid_address_smoke() -> bool {
     run_case!(igmp::tests::test_join_invalid_address)
 }
@@ -445,6 +449,14 @@ pub fn igmp_process_general_query_smoke() -> bool {
 
 pub fn igmp_report_suppression_smoke() -> bool {
     run_case!(igmp::tests::test_report_suppression)
+}
+
+pub fn igmp_v3_report_minimal_layout_accepted_smoke() -> bool {
+    run_case!(igmp::tests::test_v3_report_minimal_layout_accepted)
+}
+
+pub fn igmp_v3_report_invalid_layout_rejected_smoke() -> bool {
+    run_case!(igmp::tests::test_v3_report_invalid_layout_rejected)
 }
 
 pub fn stack_glue_zero_copy_via_bridge_smoke() -> bool {

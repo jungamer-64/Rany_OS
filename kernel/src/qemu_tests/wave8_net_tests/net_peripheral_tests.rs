@@ -197,6 +197,10 @@ pub fn net_peripheral_igmp_join_group_smoke() -> bool {
     crate::net::qemu_tests::igmp_join_group_smoke()
 }
 
+pub fn net_peripheral_igmp_join_group_unsolicited_followup_smoke() -> bool {
+    crate::net::qemu_tests::igmp_join_group_unsolicited_followup_smoke()
+}
+
 pub fn net_peripheral_igmp_join_invalid_address_smoke() -> bool {
     crate::net::qemu_tests::igmp_join_invalid_address_smoke()
 }
@@ -231,6 +235,14 @@ pub fn net_peripheral_igmp_process_general_query_smoke() -> bool {
 
 pub fn net_peripheral_igmp_report_suppression_smoke() -> bool {
     crate::net::qemu_tests::igmp_report_suppression_smoke()
+}
+
+pub fn net_peripheral_igmp_v3_report_minimal_layout_accepted_smoke() -> bool {
+    crate::net::qemu_tests::igmp_v3_report_minimal_layout_accepted_smoke()
+}
+
+pub fn net_peripheral_igmp_v3_report_invalid_layout_rejected_smoke() -> bool {
+    crate::net::qemu_tests::igmp_v3_report_invalid_layout_rejected_smoke()
 }
 
 pub fn net_peripheral_stack_glue_zero_copy_via_bridge_smoke() -> bool {
