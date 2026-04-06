@@ -53,7 +53,7 @@ fn test_grant_with_options() {
     // Capability should be present
     assert!(manager.has_capability(target, CAP_NET_BIND));
 
-    let grants = manager.list_grants(target);
+    let grants = manager.list_grants(target, target);
     assert_eq!(grants.len(), 1);
     assert_eq!(grants[0].id, token);
     assert_eq!(grants[0].delegatable, false);
@@ -79,7 +79,7 @@ fn test_revoke_grant() {
     assert!(!manager.has_capability(target, CAP_NET_BIND));
 
     // Token should remain but be marked revoked
-    let grants = manager.list_grants(target);
+    let grants = manager.list_grants(target, target);
     assert_eq!(grants.len(), 1);
     assert_eq!(grants[0].id, token);
     assert!(grants[0].revoked);
@@ -104,7 +104,7 @@ fn test_expire_grants() {
     // Capability should be removed
     assert!(!manager.has_capability(target, CAP_NET_BIND));
     // Token should be gone
-    assert!(manager.list_grants(target).is_empty());
+    assert!(manager.list_grants(target, target).is_empty());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -124,7 +124,7 @@ fn test_expire_grants_wrapper() {
         expire_grants_now();
 
         assert!(!manager().has_capability(target, CAP_NET_BIND));
-        assert!(manager().list_grants(target).is_empty());
+        assert!(manager().list_grants(target, target).is_empty());
     });
 }
 
@@ -178,7 +178,7 @@ fn test_reclaim_token() {
     // Now reclaim it
     assert!(manager.reclaim_token(token).is_ok());
     // Token should be gone
-    assert!(manager.list_grants(target).is_empty());
+    assert!(manager.list_grants(target, target).is_empty());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -202,7 +202,7 @@ fn test_in_flight_blocks_reclaim() {
 
     // reclaim_now should not remove while in-flight
     manager.reclaim_revoked_now();
-    let grants = manager.list_grants(target);
+    let grants = manager.list_grants(target, target);
     assert_eq!(grants.len(), 1);
 
     // manual reclaim should fail with busy
@@ -216,7 +216,35 @@ fn test_in_flight_blocks_reclaim() {
 
     // now reclaim
     manager.reclaim_revoked_now();
-    assert!(manager.list_grants(target).is_empty());
+    assert!(manager.list_grants(target, target).is_empty());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_list_grants_cross_domain_requires_cap_fowner() {
+    let manager = fresh_manager();
+    let issuer: u64 = 5000;
+    let observer: u64 = 5001;
+    let target: u64 = 5002;
+
+    manager.set_capabilities(issuer, CapabilitySet::with_permitted(CAP_NET_BIND));
+    manager.set_capabilities(observer, CapabilitySet::empty());
+    manager.set_capabilities(target, CapabilitySet::empty());
+
+    let token = manager
+        .grant_capability_with_opts(issuer, target, CAP_NET_BIND, None, false)
+        .unwrap();
+    let self_visible = manager.list_grants(target, target);
+    assert_eq!(self_visible.len(), 1);
+    assert_eq!(self_visible[0].id, token);
+
+    // Cross-domain observer without CAP_FOWNER cannot enumerate target grants.
+    assert!(manager.list_grants(observer, target).is_empty());
+
+    manager.set_capabilities(observer, CapabilitySet::full());
+    let visible = manager.list_grants(observer, target);
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].id, token);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

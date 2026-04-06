@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::security::capability::CAP_KILL;
+use crate::security::capability::{CAP_KILL, CAP_SYS_PTRACE};
 use crate::shell::exoshell::types::*;
 use alloc::boxed::Box;
 
@@ -15,8 +15,38 @@ use alloc::boxed::Box;
 pub struct DomainNamespace;
 
 impl DomainNamespace {
+    fn require_ptrace_for_list(
+        caps: &crate::security::CapabilitySet,
+    ) -> Result<(), ExoValue<'static>> {
+        if caps.has_capability(CAP_SYS_PTRACE) {
+            return Ok(());
+        }
+
+        Err(ExoValue::Error(String::from(
+            "Permission denied: domain.list requires CAP_SYS_PTRACE",
+        )))
+    }
+
+    fn require_ptrace_for_info(
+        id: u64,
+        caps: &crate::security::CapabilitySet,
+    ) -> Result<(), ExoValue<'static>> {
+        let caller = crate::shell::runtime::current_domain_id();
+        if caller == id || caps.has_capability(CAP_SYS_PTRACE) {
+            return Ok(());
+        }
+
+        Err(ExoValue::Error(String::from(
+            "Permission denied: domain.info requires CAP_SYS_PTRACE for other domains",
+        )))
+    }
+
     /// 実行中のタスク一覧
-    pub fn list() -> ExoValue<'static> {
+    pub fn list(caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_ptrace_for_list(caps) {
+            return e;
+        }
+
         let domains = crate::shell::runtime::list_domains();
 
         let result: Vec<ExoValue<'static>> = domains
@@ -45,7 +75,11 @@ impl DomainNamespace {
     }
 
     /// 特定ドメインの情報
-    pub fn info(id: u64) -> ExoValue<'static> {
+    pub fn info(id: u64, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_ptrace_for_info(id, caps) {
+            return e;
+        }
+
         let domain = crate::shell::runtime::get_domain(id);
 
         if let Some(d) = domain {
@@ -102,7 +136,7 @@ impl ShellNamespace for DomainNamespace {
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "list" => Self::list(),
+                "list" => Self::list(caps),
                 "info" => {
                     let id = args
                         .first()
@@ -111,7 +145,7 @@ impl ShellNamespace for DomainNamespace {
                             _ => None,
                         })
                         .unwrap_or(0);
-                    Self::info(id)
+                    Self::info(id, caps)
                 }
                 "kill" => {
                     let id = args

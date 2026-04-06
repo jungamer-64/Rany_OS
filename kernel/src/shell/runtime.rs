@@ -2,6 +2,7 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use crate::security::capability::CAP_SYS_PTRACE;
 use kernel_api::shell::{
     CpuIdleInfo, DirEntry, DomainInfo, DomainMonitorInfo, DomainState, FileAttributes, FileType,
     MemoryMonitorInfo, MemoryStats, MonitorInfo, NetworkMonitorInfo, PowerInfo, ShellSystemInfo,
@@ -49,22 +50,45 @@ pub fn current_domain_id() -> u64 {
 }
 
 pub fn list_domains() -> Vec<DomainInfo> {
-    crate::domain::list_domain_snapshots()
-        .into_iter()
-        .map(|snap| DomainInfo {
-            id: snap.id.as_u64(),
-            name: snap.name,
-            state: map_domain_state(snap.state),
-            tasks: snap.tasks,
-            memory_kb: (snap.memory_bytes / 1024) as usize,
-            rrefs: snap.rrefs,
-            last_error: snap.last_error,
+    let subject = crate::task::current_subject();
+    if subject.caps.has_capability(CAP_SYS_PTRACE) {
+        return crate::domain::list_domain_snapshots()
+            .into_iter()
+            .map(|snap| DomainInfo {
+                id: snap.id.as_u64(),
+                name: snap.name,
+                state: map_domain_state(snap.state),
+                tasks: snap.tasks,
+                memory_kb: (snap.memory_bytes / 1024) as usize,
+                rrefs: snap.rrefs,
+                last_error: snap.last_error,
+            })
+            .collect();
+    }
+
+    crate::domain::get_domain_snapshot(subject.domain)
+        .map(|snap| {
+            alloc::vec![DomainInfo {
+                id: snap.id.as_u64(),
+                name: snap.name,
+                state: map_domain_state(snap.state),
+                tasks: snap.tasks,
+                memory_kb: (snap.memory_bytes / 1024) as usize,
+                rrefs: snap.rrefs,
+                last_error: snap.last_error,
+            }]
         })
-        .collect()
+        .unwrap_or_default()
 }
 
 pub fn get_domain(id: u64) -> Option<DomainInfo> {
-    crate::domain::get_domain_snapshot(crate::domain::DomainId::new(id)).map(|snap| DomainInfo {
+    let subject = crate::task::current_subject();
+    let target = crate::domain::DomainId::new(id);
+    if target != subject.domain && !subject.caps.has_capability(CAP_SYS_PTRACE) {
+        return None;
+    }
+
+    crate::domain::get_domain_snapshot(target).map(|snap| DomainInfo {
         id: snap.id.as_u64(),
         name: snap.name,
         state: map_domain_state(snap.state),

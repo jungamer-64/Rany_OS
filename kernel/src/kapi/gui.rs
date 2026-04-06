@@ -159,6 +159,10 @@ fn net_devices_snapshot() -> alloc::vec::Vec<NetDeviceInfo> {
     crate::net::runtime::device::list_port_infos()
 }
 
+fn has_sys_admin_capability() -> bool {
+    crate::task::current_subject().caps.has_capability(CAP_SYS_ADMIN)
+}
+
 impl GuiServices for ExoKernel {
     fn request_framebuffer(
         &self,
@@ -237,6 +241,10 @@ impl GuiServices for ExoKernel {
 
 impl GraphicsServices for ExoKernel {
     fn displays(&self) -> alloc::vec::Vec<DisplayInfo> {
+        if !has_sys_admin_capability() {
+            return alloc::vec::Vec::new();
+        }
+
         current_framebuffer_info()
             .map(|framebuffer| {
                 alloc::vec![DisplayInfo {
@@ -251,12 +259,20 @@ impl GraphicsServices for ExoKernel {
     }
 
     fn primary_framebuffer(&self) -> Option<KapiFramebufferInfo> {
+        if !has_sys_admin_capability() {
+            return None;
+        }
+
         current_framebuffer_info()
     }
 }
 
 impl InputServices for ExoKernel {
     fn devices(&self) -> alloc::vec::Vec<InputDeviceInfo> {
+        if !has_sys_admin_capability() {
+            return alloc::vec::Vec::new();
+        }
+
         alloc::vec![InputDeviceInfo {
             device_id: 0,
             kind: InputDeviceKind::Keyboard,
@@ -271,6 +287,10 @@ impl InputServices for ExoKernel {
 
 impl SerialServices for ExoKernel {
     fn ports(&self) -> alloc::vec::Vec<SerialPortInfo> {
+        if !has_sys_admin_capability() {
+            return alloc::vec::Vec::new();
+        }
+
         alloc::vec![SerialPortInfo {
             port_id: 0,
             base_port: 0x3F8,
@@ -294,12 +314,20 @@ impl SerialServices for ExoKernel {
 
 impl StorageServices for ExoKernel {
     fn devices(&self) -> alloc::vec::Vec<StorageDeviceInfo> {
+        if !has_sys_admin_capability() {
+            return alloc::vec::Vec::new();
+        }
+
         storage_devices_snapshot()
     }
 }
 
 impl NetDeviceServices for ExoKernel {
     fn devices(&self) -> alloc::vec::Vec<NetDeviceInfo> {
+        if !has_sys_admin_capability() {
+            return alloc::vec::Vec::new();
+        }
+
         net_devices_snapshot()
     }
 }
@@ -341,6 +369,7 @@ use kernel_api::shell::{
     DirEntry as KapiDirEntry, DomainInfo, DomainState as KapiDomainState, MemoryStats,
     ShellServices, ShellSystemInfo as KapiSystemInfo,
 };
+use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_PTRACE};
 
 pub(crate) fn map_domain_state(state: crate::domain::DomainState) -> KapiDomainState {
     match state {
@@ -380,31 +409,52 @@ impl ShellServices for ExoKernel {
     }
 
     fn list_domains(&self) -> alloc::vec::Vec<DomainInfo> {
-        crate::domain::list_domain_snapshots()
-            .into_iter()
-            .map(|snap| DomainInfo {
-                id: snap.id.as_u64(),
-                name: snap.name,
-                state: map_domain_state(snap.state),
-                tasks: snap.tasks,
-                memory_kb: (snap.memory_bytes / 1024) as usize,
-                rrefs: snap.rrefs,
-                last_error: snap.last_error,
+        let subject = crate::task::current_subject();
+        if subject.caps.has_capability(CAP_SYS_PTRACE) {
+            return crate::domain::list_domain_snapshots()
+                .into_iter()
+                .map(|snap| DomainInfo {
+                    id: snap.id.as_u64(),
+                    name: snap.name,
+                    state: map_domain_state(snap.state),
+                    tasks: snap.tasks,
+                    memory_kb: (snap.memory_bytes / 1024) as usize,
+                    rrefs: snap.rrefs,
+                    last_error: snap.last_error,
+                })
+                .collect();
+        }
+
+        crate::domain::get_domain_snapshot(subject.domain)
+            .map(|snap| {
+                alloc::vec![DomainInfo {
+                    id: snap.id.as_u64(),
+                    name: snap.name,
+                    state: map_domain_state(snap.state),
+                    tasks: snap.tasks,
+                    memory_kb: (snap.memory_bytes / 1024) as usize,
+                    rrefs: snap.rrefs,
+                    last_error: snap.last_error,
+                }]
             })
-            .collect()
+            .unwrap_or_default()
     }
 
     fn get_domain(&self, id: u64) -> Option<DomainInfo> {
-        crate::domain::get_domain_snapshot(crate::domain::DomainId::new(id)).map(|snap| {
-            DomainInfo {
-                id: snap.id.as_u64(),
-                name: snap.name,
-                state: map_domain_state(snap.state),
-                tasks: snap.tasks,
-                memory_kb: (snap.memory_bytes / 1024) as usize,
-                rrefs: snap.rrefs,
-                last_error: snap.last_error,
-            }
+        let subject = crate::task::current_subject();
+        let target = crate::domain::DomainId::new(id);
+        if target != subject.domain && !subject.caps.has_capability(CAP_SYS_PTRACE) {
+            return None;
+        }
+
+        crate::domain::get_domain_snapshot(target).map(|snap| DomainInfo {
+            id: snap.id.as_u64(),
+            name: snap.name,
+            state: map_domain_state(snap.state),
+            tasks: snap.tasks,
+            memory_kb: (snap.memory_bytes / 1024) as usize,
+            rrefs: snap.rrefs,
+            last_error: snap.last_error,
         })
     }
 
@@ -438,6 +488,35 @@ impl ShellServices for ExoKernel {
     }
 
     fn monitor_info(&self) -> kernel_api::shell::MonitorInfo {
+        if !has_sys_admin_capability() {
+            return kernel_api::shell::MonitorInfo {
+                timestamp: 0,
+                cpu_usage: 0,
+                memory: kernel_api::shell::MemoryMonitorInfo {
+                    heap_used: 0,
+                    heap_free: 0,
+                    heap_total: 0,
+                    usage_percent: 0,
+                },
+                domains: kernel_api::shell::DomainMonitorInfo {
+                    total: 0,
+                    running: 0,
+                    stopped: 0,
+                },
+                tasks: kernel_api::shell::TaskMonitorInfo {
+                    context_switches: 0,
+                    voluntary_yields: 0,
+                    forced_preemptions: 0,
+                },
+                network: kernel_api::shell::NetworkMonitorInfo {
+                    rx_packets: 0,
+                    tx_packets: 0,
+                    rx_bytes: 0,
+                    tx_bytes: 0,
+                },
+            };
+        }
+
         let snap = crate::monitor::snapshot();
         kernel_api::shell::MonitorInfo {
             timestamp: snap.timestamp,
@@ -468,6 +547,17 @@ impl ShellServices for ExoKernel {
     }
 
     fn thermal_info(&self) -> kernel_api::shell::ThermalInfo {
+        if !has_sys_admin_capability() {
+            return kernel_api::shell::ThermalInfo {
+                cpu_celsius: None,
+                polling_count: 0,
+                trip_events: 0,
+                throttle_policy: alloc::string::String::from("restricted"),
+                throttle_count: 0,
+                sensors: alloc::vec::Vec::new(),
+            };
+        }
+
         let tm = crate::thermal::thermal_manager();
         let (polling_count, trip_events) = tm.stats();
         let throttle = tm.throttle_controller();
@@ -498,6 +588,15 @@ impl ShellServices for ExoKernel {
     }
 
     fn watchdog_info(&self) -> kernel_api::shell::WatchdogInfo {
+        if !has_sys_admin_capability() {
+            return kernel_api::shell::WatchdogInfo {
+                heartbeats: 0,
+                timeouts: 0,
+                checks: 0,
+                deadlocks_detected: 0,
+            };
+        }
+
         let wm = crate::watchdog::watchdog_manager();
         let (heartbeats, timeouts, checks) = wm.software().stats();
         kernel_api::shell::WatchdogInfo {
@@ -509,6 +608,19 @@ impl ShellServices for ExoKernel {
     }
 
     fn power_info(&self) -> kernel_api::shell::PowerInfo {
+        if !has_sys_admin_capability() {
+            return kernel_api::shell::PowerInfo {
+                state: alloc::string::String::from("restricted"),
+                power_button_presses: 0,
+                sleep_button_presses: 0,
+                cpu_idle: kernel_api::shell::CpuIdleInfo {
+                    c1_count: 0,
+                    c2_count: 0,
+                    c3_count: 0,
+                },
+            };
+        }
+
         let pm = crate::power::power_manager();
         let idle = crate::power::cpu_idle();
         let (c1, c2, c3) = idle.stats();

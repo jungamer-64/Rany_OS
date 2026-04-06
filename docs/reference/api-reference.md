@@ -149,7 +149,7 @@ PerCoreExecutor::current().spawn_local(async {
 
 ## IPC API（所有権移動ベース）
 
-### 設計原則
+### 設計原則（IPC）
 
 ExoRustのIPCは**所有権の移動**でデータを転送します。
 コピーは一切発生しません。
@@ -252,7 +252,7 @@ let completed: Buffer = virtqueue.poll().await;
 
 ## ネットワーク API（TCPストリーム + RAWパケット）
 
-### 設計原則
+### 設計原則（ネットワーク）
 
 **POSIXソケット（`socket`, `bind`, `listen`）は提供しません。**
 
@@ -387,7 +387,7 @@ let flags = OpenFlags(OpenFlags::O_RDONLY);
 
 ## 静的ケイパビリティ
 
-### 設計原則
+### 設計原則（静的ケイパビリティ）
 
 **ランタイムのアクセス制御チェックを排除**し、
 **コンパイル時に型システムで安全性を保証**します。
@@ -470,6 +470,54 @@ domain.spawn(async {
 // カーネルは継続動作
 // ドメインのリソースは自動回収
 ```
+
+---
+
+## ExoShell Namespace API（Capability 境界）
+
+ExoShell の公開 namespace は、呼び出し元ドメインの `CapabilitySet` に基づいて API 境界で権限判定を行います。
+
+### `domain.*` / `sys.*`
+
+| Method | Required Capability | 未権限時挙動 |
+| --- | --- | --- |
+| `domain.list()` | `CAP_SYS_PTRACE` | `Permission denied` |
+| `domain.info(id)` | self は不要 / other は `CAP_SYS_PTRACE` | other は `Permission denied` |
+| `sys.cells()` | `CAP_SYS_PTRACE` | `Permission denied` |
+| `sys.cell(id)` | `CAP_SYS_PTRACE` | `Permission denied` |
+| `sys.monitor()` / `sys.thermal()` / `sys.watchdog()` / `sys.power()` | `CAP_SYS_ADMIN` | `Permission denied` |
+
+### `cell.*` / `driver.*`
+
+| Method | Required Capability | 未権限時挙動 |
+| --- | --- | --- |
+| `cell.list()` / `cell.info()` / `cell.stats()` / `cell.health()` | `CAP_FOWNER` | `Permission denied` |
+| `cell.graph()` / `cell.inspect_artifact()` / `cell.epoch_status()` | `CAP_FOWNER` | `Permission denied` |
+| `driver.list()` / `driver.stats()` / `driver.status()` | `CAP_FOWNER` | `Permission denied` |
+
+### `net.*`
+
+| Method | Required Capability | 備考 |
+| --- | --- | --- |
+| `net.config()` / `net.stats()` | `CAP_NET_ADMIN` | interface 観測 |
+| `net.tcp()` / `net.udp()` / `net.netstat()` | `CAP_NET_ADMIN` | 接続情報の列挙 |
+| `net.interfaces()` / `net.routes()` | `CAP_NET_ADMIN` | トポロジ・ルーティング観測 |
+| `net.firewall_rules()` / `net.firewall_stats()` | `CAP_NET_ADMIN` | セキュリティポリシ観測 |
+| `net.snapshot()` / `net.events()` | `CAP_NET_ADMIN` | 診断イベント観測 |
+| `net.open()` | `CAP_NET_BIND` または token | bind 系 |
+| `net.ping()` | `CAP_NET_RAW` | raw packet 系 |
+
+### `task.*`
+
+| Method | Required Capability | 備考 |
+| --- | --- | --- |
+| `task.stats()` / `task.fuel()` / `task.preemption()` | `CAP_SYS_ADMIN` | scheduler/診断情報 |
+| `task.tick()` / `task.yield()` | なし | 運用互換で公開 |
+
+### runtime / KAPI の補足
+
+- `shell/runtime.rs::list_domains/get_domain` は `kapi/gui.rs::ShellServices` と同様のポリシーを採用し、`CAP_SYS_PTRACE` がない場合は `list_domains` を self のみに絞り、`get_domain(other)` は `None` を返す。
+- `kapi/gui.rs` の運用診断・デバイス列挙（`ShellServices::monitor_info/thermal_info/watchdog_info/power_info`, `GraphicsServices::displays`, `Input/Serial/Storage/NetDeviceServices::devices`）は `CAP_SYS_ADMIN` がない場合、互換維持のため空配列・`None`・マスク済み構造体を返す。
 
 ---
 

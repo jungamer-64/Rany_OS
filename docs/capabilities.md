@@ -44,8 +44,10 @@ ExoRust のケイパビリティモデルは「最小権限（least privilege）
   - `force = false`: 新規操作は即時拒否（drop_permanently を行う）。in-flight の扱いは EBR によって安全にドレインされることを期待。
   - `force = true`: 強制撤回（将来的にはより強い介入を行うオプション）。
 
-- `list_grants(domain_id: u64) -> Vec<GrantToken>`
-  - ドメインに対して与えられたトークン一覧を返す。
+- `list_grants(caller_domain: u64, target_domain: u64) -> Vec<GrantToken>`
+  - `caller_domain == target_domain` の self 参照は常に許可。
+  - `caller_domain != target_domain` の cross-domain 参照は `CAP_FOWNER` 必須。
+  - 権限不足時は空配列を返す（非破壊挙動）。
 
 - expire_tokens() (内部): 現在時刻を基に期限切れトークンを削除し、対応 capability を剥奪。
 
@@ -90,6 +92,43 @@ MVP では `shell.spawn()` により**限定的な子シェル表現 (ShellProxy
 
 ---
 
+## ExoShell Namespace の Required Capability（method-level）
+
+### domain.*
+
+- `domain.list()` → `CAP_SYS_PTRACE` 必須
+- `domain.info(id)` → 他ドメイン参照時に `CAP_SYS_PTRACE` 必須
+  - self (`current_domain_id == id`) は capability 不要
+
+### sys.*
+
+- `sys.cells()` → `CAP_SYS_PTRACE` 必須
+- `sys.cell(id)` → `CAP_SYS_PTRACE` 必須
+- `sys.monitor()` / `sys.thermal()` / `sys.watchdog()` / `sys.power()` → `CAP_SYS_ADMIN` 必須
+
+### cell.*
+
+- `cell.list()` → `CAP_FOWNER` 必須
+- `cell.info(id)` / `cell.stats(id)` / `cell.health(id)` → `CAP_FOWNER` 必須
+- `cell.graph()` / `cell.inspect_artifact(path)` / `cell.epoch_status()` → `CAP_FOWNER` 必須
+
+### driver.*
+
+- `driver.list()` / `driver.stats()` / `driver.status(id)` → `CAP_FOWNER` 必須
+
+### net.*
+
+- 読み取り系観測 API（`config`, `stats`, `tcp`, `udp`, `netstat`, `interfaces`, `routes`, `firewall_rules`, `firewall_stats`, `snapshot`, `events`）→ `CAP_NET_ADMIN` 必須
+- `open`（UDP bind）→ `CAP_NET_BIND` または有効な token 必須
+- `ping` → `CAP_NET_RAW` 必須
+
+### task.*
+
+- `task.stats()` / `task.fuel()` / `task.preemption()` → `CAP_SYS_ADMIN` 必須
+- `task.tick()` / `task.yield()` → capability 不要（運用互換のため）
+
+---
+
 ## 受け入れ基準（MVP）
 
 1. `cap.grant` が操作可能（`expires`, `delegatable` オプションを受け付ける）
@@ -118,6 +157,12 @@ KAPI 設計時に権限漏れを起こさないよう、危険操作は次の最
 | DMA / IOMMU 制御 | `alloc_dma_buffer` / IOMMU map/unmap 相当 | `CAP_SYS_ADMIN` + DMA 権限 | IOMMU 下でのみ許可し、任意アドレス DMA を拒否 |
 | 他ドメイン観測 | `domain.info(id)` / 観測ハンドル生成 | `CAP_SYS_PTRACE` | 参照ライフタイムで in-flight 追跡を行う |
 | 他ドメイン資源列挙 | ハンドル列挙 / 実行イメージ参照 | `CAP_FOWNER` | 観測対象ドメインへの監査ログを残す |
+| ドメイン一覧取得 | `domain.list()` / `sys.cells()` | `CAP_SYS_PTRACE` | self 例外を除く他ドメイン観測を保護する |
+| ドメイン詳細取得 | `sys.cell(id)` / `ShellServices::get_domain(id)` | `CAP_SYS_PTRACE` | self は許可、other は拒否（非破壊では `None` 返却可） |
+| セル/ドライバ列挙 | `cell.list/info/graph/inspect_artifact/epoch_status`, `driver.list/stats/status` | `CAP_FOWNER` | 他ドメイン資源の棚卸し・状態監査を保護する |
+| ネットワーク観測 | `net.interfaces/routes/firewall_rules/firewall_stats/snapshot/events/tcp/udp/netstat` | `CAP_NET_ADMIN` | 運用情報とトポロジ露出を統一ポリシーで保護する |
+| 運用診断・デバイス列挙 | `sys.monitor/thermal/watchdog/power`, `GraphicsServices::displays`, `Input/Serial/Storage/NetDeviceServices::devices` | `CAP_SYS_ADMIN` | 非管理者には `Permission denied`（ExoShell）または空/マスク値（KAPI）を返す |
+| Grant cross-domain 列挙 | `list_grants(caller, target)`（`caller != target`） | `CAP_FOWNER` | self 列挙のみ capability 不要 |
 
 ### KAPI 設計チェックリスト
 

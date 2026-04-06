@@ -20,6 +20,8 @@ use alloc::format;
 use alloc::string::String;
 
 use super::{BoxFuture, ShellNamespace};
+use crate::security::CapabilitySet;
+use crate::security::capability::CAP_SYS_ADMIN;
 use crate::shell::exoshell::types::ExoValue;
 
 /// タスク管理名前空間
@@ -32,8 +34,25 @@ fn s(v: &str) -> String {
 }
 
 impl TaskNamespace {
+    fn require_sys_admin(
+        caps: &CapabilitySet,
+        op_name: &str,
+    ) -> Result<(), ExoValue<'static>> {
+        if caps.has_capability(CAP_SYS_ADMIN) {
+            Ok(())
+        } else {
+            Err(ExoValue::Error(format!(
+                "Permission denied: {} requires CAP_SYS_ADMIN",
+                op_name
+            )))
+        }
+    }
+
     /// タスクシステムの統計情報
-    pub fn stats() -> ExoValue<'static> {
+    pub fn stats(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_sys_admin(caps, "task.stats") {
+            return e;
+        }
         let wake_stats = crate::task::wake_queue_stats();
         let global_stats = crate::task::global_queue_stats();
         let timer_stats = crate::task::pending_waker_stats();
@@ -90,7 +109,10 @@ impl TaskNamespace {
     }
 
     /// Fuel（実行予算）の情報
-    pub fn fuel() -> ExoValue<'static> {
+    pub fn fuel(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_sys_admin(caps, "task.fuel") {
+            return e;
+        }
         let remaining = crate::task::fuel::Fuel::remaining();
         let active = crate::task::fuel::Fuel::is_active();
 
@@ -101,7 +123,10 @@ impl TaskNamespace {
     }
 
     /// プリエンプション統計
-    pub fn preemption() -> ExoValue<'static> {
+    pub fn preemption(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_sys_admin(caps, "task.preemption") {
+            return e;
+        }
         let stats = crate::task::aggregate_preemption_stats();
         let mut map = BTreeMap::new();
         map.insert(
@@ -141,13 +166,13 @@ impl ShellNamespace for TaskNamespace {
         &'a self,
         method: &'a str,
         _args: &'a [ExoValue<'static>],
-        _caps: &'a crate::security::CapabilitySet,
+        caps: &'a crate::security::CapabilitySet,
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "stats" => Self::stats(),
-                "fuel" => Self::fuel(),
-                "preemption" => Self::preemption(),
+                "stats" => Self::stats(caps),
+                "fuel" => Self::fuel(caps),
+                "preemption" => Self::preemption(caps),
                 "tick" => Self::tick(),
                 "yield" => Self::do_yield().await,
                 _ => ExoValue::Error(format!(

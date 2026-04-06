@@ -22,6 +22,18 @@ impl NetNamespace {
         crate::shell::runtime::current_domain_id()
     }
 
+    fn require_net_admin(op_name: &str) -> Result<(), ExoValue<'static>> {
+        let domain_id = Self::current_domain_id();
+        if manager().has_capability(domain_id, CAP_NET_ADMIN) {
+            Ok(())
+        } else {
+            Err(ExoValue::Error(format!(
+                "Permission denied: {} requires CAP_NET_ADMIN",
+                op_name
+            )))
+        }
+    }
+
     fn parse_if_id_arg(
         args: &[ExoValue<'static>],
         method: &str,
@@ -36,6 +48,9 @@ impl NetNamespace {
 
     /// ネットワーク設定を取得（非同期版）
     pub async fn config(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.config") {
+            return e;
+        }
         let if_id = match Self::parse_if_id_arg(args, "config") {
             Ok(if_id) => if_id,
             Err(err) => return err,
@@ -86,6 +101,9 @@ impl NetNamespace {
 
     /// ネットワーク統計（非同期版）
     pub async fn stats(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.stats") {
+            return e;
+        }
         let if_id = match Self::parse_if_id_arg(args, "stats") {
             Ok(if_id) => if_id,
             Err(err) => return err,
@@ -398,6 +416,9 @@ impl NetNamespace {
 
     /// TCP接続一覧 (非同期版)
     pub async fn tcp_connections() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.tcp") {
+            return e;
+        }
         let connections = crate::net::api::connections::get_tcp_connections_in(
             crate::net::runtime::default_runtime(),
         )
@@ -423,6 +444,9 @@ impl NetNamespace {
 
     /// UDP エンドポイント一覧 (非同期版)
     pub async fn udp_endpoints() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.udp") {
+            return e;
+        }
         let endpoints = crate::net::api::connections::get_udp_endpoints_in(
             crate::net::runtime::default_runtime(),
         )
@@ -447,6 +471,9 @@ impl NetNamespace {
 
     /// netstat相当 — TCP接続 + UDPエンドポイント統合表示
     pub async fn netstat() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.netstat") {
+            return e;
+        }
         let tcp_connections = crate::net::api::connections::get_tcp_connections_in(
             crate::net::runtime::default_runtime(),
         )
@@ -509,6 +536,9 @@ impl NetNamespace {
 
     /// ネットワークインターフェース一覧
     pub async fn interfaces() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.interfaces") {
+            return e;
+        }
         let values: Vec<ExoValue> =
             crate::net::api::config::list_interfaces_in(crate::net::runtime::default_runtime())
                 .await
@@ -591,6 +621,9 @@ impl NetNamespace {
 
     /// IPv4/IPv6 ルーティングテーブル表示
     pub async fn routes() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.routes") {
+            return e;
+        }
         let mut entries = Vec::new();
 
         // IPv4 routes
@@ -824,6 +857,9 @@ impl NetNamespace {
 
     /// ファイアウォールルール一覧表示
     pub async fn firewall_rules() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.firewall_rules") {
+            return e;
+        }
         let rules = crate::net::api::firewall::firewall_list_rules_in(
             crate::net::runtime::default_runtime(),
         )
@@ -833,6 +869,9 @@ impl NetNamespace {
 
     /// ファイアウォール統計情報
     pub async fn firewall_stats() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.firewall_stats") {
+            return e;
+        }
         let stats =
             crate::net::api::firewall::firewall_stats_in(crate::net::runtime::default_runtime())
                 .await;
@@ -1023,6 +1062,9 @@ impl NetNamespace {
 
     /// ネットワーク全体のスナップショット (カウンタ + インターフェース + イベント)
     pub async fn snapshot() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.snapshot") {
+            return e;
+        }
         let snap = crate::net::api::diagnostics::network_snapshot_in(
             crate::net::runtime::default_runtime(),
         )
@@ -1080,6 +1122,9 @@ impl NetNamespace {
     ///
     /// usage: net.events(limit)  — デフォルト20件
     pub async fn events(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.events") {
+            return e;
+        }
         let limit = args
             .first()
             .and_then(|v| match v {
@@ -1163,7 +1208,7 @@ impl NetNamespace {
         }
         let domain_id = Self::current_domain_id();
         if let Some(t) = token_opt {
-            let grants = manager().list_grants(domain_id);
+            let grants = manager().list_grants(domain_id, domain_id);
             if !grants.iter().any(|g| g.id == t) {
                 return ExoValue::Error(String::from("Permission denied: token not owned"));
             }

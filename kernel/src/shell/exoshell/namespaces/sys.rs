@@ -26,7 +26,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::security::capability::CAP_SYS_BOOT;
+use crate::security::CapabilitySet;
+use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_PTRACE};
 use crate::shell::exoshell::types::ExoValue;
 use alloc::boxed::Box;
 
@@ -43,6 +44,28 @@ fn s(v: &str) -> String {
 }
 
 impl SysNamespace {
+    fn require_ptrace(caps: &CapabilitySet, op_name: &str) -> Result<(), ExoValue<'static>> {
+        if caps.has_capability(CAP_SYS_PTRACE) {
+            Ok(())
+        } else {
+            Err(ExoValue::Error(format!(
+                "Permission denied: {} requires CAP_SYS_PTRACE",
+                op_name
+            )))
+        }
+    }
+
+    fn require_sys_admin(caps: &CapabilitySet, op_name: &str) -> Result<(), ExoValue<'static>> {
+        if caps.has_capability(CAP_SYS_ADMIN) {
+            Ok(())
+        } else {
+            Err(ExoValue::Error(format!(
+                "Permission denied: {} requires CAP_SYS_ADMIN",
+                op_name
+            )))
+        }
+    }
+
     /// システム情報（バージョン + アップタイム）
     pub fn info() -> ExoValue<'static> {
         use crate::system_info as si;
@@ -162,14 +185,20 @@ impl SysNamespace {
     }
 
     /// セル（ドメイン）一覧
-    pub fn cells() -> ExoValue<'static> {
+    pub fn cells(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_ptrace(caps, "sys.cells") {
+            return e;
+        }
         let snaps = crate::system_info::domain_snapshots();
         let cells: Vec<ExoValue> = snaps.iter().map(Self::snap_to_value).collect();
         ExoValue::Array(cells)
     }
 
     /// 指定セルの情報
-    pub fn cell(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    pub fn cell(args: &[ExoValue<'static>], caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_ptrace(caps, "sys.cell") {
+            return e;
+        }
         let id = match args.first() {
             Some(ExoValue::Int(n)) if *n >= 0 => *n as u64,
             Some(ExoValue::String(s)) => match s.parse::<u64>() {
@@ -282,7 +311,11 @@ impl SysNamespace {
     }
 
     /// システムモニター情報
-    pub fn monitor() -> ExoValue<'static> {
+    pub fn monitor(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_sys_admin(caps, "sys.monitor") {
+            return e;
+        }
+
         let info = crate::shell::runtime::monitor_info();
 
         let mut map = BTreeMap::new();
@@ -363,7 +396,11 @@ impl SysNamespace {
     }
 
     /// 温度情報
-    pub fn thermal() -> ExoValue<'static> {
+    pub fn thermal(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_sys_admin(caps, "sys.thermal") {
+            return e;
+        }
+
         let info = crate::shell::runtime::thermal_info();
 
         let mut map = BTreeMap::new();
@@ -416,7 +453,11 @@ impl SysNamespace {
     }
 
     /// ウォッチドッグ情報
-    pub fn watchdog() -> ExoValue<'static> {
+    pub fn watchdog(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_sys_admin(caps, "sys.watchdog") {
+            return e;
+        }
+
         let info = crate::shell::runtime::watchdog_info();
 
         let mut map = BTreeMap::new();
@@ -438,7 +479,11 @@ impl SysNamespace {
     }
 
     /// 電源情報
-    pub fn power() -> ExoValue<'static> {
+    pub fn power(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_sys_admin(caps, "sys.power") {
+            return e;
+        }
+
         let info = crate::shell::runtime::power_info();
 
         let mut map = BTreeMap::new();
@@ -542,14 +587,14 @@ impl ShellNamespace for SysNamespace {
                 "cpu" | "cpuinfo" => Self::cpu(),
                 "stat" | "stats" => Self::stat(),
                 "kernel" => Self::kernel(),
-                "cells" => Self::cells(),
-                "cell" => Self::cell(args),
+                "cells" => Self::cells(caps),
+                "cell" => Self::cell(args, caps),
                 "net" | "network" => Self::net(),
                 "load" | "loadavg" => Self::load(),
-                "monitor" => Self::monitor(),
-                "thermal" | "temp" => Self::thermal(),
-                "watchdog" | "wd" => Self::watchdog(),
-                "power" => Self::power(),
+                "monitor" => Self::monitor(caps),
+                "thermal" | "temp" => Self::thermal(caps),
+                "watchdog" | "wd" => Self::watchdog(caps),
+                "power" => Self::power(caps),
                 "panic_record" => Self::panic_record(),
                 "shutdown" => Self::shutdown_with_caps(caps),
                 "reboot" => Self::reboot_with_caps(caps),

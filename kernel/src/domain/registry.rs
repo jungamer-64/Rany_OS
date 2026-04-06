@@ -368,7 +368,7 @@ pub fn spawn_domain_with_caps(
         let allowed = cap_mgr.has_capability(parent, crate::security::capability::CAP_SYS_ADMIN)
             || cap_mgr.get_capabilities(parent).is_permitted(req.cap)
             || cap_mgr
-                .list_grants(parent)
+                .list_grants(parent, parent)
                 .iter()
                 .any(|t| t.cap == req.cap && t.delegatable);
         if !allowed {

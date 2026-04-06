@@ -120,7 +120,7 @@ impl ExoShell {
         let args = self.evaluate_args(args).await;
 
         match name {
-            "list" => DomainNamespace::list(),
+            "list" => self.call_namespace("domain", "list", &[]).await,
             "info" => {
                 let id = args
                     .first()
@@ -129,7 +129,8 @@ impl ExoShell {
                         _ => None,
                     })
                     .unwrap_or(0);
-                DomainNamespace::info(id)
+                self.call_namespace("domain", "info", &[ExoValue::Int(id as i64)])
+                    .await
             }
             "kill" => {
                 let id = args

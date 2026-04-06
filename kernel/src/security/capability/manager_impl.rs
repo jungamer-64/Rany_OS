@@ -257,13 +257,19 @@ impl CapabilityManager {
         }
     }
 
-    /// List active grants targeting the given domain
-    pub fn list_grants(&self, domain_id: u64) -> Vec<GrantToken> {
+    /// List active grants for `target_domain` visible to `caller_domain`.
+    ///
+    /// - Self lookup (`caller_domain == target_domain`) is always allowed.
+    /// - Cross-domain lookup requires `CAP_FOWNER`.
+    pub fn list_grants(&self, caller_domain: u64, target_domain: u64) -> Vec<GrantToken> {
         self.expire_grants();
+        if caller_domain != target_domain && !self.has_capability(caller_domain, CAP_FOWNER) {
+            return Vec::new();
+        }
         let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
         grants
             .iter()
-            .filter(|t| t.target == domain_id)
+            .filter(|t| t.target == target_domain)
             .cloned()
             .collect()
     }

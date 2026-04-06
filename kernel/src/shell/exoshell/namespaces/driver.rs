@@ -19,14 +19,30 @@ use alloc::vec::Vec;
 use super::{BoxFuture, ShellNamespace};
 use crate::driver_domain;
 use crate::driver_registry::{self, DriverHandle};
+use crate::security::CapabilitySet;
+use crate::security::capability::CAP_FOWNER;
 use crate::shell::exoshell::types::ExoValue;
 
 /// ドライバ名前空間
 pub struct DriverNamespace;
 
 impl DriverNamespace {
+    fn require_fowner(caps: &CapabilitySet, op_name: &str) -> Result<(), ExoValue<'static>> {
+        if caps.has_capability(CAP_FOWNER) {
+            Ok(())
+        } else {
+            Err(ExoValue::Error(format!(
+                "Permission denied: {} requires CAP_FOWNER",
+                op_name
+            )))
+        }
+    }
+
     /// 登録済みドライバの一覧
-    pub fn list() -> ExoValue<'static> {
+    pub fn list(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_fowner(caps, "driver.list") {
+            return e;
+        }
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
         let manager = driver_domain::driver_domain_manager();
@@ -57,7 +73,10 @@ impl DriverNamespace {
     }
 
     /// ドライバの統計情報
-    pub fn stats() -> ExoValue<'static> {
+    pub fn stats(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_fowner(caps, "driver.stats") {
+            return e;
+        }
         let registry = driver_registry::driver_registry();
         let mut map = BTreeMap::new();
         map.insert(
@@ -72,7 +91,10 @@ impl DriverNamespace {
     }
 
     /// ドライバの状態を取得
-    pub fn status(id: i64) -> ExoValue<'static> {
+    pub fn status(id: i64, caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_fowner(caps, "driver.status") {
+            return e;
+        }
         let registry = driver_registry::driver_registry();
         let handle = driver_registry::DriverHandle::from_index(id as usize);
 
@@ -115,8 +137,8 @@ impl ShellNamespace for DriverNamespace {
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "list" => Self::list(),
-                "stats" => Self::stats(),
+                "list" => Self::list(caps),
+                "stats" => Self::stats(caps),
                 "status" => {
                     let id = args
                         .first()
@@ -125,7 +147,7 @@ impl ShellNamespace for DriverNamespace {
                             _ => None,
                         })
                         .unwrap_or(0);
-                    Self::status(id)
+                    Self::status(id, caps)
                 }
                 _ => ExoValue::Error(format!(
                     "Unknown method 'driver.{}'\nValid methods: list, stats, status\nUse cell.load/cell.unload/cell.swap for DriverDomain lifecycle operations",

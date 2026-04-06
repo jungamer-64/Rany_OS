@@ -18,7 +18,7 @@ use crate::driver_domain::lifecycle;
 use crate::driver_domain::{DriverDomainId, DriverDomainSnapshot};
 use crate::loader::live_update;
 use crate::security::CapabilitySet;
-use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_MODULE};
+use crate::security::capability::{CAP_FOWNER, CAP_SYS_ADMIN, CAP_SYS_MODULE};
 use crate::shell::exoshell::types::ExoValue;
 
 pub struct CellNamespace;
@@ -99,6 +99,8 @@ impl CellNamespace {
                 "CAP_SYS_ADMIN"
             } else if cap == CAP_SYS_MODULE {
                 "CAP_SYS_MODULE"
+            } else if cap == CAP_FOWNER {
+                "CAP_FOWNER"
             } else {
                 "required capability"
             };
@@ -482,7 +484,10 @@ impl CellNamespace {
         ExoValue::Map(map)
     }
 
-    fn dispatch_list() -> ExoValue<'static> {
+    fn dispatch_list(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_cap(caps, CAP_FOWNER, "cell.list") {
+            return e;
+        }
         let cells = driver_domain::driver_domain_manager().list_snapshots();
         let list = cells
             .into_iter()
@@ -526,7 +531,10 @@ impl CellNamespace {
         ExoValue::Array(list)
     }
 
-    fn dispatch_info(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    fn dispatch_info(args: &[ExoValue<'static>], caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_cap(caps, CAP_FOWNER, "cell.info") {
+            return e;
+        }
         let id = match Self::resolve_driver_domain_ref(args) {
             Ok(id) => id,
             Err(e) => return e,
@@ -592,7 +600,10 @@ impl CellNamespace {
         ExoValue::Map(out)
     }
 
-    fn dispatch_graph() -> ExoValue<'static> {
+    fn dispatch_graph(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_cap(caps, CAP_FOWNER, "cell.graph") {
+            return e;
+        }
         let manager = driver_domain::driver_domain_manager();
         let (nodes, edges, node_count, edge_count) = crate::loader::with_registry(|r| {
             let mut nodes = Vec::new();
@@ -672,7 +683,13 @@ impl CellNamespace {
         ExoValue::Map(out)
     }
 
-    fn dispatch_inspect_artifact(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+    fn dispatch_inspect_artifact(
+        args: &[ExoValue<'static>],
+        caps: &CapabilitySet,
+    ) -> ExoValue<'static> {
+        if let Err(e) = Self::require_cap(caps, CAP_FOWNER, "cell.inspect_artifact") {
+            return e;
+        }
         let path = match Self::parse_path_arg(args, 0, "Usage: cell.inspect_artifact(path)") {
             Ok(p) => p,
             Err(e) => return e,
@@ -793,7 +810,10 @@ impl CellNamespace {
         ExoValue::Map(out)
     }
 
-    fn dispatch_epoch_status() -> ExoValue<'static> {
+    fn dispatch_epoch_status(caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(e) = Self::require_cap(caps, CAP_FOWNER, "cell.epoch_status") {
+            return e;
+        }
         let stats = live_update::epoch_stats();
         let current_epoch = stats.current_epoch;
         let target_epoch = current_epoch.saturating_sub(1);
@@ -1176,13 +1196,13 @@ impl ShellNamespace for CellNamespace {
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
-                "list" => Self::dispatch_list(),
-                "info" => Self::dispatch_info(args),
-                "stats" => Self::dispatch_info(args),
-                "health" => Self::dispatch_info(args),
-                "graph" => Self::dispatch_graph(),
-                "inspect_artifact" => Self::dispatch_inspect_artifact(args),
-                "epoch_status" => Self::dispatch_epoch_status(),
+                "list" => Self::dispatch_list(caps),
+                "info" => Self::dispatch_info(args, caps),
+                "stats" => Self::dispatch_info(args, caps),
+                "health" => Self::dispatch_info(args, caps),
+                "graph" => Self::dispatch_graph(caps),
+                "inspect_artifact" => Self::dispatch_inspect_artifact(args, caps),
+                "epoch_status" => Self::dispatch_epoch_status(caps),
                 "wait_quiescent" => Self::dispatch_wait_quiescent(args, caps),
                 "load" => Self::dispatch_load(args, caps),
                 "swap" => Self::dispatch_swap(args, caps),
@@ -1206,8 +1226,21 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_list_returns_array() {
-        let val = CellNamespace::dispatch_list();
+        let val = CellNamespace::dispatch_list(&CapabilitySet::full());
         assert!(matches!(val, ExoValue::Array(_)));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_list_requires_cap_fowner() {
+        let ns = CellNamespace;
+        let caps = CapabilitySet::empty();
+        let args: [ExoValue<'static>; 0] = [];
+        let res = block_on(ns.call("list", &args, &caps));
+        match res {
+            ExoValue::Error(s) => assert!(s.contains("CAP_FOWNER")),
+            _ => panic!("expected permission error"),
+        }
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
