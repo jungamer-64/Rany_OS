@@ -843,14 +843,17 @@ impl NetworkStack {
 
     /// Send pending IGMP reports
     pub(crate) fn send_pending_igmp_reports(&mut self) {
-        let pending = self.igmp.take_pending_reports();
+        let pending = self.igmp.take_pending_report_entries();
+        let report_version = self.igmp.report_version();
         let current_time = self.current_time();
 
-        for (group_addr, is_leave) in pending {
-            if is_leave {
-                self.send_igmp_leave(group_addr, current_time);
+        for entry in pending {
+            if report_version == crate::net::l3::igmp::IgmpReportVersion::V3 {
+                self.send_igmp_v3_report(entry.group_addr, entry.kind, current_time);
+            } else if entry.kind == crate::net::l3::igmp::PendingIgmpReportKind::LeaveStateChange {
+                self.send_igmp_leave(entry.group_addr, current_time);
             } else {
-                self.send_igmp_report(group_addr, current_time);
+                self.send_igmp_report(entry.group_addr, current_time);
             }
         }
     }
@@ -913,6 +916,82 @@ impl NetworkStack {
                         packet.set_len(frame_len);
                         let _ = self.transmit_packet(packet);
                     }
+                }
+            }
+        }
+    }
+
+    /// Send an IGMPv3 Membership Report (single record)
+    pub(crate) fn send_igmp_v3_report(
+        &mut self,
+        group_addr: Ipv4Address,
+        kind: crate::net::l3::igmp::PendingIgmpReportKind,
+        _current_time: u64,
+    ) {
+        let dst_group = crate::net::l3::igmp::ALL_ROUTERS_V3_GROUP;
+
+        if !crate::net::security::firewall::check_egress_v4(
+            self.config.ipv4.address.octets(),
+            dst_group.octets(),
+            2,
+            0,
+            0,
+            0,
+        ) {
+            self.stats.record_dropped();
+            return;
+        }
+
+        let record_type = match kind {
+            crate::net::l3::igmp::PendingIgmpReportKind::QueryResponseCurrentState => {
+                crate::net::l3::igmp::IgmpV3GroupRecordType::ModeIsExclude
+            }
+            crate::net::l3::igmp::PendingIgmpReportKind::UnsolicitedJoinStateChange => {
+                crate::net::l3::igmp::IgmpV3GroupRecordType::ChangeToExcludeMode
+            }
+            crate::net::l3::igmp::PendingIgmpReportKind::LeaveStateChange => {
+                crate::net::l3::igmp::IgmpV3GroupRecordType::ChangeToIncludeMode
+            }
+        };
+
+        let config = self.config.clone();
+        let mut packet = match self.alloc_ethernet_frame_packet(60) {
+            Some(packet) => packet,
+            None => return,
+        };
+
+        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
+            let dst_mac = multicast_ip_to_mac(dst_group);
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let payload = frame.payload_mut();
+            if let Some(mut ip_pkt) = Ipv4PacketMut::new(payload) {
+                ip_pkt
+                    .set_version(4)
+                    .set_ihl(5)
+                    .set_dscp(0xc0)
+                    .set_ttl(1)
+                    .set_protocol(IpProtocol::Igmp)
+                    .set_source(config.ipv4.address)
+                    .set_destination(dst_group);
+
+                let ip_payload = ip_pkt.payload_mut();
+                if let Some(len) = crate::net::l3::igmp::IgmpProcessor::build_v3_single_record_report(
+                    record_type,
+                    group_addr,
+                    &[],
+                    ip_payload,
+                ) {
+                    let total_len = (20 + len) as u16;
+                    ip_pkt.set_total_length(total_len).update_checksum();
+                    frame.set_payload_len(total_len as usize);
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    packet.set_len(frame_len);
+                    let _ = self.transmit_packet(packet);
                 }
             }
         }

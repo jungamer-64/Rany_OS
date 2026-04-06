@@ -42,6 +42,9 @@ pub const ALL_HOSTS_GROUP: Ipv4Address = Ipv4Address::new([224, 0, 0, 1]);
 /// All routers multicast group (224.0.0.2)
 pub const ALL_ROUTERS_GROUP: Ipv4Address = Ipv4Address::new([224, 0, 0, 2]);
 
+/// IGMPv3 all-routers multicast group (224.0.0.22)
+pub const ALL_ROUTERS_V3_GROUP: Ipv4Address = Ipv4Address::new([224, 0, 0, 22]);
+
 /// IGMP header length
 pub const IGMP_HEADER_LEN: usize = 8;
 
@@ -85,6 +88,51 @@ impl IgmpType {
             0x22 => Some(IgmpType::V3MembershipReport),
             _ => None,
         }
+    }
+}
+
+/// Outgoing report format version
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IgmpReportVersion {
+    V2,
+    V3,
+}
+
+/// IGMPv3 group record type (RFC 3376)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum IgmpV3GroupRecordType {
+    ModeIsInclude = 1,
+    ModeIsExclude = 2,
+    ChangeToIncludeMode = 3,
+    ChangeToExcludeMode = 4,
+    AllowNewSources = 5,
+    BlockOldSources = 6,
+}
+
+impl IgmpV3GroupRecordType {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::ModeIsInclude),
+            2 => Some(Self::ModeIsExclude),
+            3 => Some(Self::ChangeToIncludeMode),
+            4 => Some(Self::ChangeToExcludeMode),
+            5 => Some(Self::AllowNewSources),
+            6 => Some(Self::BlockOldSources),
+            _ => None,
+        }
+    }
+
+    fn indicates_active_membership(self) -> bool {
+        matches!(
+            self,
+            Self::ModeIsInclude
+                | Self::ModeIsExclude
+                | Self::ChangeToIncludeMode
+                | Self::ChangeToExcludeMode
+                | Self::AllowNewSources
+                | Self::BlockOldSources
+        )
     }
 }
 
@@ -143,6 +191,46 @@ impl MulticastGroup {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingIgmpReportKind {
+    /// Query応答で送る現在状態レポート
+    QueryResponseCurrentState,
+    /// join時の状態変化レポート
+    UnsolicitedJoinStateChange,
+    /// leave時の状態変化レポート
+    LeaveStateChange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingIgmpReportEntry {
+    pub group_addr: Ipv4Address,
+    pub kind: PendingIgmpReportKind,
+}
+
+impl PendingIgmpReportEntry {
+    const fn new(group_addr: Ipv4Address, kind: PendingIgmpReportKind) -> Self {
+        Self { group_addr, kind }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedIgmpQuery {
+    group_addr: Ipv4Address,
+    max_resp_code: u8,
+    max_resp_delay_ms: u64,
+    version: IgmpReportVersion,
+    num_sources: u16,
+    qrv: Option<u8>,
+    qqic: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct IgmpV3GroupRecord {
+    record_type: IgmpV3GroupRecordType,
+    multicast_group: Ipv4Address,
+    source_addresses: Vec<Ipv4Address>,
+}
+
 // ============================================================================
 // IGMP Processor
 // ============================================================================
@@ -160,11 +248,13 @@ pub struct IgmpProcessor {
     /// Current time (for timers)
     current_time: u64,
     /// Pending reports to send (group addresses)
-    pending_reports: Vec<(Ipv4Address, bool)>, // (group, is_leave)
+    pending_reports: Vec<PendingIgmpReportEntry>,
+    /// outgoing report version selected by latest query context
+    report_version: IgmpReportVersion,
     /// Robustness variable (default 2)
     robustness: u8,
     /// Query interval from last query
-    query_interval: u8,
+    query_interval: u32,
 }
 
 impl IgmpProcessor {
@@ -175,8 +265,9 @@ impl IgmpProcessor {
             groups: Vec::with_capacity(16),
             current_time: 0,
             pending_reports: Vec::new(),
+            report_version: IgmpReportVersion::V3,
             robustness: 2,
-            query_interval: DEFAULT_QUERY_RESPONSE_INTERVAL,
+            query_interval: DEFAULT_QUERY_RESPONSE_INTERVAL as u32,
         }
     }
 
@@ -196,7 +287,10 @@ impl IgmpProcessor {
                 group.timer = group.timer.saturating_sub(elapsed);
                 if group.timer == 0 && group.state == GroupState::DelayingMember {
                     // Timer expired - need to send report
-                    self.pending_reports.push((group.address, false));
+                    self.pending_reports.push(PendingIgmpReportEntry::new(
+                        group.address,
+                        PendingIgmpReportKind::QueryResponseCurrentState,
+                    ));
                     group.state = GroupState::IdleMember;
                 }
             }
@@ -208,7 +302,10 @@ impl IgmpProcessor {
                 && self.current_time.saturating_sub(group.last_report_time)
                     >= UNSOLICITED_REPORT_INTERVAL
             {
-                self.pending_reports.push((group.address, false));
+                self.pending_reports.push(PendingIgmpReportEntry::new(
+                    group.address,
+                    PendingIgmpReportKind::UnsolicitedJoinStateChange,
+                ));
                 group.unsolicited_reports_remaining =
                     group.unsolicited_reports_remaining.saturating_sub(1);
                 group.last_report_time = self.current_time;
@@ -242,7 +339,10 @@ impl IgmpProcessor {
         self.groups.push(group);
 
         // Schedule unsolicited report
-        self.pending_reports.push((group_addr, false));
+        self.pending_reports.push(PendingIgmpReportEntry::new(
+            group_addr,
+            PendingIgmpReportKind::UnsolicitedJoinStateChange,
+        ));
 
         Ok(())
     }
@@ -256,7 +356,10 @@ impl IgmpProcessor {
                 self.groups.remove(idx);
                 // Send leave message (only if not all-hosts group)
                 if group_addr != ALL_HOSTS_GROUP {
-                    self.pending_reports.push((group_addr, true));
+                    self.pending_reports.push(PendingIgmpReportEntry::new(
+                        group_addr,
+                        PendingIgmpReportKind::LeaveStateChange,
+                    ));
                 }
                 Ok(())
             }
@@ -274,48 +377,46 @@ impl IgmpProcessor {
         &self.groups
     }
 
+    pub fn report_version(&self) -> IgmpReportVersion {
+        self.report_version
+    }
+
+    pub fn robustness_variable(&self) -> u8 {
+        self.robustness
+    }
+
+    pub fn query_interval_seconds(&self) -> u32 {
+        self.query_interval
+    }
+
     /// Get pending reports to send
     pub fn take_pending_reports(&mut self) -> Vec<(Ipv4Address, bool)> {
+        core::mem::take(&mut self.pending_reports)
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.group_addr,
+                    entry.kind == PendingIgmpReportKind::LeaveStateChange,
+                )
+            })
+            .collect()
+    }
+
+    pub fn take_pending_report_entries(&mut self) -> Vec<PendingIgmpReportEntry> {
         core::mem::take(&mut self.pending_reports)
     }
 
     /// Process an incoming IGMP message
     pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address) -> IgmpResult {
-        // Validate minimum length
         if data.len() < IGMP_HEADER_LEN {
             return IgmpResult::InvalidPacket;
         }
 
-        // Parse header
-        let msg_type = data[0];
-        let max_resp_time = data[1];
-        let _checksum = u16::from_be_bytes([data[2], data[3]]);
-        let group_addr = Ipv4Address::new([data[4], data[5], data[6], data[7]]);
-
-        // Verify checksum
         if !self.verify_checksum(data) {
             return IgmpResult::InvalidChecksum;
         }
 
-        // Process by type
-        match IgmpType::from_u8(msg_type) {
-            Some(IgmpType::MembershipQuery) => self.handle_query(group_addr, max_resp_time, src_ip),
-            Some(IgmpType::V1MembershipReport) | Some(IgmpType::V2MembershipReport) => {
-                self.handle_report(group_addr, src_ip)
-            }
-            Some(IgmpType::LeaveGroup) => {
-                // Hosts don't process leave messages (routers do)
-                IgmpResult::Ignored
-            }
-            Some(IgmpType::V3MembershipReport) => {
-                if Self::validate_v3_membership_report(data) {
-                    IgmpResult::Ignored
-                } else {
-                    IgmpResult::InvalidPacket
-                }
-            }
-            None => IgmpResult::UnknownType(msg_type),
-        }
+        self.process_verified_message(data, src_ip)
     }
 
     pub fn process_payload(
@@ -329,115 +430,198 @@ impl IgmpProcessor {
             return IgmpResult::InvalidPacket;
         }
 
-        let Some(header) = view.read_array::<IGMP_HEADER_LEN>(0) else {
-            return IgmpResult::InvalidPacket;
-        };
-
-        let msg_type = header[0];
-        let max_resp_time = header[1];
-        let group_addr = Ipv4Address::new([header[4], header[5], header[6], header[7]]);
-
         let bytes = view.read_vec(0, total_len);
         if bytes.len() != total_len || compute_igmp_checksum(&bytes) != 0 {
             return IgmpResult::InvalidChecksum;
         }
 
+        self.process_verified_message(&bytes, src_ip)
+    }
+
+    fn process_verified_message(&mut self, data: &[u8], src_ip: Ipv4Address) -> IgmpResult {
+        let msg_type = data[0];
+        let group_addr = Ipv4Address::new([data[4], data[5], data[6], data[7]]);
+
         match IgmpType::from_u8(msg_type) {
-            Some(IgmpType::MembershipQuery) => self.handle_query(group_addr, max_resp_time, src_ip),
+            Some(IgmpType::MembershipQuery) => self.handle_query(data, src_ip),
             Some(IgmpType::V1MembershipReport) | Some(IgmpType::V2MembershipReport) => {
                 self.handle_report(group_addr, src_ip)
             }
             Some(IgmpType::LeaveGroup) => IgmpResult::Ignored,
-            Some(IgmpType::V3MembershipReport) => {
-                if Self::validate_v3_membership_report(&bytes) {
-                    IgmpResult::Ignored
-                } else {
-                    IgmpResult::InvalidPacket
-                }
-            }
+            Some(IgmpType::V3MembershipReport) => self.handle_v3_membership_report(data, src_ip),
             None => IgmpResult::UnknownType(msg_type),
         }
     }
 
-    /// Validate IGMPv3 Membership Report (RFC 3376) layout.
-    ///
-    /// This parser intentionally validates record boundaries only.
-    /// Full source-filter state transitions are handled in a later phase.
-    fn validate_v3_membership_report(data: &[u8]) -> bool {
-        if data.len() < IGMP_HEADER_LEN {
-            return false;
+    fn decode_floating_code(raw: u8) -> u32 {
+        if raw < 128 {
+            raw as u32
+        } else {
+            let exp = ((raw & 0x70) >> 4) as u32;
+            let mant = (raw & 0x0f) as u32;
+            (mant | 0x10) << (exp + 3)
+        }
+    }
+
+    fn decode_max_resp_code_ms(max_resp_code: u8) -> u64 {
+        (Self::decode_floating_code(max_resp_code) as u64) * 100
+    }
+
+    fn decode_qqic_seconds(qqic: u8) -> u32 {
+        Self::decode_floating_code(qqic)
+    }
+
+    fn parse_membership_query(data: &[u8]) -> Option<ParsedIgmpQuery> {
+        if data.len() == IGMP_HEADER_LEN {
+            let group_addr = Ipv4Address::new([data[4], data[5], data[6], data[7]]);
+            let delay_ms = if data[1] == 0 {
+                (DEFAULT_QUERY_RESPONSE_INTERVAL as u64) * 100
+            } else {
+                Self::decode_max_resp_code_ms(data[1])
+            };
+            return Some(ParsedIgmpQuery {
+                group_addr,
+                max_resp_code: data[1],
+                max_resp_delay_ms: delay_ms,
+                version: IgmpReportVersion::V2,
+                num_sources: 0,
+                qrv: None,
+                qqic: None,
+            });
         }
 
-        // IGMPv3 report header (8 bytes):
-        // 0:type, 1:reserved, 2..=3:checksum, 4..=5:reserved, 6..=7:num_group_records
+        if data.len() < 12 {
+            return None;
+        }
+
+        let group_addr = Ipv4Address::new([data[4], data[5], data[6], data[7]]);
+        let num_sources = u16::from_be_bytes([data[10], data[11]]);
+        let source_bytes = (num_sources as usize).checked_mul(4)?;
+        let expected_len = 12usize.checked_add(source_bytes)?;
+        if expected_len != data.len() {
+            return None;
+        }
+
+        // General Queryでは source list を持たない
+        if group_addr == Ipv4Address::ANY && num_sources != 0 {
+            return None;
+        }
+
+        let qrv = data[8] & 0x07;
+        let qqic = data[9];
+
+        Some(ParsedIgmpQuery {
+            group_addr,
+            max_resp_code: data[1],
+            max_resp_delay_ms: Self::decode_max_resp_code_ms(data[1]),
+            version: IgmpReportVersion::V3,
+            num_sources,
+            qrv: (qrv != 0).then_some(qrv),
+            qqic: (qqic != 0).then_some(qqic),
+        })
+    }
+
+    fn parse_v3_membership_report(data: &[u8]) -> Option<Vec<IgmpV3GroupRecord>> {
+        if data.len() < IGMP_HEADER_LEN {
+            return None;
+        }
+
         let group_records = u16::from_be_bytes([data[6], data[7]]) as usize;
         let mut offset = IGMP_HEADER_LEN;
+        let mut records = Vec::with_capacity(group_records.min(16));
 
         for _ in 0..group_records {
-            // Group Record fixed header length:
-            // 0:record_type, 1:aux_data_len(32-bit words), 2..=3:num_sources,
-            // 4..=7:multicast_address
             if offset + 8 > data.len() {
-                return false;
+                return None;
             }
 
+            let record_type = IgmpV3GroupRecordType::from_u8(data[offset])?;
             let aux_words = data[offset + 1] as usize;
             let num_sources = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
+            let multicast_group = Ipv4Address::new([
+                data[offset + 4],
+                data[offset + 5],
+                data[offset + 6],
+                data[offset + 7],
+            ]);
 
-            let Some(sources_bytes) = num_sources.checked_mul(4) else {
-                return false;
-            };
-            let Some(aux_bytes) = aux_words.checked_mul(4) else {
-                return false;
-            };
-            let Some(record_len) = 8usize
-                .checked_add(sources_bytes)
-                .and_then(|value| value.checked_add(aux_bytes))
-            else {
-                return false;
-            };
-
-            let Some(next_offset) = offset.checked_add(record_len) else {
-                return false;
-            };
-            if next_offset > data.len() {
-                return false;
+            let source_bytes = num_sources.checked_mul(4)?;
+            let aux_bytes = aux_words.checked_mul(4)?;
+            let record_len = 8usize.checked_add(source_bytes)?.checked_add(aux_bytes)?;
+            let sources_start = offset + 8;
+            let sources_end = sources_start.checked_add(source_bytes)?;
+            let next_offset = offset.checked_add(record_len)?;
+            if next_offset > data.len() || sources_end > data.len() {
+                return None;
             }
+
+            let mut source_addresses = Vec::with_capacity(num_sources);
+            let mut src_offset = sources_start;
+            while src_offset < sources_end {
+                source_addresses.push(Ipv4Address::new([
+                    data[src_offset],
+                    data[src_offset + 1],
+                    data[src_offset + 2],
+                    data[src_offset + 3],
+                ]));
+                src_offset += 4;
+            }
+
+            records.push(IgmpV3GroupRecord {
+                record_type,
+                multicast_group,
+                source_addresses,
+            });
             offset = next_offset;
         }
 
-        offset == data.len()
+        (offset == data.len()).then_some(records)
+    }
+
+    /// Validate IGMPv3 Membership Report (RFC 3376) layout.
+    fn validate_v3_membership_report(data: &[u8]) -> bool {
+        Self::parse_v3_membership_report(data).is_some()
     }
 
     /// Handle a Membership Query
-    fn handle_query(
-        &mut self,
-        group_addr: Ipv4Address,
-        max_resp_time: u8,
-        _src_ip: Ipv4Address,
-    ) -> IgmpResult {
-        // Convert max response time to milliseconds (units of 1/10 second)
-        let max_delay_ms = (max_resp_time as u64) * 100;
+    fn handle_query(&mut self, data: &[u8], _src_ip: Ipv4Address) -> IgmpResult {
+        let Some(query) = Self::parse_membership_query(data) else {
+            return IgmpResult::InvalidPacket;
+        };
 
-        if group_addr == Ipv4Address::ANY {
-            // General Query - respond for all groups
+        self.report_version = query.version;
+        if let Some(qrv) = query.qrv {
+            self.robustness = qrv;
+        }
+        if let Some(qqic) = query.qqic {
+            let qqi = Self::decode_qqic_seconds(qqic);
+            if qqi != 0 {
+                self.query_interval = qqi;
+            }
+        }
+
+        let max_delay_ms = query.max_resp_delay_ms;
+        if query.group_addr == Ipv4Address::ANY {
             let current_time = self.current_time;
             for group in &mut self.groups {
                 Self::set_response_timer(current_time, group, max_delay_ms);
             }
-            IgmpResult::GeneralQueryReceived { max_resp_time }
-        } else {
-            // Group-Specific Query
-            if let Some(group) = self.groups.iter_mut().find(|g| g.address == group_addr) {
-                let current_time = self.current_time;
-                Self::set_response_timer(current_time, group, max_delay_ms);
-                IgmpResult::GroupQueryReceived {
-                    group: group_addr,
-                    max_resp_time,
-                }
-            } else {
-                IgmpResult::Ignored
+            return IgmpResult::GeneralQueryReceived {
+                max_resp_time: query.max_resp_code,
+            };
+        }
+
+        if let Some(group) = self.groups.iter_mut().find(|g| g.address == query.group_addr) {
+            let current_time = self.current_time;
+            Self::set_response_timer(current_time, group, max_delay_ms);
+            IgmpResult::GroupQueryReceived {
+                group: query.group_addr,
+                max_resp_time: query.max_resp_code,
             }
+        } else {
+            // source-specific queryも group membershipが無ければ無視
+            let _ = query.num_sources;
+            IgmpResult::Ignored
         }
     }
 
@@ -466,19 +650,43 @@ impl IgmpProcessor {
         }
     }
 
+    fn suppress_query_response_for_group(&mut self, group_addr: Ipv4Address) {
+        if let Some(group) = self.groups.iter_mut().find(|g| g.address == group_addr)
+            && group.state == GroupState::DelayingMember
+        {
+            group.timer = 0;
+            group.state = GroupState::IdleMember;
+            self.pending_reports.retain(|entry| {
+                !(entry.group_addr == group_addr
+                    && entry.kind == PendingIgmpReportKind::QueryResponseCurrentState)
+            });
+        }
+    }
+
+    fn handle_v3_membership_report(&mut self, data: &[u8], _src_ip: Ipv4Address) -> IgmpResult {
+        let Some(records) = Self::parse_v3_membership_report(data) else {
+            return IgmpResult::InvalidPacket;
+        };
+
+        for record in &records {
+            if record.record_type.indicates_active_membership() {
+                self.suppress_query_response_for_group(record.multicast_group);
+            }
+            let _ = record.source_addresses.len();
+        }
+
+        if let Some(first) = records.first() {
+            IgmpResult::ReportReceived {
+                group: first.multicast_group,
+            }
+        } else {
+            IgmpResult::Ignored
+        }
+    }
+
     /// Handle a Membership Report from another host
     fn handle_report(&mut self, group_addr: Ipv4Address, _src_ip: Ipv4Address) -> IgmpResult {
-        // If another host reports membership, cancel our pending report
-        // This is the "report suppression" mechanism
-        if let Some(group) = self.groups.iter_mut().find(|g| g.address == group_addr) {
-            if group.state == GroupState::DelayingMember {
-                // Cancel our timer - another host already reported
-                group.timer = 0;
-                group.state = GroupState::IdleMember;
-                // Remove from pending reports
-                self.pending_reports.retain(|(addr, _)| *addr != group_addr);
-            }
-        }
+        self.suppress_query_response_for_group(group_addr);
         IgmpResult::ReportReceived { group: group_addr }
     }
 
@@ -528,6 +736,64 @@ impl IgmpProcessor {
     /// Build a Leave Group message
     pub fn build_leave(group_addr: Ipv4Address, buffer: &mut [u8]) -> Option<usize> {
         Self::build_message(IgmpType::LeaveGroup, 0, group_addr, buffer)
+    }
+
+    /// Build a one-record IGMPv3 Membership Report
+    ///
+    /// RFC 3376 report format:
+    /// - Header (8 bytes)
+    /// - Group Record (8 bytes + 4 * num_sources)
+    pub fn build_v3_single_record_report(
+        record_type: IgmpV3GroupRecordType,
+        group_addr: Ipv4Address,
+        sources: &[Ipv4Address],
+        buffer: &mut [u8],
+    ) -> Option<usize> {
+        let source_count = sources.len();
+        let source_bytes = source_count.checked_mul(4)?;
+        let total_len = IGMP_HEADER_LEN.checked_add(8)?.checked_add(source_bytes)?;
+        if buffer.len() < total_len || source_count > u16::MAX as usize {
+            return None;
+        }
+
+        // report header
+        buffer[0] = IgmpType::V3MembershipReport as u8;
+        buffer[1] = 0;
+        buffer[2] = 0;
+        buffer[3] = 0;
+        buffer[4] = 0;
+        buffer[5] = 0;
+        buffer[6] = 0;
+        buffer[7] = 1; // one group record
+
+        // first group record
+        let record_offset = IGMP_HEADER_LEN;
+        buffer[record_offset] = record_type as u8;
+        buffer[record_offset + 1] = 0; // aux data len in 32-bit words
+        let source_count_be = (source_count as u16).to_be_bytes();
+        buffer[record_offset + 2] = source_count_be[0];
+        buffer[record_offset + 3] = source_count_be[1];
+        let group = group_addr.as_bytes();
+        buffer[record_offset + 4] = group[0];
+        buffer[record_offset + 5] = group[1];
+        buffer[record_offset + 6] = group[2];
+        buffer[record_offset + 7] = group[3];
+
+        let mut src_offset = record_offset + 8;
+        for src in sources {
+            let octets = src.as_bytes();
+            buffer[src_offset] = octets[0];
+            buffer[src_offset + 1] = octets[1];
+            buffer[src_offset + 2] = octets[2];
+            buffer[src_offset + 3] = octets[3];
+            src_offset += 4;
+        }
+
+        let checksum = compute_igmp_checksum(&buffer[..total_len]);
+        buffer[2] = (checksum >> 8) as u8;
+        buffer[3] = (checksum & 0xff) as u8;
+
+        Some(total_len)
     }
 }
 
@@ -801,7 +1067,10 @@ pub(crate) mod tests {
         // Set up delaying state with timer
         processor.groups[0].state = GroupState::DelayingMember;
         processor.groups[0].timer = 5000;
-        processor.pending_reports.push((group, false));
+        processor.pending_reports.push(PendingIgmpReportEntry::new(
+            group,
+            PendingIgmpReportKind::QueryResponseCurrentState,
+        ));
 
         // Receive report from another host
         let mut report = [0u8; 8];
@@ -870,6 +1139,139 @@ pub(crate) mod tests {
         report[0] = IgmpType::V3MembershipReport as u8;
         report[6] = 0;
         report[7] = 1;
+
+        let checksum = compute_igmp_checksum(&report);
+        report[2] = (checksum >> 8) as u8;
+        report[3] = (checksum & 0xff) as u8;
+
+        assert_eq!(processor.process(&report, src), IgmpResult::InvalidPacket);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_v3_query_malformed_source_length_rejected() {
+        let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
+
+        // v3 Query header(12 bytes) claims 1 source, but source bytes are missing.
+        let mut query = [0u8; 12];
+        query[0] = IgmpType::MembershipQuery as u8;
+        query[1] = 10;
+        query[4] = 224;
+        query[5] = 1;
+        query[6] = 2;
+        query[7] = 3;
+        query[10] = 0;
+        query[11] = 1;
+        let checksum = compute_igmp_checksum(&query);
+        query[2] = (checksum >> 8) as u8;
+        query[3] = (checksum & 0xff) as u8;
+
+        assert_eq!(
+            processor.process(&query, Ipv4Address::new([192, 168, 1, 1])),
+            IgmpResult::InvalidPacket
+        );
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_v3_query_with_source_list_sets_delaying_member() {
+        let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
+        let group = Ipv4Address::new([224, 1, 2, 3]);
+
+        processor.join_group(group).unwrap();
+        processor.take_pending_reports();
+
+        // v3 Query with one source => 12 + 4 bytes
+        let mut query = [0u8; 16];
+        query[0] = IgmpType::MembershipQuery as u8;
+        query[1] = 10;
+        query[4] = 224;
+        query[5] = 1;
+        query[6] = 2;
+        query[7] = 3;
+        query[10] = 0;
+        query[11] = 1;
+        query[12] = 10;
+        query[13] = 0;
+        query[14] = 0;
+        query[15] = 1;
+        let checksum = compute_igmp_checksum(&query);
+        query[2] = (checksum >> 8) as u8;
+        query[3] = (checksum & 0xff) as u8;
+
+        let result = processor.process(&query, Ipv4Address::new([192, 168, 1, 1]));
+        assert!(matches!(result, IgmpResult::GroupQueryReceived { group: _, max_resp_time: _ }));
+        assert_eq!(processor.groups[0].state, GroupState::DelayingMember);
+        assert!(processor.groups[0].timer > 0);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_build_v3_single_record_report_checksum() {
+        let mut report = [0u8; 64];
+        let group = Ipv4Address::new([239, 1, 2, 3]);
+        let sources = [Ipv4Address::new([10, 0, 0, 1])];
+
+        let len = IgmpProcessor::build_v3_single_record_report(
+            IgmpV3GroupRecordType::ModeIsExclude,
+            group,
+            &sources,
+            &mut report,
+        )
+        .unwrap();
+
+        assert_eq!(report[0], IgmpType::V3MembershipReport as u8);
+        assert_eq!(report[6], 0);
+        assert_eq!(report[7], 1);
+        assert_eq!(report[IGMP_HEADER_LEN], IgmpV3GroupRecordType::ModeIsExclude as u8);
+        assert_eq!(compute_igmp_checksum(&report[..len]), 0);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_v3_report_suppression_cancels_query_response() {
+        let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
+        let group = Ipv4Address::new([224, 1, 2, 3]);
+        processor.join_group(group).unwrap();
+        processor.take_pending_reports();
+
+        processor.groups[0].state = GroupState::DelayingMember;
+        processor.groups[0].timer = 5000;
+        processor.pending_reports.push(PendingIgmpReportEntry::new(
+            group,
+            PendingIgmpReportKind::QueryResponseCurrentState,
+        ));
+
+        let mut report = [0u8; 32];
+        let len = IgmpProcessor::build_v3_single_record_report(
+            IgmpV3GroupRecordType::ModeIsExclude,
+            group,
+            &[],
+            &mut report,
+        )
+        .unwrap();
+
+        let result = processor.process(&report[..len], Ipv4Address::new([192, 168, 1, 200]));
+        assert!(matches!(result, IgmpResult::ReportReceived { .. }));
+        assert_eq!(processor.groups[0].timer, 0);
+        assert_eq!(processor.groups[0].state, GroupState::IdleMember);
+        assert!(processor.pending_reports.is_empty());
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_v3_report_unknown_record_type_rejected() {
+        let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
+        let src = Ipv4Address::new([192, 168, 1, 1]);
+
+        // Header + one group record, but unknown record type 0xff.
+        let mut report = [0u8; 16];
+        report[0] = IgmpType::V3MembershipReport as u8;
+        report[6] = 0;
+        report[7] = 1;
+        report[8] = 0xff;
+        report[9] = 0;
+        report[10] = 0;
+        report[11] = 0;
+        report[12] = 224;
+        report[13] = 1;
+        report[14] = 2;
+        report[15] = 3;
 
         let checksum = compute_igmp_checksum(&report);
         report[2] = (checksum >> 8) as u8;
