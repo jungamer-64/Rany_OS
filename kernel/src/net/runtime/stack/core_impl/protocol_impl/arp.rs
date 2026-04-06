@@ -243,52 +243,75 @@ impl NetworkStack {
 
     /// Send an ARP request via a specific interface.
     pub fn send_arp_request_on(&mut self, if_id: super::NetIfId, target_ip: Ipv4Address) {
-        let current_time = self.current_time();
+        self
+            .send_arp_request_on_registered_interface(if_id, target_ip, self.current_time())
+            .unwrap_or_else(|| self.send_arp_request(target_ip));
+    }
 
-        // Early exit when we don't have the interface; fall back to the generic
-        // request path.
+    fn send_arp_request_on_registered_interface(
+        &mut self,
+        if_id: super::NetIfId,
+        target_ip: Ipv4Address,
+        current_time: u64,
+    ) -> Option<()> {
         if self.interfaces.get(&if_id).is_none() {
-            self.send_arp_request(target_ip);
-            return;
+            return None;
         }
 
-        // We'll build the entire packet into a local buffer and remember its
-        // length; the buffer itself lives for the duration of the function so we
-        // can safely transmit it after dropping the mutable borrow of `state`.
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
-            None => return,
+            None => return Some(()),
         };
-        let mut packet_len: Option<usize> = None;
 
-        {
-            let state = self.interfaces.get_mut(&if_id).unwrap();
-            if state.arp.cache().is_pending(target_ip, current_time) {
-                return;
-            }
+        let Some(packet_len) =
+            self.prepare_arp_request_on_interface(if_id, target_ip, current_time, &mut packet)
+        else {
+            return Some(());
+        };
 
-            if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-                frame
-                    .set_destination(MacAddress::BROADCAST)
-                    .set_source(state.config.mac)
-                    .set_ether_type(EtherType::Arp);
+        packet.set_len(packet_len);
+        if self.transmit_packet_on(Some(if_id), packet) {
+            self.mark_arp_request_sent_on_interface(if_id, target_ip, current_time);
+        }
+        Some(())
+    }
 
-                let payload = frame.payload_mut();
-                if let Some(len) = state.arp.build_request(payload, target_ip) {
-                    frame.set_payload_len(len);
-                    frame.pad_to_minimum();
-                    packet_len = Some(frame.as_bytes().len());
-                }
-            }
+    /// Build an ARP request frame into `packet` for a pinned interface.
+    ///
+    /// Returns the final frame length when packet construction succeeds.
+    fn prepare_arp_request_on_interface(
+        &mut self,
+        if_id: super::NetIfId,
+        target_ip: Ipv4Address,
+        current_time: u64,
+        packet: &mut PacketRef,
+    ) -> Option<usize> {
+        let state = self.interfaces.get_mut(&if_id)?;
+        if state.arp.cache().is_pending(target_ip, current_time) {
+            return None;
         }
 
-        if let Some(len) = packet_len {
-            packet.set_len(len);
-            if self.transmit_packet_on(Some(if_id), packet) {
-                if let Some(state) = self.interfaces.get_mut(&if_id) {
-                    state.arp.request_sent(target_ip, current_time);
-                }
-            }
+        let mut frame = EthernetFrameMut::new(packet.data_mut())?;
+        frame
+            .set_destination(MacAddress::BROADCAST)
+            .set_source(state.config.mac)
+            .set_ether_type(EtherType::Arp);
+
+        let len = state.arp.build_request(frame.payload_mut(), target_ip)?;
+        frame.set_payload_len(len);
+        frame.pad_to_minimum();
+        Some(frame.as_bytes().len())
+    }
+
+    /// Mark an ARP request as sent for interface-scoped pending tracking.
+    fn mark_arp_request_sent_on_interface(
+        &mut self,
+        if_id: super::NetIfId,
+        target_ip: Ipv4Address,
+        current_time: u64,
+    ) {
+        if let Some(state) = self.interfaces.get_mut(&if_id) {
+            state.arp.request_sent(target_ip, current_time);
         }
     }
 
