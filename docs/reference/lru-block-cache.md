@@ -1,5 +1,9 @@
 # LRUブロックキャッシュ実装
 
+- Status: Reference
+- Audience: ストレージ実装者、ブロック I/O をレビューする contributor
+- Related: [ドキュメントハブ](../README.md), [API リファレンス](api-reference.md), [アーキテクチャ概要](../ARCHITECTURE.md)
+
 ## 概要
 
 ExoRust Kernelに効率的なLRU（Least Recently Used）ブロックキャッシュを実装しました。このキャッシュは、ブロックデバイス（ディスク、SSD、NVMeなど）からの読み書きを高速化するために使用されます。
@@ -375,3 +379,9 @@ TODO: ベンチマーク結果を追加
 - Linux Page Cache: <https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html>
 - FreeBSD Buffer Cache: <https://docs.freebsd.org/en/books/arch-handbook/>
 - "Operating Systems: Three Easy Pieces" - Chapter 39: Files and Directories
+
+## 関連文書
+
+- [../README.md](../README.md)
+- [api-reference.md](api-reference.md)
+- [../ARCHITECTURE.md](../ARCHITECTURE.md)

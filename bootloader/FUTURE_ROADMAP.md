@@ -1,6 +1,10 @@
 # ExoLoader 将来機能実装ロードマップ
 
-> ExoLoader v0.1.0 - UEFI Bootloader for RanyOS
+- Status: Bootloader roadmap
+- Audience: ExoLoader 実装者、ブート経路を追う contributor
+- Related: [ドキュメントハブ](../docs/README.md), [設計ハブ](../docs/design-hub.md), [カーネルブートシーケンス](../docs/kernel_boot_sequence.md)
+
+> ExoLoader v0.1.0 - UEFI bootloader for ExoRust
 
 ## 現在の実装状態 ✅
 
@@ -518,10 +522,12 @@ bootloader/
 
 ---
 
-## 関連設計ドキュメント
+## 関連文書
 
-- [ExoRust設計書](../Rustカーネル設計案作成.md) - アーキテクチャ全体
-- [docs/exorust_design/bootstrap/](../docs/exorust_design/bootstrap/) - ブートストラップ詳細
+- [../docs/README.md](../docs/README.md) - 公開文書の入口
+- [../docs/design-hub.md](../docs/design-hub.md) - アーキテクチャ全体
+- [../docs/kernel_boot_sequence.md](../docs/kernel_boot_sequence.md) - ブート経路と handoff
+- [../docs/exorust_design/bootstrap/](../docs/exorust_design/bootstrap/) - ブートストラップ詳細
   - `early_pagetable.rs` - 1GBページ設計参照
   - `numa_detection.rs` - NUMA検出設計参照
 

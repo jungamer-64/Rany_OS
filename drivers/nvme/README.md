@@ -1,8 +1,14 @@
-# NVMe Driver Development Guide
+# NVMe ドライバ開発ガイド
 
-This NVMe driver is compiled as a standalone crate `nvme_driver` under `drivers/nvme`.
+この NVMe ドライバは `drivers/nvme` 配下の独立 crate `nvme_driver` としてビルドされます。
 
-Guidelines for NVMe driver development:
+## 概要
+
+- 対象: NVMe ドライバ実装者、ストレージ I/O reviewer
+- 方針: DMA や syscalls は `kernel_api` 経由で扱い、カーネル内部型に依存しません。
+- 関連: [../README.md](../README.md), [../../docs/driver_dependency.md](../../docs/driver_dependency.md)
+
+## ガイドライン
 
 - The driver uses the `kernel_api` crate for kernel-provided services like DMA allocation and syscalls.
 - Prefer `kernel_api::service::kernel::instance().alloc_dma_for_device(size, pci_locator)` to allocate DMA buffers.
@@ -31,3 +37,9 @@ kernel_driver_manager.register(Box::new(driver));
 ```
 
 This mirrors the `Driver` contract declared in `interfaces/kernel_api` and allows dynamic loading of the driver in the future.
+
+## 関連文書
+
+- [../README.md](../README.md)
+- [../../docs/driver_dependency.md](../../docs/driver_dependency.md)
+- [../../docs/kernel_driver_boundary.md](../../docs/kernel_driver_boundary.md)

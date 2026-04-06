@@ -1,11 +1,17 @@
-FrameBuffer Bench Baseline
-==========================
+# Framebuffer Bench Baseline
+
+## 概要
+
+- 対象: 現行ベンチマークの比較基準を確認したい contributor
+- 方針: 計測日、コマンド、結果、補足を短く保持する
+- 関連: [README.md](README.md), [../../docs/README.md](../../docs/README.md)
 
 Recorded on: 2025-12-15
 Host: Windows (local dev environment)
 
 Command used:
-```
+
+```text
 cargo run --manifest-path tools/framebuffer_bench/Cargo.toml --release -- "criterion"
 ```
 
@@ -17,6 +23,12 @@ Results (99% CI ranges from Criterion):
 - draw_line_many: time: [862.75 µs 868.24 µs 874.10 µs]
 
 Notes:
+
 - BGRA and RGBA paths use u32/u64-aligned bulk writes when possible.
 - 24-bit path uses an unrolled pack into a byte scratch buffer and bulk writes.
 - write_bytes_mmio and write_u32_slice_mmio include loop unrolling for improved throughput on large writes.
+
+## 関連文書
+
+- [README.md](README.md)
+- [../../docs/README.md](../../docs/README.md)

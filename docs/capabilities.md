@@ -1,8 +1,10 @@
-# Capabilities (Design & API) — ExoRust / ExoShell
+# Capability モデルと API
 
-💡 概要
+- Status: Canonical capability design
+- Audience: Capability 設計、ExoShell 実装、セキュリティレビューに関わる contributor
+- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](ARCHITECTURE.md), [設計ハブ](design-hub.md)
 
-ExoRust のケイパビリティモデルは「最小権限（least privilege）」と「言語ベース分離」を実践するための基盤です。シェル（ExoShell）からは権限の付与・剥奪・委譲・監査が行えるようにし、危険 API（例: `cell.swap`, `mmio.write`）は必ずケイパビリティでガードします。
+ExoRust のケイパビリティモデルは「最小権限（least privilege）」と「言語ベース分離」を実践するための基盤です。ExoShell からは権限の付与・剥奪・委譲・監査を行い、危険 API には必ず Capability チェックを通します。
 
 目的: 安全で実用的な `cap.grant` / `cap.revoke` / `cap.list` と、シェル側での限定的な委譲（子シェル生成）を MVP として実装します。
 
@@ -123,3 +125,9 @@ MVP では `shell.spawn()` により**限定的な子シェル表現 (ShellProxy
 ---
 
 追記: 具体的な関数シグネチャとテスト骨子はリポジトリ内に追加します（`libs/security`, `kernel/src/security/capability.rs`, `kernel/src/shell/runtime.rs`）。
+
+## 関連文書
+
+- [README.md](README.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [kernel_development_guidelines.md](kernel_development_guidelines.md)

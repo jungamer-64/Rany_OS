@@ -1,21 +1,25 @@
-# Driver Dependency Guidelines
+# ドライバ依存ガイドライン
 
-This document explains the driver dependency rules for the Rany_OS repository.
+- Status: Canonical driver dependency rule
+- Audience: ドライバ作者、`kernel_api` 変更担当、CI ルール整備担当
+- Related: [ドキュメントハブ](README.md), [kernel_driver_boundary.md](kernel_driver_boundary.md), [../drivers/README.md](../drivers/README.md)
 
-## Purpose
+この文書は、ExoRust リポジトリにおけるドライバ依存ルールをまとめたものです。ドライバはカーネル本体と独立にビルドできることを前提にし、将来のセル化や動的ロードに備えて `kernel` crate への直接依存を禁止します。
 
-Drivers are intended to be built separately from the kernel core and must not depend on the kernel crate (internal implementation). This allows drivers to be dynamically loaded or run in isolated "cells" in the future.
+## 目的
 
-## Rules
+Drivers are intended to be built separately from the kernel core and must not depend on the kernel crate (internal implementation). This allows drivers to be dynamically loaded or run in isolated cells in the future.
 
-- Drivers MUST NOT add `kernel` as a dependency in Cargo.toml
-- Drivers SHOULD depend on `kernel_api` for kernel-provided services and types
-- Drivers may depend on `hal` for hardware access wrappers (MMIO, port I/O, etc.)
-- Drivers SHOULD only use the kernel API for functionalities such as memory allocation and device-scoped DMA.
+## ルール
+
+- Drivers MUST NOT add `kernel` as a dependency in `Cargo.toml`.
+- Drivers SHOULD depend on `kernel_api` for kernel-provided services and types.
+- Drivers may depend on `hal` for hardware access wrappers such as MMIO and port I/O.
+- Drivers SHOULD only use the kernel API for memory allocation and device-scoped DMA.
 - Drivers that expose a `standalone` feature SHOULD treat it as a complete cell build contract: exported ABI entry symbol plus `kernel_api/cell_runtime`.
-- Kernel code SHOULD access device-facing modules via `crate::drivers::*`, while `crate::io::*` is reserved for kernel-owned I/O infrastructure such as DMA/IOMMU, interrupt routing, and polling.
+- Kernel code SHOULD access device-facing modules via `crate::drivers::*`, while `crate::io::*` is reserved for kernel-owned I/O infrastructure such as DMA / IOMMU, interrupt routing, and polling.
 
-## What to do when needing kernel capabilities
+## カーネル機能が必要な場合
 
 - Request access via `kernel_api::service::kernel::instance()`, which provides `KernelServices` trait methods such as `alloc_dma_for_device(size, pci_locator)`. DMA buffers are reclaimed automatically on Drop.
 - Obtain `pci_locator` from `kernel_api::abi::driver::DriverContext::pci_location()` or from PCI enumeration using `PackedPciLocation::new(segment, bus, device, function)`.
@@ -32,23 +36,29 @@ Drivers are intended to be built separately from the kernel core and must not de
   - driver packs with a PCI selector are staged and matched during PCI enumeration with a real `DriverContext::for_pci(...)`.
   - `storage`, `driver_domain`, `network`, and `iommu` QEMU profiles now consume the boot partition's `/drivers/*.cell` and `/cells/*.cell` payloads by default.
 
-## CI enforcement
+## CI による検証
 
 - The repository provides `scripts/check-driver-deps.ps1` which scans driver Cargo.toml files and enforces the rule.
 - `scripts/check-kernel-api-surface.sh` also rejects legacy `alloc_dma(...)`, driver-side hardware programming via legacy DMA address getters, and ad-hoc PCI locator bit packing in `drivers/`.
 - Include this check in CI pipelines to prevent regressions.
 
-## Example
+## 例
 
 - Correct: driver depends on `kernel_api` and `hal`.
 - Correct: standalone driver feature expands to `["export_driver_entry", "kernel_api/cell_runtime"]`.
 - Incorrect: driver depends on `kernel` crate or uses types from `kernel::io::dma` directly.
 
 
-## Questions / Contribution
+## 問い合わせ / Contribution
 
 If you are unsure whether a symbol belongs to `kernel_api` or `kernel`, prefer adding it to `kernel_api` with a minimal interface that doesn't expose kernel internals.
 
 If you need help migrating an existing driver, ask in a PR and attach a short plan describing the change.
 
 See also: `docs/kernel_driver_boundary.md`
+
+## 関連文書
+
+- [README.md](README.md)
+- [kernel_driver_boundary.md](kernel_driver_boundary.md)
+- [../drivers/README.md](../drivers/README.md)

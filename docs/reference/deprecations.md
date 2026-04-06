@@ -1,6 +1,10 @@
-# Deprecations and Migration Guide
+# 廃止済み API と移行ガイド
 
-This document lists symbols that have been marked deprecated and recommended migration paths. It's intended to help reviewers and integrators migrate away from legacy APIs gradually.
+- Status: Reference
+- Audience: deprecated symbol の移行を進める実装者、レビュー担当者、integrator
+- Related: [ドキュメントハブ](../README.md), [API リファレンス](api-reference.md), [アーキテクチャ概要](../ARCHITECTURE.md)
+
+This document lists symbols that have been marked deprecated and recommended migration paths. It is intended to help reviewers and integrators migrate away from legacy APIs gradually.
 
 ## Kernel
 
@@ -357,3 +361,9 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `Ipv4Header::compute_checksum()`, `update_checksum()`, `verify_checksum()` ❌ **removed**
 - `notify_addr` フィールド — virtio transport で現役使用中
 - IO scheduler の `#[allow(deprecated)]` — 内部パターン互換性のため保持
+
+## 関連文書
+
+- [../README.md](../README.md)
+- [api-reference.md](api-reference.md)
+- [../ARCHITECTURE.md](../ARCHITECTURE.md)

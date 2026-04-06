@@ -1,5 +1,7 @@
 # ECDH鍵交換実装計画書
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 ## 概要
 
 TLS 1.2/1.3での楕円曲線ディフィー・ヘルマン（ECDH）鍵交換実装。
@@ -14,8 +16,8 @@ Montgomery Ladder等の低レベル演算を自前実装せずに済ませる。
 
 | ファイル | 状態 |
 |---|---|
-| [kernel/src/net/tls.rs](../kernel/src/net/tls.rs) | ECDHE暗号スイート定義済み、`process_server_key_exchange()`はランダムpre-master secretで仮実装 |
-| [kernel/Cargo.toml](../kernel/Cargo.toml) | `ed25519-compact = { version = "2", default-features = false }` — **`x25519` feature 未有効** |
+| `kernel/src/net/tls.rs` | ECDHE暗号スイート定義済み、`process_server_key_exchange()`はランダムpre-master secretで仮実装 |
+| `kernel/Cargo.toml` | `ed25519-compact = { version = "2", default-features = false }` — **`x25519` feature 未有効** |
 
 ### `ed25519-compact` X25519 API（v2.2.0）
 
@@ -320,10 +322,10 @@ fn build_key_share_extension(&self) -> Vec<u8> {
 
 | ファイル | 変更内容 |
 |---|---|
-| [kernel/Cargo.toml](../kernel/Cargo.toml) | `ed25519-compact` に `features = ["x25519"]` 追加 |
+| `kernel/Cargo.toml` | `ed25519-compact` に `features = ["x25519"]` 追加 |
 | kernel/src/net/ecdh.rs | **新規作成**: ECDH抽象化レイヤー |
-| [kernel/src/net/mod.rs](../kernel/src/net/mod.rs) | `pub mod ecdh;` 追加 |
-| [kernel/src/net/tls.rs](../kernel/src/net/tls.rs) | `process_server_key_exchange()` 更新、`local_ecdh_keypair` フィールド追加、`build_client_key_exchange()` 追加、`generate_random()` を `pub(crate)` に変更 |
+| `kernel/src/net/mod.rs` | `pub mod ecdh;` 追加 |
+| `kernel/src/net/tls.rs` | `process_server_key_exchange()` 更新、`local_ecdh_keypair` フィールド追加、`build_client_key_exchange()` 追加、`generate_random()` を `pub(crate)` に変更 |
 
 ---
 

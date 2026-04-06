@@ -1,7 +1,10 @@
-# DriverCell / LiveUpdate Manual QEMU Runbook
+# DriverCell / LiveUpdate 手動 QEMU Runbook
 
-This runbook validates DriverCell-first `cell.*` commands and LiveUpdate behavior
-on QEMU using the `driver_cell_probe` fixture cells.
+- Status: Active runbook
+- Audience: DriverCell / LiveUpdate の手動検証を行う contributor
+- Related: [ドキュメントハブ](../README.md), [カーネルブートシーケンス](../kernel_boot_sequence.md), [ドライバ依存ガイドライン](../driver_dependency.md)
+
+This runbook validates DriverCell-first `cell.*` commands and LiveUpdate behavior on QEMU using the `driver_cell_probe` fixture cells.
 
 ## Prerequisites
 
@@ -41,6 +44,7 @@ Shell mode selection via cmdline:
 ```
 
 Notes:
+
 - Canonical key is `shell=console|serial|both|off`.
 - Shell launch mode is configured with `shell=console|serial|both|off`.
 
@@ -64,6 +68,7 @@ cell.epoch_status()
 ```
 
 Expected:
+
 - `driver_cell_probe` exists
 - `cell.list()` returns structured `Array<Map>`
 - `cell.info(<dcell_id>)` contains `driver_cell.state = Running`
@@ -72,7 +77,7 @@ Expected:
 - `cell.graph()` returns `nodes/edges/stats`
 - `cell.inspect_artifact(...)` returns ABI metadata / dependencies (or `abi_metadata_present=false`)
 
-2. Update -> Validating
+1. Update -> Validating
 
 ```text
 cell.swap(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
@@ -80,10 +85,11 @@ cell.info(<dcell_id>)
 ```
 
 Expected:
+
 - `driver_cell.hot_swap_state = Validating`
 - `driver_cell.validation_deadline_tick` is populated
 
-3. Manual rollback during validation
+1. Manual rollback during validation
 
 ```text
 cell.rollback(<dcell_id>)
@@ -91,11 +97,12 @@ cell.info(<dcell_id>)
 ```
 
 Expected:
+
 - `driver_cell.hot_swap_state = Idle`
 - `driver_cell.validation_deadline_tick = nil`
 - `driver_cell.loader_cell_id` returns to previous value
 
-4. Manual commit during validation
+1. Manual commit during validation
 
 ```text
 cell.swap(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
@@ -104,10 +111,11 @@ cell.info(<dcell_id>)
 ```
 
 Expected:
+
 - `driver_cell.hot_swap_state = Idle`
 - `driver_cell.validation_deadline_tick = nil`
 
-5. Auto-commit after grace window (default ~60s)
+1. Auto-commit after grace window (default ~60s)
 
 ```text
 cell.swap(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
@@ -122,11 +130,12 @@ cell.info(<dcell_id>)
 ```
 
 Expected:
+
 - `driver_cell.hot_swap_state = Idle`
 - `driver_cell.validation_deadline_tick = nil`
 - no new health failure recorded
 
-6. Auto-rollback via injected panic (requires `qemu-test-export`)
+1. Auto-rollback via injected panic (requires `qemu-test-export`)
 
 ```text
 cell.swap(<dcell_id>, "/cells/driver_cell_probe_v2.cell")
@@ -135,11 +144,12 @@ cell.info(<dcell_id>)
 ```
 
 Expected:
+
 - rollback path runs during validation
 - `driver_cell.hot_swap_state = Idle`
 - `driver_cell.stats.restart_count` does not increase for this case
 
-7. Idle panic -> restart -> unload integrity
+1. Idle panic -> restart -> unload integrity
 
 ```text
 cell.debug_fault(<dcell_id>, "panic")
@@ -148,6 +158,7 @@ cell.unload(<dcell_id>)
 ```
 
 Expected:
+
 - `driver_cell.stats.restart_count` increases
 - cell returns to `Running`
 - unload succeeds (loader registry remains consistent)
@@ -156,3 +167,9 @@ Expected:
 
 - Use `cell.swap(...)` for DriverCell hot-swap operations.
 - Legacy `cell <method> ...` command syntax was removed; use `cell.xxx(...)`.
+
+## 関連文書
+
+- [../README.md](../README.md)
+- [../kernel_boot_sequence.md](../kernel_boot_sequence.md)
+- [../driver_dependency.md](../driver_dependency.md)

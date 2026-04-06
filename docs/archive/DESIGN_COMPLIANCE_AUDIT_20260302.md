@@ -2,6 +2,8 @@
 
 # ExoRust (RanyOS) 設計準拠度監査レポート
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 > **監査日**: 2026年3月2日
 > **対象バージョン**: 現在のmainブランチ
 > **設計書**: `Rustカーネル設計案作成.md` / `docs/ARCHITECTURE.md` / `docs/kernel_development_guidelines.md` / `.github/instructions/exorust.instructions.md`
@@ -49,9 +51,9 @@
 
 ### 該当ファイル
 
-- [kernel/src/sas/](kernel/src/sas/) — SAS管理モジュール
-- [kernel/src/mm/virt/](kernel/src/mm/virt/) — 仮想メモリ管理
-- [kernel/src/kernel_content.rs](kernel/src/kernel_content.rs) — ガードページ設定
+- `kernel/src/sas/` — SAS管理モジュール
+- `kernel/src/mm/virt/` — 仮想メモリ管理
+- `kernel/src/kernel_content.rs` — ガードページ設定
 
 ---
 
@@ -74,9 +76,9 @@
 
 ### 该当ファイル
 
-- [interfaces/kernel_api/src/kapi.rs](interfaces/kernel_api/src/kapi.rs) — 「Traditional syscalls do not exist」と明記
-- [interfaces/kernel_api/src/services.rs](interfaces/kernel_api/src/services.rs) — `KernelServices`トレイト
-- [kernel/src/service_impl.rs](kernel/src/service_impl.rs) — 「No syscall overhead - just vtable dispatch」
+- `interfaces/kernel_api/src/kapi.rs` — 「Traditional syscalls do not exist」と明記
+- `interfaces/kernel_api/src/services.rs` — `KernelServices`トレイト
+- `kernel/src/service_impl.rs` — 「No syscall overhead - just vtable dispatch」
 
 ---
 
@@ -112,11 +114,11 @@
 
 ### 該当ファイル
 
-- [kernel/src/task/per_core_executor.rs](kernel/src/task/per_core_executor.rs) — Per-Core Executor
-- [kernel/src/task/fuel.rs](kernel/src/task/fuel.rs) — 燃料ベース実行
-- [kernel/src/task/interrupt_waker.rs](kernel/src/task/interrupt_waker.rs) — 2段階Wake
-- [kernel/src/task/work_stealing.rs](kernel/src/task/work_stealing.rs) — ワークスティーリング
-- [kernel/src/task/preemption.rs](kernel/src/task/preemption.rs) — プリエンプション
+- `kernel/src/task/per_core_executor.rs` — Per-Core Executor
+- `kernel/src/task/fuel.rs` — 燃料ベース実行
+- `kernel/src/task/interrupt_waker.rs` — 2段階Wake
+- `kernel/src/task/work_stealing.rs` — ワークスティーリング
+- `kernel/src/task/preemption.rs` — プリエンプション
 
 ---
 
@@ -146,8 +148,8 @@
 
 ### 該当ファイル
 
-- [kernel/src/mm/cache/exchange_heap.rs](kernel/src/mm/cache/exchange_heap.rs)
-- [kernel/src/ipc/rref.rs](kernel/src/ipc/rref.rs) — `TypeIdHash`トレイト含む
+- `kernel/src/mm/cache/exchange_heap.rs`
+- `kernel/src/ipc/rref.rs` — `TypeIdHash`トレイト含む
 
 ---
 
@@ -175,9 +177,9 @@
 
 ### 該当ファイル
 
-- [kernel/src/domain/](kernel/src/domain/) — ドメイン管理
-- [kernel/src/sync/poison_lock.rs](kernel/src/sync/poison_lock.rs)
-- [kernel/src/domain/registry.rs](kernel/src/domain/registry.rs)
+- `kernel/src/domain/` — ドメイン管理
+- `kernel/src/sync/poison_lock.rs`
+- `kernel/src/domain/registry.rs`
 
 ---
 
@@ -209,8 +211,8 @@
 
 ### 該当ファイル
 
-- [kernel/src/io/iommu/](kernel/src/io/iommu/) — IOMMUコアシステム
-- [kernel/src/security/dma.rs](kernel/src/security/dma.rs) — DMA保護レジストリ
+- `kernel/src/io/iommu/` — IOMMUコアシステム
+- `kernel/src/security/dma.rs` — DMA保護レジストリ
 
 ---
 
@@ -280,11 +282,11 @@ net/
 
 ### 該当ファイル
 
-- [kernel/src/security/mpk.rs](kernel/src/security/mpk.rs) — MPK管理
-- [kernel/src/security/capability.rs](kernel/src/security/capability.rs) — 動的Capability
-- [kernel/src/security/static_capability.rs](kernel/src/security/static_capability.rs) — 静的Capability
-- [kernel/src/security/dma.rs](kernel/src/security/dma.rs) — DMA保護
-- [kernel/src/spectre.rs](kernel/src/spectre.rs) — Spectre緩和
+- `kernel/src/security/mpk.rs` — MPK管理
+- `kernel/src/security/capability.rs` — 動的Capability
+- `kernel/src/security/static_capability.rs` — 静的Capability
+- `kernel/src/security/dma.rs` — DMA保護
+- `kernel/src/spectre.rs` — Spectre緩和
 
 ---
 
@@ -322,8 +324,8 @@ net/
 
 ### 該当ファイル
 
-- [kernel/src/epoch/mod.rs](kernel/src/epoch/mod.rs) — Epoch管理
-- [kernel/src/loader/live_update.rs](kernel/src/loader/live_update.rs) — LiveUpdateManager
+- `kernel/src/epoch/mod.rs` — Epoch管理
+- `kernel/src/loader/live_update.rs` — LiveUpdateManager
 
 ---
 
@@ -452,10 +454,10 @@ kernel/src/net/services/ntp/        — socket変数名
 
 ### 該当ファイル
 
-- [kernel/src/watchdog/mod.rs](kernel/src/watchdog/mod.rs)
-- [kernel/src/profiler/](kernel/src/profiler/)
-- [kernel/src/debug/](kernel/src/debug/)
-- [kernel/src/unwind/](kernel/src/unwind/)
+- `kernel/src/watchdog/mod.rs`
+- `kernel/src/profiler/`
+- `kernel/src/debug/`
+- `kernel/src/unwind/`
 
 ---
 

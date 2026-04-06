@@ -1,5 +1,7 @@
 # Network Reorganization Result (`kernel/src/net` + `kernel/src/io/virtio/net`)
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 ## Scope
 
 - Target:

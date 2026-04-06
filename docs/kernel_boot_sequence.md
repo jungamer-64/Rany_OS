@@ -1,6 +1,10 @@
-# Kernel Boot Sequence
+# ExoRust カーネルブートシーケンス
 
-RanyOS のカーネル初期化は、実装上 6 フェーズに分割されている。大枠の制御遷移は次のとおり。
+- Status: Canonical boot path note
+- Audience: ブート経路、初期化順序、runtime handoff を追う contributor
+- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](ARCHITECTURE.md), [ExoLoader ロードマップ](../bootloader/FUTURE_ROADMAP.md)
+
+ExoRust のカーネル初期化は、実装上 6 フェーズに分割されている。大枠の制御遷移は次のとおり。
 
 `ExoLoader -> _start -> kernel_boot_entry -> boot::kmain -> boot::enter -> kmain_inner -> Executor runtime tasks`
 
@@ -95,3 +99,9 @@ RanyOS のカーネル初期化は、実装上 6 フェーズに分割されて�
 - serial log は `target/x86_64-exorust/debug/serial.log` に出力され、少なくとも `BOOT COMPLETE!`、`Starting per-core executor main loop`、`[SMP][TOPOLOGY]`、`[SMP][ONLINE]`、`[SMP][HANDOFF]` を含む。
 - multicore 実行では `serial.log` に `[C1]` 以上の AP runtime log が現れることを成功条件にする。`make smoke-multicore-vfio SMP=1` では逆に AP runtime log が出ないことを確認する。
 - `>64 CPUs` の clamp / truncation は `CpuTopology` / `CpuLifecycle` の unit test を正ゲートとし、現行の KVM/VFIO runtime smoke の必須条件にはしない。
+
+## 関連文書
+
+- [README.md](README.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)

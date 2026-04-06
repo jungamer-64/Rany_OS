@@ -1,5 +1,7 @@
 # IOMMU統合実装計画
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 ## 更新日: 2026-02-18
 
 ---

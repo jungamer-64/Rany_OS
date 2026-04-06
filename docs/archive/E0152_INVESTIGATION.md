@@ -1,5 +1,7 @@
 # Investigation: duplicate lang item (E0152) when running tests
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 > Historical note (old operation): this document records pre-QEMU-unified
 > host test flows (for example `cargo test --lib --manifest-path kernel/Cargo.toml`).
 > Current official test entrypoint is `cargo test` via `qemu-tests`.

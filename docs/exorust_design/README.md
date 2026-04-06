@@ -1,19 +1,26 @@
 # ExoRust設計サンプルコード
 
-このディレクトリには、[ExoRustカーネル設計案](../../Rustカーネル設計案作成.md)で参照される実装サンプルコードが含まれています。
+- Status: Design sample index
+- Audience: 擬似コードで設計意図を追いたい contributor
+- Related: [ドキュメントハブ](../README.md), [設計ハブ](../design-hub.md), [Variant A](../design_variants/variant-a-capability-first.md)
+
+このディレクトリには、[ExoRust 設計ハブ](../design-hub.md)
+および各 design variant で参照される実装サンプルコードが含まれています。
 
 > **注意**: これらは**設計サンプル**であり、実際にコンパイル・実行されるコードではありません。設計の意図を明確にするための擬似コードです。
+> canonical baseline は Variant A ですが、`security/` 配下の擬似コードは主に Variant B/C の
+> ハードウェア支援分離案を説明するための参考実装として扱います。
 
 ## ディレクトリ構成
 
-| ディレクトリ | 説明 | 対応セクション |
-|-------------|------|---------------|
-| `abi/` | ABI互換性検証関連 | 3.4 |
-| `live_update/` | ライブアップデート機構 | 3.5 |
-| `scheduler/` | スターベーション対策・スケジューラ | 4.4 |
-| `security/` | MPK/Spectre対策・署名検証 | 9.2, 9.5 |
-| `debug/` | デバッグ・プロファイリング | 10.5 |
-| `bootstrap/` | ブートストラップシーケンス | 11 |
+| ディレクトリ | 説明 | 主な参照先 |
+|-------------|------|------------|
+| `abi/` | ABI互換性検証関連 | Variant A/B/C |
+| `live_update/` | ライブアップデート機構 | Variant A/B/C |
+| `scheduler/` | スターベーション対策・スケジューラ | Variant A/B/C |
+| `security/` | ハードウェア支援分離・Spectre対策・署名検証 | Variant B/C |
+| `debug/` | デバッグ・プロファイリング | Variant A/B/C |
+| `bootstrap/` | ブートストラップシーケンス | Variant A/B/C |
 
 ## ファイル一覧
 
@@ -40,10 +47,10 @@
 
 ### セキュリティ (`security/`)
 
-- `mpk_protection_key.rs` - MPK Protection Key分類
-- `pkru_value.rs` - PKRU権限ビットマップ
-- `domain_transition.rs` - ドメイン遷移プロローグ
-- `domain_permissions.rs` - ドメイン権限マップ
+- `mpk_protection_key.rs` - MPK / PKS 系の保護キー分類
+- `pkru_value.rs` - PKRU 権限ビットマップ
+- `domain_transition.rs` - ハードウェア支援を使う場合のドメイン遷移プロローグ
+- `domain_permissions.rs` - ハードウェア支援を使う場合の権限マップ
 - `lfence_policy.rs` - LFENCE挿入基準
 - `cell_signature.rs` - セル署名検証
 
@@ -57,3 +64,9 @@
 
 - `early_pagetable.rs` - 初期ページテーブル設定
 - `numa_detection.rs` - NUMAトポロジ検出
+
+## 関連文書
+
+- [../README.md](../README.md)
+- [../design-hub.md](../design-hub.md)
+- [../ARCHITECTURE.md](../ARCHITECTURE.md)

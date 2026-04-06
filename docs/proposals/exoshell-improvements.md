@@ -1,13 +1,14 @@
-ExoShell 改善設計案
-=====================
+# ExoShell 改善提案
 
-概要
-----
+- Status: Proposal
+- Audience: ExoShell の改善方針を検討する contributor
+- Related: [ドキュメントハブ](../README.md), [Capability モデル](../capabilities.md), [API リファレンス](../reference/api-reference.md)
+
+## 概要
 
 このドキュメントは `ExoShell` の設計改善案（ゼロコピー、Capability セキュリティ、Async-First, GUI 最適化）をまとめたものです。既にコードベースに対していくつかの安全性・非同期化・拡張性の改善パッチを適用しました（`cap.grant` の権限強化、名前空間の動的登録、Graphical shell のキーボード IRQ/Waker 利用、式評価の再帰深度制限）。
 
-優先対応提案（実装手順）
-----------------------
+## 優先対応提案（実装手順）
 
 1) ExoValue のゼロコピー化（RRef/Cow 導入）
    - 背景: 現状 `ExoValue::Bytes(Cow<'a, [u8]>)` を使っているが、カーネルのページキャッシュ / DMA バッファを直接参照するために `RRef`（設計案にあるやり方）や `Arc<[u8]>` を使った "shared buffer" 型が望ましい。
@@ -39,8 +40,7 @@ ExoShell 改善設計案
      - ダブルバッファを確実に使用し、フレームごとのフリップを実装
      - 部分更新（RectList）は維持しつつ、コンポジタが合成する時に最終的な合成領域を決定
 
-移行ロードマップ（高レベル）
-----------------------------
+## 移行ロードマップ（高レベル）
 
 1. Capability の追加テストと audit（完了: 単体テスト追加済み）
 2. 名前空間の動的登録（完了）
@@ -49,19 +49,17 @@ ExoShell 改善設計案
 5. ExoBuffer/Shared buffer 型の導入（設計→小さい段階的変更→大規模置換）
 6. GUI V-Sync 統合（フレームタイマーと compositor の実装）
 
-互換性の考慮
------------
+## 互換性の考慮
 
 - 既存スクリプトは `ExoValue::Bytes(Vec<u8>)` を想定していることがあるため、`ExoBuffer` を導入しても `to_vec()` / `to_owned_bytes()` で既存互換を確保する
 
-追加のテスト/CI
----------------
+## 追加のテスト / CI
 
 - シミュレーション/ユニットテストで、Capability の委譲の境界条件を詳細に検証
 - CI 上で `serena_audit` / `codacy_cli_analyze` を走らせて静的解析とポリシー準拠を確認
 
-CI ワークフロー
-----------------
+## CI ワークフロー
+
 このリポジトリにはホスト向けの自動テスト/リンターを追加しました: `.github/workflows/test.yml`。
 ワークフローは以下を実行します:
 
@@ -72,8 +70,7 @@ CI ワークフロー
 
 CI の audit ステップでは `serena_audit` / `codacy_cli_analyze` の CLI が利用可能であれば実行し、そうでない場合はスキップします。ローカルで同じチェックを実行するには、上の QEMU テストコマンドを使用してください。
 
-参考実装スニペット
-------------------
+## 参考実装スニペット
 
 // ExoBuffer の概念スニペット
 
@@ -97,9 +94,12 @@ impl<'a> ExoBuffer<'a> {
 }
 ```
 
-最後に
-------
+## まとめ
 
 今回のパッチで、最優先のセキュリティ（cap.grant）と拡張性（動的 namespace 登録）、および入力の非同期化の初期改善を実装しました。次の段階（ゼロコピーバッファ、Mouse の Future 化、GUI の V-Sync）は設計が少し大きめなので、綿密な移行計画と追加のテストを作ってから実装することを推奨します。
 
-質問や次の優先タスク（どれを実装しましょうか？）を教えてください。
+## 関連文書
+
+- [../README.md](../README.md)
+- [../capabilities.md](../capabilities.md)
+- [../reference/api-reference.md](../reference/api-reference.md)

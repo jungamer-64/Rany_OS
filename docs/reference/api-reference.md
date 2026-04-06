@@ -1,6 +1,10 @@
-# ExoRust (RanyOS) API Reference
+# ExoRust API リファレンス
 
-ExoRust Kernelの公開APIリファレンスドキュメントです。
+- Status: Reference
+- Audience: 公開 API の形と設計意図を確認する実装者、レビュー担当者
+- Related: [ドキュメントハブ](../README.md), [アーキテクチャ概要](../ARCHITECTURE.md), [設計ハブ](../design-hub.md)
+
+ExoRust Kernel の公開 API リファレンスドキュメントです。
 
 ## 目次
 
@@ -466,8 +470,8 @@ domain.spawn(async {
 
 ---
 
-## 参考リンク
+## 関連文書
 
-- [設計書](./Rustカーネル設計案作成.md)
-- [実装状況](./IMPLEMENTATION_STATUS.md)
-- [アーキテクチャ概要](./docs/ARCHITECTURE.md)
+- [../README.md](../README.md)
+- [../design-hub.md](../design-hub.md)
+- [../ARCHITECTURE.md](../ARCHITECTURE.md)

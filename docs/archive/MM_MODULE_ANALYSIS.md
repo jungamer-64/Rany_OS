@@ -1,5 +1,7 @@
 # Memory Management (mm) Module Analysis Report
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 ## 概要
 
 Rany_OS カーネルの `kernel/src/mm/` モジュール（39ファイル）の詳細分析結果です。
@@ -63,7 +65,7 @@ Rany_OS カーネルの `kernel/src/mm/` モジュール（39ファイル）の�
 
 ### 2.1 スワップサブシステム統合（Critical）
 
-**場所:** [page_reclaim.rs#L615](kernel/src/mm/page_reclaim.rs#L615)
+**場所:** `page_reclaim.rs#L615`
 ```rust
 PageType::Anonymous => {
     // TODO: swap subsystem
@@ -82,7 +84,7 @@ PageType::Anonymous => {
 
 ### 2.2 ライトバック統合（High）
 
-**場所:** [page_reclaim.rs#L620](kernel/src/mm/page_reclaim.rs#L620)
+**場所:** `page_reclaim.rs#L620`
 ```rust
 if entry.flags.contains(LruFlags::DIRTY) {
     // TODO: writeback
@@ -100,9 +102,9 @@ if entry.flags.contains(LruFlags::DIRTY) {
 ### 2.3 Buddyアロケータ連携（High）
 
 **場所:** 複数
-- [huge_page.rs#L340](kernel/src/mm/huge_page.rs#L340): `TODO: 実際のBuddyアロケータとの連携`
-- [numa.rs#L227](kernel/src/mm/numa.rs#L227): `TODO: 実際のNUMA対応Buddyアロケータとの統合`
-- [hotplug.rs#L470](kernel/src/mm/hotplug.rs#L470): `TODO: 実際のPMM実装と連携`
+- `huge_page.rs#L340`: `TODO: 実際のBuddyアロケータとの連携`
+- `numa.rs#L227`: `TODO: 実際のNUMA対応Buddyアロケータとの統合`
+- `hotplug.rs#L470`: `TODO: 実際のPMM実装と連携`
 
 **問題:**
 - 各モジュールがBuddyアロケータを直接呼び出す統合が未完了
@@ -111,8 +113,8 @@ if entry.flags.contains(LruFlags::DIRTY) {
 ### 2.4 Memory Compaction連携（Medium）
 
 **場所:**
-- [huge_page.rs#L393](kernel/src/mm/huge_page.rs#L393): `TODO: memory_compaction.rs との連携`
-- [memory_compaction.rs#L459](kernel/src/mm/memory_compaction.rs#L459): `TODO: 実際のPTE更新ロジック`
+- `huge_page.rs#L393`: `TODO: memory_compaction.rs との連携`
+- `memory_compaction.rs#L459`: `TODO: 実際のPTE更新ロジック`
 
 **影響:**
 - Huge Page割り当て失敗時の自動コンパクションが機能しない
@@ -121,9 +123,9 @@ if entry.flags.contains(LruFlags::DIRTY) {
 ### 2.5 TLB Shootdown IPI統合（Medium）
 
 **場所:** 複数
-- [tlb_batch.rs#L535](kernel/src/mm/tlb_batch.rs#L535): `TODO: 実際のIPI送信（APICドライバとの連携）`
-- [tlb_batch.rs#L612](kernel/src/mm/tlb_batch.rs#L612): `TODO: リモートCPUへのIPI`
-- [memory_compaction.rs#L648](kernel/src/mm/memory_compaction.rs#L648): `TODO: IPIを使用して他CPUにフラッシュを要求`
+- `tlb_batch.rs#L535`: `TODO: 実際のIPI送信（APICドライバとの連携）`
+- `tlb_batch.rs#L612`: `TODO: リモートCPUへのIPI`
+- `memory_compaction.rs#L648`: `TODO: IPIを使用して他CPUにフラッシュを要求`
 
 **影響:**
 - マルチコア環境でのTLB一貫性問題
@@ -131,7 +133,7 @@ if entry.flags.contains(LruFlags::DIRTY) {
 
 ### 2.6 AutoNUMAマイグレーション（Low）
 
-**場所:** [hotplug.rs#L477](kernel/src/mm/hotplug.rs#L477): `TODO: autonuma::migrate_numa_page と連携`
+**場所:** `hotplug.rs#L477`: `TODO: autonuma::migrate_numa_page と連携`
 
 **影響:**
 - メモリホットプラグ時の自動ページマイグレーションが未実装
@@ -143,7 +145,7 @@ if entry.flags.contains(LruFlags::DIRTY) {
 ### 3.1 Page Fault Handling（Critical）
 
 **現状:**
-- [exceptions.rs#L314](kernel/src/interrupts/exceptions.rs#L314) で`panic!`するのみ
+- `exceptions.rs#L314` で`panic!`するのみ
 - デマンドページング未実装
 - Copy-on-Write未実装
 
@@ -256,7 +258,7 @@ pub fn madvise(addr: MappedAddress, size: MappingSize, advice: MadviseAdvice) ->
 
 ### 3.7 Slab Shrinkコールバック統合（Medium）
 
-**場所:** [page_reclaim.rs#L627](kernel/src/mm/page_reclaim.rs#L627): `TODO: slab shrink callback`
+**場所:** `page_reclaim.rs#L627`: `TODO: slab shrink callback`
 
 **現状:**
 - `shrinker.rs` フレームワーク実装済み

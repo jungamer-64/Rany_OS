@@ -1,5 +1,9 @@
 # Kernel / Driver Boundary
 
+- Status: Canonical layering rule
+- Audience: ドライバ作者、カーネル統合担当、レビュー担当者
+- Related: [ドキュメントハブ](README.md), [driver_dependency.md](driver_dependency.md), [ARCHITECTURE.md](ARCHITECTURE.md)
+
 このドキュメントは、ExoRust におけるカーネルとドライバの責務境界を定義します。
 
 ## 原則
@@ -51,3 +55,9 @@
 - 新しい kernel コードが `crate::io::{ahci,nvme,virtio,...}` を直接参照していないか
 - 追加 capability が必要なら `interfaces/kernel_api` に最小面積で追加しているか
 - ドライバ内の unsafe が framework/HAL 境界に閉じているか
+
+## 関連文書
+
+- [README.md](README.md)
+- [driver_dependency.md](driver_dependency.md)
+- [../drivers/README.md](../drivers/README.md)

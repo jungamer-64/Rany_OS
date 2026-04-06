@@ -1,5 +1,11 @@
 # Framebuffer Bench
 
+## 概要
+
+- 対象: framebuffer 描画パスの性能回帰を確認したい contributor
+- 方針: workspace から切り離した専用 bench crate と baseline を使う
+- 関連: [../../docs/README.md](../../docs/README.md), [BENCH_BASELINE.md](BENCH_BASELINE.md)
+
 This small crate provides quick and reproducible micro/criterion benchmarks for the framebuffer draw paths.
 
 Note: this crate has been intentionally left out of the workspace members and contains a local
@@ -26,3 +32,8 @@ The runner exercises draw_image with three formats: BGRA8888, BGR888 (24-bit) an
 A small helper script `compare_bench.py` is provided to compare current Criterion medians against a stored baseline (`BENCH_BASELINE.json`). The GitHub Action `perf.yml` runs the benches and invokes this comparison to detect regressions.
 
 When the benchmark workflow runs on a Pull Request, it will automatically post a comment on the PR with the comparison results and upload Criterion artifacts (the `target/criterion` directory) as a workflow artifact. If any benchmark exceeds the configured regression threshold, the perf job will fail and block merging if the repository enforces status checks.
+
+## 関連文書
+
+- [BENCH_BASELINE.md](BENCH_BASELINE.md)
+- [../../docs/README.md](../../docs/README.md)

@@ -1,5 +1,7 @@
 # V2 IOVA Allocator 最適化技術一覧
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 > `kernel/src/io/iommu/iova_bitmap.rs` で活用されている最適化技術の包括的なドキュメント
 
 ---

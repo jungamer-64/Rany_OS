@@ -1,5 +1,7 @@
 # ロックプリミティブ移行計画
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 ## 概要
 
 ExoRust設計書 8.4 に基づき、全てのロックプリミティブを `PoisonLock<T>` に統一する。

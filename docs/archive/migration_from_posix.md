@@ -1,5 +1,7 @@
 # Legacy Interface Migration Status (Completed)
 
+> Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
+
 更新日: 2026-03-03
 
 この文書は、互換インターフェース撤廃後の最終状態を記録する。
