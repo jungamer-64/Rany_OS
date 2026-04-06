@@ -12,6 +12,21 @@
 - archive 文書内のコードパスやモジュール名は、執筆当時の構成を記録したものです。現行 tree と一致しない場合があります。
 - 旧計画書は「なぜその判断に至ったか」を追うための資料として読み、現行の正規ルール（Canonical 文書 + Accepted ADR）とは切り分けて扱ってください。
 
+## 旧設計案から現行正本への対応
+
+`Rustカーネル設計案.md` を参照する場合は、以下の現行正本へ読み替えてください。
+
+| 旧設計案の主題 | 現行の参照先 |
+| --- | --- |
+| SAS / SPL / Async-First の原則 | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../decisions/ADR-0001-sas-spl-foundation.md](../decisions/ADR-0001-sas-spl-foundation.md), [../decisions/ADR-0002-async-first-execution-model.md](../decisions/ADR-0002-async-first-execution-model.md) |
+| Capability-first authority | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../capabilities.md](../capabilities.md), [../decisions/ADR-0003-capability-first-authority-model.md](../decisions/ADR-0003-capability-first-authority-model.md) |
+| Exchange Heap / `RRef` | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../decisions/ADR-0005-exchange-heap-rref-domain-transfer.md](../decisions/ADR-0005-exchange-heap-rref-domain-transfer.md) |
+| DMA / IOMMU 必須 | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../decisions/ADR-0006-iommu-mandatory-for-dma.md](../decisions/ADR-0006-iommu-mandatory-for-dma.md) |
+| Live Update 実運用観点 | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../runbooks/driver-cell-qemu.md](../runbooks/driver-cell-qemu.md) |
+| 実装規約（unsafe 境界、ISR、panic 封じ込め） | [../kernel_development_guidelines.md](../kernel_development_guidelines.md) |
+| 参考実装コード | [../exorust_design/README.md](../exorust_design/README.md) |
+| 研究案（HW支援強化） | [../design_variants/variant-b-hybrid-hardware-accelerated.md](../design_variants/variant-b-hybrid-hardware-accelerated.md), [../design_variants/variant-c-pks-mandatory.md](../design_variants/variant-c-pks-mandatory.md) |
+
 ## 収録文書
 
 - [ASYNC_SWAPOUT.md](ASYNC_SWAPOUT.md)

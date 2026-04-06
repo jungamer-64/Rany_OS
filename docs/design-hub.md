@@ -16,6 +16,18 @@
 - [Capability 設計](capabilities.md)
 - [設計サンプルコードの位置付け](exorust_design/README.md)
 
+## 推奨参照順
+
+設計判断を行うときは、次の順で読む。
+
+1. [ARCHITECTURE.md](ARCHITECTURE.md)（正本）
+2. [decisions/README.md](decisions/README.md)（採択理由と境界条件）
+3. [Variant A](design_variants/variant-a-capability-first.md)（canonical baseline）
+4. [kernel_development_guidelines.md](kernel_development_guidelines.md)（実装規約）
+5. [capabilities.md](capabilities.md)（権限設計）
+
+Variant B/C や `docs/exorust_design/` は、正本を補う研究・参考資料として扱う。
+
 ## 共通原則
 
 - Safe Rust を優先し、`unsafe` は Framework 層に集約する。

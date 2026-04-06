@@ -77,6 +77,18 @@ Expected:
 - `cell.graph()` returns `nodes/edges/stats`
 - `cell.inspect_artifact(...)` returns ABI metadata / dependencies (or `abi_metadata_present=false`)
 
+1. ABI metadata sanity check (before swap)
+
+```text
+cell.inspect_artifact("/cells/driver_cell_probe_v1.cell")
+cell.inspect_artifact("/cells/driver_cell_probe_v2.cell")
+```
+
+Expected:
+
+- Both artifacts expose compatible ABI metadata for the same driver role.
+- If metadata is missing or clearly incompatible, do not proceed to `cell.swap(...)`.
+
 1. Update -> Validating
 
 ```text
@@ -149,6 +161,21 @@ Expected:
 - `driver_cell.hot_swap_state = Idle`
 - `driver_cell.stats.restart_count` does not increase for this case
 
+1. Optional: ABI mismatch rejection path
+
+If you have a known-incompatible fixture, validate that loader rejects it without partial activation.
+
+```text
+cell.swap(<dcell_id>, "/cells/<incompatible>.cell")
+cell.info(<dcell_id>)
+```
+
+Expected:
+
+- swap request is rejected with validation failure reason
+- active loader cell remains unchanged
+- `driver_cell.hot_swap_state` returns to `Idle` without commit
+
 1. Idle panic -> restart -> unload integrity
 
 ```text
@@ -167,6 +194,7 @@ Expected:
 
 - Use `cell.swap(...)` for DriverCell hot-swap operations.
 - Legacy `cell <method> ...` command syntax was removed; use `cell.xxx(...)`.
+- Rollback acceptance criteria should always include: state returns to `Idle`, old loader remains active, and no leaked in-flight references are observed.
 
 ## 関連文書
 

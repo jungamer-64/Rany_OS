@@ -83,6 +83,20 @@ fn executor_loop() {
 - ISR 内で動的メモリ割り当てをしない
 - `block_on` を executor 内部で呼ばない
 
+### 3.1 運用パラメータの既定化
+
+- 公平性の下限保証は APIC タイマーで担保し、executor 実装差異に依存させない。
+- APIC タイマー周期や優先度は、設定値を一箇所に集約して管理する（散在定義を禁止）。
+- Fuel カウンタや静的解析は性能最適化として導入し、進行保証の唯一条件にしない。
+- Fuel を無効化する構成でも、APIC タイマー下限保証が維持されることを確認する。
+
+### 3.2 ISR / deferred wake のレビュー観点
+
+- ISR 内の責務は「イベント識別」と「キュー投入」に限定する。
+- `wake()`、ロック取得、ヒープ確保を ISR から排除する。
+- deferred wake キューが飽和した場合の扱い（ドロップ/再試行/統計）を明示する。
+- レビューでは「直接 wake 経路が存在しないこと」を必須確認項目とする。
+
 ---
 
 ## 4. 権限モデル
@@ -137,6 +151,21 @@ pub struct DomainMessage {
 
 - ドライバの通常エラーを `panic!` で表現しない
 - 一つのドメインから別ドメインのメモリへ直接アクセスしない
+
+### 6.1 panic 封じ込めの実装パターン
+
+- ドメイン境界の呼び出しは proxy 層で包み、panic を `Err` に変換する。
+- panic 後の共有状態は `PoisonLock<T>` 経由で検出し、呼び出し側で縮退処理する。
+- 「panic したセルを自動再起動するか」「停止維持するか」は運用ポリシーとして明示する。
+
+```rust
+fn call_cross_domain<R>(f: impl FnOnce() -> R) -> Result<R, DomainError> {
+    match core::panic::catch_unwind(core::panic::AssertUnwindSafe(f)) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(DomainError::Panicked),
+    }
+}
+```
 
 ---
 
@@ -194,7 +223,7 @@ impl Migratable for DriverStateV2 {
 ## 改訂履歴
 
 | バージョン | 日付 | 変更内容 |
-|-----------|------|---------|
+| --- | --- | --- |
 | 1.1 | 2026-03-28 | Variant A 基準へ再編。Capability-first、live update 制約、optional hardware protection を反映 |
 | 1.0 | 2024-12-16 | 初版: MPK, Quiescent State, ABI, 燃料チェック, 署名を追加 |
 

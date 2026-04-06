@@ -13,6 +13,21 @@
 - [kernel_boot_sequence.md](kernel_boot_sequence.md): ブート経路と runtime handoff
 - [LINKER_GUIDELINES.md](LINKER_GUIDELINES.md): リンカ設定と CI 安全策
 
+## 推奨参照順（最短ルート）
+
+1. [ARCHITECTURE.md](ARCHITECTURE.md)（正本）
+2. [decisions/README.md](decisions/README.md)（採択済み判断）
+3. [kernel_development_guidelines.md](kernel_development_guidelines.md)（実装規約）
+4. [capabilities.md](capabilities.md)（権限モデル）
+5. [reference/api-reference.md](reference/api-reference.md)（API 形状）
+6. [exorust_design/README.md](exorust_design/README.md)（参考実装）
+7. [archive/README.md](archive/README.md)（履歴資料）
+
+補足:
+
+- `archive/` は履歴参照用であり、現行仕様の正本ではありません。
+- 仕様の競合時は `ARCHITECTURE.md` と Accepted ADR を優先してください。
+
 ## Design
 
 - [design-hub.md](design-hub.md): Variant A / B / C の比較と推奨案

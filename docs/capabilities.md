@@ -36,7 +36,7 @@ ExoRust のケイパビリティモデルは「最小権限（least privilege）
 
 （MVP 実装）
 
-- grant_capability_with_opts(caller_domain: u64, target_domain: u64, cap: Capability, expires: Option<u64>, delegatable: bool) -> Result<token_id: u64, CapabilityError>
+- `grant_capability_with_opts(caller_domain: u64, target_domain: u64, cap: Capability, expires: Option<u64>, delegatable: bool) -> Result<token_id: u64, CapabilityError>`
   - 返り値はトークン ID。トークンは監査・後続 revoke に使える。
   - 実行: `target.permitted |= cap; target.effective |= cap;` を行い、トークンテーブルに登録。
 
@@ -44,7 +44,7 @@ ExoRust のケイパビリティモデルは「最小権限（least privilege）
   - `force = false`: 新規操作は即時拒否（drop_permanently を行う）。in-flight の扱いは EBR によって安全にドレインされることを期待。
   - `force = true`: 強制撤回（将来的にはより強い介入を行うオプション）。
 
-- list_grants(domain_id: u64) -> Vec<GrantToken>
+- `list_grants(domain_id: u64) -> Vec<GrantToken>`
   - ドメインに対して与えられたトークン一覧を返す。
 
 - expire_tokens() (内部): 現在時刻を基に期限切れトークンを削除し、対応 capability を剥奪。
@@ -60,7 +60,7 @@ cap 名前空間（既存）を拡張します。
 - cap.list() -> 現在の CapabilitySet を列挙（既存機能）
 - cap.tokens() -> 現在のドメインに関連する GrantToken の一覧（新設）
 - cap.grant(resource: &str, ops: &["read"|"write"|...], target: u64, options?: Map) -> Capability
-  - options = { expires: <timestamp>, delegatable: <bool> }
+  - options = { expires: `timestamp`, delegatable: `bool` }
   - 成功時に `ExoValue::Capability` を返す（`id` = token_id）
   - 失敗時は Error を返す
 
@@ -105,6 +105,27 @@ MVP では `shell.spawn()` により**限定的な子シェル表現 (ShellProxy
 
 - 危険 API (`cell.swap`, `mmio.write` など) は **必ず** `CAP_SYS_ADMIN` か明示的な capability チェックを通す。公開前に確認すること。
 - `delegatable` を持つトークンは強力なので、デフォルト `false` を維持する。
+
+## Dangerous API と Required Capability Mapping
+
+KAPI 設計時に権限漏れを起こさないよう、危険操作は次の最低条件を満たす。
+
+| 操作カテゴリ | 代表 API / 操作 | Required Capability（最低） | 追加条件 |
+| --- | --- | --- | --- |
+| DriverCell 管理 | `cell.swap` / `cell.commit` / `cell.rollback` / `cell.unload` | `CAP_SYS_ADMIN` | 対象セルの所有者または管理トークンを検証する |
+| 権限管理 | `cap.grant` / `cap.revoke` | `CAP_SYS_ADMIN` または「付与対象を包含する permitted」 | 委譲時は `delegatable=true` のみ許可 |
+| MMIO / I/O ポート書き込み | `mmio.write` / `io_port.write` 相当 | `CAP_SYS_ADMIN` + デバイススコープ権限 | 読み取り専用経路と書き込み経路を分離する |
+| DMA / IOMMU 制御 | `alloc_dma_buffer` / IOMMU map/unmap 相当 | `CAP_SYS_ADMIN` + DMA 権限 | IOMMU 下でのみ許可し、任意アドレス DMA を拒否 |
+| 他ドメイン観測 | `domain.info(id)` / 観測ハンドル生成 | `CAP_SYS_PTRACE` | 参照ライフタイムで in-flight 追跡を行う |
+| 他ドメイン資源列挙 | ハンドル列挙 / 実行イメージ参照 | `CAP_FOWNER` | 観測対象ドメインへの監査ログを残す |
+
+### KAPI 設計チェックリスト
+
+1. この API は「失敗時にシステム全体へ影響するか」を判定する。
+2. 影響がある場合は `CAP_SYS_ADMIN` または専用 capability を必須化する。
+3. capability チェックを API 境界で実行し、内部実装任せにしない。
+4. `grant/revoke` 可能性がある操作は token ID と監査ログを必須化する。
+5. 「同一アドレス空間だから可視」という理由でアクセスを許可しない。
 
 ---
 
