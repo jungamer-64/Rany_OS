@@ -160,25 +160,6 @@ pub fn check_egress_v4(
     )
 }
 
-/// IPv6 Ingress パケット照合 (下位互換 API)
-pub fn check_ingress_v6(
-    src_ip: [u8; 16],
-    dst_ip: [u8; 16],
-    protocol: u8,
-    src_port: u16,
-    dst_port: u16,
-    tcp_flags: u8,
-) -> bool {
-    check_ingress(
-        IpAddress::V6(src_ip),
-        IpAddress::V6(dst_ip),
-        protocol,
-        src_port,
-        dst_port,
-        tcp_flags,
-    )
-}
-
 /// ファイアウォールルールを追加する
 ///
 /// ルールは優先度（`priority`）の昇順に自動ソートされる。

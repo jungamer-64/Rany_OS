@@ -793,21 +793,6 @@ impl Ipv4Processor {
         self.pmtu_cache.update(dst, mtu, current_time);
     }
 
-    /// Process an incoming IPv4 packet (without timestamp - for backwards compatibility)
-    pub fn process<'a>(&mut self, data: &'a [u8]) -> Ipv4ProcessResult<'a> {
-        // Use a default timestamp of 0 when not provided
-        self.process_with_time_and_packet(data, None, 0)
-    }
-
-    /// Process an incoming IPv4 packet with timestamp for fragment timeout handling
-    pub fn process_with_time<'a>(
-        &mut self,
-        data: &'a [u8],
-        mut current_time: u64,
-    ) -> Ipv4ProcessResult<'a> {
-        self.process_with_time_and_packet(data, None, current_time)
-    }
-
     pub fn process_with_time_and_packet<'a>(
         &mut self,
         data: &'a [u8],

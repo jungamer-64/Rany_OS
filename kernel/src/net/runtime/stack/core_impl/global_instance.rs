@@ -179,31 +179,6 @@ pub async fn send_udp_in(
         .map_err(|_| crate::net::l4::endpoint::types::EndpointError::ResourceExhausted)
 }
 
-/// Send a UDP datagram via the async event queue (non-blocking).
-///
-/// Instead of synchronously acquiring the NETWORK_STACK lock, the send request
-/// is posted to the `NetworkEventQueue` and processed by the `network_event_task`.
-/// This avoids lock contention and potential deadlocks when called from async contexts.
-///
-/// ソースIPはスタックの設定IPアドレスを使用する。
-/// DHCP等でソースIPを明示的に指定する場合は `enqueue_udp_send_with_src` を使用すること。
-pub fn enqueue_udp_send(
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_send_scoped(
-        crate::net::types::InterfaceScope::Any,
-        src_port,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
-}
-
 /// Send a UDP datagram via the async event queue with an explicit interface scope.
 pub fn enqueue_udp_send_scoped(
     scope: crate::net::types::InterfaceScope,
@@ -594,11 +569,6 @@ pub async fn bind_udp_with_token_scoped(
     bind_udp_endpoint_with_token_scoped(scope, port, token).await
 }
 
-/// Apply IPv6 global address obtained via DHCPv6 (async, event-queue based)
-pub fn enqueue_apply_ipv6_global_address(addr: crate::net::l3::ipv6::Ipv6Address) {
-    enqueue_apply_ipv6_global_address_in(default_runtime(), addr);
-}
-
 pub fn enqueue_apply_ipv6_global_address_in(
     runtime: NetRuntimeHandle,
     addr: crate::net::l3::ipv6::Ipv6Address,
@@ -611,11 +581,6 @@ pub fn enqueue_apply_ipv6_global_address_in(
             waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         },
     );
-}
-
-/// Unbind a TCP connection (fire-and-forget, event-queue based)
-pub fn enqueue_unbind_tcp(local: TcpEndpointAddr, remote: TcpEndpointAddr) {
-    enqueue_unbind_tcp_in(default_runtime(), local, remote);
 }
 
 pub fn enqueue_unbind_tcp_in(
@@ -632,11 +597,6 @@ pub fn enqueue_unbind_tcp_in(
             waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
         },
     );
-}
-
-/// Unbind a TCP listener (fire-and-forget, event-queue based)
-pub fn enqueue_unbind_tcp_listener(fd: EndpointFd) {
-    enqueue_unbind_tcp_listener_in(default_runtime(), fd);
 }
 
 pub fn enqueue_unbind_tcp_listener_in(runtime: NetRuntimeHandle, fd: EndpointFd) {
@@ -659,11 +619,6 @@ pub fn enqueue_unbind_tcp_listener_in(runtime: NetRuntimeHandle, fd: EndpointFd)
 /// 以前はNETWORK_STACKのロックを直接取得していたが、イベントキュー経由の
 /// 非同期パスに統一し、ロック競合を排除。ブートストラップ時のみIRQ無効化 +
 /// 同期ドレインで処理する。
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub fn bind_tcp_sync(addr: TcpEndpointAddr) -> Result<TcpListener, TcpError> {
-    bind_tcp_sync_in(default_runtime(), addr)
-}
-
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub fn bind_tcp_sync_in(
     runtime: NetRuntimeHandle,
@@ -1463,48 +1418,6 @@ pub fn apply_ipv6_global_address_in(
 // 非同期 send_*_on API（インターフェース指定送信・イベントキュー経由）
 // ============================================================================
 
-/// インターフェース指定UDP送信（非同期版・イベントキュー経由）
-///
-/// 同期版`send_udp_on()`と異なり、呼び出し元でNETWORK_STACKのロックを
-/// 取得しない。イベントキュー経由でハンドラ側にオフロードする。
-pub fn enqueue_udp_send_on(
-    if_id: super::NetIfId,
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-) -> bool {
-    enqueue_udp_send_on_with_ttl_in(
-        default_runtime(),
-        if_id,
-        src_port,
-        dst_ip,
-        dst_port,
-        payload,
-        64,
-    )
-}
-
-/// インターフェース指定UDP送信（非同期版・イベントキュー経由、明示 TTL）
-pub fn enqueue_udp_send_on_with_ttl(
-    if_id: super::NetIfId,
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_send_on_with_ttl_in(
-        default_runtime(),
-        if_id,
-        src_port,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
-}
-
 pub fn enqueue_udp_send_on_with_ttl_in(
     runtime: NetRuntimeHandle,
     if_id: super::NetIfId,
@@ -1531,27 +1444,6 @@ pub fn enqueue_udp_send_on_with_ttl_in(
         },
     );
     true
-}
-
-pub fn enqueue_udp_send_on_with_src(
-    if_id: super::NetIfId,
-    src_ip: Ipv4Address,
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_send_on_with_src_in(
-        default_runtime(),
-        if_id,
-        src_ip,
-        src_port,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
 }
 
 pub fn enqueue_udp_send_on_with_src_in(
@@ -1614,28 +1506,6 @@ pub fn enqueue_tcp_send_on_in(
         },
     );
     true
-}
-
-/// インターフェース指定IPv6 UDP送信（非同期版・イベントキュー経由）
-pub fn enqueue_udp_v6_send_on(
-    if_id: super::NetIfId,
-    src_port: u16,
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    enqueue_udp_v6_send_on_in(
-        default_runtime(),
-        if_id,
-        src_port,
-        src_ip,
-        dst_ip,
-        dst_port,
-        payload,
-        ttl,
-    )
 }
 
 pub fn enqueue_udp_v6_send_on_in(

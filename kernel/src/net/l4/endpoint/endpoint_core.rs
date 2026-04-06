@@ -179,7 +179,7 @@ impl Endpoint {
 
     /// リッスンモードを開始（同期TCP bind）
     ///
-    /// **ブートストラップ/テスト専用**: `bind_tcp_sync()` 経由でNETWORK_STACKロックを取得するため、
+    /// **ブートストラップ/テスト専用**: `bind_tcp_sync_in()` 経由の同期パスを使用するため、
     /// エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
     /// asyncコンテキストでは [`start_listening()`] を使用すること。
     #[cfg(any(test, feature = "qemu-test-export"))]
