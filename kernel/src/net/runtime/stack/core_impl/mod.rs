@@ -607,11 +607,6 @@ impl NetworkStack {
         false
     }
 
-    /// Compatibility helper for callers that do not specify an interface.
-    pub fn transmit_packet(&self, packet: PacketRef) -> bool {
-        self.transmit_packet_on(None, packet)
-    }
-
     fn alloc_ethernet_frame_packet(&self, frame_len: usize) -> Option<PacketRef> {
         crate::net::payload::alloc_packet_with_headroom(frame_len.max(60), 0)
     }

@@ -73,7 +73,7 @@ impl NetworkStack {
                         let frame_len = frame.as_bytes().len();
                         drop(frame);
                         packet.set_len(frame_len);
-                        let _ = self.transmit_packet(packet);
+                        let _ = self.transmit_packet_on(None, packet);
                     }
                 }
             }
@@ -256,42 +256,6 @@ impl NetworkStack {
             UdpResult::NoEndpoint => {
                 self.stats.record_dropped();
                 self.send_icmpv6_error_payload(src, 4, original_packet);
-            }
-            UdpResult::ChecksumError | UdpResult::Invalid => {
-                self.stats.record_rx_error();
-            }
-        }
-    }
-
-    /// Process UDP packet
-    pub fn process_udp(
-        &mut self,
-        data: &[u8],
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        packet: PacketRef,
-    ) {
-        let result = self
-            .udp
-            .process_with_packet(data, src_ip, dst_ip, packet.clone(), 64);
-
-        match result {
-            UdpResult::Delivered => {}
-            UdpResult::NoEndpoint => {
-                self.stats.record_dropped();
-
-                // RFC 1122: Send ICMP Port Unreachable
-                // Only send if it wasn't broadcast/multicast
-                if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
-                    let current_time = self.current_time();
-                    self.send_icmp_error(
-                        src_ip,
-                        DestUnreachCode::PortUnreachable,
-                        None,
-                        packet.data(),
-                        current_time,
-                    );
-                }
             }
             UdpResult::ChecksumError | UdpResult::Invalid => {
                 self.stats.record_rx_error();

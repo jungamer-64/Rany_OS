@@ -264,7 +264,7 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet(packet);
+                    self.transmit_packet_on(None, packet);
                 }
             }
         }
@@ -413,7 +413,7 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet(packet);
+                    self.transmit_packet_on(None, packet);
                 }
             }
         }
@@ -914,7 +914,7 @@ impl NetworkStack {
                         let frame_len = frame.as_bytes().len();
                         drop(frame);
                         packet.set_len(frame_len);
-                        let _ = self.transmit_packet(packet);
+                        let _ = self.transmit_packet_on(None, packet);
                     }
                 }
             }
@@ -993,7 +993,7 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    let _ = self.transmit_packet(packet);
+                    let _ = self.transmit_packet_on(None, packet);
                 }
             }
         }

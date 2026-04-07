@@ -143,6 +143,13 @@ pub enum NetworkEvent {
     /// ARP要求を送信し、解決完了時にWakerで通知する。
     /// ISR/ポーリングコンテキストからのロック取得を回避する。
     ArpResolveRequest { target_ip: [u8; 4] },
+    /// 非同期NDP解決リクエスト
+    ///
+    /// Neighbor Solicitation を送信し、解決完了時にWakerで通知する。
+    NdpResolveRequest {
+        if_id: Option<u16>,
+        target_ip: [u8; 16],
+    },
     /// ARP解決完了通知（ARPキャッシュ更新時に発火）
     ArpResolved { ip: [u8; 4], mac: [u8; 6] },
     /// 非同期TCP connect（イベントキュー経由・ロック競合回避）

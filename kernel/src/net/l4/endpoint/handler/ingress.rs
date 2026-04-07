@@ -577,11 +577,17 @@ impl NetworkEventHandler {
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::FragmentPending => {}
             crate::net::l3::ipv4::Ipv4ProcessResult::ReassemblyTimeout(src, header_data) => {
-                stack.send_icmp_time_exceeded(
-                    src,
-                    crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
-                    &header_data,
-                );
+                if let Some(header_data) = crate::net::payload::packet_from_bytes(&header_data)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                {
+                    stack.send_icmp_time_exceeded_payload(
+                        src,
+                        crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
+                        &header_data,
+                    );
+                } else {
+                    stack.stats.record_rx_error();
+                }
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Dropped => {
                 stack.stats.record_dropped();
@@ -610,13 +616,19 @@ impl NetworkEventHandler {
                     _proto,
                     src
                 );
-                stack.send_icmp_error(
-                    src,
-                    crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
-                    None,
-                    orig_packet,
-                    current_time,
-                );
+                if let Some(orig_packet) = crate::net::payload::packet_from_bytes(orig_packet)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                {
+                    stack.send_icmp_error_payload(
+                        src,
+                        crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
+                        None,
+                        &orig_packet,
+                        current_time,
+                    );
+                } else {
+                    stack.stats.record_rx_error();
+                }
             }
         }
 

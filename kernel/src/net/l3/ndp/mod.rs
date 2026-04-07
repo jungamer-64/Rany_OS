@@ -26,6 +26,8 @@ use crate::net::payload::PacketPayloadView;
 
 /// Minimum Neighbor Solicitation size: ICMPv6 header (4) + reserved (4) + target (16) = 24
 pub(crate) mod processor_impl;
+mod resolve_future;
+pub use resolve_future::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 pub const NS_MIN_SIZE: usize = 24;

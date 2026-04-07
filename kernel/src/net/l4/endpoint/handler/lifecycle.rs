@@ -50,6 +50,34 @@ impl NetworkEventHandler {
                 }
                 EventHandleResult::Success
             }
+            NetworkEvent::NdpResolveRequest { if_id, target_ip } => {
+                let ip = crate::net::l3::ipv6::Ipv6Address::new(target_ip);
+
+                if ip.is_multicast() {
+                    crate::net::l3::ndp::notify_ndp_resolved(if_id, target_ip, ip.multicast_mac());
+                    return EventHandleResult::Success;
+                }
+
+                let current_time = stack.current_time();
+                let if_scope = if_id.map(crate::net::runtime::manager::NetIfId);
+
+                match stack.resolve_ndp_for_send(if_scope, &ip, current_time, |_| {}) {
+                    Some(Ok(mac)) => {
+                        crate::net::l3::ndp::notify_ndp_resolved(if_id, target_ip, mac);
+                    }
+                    Some(Err((ns_if_id, our_ll, ns_msg))) => {
+                        let sn_mcast = ip.solicited_node();
+                        let ns_msg = crate::net::payload::PacketPayloadView::new(&ns_msg);
+                        if let Some(ns_if_id) = ns_if_id {
+                            stack.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, &ns_msg);
+                        } else {
+                            stack.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
+                        }
+                    }
+                    None => {}
+                }
+                EventHandleResult::Success
+            }
             NetworkEvent::ArpResolved { ip, mac } => {
                 crate::net::l2::arp::notify_arp_resolved(ip, mac);
                 EventHandleResult::Success
@@ -263,6 +291,8 @@ impl NetworkEventHandler {
                 crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
                 // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
                 crate::net::l2::arp::cleanup_arp_waiters();
+                // NDP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
+                crate::net::l3::ndp::cleanup_ndp_waiters();
                 EventHandleResult::Success
             }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),

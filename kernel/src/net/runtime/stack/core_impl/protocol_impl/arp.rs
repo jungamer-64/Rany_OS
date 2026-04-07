@@ -93,7 +93,7 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 packet.set_len(frame_len);
-                self.transmit_packet(packet);
+                self.transmit_packet_on(None, packet);
             }
         }
     }
@@ -150,7 +150,7 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 packet.set_len(frame_len);
-                self.transmit_packet(packet);
+                self.transmit_packet_on(None, packet);
             }
         }
     }
@@ -218,7 +218,7 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 packet.set_len(frame_len);
-                if self.transmit_packet(packet) {
+                if self.transmit_packet_on(None, packet) {
                     // Mark request as sent only when TX succeeded.
                     self.arp.request_sent(target_ip, current_time);
                     log::info!(
@@ -340,7 +340,7 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 packet.set_len(frame_len);
-                if self.transmit_packet(packet) {
+                if self.transmit_packet_on(None, packet) {
                     self.arp.request_sent(target_ip, current_time);
                     log::info!("[NET-ARP] ARP probe sent for {}", target_ip);
                 }

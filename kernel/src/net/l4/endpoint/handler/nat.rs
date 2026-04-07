@@ -20,11 +20,18 @@ impl NetworkEventHandler {
                 original_ip_header,
             } => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                stack.send_icmp_time_exceeded(
-                    src,
-                    crate::net::l3::icmp::TimeExceededCode::TtlExceeded,
-                    &original_ip_header,
-                );
+                if let Some(original_ip_header) =
+                    crate::net::payload::packet_from_bytes(&original_ip_header)
+                        .map(kernel_api::resource::net::PacketPayload::single)
+                {
+                    stack.send_icmp_time_exceeded_payload(
+                        src,
+                        crate::net::l3::icmp::TimeExceededCode::TtlExceeded,
+                        &original_ip_header,
+                    );
+                } else {
+                    stack.stats.record_rx_error();
+                }
                 EventHandleResult::Success
             }
             NetworkEvent::NatIcmpDestUnreachable {
@@ -35,13 +42,20 @@ impl NetworkEventHandler {
             } => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let now = stack.current_time();
-                stack.send_icmp_error(
-                    src,
-                    crate::net::l3::icmp::DestUnreachCode::from(code),
-                    next_hop_mtu,
-                    &original_packet,
-                    now,
-                );
+                if let Some(original_packet) =
+                    crate::net::payload::packet_from_bytes(&original_packet)
+                        .map(kernel_api::resource::net::PacketPayload::single)
+                {
+                    stack.send_icmp_error_payload(
+                        src,
+                        crate::net::l3::icmp::DestUnreachCode::from(code),
+                        next_hop_mtu,
+                        &original_packet,
+                        now,
+                    );
+                } else {
+                    stack.stats.record_rx_error();
+                }
                 EventHandleResult::Success
             }
             NetworkEvent::NatForwardUdp {

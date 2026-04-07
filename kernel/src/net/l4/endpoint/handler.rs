@@ -400,6 +400,7 @@ impl NetworkEventHandler {
 
                 crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
                 crate::net::l2::arp::cleanup_arp_waiters();
+                crate::net::l3::ndp::cleanup_ndp_waiters();
                 EventHandleResult::Success
             }
 
@@ -597,6 +598,7 @@ impl NetworkEventHandler {
             lifecycle_event @ NetworkEvent::TcpBind { .. }
             | lifecycle_event @ NetworkEvent::UdpBind { .. }
             | lifecycle_event @ NetworkEvent::ArpResolveRequest { .. }
+            | lifecycle_event @ NetworkEvent::NdpResolveRequest { .. }
             | lifecycle_event @ NetworkEvent::ArpResolved { .. }
             | lifecycle_event @ NetworkEvent::TcpConnect { .. }
             | lifecycle_event @ NetworkEvent::TcpConnectStream { .. }

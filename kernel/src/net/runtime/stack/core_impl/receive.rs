@@ -3,7 +3,7 @@
 //
 // Split from core_impl/mod.rs for clarity. Contains all methods that process
 // incoming packets: process_ipv4, process_ipv6_data, process_icmpv6_data,
-// process_ndp_message, process_igmp_data, etc.
+// process_ndp_message, process_igmp_payload, etc.
 // =============================================================================
 
 use super::*;
@@ -60,20 +60,22 @@ impl NetworkStack {
                     self.stats.record_dropped();
                     return;
                 }
-                if payload.as_ptr() < data.as_ptr()
-                    || payload.as_ptr() as usize + payload.len()
-                        > data.as_ptr() as usize + data.len()
-                {
+                let Some(icmp_payload) =
+                    crate::net::payload::payload_from_subslice(&packet, data, payload)
+                else {
                     self.stats.record_rx_error();
                     return;
-                }
-                let offset = unsafe { payload.as_ptr().offset_from(data.as_ptr()) } as usize;
-                let mut p = packet;
-                p.advance(offset);
-                self.process_icmp(payload, src_ip, dst_ip, ttl, current_time, p);
+                };
+                self.process_icmp_payload(&icmp_payload, src_ip, dst_ip, ttl, current_time);
             }
             Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
-                self.process_igmp_data(payload, src_ip, ttl);
+                let Some(igmp_payload) =
+                    crate::net::payload::payload_from_subslice(&packet, data, payload)
+                else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                self.process_igmp_payload(&igmp_payload, src_ip, ttl);
             }
             Ipv4ProcessResult::Udp(_payload, _src_ip, dst_ip, _orig) => {
                 // Security: Only process multicast UDP if group is joined (except mandatory)
@@ -146,11 +148,17 @@ impl NetworkStack {
                     "IPv4: Reassembly timeout for {} - sending ICMP Time Exceeded",
                     src
                 );
-                self.send_icmp_time_exceeded(
-                    src,
-                    crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
-                    &header_data,
-                );
+                if let Some(header_data) = crate::net::payload::packet_from_bytes(&header_data)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                {
+                    self.send_icmp_time_exceeded_payload(
+                        src,
+                        crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
+                        &header_data,
+                    );
+                } else {
+                    self.stats.record_rx_error();
+                }
             }
             Ipv4ProcessResult::UnknownProtocol(proto, src, _dst, orig_packet) => {
                 // RFC 792: Send ICMP Destination Unreachable (Protocol Unreachable, Code 2)
@@ -159,13 +167,19 @@ impl NetworkStack {
                     proto,
                     src
                 );
-                self.send_icmp_error(
-                    src,
-                    crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
-                    None,
-                    orig_packet,
-                    current_time,
-                );
+                if let Some(orig_packet) = crate::net::payload::packet_from_bytes(orig_packet)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                {
+                    self.send_icmp_error_payload(
+                        src,
+                        crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
+                        None,
+                        &orig_packet,
+                        current_time,
+                    );
+                } else {
+                    self.stats.record_rx_error();
+                }
             }
             Ipv4ProcessResult::Dropped => {
                 self.stats.record_dropped();
@@ -310,82 +324,6 @@ impl NetworkStack {
                     self.stats.record_dropped();
                 }
             }
-        }
-    }
-
-    /// Process ICMP data (for reassembled packets)
-    pub fn process_icmp_data(
-        &mut self,
-        data: &[u8],
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        _ttl: u8,
-        current_time: u64,
-    ) {
-        if !self.icmp_echo_enabled() {
-            return;
-        }
-
-        // Security: Do not respond to broadcast/multicast ICMP Echo Requests (Smurf attack prevention)
-        if dst_ip.is_broadcast()
-            || dst_ip.is_multicast()
-            || dst_ip == self.ipv4.config().broadcast_address()
-        {
-            return;
-        }
-
-        let result = self.icmp.process(data, src_ip, dst_ip, current_time);
-
-        match result {
-            IcmpResult::SendEchoReply {
-                src_ip,
-                identifier,
-                sequence,
-                data_offset,
-                data_len,
-            } => {
-                let echo_data = if data_offset + data_len <= data.len() {
-                    &data[data_offset..data_offset + data_len]
-                } else {
-                    &[]
-                };
-                self.send_icmp_echo_reply(src_ip, identifier, sequence, echo_data, current_time);
-            }
-            IcmpResult::EchoReplyReceived {
-                identifier,
-                sequence,
-            } => {
-                // ICMP Echo応答を非同期Futureレジストリに通知
-                let _ = identifier;
-                // RTTを概算（正確なタイムスタンプは別途管理が必要）
-                let rtt_us = 0; // イベントキュー側で計算
-                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(
-                    *src_ip.as_bytes(),
-                    sequence,
-                    rtt_us,
-                );
-                // イベントキュー経由でも通知（ハンドラ層での処理用）
-                crate::net::l4::endpoint::event::enqueue_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoReply {
-                        source: *src_ip.as_bytes(),
-                        sequence,
-                        rtt_us,
-                    },
-                );
-            }
-            IcmpResult::Error { icmp_type, code } => {
-                // Handle ICMP errors for PMTUD (RFC 1191)
-                self.handle_icmp_error(data, icmp_type, code, current_time);
-            }
-            IcmpResult::Redirect {
-                code,
-                gateway,
-                destination,
-            } => {
-                // Handle ICMP Redirect for route optimization (RFC 792)
-                self.handle_icmp_redirect(code, gateway, destination, src_ip);
-            }
-            _ => {}
         }
     }
 
@@ -647,7 +585,14 @@ impl NetworkStack {
                             "IPv6: Invalid fragment size (not multiple of 8) from {} - sending ICMPv6 Parameter Problem (RFC 8200)",
                             src
                         );
-                        self.send_icmpv6_parameter_problem(src, 0, 4, &quoted_packet);
+                        if let Some(quoted_packet) =
+                            crate::net::payload::packet_from_bytes(&quoted_packet)
+                                .map(kernel_api::resource::net::PacketPayload::single)
+                        {
+                            self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
+                        } else {
+                            self.stats.record_rx_error();
+                        }
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
                         // RFC 8200: If the reassembled packet would be larger than 65,535 octets,
@@ -656,7 +601,14 @@ impl NetworkStack {
                             "IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem (RFC 8200)",
                             src
                         );
-                        self.send_icmpv6_parameter_problem(src, 0, 4, &quoted_packet);
+                        if let Some(quoted_packet) =
+                            crate::net::payload::packet_from_bytes(&quoted_packet)
+                                .map(kernel_api::resource::net::PacketPayload::single)
+                        {
+                            self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
+                        } else {
+                            self.stats.record_rx_error();
+                        }
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
                         // RFC 7112: Send ICMPv6 Parameter Problem (Code 0), pointing to the first octet
@@ -668,12 +620,19 @@ impl NetworkStack {
                             "IPv6: Incomplete header chain in first fragment from {} - sending ICMPv6 Parameter Problem (RFC 7112)",
                             src
                         );
-                        self.send_icmpv6_parameter_problem(
-                            src,
-                            0,
-                            fragment_header_pointer,
-                            &quoted_packet,
-                        );
+                        if let Some(quoted_packet) =
+                            crate::net::payload::packet_from_bytes(&quoted_packet)
+                                .map(kernel_api::resource::net::PacketPayload::single)
+                        {
+                            self.send_icmpv6_parameter_problem_payload(
+                                src,
+                                0,
+                                fragment_header_pointer,
+                                &quoted_packet,
+                            );
+                        } else {
+                            self.stats.record_rx_error();
+                        }
                     }
                 }
             }
@@ -683,7 +642,13 @@ impl NetworkStack {
                     "IPv6: Unknown Next Header from {} - sending ICMPv6 Parameter Problem",
                     src
                 );
-                self.send_icmpv6_parameter_problem(src, 1, pointer, orig_packet);
+                if let Some(orig_packet) = crate::net::payload::packet_from_bytes(orig_packet)
+                    .map(kernel_api::resource::net::PacketPayload::single)
+                {
+                    self.send_icmpv6_parameter_problem_payload(src, 1, pointer, &orig_packet);
+                } else {
+                    self.stats.record_rx_error();
+                }
             }
             Ipv6ProcessResult::HopLimitExceeded(src, _dst, orig_packet) => {
                 // RFC 4443 Section 3.3: Send ICMPv6 Time Exceeded (Code 0)
@@ -1150,6 +1115,10 @@ impl NetworkStack {
                     mac[4],
                     mac[5]
                 );
+
+                // NDP解決完了をウェイターレジストリへ通知（非同期NdpResolveFuture向け）
+                crate::net::l3::ndp::notify_ndp_resolved(if_id.map(|id| id.0), ip.octets(), mac);
+
                 // Drain any pending packets for this now-resolved neighbor
                 if let Some(if_id) = if_id {
                     self.drain_ndp_pending_on(if_id, &ip);
@@ -1377,53 +1346,6 @@ impl NetworkStack {
             }
             NdpResult::None | NdpResult::Error => {}
         }
-    }
-
-    /// Process IGMP data for multicast group management
-    pub fn process_igmp_data(&mut self, data: &[u8], src_ip: Ipv4Address, ttl: u8) {
-        // Security (RFC 2236 Section 2): all IGMP messages MUST be sent with a IP TTL of 1.
-        if ttl != 1 {
-            log::warn!("IGMP: Dropping packet with invalid TTL {}", ttl);
-            return;
-        }
-
-        // Security: Verify source is on the same subnet
-        let local_ip = self.config.ipv4.address;
-        let subnet_mask = self.config.ipv4.subnet_mask;
-        if local_ip.apply_mask(subnet_mask) != src_ip.apply_mask(subnet_mask) {
-            log::warn!("IGMP: Dropping packet from different subnet {}", src_ip);
-            return;
-        }
-
-        let current_time = self.current_time();
-        self.igmp.update_time(current_time);
-
-        let result = self.igmp.process(data, src_ip);
-
-        match result {
-            IgmpResult::GeneralQueryReceived { max_resp_time: _ } => {
-                // Timers are set internally, reports will be sent on timer expiry
-            }
-            IgmpResult::GroupQueryReceived {
-                group: _,
-                max_resp_time: _,
-            } => {
-                // Timer set for specific group
-            }
-            IgmpResult::ReportReceived { group: _ } => {
-                // Report suppression handled internally
-            }
-            IgmpResult::Ignored => {}
-            IgmpResult::InvalidPacket | IgmpResult::InvalidChecksum => {
-                self.stats.record_rx_error();
-            }
-            IgmpResult::UnknownType(_) => {
-                self.stats.record_dropped();
-            }
-        }
-
-        // Process and send any pending IGMP reports
-        self.send_pending_igmp_reports();
     }
 
     pub fn process_igmp_payload(

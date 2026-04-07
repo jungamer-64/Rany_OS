@@ -89,13 +89,20 @@ impl NetworkEventHandler {
 
             // Only send if it wasn't broadcast/multicast (RFC 1122)
             if !dst_v4.is_broadcast() && !dst_v4.is_multicast() {
-                stack.send_icmp_error(
-                    src_v4,
-                    DestUnreachCode::PortUnreachable,
-                    None,
-                    original_packet,
-                    current_time,
-                );
+                if let Some(original_packet) =
+                    crate::net::payload::packet_from_bytes(original_packet)
+                        .map(kernel_api::resource::net::PacketPayload::single)
+                {
+                    stack.send_icmp_error_payload(
+                        src_v4,
+                        DestUnreachCode::PortUnreachable,
+                        None,
+                        &original_packet,
+                        current_time,
+                    );
+                } else {
+                    stack.stats.record_rx_error();
+                }
             }
         }
 
