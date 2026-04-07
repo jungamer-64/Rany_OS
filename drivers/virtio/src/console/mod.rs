@@ -232,7 +232,7 @@ impl VirtioConsoleDevice {
     /// RX_BUFFER_SIZE bytes each.
     fn post_rx_buffers(&self) -> Result<(), ConsoleError> {
         let rx_queue = self.rx_queue.as_ref().ok_or(ConsoleError::NotReady)?;
-        let mut queue_guard = rx_queue.lock().unwrap_or_else(|e| e.into_inner());
+        let queue_guard = rx_queue.lock().unwrap_or_else(|e| e.into_inner());
 
         for _ in 0..RX_BUFFER_COUNT {
             let buffer =
@@ -283,7 +283,7 @@ impl VirtioConsoleDevice {
         }
 
         let tx_queue = self.tx_queue.as_ref().ok_or(ConsoleError::NotReady)?;
-        let mut queue_guard = tx_queue.lock().unwrap_or_else(|e| e.into_inner());
+        let queue_guard = tx_queue.lock().unwrap_or_else(|e| e.into_inner());
 
         // Allocate a DMA buffer and copy the data (IOMMU-aware)
         let mut buffer =
@@ -328,7 +328,7 @@ impl VirtioConsoleDevice {
     /// After reading, reposts a fresh RX buffer to the queue.
     pub fn read_bytes(&self) -> Option<Vec<u8>> {
         let rx_queue = self.rx_queue.as_ref()?;
-        let mut queue_guard = rx_queue.lock().unwrap_or_else(|e| e.into_inner());
+        let queue_guard = rx_queue.lock().unwrap_or_else(|e| e.into_inner());
 
         // Poll for a completed RX buffer
         let (desc_id, len) = queue_guard.poll_complete()?;
@@ -393,7 +393,7 @@ impl VirtioConsoleDevice {
 
     fn process_tx_completions(&self) {
         if let Some(ref tx_queue) = self.tx_queue {
-            let mut queue_guard = tx_queue.lock().unwrap_or_else(|e| e.into_inner());
+            let queue_guard = tx_queue.lock().unwrap_or_else(|e| e.into_inner());
             // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while let Some((desc_id, _len)) = queue_guard.poll_complete() {
                 // Free the inflight DMA buffer

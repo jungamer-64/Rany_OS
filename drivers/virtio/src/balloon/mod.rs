@@ -225,7 +225,7 @@ impl VirtioBalloonDevice {
 
         let phys_addr = dma_buf.device_address();
 
-        let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
+        let queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
 
         let desc_idx = queue_guard.alloc_desc().ok_or(BalloonError::QueueFull)?;
 
@@ -286,7 +286,7 @@ impl VirtioBalloonDevice {
 
         if queue_interrupt {
             if let Some(ref queue) = self.inflate_queue {
-                let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
+                let queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
                 // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while let Some((desc_id, _len)) = queue_guard.poll_complete() {
                     self.inflight_buffers
@@ -298,7 +298,7 @@ impl VirtioBalloonDevice {
             }
 
             if let Some(ref queue) = self.deflate_queue {
-                let mut queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
+                let queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
                 // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while let Some((desc_id, _len)) = queue_guard.poll_complete() {
                     self.inflight_buffers

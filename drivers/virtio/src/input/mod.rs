@@ -231,7 +231,7 @@ impl VirtioInputDevice {
     /// Post pre-allocated DMA buffers to the event queue
     fn post_event_buffers(&self) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
-        let mut queue_guard = event_queue.lock().unwrap_or_else(|e| e.into_inner());
+        let queue_guard = event_queue.lock().unwrap_or_else(|e| e.into_inner());
         let mut buffers = self.event_buffers.lock().unwrap_or_else(|e| e.into_inner());
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
@@ -270,7 +270,7 @@ impl VirtioInputDevice {
     /// Repost a single event buffer
     fn repost_event_buffer(&self, desc_idx: u16) -> Result<(), InputError> {
         let event_queue = self.event_queue.as_ref().ok_or(InputError::NotReady)?;
-        let mut queue_guard = event_queue.lock().unwrap_or_else(|e| e.into_inner());
+        let queue_guard = event_queue.lock().unwrap_or_else(|e| e.into_inner());
         let mut buffers = self.event_buffers.lock().unwrap_or_else(|e| e.into_inner());
 
         let event_size = core::mem::size_of::<VirtioInputEvent>();
@@ -327,7 +327,7 @@ impl VirtioInputDevice {
             None => return,
         };
 
-        let mut queue_guard = event_queue.lock().unwrap_or_else(|e| e.into_inner());
+        let queue_guard = event_queue.lock().unwrap_or_else(|e| e.into_inner());
         let handler = self
             .event_handler
             .lock()
