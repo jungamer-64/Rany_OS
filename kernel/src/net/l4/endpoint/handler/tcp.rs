@@ -9,8 +9,8 @@ use super::common::{
 };
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::endpoint::segment::{send_tcp_segment_payload, TcpSegmentBuilder};
-use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
+use crate::net::l4::endpoint::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
+use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
 use crate::net::l4::endpoint::types::{
     EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
 };
@@ -269,11 +269,7 @@ impl NetworkEventHandler {
         {
             let explicit_src = {
                 let src = Ipv4Address::new(local_v4);
-                if src.is_any() {
-                    None
-                } else {
-                    Some(src)
-                }
+                if src.is_any() { None } else { Some(src) }
             };
             match stack.resolve_ipv4_egress(
                 scope,

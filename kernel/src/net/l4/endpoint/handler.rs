@@ -11,18 +11,20 @@ use alloc::vec::Vec;
 
 use super::event::NetworkEvent;
 use super::manager::ENDPOINT_MANAGER;
-use super::tcb::{tcb_table, TcpConnectionState};
+use super::tcb::tcb_table;
 use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::{default_runtime, NetRuntimeHandle};
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use kernel_api::resource::net::PacketPayload;
 
 mod common;
 mod control;
 mod ingress;
+mod lifecycle;
 mod nat;
+mod query;
 mod raw;
 mod tcp;
 mod udp;
@@ -30,7 +32,7 @@ mod utility;
 
 pub use self::common::EventHandleResult;
 
-use self::common::{finish_command, stackless_dhcp_state_unavailable, subslice_offset};
+use self::common::{finish_command, stackless_dhcp_state_unavailable};
 
 /// ネットワークイベントハンドラ
 /// プロトコルスタック（TCP/UDP）と連携する
@@ -541,141 +543,7 @@ impl NetworkEventHandler {
     ) -> EventHandleResult {
         match event {
             NetworkEvent::IngressPacket { if_id, packet } => {
-                let pkt_len = packet.len();
-                let data = packet.data();
-                let current_time = stack.current_time();
-
-                match stack.ethernet.process(data) {
-                    crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
-                        let ip_packet = subslice_offset(data, payload).map(|offset| {
-                            let mut ip_packet = packet.clone();
-                            ip_packet.advance(offset);
-                            ip_packet.set_len(payload.len());
-                            ip_packet
-                        });
-                        self.handle_ipv4_ingress_with_stack(
-                            runtime,
-                            if_id,
-                            payload,
-                            ip_packet,
-                            src_mac,
-                            current_time,
-                            stack,
-                        );
-                        stack.stats.record_rx(pkt_len);
-                        EventHandleResult::Success
-                    }
-                    crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
-                        stack.process_arp(if_id, payload, current_time, src_mac);
-                        stack.stats.record_rx(pkt_len);
-                        EventHandleResult::Success
-                    }
-                    crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
-                        if stack.ipv6.is_some() {
-                            let ip_packet = subslice_offset(data, payload).map(|offset| {
-                                let mut ip_packet = packet.clone();
-                                ip_packet.advance(offset);
-                                ip_packet.set_len(payload.len());
-                                ip_packet
-                            });
-                            // ── ファイアウォール Ingress チェック (IPv6) ──
-                            if payload.len() >= 40 {
-                                let src_ip = [
-                                    payload[8],
-                                    payload[9],
-                                    payload[10],
-                                    payload[11],
-                                    payload[12],
-                                    payload[13],
-                                    payload[14],
-                                    payload[15],
-                                    payload[16],
-                                    payload[17],
-                                    payload[18],
-                                    payload[19],
-                                    payload[20],
-                                    payload[21],
-                                    payload[22],
-                                    payload[23],
-                                ];
-                                let dst_ip = [
-                                    payload[24],
-                                    payload[25],
-                                    payload[26],
-                                    payload[27],
-                                    payload[28],
-                                    payload[29],
-                                    payload[30],
-                                    payload[31],
-                                    payload[32],
-                                    payload[33],
-                                    payload[34],
-                                    payload[35],
-                                    payload[36],
-                                    payload[37],
-                                    payload[38],
-                                    payload[39],
-                                ];
-                                let next_header = payload[6];
-                                let (protocol, transport_data) =
-                                    crate::net::l3::ipv6::skip_extension_headers(
-                                        crate::net::l3::ipv4::IpProtocol::from(next_header),
-                                        &payload[40..],
-                                    );
-
-                                let (src_port, dst_port) = if (u8::from(protocol) == 6
-                                    || u8::from(protocol) == 17)
-                                    && transport_data.len() >= 4
-                                {
-                                    let sp =
-                                        u16::from_be_bytes([transport_data[0], transport_data[1]]);
-                                    let dp =
-                                        u16::from_be_bytes([transport_data[2], transport_data[3]]);
-                                    (sp, dp)
-                                } else if u8::from(protocol) == 58 && transport_data.len() >= 2 {
-                                    // ICMPv6: src_port = type, dst_port = code
-                                    (transport_data[0] as u16, transport_data[1] as u16)
-                                } else {
-                                    (0, 0)
-                                };
-
-                                let tcp_flags =
-                                    if u8::from(protocol) == 6 && transport_data.len() >= 14 {
-                                        transport_data[13]
-                                    } else {
-                                        0
-                                    };
-
-                                // Security Fix: Use full IPv6 addresses for firewall check
-                                if !crate::net::security::firewall::check_ingress(
-                                    crate::net::security::firewall::IpAddress::V6(src_ip),
-                                    crate::net::security::firewall::IpAddress::V6(dst_ip),
-                                    u8::from(protocol),
-                                    src_port,
-                                    dst_port,
-                                    tcp_flags,
-                                ) {
-                                    stack.stats.record_dropped();
-                                    return EventHandleResult::Success;
-                                }
-                            }
-
-                            stack.process_ipv6_data(
-                                if_id,
-                                payload,
-                                current_time,
-                                src_mac,
-                                false,
-                                ip_packet,
-                            );
-                            stack.stats.record_rx(pkt_len);
-                        } else {
-                            stack.stats.record_dropped();
-                        }
-                        EventHandleResult::Success
-                    }
-                    _ => EventHandleResult::Success,
-                }
+                self.handle_ingress_packet_with_stack(runtime, if_id, packet, stack)
             }
             NetworkEvent::IngressBatch { if_id, packets } => {
                 self.handle_ingress_batch_with_stack(runtime, if_id, packets, stack)
@@ -726,257 +594,26 @@ impl NetworkEventHandler {
                 crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpBind {
-                result_slot, waker, ..
-            } => {
-                let result = Err(EndpointError::InvalidStateTransition);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBind {
-                port,
-                scope,
-                result_slot,
-                waker,
-            } => {
-                // スタックロック保持版: 二重ロックを回避
-                let success = stack.bind_udp_scoped(scope, port).is_some();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::ArpResolveRequest { target_ip } => {
-                // スタックロック保持版: ARP要求を送信
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
-                let current_time = stack.current_time();
-                if let Some(mac) = stack.arp.resolve(ip, current_time) {
-                    // 既にキャッシュにある場合は即座に通知
-                    crate::net::l2::arp::notify_arp_resolved(target_ip, *mac.as_bytes());
-                } else {
-                    stack.send_arp_request(ip);
-                }
-                EventHandleResult::Success
-            }
-            NetworkEvent::ArpResolved { ip, mac } => {
-                // ARP解決完了をウェイターに通知
-                crate::net::l2::arp::notify_arp_resolved(ip, mac);
-                EventHandleResult::Success
-            }
-            NetworkEvent::TcpConnect {
-                result_slot, waker, ..
-            } => {
-                let result = Err(EndpointError::InvalidStateTransition);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::TcpConnectStream {
-                local,
-                remote,
-                result_slot,
-                waker,
-            } => {
-                let result = self.make_tcp_stream_with_stack(runtime, local, remote, stack);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::MulticastJoin {
-                group,
-                result_slot,
-                waker,
-            } => {
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
-                let success = stack.join_multicast_group(ip).is_ok();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::MulticastLeave {
-                group,
-                result_slot,
-                waker,
-            } => {
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
-                let success = stack.leave_multicast_group(ip).is_ok();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UnbindUdp {
-                port,
-                scope,
-                result_slot,
-                waker,
-            } => {
-                stack.unbind_udp_scoped(scope, port);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UnbindTcp {
-                local,
-                remote,
-                result_slot,
-                waker,
-            } => {
-                if let Some(entry) = tcb_table().remove(local, remote) {
-                    self.close_endpoint_for_unbind(entry.fd);
-                }
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UnbindTcpListener {
-                fd,
-                result_slot,
-                waker,
-            } => {
-                let _ = tcb_table().remove_by_fd(fd);
-                self.close_endpoint_for_unbind(fd);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::TcpBindWithToken {
-                result_slot, waker, ..
-            } => {
-                let result = Err(EndpointError::InvalidStateTransition);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::TcpBindListener {
-                local,
-                result_slot,
-                waker,
-            } => {
-                let result = self.make_tcp_listener_with_stack(
-                    runtime,
-                    local,
-                    super::inner::EndpointInner::DEFAULT_BACKLOG as u32,
-                );
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::TcpBindListenerWithToken {
-                local,
-                token,
-                result_slot,
-                waker,
-            } => {
-                let _ = token;
-                let result = self.make_tcp_listener_with_stack(
-                    runtime,
-                    local,
-                    super::inner::EndpointInner::DEFAULT_BACKLOG as u32,
-                );
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBindWithToken {
-                port,
-                scope,
-                token,
-                result_slot,
-                waker,
-            } => {
-                let success = stack
-                    .bind_udp_with_token_scoped(scope, port, token)
-                    .is_some();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBindEndpoint {
-                port,
-                scope,
-                result_slot,
-                waker,
-            } => {
-                let endpoint = stack.bind_udp_scoped(scope, port);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(endpoint);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBindEndpointWithToken {
-                port,
-                scope,
-                token,
-                result_slot,
-                waker,
-            } => {
-                let endpoint = stack.bind_udp_with_token_scoped(scope, port, token);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(endpoint);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::ApplyIpv6Address {
-                addr,
-                result_slot,
-                waker,
-            } => {
-                let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(addr);
-                stack.enqueue_apply_ipv6_global_address(ipv6);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::ProcessTimeouts => {
-                // NetworkStack内部タイマーの基準時刻を同期する。
-                // IGMP/ARP/NDP等が `NetworkStack::current_time()` を参照するため、
-                // timeoutイベントごとに必ず更新しておく。
-                let now = crate::task::current_tick();
-                stack.update_time(now);
-
-                stack.process_timeouts();
-
-                // --- RFC Compliance: Process TCP periodic tasks ---
-                // 1. TCB table maintenance (RTO, TimeWait, FinWait2, etc.)
-                tcb_table().tick();
-                // 2. Delayed ACK flushing (RFC 1122 Section 4.2.3.2)
-                super::tcp_rx::flush_delayed_acks();
-
-                // ICMP Echo待ちの期限切れエントリをクリーンアップ
-                crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
-                // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
-                crate::net::l2::arp::cleanup_arp_waiters();
-                EventHandleResult::Success
+            lifecycle_event @ NetworkEvent::TcpBind { .. }
+            | lifecycle_event @ NetworkEvent::UdpBind { .. }
+            | lifecycle_event @ NetworkEvent::ArpResolveRequest { .. }
+            | lifecycle_event @ NetworkEvent::ArpResolved { .. }
+            | lifecycle_event @ NetworkEvent::TcpConnect { .. }
+            | lifecycle_event @ NetworkEvent::TcpConnectStream { .. }
+            | lifecycle_event @ NetworkEvent::MulticastJoin { .. }
+            | lifecycle_event @ NetworkEvent::MulticastLeave { .. }
+            | lifecycle_event @ NetworkEvent::UnbindUdp { .. }
+            | lifecycle_event @ NetworkEvent::UnbindTcp { .. }
+            | lifecycle_event @ NetworkEvent::UnbindTcpListener { .. }
+            | lifecycle_event @ NetworkEvent::TcpBindWithToken { .. }
+            | lifecycle_event @ NetworkEvent::TcpBindListener { .. }
+            | lifecycle_event @ NetworkEvent::TcpBindListenerWithToken { .. }
+            | lifecycle_event @ NetworkEvent::UdpBindWithToken { .. }
+            | lifecycle_event @ NetworkEvent::UdpBindEndpoint { .. }
+            | lifecycle_event @ NetworkEvent::UdpBindEndpointWithToken { .. }
+            | lifecycle_event @ NetworkEvent::ApplyIpv6Address { .. }
+            | lifecycle_event @ NetworkEvent::ProcessTimeouts => {
+                self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack)
             }
             raw_event @ NetworkEvent::RawUdpSendOn { .. } => {
                 self.handle_raw_event_with_stack(runtime, raw_event, stack)
@@ -1089,175 +726,29 @@ impl NetworkEventHandler {
             // ============================================================
             // 非同期DHCP/TCP クエリ（スタックロック保持中に処理）
             // ============================================================
-            NetworkEvent::GetDhcpState {
-                if_id,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                if let Some(if_id) = if_id {
-                    crate::net::api::dhcp::get_dhcp_state_snapshot_in(runtime, NetIfId(if_id))
-                } else {
-                    crate::net::api::dhcp::dhcp_state_snapshot_in(runtime)
-                },
-            ),
-            NetworkEvent::ListDhcpStates { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::dhcp::list_dhcp_states_snapshot_in(runtime),
-            ),
-            NetworkEvent::DhcpRenew { result_slot, waker } => {
-                use crate::net::services::dhcp;
-
-                let now = tcb_table().get_current_tick();
-                let mut touched = false;
-                let mut err_msg: Option<alloc::string::String> = None;
-
-                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
-                    client.force_renew_or_restart(now);
-                    touched = true;
-                }
-
-                if err_msg.is_none() {
-                    match dhcp::primary_v6_client_lock_in(runtime).lock() {
-                        Ok(guard6) => {
-                            if let Some(ref client6) = *guard6 {
-                                if let Err(e) = client6.force_renew_or_restart(now) {
-                                    err_msg = Some(alloc::string::String::from(e));
-                                } else {
-                                    touched = true;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            err_msg = Some(alloc::string::String::from(
-                                "DHCPv6 global client lock poisoned",
-                            ))
-                        }
-                    }
-                }
-
-                let result = if let Some(e) = err_msg {
-                    Err(e)
-                } else if !touched {
-                    Err(alloc::string::String::from(
-                        "DHCP runtime is not initialized",
-                    ))
-                } else {
-                    Ok(())
-                };
-
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            query_event @ NetworkEvent::GetDhcpState { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
             }
-            NetworkEvent::DhcpRelease { result_slot, waker } => {
-                use crate::net::services::dhcp;
-
-                let mut released = false;
-                // DHCPv4 Release
-                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
-                    client.release();
-                    released = true;
-                }
-                // DHCPv6 Release (RFC 8415 Section 18.2.6)
-                if let Ok(guard) = dhcp::primary_v6_client_lock_in(runtime).lock() {
-                    if let Some(ref client) = *guard {
-                        client.release();
-                        released = true;
-                    }
-                }
-
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(released);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            query_event @ NetworkEvent::ListDhcpStates { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
             }
-            NetworkEvent::DhcpDiscover { result_slot, waker } => {
-                use crate::net::services::dhcp;
-
-                let now = tcb_table().get_current_tick();
-                let mut offer = None;
-
-                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
-                    let _ = client.drive(now, 1000);
-                    if let Some(o) = client.offered_lease() {
-                        offer = Some(crate::net::api::dhcp::DhcpOfferInfo {
-                            server_ip: *o.server_ip.as_bytes(),
-                            offered_ip: *o.ip_address.as_bytes(),
-                        });
-                    }
-                }
-
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(offer);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            query_event @ NetworkEvent::DhcpRenew { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
             }
-            NetworkEvent::DhcpLastDeclined { result_slot, waker } => {
-                use crate::net::services::dhcp;
-
-                let mut ip = None;
-                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
-                    ip = client.last_declined_ip().map(|a| *a.as_bytes());
-                }
-
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(ip);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            query_event @ NetworkEvent::DhcpRelease { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
             }
-            NetworkEvent::DhcpLastReleased { result_slot, waker } => {
-                use crate::net::services::dhcp;
-
-                let mut ip = None;
-                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
-                    ip = client.last_released_ip().map(|a| *a.as_bytes());
-                }
-
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(ip);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            query_event @ NetworkEvent::DhcpDiscover { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
             }
-            NetworkEvent::GetTcpConnections { result_slot, waker } => {
-                let snapshots = tcb_table().list_connections();
-                let connections: Vec<_> = snapshots
-                    .into_iter()
-                    .map(|snap| {
-                        let state = match snap.state {
-                            TcpConnectionState::Closed => "CLOSED",
-                            TcpConnectionState::Listen => "LISTEN",
-                            TcpConnectionState::SynSent => "SYN_SENT",
-                            TcpConnectionState::SynReceived => "SYN_RCVD",
-                            TcpConnectionState::Established => "ESTABLISHED",
-                            TcpConnectionState::FinWait1 => "FIN_WAIT1",
-                            TcpConnectionState::FinWait2 => "FIN_WAIT2",
-                            TcpConnectionState::CloseWait => "CLOSE_WAIT",
-                            TcpConnectionState::Closing => "CLOSING",
-                            TcpConnectionState::LastAck => "LAST_ACK",
-                            TcpConnectionState::TimeWait => "TIME_WAIT",
-                        };
-                        crate::net::api::connections::TcpConnectionInfo {
-                            local_addr: alloc::format!("{}", snap.local),
-                            remote_addr: alloc::format!("{}", snap.remote),
-                            state: alloc::string::String::from(state),
-                        }
-                    })
-                    .collect();
-
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(connections);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            query_event @ NetworkEvent::DhcpLastDeclined { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
+            }
+            query_event @ NetworkEvent::DhcpLastReleased { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
+            }
+            query_event @ NetworkEvent::GetTcpConnections { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
             }
 
             // その他のイベントはスタック非依存（再帰的ロック取得を回避）
@@ -1282,12 +773,12 @@ impl Default for NetworkEventHandler {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;
-    use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
+    use crate::net::l4::endpoint::event::{NetworkEvent, event_queue};
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
-    use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
+    use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
     use crate::net::l4::endpoint::{
-        create_raw_endpoint, create_tcp_endpoint, create_udp_endpoint, EndpointAddr, EndpointError,
-        EndpointState,
+        EndpointAddr, EndpointError, EndpointState, create_raw_endpoint, create_tcp_endpoint,
+        create_udp_endpoint,
     };
 
     fn test_payload(data: &[u8]) -> PacketPayload {
@@ -1496,9 +987,11 @@ pub mod tests {
             crate::net::l4::endpoint::manager::endpoint_manager().expect("endpoint manager lock");
         let guard = manager.read().unwrap_or_else(|e| e.into_inner());
         let manager = guard.as_ref().expect("endpoint manager");
-        assert!(manager
-            .register_raw_scope(crate::net::types::InterfaceScope::Any, raw.fd())
-            .is_ok());
+        assert!(
+            manager
+                .register_raw_scope(crate::net::types::InterfaceScope::Any, raw.fd())
+                .is_ok()
+        );
         drop(guard);
 
         let ingress_if = NetIfId(9);
@@ -1645,10 +1138,10 @@ pub fn init_network_event_handler() {
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
-    use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
+    use crate::net::l4::endpoint::event::{NetworkEvent, event_queue};
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
-    use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
-    use crate::net::l4::endpoint::{create_tcp_endpoint, EndpointAddr, EndpointState};
+    use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
+    use crate::net::l4::endpoint::{EndpointAddr, EndpointState, create_tcp_endpoint};
 
     fn test_payload(data: &[u8]) -> PacketPayload {
         crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")

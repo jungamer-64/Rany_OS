@@ -5,7 +5,8 @@
 // ============================================================================
 use super::*;
 use crate::{
-    debug, domain, driver_registry, durability, fs, graphics, heap, integration, interrupts, io, kapi, loader, sas, security, task, test, util,
+    debug, domain, driver_registry, durability, fs, graphics, heap, integration, interrupts, io,
+    kapi, loader, sas, security, task, test, util,
 };
 use log::{debug, error, info, warn};
 

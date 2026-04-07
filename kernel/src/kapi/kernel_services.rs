@@ -1,9 +1,9 @@
 use super::*;
 use crate::kapi::device_registration::{
-    authorize_dma_device_for_current_subject,
-    register_block_device_for_current_subject, register_netdev_port_for_current_subject,
-    register_nvme_namespace_for_current_subject, unregister_block_device_for_current_subject,
-    unregister_netdev_port_for_current_subject, unregister_nvme_namespace_for_current_subject,
+    authorize_dma_device_for_current_subject, register_block_device_for_current_subject,
+    register_netdev_port_for_current_subject, register_nvme_namespace_for_current_subject,
+    unregister_block_device_for_current_subject, unregister_netdev_port_for_current_subject,
+    unregister_nvme_namespace_for_current_subject,
 };
 use crate::kapi::memory::release_dma_buffer;
 use crate::kapi::net::{

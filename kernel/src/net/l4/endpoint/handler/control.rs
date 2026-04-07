@@ -2,12 +2,12 @@
 // kernel/src/net/l4/endpoint/handler/control.rs
 // ============================================================================
 //! NetworkEventHandler 制御系メソッド
+use crate::net::l4::endpoint::EndpointFd;
+use crate::net::l4::endpoint::handler::ENDPOINT_MANAGER;
 use crate::net::l4::endpoint::handler::EventHandleResult;
 use crate::net::l4::endpoint::handler::NetworkEventHandler;
-use crate::net::l4::endpoint::handler::ENDPOINT_MANAGER;
 use crate::net::l4::endpoint::tcb_table;
 use crate::net::l4::endpoint::types::EndpointState;
-use crate::net::l4::endpoint::EndpointFd;
 
 impl NetworkEventHandler {
     /// SetPriorityイベント処理

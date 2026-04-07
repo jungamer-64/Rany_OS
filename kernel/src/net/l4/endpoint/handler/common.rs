@@ -6,7 +6,7 @@
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::endpoint::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult};
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::{default_runtime, NetRuntimeHandle};
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use kernel_api::resource::net::PacketPayload;
 
 /// イベント処理の結果

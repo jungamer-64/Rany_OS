@@ -1,4 +1,3 @@
-
 const ASYNC_BOOT_STAGE_COUNT: usize = 6;
 const ASYNC_BOOT_CPU_UNSET: usize = usize::MAX;
 

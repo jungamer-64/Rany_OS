@@ -8,8 +8,8 @@ use crate::net::l4::endpoint::event::NetworkEvent;
 use crate::net::l4::endpoint::handler::common::finish_command;
 use crate::net::l4::endpoint::handler::{EventHandleResult, NetworkEventHandler};
 use crate::net::l4::endpoint::types::EndpointError;
-use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::manager::NetIfId;
 
 impl NetworkEventHandler {
     pub(super) fn handle_utility_event_with_stack(

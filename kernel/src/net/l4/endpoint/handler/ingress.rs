@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::net::l4::endpoint::handler::common::{
-    deliver_raw_payload_if_registered, extract_ports, resolve_ingress_if_id_in,
+    deliver_raw_payload_if_registered, extract_ports, resolve_ingress_if_id_in, subslice_offset,
 };
 use kernel_api::resource::net::PacketPayload;
 
@@ -31,6 +31,148 @@ impl NetworkEventHandler {
             NetworkEvent::IngressPacket { if_id, packet },
         );
         EventHandleResult::Success
+    }
+
+    /// IngressPacketイベント処理（スタック保持）
+    pub(super) fn handle_ingress_packet_with_stack(
+        &self,
+        runtime: NetRuntimeHandle,
+        if_id: Option<NetIfId>,
+        packet: PacketRef,
+        stack: &mut crate::net::runtime::stack::NetworkStack,
+    ) -> EventHandleResult {
+        let pkt_len = packet.len();
+        let data = packet.data();
+        let current_time = stack.current_time();
+
+        match stack.ethernet.process(data) {
+            crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
+                let ip_packet = subslice_offset(data, payload).map(|offset| {
+                    let mut ip_packet = packet.clone();
+                    ip_packet.advance(offset);
+                    ip_packet.set_len(payload.len());
+                    ip_packet
+                });
+                self.handle_ipv4_ingress_with_stack(
+                    runtime,
+                    if_id,
+                    payload,
+                    ip_packet,
+                    src_mac,
+                    current_time,
+                    stack,
+                );
+                stack.stats.record_rx(pkt_len);
+                EventHandleResult::Success
+            }
+            crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
+                stack.process_arp(if_id, payload, current_time, src_mac);
+                stack.stats.record_rx(pkt_len);
+                EventHandleResult::Success
+            }
+            crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
+                if stack.ipv6.is_some() {
+                    let ip_packet = subslice_offset(data, payload).map(|offset| {
+                        let mut ip_packet = packet.clone();
+                        ip_packet.advance(offset);
+                        ip_packet.set_len(payload.len());
+                        ip_packet
+                    });
+                    // ── ファイアウォール Ingress チェック (IPv6) ──
+                    if payload.len() >= 40 {
+                        let src_ip = [
+                            payload[8],
+                            payload[9],
+                            payload[10],
+                            payload[11],
+                            payload[12],
+                            payload[13],
+                            payload[14],
+                            payload[15],
+                            payload[16],
+                            payload[17],
+                            payload[18],
+                            payload[19],
+                            payload[20],
+                            payload[21],
+                            payload[22],
+                            payload[23],
+                        ];
+                        let dst_ip = [
+                            payload[24],
+                            payload[25],
+                            payload[26],
+                            payload[27],
+                            payload[28],
+                            payload[29],
+                            payload[30],
+                            payload[31],
+                            payload[32],
+                            payload[33],
+                            payload[34],
+                            payload[35],
+                            payload[36],
+                            payload[37],
+                            payload[38],
+                            payload[39],
+                        ];
+                        let next_header = payload[6];
+                        let (protocol, transport_data) =
+                            crate::net::l3::ipv6::skip_extension_headers(
+                                crate::net::l3::ipv4::IpProtocol::from(next_header),
+                                &payload[40..],
+                            );
+
+                        let (src_port, dst_port) = if (u8::from(protocol) == 6
+                            || u8::from(protocol) == 17)
+                            && transport_data.len() >= 4
+                        {
+                            let sp = u16::from_be_bytes([transport_data[0], transport_data[1]]);
+                            let dp = u16::from_be_bytes([transport_data[2], transport_data[3]]);
+                            (sp, dp)
+                        } else if u8::from(protocol) == 58 && transport_data.len() >= 2 {
+                            // ICMPv6: src_port = type, dst_port = code
+                            (transport_data[0] as u16, transport_data[1] as u16)
+                        } else {
+                            (0, 0)
+                        };
+
+                        let tcp_flags = if u8::from(protocol) == 6 && transport_data.len() >= 14 {
+                            transport_data[13]
+                        } else {
+                            0
+                        };
+
+                        // Security Fix: Use full IPv6 addresses for firewall check
+                        if !crate::net::security::firewall::check_ingress(
+                            crate::net::security::firewall::IpAddress::V6(src_ip),
+                            crate::net::security::firewall::IpAddress::V6(dst_ip),
+                            u8::from(protocol),
+                            src_port,
+                            dst_port,
+                            tcp_flags,
+                        ) {
+                            stack.stats.record_dropped();
+                            return EventHandleResult::Success;
+                        }
+                    }
+
+                    stack.process_ipv6_data(
+                        if_id,
+                        payload,
+                        current_time,
+                        src_mac,
+                        false,
+                        ip_packet,
+                    );
+                    stack.stats.record_rx(pkt_len);
+                } else {
+                    stack.stats.record_dropped();
+                }
+                EventHandleResult::Success
+            }
+            _ => EventHandleResult::Success,
+        }
     }
 
     /// IngressBatchイベント処理（スタック保持）
