@@ -160,8 +160,21 @@ impl NetworkEventHandler {
                     ..NetTxMeta::default()
                 });
                 let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_udp_v6_payload_scoped_with_ttl(
+                    Some(meta) => stack
+                        .with_pending_tx_meta(meta, |stack| {
+                            stack.send_udp_v6_payload_scoped_with_ttl(
+                                crate::net::types::InterfaceScope::Any,
+                                src_port,
+                                src,
+                                dst,
+                                dst_port,
+                                &payload,
+                                ttl,
+                            )
+                        })
+                        .is_ok(),
+                    None => stack
+                        .send_udp_v6_payload_scoped_with_ttl(
                             crate::net::types::InterfaceScope::Any,
                             src_port,
                             src,
@@ -170,16 +183,7 @@ impl NetworkEventHandler {
                             &payload,
                             ttl,
                         )
-                    }),
-                    None => stack.send_udp_v6_payload_scoped_with_ttl(
-                        crate::net::types::InterfaceScope::Any,
-                        src_port,
-                        src,
-                        dst,
-                        dst_port,
-                        &payload,
-                        ttl,
-                    ),
+                        .is_ok(),
                 };
                 let result = if sent {
                     Ok(())
@@ -219,10 +223,12 @@ impl NetworkEventHandler {
                     ..NetTxMeta::default()
                 });
                 let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_v6_payload(src, dst, &payload)
-                    }),
-                    None => stack.send_tcp_v6_payload(src, dst, &payload),
+                    Some(meta) => stack
+                        .with_pending_tx_meta(meta, |stack| {
+                            stack.send_tcp_v6_payload(src, dst, &payload)
+                        })
+                        .is_ok(),
+                    None => stack.send_tcp_v6_payload(src, dst, &payload).is_ok(),
                 };
                 let result = if sent {
                     Ok(())
@@ -393,8 +399,21 @@ impl NetworkEventHandler {
                     ..NetTxMeta::default()
                 });
                 let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_udp_v6_payload_scoped_with_ttl(
+                    Some(meta) => stack
+                        .with_pending_tx_meta(meta, |stack| {
+                            stack.send_udp_v6_payload_scoped_with_ttl(
+                                crate::net::types::InterfaceScope::Pinned(net_if),
+                                src_port,
+                                src,
+                                dst,
+                                dst_port,
+                                &payload,
+                                ttl,
+                            )
+                        })
+                        .is_ok(),
+                    None => stack
+                        .send_udp_v6_payload_scoped_with_ttl(
                             crate::net::types::InterfaceScope::Pinned(net_if),
                             src_port,
                             src,
@@ -403,16 +422,7 @@ impl NetworkEventHandler {
                             &payload,
                             ttl,
                         )
-                    }),
-                    None => stack.send_udp_v6_payload_scoped_with_ttl(
-                        crate::net::types::InterfaceScope::Pinned(net_if),
-                        src_port,
-                        src,
-                        dst,
-                        dst_port,
-                        &payload,
-                        ttl,
-                    ),
+                        .is_ok(),
                 };
                 let result = if sent {
                     Ok(())
@@ -454,10 +464,12 @@ impl NetworkEventHandler {
                     ..NetTxMeta::default()
                 });
                 let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_v6_payload_on(net_if, src, dst, &payload)
-                    }),
-                    None => stack.send_tcp_v6_payload_on(net_if, src, dst, &payload),
+                    Some(meta) => stack
+                        .with_pending_tx_meta(meta, |stack| {
+                            stack.send_tcp_v6_payload_on(net_if, src, dst, &payload)
+                        })
+                        .is_ok(),
+                    None => stack.send_tcp_v6_payload_on(net_if, src, dst, &payload).is_ok(),
                 };
                 let result = if sent {
                     Ok(())

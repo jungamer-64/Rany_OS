@@ -211,24 +211,28 @@ impl NetworkEventHandler {
             let payload_view = PacketPayloadView::new(&payload);
 
             match stack.resolve_ipv6_egress(scope, None, Some(src_v6), dst_v6) {
-                Ok((Some(if_id), _, _)) => stack.send_udp_v6_payload_scoped_with_ttl(
-                    crate::net::types::InterfaceScope::Pinned(if_id),
-                    local_port,
-                    src_v6,
-                    dst_v6,
-                    remote.port(),
-                    &payload_view,
-                    64,
-                ),
-                Ok((None, _, _)) => stack.send_udp_v6_payload_scoped_with_ttl(
-                    crate::net::types::InterfaceScope::Any,
-                    local_port,
-                    src_v6,
-                    dst_v6,
-                    remote.port(),
-                    &payload_view,
-                    64,
-                ),
+                Ok((Some(if_id), _, _)) => stack
+                    .send_udp_v6_payload_scoped_with_ttl(
+                        crate::net::types::InterfaceScope::Pinned(if_id),
+                        local_port,
+                        src_v6,
+                        dst_v6,
+                        remote.port(),
+                        &payload_view,
+                        64,
+                    )
+                    .is_ok(),
+                Ok((None, _, _)) => stack
+                    .send_udp_v6_payload_scoped_with_ttl(
+                        crate::net::types::InterfaceScope::Any,
+                        local_port,
+                        src_v6,
+                        dst_v6,
+                        remote.port(),
+                        &payload_view,
+                        64,
+                    )
+                    .is_ok(),
                 Err(error) => {
                     return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
                 }

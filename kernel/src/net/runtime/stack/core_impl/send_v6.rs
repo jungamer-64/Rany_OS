@@ -7,6 +7,7 @@
 // =============================================================================
 
 use super::*;
+use core::sync::atomic::AtomicU32;
 
 impl NetworkStack {
     fn copy_payload_into_ipv6_frame(
@@ -19,6 +20,164 @@ impl NetworkStack {
         }
         let copied = payload.copy_all_into(&mut dst[..len]);
         (copied == len).then_some(len)
+    }
+
+    fn next_ipv6_fragment_identification() -> u32 {
+        static IPV6_FRAGMENT_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
+        IPV6_FRAGMENT_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn effective_ipv6_pmtu(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        dst: &Ipv6Address,
+        current_time: u64,
+    ) -> usize {
+        let mut pmtu = self.ipv6_pmtu_cache.get(dst, current_time);
+        if let Some(if_id) = if_id {
+            if let Some(state) = self.interfaces.get_mut(&if_id) {
+                pmtu = pmtu.min(state.ipv6_pmtu_cache.get(dst, current_time));
+            }
+        }
+        pmtu
+            .max(crate::net::l3::ipv6::Ipv6PmtuEntry::MIN_MTU)
+            .min(crate::net::runtime::stack::MTU as u32) as usize
+    }
+
+    fn send_ipv6_l4_payload_with_pmtu(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        next_header: IpProtocol,
+        hop_limit: u8,
+        payload: &[u8],
+        path_mtu: usize,
+    ) -> Result<(), crate::net::types::NetworkError> {
+        let Some(unfragmented_payload_limit) = path_mtu.checked_sub(IPV6_HEADER_SIZE) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+
+        if payload.len() <= unfragmented_payload_limit {
+            let mut packet = self
+                .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE + payload.len())
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            frame
+                .set_destination(dst_mac)
+                .set_source(src_mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+            let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            ip_packet.init_header();
+            ip_packet.set_source(&src);
+            ip_packet.set_destination(&dst);
+            ip_packet.set_next_header(next_header);
+            ip_packet.set_hop_limit(hop_limit);
+
+            let payload_buf = ip_packet.payload_mut();
+            if payload_buf.len() < payload.len() {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
+            payload_buf[..payload.len()].copy_from_slice(payload);
+            ip_packet.finalize(payload.len());
+
+            let total_len = IPV6_HEADER_SIZE + payload.len();
+            frame.set_payload_len(total_len);
+            let frame_len = frame.as_bytes().len();
+            drop(frame);
+            packet.set_len(frame_len);
+
+            if self.transmit_packet_on(if_id, packet) {
+                return Ok(());
+            }
+            return Err(crate::net::types::NetworkError::TransmitFailed);
+        }
+
+        let Some(fragment_payload_limit) = path_mtu.checked_sub(IPV6_HEADER_SIZE + 8) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        let non_last_fragment_len = fragment_payload_limit & !0x7;
+        if non_last_fragment_len == 0 {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+
+        let identification = Self::next_ipv6_fragment_identification();
+        let mut offset = 0usize;
+
+        while offset < payload.len() {
+            let remaining = payload.len() - offset;
+            let fragment_data_len = if remaining > fragment_payload_limit {
+                non_last_fragment_len.min(remaining)
+            } else {
+                remaining
+            };
+            let more_fragments = offset + fragment_data_len < payload.len();
+            if more_fragments && (fragment_data_len % 8 != 0) {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
+
+            let fragment_payload_len = 8 + fragment_data_len;
+            let mut packet = self
+                .alloc_ethernet_frame_packet(
+                    EthernetHeader::SIZE + IPV6_HEADER_SIZE + fragment_payload_len,
+                )
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            frame
+                .set_destination(dst_mac)
+                .set_source(src_mac)
+                .set_ether_type(EtherType::Ipv6);
+
+            let eth_payload = frame.payload_mut();
+            let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            ip_packet.init_header();
+            ip_packet.set_source(&src);
+            ip_packet.set_destination(&dst);
+            ip_packet.set_next_header(IpProtocol::Unknown(44));
+            ip_packet.set_hop_limit(hop_limit);
+
+            let payload_buf = ip_packet.payload_mut();
+            if payload_buf.len() < fragment_payload_len {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
+
+            payload_buf[0] = u8::from(next_header);
+            payload_buf[1] = 0;
+            let fragment_offset_units =
+                u16::try_from(offset / 8).map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
+            let offset_and_flags = (fragment_offset_units << 3) | u16::from(more_fragments);
+            payload_buf[2..4].copy_from_slice(&offset_and_flags.to_be_bytes());
+            payload_buf[4..8].copy_from_slice(&identification.to_be_bytes());
+            payload_buf[8..8 + fragment_data_len]
+                .copy_from_slice(&payload[offset..offset + fragment_data_len]);
+            ip_packet.finalize(fragment_payload_len);
+
+            let total_len = IPV6_HEADER_SIZE + fragment_payload_len;
+            frame.set_payload_len(total_len);
+            let frame_len = frame.as_bytes().len();
+            drop(frame);
+            packet.set_len(frame_len);
+
+            if !self.transmit_packet_on(if_id, packet) {
+                return Err(crate::net::types::NetworkError::TransmitFailed);
+            }
+
+            offset += fragment_data_len;
+        }
+
+        Ok(())
     }
 
     /// Send ICMPv6 Echo Reply with explicit source
@@ -519,13 +678,13 @@ impl NetworkStack {
         dst_port: u16,
         data: &PacketPayloadView<'_>,
         ttl: u8,
-    ) -> bool {
-        let Ok((if_id, config, resolved_src)) =
-            self.resolve_ipv6_egress(scope, None, Some(src_ip), dst)
-        else {
-            self.stats.record_dropped();
-            return false;
-        };
+    ) -> Result<(), crate::net::types::NetworkError> {
+        let (if_id, config, resolved_src) = self
+            .resolve_ipv6_egress(scope, None, Some(src_ip), dst)
+            .map_err(|error| {
+                self.stats.record_dropped();
+                error
+            })?;
 
         if !crate::net::security::firewall::check_egress(
             crate::net::security::firewall::IpAddress::V6(resolved_src.octets()),
@@ -536,7 +695,7 @@ impl NetworkStack {
             0,
         ) {
             self.stats.record_dropped();
-            return false;
+            return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
         let current_time = self.current_time.load(Ordering::Relaxed);
@@ -563,55 +722,36 @@ impl NetworkStack {
                     } else {
                         self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
                     }
-                    return false;
+                    return Err(crate::net::types::NetworkError::ArpResolutionPending);
                 }
-                None => return false,
+                None => return Err(crate::net::types::NetworkError::NetworkUnreachable),
             }
         };
 
-        let udp_total_len = 8 + data.total_len();
-        let mut packet = match self
-            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE + udp_total_len)
-        {
-            Some(packet) => packet,
-            None => return false,
+        let mut udp_datagram = alloc::vec![0u8; 8 + data.total_len()];
+        let Some(mut udp_packet) = crate::net::l4::udp::UdpPacketMut::new(&mut udp_datagram)
+        else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
-        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv6);
+        udp_packet
+            .set_src_port(src_port)
+            .set_dst_port(dst_port)
+            .write_payload_view(data);
+        let udp_len = udp_packet.finalize_v6(resolved_src, dst);
+        udp_datagram.truncate(udp_len);
 
-            let eth_payload = frame.payload_mut();
-            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
-                ip_packet.init_header();
-                ip_packet.set_source(&resolved_src);
-                ip_packet.set_destination(&dst);
-                ip_packet.set_next_header(IpProtocol::Udp);
-                ip_packet.set_hop_limit(ttl);
-
-                let payload_buf = ip_packet.payload_mut();
-                let Some(mut udp_packet) = crate::net::l4::udp::UdpPacketMut::new(payload_buf)
-                else {
-                    return false;
-                };
-                udp_packet
-                    .set_src_port(src_port)
-                    .set_dst_port(dst_port)
-                    .write_payload_view(data);
-                let udp_len = udp_packet.finalize_v6(resolved_src, dst);
-
-                ip_packet.finalize(udp_len);
-                let total_len = IPV6_HEADER_SIZE + udp_len;
-                frame.set_payload_len(total_len);
-                let frame_len = frame.as_bytes().len();
-                drop(frame);
-                packet.set_len(frame_len);
-                return self.transmit_packet_on(if_id, packet);
-            }
-        }
-
-        false
+        let path_mtu = self.effective_ipv6_pmtu(if_id, &dst, current_time);
+        self.send_ipv6_l4_payload_with_pmtu(
+            if_id,
+            config.mac,
+            dst_mac,
+            resolved_src,
+            dst,
+            IpProtocol::Udp,
+            ttl,
+            &udp_datagram,
+            path_mtu,
+        )
     }
 
     fn send_tcp_v6_payload_scoped(
@@ -620,15 +760,15 @@ impl NetworkStack {
         src_ip: Ipv6Address,
         dst: Ipv6Address,
         tcp_segment: &PacketPayloadView<'_>,
-    ) -> bool {
-        let Ok((if_id, config, resolved_src)) =
-            self.resolve_ipv6_egress(scope, None, Some(src_ip), dst)
-        else {
-            self.stats.record_dropped();
-            return false;
-        };
+    ) -> Result<(), crate::net::types::NetworkError> {
+        let (if_id, config, resolved_src) = self
+            .resolve_ipv6_egress(scope, None, Some(src_ip), dst)
+            .map_err(|error| {
+                self.stats.record_dropped();
+                error
+            })?;
         let Some(header) = tcp_segment.read_array::<14>(0) else {
-            return false;
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
         let src_port = u16::from_be_bytes([header[0], header[1]]);
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
@@ -642,7 +782,7 @@ impl NetworkStack {
             tcp_flags,
         ) {
             self.stats.record_dropped();
-            return false;
+            return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
         let current_time = self.current_time.load(Ordering::Relaxed);
@@ -667,53 +807,30 @@ impl NetworkStack {
                     } else {
                         self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
                     }
-                    return false;
+                    return Err(crate::net::types::NetworkError::ArpResolutionPending);
                 }
-                None => return false,
+                None => return Err(crate::net::types::NetworkError::NetworkUnreachable),
             }
         };
 
         let segment_len = tcp_segment.total_len();
-        let mut packet = match self
-            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE + segment_len)
-        {
-            Some(packet) => packet,
-            None => return false,
-        };
-        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv6);
-
-            let eth_payload = frame.payload_mut();
-            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
-                ip_packet.init_header();
-                ip_packet.set_source(&resolved_src);
-                ip_packet.set_destination(&dst);
-                ip_packet.set_next_header(IpProtocol::Tcp);
-                ip_packet.set_hop_limit(64);
-
-                let payload_buf = ip_packet.payload_mut();
-                if payload_buf.len() < segment_len {
-                    return false;
-                }
-                if tcp_segment.copy_all_into(&mut payload_buf[..segment_len]) != segment_len {
-                    return false;
-                }
-
-                ip_packet.finalize(segment_len);
-
-                let total_len = IPV6_HEADER_SIZE + segment_len;
-                frame.set_payload_len(total_len);
-                let frame_len = frame.as_bytes().len();
-                drop(frame);
-                packet.set_len(frame_len);
-                return self.transmit_packet_on(if_id, packet);
-            }
+        let mut tcp_bytes = alloc::vec![0u8; segment_len];
+        if tcp_segment.copy_all_into(&mut tcp_bytes) != segment_len {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
-        false
+        let path_mtu = self.effective_ipv6_pmtu(if_id, &dst, current_time);
+        self.send_ipv6_l4_payload_with_pmtu(
+            if_id,
+            config.mac,
+            dst_mac,
+            resolved_src,
+            dst,
+            IpProtocol::Tcp,
+            64,
+            &tcp_bytes,
+            path_mtu,
+        )
     }
 
     pub fn send_tcp_v6_payload(
@@ -721,7 +838,7 @@ impl NetworkStack {
         src_ip: Ipv6Address,
         dst: Ipv6Address,
         tcp_segment: &PacketPayloadView<'_>,
-    ) -> bool {
+    ) -> Result<(), crate::net::types::NetworkError> {
         self.send_tcp_v6_payload_scoped(
             crate::net::types::InterfaceScope::Any,
             src_ip,
@@ -736,7 +853,7 @@ impl NetworkStack {
         src_ip: Ipv6Address,
         dst: Ipv6Address,
         tcp_segment: &PacketPayloadView<'_>,
-    ) -> bool {
+    ) -> Result<(), crate::net::types::NetworkError> {
         self.send_tcp_v6_payload_scoped(
             crate::net::types::InterfaceScope::Pinned(if_id),
             src_ip,

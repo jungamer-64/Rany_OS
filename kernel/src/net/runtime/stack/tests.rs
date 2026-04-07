@@ -6,6 +6,7 @@ use core::future::Future;
 use kernel_api::resource::net::PacketPayload;
 
 static TEST_LAST_TX_IF: PoisonLock<Option<NetIfId>> = PoisonLock::new(None);
+static TEST_TX_FRAMES: PoisonLock<Vec<Vec<u8>>> = PoisonLock::new(Vec::new());
 
 fn test_payload(data: &[u8]) -> PacketPayload {
     crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
@@ -28,6 +29,28 @@ fn record_test_tx_if(
     true
 }
 
+fn record_test_tx_frame(
+    if_id: Option<NetIfId>,
+    packet: crate::net::datapath::mempool::PacketRef,
+    _meta: kernel_api::service::netdev::NetTxMeta,
+) -> bool {
+    if let Ok(mut guard) = TEST_LAST_TX_IF.lock() {
+        *guard = if_id;
+    }
+    if let Ok(mut frames) = TEST_TX_FRAMES.lock() {
+        frames.push(packet.data().to_vec());
+    }
+    true
+}
+
+fn reset_test_tx_capture() {
+    *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    TEST_TX_FRAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+}
+
 struct ManagerStateGuard {
     prev_manager: Option<crate::net::runtime::manager::NetworkManager>,
 }
@@ -40,6 +63,10 @@ impl ManagerStateGuard {
             core::mem::take(&mut *guard)
         };
         *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        TEST_TX_FRAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         Self { prev_manager }
     }
 }
@@ -50,6 +77,10 @@ impl Drop for ManagerStateGuard {
             .lock_for_init("[TEST][STACK] manager restore");
         *guard = self.prev_manager.take();
         *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        TEST_TX_FRAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 }
 
@@ -1059,4 +1090,204 @@ pub fn test_ndp_pending_queue_retains_udp_and_tcp_variants() {
         PendingIpv6Payload::Tcp { segment } => assert_eq!(payload_bytes(segment), b"tcp"),
         _ => panic!("expected tcp payload"),
     }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_udp_v6_payload_fragments_with_reduced_pmtu() {
+    reset_test_tx_capture();
+
+    let src_mac_octets = [0x02, 0x00, 0x00, 0x00, 0x00, 0x42];
+    let src_mac = MacAddress::from_octets(
+        src_mac_octets[0],
+        src_mac_octets[1],
+        src_mac_octets[2],
+        src_mac_octets[3],
+        src_mac_octets[4],
+        src_mac_octets[5],
+    );
+    let ipv6_cfg = crate::net::l3::ipv6::Ipv6Config::from_mac(&src_mac_octets);
+
+    let mut stack = NetworkStack::new(NetworkConfig {
+        mac: src_mac,
+        ipv6: Some(ipv6_cfg),
+        ..NetworkConfig::default()
+    });
+    stack.set_transmit_fn(record_test_tx_frame);
+
+    let dst = Ipv6Address::new([
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x44,
+    ]);
+    let dst_mac = [0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcc];
+    let now = stack.current_time();
+    stack
+        .ndp
+        .as_mut()
+        .expect("ndp available")
+        .cache_mut()
+        .insert(crate::net::l3::ndp::NeighborEntry::new_reachable(
+            dst, dst_mac, now,
+        ));
+    stack.ipv6_pmtu_cache.update(dst, 1280, now);
+
+    let data = alloc::vec![0xabu8; 2000];
+    let payload = test_payload(&data);
+    let payload_view = crate::net::payload::PacketPayloadView::new(&payload);
+
+    let result = stack.send_udp_v6_payload_scoped_with_ttl(
+        crate::net::types::InterfaceScope::Any,
+        12345,
+        ipv6_cfg.link_local,
+        dst,
+        8080,
+        &payload_view,
+        64,
+    );
+    assert!(result.is_ok());
+
+    let frames = TEST_TX_FRAMES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(frames.len() >= 2);
+
+    let mut expected_offset_units = 0u16;
+    let mut total_fragment_payload = 0usize;
+    let mut fragment_id = None;
+    for (index, frame) in frames.iter().enumerate() {
+        let ipv6_offset = EthernetHeader::SIZE;
+        assert!(frame.len() >= ipv6_offset + IPV6_HEADER_SIZE + 8);
+        assert_eq!(frame[ipv6_offset + 6], 44);
+
+        let frag_offset = ipv6_offset + IPV6_HEADER_SIZE;
+        assert_eq!(frame[frag_offset], 17);
+
+        let off_and_flags = u16::from_be_bytes([frame[frag_offset + 2], frame[frag_offset + 3]]);
+        let offset_units = off_and_flags >> 3;
+        let more_fragments = (off_and_flags & 0x1) != 0;
+        assert_eq!(offset_units, expected_offset_units);
+        if index + 1 == frames.len() {
+            assert!(!more_fragments);
+        } else {
+            assert!(more_fragments);
+        }
+
+        let current_id = u32::from_be_bytes([
+            frame[frag_offset + 4],
+            frame[frag_offset + 5],
+            frame[frag_offset + 6],
+            frame[frag_offset + 7],
+        ]);
+        if let Some(id) = fragment_id {
+            assert_eq!(id, current_id);
+        } else {
+            fragment_id = Some(current_id);
+        }
+
+        let ipv6_payload_len =
+            u16::from_be_bytes([frame[ipv6_offset + 4], frame[ipv6_offset + 5]]) as usize;
+        let fragment_payload_len = ipv6_payload_len.saturating_sub(8);
+        if index + 1 != frames.len() {
+            assert_eq!(fragment_payload_len % 8, 0);
+        }
+        total_fragment_payload += fragment_payload_len;
+        expected_offset_units =
+            expected_offset_units.saturating_add((fragment_payload_len / 8) as u16);
+    }
+
+    assert_eq!(total_fragment_payload, 8 + data.len());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_tcp_v6_payload_fragments_with_reduced_pmtu() {
+    reset_test_tx_capture();
+
+    let src_mac_octets = [0x02, 0x00, 0x00, 0x00, 0x00, 0x43];
+    let src_mac = MacAddress::from_octets(
+        src_mac_octets[0],
+        src_mac_octets[1],
+        src_mac_octets[2],
+        src_mac_octets[3],
+        src_mac_octets[4],
+        src_mac_octets[5],
+    );
+    let ipv6_cfg = crate::net::l3::ipv6::Ipv6Config::from_mac(&src_mac_octets);
+
+    let mut stack = NetworkStack::new(NetworkConfig {
+        mac: src_mac,
+        ipv6: Some(ipv6_cfg),
+        ..NetworkConfig::default()
+    });
+    stack.set_transmit_fn(record_test_tx_frame);
+
+    let dst = Ipv6Address::new([
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x45,
+    ]);
+    let dst_mac = [0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcd];
+    let now = stack.current_time();
+    stack
+        .ndp
+        .as_mut()
+        .expect("ndp available")
+        .cache_mut()
+        .insert(crate::net::l3::ndp::NeighborEntry::new_reachable(
+            dst, dst_mac, now,
+        ));
+    stack.ipv6_pmtu_cache.update(dst, 1280, now);
+
+    let mut segment = alloc::vec![0u8; 2200];
+    segment[0..2].copy_from_slice(&1234u16.to_be_bytes());
+    segment[2..4].copy_from_slice(&443u16.to_be_bytes());
+    segment[12] = 5u8 << 4;
+    segment[13] = 0x18;
+    let segment_payload = test_payload(&segment);
+    let segment_view = crate::net::payload::PacketPayloadView::new(&segment_payload);
+
+    let result = stack.send_tcp_v6_payload(ipv6_cfg.link_local, dst, &segment_view);
+    assert!(result.is_ok());
+
+    let frames = TEST_TX_FRAMES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(frames.len() >= 2);
+
+    let mut expected_offset_units = 0u16;
+    let mut total_fragment_payload = 0usize;
+    let mut fragment_id = None;
+    for (index, frame) in frames.iter().enumerate() {
+        let ipv6_offset = EthernetHeader::SIZE;
+        assert!(frame.len() >= ipv6_offset + IPV6_HEADER_SIZE + 8);
+        assert_eq!(frame[ipv6_offset + 6], 44);
+
+        let frag_offset = ipv6_offset + IPV6_HEADER_SIZE;
+        assert_eq!(frame[frag_offset], 6);
+
+        let off_and_flags = u16::from_be_bytes([frame[frag_offset + 2], frame[frag_offset + 3]]);
+        let offset_units = off_and_flags >> 3;
+        let more_fragments = (off_and_flags & 0x1) != 0;
+        assert_eq!(offset_units, expected_offset_units);
+        if index + 1 == frames.len() {
+            assert!(!more_fragments);
+        } else {
+            assert!(more_fragments);
+        }
+
+        let current_id = u32::from_be_bytes([
+            frame[frag_offset + 4],
+            frame[frag_offset + 5],
+            frame[frag_offset + 6],
+            frame[frag_offset + 7],
+        ]);
+        if let Some(id) = fragment_id {
+            assert_eq!(id, current_id);
+        } else {
+            fragment_id = Some(current_id);
+        }
+
+        let ipv6_payload_len =
+            u16::from_be_bytes([frame[ipv6_offset + 4], frame[ipv6_offset + 5]]) as usize;
+        let fragment_payload_len = ipv6_payload_len.saturating_sub(8);
+        if index + 1 != frames.len() {
+            assert_eq!(fragment_payload_len % 8, 0);
+        }
+        total_fragment_payload += fragment_payload_len;
+        expected_offset_units =
+            expected_offset_units.saturating_add((fragment_payload_len / 8) as u16);
+    }
+
+    assert_eq!(total_fragment_payload, segment.len());
 }

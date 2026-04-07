@@ -346,7 +346,7 @@ impl NetworkStack {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
                 let payload = crate::net::payload::PacketPayloadView::new(&payload);
-                if self.send_udp_v6_payload_scoped_with_ttl(
+                self.send_udp_v6_payload_scoped_with_ttl(
                     crate::net::types::InterfaceScope::Any,
                     s_port,
                     s_ip,
@@ -354,11 +354,7 @@ impl NetworkStack {
                     d_port,
                     &payload,
                     64,
-                ) {
-                    Ok(())
-                } else {
-                    Err(crate::net::types::NetworkError::TransmitFailed)
-                }
+                )
             }
             _ => Err(crate::net::types::NetworkError::InvalidAddress),
         }
