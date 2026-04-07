@@ -3,7 +3,7 @@
 // ============================================================================
 use super::ahci_ensure_mapping;
 use crate::{drivers, heap, io};
-use boot_proto::{EXO_BOOT_INFO_VERSION, ExoBootInfo};
+use boot_proto::ExoBootInfo;
 use log::{info, warn};
 
 #[allow(dead_code)]

@@ -21,7 +21,10 @@ pub trait ShellFrontend {
     /// Read a line of input
     ///
     /// This method is responsible for blocking/awaiting until a full line is ready.
-    async fn read_line(&mut self, shell: &mut ExoShell) -> Option<String>;
+    fn read_line(
+        &mut self,
+        shell: &mut ExoShell,
+    ) -> impl core::future::Future<Output = Option<String>> + Send;
 
     /// Display the command prompt
     fn print_prompt(&mut self, cwd: &str);

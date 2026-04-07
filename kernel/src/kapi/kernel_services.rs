@@ -1,11 +1,11 @@
 use super::*;
 use crate::kapi::device_registration::{
-    authorize_dma_device_for_current_subject, authorize_pci_locator_for_domain,
+    authorize_dma_device_for_current_subject,
     register_block_device_for_current_subject, register_netdev_port_for_current_subject,
     register_nvme_namespace_for_current_subject, unregister_block_device_for_current_subject,
     unregister_netdev_port_for_current_subject, unregister_nvme_namespace_for_current_subject,
 };
-use crate::kapi::memory::{cleanup_dma_for_owner, release_dma_buffer, release_dma_buffer_checked};
+use crate::kapi::memory::release_dma_buffer;
 use crate::kapi::net::{
     apply_endpoint_scope, close_endpoint_handle, endpoint_addr_from_kapi, endpoint_error_to_kapi,
     lookup_endpoint, network_error_to_kapi, stack_scope, tcp_error_to_kapi,

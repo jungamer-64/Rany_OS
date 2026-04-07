@@ -13,8 +13,6 @@
 #![feature(alloc_error_handler)]
 #![allow(unsafe_op_in_unsafe_fn)] // Transitional: allows unsafe calls in unsafe fn without block
 
-#[cfg(not(feature = "bench"))]
-use boot_proto::ExoBootInfo;
 
 // Provide fallback TLS symbols for binary builds on Windows hosts
 // when the kernel linker script is not applied (test runner builds).

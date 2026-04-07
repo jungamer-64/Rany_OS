@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::driver_domain;
-use crate::driver_registry::{self, DriverHandle};
+use crate::driver_registry::{self};
 use crate::security::CapabilitySet;
 use crate::security::capability::CAP_FOWNER;
 use crate::shell::exoshell::types::ExoValue;

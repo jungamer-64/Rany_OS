@@ -9,7 +9,6 @@ pub use allocator::{
 };
 
 pub(crate) use allocator::{
-    LockedBuddyHeap, checked_store_usize, checked_volatile_write_usize, exchange_heap_start,
-    get_default_memory_regions, physical_memory_offset, print_memory_stats,
+    checked_store_usize, exchange_heap_start, physical_memory_offset,
     reclaim_acpi_reclaimable, set_physical_memory_offset,
 };

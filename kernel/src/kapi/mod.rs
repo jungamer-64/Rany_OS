@@ -38,7 +38,6 @@ pub mod providers;
 pub mod storage;
 pub mod task;
 
-pub(crate) use bootstrap::EXOKERNEL;
 pub(crate) use bootstrap::{register_builtin_service_providers, register_kernel_services};
 
 pub struct ExoKernel;

@@ -5,10 +5,7 @@
 // ============================================================================
 use super::*;
 use crate::{
-    benchmark, console, cpu, debug, domain, driver_domain, driver_registry, drivers, durability,
-    error, fs, graphics, heap, integration, interrupts, io, ipc, kapi, loader, mm, monitor, net,
-    panic_handler, per_cpu, platform, power, profiler, provider_registry, sas, security, shell,
-    smp, sync, system_info, task, test, thermal, time, unwind, util, watchdog,
+    debug, domain, driver_registry, durability, fs, graphics, heap, integration, interrupts, io, kapi, loader, sas, security, task, test, util,
 };
 use log::{debug, error, info, warn};
 
@@ -1071,7 +1068,7 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
     }
 
     let cpu_count = crate::cpu::count() as usize;
-    let target_cpu = if cpu_count > 2 {
+    let _target_cpu = if cpu_count > 2 {
         cpu_count - 1
     } else {
         cpu_count.saturating_sub(1)
