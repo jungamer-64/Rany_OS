@@ -44,7 +44,7 @@ pub unsafe extern "C" fn _start() -> ! {
 
 #[cfg(all(not(any(test, feature = "std", feature = "bench")), target_os = "none"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_boot_entry(boot_info: &'static ExoBootInfo) -> ! {
+pub extern "C" fn kernel_boot_entry(boot_info: &'static boot_proto::ExoBootInfo) -> ! {
     rany_os::boot::kmain(boot_info)
 }
 

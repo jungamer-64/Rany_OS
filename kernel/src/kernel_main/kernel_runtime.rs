@@ -1376,7 +1376,7 @@ mod tests {
 #[cfg(all(not(test), target_os = "none"))]
 #[panic_handler]
 pub(crate) fn panic(info: &core::panic::PanicInfo) -> ! {
-    panic_handler::handle_panic(info)
+    crate::panic_handler::handle_panic(info)
 }
 
 // ============================================================================
