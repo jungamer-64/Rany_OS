@@ -861,7 +861,7 @@ impl NetworkStack {
     /// Send an IGMP Membership Report
     pub(crate) fn send_igmp_report(&mut self, group_addr: Ipv4Address, _current_time: u64) {
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             self.config.ipv4.address.octets(),
             group_addr.octets(),
             2, // IGMP
@@ -930,7 +930,7 @@ impl NetworkStack {
     ) {
         let dst_group = crate::net::l3::igmp::ALL_ROUTERS_V3_GROUP;
 
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             self.config.ipv4.address.octets(),
             dst_group.octets(),
             2,

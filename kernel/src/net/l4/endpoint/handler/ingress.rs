@@ -250,7 +250,7 @@ impl NetworkEventHandler {
                     _ => (0, 0, 0),
                 };
 
-                if !crate::net::security::firewall::check_ingress_v4(
+                if !crate::net::security::firewall::check_ingress(
                     src_ip.octets(),
                     dst_ip.octets(),
                     protocol.into(),
@@ -474,7 +474,7 @@ impl NetworkEventHandler {
                 (0, 0)
             };
 
-            if !crate::net::security::firewall::check_ingress_v4(
+            if !crate::net::security::firewall::check_ingress(
                 src_ip, dst_ip, protocol, src_port, dst_port, tcp_flags,
             ) {
                 stack.stats.record_dropped();

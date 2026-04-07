@@ -57,7 +57,7 @@ impl NetworkStack {
         payload: &crate::net::payload::PacketPayloadView<'_>,
         ttl: u8,
     ) -> bool {
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             src_ip.octets(),
             dst_ip.octets(),
             17,

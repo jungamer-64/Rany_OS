@@ -122,44 +122,6 @@ pub fn check_egress(
     }
 }
 
-/// IPv4 用の下位互換 API
-pub fn check_ingress_v4(
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
-    protocol: u8,
-    src_port: u16,
-    dst_port: u16,
-    tcp_flags: u8,
-) -> bool {
-    check_ingress(
-        IpAddress::V4(src_ip),
-        IpAddress::V4(dst_ip),
-        protocol,
-        src_port,
-        dst_port,
-        tcp_flags,
-    )
-}
-
-/// IPv4 用の下位互換 API (Egress)
-pub fn check_egress_v4(
-    src_ip: [u8; 4],
-    dst_ip: [u8; 4],
-    protocol: u8,
-    src_port: u16,
-    dst_port: u16,
-    tcp_flags: u8,
-) -> bool {
-    check_egress(
-        IpAddress::V4(src_ip),
-        IpAddress::V4(dst_ip),
-        protocol,
-        src_port,
-        dst_port,
-        tcp_flags,
-    )
-}
-
 /// ファイアウォールルールを追加する
 ///
 /// ルールは優先度（`priority`）の昇順に自動ソートされる。

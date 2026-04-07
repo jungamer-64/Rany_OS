@@ -257,7 +257,7 @@ impl NetworkStack {
             (0, 0, 0)
         };
 
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             src_ip.octets(),
             dst_ip.octets(),
             protocol,
@@ -626,7 +626,7 @@ impl NetworkStack {
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
         let tcp_flags = header[13];
 
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             src_ip.octets(),
             dst_ip.octets(),
             6,

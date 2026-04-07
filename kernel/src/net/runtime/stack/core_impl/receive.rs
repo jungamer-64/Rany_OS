@@ -233,7 +233,7 @@ impl NetworkStack {
                 _ => (0, 0, 0),
             };
 
-            if !crate::net::security::firewall::check_ingress_v4(
+            if !crate::net::security::firewall::check_ingress(
                 src.octets(),
                 dst.octets(),
                 protocol.into(),

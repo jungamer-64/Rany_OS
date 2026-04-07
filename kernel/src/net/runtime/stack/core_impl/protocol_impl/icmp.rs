@@ -24,7 +24,7 @@ impl NetworkStack {
         }
 
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             self.config.ipv4.address.octets(),
             dst_ip.octets(),
             1, // ICMP
@@ -203,7 +203,7 @@ impl NetworkStack {
             return;
         }
 
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             self.config.ipv4.address.octets(),
             dst_ip.octets(),
             1,
@@ -277,7 +277,7 @@ impl NetworkStack {
             return;
         }
 
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             self.config.ipv4.address.octets(),
             dst_ip.octets(),
             1,
@@ -371,7 +371,7 @@ impl NetworkStack {
         }
 
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             self.config.ipv4.address.octets(),
             dst_ip.octets(),
             1, // ICMP

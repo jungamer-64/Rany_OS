@@ -20,7 +20,7 @@ impl NetworkStack {
     /// Send an IGMP Leave Group message
     pub(super) fn send_igmp_leave(&mut self, group_addr: Ipv4Address, _current_time: u64) {
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress_v4(
+        if !crate::net::security::firewall::check_egress(
             self.config.ipv4.address.octets(),
             Ipv4Address::new([224, 0, 0, 2]).octets(), // all-routers
             2,                                         // IGMP
