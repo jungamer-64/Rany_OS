@@ -11,28 +11,26 @@ use alloc::vec::Vec;
 
 use super::event::NetworkEvent;
 use super::manager::ENDPOINT_MANAGER;
-use super::tcb::{TcpConnectionState, tcb_table};
+use super::tcb::{tcb_table, TcpConnectionState};
 use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
-use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
+use crate::net::runtime::{default_runtime, NetRuntimeHandle};
 use kernel_api::resource::net::PacketPayload;
-use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
 
 mod common;
 mod control;
 mod ingress;
+mod nat;
+mod raw;
 mod tcp;
 mod udp;
+mod utility;
 
 pub use self::common::EventHandleResult;
 
-use self::common::{
-    deliver_raw_payload_if_registered, finish_command, resolve_ingress_if_id_in,
-    stackless_dhcp_state_unavailable, subslice_offset,
-};
+use self::common::{finish_command, stackless_dhcp_state_unavailable, subslice_offset};
 
 /// ネットワークイベントハンドラ
 /// プロトコルスタック（TCP/UDP）と連携する
@@ -680,235 +678,10 @@ impl NetworkEventHandler {
                 }
             }
             NetworkEvent::IngressBatch { if_id, packets } => {
-                // バッチ着信: スタックロック保持中に全パケットを連続処理
-                for packet in packets {
-                    self.handle_event_with_stack_in(
-                        runtime,
-                        NetworkEvent::IngressPacket { if_id, packet },
-                        stack,
-                    );
-                }
-                EventHandleResult::Success
+                self.handle_ingress_batch_with_stack(runtime, if_id, packets, stack)
             }
             NetworkEvent::ReassembledPacket { if_id, payload } => {
-                let current_time = stack.current_time();
-                let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-                let view = PacketPayloadView::new(&payload);
-
-                // Determine if it's IPv4 or IPv6
-                if view.total_len() >= 20 && view.first_byte().map(|byte| byte >> 4) == Some(4) {
-                    // IPv4
-                    if let Some(header_packet) = view.first_segment() {
-                        let header = header_packet.data();
-                        if header.len() < 20 {
-                            return EventHandleResult::Success;
-                        }
-                        let header_len = ((header[0] & 0x0f) as usize) * 4;
-                        if header_len < 20
-                            || header.len() < header_len
-                            || view.total_len() < header_len
-                        {
-                            return EventHandleResult::Success;
-                        }
-                        let src_ip = crate::net::l3::ipv4::Ipv4Address::new([
-                            header[12], header[13], header[14], header[15],
-                        ]);
-                        let dst_ip = crate::net::l3::ipv4::Ipv4Address::new([
-                            header[16], header[17], header[18], header[19],
-                        ]);
-                        let protocol = crate::net::l3::ipv4::IpProtocol::from(header[9]);
-                        let transport_len = view.total_len().saturating_sub(header_len);
-                        let prefix_len = transport_len.min(20);
-                        let prefix = view.read_vec(header_len, prefix_len);
-                        let ttl = header[8];
-
-                        let (src_port, dst_port, tcp_flags) = match protocol {
-                            crate::net::l3::ipv4::IpProtocol::Tcp if prefix.len() >= 20 => (
-                                u16::from_be_bytes([prefix[0], prefix[1]]),
-                                u16::from_be_bytes([prefix[2], prefix[3]]),
-                                prefix[13],
-                            ),
-                            crate::net::l3::ipv4::IpProtocol::Udp if prefix.len() >= 8 => (
-                                u16::from_be_bytes([prefix[0], prefix[1]]),
-                                u16::from_be_bytes([prefix[2], prefix[3]]),
-                                0,
-                            ),
-                            crate::net::l3::ipv4::IpProtocol::Icmp if prefix.len() >= 2 => {
-                                (prefix[0] as u16, prefix[1] as u16, 0)
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Icmpv6 if prefix.len() >= 2 => {
-                                (prefix[0] as u16, prefix[1] as u16, 0)
-                            }
-                            _ => (0, 0, 0),
-                        };
-
-                        if !crate::net::security::firewall::check_ingress_v4(
-                            src_ip.octets(),
-                            dst_ip.octets(),
-                            protocol.into(),
-                            src_port,
-                            dst_port,
-                            tcp_flags,
-                        ) {
-                            stack.stats.record_dropped();
-                            return EventHandleResult::Success;
-                        }
-
-                        if deliver_raw_payload_if_registered(ingress_if_id, payload.clone()) {
-                            return EventHandleResult::Success;
-                        }
-
-                        let transport_payload = payload.slice(header_len, transport_len);
-                        match protocol {
-                            crate::net::l3::ipv4::IpProtocol::Tcp => {
-                                if let Some(transport_payload) = transport_payload {
-                                    super::tcp_rx::process_tcp_segment_payload_on(
-                                        if_id,
-                                        src_ip.octets(),
-                                        dst_ip.octets(),
-                                        &transport_payload,
-                                    );
-                                }
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Udp => {
-                                if let Some(transport_payload) = transport_payload {
-                                    stack.process_udp_payload(
-                                        if_id,
-                                        transport_payload,
-                                        src_ip,
-                                        dst_ip,
-                                        ttl,
-                                        &payload,
-                                        current_time,
-                                    );
-                                }
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Icmp => {
-                                if let Some(transport_payload) = transport_payload {
-                                    stack.process_icmp_payload(
-                                        &transport_payload,
-                                        src_ip,
-                                        dst_ip,
-                                        ttl,
-                                        current_time,
-                                    );
-                                }
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Igmp => {
-                                if let Some(transport_payload) = transport_payload {
-                                    stack.process_igmp_payload(&transport_payload, src_ip, ttl);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                } else if view.total_len() >= 40
-                    && view.first_byte().map(|byte| byte >> 4) == Some(6)
-                {
-                    // IPv6
-                    if let Some(header_packet) = view.first_segment() {
-                        let header = header_packet.data();
-                        if header.len() < 40 {
-                            return EventHandleResult::Success;
-                        }
-                        let src = crate::net::l3::ipv6::Ipv6Address::new([
-                            header[8], header[9], header[10], header[11], header[12], header[13],
-                            header[14], header[15], header[16], header[17], header[18], header[19],
-                            header[20], header[21], header[22], header[23],
-                        ]);
-                        let dst = crate::net::l3::ipv6::Ipv6Address::new([
-                            header[24], header[25], header[26], header[27], header[28], header[29],
-                            header[30], header[31], header[32], header[33], header[34], header[35],
-                            header[36], header[37], header[38], header[39],
-                        ]);
-                        let (protocol, _) = crate::net::l3::ipv6::skip_extension_headers(
-                            crate::net::l3::ipv4::IpProtocol::from(header[6]),
-                            &header[40..],
-                        );
-                        let payload_offset = header.len();
-                        let transport_len = view.total_len().saturating_sub(payload_offset);
-                        let prefix_len = transport_len.min(20);
-                        let prefix = view.read_vec(payload_offset, prefix_len);
-                        let hop_limit = header[7];
-
-                        let (src_port, dst_port, tcp_flags) = match protocol {
-                            crate::net::l3::ipv4::IpProtocol::Tcp if prefix.len() >= 20 => (
-                                u16::from_be_bytes([prefix[0], prefix[1]]),
-                                u16::from_be_bytes([prefix[2], prefix[3]]),
-                                prefix[13],
-                            ),
-                            crate::net::l3::ipv4::IpProtocol::Udp if prefix.len() >= 8 => (
-                                u16::from_be_bytes([prefix[0], prefix[1]]),
-                                u16::from_be_bytes([prefix[2], prefix[3]]),
-                                0,
-                            ),
-                            crate::net::l3::ipv4::IpProtocol::Icmp if prefix.len() >= 2 => {
-                                (prefix[0] as u16, prefix[1] as u16, 0)
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Icmpv6 if prefix.len() >= 2 => {
-                                (prefix[0] as u16, prefix[1] as u16, 0)
-                            }
-                            _ => (0, 0, 0),
-                        };
-
-                        if !crate::net::security::firewall::check_ingress(
-                            crate::net::security::firewall::IpAddress::V6(src.octets()),
-                            crate::net::security::firewall::IpAddress::V6(dst.octets()),
-                            protocol.into(),
-                            src_port,
-                            dst_port,
-                            tcp_flags,
-                        ) {
-                            stack.stats.record_dropped();
-                            return EventHandleResult::Success;
-                        }
-
-                        if deliver_raw_payload_if_registered(ingress_if_id, payload.clone()) {
-                            return EventHandleResult::Success;
-                        }
-
-                        let transport_payload = payload.slice(payload_offset, transport_len);
-                        match protocol {
-                            crate::net::l3::ipv4::IpProtocol::Tcp => {
-                                if let Some(transport_payload) = transport_payload {
-                                    super::tcp_rx::process_tcp_segment_v6_payload_on(
-                                        if_id,
-                                        src,
-                                        dst,
-                                        &transport_payload,
-                                    );
-                                }
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Udp => {
-                                if let Some(transport_payload) = transport_payload {
-                                    stack.process_udp_payload_v6(
-                                        if_id,
-                                        transport_payload,
-                                        src,
-                                        dst,
-                                        hop_limit,
-                                        &payload,
-                                    );
-                                }
-                            }
-                            crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
-                                if let Some(transport_payload) = transport_payload {
-                                    stack.process_icmpv6_data(
-                                        if_id,
-                                        transport_payload,
-                                        src,
-                                        dst,
-                                        crate::net::l2::ethernet::MacAddress::ZERO,
-                                        hop_limit,
-                                        current_time,
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                EventHandleResult::Success
+                self.handle_reassembled_packet_with_stack(runtime, if_id, payload, stack)
             }
             NetworkEvent::DataReady { fd, endpoint_type } => {
                 if endpoint_type == EndpointType::Tcp {
@@ -925,232 +698,17 @@ impl NetworkEventHandler {
                 payload,
                 remote,
             } => self.handle_send_to_with_stack(fd, remote, payload, stack),
-            NetworkEvent::RawUdpSend {
-                src_port,
-                src_ip,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-                completion_id,
-                result_slot,
-                waker,
-            } => {
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
-                        Some(ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            crate::net::l3::ipv4::Ipv4Address::new(ip),
-                            src_port,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        ),
-                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            src_port,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        ),
-                    }),
-                    None => match src_ip {
-                        Some(ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            crate::net::l3::ipv4::Ipv4Address::new(ip),
-                            src_port,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        ),
-                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            src_port,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        ),
-                    },
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("raw UDP send failed"),
-                        );
-                    }
-                    Err(EndpointError::NetworkUnreachable)
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+            raw_event @ NetworkEvent::RawUdpSend { .. } => {
+                self.handle_raw_event_with_stack(runtime, raw_event, stack)
             }
-            NetworkEvent::RawTcpSend {
-                src_ip,
-                dst_ip,
-                payload,
-                completion_id,
-                result_slot,
-                waker,
-            } => {
-                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_payload(src, dst, &payload)
-                    }),
-                    None => stack.send_tcp_payload(src, dst, &payload),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("raw TCP send failed"),
-                        );
-                    }
-                    Err(EndpointError::ResourceExhausted)
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+            raw_event @ NetworkEvent::RawTcpSend { .. } => {
+                self.handle_raw_event_with_stack(runtime, raw_event, stack)
             }
-            NetworkEvent::RawUdpV6Send {
-                src_port,
-                src_ip,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-                completion_id,
-                result_slot,
-                waker,
-            } => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_udp_v6_payload_scoped_with_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            src_port,
-                            src,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        )
-                    }),
-                    None => stack.send_udp_v6_payload_scoped_with_ttl(
-                        crate::net::types::InterfaceScope::Any,
-                        src_port,
-                        src,
-                        dst,
-                        dst_port,
-                        &payload,
-                        ttl,
-                    ),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("raw UDPv6 send failed"),
-                        );
-                    }
-                    Err(EndpointError::ResourceExhausted)
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+            raw_event @ NetworkEvent::RawUdpV6Send { .. } => {
+                self.handle_raw_event_with_stack(runtime, raw_event, stack)
             }
-            NetworkEvent::RawTcpV6Send {
-                src_ip,
-                dst_ip,
-                payload,
-                completion_id,
-                result_slot,
-                waker,
-            } => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_v6_payload(src, dst, &payload)
-                    }),
-                    None => stack.send_tcp_v6_payload(src, dst, &payload),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("raw TCPv6 send failed"),
-                        );
-                    }
-                    Err(EndpointError::ResourceExhausted)
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+            raw_event @ NetworkEvent::RawTcpV6Send { .. } => {
+                self.handle_raw_event_with_stack(runtime, raw_event, stack)
             }
             NetworkEvent::IcmpEchoRequest { target, sequence } => {
                 let target_ip = crate::net::l3::ipv4::Ipv4Address::new(target);
@@ -1420,561 +978,112 @@ impl NetworkEventHandler {
                 crate::net::l2::arp::cleanup_arp_waiters();
                 EventHandleResult::Success
             }
-            NetworkEvent::RawUdpSendOn {
-                if_id,
-                src_port,
-                src_ip,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-                completion_id,
-                result_slot,
-                waker,
-            } => {
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let payload = PacketPayloadView::new(&payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
-                        Some(src_ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            crate::net::l3::ipv4::Ipv4Address::new(src_ip),
-                            src_port,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        ),
-                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            src_port,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        ),
-                    }),
-                    None => match src_ip {
-                        Some(src_ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            crate::net::l3::ipv4::Ipv4Address::new(src_ip),
-                            src_port,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        ),
-                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            src_port,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        ),
-                    },
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("scoped raw UDP send failed"),
-                        );
-                    }
-                    Err(EndpointError::NetworkUnreachable)
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+            raw_event @ NetworkEvent::RawUdpSendOn { .. } => {
+                self.handle_raw_event_with_stack(runtime, raw_event, stack)
             }
-            NetworkEvent::RawTcpSendOn {
-                if_id,
-                src_ip,
-                dst_ip,
-                payload,
-                completion_id,
-                result_slot,
-                waker,
-            } => {
-                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let payload = PacketPayloadView::new(&payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_payload_on(net_if, src, dst, &payload)
-                    }),
-                    None => stack.send_tcp_payload_on(net_if, src, dst, &payload),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("scoped raw TCP send failed"),
-                        );
-                    }
-                    Err(EndpointError::NetworkUnreachable)
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+            raw_event @ NetworkEvent::RawTcpSendOn { .. } => {
+                self.handle_raw_event_with_stack(runtime, raw_event, stack)
             }
-            NetworkEvent::RawUdpV6SendOn {
-                if_id,
-                src_port,
-                src_ip,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-                completion_id,
-                result_slot,
-                waker,
-            } => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let payload = PacketPayloadView::new(&payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_udp_v6_payload_scoped_with_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            src_port,
-                            src,
-                            dst,
-                            dst_port,
-                            &payload,
-                            ttl,
-                        )
-                    }),
-                    None => stack.send_udp_v6_payload_scoped_with_ttl(
-                        crate::net::types::InterfaceScope::Pinned(net_if),
-                        src_port,
-                        src,
-                        dst,
-                        dst_port,
-                        &payload,
-                        ttl,
-                    ),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("scoped raw UDPv6 send failed"),
-                        );
-                    }
-                    Err(EndpointError::ResourceExhausted)
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+            raw_event @ NetworkEvent::RawUdpV6SendOn { .. } => {
+                self.handle_raw_event_with_stack(runtime, raw_event, stack)
             }
-            NetworkEvent::RawTcpV6SendOn {
-                if_id,
-                src_ip,
-                dst_ip,
-                payload,
-                completion_id,
-                result_slot,
-                waker,
-            } => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let payload = PacketPayloadView::new(&payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_v6_payload_on(net_if, src, dst, &payload)
-                    }),
-                    None => stack.send_tcp_v6_payload_on(net_if, src, dst, &payload),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("scoped raw TCPv6 send failed"),
-                        );
-                    }
-                    Err(EndpointError::NetworkUnreachable)
-                };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+            raw_event @ NetworkEvent::RawTcpV6SendOn { .. } => {
+                self.handle_raw_event_with_stack(runtime, raw_event, stack)
             }
 
             // ================================================================
             // NAT forwarding events (with stack)
             // ================================================================
-            NetworkEvent::NatIcmpTimeExceeded {
-                src_ip,
-                original_ip_header,
-            } => {
-                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                stack.send_icmp_time_exceeded(
-                    src,
-                    crate::net::l3::icmp::TimeExceededCode::TtlExceeded,
-                    &original_ip_header,
-                );
-                EventHandleResult::Success
+            nat_event @ NetworkEvent::NatIcmpTimeExceeded { .. } => {
+                self.handle_nat_event_with_stack(nat_event, stack)
             }
-            NetworkEvent::NatIcmpDestUnreachable {
-                src_ip,
-                code,
-                next_hop_mtu,
-                original_packet,
-            } => {
-                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let now = stack.current_time();
-                stack.send_icmp_error(
-                    src,
-                    crate::net::l3::icmp::DestUnreachCode::from(code),
-                    next_hop_mtu,
-                    &original_packet,
-                    now,
-                );
-                EventHandleResult::Success
+            nat_event @ NetworkEvent::NatIcmpDestUnreachable { .. } => {
+                self.handle_nat_event_with_stack(nat_event, stack)
             }
-            NetworkEvent::NatForwardUdp {
-                if_id,
-                src_ip,
-                src_port,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-            } => {
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let s = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let d = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
-                stack.send_udp_raw_payload_scoped_with_src_ttl(
-                    crate::net::types::InterfaceScope::Pinned(net_if),
-                    s,
-                    src_port,
-                    d,
-                    dst_port,
-                    &payload,
-                    ttl,
-                );
-                EventHandleResult::Success
+            nat_event @ NetworkEvent::NatForwardUdp { .. } => {
+                self.handle_nat_event_with_stack(nat_event, stack)
             }
-            NetworkEvent::NatForwardTcp {
-                src_ip,
-                dst_ip,
-                payload,
-                ttl,
-            } => {
-                let s = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let d = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
-                stack.send_tcp_payload_with_ttl(s, d, &payload, ttl);
-                EventHandleResult::Success
+            nat_event @ NetworkEvent::NatForwardTcp { .. } => {
+                self.handle_nat_event_with_stack(nat_event, stack)
             }
 
             // ================================================================
             // Async utility events (with stack)
             // ================================================================
-            NetworkEvent::IcmpEcho {
-                target,
-                sequence,
-                result_slot,
-                waker,
-            } => {
-                let target_ip = crate::net::l3::ipv4::Ipv4Address::new(target);
-                let result = stack
-                    .send_icmp_echo_request(target_ip, sequence)
-                    .map_err(|_| ());
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            utility_event @ NetworkEvent::IcmpEcho { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::ArpProbe { target_ip } => {
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
-                stack.send_arp_probe(ip);
-                EventHandleResult::Success
+            utility_event @ NetworkEvent::ArpProbe { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::ArpResolveCheck {
-                target_ip,
-                requester_mac,
-                result_slot,
-                waker,
-            } => {
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
-                let now = stack.current_time();
-                let result = stack.arp_resolve(ip, now).map(|mac| {
-                    let req_mac = MacAddress::new(requester_mac);
-                    mac != req_mac && !mac.is_broadcast()
-                });
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            utility_event @ NetworkEvent::ArpResolveCheck { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::DhcpApplyLease {
-                if_id,
-                ip,
-                subnet,
-                gateway,
-                dns,
-                hostname,
-            } => {
-                let lease = crate::net::services::dhcp::DhcpLease {
-                    ip_address: crate::net::l3::ipv4::Ipv4Address::new(ip),
-                    subnet_mask: crate::net::l3::ipv4::Ipv4Address::new(subnet),
-                    gateway: Some(crate::net::l3::ipv4::Ipv4Address::new(gateway)),
-                    dns_servers: alloc::vec![crate::net::l3::ipv4::Ipv4Address::new(dns)],
-                    server_ip: crate::net::l3::ipv4::Ipv4Address::ANY,
-                    lease_time: 0,
-                    t1: 0,
-                    t2: 0,
-                    hostname: if hostname.is_empty() {
-                        None
-                    } else {
-                        Some(hostname)
-                    },
-                    domain_name: None,
-                    obtained_at: crate::task::current_tick(),
-                };
-                let target_if = if_id.map(crate::net::runtime::manager::NetIfId);
-                let selected_primary = target_if
-                    .map(|if_id| {
-                        crate::net::runtime::device::claim_bound_primary_interface_with_stack_state_in(
-                            runtime,
-                            if_id, stack,
-                        )
-                    })
-                    .unwrap_or(false);
-                if let Some(if_id) = target_if {
-                    let is_primary = selected_primary
-                        || crate::net::runtime::device::primary_if_in(runtime) == Some(if_id);
-                    if is_primary {
-                        crate::net::services::dhcp::mark_primary_interface(if_id);
-                    }
-                    stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, is_primary);
-                    log::info!(
-                        "[NET] DHCP lease bound: if{} primary={} ip={}",
-                        if_id.0,
-                        is_primary,
-                        lease.ip_address
-                    );
-                } else {
-                    stack.apply_dhcp_v4_lease(&lease);
-                }
-                EventHandleResult::Success
+            utility_event @ NetworkEvent::DhcpApplyLease { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::GetLinkLocal { result_slot, waker } => {
-                let result = stack.config().ipv6.map(|c| c.link_local.octets());
-                finish_command(result_slot, waker, result)
+            utility_event @ NetworkEvent::GetLinkLocal { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => {
-                let result =
-                    crate::net::api::config::primary_interface_config_from_runtime_in(runtime);
-                finish_command(result_slot, waker, result)
+            utility_event @ NetworkEvent::GetPrimaryInterfaceConfig { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::GetInterfaceConfig {
-                if_id,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::get_interface_config_from_runtime_in(
-                    runtime,
-                    NetIfId(if_id),
-                ),
-            ),
-            NetworkEvent::ListInterfaceConfigs { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::list_interface_configs_from_runtime_in(runtime),
-            ),
-            NetworkEvent::GetInterfaceStats {
-                if_id,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::interface_stats_snapshot_with_stack_in(
-                    runtime,
-                    NetIfId(if_id),
-                    Some(stack),
-                ),
-            ),
-            NetworkEvent::ListInterfaceStats { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::list_interface_stats_with_stack_in(runtime, Some(stack)),
-            ),
-            NetworkEvent::ListInterfaces { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::list_interfaces_from_runtime_in(runtime),
-            ),
-            NetworkEvent::GetNetworkSnapshot { result_slot, waker } => {
-                finish_command(result_slot, waker, crate::net::obs::snapshot())
+            utility_event @ NetworkEvent::GetInterfaceConfig { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::GetNetworkRecentEvents {
-                limit,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::obs::snapshot()
-                    .recent_events
-                    .into_iter()
-                    .take(limit)
-                    .collect(),
-            ),
-            NetworkEvent::FirewallEnable { result_slot, waker } => {
-                finish_command(result_slot, waker, crate::net::security::firewall::enable())
+            utility_event @ NetworkEvent::ListInterfaceConfigs { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::FirewallDisable { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::security::firewall::disable(),
-            ),
-            NetworkEvent::FirewallStatus { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_status_text(),
-            ),
-            NetworkEvent::FirewallListRules { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_list_rules_text(),
-            ),
-            NetworkEvent::FirewallStats { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_stats_text(),
-            ),
-            NetworkEvent::FirewallAddRule {
-                rule,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::security::firewall::add_rule(rule).map_err(alloc::string::String::from),
-            ),
-            NetworkEvent::FirewallRemoveRule {
-                id,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::security::firewall::remove_rule(id)
-                    .map_err(alloc::string::String::from),
-            ),
-            NetworkEvent::FirewallClearRules { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::security::firewall::clear_rules().map_err(alloc::string::String::from),
-            ),
-            NetworkEvent::FirewallSetDefaultPolicy {
-                direction,
-                action,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::security::firewall::set_default_policy(direction, action)
-                    .map_err(alloc::string::String::from),
-            ),
-            NetworkEvent::GetArpCache { result_slot, waker } => {
-                let entries: Vec<_> = stack
-                    .arp_cache()
-                    .iter()
-                    .map(|(ip, mac)| crate::net::api::connections::ArpCacheEntry {
-                        ip: *ip.as_bytes(),
-                        mac: *mac.as_bytes(),
-                        complete: true,
-                    })
-                    .collect();
-                finish_command(result_slot, waker, entries)
+            utility_event @ NetworkEvent::GetInterfaceStats { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::ArpInsert { ip, mac } => {
-                let now = crate::time::get_uptime_ms();
-                let ipv4 = crate::net::l3::ipv4::Ipv4Address::new(ip);
-                let mac_addr = MacAddress::new(mac);
-                stack.arp_cache_insert(ipv4, mac_addr, now);
-                EventHandleResult::Success
+            utility_event @ NetworkEvent::ListInterfaceStats { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
-            NetworkEvent::GetUdpEndpoints { result_slot, waker } => {
-                let snapshots = stack.list_udp_endpoints();
-                let result: Vec<_> = snapshots
-                    .into_iter()
-                    .map(|snap| crate::net::api::connections::UdpEndpointInfo {
-                        local_addr: alloc::format!("*:{}", snap.local_port),
-                        remote_addr: alloc::string::String::from("*:*"),
-                    })
-                    .collect();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
+            utility_event @ NetworkEvent::ListInterfaces { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::GetNetworkSnapshot { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::GetNetworkRecentEvents { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallEnable { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallDisable { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallStatus { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallListRules { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallStats { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallAddRule { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallRemoveRule { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallClearRules { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::FirewallSetDefaultPolicy { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::GetArpCache { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::ArpInsert { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::GetUdpEndpoints { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
 
             // ============================================================
@@ -2173,12 +1282,12 @@ impl Default for NetworkEventHandler {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;
-    use crate::net::l4::endpoint::event::{NetworkEvent, event_queue};
+    use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
-    use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
+    use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
     use crate::net::l4::endpoint::{
-        EndpointAddr, EndpointError, EndpointState, create_raw_endpoint, create_tcp_endpoint,
-        create_udp_endpoint,
+        create_raw_endpoint, create_tcp_endpoint, create_udp_endpoint, EndpointAddr, EndpointError,
+        EndpointState,
     };
 
     fn test_payload(data: &[u8]) -> PacketPayload {
@@ -2387,11 +1496,9 @@ pub mod tests {
             crate::net::l4::endpoint::manager::endpoint_manager().expect("endpoint manager lock");
         let guard = manager.read().unwrap_or_else(|e| e.into_inner());
         let manager = guard.as_ref().expect("endpoint manager");
-        assert!(
-            manager
-                .register_raw_scope(crate::net::types::InterfaceScope::Any, raw.fd())
-                .is_ok()
-        );
+        assert!(manager
+            .register_raw_scope(crate::net::types::InterfaceScope::Any, raw.fd())
+            .is_ok());
         drop(guard);
 
         let ingress_if = NetIfId(9);
@@ -2538,10 +1645,10 @@ pub fn init_network_event_handler() {
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
-    use crate::net::l4::endpoint::event::{NetworkEvent, event_queue};
+    use crate::net::l4::endpoint::event::{event_queue, NetworkEvent};
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
-    use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
-    use crate::net::l4::endpoint::{EndpointAddr, EndpointState, create_tcp_endpoint};
+    use crate::net::l4::endpoint::tcb::{tcb_table, TcpConnectionState, TcpControlBlockEntry};
+    use crate::net::l4::endpoint::{create_tcp_endpoint, EndpointAddr, EndpointState};
 
     fn test_payload(data: &[u8]) -> PacketPayload {
         crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")

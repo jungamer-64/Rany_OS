@@ -7,9 +7,11 @@ use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::handler::common::{
     endpoint_error_from_network, endpoint_ipv4_pair, endpoint_is_native_v6_pair,
+    resolve_ingress_if_id_in,
 };
 use crate::net::l4::endpoint::manager::EndpointFamily;
 use crate::net::l4::endpoint::types::EndpointResult;
+use crate::net::payload::PacketPayloadView;
 
 impl NetworkEventHandler {
     /// UDPパケットの処理
