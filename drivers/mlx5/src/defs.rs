@@ -726,6 +726,7 @@ pub enum WqState {
     Reset = 0x00,
     /// Ready to Send/Receive
     Ready = 0x01,
+    /// 0x02 は mlx5 IFC で予約値のため未使用
     /// エラー状態
     Error = 0x03,
 }

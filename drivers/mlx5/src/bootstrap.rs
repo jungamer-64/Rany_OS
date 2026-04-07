@@ -49,12 +49,6 @@ impl Mlx5QueueProfile {
             log_rq_size: floor_log2_u32(MLX5_WQ_DEPTH),
         }
     }
-
-    pub fn max_queue_count(&self) -> usize {
-        self.eq_count
-            .max(self.tx_queue_count)
-            .max(self.rx_queue_count)
-    }
 }
 
 impl Default for Mlx5QueueProfile {

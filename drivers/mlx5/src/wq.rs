@@ -897,6 +897,32 @@ impl ReceiveQueue {
         let front_slot = self.inflight_slots.front().copied()?;
 
         if !self.rx_buffers[expected_slot as usize].in_use {
+            if let Some(position) = self
+                .inflight_slots
+                .iter()
+                .position(|&slot| slot == expected_slot)
+            {
+                let removed = self
+                    .inflight_slots
+                    .remove(position)
+                    .unwrap_or(expected_slot);
+                if !self.free_slots.iter().any(|&slot| slot == removed) {
+                    self.free_slots.push_back(removed);
+                }
+                log::warn!(
+                    target: "mlx5",
+                    "RX completion dropped stale cyclic slot: rqn={:#x} wqe_counter={} expected_slot={} front_slot={} removed_pos={} inflight_len={} free_len={}",
+                    self.rqn,
+                    wqe_counter,
+                    expected_slot,
+                    front_slot,
+                    position,
+                    self.inflight_slots.len(),
+                    self.free_slots.len()
+                );
+                return None;
+            }
+
             log::warn!(
                 target: "mlx5",
                 "RX completion referenced inactive cyclic slot: rqn={:#x} wqe_counter={} expected_slot={} front_slot={} inflight_len={}",
@@ -1216,13 +1242,20 @@ mod tests {
         }
 
         rq.rx_buffers[2] = RxBufferInfo::default();
-        let inflight_before = rq.inflight_slots.clone();
-        let free_before = rq.free_slots.clone();
+        let free_len_before = rq.free_slots.len();
 
         assert!(rq.complete_rx(2, false, false).is_none());
-        assert_eq!(rq.inflight_slots, inflight_before);
-        assert_eq!(rq.free_slots, free_before);
-        assert_eq!(rq.available_slots(), 0);
+
+        assert!(!rq.inflight_slots.iter().any(|&slot| slot == 2));
+        assert_eq!(rq.free_slots.len(), free_len_before + 1);
+        assert_eq!(rq.free_slots.iter().filter(|&&slot| slot == 2).count(), 1);
+        assert_eq!(rq.available_slots(), 1);
+
+        let inflight_after = rq.inflight_slots.clone();
+        let free_after = rq.free_slots.clone();
+        assert!(rq.complete_rx(2, false, false).is_none());
+        assert_eq!(rq.inflight_slots, inflight_after);
+        assert_eq!(rq.free_slots, free_after);
     }
 
     #[test]

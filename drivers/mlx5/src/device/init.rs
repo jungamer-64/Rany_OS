@@ -32,7 +32,10 @@ struct TxTisSelection {
 }
 
 impl Mlx5Device {
-    const PF_TIS_REUSE_SCAN_LIMIT: u32 = 4096;
+    // QUERY_TIS の走査はコマンド往復が重いため、通常ブートでは探索予算を抑える。
+    // PF は互換性確保のため VF より広めに残し、VF は初期化遅延を優先して小さくする。
+    const PF_TIS_REUSE_SCAN_LIMIT: u32 = 2048;
+    const VF_TIS_REUSE_SCAN_LIMIT: u32 = 512;
     const PF_SQ_TIS_SCAN_LIMIT: u32 = 64;
     const PF_TIS_SQ_ORACLE_CANDIDATES: [u32; 13] = [
         0x0000_0001,
@@ -129,7 +132,7 @@ impl Mlx5Device {
             match attempt {
                 TxTisAttemptKind::ReuseExisting => {
                     match self.find_existing_tis_strict_match(
-                        Self::PF_TIS_REUSE_SCAN_LIMIT,
+                        Self::VF_TIS_REUSE_SCAN_LIMIT,
                         self.td,
                         0,
                     ) {
@@ -154,7 +157,7 @@ impl Mlx5Device {
                         }
                     }
 
-                    match self.find_existing_tis_matching(Self::PF_TIS_REUSE_SCAN_LIMIT, self.td, 0)
+                    match self.find_existing_tis_matching(Self::VF_TIS_REUSE_SCAN_LIMIT, self.td, 0)
                     {
                         Ok(tisn) => {
                             log::warn!(

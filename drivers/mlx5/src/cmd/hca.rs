@@ -55,12 +55,11 @@ pub fn build_set_hca_cap_input(in_mbox: &mut CmdMailbox, cap_type: u16, capabili
     let mut layout = QueryHcaCapInputLayout::new(&mut in_mbox.data[..]);
     layout.set_op_mod(cap_type << 1);
 
-    let in_mbox_ptr = in_mbox as *mut CmdMailbox as *mut u8;
-    let dst_ptr = unsafe { in_mbox_ptr.add(0x10) };
-    let copy_len = capability_payload.len().min(4096);
-    unsafe {
-        core::ptr::copy_nonoverlapping(capability_payload.as_ptr(), dst_ptr, copy_len);
-    }
+    let copy_len = capability_payload
+        .len()
+        .min(4096)
+        .min(MLX5_CMD_MBOX_SIZE.saturating_sub(0x10));
+    in_mbox.data[0x10..0x10 + copy_len].copy_from_slice(&capability_payload[..copy_len]);
 }
 
 /// ACCESS_REGISTER コマンド入力の構築
@@ -720,5 +719,27 @@ mod tests {
         assert_eq!(counters.tx_multicast_bytes, 1200);
         assert_eq!(counters.rx_dropped, 0);
         assert_eq!(counters.tx_dropped, 0);
+    }
+
+    #[test]
+    fn build_set_hca_cap_input_places_payload_at_offset_0x10() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let payload = [0xa5u8, 0x5a, 0x11, 0x22, 0x33];
+
+        build_set_hca_cap_input(&mut in_mbox, MLX5_CAP_GENERAL, &payload);
+
+        assert_eq!(in_mbox.read_be16(0x06), MLX5_CAP_GENERAL << 1);
+        assert_eq!(&in_mbox.data[0x10..0x10 + payload.len()], &payload);
+    }
+
+    #[test]
+    fn build_set_hca_cap_input_caps_payload_to_4096_bytes() {
+        let mut in_mbox = CmdMailbox::zeroed();
+        let payload = [0x7bu8; 5000];
+
+        build_set_hca_cap_input(&mut in_mbox, MLX5_CAP_GENERAL, &payload);
+
+        assert_eq!(&in_mbox.data[0x10..0x10 + 4096], &payload[..4096]);
+        assert_eq!(in_mbox.data[0x10 + 4096], 0);
     }
 }

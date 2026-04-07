@@ -221,7 +221,7 @@ impl Mlx5Device {
                             );
                             return Ok(tisn);
                         }
-                        log::info!(
+                        log::debug!(
                             target: "mlx5",
                             "Found reusable existing TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
                             tisn,
@@ -283,7 +283,7 @@ impl Mlx5Device {
                             return Ok(tisn);
                         }
 
-                        log::info!(
+                        log::debug!(
                             target: "mlx5",
                             "Ignoring non-matching VF TIS candidate via QUERY_TIS: tisn={:#x} td={} prio={} pd={} underlay_qpn={:#x} tls={} lag_port={} strict_lag={}",
                             tisn,
@@ -744,23 +744,36 @@ impl Mlx5Device {
             },
         ];
         let mut last_err = Err(Mlx5Error::NotSupported);
+        let attempt_count = attempts.len();
 
-        for attempt in attempts {
+        for (attempt_idx, attempt) in attempts.into_iter().enumerate() {
             let pre_exec = Self::prepare_create_tis_attempt(in_mbox, params, attempt);
-            log::info!(
-                target: "mlx5",
-                "CREATE_TIS try {}: td={} pd={} include_pd={} port={} prio={} underlay_qpn={:#x} op_mod={} lag_port={} strict_lag={}",
-                attempt.name,
-                attempt.td,
-                params.pd,
-                attempt.include_pd,
-                params.port,
-                attempt.prio,
-                attempt.underlay_qpn,
-                attempt.op_mod,
-                attempt.lag_port,
-                attempt.strict_lag
-            );
+            if attempt_idx == 0 || cfg!(feature = "debug_mlx5_cmd") {
+                log::info!(
+                    target: "mlx5",
+                    "CREATE_TIS try {}/{} {}: td={} pd={} include_pd={} port={} prio={} underlay_qpn={:#x} op_mod={} lag_port={} strict_lag={}",
+                    attempt_idx + 1,
+                    attempt_count,
+                    attempt.name,
+                    attempt.td,
+                    params.pd,
+                    attempt.include_pd,
+                    params.port,
+                    attempt.prio,
+                    attempt.underlay_qpn,
+                    attempt.op_mod,
+                    attempt.lag_port,
+                    attempt.strict_lag
+                );
+            } else {
+                log::debug!(
+                    target: "mlx5",
+                    "CREATE_TIS try {}/{} {}",
+                    attempt_idx + 1,
+                    attempt_count,
+                    attempt.name
+                );
+            }
             crate::boot_trace_tis_attempt(
                 "try",
                 attempt.name,
@@ -790,14 +803,29 @@ impl Mlx5Device {
                     let (fw_status, syndrome) = self.last_cmd_status_and_syndrome();
                     crate::boot_trace_mailbox_range("tisc_pre_fail", &pre_exec, 0x20, 16);
                     crate::boot_trace_tis_attempt_result("fail", attempt.name, fw_status, syndrome);
-                    log::warn!(
-                        target: "mlx5",
-                        "CREATE_TIS attempt {} failed: err={:?} fw_status={:#x} syndrome={:#x}",
-                        attempt.name,
-                        err,
-                        fw_status,
-                        syndrome
-                    );
+                    if cfg!(feature = "debug_mlx5_cmd") || attempt_idx + 1 == attempt_count {
+                        log::warn!(
+                            target: "mlx5",
+                            "CREATE_TIS attempt {}/{} {} failed: err={:?} fw_status={:#x} syndrome={:#x}",
+                            attempt_idx + 1,
+                            attempt_count,
+                            attempt.name,
+                            err,
+                            fw_status,
+                            syndrome
+                        );
+                    } else {
+                        log::debug!(
+                            target: "mlx5",
+                            "CREATE_TIS attempt {}/{} {} failed: err={:?} fw_status={:#x} syndrome={:#x}",
+                            attempt_idx + 1,
+                            attempt_count,
+                            attempt.name,
+                            err,
+                            fw_status,
+                            syndrome
+                        );
+                    }
                     crate::boot_trace("[MLX5_TIS] create fail\n");
                     last_err = Err(err);
                 }

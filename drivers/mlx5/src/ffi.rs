@@ -249,30 +249,53 @@ impl DmaSlot {
         pci_locator: PackedPciLocation,
         label: &'static str,
     ) -> Result<Self, i32> {
+        let mut low_iova_retries = 0u32;
         loop {
             match kernel_api::service::kernel::instance().alloc_dma_for_device(size, pci_locator) {
                 Ok(buf) => {
                     let device_addr = buf.device_address();
                     let virt_addr = buf.as_ptr() as u64;
-                    let size = buf.size();
+                    let allocated_size = buf.size();
 
                     // Skip anything below 1MB to avoid legacy/IOMMU reservation conflicts
-                    if device_addr < 0x100000 {
-                        log::warn!(target: "mlx5", "DMA allocated at IOVA {:#x} for {}, skipping (<1MB)", device_addr, label);
+                    if device_addr < MLX5_DMA_MIN_IOVA {
+                        low_iova_retries = low_iova_retries.saturating_add(1);
+                        if low_iova_retries == 1 || low_iova_retries % 8 == 0 {
+                            log::warn!(
+                                target: "mlx5",
+                                "DMA allocated at low IOVA {:#x} for {}, retry {}/{}",
+                                device_addr,
+                                label,
+                                low_iova_retries,
+                                MLX5_DMA_LOW_IOVA_MAX_RETRIES
+                            );
+                        }
                         drop(buf);
+
+                        if low_iova_retries >= MLX5_DMA_LOW_IOVA_MAX_RETRIES {
+                            log::error!(
+                                target: "mlx5",
+                                "DMA allocation failed for {}: allocator returned only low IOVA (<{:#x}) for {} attempts",
+                                label,
+                                MLX5_DMA_MIN_IOVA,
+                                MLX5_DMA_LOW_IOVA_MAX_RETRIES
+                            );
+                            return Err(-1);
+                        }
+
                         continue;
                     }
 
                     log::info!(
                         target: "mlx5",
                         "DMA allocated for {}: device={:#x} size={:#x}",
-                        label, device_addr, size
+                        label, device_addr, allocated_size
                     );
                     return Ok(Self {
                         buffer: Some(buf),
                         virt_addr,
                         device_addr,
-                        size,
+                        size: allocated_size,
                     });
                 }
                 Err(e) => {
@@ -483,6 +506,8 @@ impl Drop for Mlx5DmaResources {
 const MLX5_RX_BUFFER_SIZE: usize = 2048;
 const MLX5_POLL_BATCH: u32 = 64;
 const MLX5_POLL_INTERVAL_MS: u64 = 1;
+const MLX5_DMA_MIN_IOVA: u64 = 0x100000;
+const MLX5_DMA_LOW_IOVA_MAX_RETRIES: u32 = 64;
 
 struct Mlx5StandaloneState {
     device: Mlx5Device,
@@ -800,7 +825,16 @@ extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntimeV
     match kernel_api::service::kernel::instance().spawn_task(Box::pin(mlx5_poll_kicker(generation)))
     {
         Ok(_) => AbiError::Success as i32,
-        Err(_) => AbiError::IoError as i32,
+        Err(_) => {
+            let mut guard = MLX5_STANDALONE_STATE.lock();
+            if let Some(state) = guard.as_mut() {
+                if state.poll_generation == generation {
+                    state.runtime = None;
+                    state.poll_generation = state.poll_generation.wrapping_add(1);
+                }
+            }
+            AbiError::IoError as i32
+        }
     }
 }
 
@@ -1071,7 +1105,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 .port(0)
                 .map(|port| port.is_link_up())
                 .unwrap_or(false);
-            let mut state = Mlx5StandaloneState {
+            let state = Mlx5StandaloneState {
                 device,
                 dma,
                 mmio,

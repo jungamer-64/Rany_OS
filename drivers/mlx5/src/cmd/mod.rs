@@ -217,6 +217,7 @@ pub struct CmdQueueTransport {
     uid: u16,
     in_snapshot: [u8; MLX5_CMD_MBOX_SIZE],
     in_snapshot_len: usize,
+    out_reconstruct: [u8; MLX5_CMD_MBOX_SIZE],
 }
 
 #[repr(C)]
@@ -232,6 +233,8 @@ struct CmdProtBlock {
 }
 
 const CMD_BLOCK_SIZE: usize = size_of::<CmdProtBlock>();
+const CMD_WAIT_TIMEOUT_MS: u64 = 5_000;
+const CMD_WAIT_MAX_STALLED_TICK_SPINS: u64 = 50_000_000;
 
 pub type CmdQueue = CmdQueueTransport;
 
@@ -331,6 +334,7 @@ impl CmdQueueTransport {
             uid: 0,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
+            out_reconstruct: [0u8; MLX5_CMD_MBOX_SIZE],
         })
     }
 
@@ -486,10 +490,19 @@ impl CmdQueueTransport {
     }
 
     unsafe fn reconstruct_output_mailbox(
-        &self,
+        &mut self,
         out_inline: &[u8; MLX5_CMD_INLINE_SIZE],
         out_len: usize,
     ) {
+        let out_len = out_len.min(MLX5_CMD_MBOX_SIZE);
+        if out_len == 0 {
+            return;
+        }
+
+        self.out_reconstruct[..out_len].fill(0);
+        let inline_len = out_len.min(MLX5_CMD_INLINE_SIZE);
+        self.out_reconstruct[..inline_len].copy_from_slice(&out_inline[..inline_len]);
+
         if out_len > MLX5_CMD_INLINE_SIZE {
             let total_payload = out_len - MLX5_CMD_INLINE_SIZE;
             let num_blocks = Self::chained_block_count(out_len);
@@ -497,23 +510,20 @@ impl CmdQueueTransport {
                 let block = &*Self::block_ptr(self.out_mbox_virt, i);
                 let offset = i * MLX5_CMD_DATA_BLOCK_SIZE;
                 let payload_len = (total_payload - offset).min(MLX5_CMD_DATA_BLOCK_SIZE);
-                let mut payload = [0u8; MLX5_CMD_DATA_BLOCK_SIZE];
-                payload[..payload_len].copy_from_slice(&block.data[..payload_len]);
-                core::ptr::copy_nonoverlapping(
-                    payload.as_ptr(),
-                    (self.out_mbox_virt as *mut u8).add(MLX5_CMD_INLINE_SIZE + offset),
-                    payload_len,
-                );
+                let dst_start = MLX5_CMD_INLINE_SIZE + offset;
+                let dst_end = dst_start + payload_len;
+                self.out_reconstruct[dst_start..dst_end]
+                    .copy_from_slice(&block.data[..payload_len]);
             }
         }
 
-        // `out_mbox_virt` doubles as both the protected-block backing store and
-        // the logical mailbox buffer. Copy the inline header last so we do not
-        // clobber block 0's payload before it is reconstructed.
+        // `out_mbox_virt` is reserved for protocol-block backing during command
+        // execution. Rebuild the logical mailbox in a dedicated buffer first,
+        // then publish it to the logical mailbox region in a single copy.
         core::ptr::copy_nonoverlapping(
-            out_inline.as_ptr(),
+            self.out_reconstruct.as_ptr(),
             self.out_mbox_virt as *mut u8,
-            MLX5_CMD_INLINE_SIZE,
+            out_len,
         );
     }
 
@@ -596,6 +606,8 @@ impl CommandTransport for CmdQueueTransport {
 
         crate::boot_trace_cmd(opcode, "wait_slot", self.uid);
         let queue_wait_start = kernel_api::service::kernel::instance().current_tick();
+        let mut queue_wait_last_tick = queue_wait_start;
+        let mut queue_wait_stalled_tick_spins = 0u64;
         let mut queue_wait_spins = 0u64;
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while entry.is_owned_by_hw() {
@@ -603,7 +615,8 @@ impl CommandTransport for CmdQueueTransport {
             if queue_wait_spins == 10_000_000 {
                 crate::boot_trace_cmd(opcode, "slot_still_busy", self.uid);
             }
-            if kernel_api::service::kernel::instance().current_tick() - queue_wait_start > 5000 {
+            let now_tick = kernel_api::service::kernel::instance().current_tick();
+            if now_tick.saturating_sub(queue_wait_start) > CMD_WAIT_TIMEOUT_MS {
                 crate::boot_trace_cmd(opcode, "slot_timeout", self.uid);
                 log::error!(
                     target: "mlx5",
@@ -614,6 +627,26 @@ impl CommandTransport for CmdQueueTransport {
                 );
                 return Err(Mlx5Error::CommandTimeout);
             }
+
+            if now_tick == queue_wait_last_tick {
+                queue_wait_stalled_tick_spins = queue_wait_stalled_tick_spins.saturating_add(1);
+                if queue_wait_stalled_tick_spins >= CMD_WAIT_MAX_STALLED_TICK_SPINS {
+                    crate::boot_trace_cmd(opcode, "slot_tick_stall", self.uid);
+                    log::error!(
+                        target: "mlx5",
+                        "Command queue wait aborted due to stalled tick before submit: opcode={:?} token={} uid={:#x} stalled_spins={}",
+                        opcode,
+                        token,
+                        self.uid,
+                        queue_wait_stalled_tick_spins
+                    );
+                    return Err(Mlx5Error::CommandTimeout);
+                }
+            } else {
+                queue_wait_last_tick = now_tick;
+                queue_wait_stalled_tick_spins = 0;
+            }
+
             core::hint::spin_loop();
         }
         crate::boot_trace_cmd(opcode, "slot_ready", self.uid);
@@ -640,6 +673,8 @@ impl CommandTransport for CmdQueueTransport {
 
         crate::boot_trace_cmd(opcode, "wait_hw", self.uid);
         let start_ms = kernel_api::service::kernel::instance().current_tick();
+        let mut hw_wait_last_tick = start_ms;
+        let mut hw_wait_stalled_tick_spins = 0u64;
         let mut hw_wait_spins = 0u64;
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while entry.is_owned_by_hw() {
@@ -647,11 +682,32 @@ impl CommandTransport for CmdQueueTransport {
             if hw_wait_spins == 10_000_000 {
                 crate::boot_trace_cmd(opcode, "hw_still_owned", self.uid);
             }
-            if kernel_api::service::kernel::instance().current_tick() - start_ms > 5000 {
+            let now_tick = kernel_api::service::kernel::instance().current_tick();
+            if now_tick.saturating_sub(start_ms) > CMD_WAIT_TIMEOUT_MS {
                 crate::boot_trace_cmd(opcode, "hw_timeout", self.uid);
                 log::error!(target: "mlx5", "Command timeout: opcode={:?}", opcode);
                 return Err(Mlx5Error::CommandTimeout);
             }
+
+            if now_tick == hw_wait_last_tick {
+                hw_wait_stalled_tick_spins = hw_wait_stalled_tick_spins.saturating_add(1);
+                if hw_wait_stalled_tick_spins >= CMD_WAIT_MAX_STALLED_TICK_SPINS {
+                    crate::boot_trace_cmd(opcode, "hw_tick_stall", self.uid);
+                    log::error!(
+                        target: "mlx5",
+                        "Command wait aborted due to stalled tick after submit: opcode={:?} token={} uid={:#x} stalled_spins={}",
+                        opcode,
+                        token,
+                        self.uid,
+                        hw_wait_stalled_tick_spins
+                    );
+                    return Err(Mlx5Error::CommandTimeout);
+                }
+            } else {
+                hw_wait_last_tick = now_tick;
+                hw_wait_stalled_tick_spins = 0;
+            }
+
             core::hint::spin_loop();
         }
         crate::boot_trace_cmd(opcode, "hw_done", self.uid);
@@ -725,6 +781,7 @@ mod tests {
             uid: 0x1234,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
+            out_reconstruct: [0u8; MLX5_CMD_MBOX_SIZE],
         };
 
         let mut with_uid = CmdMailbox::zeroed();
@@ -791,6 +848,7 @@ mod tests {
             uid: 0,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
+            out_reconstruct: [0u8; MLX5_CMD_MBOX_SIZE],
         };
 
         let in_inline = unsafe {
@@ -827,6 +885,7 @@ mod tests {
             uid: 0,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
+            out_reconstruct: [0u8; MLX5_CMD_MBOX_SIZE],
         };
 
         unsafe {
@@ -858,7 +917,7 @@ mod tests {
             unsafe { &mut *CmdQueueTransport::block_ptr(out_backing.as_mut_ptr() as u64, 0) };
         block.data[..payload_len].copy_from_slice(&expected[MLX5_CMD_INLINE_SIZE..out_len]);
 
-        let transport = CmdQueueTransport {
+        let mut transport = CmdQueueTransport {
             cmdq_phys: 0,
             cmdq_virt: 0,
             log_cmdq_size: 5,
@@ -870,6 +929,7 @@ mod tests {
             uid: 0,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
+            out_reconstruct: [0u8; MLX5_CMD_MBOX_SIZE],
         };
 
         unsafe { transport.reconstruct_output_mailbox(&inline, out_len) };
