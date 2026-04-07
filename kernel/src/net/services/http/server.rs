@@ -101,7 +101,7 @@ fn should_log_http_restart_warning(consecutive_failures: u32) -> bool {
     consecutive_failures < 4 || consecutive_failures.is_power_of_two()
 }
 
-fn http_config_usable(config: &crate::net::api::config::NetworkConfigSnapshot) -> bool {
+fn http_config_usable(config: &crate::net::api::config::InterfaceConfigSnapshot) -> bool {
     config.ip != [0, 0, 0, 0] && config.mac != [0, 0, 0, 0, 0, 0]
 }
 
@@ -110,7 +110,7 @@ fn http_network_ready() -> bool {
         return false;
     }
 
-    crate::net::runtime::bridge::get_real_config()
+    crate::net::runtime::bridge::primary_interface_config()
         .as_ref()
         .is_some_and(http_config_usable)
 }
@@ -393,13 +393,21 @@ mod tests {
 
     #[test]
     fn http_config_requires_nonzero_ip_and_mac() {
-        let unusable = crate::net::api::config::NetworkConfigSnapshot {
+        let unusable = crate::net::api::config::InterfaceConfigSnapshot {
+            if_id: 0,
+            name: alloc::string::String::from("eth0"),
+            admin_up: true,
+            virtio_index: Some(0),
             ip: [0, 0, 0, 0],
             netmask: [0, 0, 0, 0],
             gateway: [0, 0, 0, 0],
             mac: [0, 0, 0, 0, 0, 0],
         };
-        let usable = crate::net::api::config::NetworkConfigSnapshot {
+        let usable = crate::net::api::config::InterfaceConfigSnapshot {
+            if_id: 0,
+            name: alloc::string::String::from("eth0"),
+            admin_up: true,
+            virtio_index: Some(0),
             ip: [192, 168, 1, 10],
             netmask: [255, 255, 255, 0],
             gateway: [192, 168, 1, 1],

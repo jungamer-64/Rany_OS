@@ -416,12 +416,7 @@ impl NetworkEventHandler {
             NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::config::primary_interface_config_snapshot_sync_in(runtime),
-            ),
-            NetworkEvent::GetAggregateNetworkStats { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::aggregate_network_stats_snapshot_sync_in(runtime),
+                crate::net::api::config::primary_interface_config_sync_in(runtime),
             ),
             NetworkEvent::GetInterfaceConfig {
                 if_id,
@@ -1995,30 +1990,8 @@ impl NetworkEventHandler {
                 finish_command(result_slot, waker, result)
             }
             NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => {
-                let result = crate::net::api::config::primary_interface_id_in(runtime)
-                    .and_then(|if_id| {
-                        crate::net::api::config::get_interface_config_from_runtime_in(
-                            runtime, if_id,
-                        )
-                    })
-                    .map(|cfg| crate::net::api::config::NetworkConfigSnapshot {
-                        ip: cfg.ip,
-                        netmask: cfg.netmask,
-                        gateway: cfg.gateway,
-                        mac: cfg.mac,
-                    });
+                let result = crate::net::api::config::primary_interface_config_sync_in(runtime);
                 finish_command(result_slot, waker, result)
-            }
-            NetworkEvent::GetAggregateNetworkStats { result_slot, waker } => {
-                let stats = crate::net::api::config::list_interface_stats_with_stack_in(
-                    runtime,
-                    Some(stack),
-                );
-                finish_command(
-                    result_slot,
-                    waker,
-                    crate::net::api::config::aggregate_network_stats_from_list(&stats),
-                )
             }
             NetworkEvent::GetInterfaceConfig {
                 if_id,

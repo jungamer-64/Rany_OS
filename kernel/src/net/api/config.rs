@@ -21,15 +21,6 @@ pub struct InterfaceConfigSnapshot {
     pub mac: [u8; 6],
 }
 
-/// Legacy single-interface snapshot retained for internal event payloads.
-#[derive(Debug, Clone)]
-pub struct NetworkConfigSnapshot {
-    pub ip: [u8; 4],
-    pub netmask: [u8; 4],
-    pub gateway: [u8; 4],
-    pub mac: [u8; 6],
-}
-
 /// Per-interface runtime statistics snapshot.
 #[derive(Debug, Clone, Copy)]
 pub struct InterfaceStatsSnapshot {
@@ -40,17 +31,6 @@ pub struct InterfaceStatsSnapshot {
     pub tx_bytes: u64,
     pub rx_errors: u64,
     pub tx_errors: u64,
-    pub rx_dropped: u64,
-}
-
-/// Legacy aggregate stats snapshot retained for internal event payloads.
-#[derive(Debug, Clone, Copy)]
-pub struct NetworkStatsSnapshot {
-    pub rx_packets: u64,
-    pub tx_packets: u64,
-    pub rx_bytes: u64,
-    pub tx_bytes: u64,
-    pub rx_errors: u64,
     pub rx_dropped: u64,
 }
 
@@ -155,23 +135,6 @@ pub(crate) fn primary_interface_id_in(runtime: NetRuntimeHandle) -> Option<NetIf
     })
 }
 
-pub(crate) fn aggregate_network_stats_from_list(
-    stats: &[InterfaceStatsSnapshot],
-) -> Option<NetworkStatsSnapshot> {
-    if stats.is_empty() {
-        return None;
-    }
-
-    Some(NetworkStatsSnapshot {
-        rx_packets: stats.iter().map(|s| s.rx_packets).sum(),
-        tx_packets: stats.iter().map(|s| s.tx_packets).sum(),
-        rx_bytes: stats.iter().map(|s| s.rx_bytes).sum(),
-        tx_bytes: stats.iter().map(|s| s.tx_bytes).sum(),
-        rx_errors: stats.iter().map(|s| s.rx_errors).sum(),
-        rx_dropped: stats.iter().map(|s| s.rx_dropped).sum(),
-    })
-}
-
 pub(crate) fn get_interface_config_from_runtime_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
@@ -220,22 +183,11 @@ pub(crate) fn list_interfaces_from_runtime_in(
         .collect()
 }
 
-pub(crate) fn primary_interface_config_snapshot_sync_in(
+pub(crate) fn primary_interface_config_sync_in(
     runtime: NetRuntimeHandle,
-) -> Option<NetworkConfigSnapshot> {
+) -> Option<InterfaceConfigSnapshot> {
     let preferred_if = primary_interface_id_in(runtime)?;
-    get_interface_config_from_runtime_in(runtime, preferred_if).map(|cfg| NetworkConfigSnapshot {
-        ip: cfg.ip,
-        netmask: cfg.netmask,
-        gateway: cfg.gateway,
-        mac: cfg.mac,
-    })
-}
-
-pub(crate) fn aggregate_network_stats_snapshot_sync_in(
-    runtime: NetRuntimeHandle,
-) -> Option<NetworkStatsSnapshot> {
-    aggregate_network_stats_from_list(&list_interface_stats_sync_in(runtime))
+    get_interface_config_from_runtime_in(runtime, preferred_if)
 }
 
 pub(crate) fn list_interface_stats_sync_in(
@@ -249,25 +201,12 @@ pub(crate) fn list_interface_stats_sync_in(
     list_interface_stats_with_stack_in(runtime, None)
 }
 
-pub async fn primary_interface_config_snapshot_in(
+pub async fn primary_interface_config_in(
     runtime: NetRuntimeHandle,
-) -> Option<NetworkConfigSnapshot> {
+) -> Option<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
-        stack::new_command_channel::<Option<NetworkConfigSnapshot>>();
+        stack::new_command_channel::<Option<InterfaceConfigSnapshot>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetPrimaryInterfaceConfig {
-        result_slot,
-        waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
-    command_future.await
-}
-
-pub async fn aggregate_network_stats_snapshot_in(
-    runtime: NetRuntimeHandle,
-) -> Option<NetworkStatsSnapshot> {
-    let (result_slot, waker, command_future) =
-        stack::new_command_channel::<Option<NetworkStatsSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::GetAggregateNetworkStats {
         result_slot,
         waker,
     };

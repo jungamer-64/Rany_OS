@@ -374,14 +374,7 @@ pub enum NetworkEvent {
     /// 非同期プライマリインターフェース設定取得
     GetPrimaryInterfaceConfig {
         result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Option<crate::net::api::config::NetworkConfigSnapshot>>>,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-    /// 非同期集約ネットワーク統計取得
-    GetAggregateNetworkStats {
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Option<crate::net::api::config::NetworkStatsSnapshot>>>,
+            PoisonLock<Option<Option<crate::net::api::config::InterfaceConfigSnapshot>>>,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },

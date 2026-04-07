@@ -5,7 +5,7 @@
 //! ネットワークドライバと NetworkStack を接続する stack glue モジュール。
 //! deferred RX、batch/NAT、PacketRef の stack 受け渡しを担当します。
 
-use crate::net::api::config::NetworkConfigSnapshot;
+use crate::net::api::config::InterfaceConfigSnapshot;
 use crate::net::datapath::optimization::{BatchConfig, BatchProcessor};
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::obs::{
@@ -501,8 +501,8 @@ pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<NetIfId> {
     manager::lookup_if_by_virtio_index(virtio_index)
 }
 
-pub fn get_real_config() -> Option<NetworkConfigSnapshot> {
-    crate::net::api::config::primary_interface_config_snapshot_sync_in(
+pub fn primary_interface_config() -> Option<InterfaceConfigSnapshot> {
+    crate::net::api::config::primary_interface_config_sync_in(
         crate::net::runtime::default_runtime(),
     )
 }

@@ -87,7 +87,7 @@ impl SystemIntegration {
             tx_errors,
             rx_errors
         ));
-        if let Some(cfg) = crate::net::runtime::bridge::get_real_config() {
+        if let Some(cfg) = crate::net::runtime::bridge::primary_interface_config() {
             self.log(&alloc::format!(
                 "  Net Config: IP={:?} MAC={:02x?}",
                 cfg.ip,
