@@ -565,7 +565,7 @@ impl UdpEndpoint {
     ///
     /// ブートストラップ同期コンテキスト（async executor 未起動時）で使用する。
     /// キューにパケットがなければ `None` を返す。
-    pub fn try_recv_sync(&self) -> Option<(NetIfId, UdpAddr, u8, PacketPayload)> {
+    pub fn try_recv(&self) -> Option<(NetIfId, UdpAddr, u8, PacketPayload)> {
         match self.inner.lock() {
             Ok(mut inner) => {
                 if let Some((if_id, addr, ttl, pkt)) = inner.rx_packet_queue.pop_front() {
@@ -577,7 +577,7 @@ impl UdpEndpoint {
                 }
             }
             Err(_) => {
-                log::error!("[NET] UDP Endpoint poisoned (try_recv_sync)");
+                log::error!("[NET] UDP Endpoint poisoned (try_recv)");
                 None
             }
         }
@@ -775,18 +775,16 @@ impl Future for UdpSendFuture {
                 payload,
                 ttl,
             ),
-            UdpAddr::V6 { ip, port } => {
-                crate::net::runtime::stack::enqueue_udp_v6_send_scoped_in(
-                    crate::net::runtime::default_runtime(),
-                    scope,
-                    local_port,
-                    Ipv6Address::UNSPECIFIED,
-                    ip,
-                    port,
-                    payload,
-                    ttl,
-                )
-            }
+            UdpAddr::V6 { ip, port } => crate::net::runtime::stack::enqueue_udp_v6_send_scoped_in(
+                crate::net::runtime::default_runtime(),
+                scope,
+                local_port,
+                Ipv6Address::UNSPECIFIED,
+                ip,
+                port,
+                payload,
+                ttl,
+            ),
         };
 
         if sent {

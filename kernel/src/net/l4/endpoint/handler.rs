@@ -124,6 +124,21 @@ fn finish_command<T>(
     EventHandleResult::Success
 }
 
+#[inline]
+fn stackless_dhcp_state_unavailable() -> crate::net::api::dhcp::DhcpRuntimeState {
+    crate::net::api::dhcp::DhcpRuntimeState {
+        v4_state: alloc::string::String::from("Unavailable"),
+        v4_assigned_ip: None,
+        v4_lease_remaining: None,
+        v4_last_declined: None,
+        v4_last_released: None,
+        v6_state: alloc::string::String::from("Unavailable"),
+        v6_assigned_ip: None,
+        v6_preferred_remaining: None,
+        v6_valid_remaining: None,
+    }
+}
+
 fn apply_tcp_checksum_for_addrs(
     segment: &mut [u8],
     local: EndpointAddr,
@@ -413,125 +428,93 @@ impl NetworkEventHandler {
             NetworkEvent::GetLinkLocal { result_slot, waker } => {
                 finish_command(result_slot, waker, None)
             }
-            NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::primary_interface_config_sync_in(runtime),
-            ),
-            NetworkEvent::GetInterfaceConfig {
-                if_id,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::get_interface_config_from_runtime_in(
-                    runtime,
-                    NetIfId(if_id),
-                ),
-            ),
-            NetworkEvent::ListInterfaceConfigs { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::list_interface_configs_from_runtime_in(runtime),
-            ),
-            NetworkEvent::GetInterfaceStats {
-                if_id,
-                result_slot,
-                waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::get_interface_stats_without_stack_in(
-                    runtime,
-                    NetIfId(if_id),
-                ),
-            ),
-            NetworkEvent::ListInterfaceStats { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::list_interface_stats_with_stack_in(runtime, None),
-            ),
-            NetworkEvent::ListInterfaces { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::config::list_interfaces_from_runtime_in(runtime),
-            ),
-            NetworkEvent::GetNetworkSnapshot { result_slot, waker } => {
-                finish_command(result_slot, waker, crate::net::obs::snapshot())
+            NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => {
+                finish_command(result_slot, waker, None)
             }
+            NetworkEvent::GetInterfaceConfig {
+                result_slot,
+                waker,
+                ..
+            } => finish_command(result_slot, waker, None),
+            NetworkEvent::ListInterfaceConfigs { result_slot, waker } => {
+                finish_command(result_slot, waker, Vec::new())
+            }
+            NetworkEvent::GetInterfaceStats {
+                result_slot,
+                waker,
+                ..
+            } => finish_command(result_slot, waker, None),
+            NetworkEvent::ListInterfaceStats { result_slot, waker } => {
+                finish_command(result_slot, waker, Vec::new())
+            }
+            NetworkEvent::ListInterfaces { result_slot, waker } => {
+                finish_command(result_slot, waker, Vec::new())
+            }
+            NetworkEvent::GetNetworkSnapshot { result_slot, waker } => finish_command(
+                result_slot,
+                waker,
+                crate::net::obs::NetSnapshot {
+                    rx_packets: 0,
+                    tx_packets: 0,
+                    rx_bytes: 0,
+                    tx_bytes: 0,
+                    drops: 0,
+                    errors: 0,
+                    interfaces: Vec::new(),
+                    recent_events: Vec::new(),
+                },
+            ),
             NetworkEvent::GetNetworkRecentEvents {
-                limit,
                 result_slot,
                 waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                crate::net::obs::snapshot()
-                    .recent_events
-                    .into_iter()
-                    .take(limit)
-                    .collect(),
-            ),
-            NetworkEvent::FirewallEnable { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_enable_sync(),
-            ),
-            NetworkEvent::FirewallDisable { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_disable_sync(),
-            ),
-            NetworkEvent::FirewallStatus { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_status_sync(),
-            ),
-            NetworkEvent::FirewallListRules { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_list_rules_sync(),
-            ),
-            NetworkEvent::FirewallStats { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_stats_sync(),
-            ),
+                ..
+            } => finish_command(result_slot, waker, Vec::new()),
+            NetworkEvent::FirewallEnable { result_slot, waker } => {
+                finish_command(result_slot, waker, Err("Stack unavailable"))
+            }
+            NetworkEvent::FirewallDisable { result_slot, waker } => {
+                finish_command(result_slot, waker, Err("Stack unavailable"))
+            }
+            NetworkEvent::FirewallStatus { result_slot, waker } => {
+                finish_command(result_slot, waker, alloc::string::String::from("Stack unavailable"))
+            }
+            NetworkEvent::FirewallListRules { result_slot, waker } => {
+                finish_command(result_slot, waker, alloc::string::String::from("Stack unavailable"))
+            }
+            NetworkEvent::FirewallStats { result_slot, waker } => {
+                finish_command(result_slot, waker, alloc::string::String::from("Stack unavailable"))
+            }
             NetworkEvent::FirewallAddRule {
-                rule,
                 result_slot,
                 waker,
+                ..
             } => finish_command(
                 result_slot,
                 waker,
-                crate::net::security::firewall::add_rule(rule).map_err(alloc::string::String::from),
+                Err(alloc::string::String::from("Stack unavailable")),
             ),
             NetworkEvent::FirewallRemoveRule {
-                id,
                 result_slot,
                 waker,
+                ..
             } => finish_command(
                 result_slot,
                 waker,
-                crate::net::security::firewall::remove_rule(id)
-                    .map_err(alloc::string::String::from),
+                Err(alloc::string::String::from("Stack unavailable")),
             ),
             NetworkEvent::FirewallClearRules { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::security::firewall::clear_rules().map_err(alloc::string::String::from),
+                Err(alloc::string::String::from("Stack unavailable")),
             ),
             NetworkEvent::FirewallSetDefaultPolicy {
-                direction,
-                action,
                 result_slot,
                 waker,
+                ..
             } => finish_command(
                 result_slot,
                 waker,
-                crate::net::security::firewall::set_default_policy(direction, action)
-                    .map_err(alloc::string::String::from),
+                Err(alloc::string::String::from("Stack unavailable")),
             ),
             NetworkEvent::GetArpCache { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -561,23 +544,13 @@ impl NetworkEventHandler {
             // DHCP/TCP 非同期クエリ: スタック不可時はデフォルト値で完了
             // ============================================================
             NetworkEvent::GetDhcpState {
-                if_id,
                 result_slot,
                 waker,
-            } => finish_command(
-                result_slot,
-                waker,
-                if let Some(if_id) = if_id {
-                    crate::net::api::dhcp::get_dhcp_state_sync_in(runtime, NetIfId(if_id))
-                } else {
-                    crate::net::api::dhcp::dhcp_state_sync_in(runtime)
-                },
-            ),
-            NetworkEvent::ListDhcpStates { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::dhcp::list_dhcp_states_sync_in(runtime),
-            ),
+                ..
+            } => finish_command(result_slot, waker, stackless_dhcp_state_unavailable()),
+            NetworkEvent::ListDhcpStates { result_slot, waker } => {
+                finish_command(result_slot, waker, Vec::new())
+            }
             NetworkEvent::DhcpRenew { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Err(alloc::string::String::from("Stack unavailable")));
@@ -1990,7 +1963,8 @@ impl NetworkEventHandler {
                 finish_command(result_slot, waker, result)
             }
             NetworkEvent::GetPrimaryInterfaceConfig { result_slot, waker } => {
-                let result = crate::net::api::config::primary_interface_config_sync_in(runtime);
+                let result =
+                    crate::net::api::config::primary_interface_config_from_runtime_in(runtime);
                 finish_command(result_slot, waker, result)
             }
             NetworkEvent::GetInterfaceConfig {
@@ -2049,30 +2023,28 @@ impl NetworkEventHandler {
                     .take(limit)
                     .collect(),
             ),
-            NetworkEvent::FirewallEnable { result_slot, waker } => finish_command(
-                result_slot,
-                waker,
-                crate::net::api::firewall::firewall_enable_sync(),
-            ),
+            NetworkEvent::FirewallEnable { result_slot, waker } => {
+                finish_command(result_slot, waker, crate::net::security::firewall::enable())
+            }
             NetworkEvent::FirewallDisable { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::firewall::firewall_disable_sync(),
+                crate::net::security::firewall::disable(),
             ),
             NetworkEvent::FirewallStatus { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::firewall::firewall_status_sync(),
+                crate::net::api::firewall::firewall_status_text(),
             ),
             NetworkEvent::FirewallListRules { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::firewall::firewall_list_rules_sync(),
+                crate::net::api::firewall::firewall_list_rules_text(),
             ),
             NetworkEvent::FirewallStats { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::firewall::firewall_stats_sync(),
+                crate::net::api::firewall::firewall_stats_text(),
             ),
             NetworkEvent::FirewallAddRule {
                 rule,
@@ -2155,15 +2127,15 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
                 if let Some(if_id) = if_id {
-                    crate::net::api::dhcp::get_dhcp_state_sync_in(runtime, NetIfId(if_id))
+                    crate::net::api::dhcp::get_dhcp_state_snapshot_in(runtime, NetIfId(if_id))
                 } else {
-                    crate::net::api::dhcp::dhcp_state_sync_in(runtime)
+                    crate::net::api::dhcp::dhcp_state_snapshot_in(runtime)
                 },
             ),
             NetworkEvent::ListDhcpStates { result_slot, waker } => finish_command(
                 result_slot,
                 waker,
-                crate::net::api::dhcp::list_dhcp_states_sync_in(runtime),
+                crate::net::api::dhcp::list_dhcp_states_snapshot_in(runtime),
             ),
             NetworkEvent::DhcpRenew { result_slot, waker } => {
                 use crate::net::services::dhcp;
@@ -3919,7 +3891,7 @@ pub mod tests {
         let (payload, if_id) = raw
             .endpoint()
             .expect("raw endpoint")
-            .recv_raw_payload_sync()
+            .try_recv_raw_payload()
             .expect("raw payload");
         assert_eq!(if_id, ingress_if);
         let mut actual = alloc::vec![0u8; payload.total_len()];
@@ -3932,7 +3904,7 @@ pub mod tests {
         assert!(matches!(
             udp.endpoint()
                 .expect("udp endpoint")
-                .recv_from_sync(&mut buf),
+                .try_recv_from(&mut buf),
             Err(EndpointError::Timeout)
         ));
     }
@@ -4020,7 +3992,7 @@ pub mod tests {
         assert_eq!(endpoint.state(), EndpointState::Listening);
         assert_eq!(endpoint.local_addr(), Some(local));
         assert!(matches!(
-            endpoint.next_incoming_sync(),
+            endpoint.try_next_incoming(),
             Err(EndpointError::Timeout)
         ));
     }

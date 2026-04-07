@@ -5,21 +5,12 @@
 
 use alloc::vec::Vec;
 
-use crate::net::obs::{NetSnapshot, NetTraceEvent, snapshot};
+use crate::net::obs::{NetSnapshot, NetTraceEvent};
 use crate::net::runtime::NetRuntimeHandle;
 
 extern crate alloc;
 
 // Removed: `dns_resolve()` — deprecated stub. Use `crate::net::services::dns` instead.
-
-fn network_snapshot_sync() -> NetSnapshot {
-    snapshot()
-}
-
-fn network_recent_events_sync(limit: usize) -> Vec<NetTraceEvent> {
-    let snap = network_snapshot_sync();
-    snap.recent_events.into_iter().take(limit).collect()
-}
 
 pub async fn network_snapshot_in(runtime: NetRuntimeHandle) -> NetSnapshot {
     let (result_slot, waker, command_future) =

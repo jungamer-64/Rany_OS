@@ -137,87 +137,11 @@ impl Endpoint {
         inner.transition_to(EndpointState::Bound)
     }
 
-    /// リモートアドレスへ接続を開始
-    ///
-    /// 【設計書】POSIXのconnect()ではなく、open_connection()を使用
-    ///
-    /// **ブートストラップ/テスト専用**: NETWORK_STACKロックは取得しないが、
-    /// asyncコンテキストでは [`open_connection()`] を推奨。
-    #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn open_connection_sync(&self, addr: EndpointAddr) -> EndpointResult<()> {
-        let local_addr;
-        {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-            if !inner.state.can_connect() {
-                return Err(EndpointError::AlreadyConnected);
-            }
-
-            // ローカルアドレスが未設定ならエフェメラルポートを割り当て
-            local_addr = inner.local_addr.unwrap_or_else(|| {
-                if addr.is_ipv6() {
-                    EndpointAddr::new_v6([0; 16], 0)
-                } else {
-                    EndpointAddr::new([0, 0, 0, 0], 0)
-                }
-            });
-
-            inner.remote_addr = Some(addr);
-            inner.transition_to(EndpointState::Connecting)?;
-        }
-
-        // TCPスタックに接続イベントを送信（バックプレッシャー対応）
-        enqueue_event_in(
-            self.runtime,
-            NetworkEvent::Connect {
-                fd: self.fd,
-                local: local_addr,
-                remote: addr,
-            },
-        )
-    }
-
-    /// リッスンモードを開始（同期TCP bind）
-    ///
-    /// **ブートストラップ/テスト専用**: `bind_tcp_sync_in()` 経由の同期パスを使用するため、
-    /// エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
-    /// asyncコンテキストでは [`start_listening()`] を使用すること。
-    #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn start_listening_sync(&self, backlog: u32) -> EndpointResult<()> {
-        if self.endpoint_type != EndpointType::Tcp {
-            return Err(EndpointError::InvalidArgument);
-        }
-
-        let local_addr;
-        {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-            if !inner.state.can_listen() {
-                return Err(EndpointError::InvalidStateTransition);
-            }
-
-            local_addr = inner.local_addr.ok_or(EndpointError::InvalidArgument)?;
-
-            inner.ensure_tcp().accept_backlog = backlog as usize;
-            inner.transition_to(EndpointState::Listening)?;
-        }
-
-        // ネットワークスタックにリッスンイベントを送信（バックプレッシャー対応）
-        enqueue_event_in(
-            self.runtime,
-            NetworkEvent::Listen {
-                fd: self.fd,
-                local: local_addr,
-                backlog,
-            },
-        )
-    }
-
     /// 次の接続を取得（同期バッファ読み取り）
     ///
     /// Acceptキューから接続を取得する。NETWORK_STACKロックは使用しない。
     /// 空の場合はTimeoutを返す。`AcceptFuture` が内部で使用する。
-    pub fn next_incoming_sync(&self) -> EndpointResult<(Endpoint, EndpointAddr, NetIfId)> {
+    pub fn try_next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr, NetIfId)> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
         }
@@ -305,7 +229,7 @@ impl Endpoint {
     /// データ受信（同期バッファ読み取り）
     ///
     /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
-    pub fn recv_sync(&self, buf: &mut [u8]) -> EndpointResult<usize> {
+    pub fn try_recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
         if !inner.state.can_receive() {
@@ -323,7 +247,7 @@ impl Endpoint {
     /// UDP受信（同期バッファ読み取り）
     ///
     /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
-    pub fn recv_from_sync(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
+    pub fn try_recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
         if self.endpoint_type != EndpointType::Udp {
             return Err(EndpointError::InvalidArgument);
         }
@@ -343,7 +267,7 @@ impl Endpoint {
         };
 
         if let Some(socket) = socket {
-            if let Some((if_id, addr, _ttl, mut payload)) = socket.try_recv_sync() {
+            if let Some((if_id, addr, _ttl, mut payload)) = socket.try_recv() {
                 let len = payload.copy_into(buf);
                 let endpoint_addr = match addr {
                     UdpAddr::V4 { ip, port } => EndpointAddr::new(ip.octets(), port),
@@ -469,7 +393,7 @@ impl Endpoint {
         Ok(())
     }
 
-    pub fn recv_raw_payload_sync(&self) -> EndpointResult<(PacketPayload, NetIfId)> {
+    pub fn try_recv_raw_payload(&self) -> EndpointResult<(PacketPayload, NetIfId)> {
         if self.endpoint_type != EndpointType::Raw {
             return Err(EndpointError::InvalidArgument);
         }
@@ -517,7 +441,7 @@ impl Endpoint {
     }
 
     /// クローズ
-    pub fn close_sync(&self) -> EndpointResult<()> {
+    pub(crate) fn close_immediate(&self) -> EndpointResult<()> {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -797,45 +721,33 @@ impl OwnedEndpoint {
             .set_local_addr(addr)
     }
 
-    /// リッスンモードを開始（同期版）
-    ///
-    /// **ブートストラップ/テスト専用**: `bind_tcp()` 経由でNETWORK_STACKロックを取得する。
-    /// asyncコンテキストでは [`start_listening()`] を使用すること。
-    #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn start_listening_sync(&self, backlog: u32) -> EndpointResult<()> {
-        self.endpoint
-            .as_ref()
-            .ok_or(EndpointError::NotFound)?
-            .start_listening_sync(backlog)
-    }
-
     /// 次の接続を取得（同期版）
     ///
     /// NETWORK_STACKロックは使用しない。`AcceptFuture` が内部で使用する。
     /// asyncコンテキストでは `accept()` を推奨。
-    pub fn next_incoming_sync(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr, NetIfId)> {
+    pub fn try_next_incoming(&self) -> EndpointResult<(OwnedEndpoint, EndpointAddr, NetIfId)> {
         let (ep, addr, if_id) = self
             .endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .next_incoming_sync()?;
+            .try_next_incoming()?;
         Ok((OwnedEndpoint::from_endpoint(ep), addr, if_id))
     }
 
     /// 受信（同期）
-    pub fn recv_sync(&self, buf: &mut [u8]) -> EndpointResult<usize> {
+    pub fn try_recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .recv_sync(buf)
+            .try_recv(buf)
     }
 
     /// UDP受信（同期）
-    pub fn recv_from_sync(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
+    pub fn try_recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
         self.endpoint
             .as_ref()
             .ok_or(EndpointError::NotFound)?
-            .recv_from_sync(buf)
+            .try_recv_from(buf)
     }
 
     /// TCP_NODELAY設定
@@ -885,7 +797,7 @@ impl Drop for OwnedEndpoint {
     fn drop(&mut self) {
         if let Some(ref ep) = self.endpoint {
             // エンドポイントクローズ
-            let _ = ep.close_sync();
+            let _ = ep.close_immediate();
 
             // EndpointManagerから登録解除
             if let Some(ref manager) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
@@ -950,13 +862,6 @@ pub fn create_raw_endpoint() -> OwnedEndpoint {
 /// 指定ランタイムのRAWソケット作成
 pub fn create_raw_endpoint_in(runtime: NetRuntimeHandle) -> OwnedEndpoint {
     OwnedEndpoint::new_in(runtime, EndpointType::Raw)
-}
-
-/// UDPエンドポイント作成とローカルアドレス設定（推奨API）
-pub fn create_udp_endpoint_bound_sync(addr: EndpointAddr) -> EndpointResult<OwnedEndpoint> {
-    let ep = create_udp_endpoint();
-    ep.set_local_addr(addr)?;
-    Ok(ep)
 }
 
 /// 非同期TCPサーバー作成（推奨API）

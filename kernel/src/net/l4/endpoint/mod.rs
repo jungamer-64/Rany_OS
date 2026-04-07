@@ -75,8 +75,8 @@ pub use manager::{endpoint_manager, init_endpoint_manager, is_endpoint_manager_i
 pub use endpoint_core::{
     OwnedEndpoint, create_raw_endpoint, create_raw_endpoint_in, create_tcp_endpoint,
     create_tcp_endpoint_in, create_tcp_server, create_tcp_server_in, create_udp_endpoint,
-    create_udp_endpoint_bound, create_udp_endpoint_bound_in, create_udp_endpoint_bound_sync,
-    create_udp_endpoint_in, open_tcp_connection, open_tcp_connection_in,
+    create_udp_endpoint_bound, create_udp_endpoint_bound_in, create_udp_endpoint_in,
+    open_tcp_connection, open_tcp_connection_in,
 };
 // Re-exports: futures
 

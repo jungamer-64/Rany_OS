@@ -340,7 +340,7 @@ pub fn udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
             return false;
         }
 
-        let Some((if_id, addr, _ttl, packet)) = endpoint.try_recv_sync() else {
+        let Some((if_id, addr, _ttl, packet)) = endpoint.try_recv() else {
             return false;
         };
 

@@ -682,7 +682,7 @@ impl<'a> Future for AcceptFuture<'a> {
     type Output = Result<(TcpStream, EndpointAddr), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.listener.endpoint.next_incoming_sync() {
+        match self.listener.endpoint.try_next_incoming() {
             Ok((endpoint, addr, _if_id)) => {
                 Poll::Ready(Ok((TcpStream::from_endpoint(endpoint), addr)))
             }

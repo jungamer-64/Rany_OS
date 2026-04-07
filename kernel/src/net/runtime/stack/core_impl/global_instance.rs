@@ -485,24 +485,6 @@ pub fn enqueue_unbind_tcp_listener_in(runtime: NetRuntimeHandle, fd: EndpointFd)
     );
 }
 
-/// Bind a TCP listener (sync, acquires NETWORK_STACK lock)
-///
-/// **非推奨 (deprecated)**: エグゼキュータ未起動時の同期コンテキストでのみ使用すること。
-/// asyncコンテキストでは `bind_tcp_listener()` を使用すること。
-///
-/// # 完全非同期化
-/// 以前はNETWORK_STACKのロックを直接取得していたが、イベントキュー経由の
-/// 非同期パスに統一し、ロック競合を排除。ブートストラップ時のみIRQ無効化 +
-/// 同期ドレインで処理する。
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub fn bind_tcp_sync_in(
-    runtime: NetRuntimeHandle,
-    addr: TcpEndpointAddr,
-) -> Result<TcpListener, TcpError> {
-    let _ = (runtime, addr);
-    Err(TcpError::InvalidState)
-}
-
 // ============================================================================
 // Multicast Group Management (Global API) - 完全非同期化
 // ============================================================================

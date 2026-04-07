@@ -289,14 +289,14 @@ fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpR
     out
 }
 
-pub(crate) fn get_dhcp_state_sync_in(
+pub(crate) fn get_dhcp_state_snapshot_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> DhcpRuntimeState {
     snapshot_for_interface_in(runtime, if_id)
 }
 
-pub(crate) fn list_dhcp_states_sync_in(
+pub(crate) fn list_dhcp_states_snapshot_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceDhcpState> {
     manager::list_interfaces_in(runtime)
@@ -309,7 +309,7 @@ pub(crate) fn list_dhcp_states_sync_in(
         .collect()
 }
 
-pub(crate) fn dhcp_state_sync_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
+pub(crate) fn dhcp_state_snapshot_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
     let now = tcb_table().get_current_tick();
     let tick_rate = 1000u64;
 

@@ -1,6 +1,6 @@
 use super::*;
-use crate::security::capability::{CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_PTRACE};
 use crate::security::CapabilitySet;
+use crate::security::capability::{CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_PTRACE};
 use crate::shell::exoshell::parser::parse_expression;
 use crate::task::block_on;
 

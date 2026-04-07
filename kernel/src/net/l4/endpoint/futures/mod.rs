@@ -147,7 +147,7 @@ impl Future for AcceptFuture {
     type Output = EndpointResult<(OwnedEndpoint, EndpointAddr, NetIfId)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.endpoint.next_incoming_sync() {
+        match self.endpoint.try_next_incoming() {
             Ok((ep, addr, if_id)) => {
                 Poll::Ready(Ok((OwnedEndpoint::from_endpoint(ep), addr, if_id)))
             }
@@ -188,7 +188,7 @@ impl Future for RecvFromFuture {
         let buf_len = this.buffer.len();
         let mut temp_buf = alloc::vec![0u8; buf_len];
 
-        match this.endpoint.recv_from_sync(&mut temp_buf) {
+        match this.endpoint.try_recv_from(&mut temp_buf) {
             Ok((len, addr, if_id)) => {
                 this.buffer.truncate(len);
                 this.buffer[..len].copy_from_slice(&temp_buf[..len]);

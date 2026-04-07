@@ -34,10 +34,7 @@ fn s(v: &str) -> String {
 }
 
 impl TaskNamespace {
-    fn require_sys_admin(
-        caps: &CapabilitySet,
-        op_name: &str,
-    ) -> Result<(), ExoValue<'static>> {
+    fn require_sys_admin(caps: &CapabilitySet, op_name: &str) -> Result<(), ExoValue<'static>> {
         if caps.has_capability(CAP_SYS_ADMIN) {
             Ok(())
         } else {

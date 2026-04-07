@@ -462,7 +462,7 @@ pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
     );
 
     let (_if_id, addr, _ttl, packet) = endpoint
-        .try_recv_sync()
+        .try_recv()
         .expect("payload-chain delivery should enqueue a datagram");
     assert_eq!(addr, UdpAddr::new(src_ip, 4321));
     assert_eq!(payload_bytes(&packet), payload);

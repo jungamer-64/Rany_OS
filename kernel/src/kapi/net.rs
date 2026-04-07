@@ -85,7 +85,7 @@ pub(crate) fn close_endpoint_handle(
     fd: crate::net::l4::endpoint::EndpointFd,
 ) -> Result<(), KapiError> {
     let socket = lookup_endpoint(fd)?;
-    socket.close_sync().map_err(endpoint_error_to_kapi)?;
+    socket.close_immediate().map_err(endpoint_error_to_kapi)?;
 
     if let Some(mgr_lock) = crate::net::l4::endpoint::endpoint_manager() {
         let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());

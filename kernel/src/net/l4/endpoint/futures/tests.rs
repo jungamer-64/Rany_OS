@@ -448,7 +448,7 @@ pub fn test_udp_packet_stream_delivered() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_udp_recv_from_sync_reads_zero_copy_socket_queue() {
+pub fn test_udp_try_recv_from_reads_zero_copy_socket_queue() {
     init_endpoint_manager();
 
     let processor = crate::net::l4::udp::UdpProcessor::new();
@@ -487,15 +487,15 @@ pub fn test_udp_recv_from_sync_reads_zero_copy_socket_queue() {
 
     let mut buf = [0u8; 32];
     let (len, addr, if_id) = endpoint
-        .recv_from_sync(&mut buf)
-        .expect("recv_from_sync should read UDP socket queue");
+        .try_recv_from(&mut buf)
+        .expect("try_recv_from should read UDP socket queue");
     assert_eq!(&buf[..len], b"zero-copy");
     assert_eq!(addr, EndpointAddr::new([127, 0, 0, 1], 54321));
     assert_eq!(if_id, crate::net::runtime::manager::NetIfId::default());
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_udp_recv_from_sync_reads_zero_copy_socket_queue_v6() {
+pub fn test_udp_try_recv_from_reads_zero_copy_socket_queue_v6() {
     init_endpoint_manager();
 
     let processor = crate::net::l4::udp::UdpProcessor::new();
@@ -539,8 +539,8 @@ pub fn test_udp_recv_from_sync_reads_zero_copy_socket_queue_v6() {
 
     let mut buf = [0u8; 32];
     let (len, addr, if_id) = endpoint
-        .recv_from_sync(&mut buf)
-        .expect("recv_from_sync should read UDP socket queue");
+        .try_recv_from(&mut buf)
+        .expect("try_recv_from should read UDP socket queue");
     assert_eq!(&buf[..len], b"zero-copy-v6");
     assert_eq!(
         addr,

@@ -1,8 +1,8 @@
 extern crate alloc;
 
+use crate::security::capability::CAP_SYS_PTRACE;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use crate::security::capability::CAP_SYS_PTRACE;
 use kernel_api::shell::{
     CpuIdleInfo, DirEntry, DomainInfo, DomainMonitorInfo, DomainState, FileAttributes, FileType,
     MemoryMonitorInfo, MemoryStats, MonitorInfo, NetworkMonitorInfo, PowerInfo, ShellSystemInfo,

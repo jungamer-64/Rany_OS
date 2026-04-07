@@ -160,7 +160,9 @@ fn net_devices_snapshot() -> alloc::vec::Vec<NetDeviceInfo> {
 }
 
 fn has_sys_admin_capability() -> bool {
-    crate::task::current_subject().caps.has_capability(CAP_SYS_ADMIN)
+    crate::task::current_subject()
+        .caps
+        .has_capability(CAP_SYS_ADMIN)
 }
 
 impl GuiServices for ExoKernel {
@@ -365,11 +367,11 @@ mod gui_input_queue_tests {
 // ShellServices Implementation
 // ============================================================================
 
+use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_PTRACE};
 use kernel_api::shell::{
     DirEntry as KapiDirEntry, DomainInfo, DomainState as KapiDomainState, MemoryStats,
     ShellServices, ShellSystemInfo as KapiSystemInfo,
 };
-use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_PTRACE};
 
 pub(crate) fn map_domain_state(state: crate::domain::DomainState) -> KapiDomainState {
     match state {

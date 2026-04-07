@@ -243,8 +243,7 @@ impl NetworkStack {
 
     /// Send an ARP request via a specific interface.
     pub fn send_arp_request_on(&mut self, if_id: super::NetIfId, target_ip: Ipv4Address) {
-        self
-            .send_arp_request_on_registered_interface(if_id, target_ip, self.current_time())
+        self.send_arp_request_on_registered_interface(if_id, target_ip, self.current_time())
             .unwrap_or_else(|| self.send_arp_request(target_ip));
     }
 

@@ -611,7 +611,11 @@ impl IgmpProcessor {
             };
         }
 
-        if let Some(group) = self.groups.iter_mut().find(|g| g.address == query.group_addr) {
+        if let Some(group) = self
+            .groups
+            .iter_mut()
+            .find(|g| g.address == query.group_addr)
+        {
             let current_time = self.current_time;
             Self::set_response_timer(current_time, group, max_delay_ms);
             IgmpResult::GroupQueryReceived {
@@ -1198,7 +1202,13 @@ pub(crate) mod tests {
         query[3] = (checksum & 0xff) as u8;
 
         let result = processor.process(&query, Ipv4Address::new([192, 168, 1, 1]));
-        assert!(matches!(result, IgmpResult::GroupQueryReceived { group: _, max_resp_time: _ }));
+        assert!(matches!(
+            result,
+            IgmpResult::GroupQueryReceived {
+                group: _,
+                max_resp_time: _
+            }
+        ));
         assert_eq!(processor.groups[0].state, GroupState::DelayingMember);
         assert!(processor.groups[0].timer > 0);
     }
@@ -1220,7 +1230,10 @@ pub(crate) mod tests {
         assert_eq!(report[0], IgmpType::V3MembershipReport as u8);
         assert_eq!(report[6], 0);
         assert_eq!(report[7], 1);
-        assert_eq!(report[IGMP_HEADER_LEN], IgmpV3GroupRecordType::ModeIsExclude as u8);
+        assert_eq!(
+            report[IGMP_HEADER_LEN],
+            IgmpV3GroupRecordType::ModeIsExclude as u8
+        );
         assert_eq!(compute_igmp_checksum(&report[..len]), 0);
     }
 

@@ -502,7 +502,7 @@ pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<NetIfId> {
 }
 
 pub fn primary_interface_config() -> Option<InterfaceConfigSnapshot> {
-    crate::net::api::config::primary_interface_config_sync_in(
+    crate::net::api::config::primary_interface_config_from_runtime_in(
         crate::net::runtime::default_runtime(),
     )
 }

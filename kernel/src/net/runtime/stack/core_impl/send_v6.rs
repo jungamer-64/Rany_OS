@@ -979,12 +979,14 @@ impl NetworkStack {
                     .set_destination(dst_group);
 
                 let ip_payload = ip_pkt.payload_mut();
-                if let Some(len) = crate::net::l3::igmp::IgmpProcessor::build_v3_single_record_report(
-                    record_type,
-                    group_addr,
-                    &[],
-                    ip_payload,
-                ) {
+                if let Some(len) =
+                    crate::net::l3::igmp::IgmpProcessor::build_v3_single_record_report(
+                        record_type,
+                        group_addr,
+                        &[],
+                        ip_payload,
+                    )
+                {
                     let total_len = (20 + len) as u16;
                     ip_pkt.set_total_length(total_len).update_checksum();
                     frame.set_payload_len(total_len as usize);

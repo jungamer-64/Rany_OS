@@ -24,18 +24,8 @@ use crate::net::security::firewall::{
 
 extern crate alloc;
 
-/// ファイアウォールを有効化する
-pub(crate) fn firewall_enable_sync() -> Result<(), &'static str> {
-    firewall::enable()
-}
-
-/// ファイアウォールを無効化する
-pub(crate) fn firewall_disable_sync() -> Result<(), &'static str> {
-    firewall::disable()
-}
-
-/// ファイアウォールの状態を返す
-pub(crate) fn firewall_status_sync() -> String {
+/// ファイアウォールの状態を文字列化する（イベントハンドラ内部用）
+pub(crate) fn firewall_status_text() -> String {
     let enabled = firewall::is_enabled();
     let stats = firewall::get_stats();
     let rules = firewall::list_rules().unwrap_or_default();
@@ -47,8 +37,8 @@ pub(crate) fn firewall_status_sync() -> String {
     )
 }
 
-/// ルール一覧を文字列で返す
-pub(crate) fn firewall_list_rules_sync() -> String {
+/// ルール一覧を文字列化する（イベントハンドラ内部用）
+pub(crate) fn firewall_list_rules_text() -> String {
     match firewall::list_rules() {
         Ok(rules) if rules.is_empty() => String::from("(no rules)"),
         Ok(rules) => {
@@ -62,75 +52,9 @@ pub(crate) fn firewall_list_rules_sync() -> String {
     }
 }
 
-/// 統計情報を文字列で返す
-pub(crate) fn firewall_stats_sync() -> String {
+/// 統計情報を文字列化する（イベントハンドラ内部用）
+pub(crate) fn firewall_stats_text() -> String {
     format!("{}", firewall::get_stats())
-}
-
-/// ルールを追加する
-///
-/// ## 引数
-/// - `action`: "allow" / "deny" / "log-allow" / "log-deny"
-/// - `direction`: "in" / "out" / "both"
-/// - `src_ip`: IP/CIDR 文字列（"*" or "0.0.0.0/0" for any）
-/// - `dst_ip`: IP/CIDR 文字列
-/// - `protocol`: "tcp" / "udp" / "icmp" / "*" / 数字
-/// - `src_port`: ポート文字列（"*" / "80" / "1024-65535"）
-/// - `dst_port`: ポート文字列
-/// - `priority`: 優先度（小さいほど先に評価）
-/// - `name`: ルール名（オプション）
-pub(crate) fn firewall_add_rule_sync(
-    action: &str,
-    direction: &str,
-    src_ip: &str,
-    dst_ip: &str,
-    protocol: &str,
-    src_port: &str,
-    dst_port: &str,
-    priority: u16,
-    name: &str,
-) -> Result<u64, String> {
-    let action = parse_action(action)?;
-    let direction = parse_direction(direction)?;
-    let src_ip = parse_ip_match(src_ip)?;
-    let dst_ip = parse_ip_match(dst_ip)?;
-    let protocol = parse_protocol(protocol)?;
-    let src_port = parse_port_match(src_port)?;
-    let dst_port = parse_port_match(dst_port)?;
-
-    let rule = FirewallRule::builder()
-        .name(name)
-        .action(action)
-        .direction(direction)
-        .src_ip(src_ip)
-        .dst_ip(dst_ip)
-        .protocol(protocol)
-        .src_port(src_port)
-        .dst_port(dst_port)
-        .priority(priority)
-        .build();
-
-    firewall::add_rule(rule).map_err(|e| String::from(e))
-}
-
-/// ルールを削除する
-pub(crate) fn firewall_remove_rule_sync(id: u64) -> Result<bool, String> {
-    firewall::remove_rule(id).map_err(|e| String::from(e))
-}
-
-/// 全ルールをクリアする
-pub(crate) fn firewall_clear_rules_sync() -> Result<(), String> {
-    firewall::clear_rules().map_err(|e| String::from(e))
-}
-
-/// デフォルトポリシーを設定する
-pub(crate) fn firewall_set_default_policy_sync(
-    direction: &str,
-    action: &str,
-) -> Result<(), String> {
-    let dir = parse_direction(direction)?;
-    let act = parse_action(action)?;
-    firewall::set_default_policy(dir, act).map_err(|e| String::from(e))
 }
 
 pub async fn firewall_enable_in(runtime: NetRuntimeHandle) -> Result<(), &'static str> {

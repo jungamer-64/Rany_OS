@@ -183,14 +183,14 @@ pub(crate) fn list_interfaces_from_runtime_in(
         .collect()
 }
 
-pub(crate) fn primary_interface_config_sync_in(
+pub(crate) fn primary_interface_config_from_runtime_in(
     runtime: NetRuntimeHandle,
 ) -> Option<InterfaceConfigSnapshot> {
     let preferred_if = primary_interface_id_in(runtime)?;
     get_interface_config_from_runtime_in(runtime, preferred_if)
 }
 
-pub(crate) fn list_interface_stats_sync_in(
+pub(crate) fn list_interface_stats_from_runtime_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
     if let Ok(guard) = runtime.context().stack.lock() {

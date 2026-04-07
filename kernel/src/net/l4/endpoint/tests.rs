@@ -49,7 +49,7 @@ pub mod tests {
             let _ = inner.transition_to(EndpointState::Listening);
         }
 
-        let result = endpoint.next_incoming_sync();
+        let result = endpoint.try_next_incoming();
         assert!(matches!(result, Err(EndpointError::Timeout)));
     }
 
@@ -315,7 +315,33 @@ pub mod tests {
         let local =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
         assert!(sock.set_local_addr(local).is_ok());
-        assert!(sock.start_listening_sync(4).is_ok());
+        let endpoint = sock.endpoint().expect("endpoint not found").clone();
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+
+        let mut executor = crate::task::TestExecutor::new();
+        let result_slot_clone = result_slot.clone();
+        let completed_clone = completed.clone();
+        executor.spawn(crate::task::Task::new(async move {
+            let output = endpoint.start_listening(4).await;
+            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(output);
+            completed_clone.store(true, core::sync::atomic::Ordering::Release);
+        }));
+
+        let mut listen_result = None;
+        for _ in 0..100_000 {
+            executor.drive_once_for_test();
+            if completed.load(core::sync::atomic::Ordering::Acquire) {
+                listen_result = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                break;
+            }
+        }
+        assert!(
+            listen_result
+                .expect("start_listening test timed out")
+                .is_ok()
+        );
 
         if let Some(s) = sock.endpoint() {
             let inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -393,7 +419,7 @@ pub mod tests {
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
-        let (accepted, _, if_id) = listen_endpoint.next_incoming_sync().expect("accept");
+        let (accepted, _, if_id) = listen_endpoint.try_next_incoming().expect("accept");
         assert_eq!(if_id, NetIfId(4));
         let inner = accepted.inner().lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(inner.scope, InterfaceScope::Pinned(NetIfId(4)));
@@ -457,7 +483,7 @@ pub mod tests {
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
-        let (accepted, _, _) = listen_endpoint.next_incoming_sync().expect("accept");
+        let (accepted, _, _) = listen_endpoint.try_next_incoming().expect("accept");
         assert_eq!(accepted.runtime().id(), runtime_b.id());
     }
 
@@ -569,7 +595,7 @@ pub mod tests {
         let (received_pinned, if_id) = raw_pinned
             .endpoint()
             .expect("pinned raw endpoint")
-            .recv_raw_payload_sync()
+            .try_recv_raw_payload()
             .expect("pinned delivery");
         assert_eq!(if_id, NetIfId(12));
         assert_eq!(payload_bytes(&received_pinned), vec![1, 2, 3, 4]);
@@ -577,7 +603,7 @@ pub mod tests {
             raw_any
                 .endpoint()
                 .expect("wildcard raw endpoint")
-                .recv_raw_payload_sync(),
+                .try_recv_raw_payload(),
             Err(EndpointError::Timeout)
         ));
 
@@ -589,7 +615,7 @@ pub mod tests {
         let (received_any, if_id) = raw_any
             .endpoint()
             .expect("wildcard raw endpoint")
-            .recv_raw_payload_sync()
+            .try_recv_raw_payload()
             .expect("wildcard delivery");
         assert_eq!(if_id, NetIfId(13));
         assert_eq!(payload_bytes(&received_any), vec![9, 8, 7]);

@@ -376,7 +376,7 @@ impl KernelServices for ExoKernel {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(endpoint.id() as u32);
             let socket = lookup_endpoint(fd)?;
 
-            core::future::poll_fn(|cx| match socket.recv_raw_payload_sync() {
+            core::future::poll_fn(|cx| match socket.try_recv_raw_payload() {
                 Ok((payload, _if_id)) => core::task::Poll::Ready(Ok(payload)),
                 Err(crate::net::l4::endpoint::EndpointError::Timeout) => {
                     socket.register_recv_waker(cx.waker().clone());

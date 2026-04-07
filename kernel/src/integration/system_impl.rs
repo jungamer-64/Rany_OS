@@ -96,7 +96,7 @@ impl SystemIntegration {
         } else {
             self.log("  Net Config: none");
         }
-        let stats = crate::net::api::config::list_interface_stats_sync_in(
+        let stats = crate::net::api::config::list_interface_stats_from_runtime_in(
             crate::net::runtime::default_runtime(),
         );
         if !stats.is_empty() {

@@ -3,13 +3,11 @@
 // ============================================================================
 //! TCP接続一覧、UDPソケット一覧、ARPキャッシュの取得・操作。
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::endpoint::{TcpConnectionState, tcb_table};
 use crate::net::runtime::NetRuntimeHandle;
 
 extern crate alloc;
@@ -35,42 +33,6 @@ pub struct ArpCacheEntry {
     pub ip: [u8; 4],
     pub mac: [u8; 6],
     pub complete: bool,
-}
-
-/// TCP接続一覧取得（読み取り専用・tcb_table参照）
-///
-/// `tcb_table()` から接続スナップショットを取得する。ネットワークスタックロックは使用しない。
-pub fn get_tcp_connections_sync() -> Option<Vec<TcpConnectionInfo>> {
-    let snapshots = tcb_table().list_connections();
-    if snapshots.is_empty() {
-        return None;
-    }
-
-    let connections = snapshots
-        .into_iter()
-        .map(|snap| {
-            let state = match snap.state {
-                TcpConnectionState::Closed => "CLOSED",
-                TcpConnectionState::Listen => "LISTEN",
-                TcpConnectionState::SynSent => "SYN_SENT",
-                TcpConnectionState::SynReceived => "SYN_RCVD",
-                TcpConnectionState::Established => "ESTABLISHED",
-                TcpConnectionState::FinWait1 => "FIN_WAIT1",
-                TcpConnectionState::FinWait2 => "FIN_WAIT2",
-                TcpConnectionState::CloseWait => "CLOSE_WAIT",
-                TcpConnectionState::Closing => "CLOSING",
-                TcpConnectionState::LastAck => "LAST_ACK",
-                TcpConnectionState::TimeWait => "TIME_WAIT",
-            };
-            TcpConnectionInfo {
-                local_addr: format!("{}", snap.local),
-                remote_addr: format!("{}", snap.remote),
-                state: String::from(state),
-            }
-        })
-        .collect();
-
-    Some(connections)
 }
 
 // ============================================================================
