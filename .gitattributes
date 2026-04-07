@@ -1,7 +1,6 @@
 # デフォルトの挙動：すべてのテキストファイルをLFに強制変換してコミット
 # チェックアウト時はOSの設定に従わずLFのままにする（クロスプラットフォームでの事故防止）
 * text=auto eol=lf
-
 # ---------------------------------------------------------
 # Windows固有のファイル
 # ---------------------------------------------------------
@@ -9,18 +8,15 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
-
 # ---------------------------------------------------------
 # Linux/Unix固有のファイル
 # ---------------------------------------------------------
 # シェルスクリプトは絶対にLFである必要がある
 *.sh text eol=lf
-
 # MakefileやリンカスクリプトもLF推奨
 Makefile text eol=lf
 *.mk     text eol=lf
 *.ld     text eol=lf
-
 # ---------------------------------------------------------
 # 言語ごとの明示的な指定（念のため）
 # ---------------------------------------------------------
@@ -31,38 +27,37 @@ Makefile text eol=lf
 *.cpp text eol=lf
 *.asm text eol=lf
 *.S text eol=lf
-
 # ---------------------------------------------------------
 # バイナリファイル（Gitに改行コードを変換させない設定）
 # ---------------------------------------------------------
 # 画像やフォント、コンパイル済みバイナリが壊れるのを防ぐ
-*.png binary
-*.jpg binary
-*.jpeg binary
-*.gif binary
-*.ico binary
-*.mov binary
-*.mp4 binary
-*.mp3 binary
-*.flac binary
-*.pdf binary
-*.doc binary
-*.docx binary
-*.xls binary
-*.xlsx binary
-*.ppt binary
-*.pptx binary
-*.zip binary
-*.tar.gz binary
-*.7z binary
-
+*.png filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+*.gif filter=lfs diff=lfs merge=lfs -text
+*.ico filter=lfs diff=lfs merge=lfs -text
+*.mov filter=lfs diff=lfs merge=lfs -text
+*.mp4 filter=lfs diff=lfs merge=lfs -text
+*.mp3 filter=lfs diff=lfs merge=lfs -text
+*.flac filter=lfs diff=lfs merge=lfs -text
+*.pdf filter=lfs diff=lfs merge=lfs -text
+*.doc filter=lfs diff=lfs merge=lfs -text
+*.docx filter=lfs diff=lfs merge=lfs -text
+*.xls filter=lfs diff=lfs merge=lfs -text
+*.xlsx filter=lfs diff=lfs merge=lfs -text
+*.ppt filter=lfs diff=lfs merge=lfs -text
+*.pptx filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+*.tar.gz filter=lfs diff=lfs merge=lfs -text
+*.7z filter=lfs diff=lfs merge=lfs -text
 # OS自作で扱う可能性のあるバイナリ系
-*.bin binary
-*.img binary
-*.iso binary
-*.o binary
-*.a binary
-*.so binary
-*.dll binary
-*.exe binary
-*.class binary
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.img filter=lfs diff=lfs merge=lfs -text
+*.iso filter=lfs diff=lfs merge=lfs -text
+*.o filter=lfs diff=lfs merge=lfs -text
+*.a filter=lfs diff=lfs merge=lfs -text
+*.so filter=lfs diff=lfs merge=lfs -text
+*.dll filter=lfs diff=lfs merge=lfs -text
+*.exe filter=lfs diff=lfs merge=lfs -text
+*.class filter=lfs diff=lfs merge=lfs -text
+*.fd filter=lfs diff=lfs merge=lfs -text
