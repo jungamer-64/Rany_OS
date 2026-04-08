@@ -1,5 +1,3 @@
-#![allow(clippy::result_large_err)]
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -122,18 +120,18 @@ impl std::error::Error for BuildError {}
 
 #[derive(Debug)]
 pub enum RunError {
-    Build(BuildError),
-    QemuNotFound(String),
-    FirmwareMissing(String),
-    InvalidAccel(String),
-    AccelUnavailable(String),
+    Build(Box<BuildError>),
+    QemuNotFound(Box<str>),
+    FirmwareMissing(Box<str>),
+    InvalidAccel(Box<str>),
+    AccelUnavailable(Box<str>),
     QemuLaunch(std::io::Error),
     Timeout {
         timeout_secs: u64,
-        log_path: PathBuf,
-        qemu_stderr_path: PathBuf,
+        log_path: Box<PathBuf>,
+        qemu_stderr_path: Box<PathBuf>,
     },
-    ProfileFailed(RunReport),
+    ProfileFailed(Box<RunReport>),
 }
 
 impl fmt::Display for RunError {
@@ -185,7 +183,8 @@ impl AccelPreference {
             Some(value) if value.eq_ignore_ascii_case("tcg") => Ok(Self::Tcg),
             Some(value) => Err(RunError::InvalidAccel(format!(
                 "unsupported QEMU_TEST_ACCEL='{value}'. Expected one of: auto, kvm, tcg."
-            ))),
+            )
+            .into_boxed_str())),
         }
     }
 }
@@ -696,7 +695,8 @@ fn ensure_qemu_available() -> Result<(), RunError> {
         Ok(_) => Ok(()),
         Err(_) => Err(RunError::QemuNotFound(String::from(
             "qemu-system-x86_64 was not found in PATH. Install QEMU first (for Ubuntu: sudo apt-get install qemu-system-x86).",
-        ))),
+        )
+        .into_boxed_str())),
     }
 }
 
@@ -745,7 +745,8 @@ fn select_fullboot_accel(
                 Err(RunError::AccelUnavailable(format!(
                     "KVM acceleration is unavailable for full-boot tests ({mode}). \
 Set QEMU_TEST_ACCEL=tcg to enable the slower software-emulated path explicitly."
-                )))
+                )
+                .into_boxed_str()))
             }
         }
         AccelPreference::Tcg => Ok(FullbootAccel::Tcg),
@@ -766,7 +767,8 @@ fn ensure_ovmf_assets(root: &Path) -> Result<(PathBuf, PathBuf), RunError> {
             "OVMF firmware is missing. Expected '{}' and '{}'.",
             code.display(),
             vars.display()
-        )));
+        )
+        .into_boxed_str()));
     }
     Ok((code, vars))
 }
@@ -818,8 +820,8 @@ fn poll_qemu(
             let _ = child.wait();
             return Err(RunError::Timeout {
                 timeout_secs: config.timeout_secs,
-                log_path,
-                qemu_stderr_path,
+                log_path: Box::new(log_path),
+                qemu_stderr_path: Box::new(qemu_stderr_path),
             });
         }
 
@@ -838,7 +840,7 @@ fn poll_qemu(
             if success {
                 return Ok(report);
             }
-            return Err(RunError::ProfileFailed(report));
+            return Err(RunError::ProfileFailed(Box::new(report)));
         }
 
         match child.try_wait() {
@@ -856,7 +858,7 @@ fn poll_qemu(
                 if token_result == Some(true) || report.isa_debug_value == Some(0x10) {
                     return Ok(report);
                 }
-                return Err(RunError::ProfileFailed(report));
+                return Err(RunError::ProfileFailed(Box::new(report)));
             }
             Ok(None) => thread::sleep(Duration::from_millis(100)),
             Err(err) => {
@@ -868,16 +870,15 @@ fn poll_qemu(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
+pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
     ensure_qemu_available()?;
     let accel = resolve_fullboot_accel()?;
-    let image = package_fullboot_image(&config).map_err(RunError::Build)?;
+    let image = package_fullboot_image(config).map_err(|err| RunError::Build(Box::new(err)))?;
 
     let root = workspace_root();
     let (ovmf_code, ovmf_vars_template) = ensure_ovmf_assets(&root)?;
 
-    let label = fullboot_label(&config);
+    let label = fullboot_label(config);
     let log_dir = root.join("target").join("qemu-logs");
     std::fs::create_dir_all(&log_dir).map_err(RunError::QemuLaunch)?;
     let log_path = log_dir.join(format!("fullboot-{label}.log"));
@@ -900,7 +901,10 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
     let ovmf_vars_arg = format!("if=pflash,format=raw,file={}", vars_copy_path.display());
     let fat_arg = format!("format=raw,file=fat:rw:{}", image.boot_root.display());
     let storage_disk_path = if profile_needs_storage_disk(&config.profile) {
-        Some(build_storage_test_disk(&image.boot_root).map_err(RunError::Build)?)
+        Some(
+            build_storage_test_disk(&image.boot_root)
+                .map_err(|err| RunError::Build(Box::new(err)))?,
+        )
     } else {
         None
     };
@@ -970,7 +974,7 @@ pub fn run_fullboot(config: RunConfig) -> Result<RunReport, RunError> {
 
     let child = qemu_cmd.spawn().map_err(RunError::QemuLaunch)?;
     poll_qemu(
-        &config,
+        config,
         image.kernel_payload_path,
         log_path,
         qemu_stderr_path,

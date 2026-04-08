@@ -1144,7 +1144,10 @@ pub fn test_send_udp_v6_payload_fragments_with_reduced_pmtu() {
     );
     assert!(result.is_ok());
 
-    let frames = TEST_TX_FRAMES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let frames = TEST_TX_FRAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     assert!(frames.len() >= 2);
 
     let mut expected_offset_units = 0u16;
@@ -1242,7 +1245,10 @@ pub fn test_send_tcp_v6_payload_fragments_with_reduced_pmtu() {
     let result = stack.send_tcp_v6_payload(ipv6_cfg.link_local, dst, &segment_view);
     assert!(result.is_ok());
 
-    let frames = TEST_TX_FRAMES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let frames = TEST_TX_FRAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     assert!(frames.len() >= 2);
 
     let mut expected_offset_units = 0u16;

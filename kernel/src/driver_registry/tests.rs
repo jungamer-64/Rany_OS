@@ -4,7 +4,7 @@ use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use kernel_api::abi::driver::{
     AbiDmaSlice, AbiDriverType, AbiError, DRIVER_ABI_VERSION, DriverContext, DriverVTable,
-    PackedPciLocation,
+    DriverVTableFns, PackedPciLocation,
 };
 use kernel_api::provider::{ProviderDescriptorV1, ProviderKind};
 
@@ -73,45 +73,51 @@ extern "C" fn providers_fn(count_out: *mut usize) -> *const () {
 
 static VTABLE: DriverVTable = DriverVTable::new(
     DRIVER_ABI_VERSION,
-    probe,
-    start,
-    stop,
-    remove,
-    name_fn,
-    name_len_fn,
-    type_fn,
-    version_fn,
-    None,
-    None,
+    DriverVTableFns {
+        probe,
+        start,
+        stop,
+        remove,
+        name: name_fn,
+        name_len: name_len_fn,
+        driver_type: type_fn,
+        version: version_fn,
+        request_capabilities: None,
+        handle_irq: None,
+    },
 )
 .with_provider_descriptors_export(Some(providers_fn));
 
 static OLD_ABI_VTABLE: DriverVTable = DriverVTable::new(
     DRIVER_ABI_VERSION - 1,
-    probe,
-    start,
-    stop,
-    remove,
-    name_fn,
-    name_len_fn,
-    type_fn,
-    version_fn,
-    None,
-    None,
+    DriverVTableFns {
+        probe,
+        start,
+        stop,
+        remove,
+        name: name_fn,
+        name_len: name_len_fn,
+        driver_type: type_fn,
+        version: version_fn,
+        request_capabilities: None,
+        handle_irq: None,
+    },
 );
 
 static IRQ_VTABLE: DriverVTable = DriverVTable::new(
     DRIVER_ABI_VERSION,
-    probe,
-    start,
-    stop,
-    remove,
-    name_fn,
-    name_len_fn,
-    type_fn,
-    version_fn,
-    None,
-    Some(irq_handler),
+    DriverVTableFns {
+        probe,
+        start,
+        stop,
+        remove,
+        name: name_fn,
+        name_len: name_len_fn,
+        driver_type: type_fn,
+        version: version_fn,
+        request_capabilities: None,
+        handle_irq: Some(irq_handler),
+    },
 );
 
 extern "C" fn entry_fn() -> *const DriverVTable {

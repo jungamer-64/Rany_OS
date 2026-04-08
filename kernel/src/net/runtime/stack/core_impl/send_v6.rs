@@ -39,8 +39,7 @@ impl NetworkStack {
                 pmtu = pmtu.min(state.ipv6_pmtu_cache.get(dst, current_time));
             }
         }
-        pmtu
-            .max(crate::net::l3::ipv6::Ipv6PmtuEntry::MIN_MTU)
+        pmtu.max(crate::net::l3::ipv6::Ipv6PmtuEntry::MIN_MTU)
             .min(crate::net::runtime::stack::MTU as u32) as usize
     }
 
@@ -62,7 +61,9 @@ impl NetworkStack {
 
         if payload.len() <= unfragmented_payload_limit {
             let mut packet = self
-                .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE + payload.len())
+                .alloc_ethernet_frame_packet(
+                    EthernetHeader::SIZE + IPV6_HEADER_SIZE + payload.len(),
+                )
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
             let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
@@ -155,8 +156,8 @@ impl NetworkStack {
 
             payload_buf[0] = u8::from(next_header);
             payload_buf[1] = 0;
-            let fragment_offset_units =
-                u16::try_from(offset / 8).map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
+            let fragment_offset_units = u16::try_from(offset / 8)
+                .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
             let offset_and_flags = (fragment_offset_units << 3) | u16::from(more_fragments);
             payload_buf[2..4].copy_from_slice(&offset_and_flags.to_be_bytes());
             payload_buf[4..8].copy_from_slice(&identification.to_be_bytes());
@@ -729,8 +730,7 @@ impl NetworkStack {
         };
 
         let mut udp_datagram = alloc::vec![0u8; 8 + data.total_len()];
-        let Some(mut udp_packet) = crate::net::l4::udp::UdpPacketMut::new(&mut udp_datagram)
-        else {
+        let Some(mut udp_packet) = crate::net::l4::udp::UdpPacketMut::new(&mut udp_datagram) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
         udp_packet

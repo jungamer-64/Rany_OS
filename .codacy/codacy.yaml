@@ -3,7 +3,7 @@ runtimes:
     - python@3.11.11
 tools:
     - lizard@1.17.31
-    - opengrep@1.16.4
+    - opengrep@1.17.0
     - pmd@6.55.0
     - pylint@3.3.9
     - trivy@0.69.3

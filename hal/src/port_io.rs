@@ -1,6 +1,4 @@
 // hal/src/port_io.rs - Centralized wrappers for x86_64 port I/O
-#![allow(dead_code)]
-
 use x86_64::instructions::port::{Port as XPort, PortRead, PortWrite};
 
 /// Read a byte from a port
@@ -48,11 +46,10 @@ pub fn outl(port: u16, value: u32) {
 pub fn out(port: u16, data: u32) {
     // choose width based on value range (simple approximation)
     if data <= 0xFF {
-        #[allow(clippy::cast_possible_truncation)]
-        outb(port, data as u8);
+        outb(port, data.to_le_bytes()[0]);
     } else if data <= 0xFFFF {
-        #[allow(clippy::cast_possible_truncation)]
-        outw(port, data as u16);
+        let bytes = data.to_le_bytes();
+        outw(port, u16::from_le_bytes([bytes[0], bytes[1]]));
     } else {
         outl(port, data);
     }

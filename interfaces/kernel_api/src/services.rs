@@ -428,7 +428,7 @@ pub fn instance() -> &'static dyn KernelServices {
 
     #[cfg(feature = "cell_runtime")]
     {
-        return standalone::instance();
+        standalone::instance()
     }
 
     #[cfg(not(feature = "cell_runtime"))]
@@ -712,7 +712,7 @@ mod standalone {
             &self,
             future: Pin<Box<dyn Future<Output = ()> + Send>>,
         ) -> KapiResult<TaskHandle> {
-            let _ = future;
+            core::mem::drop(future);
             Err(KapiError::NotSupported)
         }
 

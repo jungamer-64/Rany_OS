@@ -16,6 +16,8 @@ use crate::io::io_scheduler::{
 use crate::net::runtime::device::{self as net_device_runtime, NetDeviceKey};
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::{PoisonLock, PoisonRwLock};
+#[cfg(test)]
+use kernel_api::abi::driver::AbiNetPortOpsV3;
 use kernel_api::abi::driver::{
     AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
     AbiError as AbiErrorCode, AbiIoCompletion, AbiNetDriverEvent, AbiNetDriverEventKind,
@@ -418,7 +420,7 @@ extern "C" fn runtime_submit_rx_packet(
     packet: *mut AbiPacketRefRaw,
     meta: AbiNetRxMeta,
 ) -> i32 {
-    let Some(packet) = AbiPacketRefRaw::take(packet) else {
+    let Some(packet) = (unsafe { AbiPacketRefRaw::take(packet) }) else {
         return AbiErrorCode::InvalidParam as i32;
     };
     let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
@@ -560,10 +562,10 @@ impl NetDevicePort for NetdevPortAdapter {
             queue_index: meta.queue_index.unwrap_or(0),
             has_queue_index: meta.queue_index.is_some(),
             has_vlan_tag: meta.vlan_tag.is_some(),
-            _padding0: 0,
+            reserved0: 0,
             flags: meta.flags,
             vlan_tag: meta.vlan_tag.unwrap_or(0),
-            _padding1: 0,
+            reserved1: 0,
         };
         let status =
             (self.registration.submit_tx_packet)(self.registration.opaque, &mut packet, abi_meta);
@@ -794,7 +796,7 @@ mod tests {
         packet: *mut AbiPacketRefRaw,
         _meta: AbiNetTxMeta,
     ) -> i32 {
-        let _ = AbiPacketRefRaw::take(packet);
+        let _ = unsafe { AbiPacketRefRaw::take(packet) };
         AbiErrorCode::Success as i32
     }
 
@@ -837,7 +839,7 @@ mod tests {
             mtu: 1500,
             flags: 0,
             mac: [0x02, 0, 0, 0, 0, port_index as u8],
-            _padding0: [0; 2],
+            reserved0: [0; 2],
             name_ptr: core::ptr::null(),
             name_len: 0,
         }
@@ -847,14 +849,16 @@ mod tests {
         AbiNetPortRegistrationV3::new(
             test_net_info(AbiNetPortKind::Virtio, port_index),
             0,
-            test_net_start,
-            test_net_bind,
-            test_net_submit_tx,
-            test_net_poll,
-            test_net_handle_event,
-            test_net_stats,
-            test_net_stop,
-            test_net_set_interrupts_enabled,
+            AbiNetPortOpsV3 {
+                start: test_net_start,
+                bind: test_net_bind,
+                submit_tx_packet: test_net_submit_tx,
+                poll: test_net_poll,
+                handle_event: test_net_handle_event,
+                stats: test_net_stats,
+                stop: test_net_stop,
+                set_interrupts_enabled: test_net_set_interrupts_enabled,
+            },
         )
     }
 

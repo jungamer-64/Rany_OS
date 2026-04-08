@@ -22,8 +22,6 @@
 //!
 //! The runtime stubs will automatically be linked when building as cdylib.
 
-#![allow(dead_code)]
-
 use crate::abi::driver::{KERNEL_API_SYMBOL, KernelApiV4};
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::{align_of, size_of};
@@ -58,10 +56,7 @@ fn call_heap_alloc(size: usize) -> *mut u8 {
     if !has_runtime_entries(api) {
         return ptr::null_mut();
     }
-    match api.heap_alloc {
-        Some(f) => f(size),
-        None => ptr::null_mut(),
-    }
+    api.heap_alloc.map_or(ptr::null_mut(), |f| f(size))
 }
 
 #[inline]
@@ -87,12 +82,10 @@ fn call_log(msg: &[u8]) {
 #[inline]
 fn call_panic_abort(msg: &[u8]) -> ! {
     let api = kernel_api();
-    if has_runtime_entries(api) {
-        if let Some(f) = api.panic_abort {
-            f(msg.as_ptr(), msg.len());
-        }
+    if has_runtime_entries(api) && let Some(panic_abort) = api.panic_abort {
+        panic_abort(msg.as_ptr(), msg.len());
     }
-    panic!("Kernel API panic entry missing ({})", KERNEL_API_SYMBOL);
+    panic!("Kernel API panic entry missing ({KERNEL_API_SYMBOL})");
 }
 
 // ============================================================================
@@ -121,7 +114,7 @@ impl KernelAllocator {
         Some((payload_size, align, total_size))
     }
 
-    unsafe fn alloc_with_header(&self, layout: Layout) -> *mut u8 {
+    unsafe fn alloc_with_header(layout: Layout) -> *mut u8 {
         let (_, align, total_size) = match Self::header_layout_values(layout) {
             Some(v) => v,
             None => return ptr::null_mut(),
@@ -134,11 +127,12 @@ impl KernelAllocator {
 
         let start = unsafe { base.add(size_of::<AllocHeader>()) } as usize;
         let aligned = (start + (align - 1)) & !(align - 1);
-        let header_ptr = (aligned - size_of::<AllocHeader>()) as *mut AllocHeader;
+        let header_ptr_u8 = (aligned - size_of::<AllocHeader>()) as *mut u8;
 
         unsafe {
-            ptr::write(
-                header_ptr,
+            // Use unaligned write to avoid assuming pointer alignment for static analysis.
+            ptr::write_unaligned(
+                header_ptr_u8 as *mut AllocHeader,
                 AllocHeader {
                     base_ptr: base,
                     alloc_size: total_size,
@@ -150,14 +144,15 @@ impl KernelAllocator {
     }
 
     unsafe fn read_header(ptr: *mut u8) -> AllocHeader {
-        let header_ptr = unsafe { ptr.sub(size_of::<AllocHeader>()) } as *const AllocHeader;
-        unsafe { ptr::read(header_ptr) }
+        let header_ptr_u8 = unsafe { ptr.sub(size_of::<AllocHeader>()) } as *const u8;
+        // Use unaligned read to avoid strict alignment assumptions caught by clippy
+        unsafe { ptr::read_unaligned(header_ptr_u8 as *const AllocHeader) }
     }
 }
 
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { self.alloc_with_header(layout) }
+        unsafe { Self::alloc_with_header(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {

@@ -5,7 +5,8 @@
 //! FFI adapter for the HID (Human Interface Device) driver.
 
 use kernel_api::abi::driver::{
-    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
+    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, DriverVTableFns,
+    pack_version,
 };
 use kernel_api::driver::DriverType;
 
@@ -46,16 +47,18 @@ extern "C" fn hid_request_capabilities(caps: *mut DriverCapabilities) {
 fn hid_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
-        hid_probe,
-        hid_start,
-        hid_stop,
-        hid_remove,
-        hid_name,
-        hid_name_len,
-        hid_driver_type,
-        hid_version,
-        Some(hid_request_capabilities),
-        None,
+        DriverVTableFns {
+            probe: hid_probe,
+            start: hid_start,
+            stop: hid_stop,
+            remove: hid_remove,
+            name: hid_name,
+            name_len: hid_name_len,
+            driver_type: hid_driver_type,
+            version: hid_version,
+            request_capabilities: Some(hid_request_capabilities),
+            handle_irq: None,
+        },
     );
     &VTABLE
 }
@@ -67,7 +70,6 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
 }
 
 #[cfg(not(feature = "export_driver_entry"))]
-#[allow(non_snake_case)]
-pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
+pub(crate) fn exorust_driver_entry_unique() -> *const DriverVTable {
     hid_driver_vtable()
 }

@@ -4,20 +4,13 @@
 
 #![no_std]
 #![allow(dead_code)]
-#![allow(clippy::cargo_common_metadata)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::use_self)]
-#![allow(clippy::inline_always)]
 #![allow(clippy::wildcard_imports)]
-#![allow(clippy::manual_let_else)]
-#![allow(clippy::assign_op_pattern)]
-#![allow(clippy::unnecessary_literal_bound)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_safety_doc)]
-#![allow(clippy::semicolon_if_nothing_returned)]
 #![allow(unused_variables)]
-#![allow(clippy::derivable_impls)]
 #![allow(clippy::must_use_candidate)]
 
 extern crate alloc;
@@ -384,12 +377,13 @@ mod tests {
     #[test]
     fn driver_context_for_pci_preserves_locator() {
         let locator = PackedPciLocation::new(0x002a, 0x11, 0x03, 0x01);
-        let ctx = DriverContext::for_pci(0xfeed_0000, 17, 0x8086, 0x1234, 0x0108_02, locator);
+        let ctx =
+            DriverContext::for_pci(0xfeed_0000, 17, 0x8086, 0x1234, 0x0001_0802, locator);
         assert_eq!(ctx.device_address, 0xfeed_0000);
         assert_eq!(ctx.irq, 17);
         assert_eq!(ctx.vendor_id, 0x8086);
         assert_eq!(ctx.device_id, 0x1234);
-        assert_eq!(ctx.class_code, 0x0108_02);
+        assert_eq!(ctx.class_code, 0x0001_0802);
         assert_eq!(ctx.pci_location(), locator);
     }
 

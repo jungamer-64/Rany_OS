@@ -64,16 +64,18 @@ macro_rules! export_async_driver {
 
             static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
                 $crate::abi::driver::DRIVER_ABI_VERSION,
-                probe_adapter,
-                start_adapter,
-                stop_adapter,
-                remove_adapter,
-                name_adapter,
-                name_len_adapter,
-                type_adapter,
-                version_adapter,
-                None,
-                Some(irq_adapter),
+                $crate::abi::driver::DriverVTableFns {
+                    probe: probe_adapter,
+                    start: start_adapter,
+                    stop: stop_adapter,
+                    remove: remove_adapter,
+                    name: name_adapter,
+                    name_len: name_len_adapter,
+                    driver_type: type_adapter,
+                    version: version_adapter,
+                    request_capabilities: None,
+                    handle_irq: Some(irq_adapter),
+                },
             ).with_provider_descriptors_export(Some(providers_adapter));
             &VTABLE
         }
@@ -111,16 +113,18 @@ macro_rules! export_async_driver {
 
             static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
                 $crate::abi::driver::DRIVER_ABI_VERSION,
-                probe_adapter,
-                start_adapter,
-                stop_adapter,
-                remove_adapter,
-                name_adapter,
-                name_len_adapter,
-                type_adapter,
-                version_adapter,
-                None,
-                None,
+                $crate::abi::driver::DriverVTableFns {
+                    probe: probe_adapter,
+                    start: start_adapter,
+                    stop: stop_adapter,
+                    remove: remove_adapter,
+                    name: name_adapter,
+                    name_len: name_len_adapter,
+                    driver_type: type_adapter,
+                    version: version_adapter,
+                    request_capabilities: None,
+                    handle_irq: None,
+                },
             ).with_provider_descriptors_export(Some(providers_adapter));
             &VTABLE
         }

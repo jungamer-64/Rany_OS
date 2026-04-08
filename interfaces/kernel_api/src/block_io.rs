@@ -220,11 +220,12 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
             }
 
             let blocks = len / block_size;
-            if blocks > u32::MAX as usize {
-                return Err(BlockError::InvalidBufferSize);
-            }
+            let blocks_u32 = match u32::try_from(blocks) {
+                Ok(v) => v,
+                Err(_) => return Err(BlockError::InvalidBufferSize),
+            };
 
-            let buf = self.read_async(block, blocks as u32).await?;
+            let buf = self.read_async(block, blocks_u32).await?;
             let src = ZeroCopyBuffer::as_slice(&buf);
             if src.len() < len {
                 return Err(BlockError::IoError);

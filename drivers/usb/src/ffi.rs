@@ -7,7 +7,8 @@
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
 use kernel_api::abi::driver::{
-    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
+    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, DriverVTableFns,
+    pack_version,
 };
 use kernel_api::driver::Driver;
 use kernel_api::driver::DriverType;
@@ -115,16 +116,18 @@ extern "C" fn usb_request_capabilities(caps: *mut DriverCapabilities) {
 pub fn standalone_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
-        usb_probe,
-        usb_start,
-        usb_stop,
-        usb_remove,
-        usb_name,
-        usb_name_len,
-        usb_driver_type,
-        usb_version,
-        Some(usb_request_capabilities),
-        None, // handle_irq - TODO: implement interrupt handler
+        DriverVTableFns {
+            probe: usb_probe,
+            start: usb_start,
+            stop: usb_stop,
+            remove: usb_remove,
+            name: usb_name,
+            name_len: usb_name_len,
+            driver_type: usb_driver_type,
+            version: usb_version,
+            request_capabilities: Some(usb_request_capabilities),
+            handle_irq: None, // TODO: implement interrupt handler
+        },
     );
 
     &VTABLE
@@ -141,8 +144,6 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
 // emit a unique name to avoid collisions across multiple statically linked
 // drivers. We use unsafe(concat!(...)) for the compile-time concatenation.
 #[cfg(not(feature = "export_driver_entry"))]
-#[allow(non_snake_case)]
-#[allow(clippy::missing_safety_doc)]
-pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
+pub(crate) fn exorust_driver_entry_unique() -> *const DriverVTable {
     standalone_driver_vtable()
 }

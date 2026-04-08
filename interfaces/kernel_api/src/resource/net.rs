@@ -80,10 +80,10 @@ impl TcpStream {
     }
 
     pub async fn recv_payload(&mut self) -> KapiResult<PacketPayload> {
-        if let Some(payload) = self.recv_stash.take() {
-            if !payload.is_empty() {
-                return Ok(payload);
-            }
+        if let Some(payload) = self.recv_stash.take()
+            && !payload.is_empty()
+        {
+            return Ok(payload);
         }
         kernel::instance()
             .net_tcp_stream_recv_payload(Self::from_raw_parts(self.id, self.default_scope))

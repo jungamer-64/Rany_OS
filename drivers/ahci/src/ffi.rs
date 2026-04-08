@@ -7,7 +7,8 @@
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
 use kernel_api::abi::driver::{
-    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
+    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, DriverVTableFns,
+    pack_version,
 };
 use kernel_api::driver::Driver;
 use kernel_api::driver::DriverType;
@@ -115,16 +116,18 @@ extern "C" fn ahci_request_capabilities(caps: *mut DriverCapabilities) {
 pub fn standalone_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
-        ahci_probe,
-        ahci_start,
-        ahci_stop,
-        ahci_remove,
-        ahci_name,
-        ahci_name_len,
-        ahci_driver_type,
-        ahci_version,
-        Some(ahci_request_capabilities),
-        None, // handle_irq - TODO: implement interrupt handler
+        DriverVTableFns {
+            probe: ahci_probe,
+            start: ahci_start,
+            stop: ahci_stop,
+            remove: ahci_remove,
+            name: ahci_name,
+            name_len: ahci_name_len,
+            driver_type: ahci_driver_type,
+            version: ahci_version,
+            request_capabilities: Some(ahci_request_capabilities),
+            handle_irq: None, // TODO: implement interrupt handler
+        },
     );
 
     &VTABLE
@@ -145,7 +148,6 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
 // collisions. `unsafe(concat!(...))` is required for compile-time
 // concatenation in the attribute expression.
 #[cfg(not(feature = "export_driver_entry"))]
-#[allow(non_snake_case)]
-pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
+pub(crate) fn exorust_driver_entry_unique() -> *const DriverVTable {
     standalone_driver_vtable()
 }

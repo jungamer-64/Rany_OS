@@ -1222,7 +1222,7 @@ extern "C" fn kapi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> i32 {
 #[unsafe(no_mangle)]
 pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     abi_version: KERNEL_API_ABI_VERSION,
-    abi_size: core::mem::size_of::<KernelApiV4>() as u32,
+    abi_size: core::mem::size_of::<KernelApiV4>() as u64,
     log: kapi_log,
     alloc_dma_for_device_raw: kapi_alloc_dma_for_device_raw,
     release_dma_raw: kapi_release_dma_raw,
@@ -1452,7 +1452,7 @@ pub(crate) fn prepare_driver_exports(
         return Err(DriverError::InvalidState);
     }
 
-    let min_size = core::mem::size_of::<DriverExportsV1>() as u32;
+    let min_size = core::mem::size_of::<DriverExportsV1>() as u64;
     if exports_ref.abi_size < min_size {
         log::error!(
             "[DRIVER] DriverExports ABI size too small: expected >= {}, got {}",

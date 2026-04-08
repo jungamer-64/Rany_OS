@@ -1039,6 +1039,7 @@ pub enum NvmeIoResult {
 mod packet_ref_tests {
     use super::*;
     use alloc::boxed::Box;
+    use alloc::rc::Rc;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1165,7 +1166,7 @@ mod packet_ref_tests {
 
     #[derive(Clone)]
     struct DmaPacketState {
-        backing: Arc<SharedDmaBuffer>,
+        backing: Rc<SharedDmaBuffer>,
         offset: usize,
         len: usize,
     }
@@ -1290,7 +1291,7 @@ mod packet_ref_tests {
             )
         };
         let state = DmaPacketState {
-            backing: Arc::new(SharedDmaBuffer {
+            backing: Rc::new(SharedDmaBuffer {
                 ptr,
                 len: 64,
                 phys_addr: 0x3000,
@@ -1315,9 +1316,11 @@ mod packet_ref_tests {
         assert_eq!(packet.phys_addr().as_u64(), 0x1000);
         assert_eq!(packet.device_address(), 0x1000);
 
-        let mut meta = PacketMeta::default();
-        meta.l2_len = 14;
-        meta.l3_len = 20;
+        let mut meta = PacketMeta {
+            l2_len: 14,
+            l3_len: 20,
+            ..PacketMeta::default()
+        };
         meta.set_ip_csum_verified();
         packet.set_meta(meta);
         assert!(packet.meta().ip_csum_verified());

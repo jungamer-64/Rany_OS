@@ -20,7 +20,7 @@ fn main() {
         }
     }
 
-    match run_fullboot(config) {
+    match run_fullboot(&config) {
         Ok(report) => {
             eprintln!(
                 "full-boot profile '{}' passed in {:?} (log: {})",

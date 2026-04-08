@@ -46,7 +46,7 @@ fn base_config(profile: &str) -> RunConfig {
 fn run_required_profile(profile: &str) {
     let guard = qemu_lock().lock().expect("qemu lock poisoned");
     let cfg = base_config(profile);
-    let result = run_fullboot(cfg);
+    let result = run_fullboot(&cfg);
     drop(guard);
 
     match result {

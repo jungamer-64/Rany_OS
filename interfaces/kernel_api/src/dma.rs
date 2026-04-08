@@ -2,6 +2,7 @@
 // kernel_api/src/dma.rs - Public typestate DMA surface
 // ============================================================================
 
+use core::convert::TryFrom;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::sync::atomic::{Ordering, fence};
@@ -35,6 +36,18 @@ impl DmaState for DeviceOwned {}
 type HandleReleaseFn = unsafe fn(u64);
 type KernelObjectReleaseFn = fn(usize);
 type KernelReleaseFn = fn(*mut u8, usize, u64);
+
+struct DmaRawParts {
+    host_addr: u64,
+    dma_handle_id: u64,
+    device_addr: u64,
+    virt_addr: *mut u8,
+    size: usize,
+    handle_releaser: Option<HandleReleaseFn>,
+    kernel_object_token: usize,
+    kernel_object_releaser: Option<KernelObjectReleaseFn>,
+    kernel_releaser: Option<KernelReleaseFn>,
+}
 
 /// Drop strategy for DMA buffers materialized by kernel/framework code.
 ///
@@ -80,39 +93,29 @@ pub struct DmaSlice<State: DmaState> {
 unsafe impl<State: DmaState> Send for DmaSlice<State> {}
 
 impl DmaSlice<CpuOwned> {
-    unsafe fn from_parts_unchecked(
-        host_addr: u64,
-        dma_handle_id: u64,
-        device_addr: u64,
-        virt_addr: *mut u8,
-        size: usize,
-        handle_releaser: Option<HandleReleaseFn>,
-        kernel_object_token: usize,
-        kernel_object_releaser: Option<KernelObjectReleaseFn>,
-        kernel_releaser: Option<KernelReleaseFn>,
-    ) -> Self {
+    unsafe fn from_parts_unchecked(parts: DmaRawParts) -> Self {
         assert!(
-            size <= isize::MAX as usize,
+            isize::try_from(parts.size).is_ok(),
             "DMA slice size must fit within isize"
         );
         debug_assert!(
-            (handle_releaser.is_some() as u8)
-                + (kernel_object_releaser.is_some() as u8)
-                + (kernel_releaser.is_some() as u8)
+            u8::from(parts.handle_releaser.is_some())
+                + u8::from(parts.kernel_object_releaser.is_some())
+                + u8::from(parts.kernel_releaser.is_some())
                 <= 1,
             "DMA slice must not carry multiple reclaim paths"
         );
-        let virt_addr = NonNull::new(virt_addr).expect("DMA slice pointer must be non-null");
+        let virt_addr = NonNull::new(parts.virt_addr).expect("DMA slice pointer must be non-null");
         Self {
-            dma_handle_id,
-            host_addr,
-            device_addr,
+            dma_handle_id: parts.dma_handle_id,
+            host_addr: parts.host_addr,
+            device_addr: parts.device_addr,
             virt_addr,
-            size,
-            handle_releaser,
-            kernel_object_token,
-            kernel_object_releaser,
-            kernel_releaser,
+            size: parts.size,
+            handle_releaser: parts.handle_releaser,
+            kernel_object_token: parts.kernel_object_token,
+            kernel_object_releaser: parts.kernel_object_releaser,
+            kernel_releaser: parts.kernel_releaser,
             _state: PhantomData,
         }
     }
@@ -131,17 +134,17 @@ impl DmaSlice<CpuOwned> {
         releaser: Option<HandleReleaseFn>,
     ) -> Self {
         unsafe {
-            Self::from_parts_unchecked(
-                0,
+            Self::from_parts_unchecked(DmaRawParts {
+                host_addr: 0,
                 dma_handle_id,
                 device_addr,
                 virt_addr,
                 size,
-                releaser,
-                0,
-                None,
-                None,
-            )
+                handle_releaser: releaser,
+                kernel_object_token: 0,
+                kernel_object_releaser: None,
+                kernel_releaser: None,
+            })
         }
     }
 
@@ -179,7 +182,7 @@ impl DmaSlice<CpuOwned> {
             InternalDmaReclaimer::KernelBuffer { releaser } => (0, None, 0, None, releaser),
         };
         unsafe {
-            Self::from_parts_unchecked(
+            Self::from_parts_unchecked(DmaRawParts {
                 host_addr,
                 dma_handle_id,
                 device_addr,
@@ -189,7 +192,7 @@ impl DmaSlice<CpuOwned> {
                 kernel_object_token,
                 kernel_object_releaser,
                 kernel_releaser,
-            )
+            })
         }
     }
 
@@ -325,13 +328,15 @@ impl DmaGuard {
 
 impl Drop for DmaGuard {
     fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        assert!(
+            self.completed,
+            "DmaGuard dropped without complete(); dma_handle_id={} device={:#x} size={}",
+            self.dma_handle_id, self.device_addr, self.size
+        );
+
+        #[cfg(not(debug_assertions))]
         if !self.completed {
-            #[cfg(debug_assertions)]
-            panic!(
-                "DmaGuard dropped without complete(); dma_handle_id={} device={:#x} size={}",
-                self.dma_handle_id, self.device_addr, self.size
-            );
-            #[cfg(not(debug_assertions))]
             log::warn!(
                 "DmaGuard leaked without complete(); dma_handle_id={} device={:#x} size={}",
                 self.dma_handle_id,

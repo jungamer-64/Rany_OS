@@ -18,8 +18,9 @@ use kernel_api::abi::driver::AbiDmaSlice;
 use kernel_api::abi::driver::{AbiBlockDeviceRegistration, AbiNvmeNamespaceRegistration};
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
-    AbiNetPortKind, AbiNetPortRegistrationV3, AbiNetPortRuntimeV2, AbiNetPortStats, AbiNetRxMeta,
-    AbiNetTxMeta, AbiPacketRefRaw, DriverContext, KernelApiV4, PackedPciLocation,
+    AbiNetPortKind, AbiNetPortOpsV3, AbiNetPortRegistrationV3, AbiNetPortRuntimeV2,
+    AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta, AbiPacketRefRaw, DriverContext, KernelApiV4,
+    PackedPciLocation,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
@@ -196,7 +197,7 @@ extern "C" fn test_kernel_ipc_recv_raw(
 #[unsafe(no_mangle)]
 pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     abi_version: kernel_api::abi::driver::KERNEL_API_ABI_VERSION,
-    abi_size: core::mem::size_of::<KernelApiV4>() as u32,
+    abi_size: core::mem::size_of::<KernelApiV4>() as u64,
     log: test_kernel_log,
     alloc_dma_for_device_raw: test_kernel_alloc_dma_for_device_raw,
     release_dma_raw: test_kernel_release_dma_raw,
@@ -847,7 +848,7 @@ extern "C" fn mlx5_netdev_submit_tx(
     packet: *mut AbiPacketRefRaw,
     meta: AbiNetTxMeta,
 ) -> i32 {
-    let Some(mut packet) = AbiPacketRefRaw::take(packet) else {
+    let Some(mut packet) = (unsafe { AbiPacketRefRaw::take(packet) }) else {
         return AbiError::InvalidParam as i32;
     };
     let mut guard = MLX5_STANDALONE_STATE.lock();
@@ -961,7 +962,7 @@ extern "C" fn mlx5_netdev_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 
             tx_errors: state.tx_errors,
             rx_errors: state.rx_errors,
             initialized: state.device.is_active(),
-            _padding: [0; 7],
+            reserved: [0; 7],
         };
     }
     AbiError::Success as i32
@@ -989,19 +990,21 @@ fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistrationV3 
             mtu: state.device.port(0).map(|port| port.mtu()).unwrap_or(1500),
             flags: port_flags(&state.device),
             mac: reported_mac(&state.device),
-            _padding0: [0; 2],
+            reserved0: [0; 2],
             name_ptr: mlx5_driver_name().as_ptr(),
             name_len: mlx5_driver_name().len(),
         },
         0,
-        mlx5_netdev_start,
-        mlx5_netdev_bind,
-        mlx5_netdev_submit_tx,
-        mlx5_netdev_poll,
-        mlx5_netdev_handle_event,
-        mlx5_netdev_stats,
-        mlx5_netdev_stop,
-        mlx5_netdev_set_interrupts_enabled,
+        AbiNetPortOpsV3 {
+            start: mlx5_netdev_start,
+            bind: mlx5_netdev_bind,
+            submit_tx_packet: mlx5_netdev_submit_tx,
+            poll: mlx5_netdev_poll,
+            handle_event: mlx5_netdev_handle_event,
+            stats: mlx5_netdev_stats,
+            stop: mlx5_netdev_stop,
+            set_interrupts_enabled: mlx5_netdev_set_interrupts_enabled,
+        },
     )
 }
 

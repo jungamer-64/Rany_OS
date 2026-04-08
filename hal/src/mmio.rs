@@ -1,8 +1,6 @@
 // ============================================================================
 // hal/src/mmio.rs - Minimal wrappers for MMIO volatile reads/writes
 // ============================================================================
-#![allow(dead_code)]
-
 use core::marker::Copy;
 
 /// Read an 8-bit value from the MMIO address
@@ -267,10 +265,10 @@ pub fn sfence() {
     target_feature = "sse2"
 ))]
 #[inline]
-#[allow(clippy::cast_possible_wrap)]
 pub fn stream_write_u32(addr: usize, val: u32) {
     unsafe {
-        core::arch::x86_64::_mm_stream_si32(addr as *mut i32, val as i32);
+        let signed = i32::from_ne_bytes(val.to_ne_bytes());
+        core::arch::x86_64::_mm_stream_si32(addr as *mut i32, signed);
     }
 }
 
@@ -293,10 +291,10 @@ pub fn stream_write_u32(addr: usize, val: u32) {
     target_feature = "sse2"
 ))]
 #[inline]
-#[allow(clippy::cast_possible_wrap)]
 pub fn stream_write_u64(addr: usize, val: u64) {
     unsafe {
-        core::arch::x86_64::_mm_stream_si64(addr as *mut i64, val as i64);
+        let signed = i64::from_ne_bytes(val.to_ne_bytes());
+        core::arch::x86_64::_mm_stream_si64(addr as *mut i64, signed);
     }
 }
 
@@ -323,13 +321,13 @@ pub fn stream_write_u64(addr: usize, val: u64) {
 #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "std"))]
 #[target_feature(enable = "sse2")]
 #[inline]
-#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
     use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_stream_si128};
     // SAFETY: Caller ensures SSE2 is available and address is 16-byte aligned
     unsafe {
         let v = _mm_loadu_si128(data.as_ptr().cast::<__m128i>());
-        _mm_stream_si128(addr as *mut __m128i, v);
+        let dst = core::ptr::with_exposed_provenance_mut::<__m128i>(addr);
+        _mm_stream_si128(dst, v);
     }
 }
 
@@ -357,13 +355,13 @@ pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
 #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "std"))]
 #[target_feature(enable = "avx")]
 #[inline]
-#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
     use core::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm256_stream_si256};
     // SAFETY: Caller ensures AVX is available and address is 32-byte aligned
     unsafe {
         let v = _mm256_loadu_si256(data.as_ptr().cast::<__m256i>());
-        _mm256_stream_si256(addr as *mut __m256i, v);
+        let dst = core::ptr::with_exposed_provenance_mut::<__m256i>(addr);
+        _mm256_stream_si256(dst, v);
     }
 }
 

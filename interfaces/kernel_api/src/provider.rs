@@ -2,10 +2,8 @@
 // kernel_api/src/provider.rs - Provider metadata shared across kernel boundary
 // ============================================================================
 
-#![allow(clippy::module_name_repetitions)]
-
 /// Version for provider descriptor tables.
-pub const PROVIDER_DESCRIPTOR_ABI_VERSION: u32 = 1;
+pub const PROVIDER_DESCRIPTOR_ABI_VERSION: u32 = 2;
 
 /// Runtime capability families exposed by drivers or kernel-owned adapters.
 #[repr(u32)]
@@ -46,7 +44,7 @@ impl ProviderHandle {
 pub struct ProviderDescriptorV1 {
     pub kind: ProviderKind,
     pub abi_version: u32,
-    pub abi_size: u32,
+    pub abi_size: u64,
     pub flags: u32,
     pub vtable: *const (),
     pub reserved: [u64; 4],
@@ -62,7 +60,7 @@ impl ProviderDescriptorV1 {
         Self {
             kind,
             abi_version: PROVIDER_DESCRIPTOR_ABI_VERSION,
-            abi_size: core::mem::size_of::<Self>() as u32,
+            abi_size: core::mem::size_of::<Self>() as u64,
             flags: 0,
             vtable,
             reserved: [0; 4],
@@ -71,7 +69,7 @@ impl ProviderDescriptorV1 {
 
     pub const fn validate(&self) -> bool {
         self.abi_version == PROVIDER_DESCRIPTOR_ABI_VERSION
-            && self.abi_size >= core::mem::size_of::<Self>() as u32
+            && self.abi_size >= core::mem::size_of::<Self>() as u64
     }
 }
 

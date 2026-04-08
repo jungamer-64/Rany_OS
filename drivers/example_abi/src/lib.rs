@@ -68,7 +68,7 @@ extern "C" fn driver_fini() -> i32 {
 #[unsafe(no_mangle)]
 pub static DRIVER_EXPORTS: DriverExportsV1 = DriverExportsV1 {
     abi_version: DRIVER_EXPORTS_ABI_VERSION,
-    abi_size: core::mem::size_of::<DriverExportsV1>() as u32,
+    abi_size: core::mem::size_of::<DriverExportsV1>() as u64,
     name_ptr: driver_name().as_ptr(),
     name_len: driver_name().len(),
     entry: _exorust_driver_entry,

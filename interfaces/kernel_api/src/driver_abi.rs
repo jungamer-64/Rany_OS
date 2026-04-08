@@ -69,9 +69,9 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v4";
 /// ABI version for the KernelApiV4 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 8;
+pub const KERNEL_API_ABI_VERSION: u32 = 9;
 /// ABI version for the DriverExportsV1 header.
-pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 2;
+pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 3;
 
 /// Exporter for a driver's provider descriptor slice.
 ///
@@ -210,19 +210,20 @@ impl PackedPciLocation {
     }
 
     pub const fn segment(self) -> u16 {
-        (self.0 >> 32) as u16
+        let bytes = self.0.to_le_bytes();
+        u16::from_le_bytes([bytes[4], bytes[5]])
     }
 
     pub const fn bus(self) -> u8 {
-        (self.0 >> 16) as u8
+        self.0.to_le_bytes()[2]
     }
 
     pub const fn device(self) -> u8 {
-        (self.0 >> 8) as u8
+        self.0.to_le_bytes()[1]
     }
 
     pub const fn function(self) -> u8 {
-        self.0 as u8
+        self.0.to_le_bytes()[0]
     }
 }
 
@@ -419,6 +420,20 @@ pub struct DriverVTable {
     pub reserved: [u64; 6],
 }
 
+#[derive(Clone, Copy)]
+pub struct DriverVTableFns {
+    pub probe: extern "C" fn(ctx: *mut DriverContext) -> i32,
+    pub start: extern "C" fn(ctx: *mut DriverContext) -> i32,
+    pub stop: extern "C" fn(ctx: *mut DriverContext) -> i32,
+    pub remove: extern "C" fn(ctx: *mut DriverContext) -> i32,
+    pub name: extern "C" fn() -> *const u8,
+    pub name_len: extern "C" fn() -> usize,
+    pub driver_type: extern "C" fn() -> u32,
+    pub version: extern "C" fn() -> u64,
+    pub request_capabilities: Option<extern "C" fn(caps: *mut DriverCapabilities)>,
+    pub handle_irq: Option<extern "C" fn(ctx: *mut DriverContext) -> bool>,
+}
+
 impl DriverVTable {
     /// Validate that this vtable is compatible with the current ABI version.
     pub fn validate(&self) -> Result<(), AbiError> {
@@ -435,39 +450,28 @@ impl DriverVTable {
     ///
     /// This function is `pub` and `const` so other crates (drivers) can invoke it
     /// to create their static vtables without accessing private fields.
-    #[allow(clippy::too_many_arguments)]
-    pub const fn new(
-        abi_version: u64,
-        probe: extern "C" fn(ctx: *mut DriverContext) -> i32,
-        start: extern "C" fn(ctx: *mut DriverContext) -> i32,
-        stop: extern "C" fn(ctx: *mut DriverContext) -> i32,
-        remove: extern "C" fn(ctx: *mut DriverContext) -> i32,
-        name: extern "C" fn() -> *const u8,
-        name_len: extern "C" fn() -> usize,
-        driver_type: extern "C" fn() -> u32,
-        version: extern "C" fn() -> u64,
-        request_capabilities: Option<extern "C" fn(caps: *mut DriverCapabilities)>,
-        handle_irq: Option<extern "C" fn(ctx: *mut DriverContext) -> bool>,
-    ) -> Self {
+    pub const fn new(abi_version: u64, fns: DriverVTableFns) -> Self {
         Self {
             abi_version,
             type_hash: DRIVER_TYPE_HASH,
-            probe,
-            start,
-            stop,
-            remove,
-            name,
-            name_len,
-            driver_type,
-            version,
-            request_capabilities,
-            handle_irq,
+            probe: fns.probe,
+            start: fns.start,
+            stop: fns.stop,
+            remove: fns.remove,
+            name: fns.name,
+            name_len: fns.name_len,
+            driver_type: fns.driver_type,
+            version: fns.version,
+            request_capabilities: fns.request_capabilities,
+            handle_irq: fns.handle_irq,
             provider_descriptors: None,
             reserved: [0; 6],
         }
     }
 
     /// Attach a provider descriptor exporter without changing the ABI layout.
+    /// NOTE: caller should use the returned value; mark as must_use.
+    #[must_use]
     pub const fn with_provider_descriptors_export(
         mut self,
         provider_export: Option<ProviderDescriptorsFn>,
@@ -557,7 +561,7 @@ pub struct AbiBlockDeviceInfo {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AbiBlockDeviceRegistration {
-    pub abi_size: u32,
+    pub abi_size: u64,
     pub info: AbiBlockDeviceInfo,
     pub opaque: u64,
     pub submit: extern "C" fn(
@@ -588,7 +592,8 @@ impl AbiBlockDeviceRegistration {
         is_ready: extern "C" fn(u64) -> bool,
     ) -> Self {
         Self {
-            abi_size: core::mem::size_of::<Self>() as u32,
+            // ABI header size recorded as u64 to avoid truncation on large targets.
+            abi_size: core::mem::size_of::<Self>() as u64,
             info,
             opaque,
             submit,
@@ -615,7 +620,7 @@ pub struct AbiNvmeNamespaceInfo {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AbiNvmeNamespaceRegistration {
-    pub abi_size: u32,
+    pub abi_size: u64,
     pub info: AbiNvmeNamespaceInfo,
     pub reserved: [u64; 6],
 }
@@ -623,7 +628,8 @@ pub struct AbiNvmeNamespaceRegistration {
 impl AbiNvmeNamespaceRegistration {
     pub const fn new(info: AbiNvmeNamespaceInfo) -> Self {
         Self {
-            abi_size: core::mem::size_of::<Self>() as u32,
+            // ABI header size recorded as u64 to avoid truncation on large targets.
+            abi_size: core::mem::size_of::<Self>() as u64,
             info,
             reserved: [0; 6],
         }
@@ -662,10 +668,10 @@ pub struct AbiNetTxMeta {
     pub queue_index: u16,
     pub has_queue_index: bool,
     pub has_vlan_tag: bool,
-    pub _padding0: u8,
+    pub reserved0: u8,
     pub flags: u32,
     pub vlan_tag: u16,
-    pub _padding1: u16,
+    pub reserved1: u16,
 }
 
 #[repr(C)]
@@ -684,7 +690,7 @@ pub struct AbiNetPortStats {
     pub tx_errors: u64,
     pub rx_errors: u64,
     pub initialized: bool,
-    pub _padding: [u8; 7],
+    pub reserved: [u8; 7],
 }
 
 #[repr(C)]
@@ -697,7 +703,7 @@ pub struct AbiNetPortInfo {
     pub mtu: u32,
     pub flags: u32,
     pub mac: [u8; 6],
-    pub _padding0: [u8; 2],
+    pub reserved0: [u8; 2],
     pub name_ptr: *const u8,
     pub name_len: usize,
 }
@@ -794,7 +800,7 @@ impl Drop for AbiPacketRefRaw {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AbiNetPortRuntimeV2 {
-    pub abi_size: u32,
+    pub abi_size: u64,
     pub runtime_cookie: u64,
     pub alloc_packet: extern "C" fn(runtime_cookie: u64, out_packet: *mut AbiPacketRefRaw) -> i32,
     pub submit_rx_packet:
@@ -815,7 +821,8 @@ impl AbiNetPortRuntimeV2 {
         log: extern "C" fn(u64, u32, *const u8, usize),
     ) -> Self {
         Self {
-            abi_size: core::mem::size_of::<Self>() as u32,
+            // ABI header size recorded as u64 to avoid truncation on large targets.
+            abi_size: core::mem::size_of::<Self>() as u64,
             runtime_cookie,
             alloc_packet,
             submit_rx_packet,
@@ -830,7 +837,7 @@ impl AbiNetPortRuntimeV2 {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AbiNetPortRegistrationV3 {
-    pub abi_size: u32,
+    pub abi_size: u64,
     pub info: AbiNetPortInfo,
     pub opaque: u64,
     pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV2) -> i32,
@@ -845,32 +852,32 @@ pub struct AbiNetPortRegistrationV3 {
     pub reserved: [u64; 3],
 }
 
+#[derive(Clone, Copy)]
+pub struct AbiNetPortOpsV3 {
+    pub start: extern "C" fn(u64, *const AbiNetPortRuntimeV2) -> i32,
+    pub bind: extern "C" fn(u64, u16) -> i32,
+    pub submit_tx_packet: extern "C" fn(u64, *mut AbiPacketRefRaw, AbiNetTxMeta) -> i32,
+    pub poll: extern "C" fn(u64, u16) -> i32,
+    pub handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
+    pub stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
+    pub stop: extern "C" fn(u64),
+    pub set_interrupts_enabled: extern "C" fn(u64, bool) -> i32,
+}
+
 impl AbiNetPortRegistrationV3 {
-    #[allow(clippy::too_many_arguments)]
-    pub const fn new(
-        info: AbiNetPortInfo,
-        opaque: u64,
-        start: extern "C" fn(u64, *const AbiNetPortRuntimeV2) -> i32,
-        bind: extern "C" fn(u64, u16) -> i32,
-        submit_tx_packet: extern "C" fn(u64, *mut AbiPacketRefRaw, AbiNetTxMeta) -> i32,
-        poll: extern "C" fn(u64, u16) -> i32,
-        handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
-        stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
-        stop: extern "C" fn(u64),
-        set_interrupts_enabled: extern "C" fn(u64, bool) -> i32,
-    ) -> Self {
+    pub const fn new(info: AbiNetPortInfo, opaque: u64, ops: AbiNetPortOpsV3) -> Self {
         Self {
-            abi_size: core::mem::size_of::<Self>() as u32,
+            abi_size: core::mem::size_of::<Self>() as u64,
             info,
             opaque,
-            start,
-            bind,
-            submit_tx_packet,
-            poll,
-            handle_event,
-            stats,
-            stop,
-            set_interrupts_enabled,
+            start: ops.start,
+            bind: ops.bind,
+            submit_tx_packet: ops.submit_tx_packet,
+            poll: ops.poll,
+            handle_event: ops.handle_event,
+            stats: ops.stats,
+            stop: ops.stop,
+            set_interrupts_enabled: ops.set_interrupts_enabled,
             reserved: [0; 3],
         }
     }
@@ -1006,7 +1013,10 @@ impl AbiPacketRefRaw {
         }
     }
 
-    pub fn take(ptr: *mut Self) -> Option<Self> {
+    /// # Safety
+    /// `ptr` must point to a valid `AbiPacketRefRaw` value or be null.
+    /// This function dereferences a raw pointer and is therefore unsafe.
+    pub unsafe fn take(ptr: *mut Self) -> Option<Self> {
         if ptr.is_null() {
             return None;
         }
@@ -1035,6 +1045,12 @@ impl AbiPacketRefRaw {
         } else {
             unsafe { ((*self.vtable).len)(&self.storage) }
         }
+    }
+
+    /// Return true when the packet reference reports zero length.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn set_len(&mut self, len: usize) {
@@ -1142,7 +1158,7 @@ pub struct AbiExportedState {
 #[derive(Clone, Copy)]
 pub struct KernelApiV4 {
     pub abi_version: u32,
-    pub abi_size: u32,
+    pub abi_size: u64,
 
     pub log: extern "C" fn(level: u32, msg_ptr: *const u8, msg_len: usize),
 
@@ -1207,7 +1223,7 @@ pub struct KernelApiV4 {
 #[repr(C)]
 pub struct DriverExportsV1 {
     pub abi_version: u32,
-    pub abi_size: u32,
+    pub abi_size: u64,
 
     pub name_ptr: *const u8,
     pub name_len: usize,
@@ -1242,9 +1258,10 @@ pub const fn pack_version(major: u16, minor: u16, patch: u16) -> u64 {
 #[inline]
 #[must_use]
 pub const fn unpack_version(packed: u64) -> (u16, u16, u16) {
-    let major = ((packed >> 32) & 0xFFFF) as u16;
-    let minor = ((packed >> 16) & 0xFFFF) as u16;
-    let patch = (packed & 0xFFFF) as u16;
+    let bytes = packed.to_le_bytes();
+    let major = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let minor = u16::from_le_bytes([bytes[2], bytes[3]]);
+    let patch = u16::from_le_bytes([bytes[0], bytes[1]]);
     (major, minor, patch)
 }
 
@@ -1369,16 +1386,18 @@ macro_rules! export_driver {
 
             static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
                 $crate::abi::driver::DRIVER_ABI_VERSION,
-                probe_adapter,
-                start_adapter,
-                stop_adapter,
-                remove_adapter,
-                name_adapter,
-                name_len_adapter,
-                type_adapter,
-                version_adapter,
-                None,
-                Some(irq_adapter),
+                $crate::abi::driver::DriverVTableFns {
+                    probe: probe_adapter,
+                    start: start_adapter,
+                    stop: stop_adapter,
+                    remove: remove_adapter,
+                    name: name_adapter,
+                    name_len: name_len_adapter,
+                    driver_type: type_adapter,
+                    version: version_adapter,
+                    request_capabilities: None,
+                    handle_irq: Some(irq_adapter),
+                },
             ).with_provider_descriptors_export(Some(providers_adapter));
 
             &VTABLE
@@ -1462,16 +1481,18 @@ macro_rules! export_driver {
 
             static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
                 $crate::abi::driver::DRIVER_ABI_VERSION,
-                probe_adapter,
-                start_adapter,
-                stop_adapter,
-                remove_adapter,
-                name_adapter,
-                name_len_adapter,
-                type_adapter,
-                version_adapter,
-                None,
-                None,
+                $crate::abi::driver::DriverVTableFns {
+                    probe: probe_adapter,
+                    start: start_adapter,
+                    stop: stop_adapter,
+                    remove: remove_adapter,
+                    name: name_adapter,
+                    name_len: name_len_adapter,
+                    driver_type: type_adapter,
+                    version: version_adapter,
+                    request_capabilities: None,
+                    handle_irq: None,
+                },
             ).with_provider_descriptors_export(Some(providers_adapter));
 
             &VTABLE

@@ -469,7 +469,9 @@ impl NetworkEventHandler {
                             stack.send_tcp_v6_payload_on(net_if, src, dst, &payload)
                         })
                         .is_ok(),
-                    None => stack.send_tcp_v6_payload_on(net_if, src, dst, &payload).is_ok(),
+                    None => stack
+                        .send_tcp_v6_payload_on(net_if, src, dst, &payload)
+                        .is_ok(),
                 };
                 let result = if sent {
                     Ok(())

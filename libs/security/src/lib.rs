@@ -1,10 +1,4 @@
-#![allow(clippy::cargo_common_metadata)]
 #![cfg_attr(not(feature = "std"), no_std)]
-#![allow(clippy::must_use_candidate)] // Capability accessor methods
-#![allow(clippy::use_self)] // Explicit type names for clarity
-#![allow(clippy::missing_const_for_fn)] // Functions using Mutex
-#![allow(clippy::missing_errors_doc)] // Result type documentation
-#![allow(clippy::map_unwrap_or)] // map().unwrap_or() pattern is clear
 
 //! Minimal Security crate extracted from the kernel for host-friendly unit testing.
 //!
@@ -17,7 +11,6 @@ use std::vec::Vec;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
-#[cfg(not(feature = "std"))]
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -63,8 +56,9 @@ pub struct CapabilitySet {
 }
 
 impl CapabilitySet {
+    #[must_use]
     pub const fn empty() -> Self {
-        CapabilitySet {
+        Self {
             effective: CAP_NONE,
             permitted: CAP_NONE,
             inheritable: CAP_NONE,
@@ -72,8 +66,9 @@ impl CapabilitySet {
         }
     }
 
+    #[must_use]
     pub const fn full() -> Self {
-        CapabilitySet {
+        Self {
             effective: CAP_ALL,
             permitted: CAP_ALL,
             inheritable: CAP_ALL,
@@ -81,8 +76,9 @@ impl CapabilitySet {
         }
     }
 
+    #[must_use]
     pub const fn with_permitted(permitted: Capability) -> Self {
-        CapabilitySet {
+        Self {
             effective: permitted,
             permitted,
             inheritable: CAP_NONE,
@@ -91,16 +87,19 @@ impl CapabilitySet {
     }
 
     #[must_use]
-    pub fn has_capability(&self, cap: Capability) -> bool {
+    pub const fn has_capability(&self, cap: Capability) -> bool {
         (self.effective & cap) == cap
     }
 
     #[must_use]
-    pub fn is_permitted(&self, cap: Capability) -> bool {
+    pub const fn is_permitted(&self, cap: Capability) -> bool {
         (self.permitted & cap) == cap
     }
 
-    pub fn raise(&mut self, cap: Capability) -> Result<(), CapabilityError> {
+    /// # Errors
+    ///
+    /// * `CapabilityError::NotPermitted` - when `cap` is not in the permitted set.
+    pub const fn raise(&mut self, cap: Capability) -> Result<(), CapabilityError> {
         if !self.is_permitted(cap) {
             return Err(CapabilityError::NotPermitted);
         }
@@ -108,25 +107,25 @@ impl CapabilitySet {
         Ok(())
     }
 
-    pub fn drop(&mut self, cap: Capability) {
+    pub const fn drop(&mut self, cap: Capability) {
         self.effective &= !cap;
     }
 
-    pub fn drop_permanently(&mut self, cap: Capability) {
+    pub const fn drop_permanently(&mut self, cap: Capability) {
         self.effective &= !cap;
         self.permitted &= !cap;
         self.inheritable &= !cap;
         self.ambient &= !cap;
     }
 
-    pub fn clear_effective(&mut self) {
+    pub const fn clear_effective(&mut self) {
         self.effective = CAP_NONE;
     }
 
     /// # Errors
     ///
     /// * `CapabilityError::NotPermitted` - If trying to set a capability not present in permitted set
-    pub fn set_inheritable(&mut self, caps: Capability) -> Result<(), CapabilityError> {
+    pub const fn set_inheritable(&mut self, caps: Capability) -> Result<(), CapabilityError> {
         if (caps & !self.permitted) != 0 {
             return Err(CapabilityError::NotPermitted);
         }
@@ -135,11 +134,15 @@ impl CapabilitySet {
     }
 
     #[must_use]
-    pub fn after_exec(&self, file_permitted: Capability, file_inheritable: Capability) -> Self {
+    pub const fn after_exec(
+        &self,
+        file_permitted: Capability,
+        file_inheritable: Capability,
+    ) -> Self {
         let new_permitted = (self.inheritable & file_inheritable) | file_permitted;
         let new_effective = new_permitted;
         let new_inheritable = self.inheritable;
-        CapabilitySet {
+        Self {
             effective: new_effective,
             permitted: new_permitted,
             inheritable: new_inheritable,
@@ -175,10 +178,10 @@ pub enum CapabilityError {
 impl fmt::Display for CapabilityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CapabilityError::NotPermitted => write!(f, "capability not permitted"),
-            CapabilityError::CapabilityRequired => write!(f, "capability required"),
-            CapabilityError::InvalidCapability => write!(f, "invalid capability"),
-            CapabilityError::ReclamationBusy => write!(f, "token reclamation in progress"),
+            Self::NotPermitted => write!(f, "capability not permitted"),
+            Self::CapabilityRequired => write!(f, "capability required"),
+            Self::InvalidCapability => write!(f, "invalid capability"),
+            Self::ReclamationBusy => write!(f, "token reclamation in progress"),
         }
     }
 }
@@ -218,8 +221,9 @@ pub struct CapabilityManager {
 }
 
 impl CapabilityManager {
+    #[must_use]
     pub const fn new() -> Self {
-        CapabilityManager {
+        Self {
             domains: Mutex::new(Vec::new()),
             bounding_set: Mutex::new(CAP_ALL),
             grants: Mutex::new(Vec::new()),
@@ -233,8 +237,7 @@ impl CapabilityManager {
         domains
             .iter()
             .find(|d| d.domain_id == domain_id)
-            .map(|d| d.caps)
-            .unwrap_or(CapabilitySet::empty())
+            .map_or(CapabilitySet::empty(), |d| d.caps)
     }
 
     pub fn set_capabilities(&self, domain_id: u64, caps: CapabilitySet) {
@@ -260,6 +263,9 @@ impl CapabilityManager {
         self.get_capabilities(domain_id).has_capability(cap)
     }
 
+    /// # Errors
+    ///
+    /// * `CapabilityError::NotPermitted` - when caller lacks required delegation rights.
     pub fn grant_capability(
         &self,
         caller_domain: u64,
@@ -278,6 +284,10 @@ impl CapabilityManager {
     }
 
     /// Grant with options and return a token id
+    ///
+    /// # Errors
+    ///
+    /// * `CapabilityError::NotPermitted` - when caller lacks required delegation rights.
     pub fn grant_capability_with_opts(
         &self,
         caller_domain: u64,
@@ -332,6 +342,11 @@ impl CapabilityManager {
     }
 
     /// Revoke a grant by token id
+    ///
+    /// # Errors
+    ///
+    /// * `CapabilityError::NotPermitted` - when caller is not issuer/admin.
+    /// * `CapabilityError::InvalidCapability` - when `token_id` is unknown.
     pub fn revoke_grant(
         &self,
         caller_domain: u64,
@@ -428,6 +443,9 @@ impl CapabilityManager {
         }
     }
 
+    /// # Errors
+    ///
+    /// * `CapabilityError::CapabilityRequired` - when `domain_id` does not hold `cap`.
     pub fn require_capability(
         &self,
         domain_id: u64,
@@ -468,15 +486,19 @@ impl CapabilityManager {
         })
     }
 
-    /// Forcefully reclaim a revoked token (physically remove it); returns Err if not revoked or not found
+    /// Forcefully reclaim a revoked token (physically remove it).
+    ///
+    /// # Errors
+    ///
+    /// * `CapabilityError::ReclamationBusy` - when in-flight users still reference this token.
+    /// * `CapabilityError::InvalidCapability` - when token is missing or not revoked.
     pub fn reclaim_token(&self, token_id: u64) -> Result<(), CapabilityError> {
         // Can't reclaim while there are in-flight users
         let in_flight = {
             let m = self.in_flight.lock();
             m.iter()
                 .find(|(id, _)| *id == token_id)
-                .map(|(_, cnt)| *cnt)
-                .unwrap_or(0)
+                .map_or(0, |(_, cnt)| *cnt)
         };
         if in_flight > 0 {
             return Err(CapabilityError::ReclamationBusy);
@@ -498,7 +520,11 @@ impl CapabilityManager {
         }
     }
 
-    /// Increment in-flight counter for a token. Fails if token doesn't exist or is revoked.
+    /// Increment in-flight counter for a token.
+    ///
+    /// # Errors
+    ///
+    /// * `CapabilityError::InvalidCapability` - when token is missing or already revoked.
     pub fn increment_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
         {
             let grants = self.grants.lock();
@@ -521,6 +547,10 @@ impl CapabilityManager {
     }
 
     /// Decrement in-flight counter for a token.
+    ///
+    /// # Errors
+    ///
+    /// * `CapabilityError::InvalidCapability` - when token is missing or counter is already zero.
     pub fn decrement_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
         let mut m = self.in_flight.lock();
         if let Some(pos) = m.iter().position(|(id, _)| *id == token_id) {
@@ -542,8 +572,7 @@ impl CapabilityManager {
         let m = self.in_flight.lock();
         m.iter()
             .find(|(id, _)| *id == token_id)
-            .map(|(_, c)| *c)
-            .unwrap_or(0)
+            .map_or(0, |(_, c)| *c)
     }
 
     /// Reclaim revoked tokens that have no in-flight users
@@ -557,8 +586,7 @@ impl CapabilityManager {
                     let cnt = in_flight
                         .iter()
                         .find(|(id, _)| *id == t.id)
-                        .map(|(_, c)| *c)
-                        .unwrap_or(0);
+                        .map_or(0, |(_, c)| *c);
                     if cnt == 0 {
                         to_reclaim.push(t.id);
                     }
@@ -630,6 +658,7 @@ pub fn reclaim_revoked_now() {
 
 static MANAGER: CapabilityManager = CapabilityManager::new();
 
+#[must_use]
 pub fn manager() -> &'static CapabilityManager {
     &MANAGER
 }
@@ -647,7 +676,6 @@ pub fn init() {
 pub mod root_certs;
 
 #[cfg(test)]
-#[allow(clippy::must_use_candidate)]
 mod tests {
     use super::{
         CAP_NET_BIND, CAP_NET_RAW, CAP_SYS_ADMIN, CapabilityError, CapabilitySet,

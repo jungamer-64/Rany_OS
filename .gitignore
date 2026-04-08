@@ -24,3 +24,7 @@ __pycache__/
 # Secure boot keys - never commit any key material!
 # Contains: kernel.key (secret), kernel_pub.key (public)
 /keys/
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
