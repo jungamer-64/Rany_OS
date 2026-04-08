@@ -52,6 +52,14 @@ ExoRust カーネルの canonical baseline は
 - Exchange Heap 以外でドメイン間共有メモリを既定経路にしない
 - 任意アドレス DMA や IOMMU バイパスを許可しない
 
+### 2.1 永続性 / durability
+
+- DO: WAL / PMEM / recovery は `durability` 層に集約する。
+- DO: PMEM の永続化順序は `persist_range()` / `persist_ordered()` 相当の helper 経由で表現する。
+- DO: CoW / snapshot を使う場合も、ファイルシステム局所の実装技法として説明し、canonical durability guarantee と混同しない。
+- DON'T: ファイルシステムやサービス側で durability ordering を ad hoc に再定義しない。
+- DON'T: CoW snapshot を WAL や recovery の代替だとみなさない。
+
 ---
 
 ## 3. 並行性と Async/Await
@@ -96,6 +104,14 @@ fn executor_loop() {
 - `wake()`、ロック取得、ヒープ確保を ISR から排除する。
 - deferred wake キューが飽和した場合の扱い（ドロップ/再試行/統計）を明示する。
 - レビューでは「直接 wake 経路が存在しないこと」を必須確認項目とする。
+
+### 3.3 Runtime quota / QoS
+
+- DO: quota と authority を分離して扱う。
+- DO: CPU / memory / I/O enforcement を `quota_manager()` と `heap::oom` の正規経路に集約する。
+- DO: OOM victim selection は domain priority と使用量に基づく既定方針を前提にする。
+- DON'T: capability 付与を理由に quota bypass を黙認しない。
+- DON'T: ad hoc な OOM 判定や帯域制御を各 subsystem に重複実装しない。
 
 ---
 
@@ -184,6 +200,15 @@ fn call_cross_domain<R>(f: impl FnOnce() -> R) -> Result<R, DomainError> {
 - `WRPKRU` 相当の利用を全構成の必須条件にしない
 - LFENCE を万能策として乱用しない
 
+### 7.1 Secure Boot / loader chain のレビュー観点
+
+- DO: 本番 boot path が署名検証済みの loader chain を前提としていることを確認する。
+- DO: UEFI / Shim / MOK / db / dbx の詳細変更は
+  [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)
+  と整合させる。
+- DO: cell signature / revocation の変更時は loader policy と docs を同時に更新する。
+- DON'T: Secure Boot の component detail を kernel 側の各文書へ重複定義しない。
+
 ---
 
 ## 8. ライブアップデートと状態移行
@@ -217,6 +242,20 @@ impl Migratable for DriverStateV2 {
 - 構造化ログを出力する
 - DWARF アンワインド情報を保持し、バックトレース取得を可能にする
 - ウォッチドッグ、メトリクス、ハートビートで異常検知を補助する
+- GDB / KGDB の transport と有効化条件を boot 設定と一致させる
+
+### ❌ DON'T
+
+- デバッグ専用ビルドだけに障害情報出力を依存させない
+- panic / OOM / watchdog timeout の経路で診断ログを欠落させない
+- tracepoint / BPF / reproducible build を canonical requirement として扱わない
+
+### 9.1 可観測性 / panic diagnostics のレビュー観点
+
+- DO: `sys.monitor()` / `sys.watchdog()` / `sys.power()` の summary surface を壊さない。
+- DO: panic path で最小ログ経路と backtrace capture が維持されることを確認する。
+- DO: profiler / monitor / watchdog / gdb stub の責務境界を崩さない。
+- DON'T: 内部計測 API の細部を public ABI と誤認させる文書化をしない。
 
 ---
 

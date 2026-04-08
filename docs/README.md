@@ -48,6 +48,9 @@
 ## Reference
 
 - [reference/api-reference.md](reference/api-reference.md): 公開 API と設計意図
+- [reference/durability.md](reference/durability.md): durability / persistence の現行整理
+- [reference/runtime-qos.md](reference/runtime-qos.md): runtime QoS / resource accounting の現行整理
+- [reference/observability-debug.md](reference/observability-debug.md): observability / debug の現行整理
 - [reference/deprecations.md](reference/deprecations.md): 廃止済み API と移行ガイド
 - [reference/lru-block-cache.md](reference/lru-block-cache.md): LRU ブロックキャッシュ実装リファレンス
 
@@ -61,7 +64,7 @@
 
 ## Component Docs
 
-- [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md): ExoLoader のロードマップ
+- [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md): ExoLoader のロードマップ、UEFI / Secure Boot / measured boot detail
 - [../drivers/README.md](../drivers/README.md): ドライバディレクトリ案内
 - [../drivers/nvme/README.md](../drivers/nvme/README.md): NVMe ドライバ案内
 - [../libs/sync/README.md](../libs/sync/README.md): `libs/sync` の設計意図

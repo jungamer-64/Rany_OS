@@ -81,6 +81,13 @@ ExoRust は、次の三原則を採用します。
 - ドライバは `alloc_dma_buffer()` のような Framework API 経由でのみ DMA バッファを取得する。
 - 任意アドレス DMA、IOMMU バイパス、DMA 中の CPU 側アクセスは設計上禁止する。
 
+### 3.4 Durability
+
+- 永続性保証は公開 `fs` API とは分離された `durability` 層で扱う。
+- 現行の reference 対象は WAL と PMEM persist ordering（`clwb` + `sfence`）である。
+- CoW や snapshot は一部ファイルシステム実装で使えても、canonical durability contract の唯一前提にはしない。
+- 詳細は [reference/durability.md](reference/durability.md) を参照する。
+
 ## 4. ドメイン分離と authority
 
 ### 4.1 authority の根
@@ -133,6 +140,12 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 - ISR はイベント ID を deferred wake キューへ積み、通常コンテキストで `wake()` を行う。
 - ポーリングと割り込みは workload に応じて切り替える。
 - share-nothing を優先し、共有状態が必要な場合は owner を明確にした message passing を使う。
+
+### 5.1 Runtime policy と quota
+
+- CPU / memory / I/O quota、OOM victim selection、bandwidth shaping は authority とは別の runtime policy とする。
+- quota は公平性と資源保護のために使い、Capability や署名検証の代替にしない。
+- 詳細は [reference/runtime-qos.md](reference/runtime-qos.md) を参照する。
 
 ## 6. ライブアップデートの制約
 
@@ -187,6 +200,13 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 - ガードページでスタックオーバーフローを捕捉する。
 - 共有ロックは `PoisonLock<T>` を使い、パニック後の連鎖障害を防ぐ。
 
+### 7.1 最低限の可観測性
+
+- runtime は structured log、watchdog、metrics / snapshot、backtrace を最低限維持する。
+- panic、OOM、watchdog timeout のような縮退経路でも、最小診断情報を残せることを優先する。
+- tracing / BPF / reproducible build のような拡張は baseline では参考扱いとする。
+- 詳細は [reference/observability-debug.md](reference/observability-debug.md) を参照する。
+
 ## 8. セキュリティモデル
 
 ### 8.1 基本方針
@@ -205,6 +225,14 @@ ExoRust では、authority の根は次の組み合わせで定義する。
   [Variant C](design_variants/variant-c-pks-mandatory.md)
   に分離して扱う。
 
+### 8.3 Secure Boot と loader chain
+
+- 本番の canonical boot path は、署名検証済みの bootloader -> kernel -> cell load chain を前提にする。
+- UEFI Secure Boot、Shim、MOK、db / dbx の詳細は component detail とし、
+  [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)
+  を正規の詳細参照先とする。
+- セル署名の trust chain、key level、revocation は loader policy の一部として扱い、ad hoc なドメインローカルポリシーに分散させない。
+
 ## 9. 関連文書
 
 - ドキュメントハブ:
@@ -215,6 +243,14 @@ ExoRust では、authority の根は次の組み合わせで定義する。
   [kernel_development_guidelines.md](kernel_development_guidelines.md)
 - Capability 設計:
   [capabilities.md](capabilities.md)
+- durability / persistence:
+  [reference/durability.md](reference/durability.md)
+- runtime QoS / resource accounting:
+  [reference/runtime-qos.md](reference/runtime-qos.md)
+- observability / debug:
+  [reference/observability-debug.md](reference/observability-debug.md)
+- ExoLoader / Secure Boot detail:
+  [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)
 - 設計サンプル:
   [exorust_design/README.md](exorust_design/README.md)
 
@@ -224,10 +260,13 @@ ExoRust では、authority の根は次の組み合わせで定義する。
   - 本書 `ARCHITECTURE.md`
   - Accepted ADR 群
   - `kernel_development_guidelines.md`
-- 参考（implementation examples）:
+- 参考（reference / implementation examples）:
+  - `docs/reference/` の reference 文書
   - `docs/exorust_design/` のサンプルコード
   - 研究・比較向け Variant B/C 文書
+- component detail:
+  - `../bootloader/FUTURE_ROADMAP.md` の UEFI / Secure Boot / measured boot detail
 - 履歴（historical archive）:
   - `docs/archive/` 配下の検討記録
 
-レビュー時は「規範 -> 参考 -> 履歴」の順で参照し、履歴文書を正本として扱わない。
+レビュー時は「規範 -> 参考 -> component detail -> 履歴」の順で参照し、履歴文書を正本として扱わない。
