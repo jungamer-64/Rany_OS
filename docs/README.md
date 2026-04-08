@@ -45,6 +45,7 @@
 - [design_variants/variant-a-capability-first.md](design_variants/variant-a-capability-first.md): canonical baseline
 - [design_variants/variant-b-hybrid-hardware-accelerated.md](design_variants/variant-b-hybrid-hardware-accelerated.md): 追加防御を伴う研究案
 - [design_variants/variant-c-pks-mandatory.md](design_variants/variant-c-pks-mandatory.md): 高保証 SKU 向け研究案
+- [design_variants/hardware-assisted-security-notes.md](design_variants/hardware-assisted-security-notes.md): ハードウェア支援セキュリティ詳細の研究ノート
 - [exorust_design/README.md](exorust_design/README.md): 設計サンプルコードの位置付け
 
 ## Decisions
@@ -61,12 +62,21 @@
 
 - [reference/api-reference.md](reference/api-reference.md): 公開 API と設計意図
 - [reference/durability.md](reference/durability.md): durability / persistence の現行整理
+- [reference/execution-fairness.md](reference/execution-fairness.md): fuel / loop-bound / APIC fairness の現行整理
 - [reference/runtime-qos.md](reference/runtime-qos.md): runtime QoS / resource accounting の現行整理
 - [reference/resilience-recovery.md](reference/resilience-recovery.md): checkpoint / restart / replication / panic hardening の現行整理
 - [reference/observability-debug.md](reference/observability-debug.md): observability / debug の現行整理
 - [reference/performance-targets.md](reference/performance-targets.md): ベンチマーク目標と測定基準
+- [reference/archive-migration-checklist.md](reference/archive-migration-checklist.md): archive 由来の残存細部の移行対応表
 - [reference/deprecations.md](reference/deprecations.md): 廃止済み API と移行ガイド
 - [reference/lru-block-cache.md](reference/lru-block-cache.md): LRU ブロックキャッシュ実装リファレンス
+
+archive 由来の残存細部の着地点:
+
+- 旧 4.4: [reference/execution-fairness.md](reference/execution-fairness.md)
+- 旧 9.2: [design_variants/hardware-assisted-security-notes.md](design_variants/hardware-assisted-security-notes.md)
+- 旧 11 / 13: [proposals/kernel-roadmap.md](proposals/kernel-roadmap.md)
+- 完全対応表: [reference/archive-migration-checklist.md](reference/archive-migration-checklist.md)
 
 ## Runbooks
 
@@ -75,6 +85,7 @@
 ## Proposals
 
 - [proposals/exoshell-improvements.md](proposals/exoshell-improvements.md): ExoShell 改善提案
+- [proposals/kernel-roadmap.md](proposals/kernel-roadmap.md): 旧設計案 11 / 13 を workstream 化したロードマップ案
 
 ## Component Docs
 

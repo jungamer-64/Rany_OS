@@ -146,6 +146,7 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 - ISR はイベント ID を deferred wake キューへ積み、通常コンテキストで `wake()` を行う。
 - ポーリングと割り込みは workload に応じて切り替える。
 - share-nothing を優先し、共有状態が必要な場合は owner を明確にした message passing を使う。
+- Fuel-based execution、loop-bound proof、FFI / 外部クレート境界 checkpoint、APIC timeslice の reference default は [reference/execution-fairness.md](reference/execution-fairness.md) に集約する。
 
 ### 5.1 Runtime policy と quota
 
@@ -159,6 +160,13 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 - task affinity mask と same-node-first scheduling は canonical target interface とする。
 - adaptive polling / interrupt switching と C-state 制御は baseline の一部とする。
 - idle path は HLT / MWAIT 相当の低電力待機を優先し、割り込み到着で即時復帰できることを要求する。
+
+### 5.3 旧設計案からの読み替え
+
+| 旧設計案の項目 | 現行の扱い |
+| --- | --- |
+| 4.4 Fuel-based Execution / loop-bound proof / FFI checkpoint | baseline は本節、細部は [reference/execution-fairness.md](reference/execution-fairness.md) の Reference |
+| 4.4.4 APIC タイマーによる最終防御 | Canonical requirement |
 
 ## 6. ライブアップデートの制約
 
@@ -270,6 +278,8 @@ ExoRust では、authority の根は次の組み合わせで定義する。
   [reference/durability.md](reference/durability.md)
 - runtime QoS / resource accounting:
   [reference/runtime-qos.md](reference/runtime-qos.md)
+- execution fairness / starvation control:
+  [reference/execution-fairness.md](reference/execution-fairness.md)
 - resilience / recovery:
   [reference/resilience-recovery.md](reference/resilience-recovery.md)
 - observability / debug:

@@ -2,7 +2,7 @@
 
 - Status: Canonical implementation guideline
 - Audience: カーネル実装者、ドライバ統合担当、レビュー担当者
-- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](ARCHITECTURE.md), [Variant A](design_variants/variant-a-capability-first.md)
+- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](ARCHITECTURE.md), [Variant A](design_variants/variant-a-capability-first.md), [Execution Fairness Reference](reference/execution-fairness.md)
 
 ExoRust カーネルの canonical baseline は
 [Variant A: Capability-First Baseline](design_variants/variant-a-capability-first.md)
@@ -126,6 +126,13 @@ fn executor_loop() {
 - DO: same-node-first scheduling と task affinity mask は `Canonical target` として文書化する。
 - DO: adaptive polling / interrupt switching と C-state 制御を latency floor と両立させる。
 - DON'T: cross-node migration や power policy を driver ごとの ad hoc heuristic に閉じ込めない。
+
+### 3.5 旧設計案からの読み替え
+
+- `fuel quota`、`loop-bound proof`、FFI checkpoint、APIC timeslice default は
+  [reference/execution-fairness.md](reference/execution-fairness.md)
+  に集約する。
+- baseline として必須なのは APIC タイマーによる公平性の下限保証であり、archive 由来の具体値や instrumentation 方針そのものではない。
 
 ---
 
@@ -287,6 +294,7 @@ impl Migratable for DriverStateV2 {
 
 | バージョン | 日付 | 変更内容 |
 | --- | --- | --- |
+| 1.3 | 2026-04-09 | fairness / starvation の細部を reference へ分離し、旧設計案からの読み替えを追加 |
 | 1.2 | 2026-04-09 | Canonical target / requirement 語彙を導入し、durability、resilience、tracing、NUMA / power、fault hardening の baseline を更新 |
 | 1.1 | 2026-03-28 | Variant A 基準へ再編。Capability-first、live update 制約、optional hardware protection を反映 |
 | 1.0 | 2024-12-16 | 初版: MPK, Quiescent State, ABI, 燃料チェック, 署名を追加 |
@@ -296,3 +304,4 @@ impl Migratable for DriverStateV2 {
 - [README.md](README.md)
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [capabilities.md](capabilities.md)
+- [reference/execution-fairness.md](reference/execution-fairness.md)

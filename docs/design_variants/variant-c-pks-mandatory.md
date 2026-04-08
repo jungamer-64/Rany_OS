@@ -2,7 +2,7 @@
 
 - Status: Research / high-assurance SKU option
 - Audience: 高保証 SKU や強制分離要件を検討する contributor
-- Related: [ドキュメントハブ](../README.md), [設計ハブ](../design-hub.md), [Variant A](variant-a-capability-first.md)
+- Related: [ドキュメントハブ](../README.md), [設計ハブ](../design-hub.md), [Variant A](variant-a-capability-first.md), [Hardware-Assisted Security Notes](hardware-assisted-security-notes.md)
 
 高保証 SKU 向けの研究案です。Supervisor 向け保護キー相当のハードウェア、IOMMU、署名済みロードを必須化し、ドメイン遷移とデータ配置を最も厳しく制約します。
 
@@ -68,6 +68,7 @@
 - high-assurance を優先し、移植性と実装単純性を犠牲にする。
 - hardware protection は optional ではなく required とする。
 - Capability、署名、IOMMU、secure boot、hardware protection を積層し、単一メカニズム依存を避ける。
+- WRPKRU-LFENCE tradeoff、cache partitioning、Retpoline / IBRS / STIBP / IBPB などの詳細は [hardware-assisted-security-notes.md](hardware-assisted-security-notes.md) を参照する。
 - CPU 要件を満たさない環境はサポート対象外とする。
 
 ## 10. 対象ハードウェア
@@ -82,3 +83,4 @@
 - [../README.md](../README.md)
 - [../design-hub.md](../design-hub.md)
 - [variant-a-capability-first.md](variant-a-capability-first.md)
+- [hardware-assisted-security-notes.md](hardware-assisted-security-notes.md)

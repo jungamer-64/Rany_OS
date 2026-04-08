@@ -232,6 +232,10 @@ let packet: Packet = rx.recv().await;
 
 ### モジュール: `exorust::io`
 
+> [!NOTE]
+> 旧設計案でいう `mempool`、batch processing、scatter-gather I/O は、この文書では
+> RAW / datapath packet pool、`PacketBatch`、descriptor chaining を伴う multi-buffer submission として説明します。
+
 #### DMAバッファ（静的ケイパビリティ付き）
 
 ```rust
@@ -366,6 +370,15 @@ while batch.len() < 64 {
 // バッチ処理（SIMD最適化）
 processor.process_batch(&mut batch);
 ```
+
+#### 旧設計案との用語対応
+
+| 旧設計案の用語 | 現行 reference の語彙 |
+| --- | --- |
+| mempool | `PacketPool` / RAW / datapath packet pool |
+| batch processing | `PacketBatch` / `BatchProcessor` |
+| scatter-gather I/O | descriptor chaining を伴う multi-buffer DMA / queue submission |
+| zero-copy datapath | RAW endpoint / packet ownership exchange |
 
 ---
 

@@ -11,11 +11,15 @@
 - [Variant A: Capability-First Baseline](design_variants/variant-a-capability-first.md)
 - [Variant B: Hybrid Hardware-Assisted Isolation](design_variants/variant-b-hybrid-hardware-accelerated.md)
 - [Variant C: PKS-Mandatory High-Assurance SKU](design_variants/variant-c-pks-mandatory.md)
+- [Hardware-Assisted Security Notes](design_variants/hardware-assisted-security-notes.md)
 - [運用向けアーキテクチャ概要](ARCHITECTURE.md)
 - [開発ガイドライン](kernel_development_guidelines.md)
 - [Capability 設計](capabilities.md)
+- [Execution Fairness Reference](reference/execution-fairness.md)
 - [Resilience / Recovery Reference](reference/resilience-recovery.md)
 - [Performance Targets Reference](reference/performance-targets.md)
+- [Kernel Roadmap Proposal](proposals/kernel-roadmap.md)
+- [Archive Migration Checklist](reference/archive-migration-checklist.md)
 - [設計サンプルコードの位置付け](exorust_design/README.md)
 
 ## 推奨参照順
@@ -70,6 +74,13 @@ Variant B/C や `docs/exorust_design/` は、正本を補う研究・参考資�
 - Variant B は、対応 CPU で PKS / MPK 系を追加防御として使う研究・将来拡張案です。
 - Variant C は、Supervisor 向け保護キー相当を必須とする高保証 SKU 向け研究案です。
 - `docs/exorust_design/security/` の擬似コードは主に Variant B / C の参考実装として扱います。
+
+## 旧設計案の残存細部の移行先
+
+- 旧 4.4 の starvation / fairness 詳細は [reference/execution-fairness.md](reference/execution-fairness.md) に集約する。
+- 旧 9.2 の Spectre / MPK / LFENCE / cache partitioning 詳細は [design_variants/hardware-assisted-security-notes.md](design_variants/hardware-assisted-security-notes.md) に移す。
+- 旧 11 / 13 のロードマップと将来課題は [proposals/kernel-roadmap.md](proposals/kernel-roadmap.md) に現代化して移す。
+- 対応表全体は [reference/archive-migration-checklist.md](reference/archive-migration-checklist.md) を正とする。
 
 ## 関連文書
 
