@@ -68,7 +68,7 @@ pub use types::{EndpointAddr, EndpointError, EndpointFd, EndpointState, Endpoint
 pub use tcb::{TcpConnectionState, tcb_table};
 
 // Re-exports: manager
-pub use manager::{endpoint_manager, init_endpoint_manager, is_endpoint_manager_initialized};
+pub use manager::init_endpoint_manager;
 
 // Re-exports: handler
 pub use event::NetworkEvent;

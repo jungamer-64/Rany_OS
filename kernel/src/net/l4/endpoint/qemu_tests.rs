@@ -215,7 +215,8 @@ pub fn futures_tcp_stream_multiple_reads_smoke() -> bool {
 }
 
 pub fn futures_udp_recv_delivered_smoke() -> bool {
-    crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+    crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+        crate::net::runtime::default_runtime(),
         crate::net::types::InterfaceScope::Any,
         40123,
         None,

@@ -65,7 +65,10 @@ impl SystemIntegration {
 
         // Diagnostic: print network port runtime and stack configuration/stats
         // NOTE: ブートストラップ時はエグゼキュータ未起動のため同期版を使用（許容）
-        let port_keys = crate::net::runtime::device::list_port_keys(None);
+        let port_keys = crate::net::runtime::device::list_port_keys_in(
+            crate::net::runtime::default_runtime(),
+            None,
+        );
         let mut rx_packets = 0u64;
         let mut tx_packets = 0u64;
         let mut tx_errors = 0u64;

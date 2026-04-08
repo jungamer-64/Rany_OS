@@ -254,14 +254,28 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::GetUdpEndpoints { result_slot, waker } => {
-                let snapshots = stack.list_udp_endpoints();
-                let result: alloc::vec::Vec<_> = snapshots
-                    .into_iter()
-                    .map(|snap| crate::net::api::connections::UdpEndpointInfo {
-                        local_addr: alloc::format!("*:{}", snap.local_port),
-                        remote_addr: alloc::string::String::from("*:*"),
-                    })
-                    .collect();
+                let mut result = alloc::vec::Vec::new();
+                if let Some(manager) = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                {
+                    manager.for_each(|endpoint| {
+                        if endpoint.socket_type()
+                            != crate::net::l4::endpoint::types::EndpointType::Udp
+                        {
+                            return;
+                        }
+                        let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                        let Some(local_addr) = inner.local_addr else {
+                            return;
+                        };
+                        result.push(crate::net::api::connections::UdpEndpointInfo {
+                            local_addr: alloc::format!("*:{}", local_addr.port()),
+                            remote_addr: alloc::string::String::from("*:*"),
+                        });
+                    });
+                }
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }

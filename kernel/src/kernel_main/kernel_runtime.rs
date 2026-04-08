@@ -660,7 +660,10 @@ pub(crate) fn start_async_boot_runtime(context: KernelBootContext) -> ! {
 /// 非同期で走る。このタスクは状態が Bound になるのを待ってから ping で
 /// 接続性を確認する。
 fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
-    let keys = crate::net::runtime::device::list_port_keys(None);
+    let keys = crate::net::runtime::device::list_port_keys_in(
+        crate::net::runtime::default_runtime(),
+        None,
+    );
     let mut rx_packets = 0u64;
     let mut tx_packets = 0u64;
     let mut tx_errors = 0u64;

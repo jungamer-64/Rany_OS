@@ -9,38 +9,6 @@
 use super::*;
 
 impl NetworkStack {
-    /// Process an incoming packet (main entry point)
-    /// Receive a packet from the network
-    pub fn receive(&mut self, packet: PacketRef) {
-        self.receive_on(None, packet);
-    }
-
-    /// Process an incoming packet received on a specific interface.
-    pub fn receive_on(&mut self, if_id: Option<super::NetIfId>, packet: PacketRef) {
-        // Offload ALL packet processing to the asynchronous endpoint stack.
-        // This minimizes time spent in the interrupt/polling context.
-        crate::net::l4::endpoint::event::enqueue_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { if_id, packet },
-        );
-    }
-
-    /// Process a batch of incoming packets
-    ///
-    /// バッチイベントとして一括送信し、イベントキューのロック取得を
-    /// 1回に削減することでハイスループット時のオーバーヘッドを低減する。
-    pub fn receive_batch(&mut self, batch: PacketBatch) {
-        self.receive_batch_on(None, batch);
-    }
-
-    /// Process a batch of incoming packets from the same ingress interface.
-    pub fn receive_batch_on(&mut self, if_id: Option<super::NetIfId>, batch: PacketBatch) {
-        let packets: Vec<PacketRef> = batch.into_iter().collect();
-        if packets.is_empty() {
-            return;
-        }
-        crate::net::l4::endpoint::event::send_batch_event_on(if_id, packets);
-    }
-
     /// Process IPv4 packet
     pub(crate) fn process_ipv4(
         &mut self,
@@ -458,10 +426,21 @@ impl NetworkStack {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
                 let ingress_if_id = self.resolve_ingress_if(if_id);
                 if let Some(packet) = ip_packet.clone() {
-                    if crate::net::l4::endpoint::manager::deliver_raw_payload(
-                        ingress_if_id,
-                        kernel_api::resource::net::PacketPayload::single(packet),
-                    ) {
+                    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let delivered = guard
+                        .as_ref()
+                        .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
+                        .is_some_and(|endpoint| {
+                            endpoint
+                                .deliver_raw_payload(
+                                    ingress_if_id,
+                                    kernel_api::resource::net::PacketPayload::single(packet),
+                                )
+                                .is_ok()
+                        });
+                    if delivered {
                         return;
                     }
                 }
@@ -484,10 +463,21 @@ impl NetworkStack {
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
                 let ingress_if_id = self.resolve_ingress_if(if_id);
                 if let Some(packet) = ip_packet.clone() {
-                    if crate::net::l4::endpoint::manager::deliver_raw_payload(
-                        ingress_if_id,
-                        kernel_api::resource::net::PacketPayload::single(packet),
-                    ) {
+                    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let delivered = guard
+                        .as_ref()
+                        .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
+                        .is_some_and(|endpoint| {
+                            endpoint
+                                .deliver_raw_payload(
+                                    ingress_if_id,
+                                    kernel_api::resource::net::PacketPayload::single(packet),
+                                )
+                                .is_ok()
+                        });
+                    if delivered {
                         return;
                     }
                 }
@@ -507,10 +497,21 @@ impl NetworkStack {
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
                 let ingress_if_id = self.resolve_ingress_if(if_id);
                 if let Some(packet) = ip_packet.clone() {
-                    if crate::net::l4::endpoint::manager::deliver_raw_payload(
-                        ingress_if_id,
-                        kernel_api::resource::net::PacketPayload::single(packet),
-                    ) {
+                    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let delivered = guard
+                        .as_ref()
+                        .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
+                        .is_some_and(|endpoint| {
+                            endpoint
+                                .deliver_raw_payload(
+                                    ingress_if_id,
+                                    kernel_api::resource::net::PacketPayload::single(packet),
+                                )
+                                .is_ok()
+                        });
+                    if delivered {
                         return;
                     }
                 }
@@ -854,9 +855,14 @@ impl NetworkStack {
                             IpProtocol::Udp => {
                                 if let Some(header) = transport_data.read_array::<4>(0) {
                                     let src_port = u16::from_be_bytes([header[0], header[1]]);
-                                    if !crate::net::l4::udp::UdpEndpoint::has_registered_port(
-                                        src_port,
-                                    ) {
+                                    let has_udp_port =
+                                        crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                                            .read()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .as_ref()
+                                            .map(|manager| manager.has_udp_port(src_port))
+                                            .unwrap_or(false);
+                                    if !has_udp_port {
                                         log::warn!(
                                             "[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})",
                                             dst,

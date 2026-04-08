@@ -583,10 +583,6 @@ pub fn register_virtio_port_in(
 }
 
 /// Resolve a VirtIO index into a network interface id.
-pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<NetIfId> {
-    lookup_if_by_virtio_index_in(default_runtime(), virtio_index)
-}
-
 pub fn lookup_if_by_virtio_index_in(
     runtime: NetRuntimeHandle,
     virtio_index: u8,

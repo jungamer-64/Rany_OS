@@ -674,7 +674,13 @@ impl NetworkStack {
                 }
             }
             17 => {
-                if !crate::net::l4::udp::UdpEndpoint::has_registered_port(src_port) {
+                let has_udp_port = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|manager| manager.has_udp_port(src_port))
+                    .unwrap_or(false);
+                if !has_udp_port {
                     return;
                 }
             }
@@ -969,7 +975,13 @@ impl NetworkStack {
                     return;
                 };
                 let src_port = u16::from_be_bytes([header[0], header[1]]);
-                if !crate::net::l4::udp::UdpEndpoint::has_registered_port(src_port) {
+                let has_udp_port = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                    .map(|manager| manager.has_udp_port(src_port))
+                    .unwrap_or(false);
+                if !has_udp_port {
                     return;
                 }
                 // UDP error notification could be implemented here

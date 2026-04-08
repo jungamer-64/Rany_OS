@@ -68,7 +68,7 @@ fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
     if let Some(if_id) = if_id {
         return if_id;
     }
-    crate::net::runtime::device::primary_if()
+    crate::net::runtime::device::primary_if_in(crate::net::runtime::default_runtime())
         .or_else(|| {
             crate::net::runtime::manager::list_interfaces()
                 .ok()

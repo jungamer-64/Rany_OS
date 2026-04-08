@@ -779,7 +779,10 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_raw_endpoint_intercepts_udp_before_socket_demux() {
         init_endpoint_manager();
-        crate::net::runtime::stack::init_default();
+        crate::net::runtime::stack::init_in(
+            crate::net::runtime::default_runtime(),
+            crate::net::runtime::stack::NetworkConfig::default(),
+        );
 
         let udp = new_udp_socket();
         let mut inner = udp.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -796,9 +799,9 @@ pub mod tests {
         let _ = inner.transition_to(EndpointState::Bound);
         drop(inner);
 
-        let manager =
-            crate::net::l4::endpoint::manager::endpoint_manager().expect("endpoint manager lock");
-        let guard = manager.read().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         let manager = guard.as_ref().expect("endpoint manager");
         assert!(
             manager

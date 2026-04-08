@@ -174,7 +174,8 @@ impl DnsClient {
             .ok_or("No DNS server configured")?;
 
         // Try UDP first
-        let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+        let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+            crate::net::runtime::default_runtime(),
             crate::net::types::InterfaceScope::Any,
             0,
             None,

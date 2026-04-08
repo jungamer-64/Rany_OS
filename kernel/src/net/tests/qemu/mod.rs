@@ -437,8 +437,11 @@ pub fn stack_network_stack_creation_smoke() -> bool {
 pub fn stack_network_stack_poisoned_runtime_apis_fail_smoke() -> bool {
     // Host unit test intentionally poisons global locks to validate failure paths.
     // In full-boot QEMU runtime suite this side effect destabilizes subsequent cases.
-    stack::init_default();
-    match stack::stack().lock() {
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
+    match stack::stack_in(crate::net::runtime::default_runtime()).lock() {
         Ok(guard) => guard.is_some(),
         Err(_) => true,
     }
@@ -465,8 +468,8 @@ pub fn stack_send_udp_event_task_zero_copy_smoke() -> bool {
         }
         QEMU_STACK_LAST_TX_LEN.store(0, Ordering::Release);
 
-        stack::init(config);
-        let Ok(mut guard) = stack::stack().lock() else {
+        stack::init_in(crate::net::runtime::default_runtime(), config);
+        let Ok(mut guard) = stack::stack_in(crate::net::runtime::default_runtime()).lock() else {
             return false;
         };
         let Some(ref mut net_stack) = *guard else {

@@ -71,10 +71,9 @@ pub(crate) fn network_error_to_kapi(error: crate::net::types::NetworkError) -> K
 pub(crate) fn lookup_endpoint(
     fd: crate::net::l4::endpoint::EndpointFd,
 ) -> Result<crate::net::l4::endpoint::endpoint_core::Endpoint, KapiError> {
-    let Some(mgr_lock) = crate::net::l4::endpoint::endpoint_manager() else {
-        return Err(KapiError::NotFound);
-    };
-    let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
+    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
     let Some(mgr) = guard.as_ref() else {
         return Err(KapiError::NotFound);
     };
@@ -87,11 +86,11 @@ pub(crate) fn close_endpoint_handle(
     let socket = lookup_endpoint(fd)?;
     socket.close_immediate().map_err(endpoint_error_to_kapi)?;
 
-    if let Some(mgr_lock) = crate::net::l4::endpoint::endpoint_manager() {
-        let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(mgr) = guard.as_ref() {
-            let _ = mgr.unregister(fd);
-        }
+    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(mgr) = guard.as_ref() {
+        let _ = mgr.unregister(fd);
     }
 
     Ok(())

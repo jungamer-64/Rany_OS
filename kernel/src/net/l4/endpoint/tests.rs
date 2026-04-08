@@ -31,19 +31,24 @@ pub mod tests {
     }
 
     fn init_test_ipv6_stack() {
-        crate::net::runtime::stack::init(crate::net::runtime::stack::NetworkConfig {
-            ipv6: Some(crate::net::l3::ipv6::Ipv6Config {
-                link_local: crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
-                global: Some(crate::net::l3::ipv6::Ipv6Address::LOOPBACK),
-                temporary: None,
-                prefix_len: 128,
-                gateway: None,
-                hop_limit: 64,
-            }),
-            ..crate::net::runtime::stack::NetworkConfig::default()
-        });
+        crate::net::runtime::stack::init_in(
+            crate::net::runtime::default_runtime(),
+            crate::net::runtime::stack::NetworkConfig {
+                ipv6: Some(crate::net::l3::ipv6::Ipv6Config {
+                    link_local: crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
+                    global: Some(crate::net::l3::ipv6::Ipv6Address::LOOPBACK),
+                    temporary: None,
+                    prefix_len: 128,
+                    gateway: None,
+                    hop_limit: 64,
+                }),
+                ..crate::net::runtime::stack::NetworkConfig::default()
+            },
+        );
 
-        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
+        if let Ok(mut guard) =
+            crate::net::runtime::stack::stack_in(crate::net::runtime::default_runtime()).lock()
+        {
             if let Some(ref mut stack) = *guard {
                 stack.set_transmit_fn(
                     |_if_id,
@@ -616,9 +621,9 @@ pub mod tests {
         let _ = inner.transition_to(EndpointState::Bound);
         drop(inner);
 
-        let manager =
-            crate::net::l4::endpoint::manager::endpoint_manager().expect("endpoint manager lock");
-        let guard = manager.read().unwrap_or_else(|e| e.into_inner());
+        let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         let manager = guard.as_ref().expect("endpoint manager");
         assert!(
             manager
@@ -633,10 +638,19 @@ pub mod tests {
         drop(guard);
 
         let pinned_payload = test_payload(&[1, 2, 3, 4]);
-        assert!(crate::net::l4::endpoint::manager::deliver_raw_payload(
-            NetIfId(12),
-            pinned_payload
-        ));
+        let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let delivered = guard
+            .as_ref()
+            .and_then(|manager| manager.find_raw_endpoint(NetIfId(12)))
+            .is_some_and(|endpoint| {
+                endpoint
+                    .deliver_raw_payload(NetIfId(12), pinned_payload)
+                    .is_ok()
+            });
+        drop(guard);
+        assert!(delivered);
         let (received_pinned, if_id) = raw_pinned.try_recv_raw_payload().expect("pinned delivery");
         assert_eq!(if_id, NetIfId(12));
         assert_eq!(payload_bytes(&received_pinned), vec![1, 2, 3, 4]);
@@ -646,10 +660,19 @@ pub mod tests {
         ));
 
         let wildcard_payload = test_payload(&[9, 8, 7]);
-        assert!(crate::net::l4::endpoint::manager::deliver_raw_payload(
-            NetIfId(13),
-            wildcard_payload
-        ));
+        let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let delivered = guard
+            .as_ref()
+            .and_then(|manager| manager.find_raw_endpoint(NetIfId(13)))
+            .is_some_and(|endpoint| {
+                endpoint
+                    .deliver_raw_payload(NetIfId(13), wildcard_payload)
+                    .is_ok()
+            });
+        drop(guard);
+        assert!(delivered);
         let (received_any, if_id) = raw_any.try_recv_raw_payload().expect("wildcard delivery");
         assert_eq!(if_id, NetIfId(13));
         assert_eq!(payload_bytes(&received_any), vec![9, 8, 7]);

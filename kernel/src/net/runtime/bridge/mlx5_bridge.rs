@@ -628,9 +628,20 @@ fn dispatch_mlx5_rx_packet(state: &Arc<Mlx5BridgeState>, packet: PacketRef, payl
 
     let if_id = state.if_id.lock().ok().and_then(|guard| *guard);
     if let Some(if_id) = if_id {
-        super::process_received_packet_zero_copy_for_interface(if_id, packet, 0, payload_len);
+        super::process_received_packet_zero_copy_for_interface_in(
+            crate::net::runtime::default_runtime(),
+            if_id,
+            packet,
+            0,
+            payload_len,
+        );
     } else {
-        super::process_received_packet_zero_copy(packet, 0, payload_len);
+        super::process_received_packet_zero_copy_in(
+            crate::net::runtime::default_runtime(),
+            packet,
+            0,
+            payload_len,
+        );
     }
 }
 
@@ -969,7 +980,11 @@ fn poll_mlx5_tx_cqs(
                         if bb_idx < queue_bufs.len() {
                             if let Some(tracked) = queue_bufs[bb_idx].take() {
                                 if let Some(completion_id) = tracked.completion_id {
-                                    let _ = device::complete_tx_request(completion_id, Ok(()));
+                                    let _ = device::complete_tx_request_in(
+                                        crate::net::runtime::default_runtime(),
+                                        completion_id,
+                                        Ok(()),
+                                    );
                                 }
                             }
                         }

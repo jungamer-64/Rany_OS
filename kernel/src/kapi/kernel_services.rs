@@ -316,12 +316,12 @@ impl KernelServices for ExoKernel {
             .map_err(endpoint_error_to_kapi)?;
         drop(inner);
 
-        if let Some(mgr_lock) = crate::net::l4::endpoint::endpoint_manager() {
-            let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(mgr) = guard.as_ref() {
-                mgr.register_raw_scope(stack_scope(scope), endpoint.fd())
-                    .map_err(endpoint_error_to_kapi)?;
-            }
+        let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(mgr) = guard.as_ref() {
+            mgr.register_raw_scope(stack_scope(scope), endpoint.fd())
+                .map_err(endpoint_error_to_kapi)?;
         }
         let fd = endpoint.fd();
 

@@ -94,7 +94,10 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
         DHCP_MAGIC_COOKIE, DhcpClient, DhcpHeader, DhcpMessageType, DhcpOperation, DhcpOption,
     };
 
-    stack::init_default();
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
 
     let client = DhcpClient::new(MacAddress::new([7, 7, 7, 7, 7, 7]));
 
@@ -136,7 +139,10 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     use crate::net::runtime::stack;
 
     crate::net::runtime::context::reset_runtime_registry_for_tests();
-    stack::init_default();
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
     let _ = crate::net::api::dhcp::init_dhcp_runtime();
     let client = install_default_runtime_dhcp_v4_client(
         crate::net::runtime::stack::NetworkConfig::default().mac,

@@ -13,7 +13,7 @@ use crate::net::obs::{
     trace::{self, NetEventKind, NetLayer},
 };
 use crate::net::runtime::device;
-use crate::net::runtime::manager::{self, NetIfId};
+use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::stack;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
@@ -97,7 +97,8 @@ fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static NetBridgeRuntimeStat
 fn primary_stack_glue_if_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
     let state = runtime_state_for(runtime);
     if runtime.id() == default_runtime().id() {
-        device::primary_if().or_else(|| *state.primary_if.read().unwrap_or_else(|e| e.into_inner()))
+        device::primary_if_in(default_runtime())
+            .or_else(|| *state.primary_if.read().unwrap_or_else(|e| e.into_inner()))
     } else {
         *state.primary_if.read().unwrap_or_else(|e| e.into_inner())
     }
@@ -112,22 +113,14 @@ fn set_primary_stack_glue_if_in(runtime: NetRuntimeHandle, if_id: NetIfId, virti
         *primary = Some(if_id);
     }
     if runtime.id() == default_runtime().id() {
-        device::set_primary_interface(if_id);
+        device::set_primary_interface_in(default_runtime(), if_id);
     }
-}
-
-pub fn enter_deferred_rx_mode() {
-    enter_deferred_rx_mode_in(default_runtime());
 }
 
 pub fn enter_deferred_rx_mode_in(runtime: NetRuntimeHandle) {
     runtime_state_for(runtime)
         .rx_deferred_mode
         .store(true, Ordering::Release);
-}
-
-pub fn drain_deferred_rx_packets() {
-    drain_deferred_rx_packets_in(default_runtime());
 }
 
 pub fn drain_deferred_rx_packets_in(runtime: NetRuntimeHandle) {
@@ -225,14 +218,6 @@ fn record_stack_glue_if_rx_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     entry.initialized = true;
 }
 
-fn primary_stack_glue_if() -> Option<NetIfId> {
-    primary_stack_glue_if_in(default_runtime())
-}
-
-pub fn register_stack_glue_interface(if_id: NetIfId, virtio_index: Option<u8>) {
-    register_stack_glue_interface_in(default_runtime(), if_id, virtio_index);
-}
-
 pub fn register_stack_glue_interface_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
@@ -256,7 +241,7 @@ pub fn transmit_from_stack(
     packet: crate::net::datapath::mempool::PacketRef,
     meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
-    let resolved_if = if_id.or_else(primary_stack_glue_if);
+    let resolved_if = if_id.or_else(|| primary_stack_glue_if_in(default_runtime()));
     let packet_len = packet.len();
     let sent = device::transmit_packet(if_id, packet, meta);
 
@@ -294,14 +279,6 @@ pub fn send_packet_on_interface(
 // Receive Bridge
 // ============================================================================
 
-pub fn process_received_packet_zero_copy(
-    packet: crate::net::datapath::mempool::PacketRef,
-    header_size: usize,
-    payload_len: usize,
-) {
-    process_received_packet_zero_copy_in(default_runtime(), packet, header_size, payload_len);
-}
-
 pub fn process_received_packet_zero_copy_in(
     runtime: NetRuntimeHandle,
     mut packet: crate::net::datapath::mempool::PacketRef,
@@ -322,7 +299,7 @@ pub fn process_received_packet_zero_copy_in(
         return;
     }
 
-    if let Some(if_id) = primary_stack_glue_if() {
+    if let Some(if_id) = primary_stack_glue_if_in(runtime) {
         process_received_packet_zero_copy_for_interface_in(
             runtime,
             if_id,
@@ -348,21 +325,6 @@ pub fn process_received_packet_zero_copy_in(
     if let Some(batch) = state.batch_processor.enqueue(packet) {
         stack::receive_batch_on_in(runtime, None, batch);
     }
-}
-
-pub fn process_received_packet_zero_copy_for_interface(
-    if_id: NetIfId,
-    packet: crate::net::datapath::mempool::PacketRef,
-    header_size: usize,
-    payload_len: usize,
-) {
-    process_received_packet_zero_copy_for_interface_in(
-        default_runtime(),
-        if_id,
-        packet,
-        header_size,
-        payload_len,
-    );
 }
 
 pub fn process_received_packet_zero_copy_for_interface_in(
@@ -438,14 +400,6 @@ pub fn set_rx_csum_hw_verified(verified: bool) {
         .store(verified, Ordering::Release);
 }
 
-pub fn check_batch_timeout(current_tsc: u64, tsc_freq: u64) {
-    check_batch_timeout_in(default_runtime(), current_tsc, tsc_freq);
-}
-
-pub fn flush_batch() {
-    flush_batch_in(default_runtime());
-}
-
 pub fn check_batch_timeout_in(runtime: NetRuntimeHandle, current_tsc: u64, tsc_freq: u64) {
     if let Some(batch) = runtime_state_for(runtime)
         .batch_processor
@@ -495,10 +449,6 @@ pub fn get_stack_glue_stats() -> StackGlueStats {
         rx_packets: state.rx_packets.load(Ordering::Relaxed),
         tx_packets: state.tx_packets.load(Ordering::Relaxed),
     }
-}
-
-pub fn lookup_if_by_virtio_index(virtio_index: u8) -> Option<NetIfId> {
-    manager::lookup_if_by_virtio_index(virtio_index)
 }
 
 pub fn primary_interface_config() -> Option<InterfaceConfigSnapshot> {

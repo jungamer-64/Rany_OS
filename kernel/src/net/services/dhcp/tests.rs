@@ -660,7 +660,10 @@ pub fn test_offer_probe_and_decline_flow() {
     use crate::net::runtime::stack;
 
     // Initialize global stack for ARP facilities (best-effort)
-    stack::init_default();
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
 
     let client = DhcpClient::new(MacAddress::new([7, 7, 7, 7, 7, 7]));
     client.xid.store(0x3333_4444, Ordering::SeqCst);
@@ -698,7 +701,7 @@ pub fn test_offer_probe_and_decline_flow() {
     assert!(client.offered_probe_at.load(Ordering::SeqCst) != 0);
 
     // Simulate ARP reply from another host for the offered IP
-    if let Ok(mut s) = stack::stack().lock() {
+    if let Ok(mut s) = stack::stack_in(crate::net::runtime::default_runtime()).lock() {
         if let Some(ref mut st) = s.as_mut() {
             st.arp_cache_insert(
                 Ipv4Address::new([10, 0, 0, 9]),

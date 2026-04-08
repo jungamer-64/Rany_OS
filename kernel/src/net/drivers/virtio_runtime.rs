@@ -109,17 +109,20 @@ impl virtio_driver::net::NetRuntime for KernelVirtioNetRuntime {
         header_len: usize,
         payload_len: usize,
     ) {
-        if let Some(if_id) =
-            crate::net::runtime::bridge::lookup_if_by_virtio_index(self.device_index)
-        {
-            crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface(
+        if let Some(if_id) = crate::net::runtime::manager::lookup_if_by_virtio_index_in(
+            crate::net::runtime::default_runtime(),
+            self.device_index,
+        ) {
+            crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface_in(
+                crate::net::runtime::default_runtime(),
                 if_id,
                 packet,
                 header_len,
                 payload_len,
             );
         } else {
-            crate::net::runtime::bridge::process_received_packet_zero_copy(
+            crate::net::runtime::bridge::process_received_packet_zero_copy_in(
+                crate::net::runtime::default_runtime(),
                 packet,
                 header_len,
                 payload_len,
@@ -129,7 +132,11 @@ impl virtio_driver::net::NetRuntime for KernelVirtioNetRuntime {
 
     fn transmit_complete(&self, _queue_index: u16, _packet: PacketRef, completion_id: Option<u64>) {
         if let Some(completion_id) = completion_id {
-            let _ = crate::net::runtime::device::complete_tx_request(completion_id, Ok(()));
+            let _ = crate::net::runtime::device::complete_tx_request_in(
+                crate::net::runtime::default_runtime(),
+                completion_id,
+                Ok(()),
+            );
         }
 
         crate::net::l4::endpoint::event::enqueue_event_ignore(
@@ -178,7 +185,11 @@ pub fn register_kernel_virtio_net_port(
         KapiError::IoError
     })?;
 
-    crate::net::runtime::bridge::register_stack_glue_interface(if_id, Some(index));
+    crate::net::runtime::bridge::register_stack_glue_interface_in(
+        crate::net::runtime::default_runtime(),
+        if_id,
+        Some(index),
+    );
     crate::net::runtime::bridge::set_rx_csum_hw_verified(true);
     crate::io::io_scheduler::virtio_net::register_virtio_net_with_io_scheduler(index);
     Ok(())

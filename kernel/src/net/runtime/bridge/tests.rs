@@ -80,7 +80,7 @@ impl Drop for BridgeStateGuard {
 #[cfg(feature = "qemu-test-export")]
 fn qemu_prepare_zero_copy_env() -> BridgeStateGuard {
     let guard = BridgeStateGuard::new();
-    stack::stack().clear_poison();
+    stack::stack_in(crate::net::runtime::default_runtime()).clear_poison();
     guard
 }
 
@@ -112,7 +112,7 @@ fn qemu_zero_copy_prereq_postcheck(
     local: TcpEndpointAddr,
     remote: TcpEndpointAddr,
 ) -> bool {
-    check_batch_timeout(100_000, 1);
+    check_batch_timeout_in(crate::net::runtime::default_runtime(), 100_000, 1);
     let endpoint_ready = {
         let inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.state == EndpointState::Connected && inner.recv_payload_bytes() == 0
@@ -136,7 +136,7 @@ fn qemu_zero_copy_prereq_ipv4_heapless_smoke() -> bool {
 
     let mut config = NetworkConfig::default();
     config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
-    stack::init(config);
+    stack::init_in(crate::net::runtime::default_runtime(), config);
 
     let local = TcpEndpointAddr::new([127, 0, 0, 1], 1000);
     let remote = TcpEndpointAddr::new([127, 0, 0, 1], 2000);
@@ -156,7 +156,7 @@ fn qemu_zero_copy_prereq_ipv6_heapless_smoke() -> bool {
     config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[
         0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
     ]));
-    stack::init(config);
+    stack::init_in(crate::net::runtime::default_runtime(), config);
 
     let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 1000);
     let remote =
@@ -260,7 +260,7 @@ pub fn qemu_zero_copy_via_bridge_v6_smoke() -> bool {
 #[cfg_attr(test, test_case)]
 pub fn test_zero_copy_via_bridge() {
     let _guard = BridgeStateGuard::new();
-    stack::stack().clear_poison();
+    stack::stack_in(crate::net::runtime::default_runtime()).clear_poison();
     init_endpoint_manager();
 
     // Initialize mempool and stack
@@ -269,7 +269,7 @@ pub fn test_zero_copy_via_bridge() {
     // Configure stack to use 127.0.0.1 for tests
     let mut config = NetworkConfig::default();
     config.ipv4.address = Ipv4Address::new([127, 0, 0, 1]);
-    stack::init(config);
+    stack::init_in(crate::net::runtime::default_runtime(), config);
 
     // Prepare a TCB and register it in the global stack
     let local = TcpEndpointAddr::new([127, 0, 0, 1], 1000);
@@ -340,10 +340,15 @@ pub fn test_zero_copy_via_bridge() {
     packet.set_len(header_size + eth_total_len);
 
     // Call bridge zero-copy entry
-    process_received_packet_zero_copy(packet, header_size, eth_total_len);
+    process_received_packet_zero_copy_in(
+        crate::net::runtime::default_runtime(),
+        packet,
+        header_size,
+        eth_total_len,
+    );
 
     // Force a batch timeout to flush the packet into the stack
-    check_batch_timeout(100_000, 1);
+    check_batch_timeout_in(crate::net::runtime::default_runtime(), 100_000, 1);
 
     let mut buf = [0u8; 32];
     let len = sock
@@ -447,7 +452,13 @@ pub fn test_routing_and_nat() {
             .clear();
     }
 
-    process_received_packet_zero_copy_for_interface(if1, packet, header_size, 14 + 28);
+    process_received_packet_zero_copy_for_interface_in(
+        crate::net::runtime::default_runtime(),
+        if1,
+        packet,
+        header_size,
+        14 + 28,
+    );
 
     // verify forwarded to if2 and NAT table contains entry
     #[cfg(any(test, feature = "qemu-test-export"))]
@@ -767,7 +778,7 @@ pub fn test_nat_icmp_error() {
 #[cfg_attr(test, test_case)]
 pub fn test_zero_copy_via_bridge_v6() {
     let _guard = BridgeStateGuard::new();
-    stack::stack().clear_poison();
+    stack::stack_in(crate::net::runtime::default_runtime()).clear_poison();
     init_endpoint_manager();
 
     // Initialize mempool and stack
@@ -778,7 +789,7 @@ pub fn test_zero_copy_via_bridge_v6() {
     config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[
         0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
     ]));
-    stack::init(config);
+    stack::init_in(crate::net::runtime::default_runtime(), config);
 
     // Prepare a TCB and register it in the global stack (IPv6)
     let local = TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 1000);
@@ -846,10 +857,15 @@ pub fn test_zero_copy_via_bridge_v6() {
     packet.set_len(header_size + eth_total_len);
 
     // Call bridge zero-copy entry
-    process_received_packet_zero_copy(packet, header_size, eth_total_len);
+    process_received_packet_zero_copy_in(
+        crate::net::runtime::default_runtime(),
+        packet,
+        header_size,
+        eth_total_len,
+    );
 
     // Force a batch timeout to flush the packet into the stack
-    check_batch_timeout(100_000, 1);
+    check_batch_timeout_in(crate::net::runtime::default_runtime(), 100_000, 1);
 
     let mut buf = [0u8; 32];
     let len = sock
@@ -889,13 +905,19 @@ pub fn test_register_virtio_port_is_idempotent_and_records_mapping() {
     let if0_again = manager::register_virtio_port(0, None).expect("register vnet0 again");
     let if1 = manager::register_virtio_port(1, None).expect("register vnet1");
 
-    register_stack_glue_interface(if0, Some(0));
-    register_stack_glue_interface(if1, Some(1));
+    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if0, Some(0));
+    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if1, Some(1));
 
     assert_eq!(if0, if0_again);
     assert_ne!(if0, if1);
-    assert_eq!(lookup_if_by_virtio_index(0), Some(if0));
-    assert_eq!(lookup_if_by_virtio_index(1), Some(if1));
+    assert_eq!(
+        manager::lookup_if_by_virtio_index_in(crate::net::runtime::default_runtime(), 0),
+        Some(if0)
+    );
+    assert_eq!(
+        manager::lookup_if_by_virtio_index_in(crate::net::runtime::default_runtime(), 1),
+        Some(if1)
+    );
 
     let s0 = get_stack_glue_stats_for_interface(if0).expect("if0 stats");
     let s1 = get_stack_glue_stats_for_interface(if1).expect("if1 stats");
@@ -909,16 +931,25 @@ pub fn test_register_virtio_port_prefers_vnet0_as_primary() {
     let _guard = BridgeStateGuard::new();
 
     let if1 = manager::register_virtio_port(1, None).expect("register vnet1");
-    register_stack_glue_interface(if1, Some(1));
-    assert_eq!(primary_stack_glue_if(), Some(if1));
+    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if1, Some(1));
+    assert_eq!(
+        primary_stack_glue_if_in(crate::net::runtime::default_runtime()),
+        Some(if1)
+    );
 
     let if0 = manager::register_virtio_port(0, None).expect("register vnet0");
-    register_stack_glue_interface(if0, Some(0));
-    assert_eq!(primary_stack_glue_if(), Some(if0));
+    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if0, Some(0));
+    assert_eq!(
+        primary_stack_glue_if_in(crate::net::runtime::default_runtime()),
+        Some(if0)
+    );
 
     let if2 = manager::register_virtio_port(2, None).expect("register vnet2");
-    register_stack_glue_interface(if2, Some(2));
-    assert_eq!(primary_stack_glue_if(), Some(if0));
+    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if2, Some(2));
+    assert_eq!(
+        primary_stack_glue_if_in(crate::net::runtime::default_runtime()),
+        Some(if0)
+    );
 }
 
 #[cfg_attr(test, test_case)]

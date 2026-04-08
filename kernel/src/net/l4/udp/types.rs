@@ -4,22 +4,13 @@ fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
     if let Some(if_id) = if_id {
         return if_id;
     }
-    crate::net::runtime::device::primary_if()
+    crate::net::runtime::device::primary_if_in(crate::net::runtime::default_runtime())
         .or_else(|| {
             crate::net::runtime::manager::list_interfaces()
                 .ok()
                 .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
         })
         .unwrap_or_default()
-}
-
-/// UDP socket snapshot for monitoring
-#[derive(Debug, Clone)]
-pub struct UdpEndpointSnapshot {
-    /// Local port
-    pub local_port: u16,
-    /// Number of pending datagrams in receive queue
-    pub rx_queue_len: usize,
 }
 
 /// UDP processor for handling UDP packets

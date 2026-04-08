@@ -756,9 +756,10 @@ pub fn poll_timer_events() {
         if VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
             && VIRTIO_NET_IRQ_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
         {
-            for key in crate::net::runtime::device::list_port_keys(Some(
-                kernel_api::service::netdev::NetPortKind::Virtio,
-            )) {
+            for key in crate::net::runtime::device::list_port_keys_in(
+                crate::net::runtime::default_runtime(),
+                Some(kernel_api::service::netdev::NetPortKind::Virtio),
+            ) {
                 let _ = crate::net::runtime::device::enqueue_event(
                     key,
                     kernel_api::service::netdev::NetDriverEvent::Poll,
@@ -776,7 +777,11 @@ pub fn poll_timer_events() {
             .map(|hz| (hz / 1_000_000).max(1))
             .unwrap_or(2000);
         let current_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        crate::net::runtime::bridge::check_batch_timeout(current_tsc, tsc_freq_mhz);
+        crate::net::runtime::bridge::check_batch_timeout_in(
+            crate::net::runtime::default_runtime(),
+            current_tsc,
+            tsc_freq_mhz,
+        );
     }
 
     // ペンディングのプリエンプションを処理

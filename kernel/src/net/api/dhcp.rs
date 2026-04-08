@@ -95,7 +95,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     let bootstrap_config = interfaces
         .iter()
         .find_map(|iface| iface.config)
-        .or_else(|| match stack::stack().lock() {
+        .or_else(|| match stack::stack_in(default_runtime()).lock() {
             Ok(guard) => guard.as_ref().map(|stack_guard| stack_guard.config()),
             Err(_) => None,
         })

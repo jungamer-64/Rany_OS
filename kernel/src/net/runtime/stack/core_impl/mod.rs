@@ -5,7 +5,7 @@ use alloc::vec;
 use kernel_api::resource::net::PacketPayload;
 
 mod global_instance;
-pub use global_instance::*;
+pub(crate) use global_instance::*;
 /// Protocol-specific NetworkStack impl methods (IGMP, ARP, ICMP, TCP bind, UDP raw).
 mod protocol_impl;
 /// Receive path — IPv4/IPv6 incoming packet processing.
@@ -582,8 +582,11 @@ impl NetworkStack {
                         == kernel_api::service::netdev::NetTxCompletionPolicy::DeviceCompletion
                 {
                     if let Some(completion_id) = meta.completion_id {
-                        let _ =
-                            crate::net::runtime::device::complete_tx_request(completion_id, Ok(()));
+                        let _ = crate::net::runtime::device::complete_tx_request_in(
+                            crate::net::runtime::default_runtime(),
+                            completion_id,
+                            Ok(()),
+                        );
                     }
                 }
                 self.stats.record_tx(packet_len);
@@ -884,10 +887,6 @@ impl NetworkStack {
         group: Ipv4Address,
     ) -> Result<(), crate::net::l3::igmp::IgmpError> {
         self.igmp.leave_group(group)
-    }
-
-    pub fn list_udp_endpoints(&self) -> Vec<crate::net::l4::udp::UdpEndpointSnapshot> {
-        UdpEndpoint::list_registered()
     }
 
     /// Update current time (call periodically)

@@ -92,9 +92,10 @@ fn lock_mlx5_sriov_state(context: &str) -> Mlx5SriovStateGuard {
 }
 
 fn current_port_runtime_initialized() -> bool {
-    crate::net::runtime::device::list_port_keys(Some(
-        kernel_api::service::netdev::NetPortKind::Mlx5,
-    ))
+    crate::net::runtime::device::list_port_keys_in(
+        crate::net::runtime::default_runtime(),
+        Some(kernel_api::service::netdev::NetPortKind::Mlx5),
+    )
     .into_iter()
     .next()
     .is_some()
@@ -941,7 +942,8 @@ impl Mlx5AsyncDriver {
         let register_result = crate::net::runtime::device::register_port_with_default_config(
             crate::net::runtime::device::NetDeviceKey::Mlx5(index),
             adapter,
-            crate::net::runtime::device::primary_if().is_none(),
+            crate::net::runtime::device::primary_if_in(crate::net::runtime::default_runtime())
+                .is_none(),
         );
         if let Err(e) = register_result {
             log::error!(target: "mlx5", "Port runtime registration failed: {}", e);
@@ -958,7 +960,11 @@ impl Mlx5AsyncDriver {
             return Err(KapiError::IoError);
         }
         if let Ok(if_id) = register_result {
-            crate::net::runtime::bridge::register_stack_glue_interface(if_id, None);
+            crate::net::runtime::bridge::register_stack_glue_interface_in(
+                crate::net::runtime::default_runtime(),
+                if_id,
+                None,
+            );
         }
 
         if self.variant.is_none() {
@@ -1095,7 +1101,8 @@ impl AsyncDriver for Mlx5AsyncDriver {
             clear_mlx5_sriov_state();
 
             for device in &self.devices {
-                if let Some(if_id) = crate::net::runtime::device::lookup_if_by_key(
+                if let Some(if_id) = crate::net::runtime::device::lookup_if_by_key_in(
+                    crate::net::runtime::default_runtime(),
                     crate::net::runtime::device::NetDeviceKey::Mlx5(device.index),
                 ) {
                     let _ = crate::net::runtime::device::unregister_port(if_id);

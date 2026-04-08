@@ -159,8 +159,15 @@ pub(crate) fn init_network_infra() {
     crate::net::l4::endpoint::tcb::tcb_table().init_syncookies();
 
     let stack_initialized = crate::net::runtime::device::is_initialized();
-    let port_runtime_initialized = !crate::net::runtime::device::list_port_keys(None).is_empty();
-    let endpoint_manager_initialized = crate::net::l4::endpoint::is_endpoint_manager_initialized();
+    let port_runtime_initialized = !crate::net::runtime::device::list_port_keys_in(
+        crate::net::runtime::default_runtime(),
+        None,
+    )
+    .is_empty();
+    let endpoint_manager_initialized = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
     debug!(
         target: "init",
         "Network bootstrap precheck: port_runtime_active={} stack_initialized={} socket_manager_initialized={}",
@@ -187,7 +194,11 @@ pub(crate) fn init_network_infra() {
         }
     }
 
-    if !crate::net::l4::endpoint::is_endpoint_manager_initialized() {
+    if !crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+    {
         crate::net::l4::endpoint::init_endpoint_manager();
         info!(target: "init", "Socket manager initialized");
     } else {
@@ -198,8 +209,15 @@ pub(crate) fn init_network_infra() {
     }
 
     let stack_initialized = crate::net::runtime::device::is_initialized();
-    let port_runtime_initialized = !crate::net::runtime::device::list_port_keys(None).is_empty();
-    let endpoint_manager_initialized = crate::net::l4::endpoint::is_endpoint_manager_initialized();
+    let port_runtime_initialized = !crate::net::runtime::device::list_port_keys_in(
+        crate::net::runtime::default_runtime(),
+        None,
+    )
+    .is_empty();
+    let endpoint_manager_initialized = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
     info!(
         target: "init",
         "Network core ready: stack_initialized={} socket_manager_initialized={} port_runtime_active={} async_port_bootstrap_pending={}",

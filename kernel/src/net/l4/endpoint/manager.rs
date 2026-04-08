@@ -13,7 +13,6 @@ use super::endpoint_core::Endpoint;
 use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
-use kernel_api::resource::net::PacketPayload;
 
 const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
@@ -287,26 +286,9 @@ impl EndpointManager {
         wildcard
     }
 
-    pub fn unregister_udp_binding(&self, scope: InterfaceScope, port: u16) -> bool {
-        let fds = {
-            let guard = self.udp_ports.read().unwrap_or_else(|e| e.into_inner());
-            let mut unique = alloc::collections::BTreeSet::new();
-            for (key, fd) in guard.iter() {
-                if key.port == port && key.scope == scope {
-                    unique.insert(*fd);
-                }
-            }
-            unique
-        };
-
-        if fds.is_empty() {
-            return false;
-        }
-
-        for fd in fds {
-            let _ = self.unregister(fd);
-        }
-        true
+    pub fn has_udp_port(&self, port: u16) -> bool {
+        let guard = self.udp_ports.read().unwrap_or_else(|e| e.into_inner());
+        guard.keys().any(|key| key.port == port)
     }
 
     pub fn endpoint_count(&self) -> usize {
@@ -344,17 +326,6 @@ pub fn init_endpoint_manager() {
     *ENDPOINT_MANAGER.write().unwrap_or_else(|e| e.into_inner()) = Some(EndpointManager::new());
 }
 
-pub fn is_endpoint_manager_initialized() -> bool {
-    ENDPOINT_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some()
-}
-
-pub fn endpoint_manager() -> Option<&'static PoisonRwLock<Option<EndpointManager>>> {
-    Some(&ENDPOINT_MANAGER)
-}
-
 pub fn find_listening_socket(
     local: EndpointAddr,
     ingress_if_id: Option<NetIfId>,
@@ -373,18 +344,4 @@ pub fn find_listening_socket(
     } else {
         None
     }
-}
-
-pub fn deliver_raw_payload(ingress_if_id: NetIfId, payload: PacketPayload) -> bool {
-    let Some(mgr_lock) = endpoint_manager() else {
-        return false;
-    };
-    let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
-    let Some(mgr) = guard.as_ref() else {
-        return false;
-    };
-    let Some(endpoint) = mgr.find_raw_endpoint(ingress_if_id) else {
-        return false;
-    };
-    endpoint.deliver_raw_payload(ingress_if_id, payload).is_ok()
 }

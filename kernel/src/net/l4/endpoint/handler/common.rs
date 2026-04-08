@@ -5,8 +5,8 @@
 
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::endpoint::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use kernel_api::resource::net::PacketPayload;
 
 /// イベント処理の結果
@@ -41,11 +41,6 @@ pub(super) fn endpoint_is_native_v6_pair(local: EndpointAddr, remote: EndpointAd
 }
 
 #[inline]
-pub(super) fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
-    resolve_ingress_if_id_in(default_runtime(), if_id)
-}
-
-#[inline]
 pub(super) fn resolve_ingress_if_id_in(
     runtime: NetRuntimeHandle,
     if_id: Option<NetIfId>,
@@ -73,7 +68,16 @@ pub(super) fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize
 
 #[inline]
 pub(super) fn deliver_raw_payload_if_registered(if_id: NetIfId, payload: PacketPayload) -> bool {
-    crate::net::l4::endpoint::manager::deliver_raw_payload(if_id, payload)
+    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    let Some(manager) = guard.as_ref() else {
+        return false;
+    };
+    let Some(endpoint) = manager.find_raw_endpoint(if_id) else {
+        return false;
+    };
+    endpoint.deliver_raw_payload(if_id, payload).is_ok()
 }
 
 #[inline]

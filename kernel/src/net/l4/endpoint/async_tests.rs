@@ -71,8 +71,11 @@ pub fn test_write_future_wakes_on_send() {
     init_endpoint_manager();
 
     // Initialize stack and set a dummy transmit function that always succeeds
-    stack::init_default();
-    if let Ok(mut guard) = stack::stack().lock() {
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
+    if let Ok(mut guard) = stack::stack_in(crate::net::runtime::default_runtime()).lock() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if: Option<crate::net::runtime::manager::NetIfId>,
@@ -145,9 +148,11 @@ pub fn test_write_future_wakes_on_send_v6() {
     cfg.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(&[
         0x02, 0x00, 0x00, 0x00, 0x00, 0x01,
     ]));
-    crate::net::runtime::stack::init(cfg);
+    crate::net::runtime::stack::init_in(crate::net::runtime::default_runtime(), cfg);
 
-    if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
+    if let Ok(mut guard) =
+        crate::net::runtime::stack::stack_in(crate::net::runtime::default_runtime()).lock()
+    {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if: Option<crate::net::runtime::manager::NetIfId>,
@@ -219,7 +224,10 @@ pub fn test_tcp_stream_read_zero_copy() {
     init_endpoint_manager();
 
     // Initialize stack (some operations rely on stack state)
-    stack::init_default();
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
 
     let sock = new_tcp_socket();
     let local = EndpointAddr::new([127, 0, 0, 1], 12345);
@@ -250,7 +258,10 @@ pub fn test_tcp_stream_read_zero_copy_v6() {
     init_endpoint_manager();
 
     // Initialize stack (some operations rely on stack state)
-    stack::init_default();
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
 
     let sock = new_tcp_socket();
     let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
@@ -279,7 +290,10 @@ pub fn test_tcp_stream_read_zero_copy_v6() {
 #[cfg_attr(test, test_case)]
 pub fn test_tcp_stream_multiple_reads() {
     init_endpoint_manager();
-    stack::init_default();
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
 
     let sock = new_tcp_socket();
     let local = EndpointAddr::new([127, 0, 0, 1], 12345);
@@ -317,7 +331,10 @@ pub fn test_tcp_stream_multiple_reads() {
 #[cfg_attr(test, test_case)]
 pub fn test_tcp_stream_multiple_reads_v6() {
     init_endpoint_manager();
-    stack::init_default();
+    stack::init_in(
+        crate::net::runtime::default_runtime(),
+        stack::NetworkConfig::default(),
+    );
 
     let sock = new_tcp_socket();
     let local = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
@@ -356,7 +373,8 @@ pub fn test_udp_recv_delivered() {
     init_endpoint_manager();
 
     let port = 40000u16;
-    let sock = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+    let sock = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+        crate::net::runtime::default_runtime(),
         crate::net::types::InterfaceScope::Any,
         port,
         None,

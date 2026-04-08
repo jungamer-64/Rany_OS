@@ -275,10 +275,6 @@ impl Future for NetEventWaitFuture<'_> {
     }
 }
 
-pub fn register_tx_completion() -> (u64, TxCompletionFuture) {
-    register_tx_completion_in(default_runtime())
-}
-
 pub fn register_tx_completion_in(runtime: NetRuntimeHandle) -> (u64, TxCompletionFuture) {
     let context = runtime_context_for(runtime);
     let completion_id = context
@@ -291,10 +287,6 @@ pub fn register_tx_completion_in(runtime: NetRuntimeHandle) -> (u64, TxCompletio
         .unwrap_or_else(|e| e.into_inner())
         .insert(completion_id, state.clone());
     (completion_id, TxCompletionFuture { state })
-}
-
-pub fn complete_tx_request(completion_id: u64, result: TxCompletionResult) -> bool {
-    complete_tx_request_in(default_runtime(), completion_id, result)
 }
 
 pub fn complete_tx_request_in(
@@ -393,7 +385,7 @@ impl NetPortRuntime for PortRuntimeHandle {
                 }
             }
             let _ = crate::net::services::dhcp::restart_interface_runtime(if_id);
-            if primary_if() == Some(if_id) {
+            if primary_if_in(default_runtime()) == Some(if_id) {
                 log::info!(
                     target: "net::device",
                     "[NET] link_up: key={:?} if{} role=primary",
@@ -486,7 +478,7 @@ impl NetDeviceHandle {
         if stats.initialized || stats.rx_packets > 0 || stats.tx_packets > 0 {
             info.flags |= NETDEV_FLAG_HEALTHY;
         }
-        if primary_if() == Some(binding.if_id) {
+        if primary_if_in(default_runtime()) == Some(binding.if_id) {
             info.flags |= NETDEV_FLAG_PRIMARY;
         }
         if let Ok(Some(interface)) = manager::get_interface(binding.if_id) {
@@ -563,7 +555,7 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
             let completion_policy = request.meta.completion_policy;
             if let Err(err) = handle.driver.submit_tx(request.packet, request.meta) {
                 if let Some(completion_id) = completion_id {
-                    let _ = complete_tx_request(completion_id, Err(err));
+                    let _ = complete_tx_request_in(default_runtime(), completion_id, Err(err));
                 }
                 log::warn!(
                     target: "net::device",
@@ -573,7 +565,7 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
                 );
             } else if completion_policy == NetTxCompletionPolicy::QueueAcceptance {
                 if let Some(completion_id) = completion_id {
-                    let _ = complete_tx_request(completion_id, Ok(()));
+                    let _ = complete_tx_request_in(default_runtime(), completion_id, Ok(()));
                 }
             }
             pending = handle.tx_queue.pop();
@@ -650,7 +642,7 @@ impl FailoverReason {
 }
 
 fn apply_runtime_network_config(config: &NetworkConfig) {
-    if let Ok(mut guard) = stack::stack().lock() {
+    if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
         if let Some(stack) = guard.as_mut() {
             stack.set_config(config.clone());
         }
@@ -670,7 +662,7 @@ fn sync_runtime_config_for_interface(if_id: NetIfId) {
 }
 
 fn clear_runtime_network_config() {
-    if let Ok(mut guard) = stack::stack().lock() {
+    if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
         if let Some(stack) = guard.as_mut() {
             let mut config = stack.config();
             config.ipv4 = Ipv4Config::default();
@@ -732,7 +724,7 @@ fn set_primary_slot_in(runtime: NetRuntimeHandle, primary: Option<NetIfId>) {
 
 fn apply_primary_runtime_for_interface(if_id: NetIfId) -> Result<(), &'static str> {
     if let Some(lease) = crate::net::services::dhcp::lease_for_interface(if_id) {
-        let mut guard = stack::stack()
+        let mut guard = stack::stack_in(default_runtime())
             .lock()
             .map_err(|_| "network stack poisoned")?;
         let stack = guard.as_mut().ok_or("network stack unavailable")?;
@@ -750,7 +742,7 @@ fn apply_primary_runtime_for_interface(if_id: NetIfId) -> Result<(), &'static st
 }
 
 fn clear_interface_runtime_for_failover(if_id: NetIfId, clear_primary_runtime: bool) {
-    if let Ok(mut guard) = stack::stack().lock() {
+    if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
         if let Some(stack) = guard.as_mut() {
             stack.clear_dhcp_v4_lease_for_interface(if_id, clear_primary_runtime);
             if clear_primary_runtime {
@@ -770,7 +762,7 @@ fn clear_interface_runtime_for_failover(if_id: NetIfId, clear_primary_runtime: b
 }
 
 fn handle_interface_departure(if_id: NetIfId, reason: FailoverReason) {
-    let was_primary = primary_if() == Some(if_id);
+    let was_primary = primary_if_in(default_runtime()) == Some(if_id);
     let candidate = was_primary
         .then(|| select_surviving_primary(if_id))
         .flatten();
@@ -845,10 +837,10 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
         log::warn!(target: "net::device", "mempool init failed: {}", err);
     }
 
-    stack::init(config);
+    stack::init_in(default_runtime(), config);
     manager::init_network_manager();
 
-    match stack::stack().lock() {
+    match stack::stack_in(default_runtime()).lock() {
         Ok(mut guard) => {
             let Some(stack) = guard.as_mut() else {
                 runtime_context()
@@ -889,7 +881,7 @@ fn interface_for_key(
         NetDeviceKey::Virtio(index) => manager::register_virtio_port(index, Some(config))
             .map_err(|_| "failed to register virtio interface")?,
         NetDeviceKey::Mlx5(_) => {
-            if let Some(existing) = lookup_if_by_key(key) {
+            if let Some(existing) = lookup_if_by_key_in(default_runtime(), key) {
                 let _ = manager::set_interface_config(existing, config);
                 existing
             } else {
@@ -901,7 +893,7 @@ fn interface_for_key(
         }
     };
 
-    if let Ok(mut guard) = stack::stack().lock() {
+    if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
         if let Some(stack) = guard.as_mut() {
             stack.register_interface_state(if_id, config);
         }
@@ -941,9 +933,9 @@ pub fn register_port(
 ) -> Result<NetIfId, &'static str> {
     ensure_stack_initialized(config.clone())?;
 
-    if let Some(existing) = lookup_if_by_key(key) {
+    if let Some(existing) = lookup_if_by_key_in(default_runtime(), key) {
         if make_primary {
-            set_primary_interface(existing);
+            set_primary_interface_in(default_runtime(), existing);
         }
         return Ok(existing);
     }
@@ -977,7 +969,7 @@ pub fn register_port(
 
     if selected_as_primary {
         apply_runtime_network_config(&config);
-        if let Ok(mut guard) = stack::stack().lock() {
+        if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
             if let Some(stack) = guard.as_mut() {
                 stack.set_primary_interface_state(Some(if_id));
             }
@@ -1056,7 +1048,7 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
         let _ = manager::set_interface_down(if_id);
         handle_interface_departure(if_id, FailoverReason::Unregister);
         crate::net::services::dhcp::unregister_interface_runtime(if_id);
-        if let Ok(mut guard) = stack::stack().lock() {
+        if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
             if let Some(stack) = guard.as_mut() {
                 stack.unregister_interface_state(if_id);
             }
@@ -1068,10 +1060,6 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
     }
 }
 
-pub fn lookup_if_by_key(key: NetDeviceKey) -> Option<NetIfId> {
-    lookup_if_by_key_in(default_runtime(), key)
-}
-
 pub fn lookup_if_by_key_in(runtime: NetRuntimeHandle, key: NetDeviceKey) -> Option<NetIfId> {
     device_manager_in(runtime)
         .read()
@@ -1079,10 +1067,6 @@ pub fn lookup_if_by_key_in(runtime: NetRuntimeHandle, key: NetDeviceKey) -> Opti
         .key_map
         .get(&key)
         .copied()
-}
-
-pub fn lookup_port(if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
-    lookup_port_in(default_runtime(), if_id)
 }
 
 pub fn lookup_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
@@ -1112,19 +1096,15 @@ pub fn list_port_infos() -> Vec<NetDeviceInfo> {
 }
 
 pub fn port_info(key: NetDeviceKey) -> Option<NetDeviceInfo> {
-    let if_id = lookup_if_by_key(key)?;
-    let handle = lookup_port(if_id)?;
+    let if_id = lookup_if_by_key_in(default_runtime(), key)?;
+    let handle = lookup_port_in(default_runtime(), if_id)?;
     Some(handle.info())
 }
 
 pub fn port_stats(key: NetDeviceKey) -> Option<NetPortStats> {
-    let if_id = lookup_if_by_key(key)?;
-    let handle = lookup_port(if_id)?;
+    let if_id = lookup_if_by_key_in(default_runtime(), key)?;
+    let handle = lookup_port_in(default_runtime(), if_id)?;
     Some(handle.driver().stats())
-}
-
-pub fn list_port_keys(kind: Option<NetPortKind>) -> Vec<NetDeviceKey> {
-    list_port_keys_in(default_runtime(), kind)
 }
 
 pub fn list_port_keys_in(
@@ -1141,19 +1121,11 @@ pub fn list_port_keys_in(
         .collect()
 }
 
-pub fn primary_if() -> Option<NetIfId> {
-    primary_if_in(default_runtime())
-}
-
 pub fn primary_if_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
     device_manager_in(runtime)
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .primary
-}
-
-pub fn set_primary_interface(if_id: NetIfId) {
-    set_primary_interface_in(default_runtime(), if_id);
 }
 
 pub fn set_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
@@ -1174,10 +1146,6 @@ pub fn set_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     }
 }
 
-fn claim_bound_primary_slot(if_id: NetIfId) -> bool {
-    claim_bound_primary_slot_in(default_runtime(), if_id)
-}
-
 fn claim_bound_primary_slot_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
     if runtime_context_for(runtime)
         .dhcp_bound_primary_selected
@@ -1189,13 +1157,6 @@ fn claim_bound_primary_slot_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> boo
     } else {
         false
     }
-}
-
-pub(crate) fn claim_bound_primary_interface_with_stack_state(
-    if_id: NetIfId,
-    stack: &mut stack::NetworkStack,
-) -> bool {
-    claim_bound_primary_interface_with_stack_state_in(default_runtime(), if_id, stack)
 }
 
 pub(crate) fn claim_bound_primary_interface_with_stack_state_in(
@@ -1213,24 +1174,17 @@ pub(crate) fn claim_bound_primary_interface_with_stack_state_in(
     }
 }
 
-pub fn claim_bound_primary_interface(if_id: NetIfId) -> bool {
-    if claim_bound_primary_slot(if_id) {
-        if let Ok(mut guard) = runtime_context().stack.lock() {
-            if let Some(stack) = guard.as_mut() {
-                stack.set_primary_interface_state(Some(if_id));
-            }
-        }
-        true
-    } else {
-        false
-    }
-}
-
 pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMeta) -> bool {
-    let resolved_if = if_id.or_else(primary_if);
-    let Some(handle) = resolved_if.and_then(lookup_port) else {
+    let resolved_if = if_id.or_else(|| primary_if_in(default_runtime()));
+    let Some(handle) =
+        resolved_if.and_then(|resolved_if| lookup_port_in(default_runtime(), resolved_if))
+    else {
         if let Some(completion_id) = meta.completion_id {
-            let _ = complete_tx_request(completion_id, Err("network interface unavailable"));
+            let _ = complete_tx_request_in(
+                default_runtime(),
+                completion_id,
+                Err("network interface unavailable"),
+            );
         }
         return false;
     };
@@ -1238,7 +1192,11 @@ pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMet
         true
     } else {
         if let Some(completion_id) = meta.completion_id {
-            let _ = complete_tx_request(completion_id, Err("device TX queue full"));
+            let _ = complete_tx_request_in(
+                default_runtime(),
+                completion_id,
+                Err("device TX queue full"),
+            );
         }
         false
     }
@@ -1253,10 +1211,16 @@ pub(crate) fn transmit_bytes_with_meta_internal(
     data: &[u8],
     meta: NetTxMeta,
 ) -> bool {
-    let resolved_if = if_id.or_else(primary_if);
-    let Some(handle) = resolved_if.and_then(lookup_port) else {
+    let resolved_if = if_id.or_else(|| primary_if_in(default_runtime()));
+    let Some(handle) =
+        resolved_if.and_then(|resolved_if| lookup_port_in(default_runtime(), resolved_if))
+    else {
         if let Some(completion_id) = meta.completion_id {
-            let _ = complete_tx_request(completion_id, Err("network interface unavailable"));
+            let _ = complete_tx_request_in(
+                default_runtime(),
+                completion_id,
+                Err("network interface unavailable"),
+            );
         }
         return false;
     };
@@ -1265,7 +1229,11 @@ pub(crate) fn transmit_bytes_with_meta_internal(
         Some(packet) => packet,
         None => {
             if let Some(completion_id) = meta.completion_id {
-                let _ = complete_tx_request(completion_id, Err("TX packet allocation failed"));
+                let _ = complete_tx_request_in(
+                    default_runtime(),
+                    completion_id,
+                    Err("TX packet allocation failed"),
+                );
             }
             return false;
         }
@@ -1273,7 +1241,11 @@ pub(crate) fn transmit_bytes_with_meta_internal(
 
     if data.len() > packet.capacity() {
         if let Some(completion_id) = meta.completion_id {
-            let _ = complete_tx_request(completion_id, Err("packet exceeds TX capacity"));
+            let _ = complete_tx_request_in(
+                default_runtime(),
+                completion_id,
+                Err("packet exceeds TX capacity"),
+            );
         }
         return false;
     }
@@ -1284,27 +1256,31 @@ pub(crate) fn transmit_bytes_with_meta_internal(
         true
     } else {
         if let Some(completion_id) = meta.completion_id {
-            let _ = complete_tx_request(completion_id, Err("device TX queue full"));
+            let _ = complete_tx_request_in(
+                default_runtime(),
+                completion_id,
+                Err("device TX queue full"),
+            );
         }
         false
     }
 }
 
 pub fn enqueue_event(key: NetDeviceKey, event: NetDriverEvent) -> bool {
-    let Some(if_id) = lookup_if_by_key(key) else {
+    let Some(if_id) = lookup_if_by_key_in(default_runtime(), key) else {
         return false;
     };
-    let Some(handle) = lookup_port(if_id) else {
+    let Some(handle) = lookup_port_in(default_runtime(), if_id) else {
         return false;
     };
     handle.enqueue_event(event)
 }
 
 pub fn enqueue_event_from_isr(key: NetDeviceKey, event: NetDriverEvent) -> bool {
-    let Some(if_id) = lookup_if_by_key(key) else {
+    let Some(if_id) = lookup_if_by_key_in(default_runtime(), key) else {
         return false;
     };
-    let Some(handle) = lookup_port(if_id) else {
+    let Some(handle) = lookup_port_in(default_runtime(), if_id) else {
         return false;
     };
     handle.enqueue_event_from_isr(event)
@@ -1463,7 +1439,7 @@ mod tests {
         let driver = Arc::new(FakeDriver::new());
         let if_id = register_port_with_default_config(NetDeviceKey::Virtio(89), driver, false)
             .expect("register port");
-        let handle = lookup_port(if_id).expect("handle");
+        let handle = lookup_port_in(default_runtime(), if_id).expect("handle");
 
         crate::per_cpu::enter_interrupt();
         let result = handle
@@ -1522,12 +1498,18 @@ mod tests {
         let info = port_info(NetDeviceKey::Virtio(90)).expect("port info");
         let stats = port_stats(NetDeviceKey::Virtio(90)).expect("port stats");
 
-        assert_eq!(lookup_if_by_key(NetDeviceKey::Virtio(90)), Some(if_id));
+        assert_eq!(
+            lookup_if_by_key_in(default_runtime(), NetDeviceKey::Virtio(90)),
+            Some(if_id)
+        );
         assert_eq!(info.port_id, NetDeviceKey::Virtio(90).port_id());
         assert_eq!(info.if_id, Some(if_id.0));
         assert_eq!(stats.tx_packets, 11);
         assert_eq!(stats.rx_packets, 7);
-        assert!(list_port_keys(Some(NetPortKind::Virtio)).contains(&NetDeviceKey::Virtio(90)));
+        assert!(
+            list_port_keys_in(default_runtime(), Some(NetPortKind::Virtio))
+                .contains(&NetDeviceKey::Virtio(90))
+        );
 
         assert!(unregister_port(if_id));
         assert_eq!(driver.stop_calls.load(Ordering::Relaxed), 1);
@@ -1544,7 +1526,7 @@ mod tests {
         let if_b = register_port_with_default_config(NetDeviceKey::Virtio(92), driver_b, true)
             .expect("register second port");
 
-        assert_eq!(primary_if(), Some(if_b));
+        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
         assert!(
             port_info(NetDeviceKey::Virtio(92))
                 .expect("primary info")
@@ -1554,7 +1536,7 @@ mod tests {
         );
 
         assert!(unregister_port(if_b));
-        assert_eq!(primary_if(), Some(if_a));
+        assert_eq!(primary_if_in(default_runtime()), Some(if_a));
         assert!(unregister_port(if_a));
     }
 
@@ -1578,8 +1560,8 @@ mod tests {
             .expect("dhcp client b")
             .set_lease_for_test(lease_b.clone());
 
-        set_primary_interface(if_a);
-        if let Ok(mut guard) = stack::stack().lock() {
+        set_primary_interface_in(default_runtime(), if_a);
+        if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
             let stack = guard.as_mut().expect("stack");
             stack.apply_dhcp_v4_lease_for_interface(&lease_b, if_b, false);
         }
@@ -1587,13 +1569,13 @@ mod tests {
         assert!(manager::set_interface_down(if_a).is_ok());
         handle_interface_departure(if_a, FailoverReason::LinkDown);
 
-        assert_eq!(primary_if(), Some(if_b));
+        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
         assert_eq!(
             crate::net::services::dhcp::primary_interface_if_id(),
             Some(if_b)
         );
 
-        let cfg = stack::stack()
+        let cfg = stack::stack_in(default_runtime())
             .lock()
             .ok()
             .and_then(|guard| guard.as_ref().map(|stack| stack.config()))
@@ -1631,12 +1613,12 @@ mod tests {
         crate::net::services::dhcp::interface_v4_client(if_a)
             .expect("dhcp client a")
             .set_lease_for_test(lease_a.clone());
-        set_primary_interface(if_a);
+        set_primary_interface_in(default_runtime(), if_a);
 
         assert!(unregister_port(if_a));
-        assert_eq!(primary_if(), None);
+        assert_eq!(primary_if_in(default_runtime()), None);
 
-        let cfg = stack::stack()
+        let cfg = stack::stack_in(default_runtime())
             .lock()
             .ok()
             .and_then(|guard| guard.as_ref().map(|stack| stack.config()))
@@ -1666,19 +1648,19 @@ mod tests {
             .expect("dhcp client b")
             .set_lease_for_test(lease_b.clone());
 
-        set_primary_interface(if_a);
-        if let Ok(mut guard) = stack::stack().lock() {
+        set_primary_interface_in(default_runtime(), if_a);
+        if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
             let stack = guard.as_mut().expect("stack");
             stack.apply_dhcp_v4_lease_for_interface(&lease_b, if_b, false);
         }
 
         assert!(manager::set_interface_down(if_a).is_ok());
         handle_interface_departure(if_a, FailoverReason::LinkDown);
-        assert_eq!(primary_if(), Some(if_b));
+        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
 
         assert!(manager::set_interface_up(if_a).is_ok());
-        assert!(!claim_bound_primary_interface(if_a));
-        assert_eq!(primary_if(), Some(if_b));
+        assert!(!claim_bound_primary_slot_in(default_runtime(), if_a));
+        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
 
         assert!(unregister_port(if_b));
         assert!(unregister_port(if_a));
@@ -1703,11 +1685,12 @@ mod tests {
         test_stack.register_interface_state(if_a, NetworkConfig::default());
         test_stack.register_interface_state(if_b, NetworkConfig::default());
 
-        assert!(claim_bound_primary_interface_with_stack_state(
+        assert!(claim_bound_primary_interface_with_stack_state_in(
+            default_runtime(),
             if_b,
             &mut test_stack
         ));
-        assert_eq!(primary_if(), Some(if_b));
+        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
         assert_eq!(test_stack.resolve_ingress_if(None), if_b);
 
         assert!(unregister_port(if_b));
@@ -1717,16 +1700,24 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_completion_future_resolves_success() {
-        let (completion_id, future) = register_tx_completion();
-        assert!(complete_tx_request(completion_id, Ok(())));
+        let (completion_id, future) = register_tx_completion_in(default_runtime());
+        assert!(complete_tx_request_in(
+            default_runtime(),
+            completion_id,
+            Ok(())
+        ));
         assert_eq!(crate::task::block_on(future), Ok(()));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_completion_future_resolves_error() {
-        let (completion_id, future) = register_tx_completion();
-        assert!(complete_tx_request(completion_id, Err("submit failed")));
+        let (completion_id, future) = register_tx_completion_in(default_runtime());
+        assert!(complete_tx_request_in(
+            default_runtime(),
+            completion_id,
+            Err("submit failed")
+        ));
         assert_eq!(crate::task::block_on(future), Err("submit failed"));
     }
 }

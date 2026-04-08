@@ -474,7 +474,10 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
 }
 
 fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
-    let keys = crate::net::runtime::device::list_port_keys(None);
+    let keys = crate::net::runtime::device::list_port_keys_in(
+        crate::net::runtime::default_runtime(),
+        None,
+    );
     let mut rx_packets = 0u64;
     let mut tx_packets = 0u64;
     let mut tx_errors = 0u64;

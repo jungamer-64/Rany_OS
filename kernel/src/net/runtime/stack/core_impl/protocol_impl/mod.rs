@@ -82,7 +82,9 @@ impl NetworkStack {
 
     /// Apply DHCPv4 lease to live stack configuration and synchronize manager state.
     pub fn apply_dhcp_v4_lease(&mut self, lease: &crate::net::services::dhcp::DhcpLease) {
-        if let Some(primary_if) = crate::net::runtime::device::primary_if() {
+        if let Some(primary_if) =
+            crate::net::runtime::device::primary_if_in(crate::net::runtime::default_runtime())
+        {
             self.apply_dhcp_v4_lease_for_interface(lease, primary_if, true);
             return;
         }

@@ -27,7 +27,7 @@ use crate::net::l3::ipv6::{
     Ipv6PmtuCache, Ipv6ProcessResult, Ipv6Processor,
 };
 use crate::net::l3::ndp::{NdpProcessor, NdpResult};
-use crate::net::l4::udp::{UdpEndpoint, UdpProcessor, UdpResult};
+use crate::net::l4::udp::{UdpProcessor, UdpResult};
 use crate::net::obs::{
     counters,
     trace::{self, NetEventKind, NetLayer},
@@ -45,7 +45,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::resource::net::PacketPayload;
 use kernel_api::service::netdev::NetTxMeta;
 mod core_impl;
-pub use core_impl::*;
+pub(crate) use core_impl::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 

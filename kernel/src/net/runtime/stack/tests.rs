@@ -19,6 +19,82 @@ fn payload_bytes(payload: &PacketPayload) -> Vec<u8> {
     out
 }
 
+async fn send_udp_for_test(
+    src_port: u16,
+    dst_ip: Ipv4Address,
+    dst_port: u16,
+    payload: PacketPayload,
+) -> Result<(), crate::net::l4::endpoint::types::EndpointError> {
+    let runtime = crate::net::runtime::default_runtime();
+    let (completion_id, completion_future) =
+        crate::net::runtime::device::register_tx_completion_in(runtime);
+    let (result_slot, waker, command_future) =
+        crate::net::l4::endpoint::event::new_command_channel();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
+        src_port,
+        src_ip: None,
+        dst_ip: *dst_ip.as_bytes(),
+        dst_port,
+        payload,
+        ttl: 64,
+        completion_id: Some(completion_id),
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event_in(runtime, event)
+        .await
+        .is_err()
+    {
+        let _ = crate::net::runtime::device::complete_tx_request_in(
+            runtime,
+            completion_id,
+            Err("network event queue full"),
+        );
+        return Err(crate::net::l4::endpoint::types::EndpointError::ResourceExhausted);
+    }
+
+    command_future.await?;
+    completion_future
+        .await
+        .map_err(|_| crate::net::l4::endpoint::types::EndpointError::ResourceExhausted)
+}
+
+async fn send_tcp_for_test(
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    payload: PacketPayload,
+) -> Result<(), crate::net::l4::endpoint::types::EndpointError> {
+    let runtime = crate::net::runtime::default_runtime();
+    let (completion_id, completion_future) =
+        crate::net::runtime::device::register_tx_completion_in(runtime);
+    let (result_slot, waker, command_future) =
+        crate::net::l4::endpoint::event::new_command_channel();
+    let event = crate::net::l4::endpoint::event::NetworkEvent::RawTcpSend {
+        src_ip: *src_ip.as_bytes(),
+        dst_ip: *dst_ip.as_bytes(),
+        payload,
+        completion_id: Some(completion_id),
+        result_slot,
+        waker,
+    };
+    if crate::net::l4::endpoint::event::send_event_in(runtime, event)
+        .await
+        .is_err()
+    {
+        let _ = crate::net::runtime::device::complete_tx_request_in(
+            runtime,
+            completion_id,
+            Err("network event queue full"),
+        );
+        return Err(crate::net::l4::endpoint::types::EndpointError::ResourceExhausted);
+    }
+
+    command_future.await?;
+    completion_future
+        .await
+        .map_err(|_| crate::net::l4::endpoint::types::EndpointError::ResourceExhausted)
+}
+
 fn record_test_tx_if(
     if_id: Option<NetIfId>,
     _packet: crate::net::datapath::mempool::PacketRef,
@@ -246,10 +322,13 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
     use crate::sync::set_panicking;
 
     // Initialize and then poison the global stack lock
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
 
     set_panicking(true);
-    if let Ok(_g) = stack().lock() {
+    if let Ok(_g) = stack_in(crate::net::runtime::default_runtime()).lock() {
         // Dropping _g while panicking marks the lock poisoned
     }
     set_panicking(false);
@@ -257,7 +336,7 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
     // Runtime APIs should fail conservatively when the global lock is poisoned.
     // UDP bind is now handled by the endpoint facade and should remain available.
     assert!(
-        run_with_event_task(send_udp(
+        run_with_event_task(send_udp_for_test(
             1234,
             Ipv4Address::LOOPBACK,
             80,
@@ -266,14 +345,15 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
         .is_err()
     );
     assert!(
-        run_with_event_task(send_tcp(
+        run_with_event_task(send_tcp_for_test(
             Ipv4Address::LOOPBACK,
             Ipv4Address::LOOPBACK,
             test_payload(&[]),
         ))
         .is_err()
     );
-    let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+    let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+        crate::net::runtime::default_runtime(),
         crate::net::types::InterfaceScope::Any,
         1234,
         None,
@@ -284,8 +364,11 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
 #[cfg_attr(test, test_case)]
 pub fn test_send_udp_event_task_zero_copy() {
     // Initialize stack and set transmit function to always succeed
-    init_default();
-    if let Ok(mut guard) = stack().lock() {
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
+    if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if_id: Option<super::NetIfId>,
@@ -306,7 +389,7 @@ pub fn test_send_udp_event_task_zero_copy() {
         let result_slot_clone = result_slot.clone();
         let completed_clone = completed.clone();
         executor.spawn(crate::task::Task::new(async move {
-            let output = send_udp(1234, dst, 80, test_payload(&[1, 2, 3])).await;
+            let output = send_udp_for_test(1234, dst, 80, test_payload(&[1, 2, 3])).await;
             let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
             *slot = Some(output);
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
@@ -333,8 +416,11 @@ pub fn test_send_udp_event_task_zero_copy() {
 #[cfg_attr(test, test_case)]
 pub fn test_send_icmp_event_dispatch_smoke() {
     // Initialize stack and set transmit function
-    init_default();
-    if let Ok(mut guard) = stack().lock() {
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
+    if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if_id: Option<super::NetIfId>,
@@ -436,7 +522,10 @@ pub fn test_runtime_scoped_event_task_reads_runtime_local_stack() {
 #[cfg_attr(test, test_case)]
 pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
     crate::net::runtime::context::reset_runtime_registry_for_tests();
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
 
     let client_mac = MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
     let client = install_primary_dhcp_v4_client(client_mac);
@@ -544,7 +633,7 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
         crate::net::l4::endpoint::handler::EventHandleResult::Success
     ));
 
-    let guard = match stack().lock() {
+    let guard = match stack_in(crate::net::runtime::default_runtime()).lock() {
         Ok(g) => g,
         Err(_) => panic!("stack lock"),
     };
@@ -559,7 +648,10 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
 #[cfg_attr(test, test_case)]
 pub fn test_dhcp_runtime_public_apis_smoke() {
     crate::net::runtime::context::reset_runtime_registry_for_tests();
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
     let client = install_primary_dhcp_v4_client(NetworkConfig::default().mac);
 
     assert!(crate::net::api::dhcp::init_dhcp_runtime().is_ok());
@@ -652,7 +744,10 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 pub fn test_send_udp_raw_uses_route_selected_interface() {
     let _guard = ManagerStateGuard::new();
     manager::init_network_manager();
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
 
     let if0 = manager::register_interface("if0").expect("register if0");
     let if1 = manager::register_interface("if1").expect("register if1");
@@ -679,7 +774,7 @@ pub fn test_send_udp_raw_uses_route_selected_interface() {
     manager::set_interface_config(if0, cfg0).expect("cfg if0");
     manager::set_interface_config(if1, cfg1).expect("cfg if1");
 
-    if let Ok(mut guard) = stack().lock() {
+    if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
         stack.set_transmit_fn(record_test_tx_if);
         stack.register_interface_state(if0, cfg0);
@@ -718,7 +813,10 @@ pub fn test_send_udp_raw_uses_route_selected_interface() {
 pub fn test_send_udp_raw_without_route_does_not_fallback() {
     let _guard = ManagerStateGuard::new();
     manager::init_network_manager();
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
 
     let if0 = manager::register_interface("if0").expect("register if0");
     let cfg0 = NetworkConfig {
@@ -733,7 +831,7 @@ pub fn test_send_udp_raw_without_route_does_not_fallback() {
     };
     manager::set_interface_config(if0, cfg0).expect("cfg if0");
 
-    if let Ok(mut guard) = stack().lock() {
+    if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
         stack.set_transmit_fn(record_test_tx_if);
         stack.register_interface_state(if0, cfg0);
@@ -759,7 +857,10 @@ pub fn test_send_udp_raw_without_route_does_not_fallback() {
 pub fn test_send_raw_ipv4_payload_rejects_bad_checksum() {
     let _guard = ManagerStateGuard::new();
     manager::init_network_manager();
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
 
     let if0 = manager::register_interface("raw0").expect("register raw0");
     let cfg0 = NetworkConfig {
@@ -774,7 +875,7 @@ pub fn test_send_raw_ipv4_payload_rejects_bad_checksum() {
     };
     manager::set_interface_config(if0, cfg0).expect("cfg raw0");
 
-    if let Ok(mut guard) = stack().lock() {
+    if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
         stack.set_transmit_fn(record_test_tx_if);
         stack.register_interface_state(if0, cfg0);
@@ -805,7 +906,10 @@ pub fn test_send_raw_ipv4_payload_rejects_bad_checksum() {
 pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
     let _guard = ManagerStateGuard::new();
     manager::init_network_manager();
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
 
     let if0 = manager::register_interface("raw-pin0").expect("register raw-pin0");
     let cfg0 = NetworkConfig {
@@ -820,7 +924,7 @@ pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
     };
     manager::set_interface_config(if0, cfg0).expect("cfg raw-pin0");
 
-    if let Ok(mut guard) = stack().lock() {
+    if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
         stack.set_transmit_fn(record_test_tx_if);
         stack.register_interface_state(if0, cfg0);
@@ -864,7 +968,10 @@ pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
 pub fn test_send_raw_ipv6_payload_rejects_length_mismatch() {
     let _guard = ManagerStateGuard::new();
     manager::init_network_manager();
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
 
     let if0 = manager::register_interface("raw6").expect("register raw6");
     let ipv6_cfg =
@@ -877,7 +984,7 @@ pub fn test_send_raw_ipv6_payload_rejects_length_mismatch() {
     };
     manager::set_interface_config(if0, cfg0).expect("cfg raw6");
 
-    if let Ok(mut guard) = stack().lock() {
+    if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
         stack.register_interface_state(if0, cfg0);
 
@@ -907,7 +1014,10 @@ pub fn test_send_raw_ipv6_payload_rejects_length_mismatch() {
 pub fn test_process_arp_replies_on_ingress_interface() {
     let _guard = ManagerStateGuard::new();
     manager::init_network_manager();
-    init_default();
+    init_in(
+        crate::net::runtime::default_runtime(),
+        NetworkConfig::default(),
+    );
 
     let if0 = manager::register_interface("if0").expect("register if0");
     let cfg0 = NetworkConfig {
@@ -922,7 +1032,7 @@ pub fn test_process_arp_replies_on_ingress_interface() {
     };
     manager::set_interface_config(if0, cfg0).expect("cfg if0");
 
-    if let Ok(mut guard) = stack().lock() {
+    if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
         stack.set_transmit_fn(record_test_tx_if);
         stack.register_interface_state(if0, cfg0);

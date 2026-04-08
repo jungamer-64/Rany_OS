@@ -510,14 +510,6 @@ impl core::fmt::Debug for UdpEndpoint {
 }
 
 impl UdpEndpoint {
-    pub(crate) fn bind_registered_with_token(
-        scope: InterfaceScope,
-        port: u16,
-        token: Option<u64>,
-    ) -> Result<Self, NetworkError> {
-        Self::bind_registered_with_token_in(default_runtime(), scope, port, token)
-    }
-
     pub(crate) fn bind_registered_with_token_in(
         runtime: NetRuntimeHandle,
         scope: InterfaceScope,
@@ -576,67 +568,6 @@ impl UdpEndpoint {
         }
     }
 
-    pub(crate) fn unregister_scope(scope: InterfaceScope, port: u16) {
-        if let Some(manager) = ENDPOINT_MANAGER
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
-            let _ = manager.unregister_udp_binding(scope, port);
-        }
-    }
-
-    pub(crate) fn list_registered() -> alloc::vec::Vec<UdpEndpointSnapshot> {
-        let mut snapshots = alloc::vec::Vec::new();
-        if let Some(manager) = ENDPOINT_MANAGER
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-        {
-            manager.for_each(|endpoint| {
-                if endpoint.socket_type() != EndpointType::Udp {
-                    return;
-                }
-                let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-                let Some(local_addr) = inner.local_addr else {
-                    return;
-                };
-                let Some(udp) = inner.udp() else {
-                    return;
-                };
-                snapshots.push(UdpEndpointSnapshot {
-                    local_port: local_addr.port(),
-                    rx_queue_len: udp.pending_packets.len(),
-                });
-            });
-        }
-        snapshots
-    }
-
-    pub(crate) fn has_registered_port(port: u16) -> bool {
-        let guard = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(manager) = guard.as_ref() else {
-            return false;
-        };
-
-        manager
-            .find_by_port(
-                EndpointType::Udp,
-                crate::net::l4::endpoint::manager::EndpointFamily::Ipv4,
-                port,
-                None,
-            )
-            .is_some()
-            || manager
-                .find_by_port(
-                    EndpointType::Udp,
-                    crate::net::l4::endpoint::manager::EndpointFamily::Ipv6,
-                    port,
-                    None,
-                )
-                .is_some()
-    }
-
     pub fn new(local_port: u16) -> Result<Self, NetworkError> {
         Self::new_with_token_and_scope(local_port, None, InterfaceScope::Any)
     }
@@ -655,13 +586,6 @@ impl UdpEndpoint {
         scope: InterfaceScope,
     ) -> Result<Self, NetworkError> {
         Self::bind_registered_with_token_in(default_runtime(), scope, local_port, token)
-    }
-
-    pub fn local_port(&self) -> u16 {
-        self.endpoint
-            .local_addr()
-            .map(|addr| addr.port())
-            .unwrap_or(0)
     }
 
     pub fn set_ttl(&self, ttl: u8) {
@@ -683,17 +607,11 @@ impl UdpEndpoint {
             .map(|(if_id, addr, ttl, payload)| (if_id, udp_addr_from_endpoint(addr), ttl, payload))
     }
 
-    pub fn join_multicast_group(
-        &self,
-        group: Ipv4Address,
-    ) -> crate::net::runtime::stack::MulticastJoinFuture {
+    pub fn join_multicast_group(&self, group: Ipv4Address) -> impl Future<Output = bool> {
         crate::net::runtime::stack::join_multicast_in(self.runtime, group)
     }
 
-    pub fn leave_multicast_group(
-        &self,
-        group: Ipv4Address,
-    ) -> crate::net::runtime::stack::MulticastLeaveFuture {
+    pub fn leave_multicast_group(&self, group: Ipv4Address) -> impl Future<Output = bool> {
         crate::net::runtime::stack::leave_multicast_in(self.runtime, group)
     }
 
