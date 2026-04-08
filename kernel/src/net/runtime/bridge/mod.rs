@@ -12,7 +12,7 @@ use crate::net::obs::{
     trace::{self, NetEventKind, NetLayer},
 };
 use crate::net::runtime::device;
-use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
@@ -149,13 +149,11 @@ pub fn drain_deferred_rx_packets_in(runtime: NetRuntimeHandle) {
 
 #[allow(dead_code)]
 fn is_local_ipv4_in(runtime: NetRuntimeHandle, addr: Ipv4Address) -> bool {
-    if let Ok(routes) = runtime.context().manager.lock() {
-        if let Some(mgr) = routes.as_ref() {
-            for iface in mgr.list_interfaces() {
-                if let Some(cfg) = iface.config {
-                    if cfg.ipv4.address == addr {
-                        return true;
-                    }
+    if let Ok(ifaces) = manager::list_interfaces_in(runtime) {
+        for iface in ifaces {
+            if let Some(cfg) = iface.config {
+                if cfg.ipv4.address == addr {
+                    return true;
                 }
             }
         }

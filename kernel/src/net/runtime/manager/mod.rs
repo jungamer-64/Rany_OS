@@ -90,7 +90,7 @@ pub type RouteLookupResultV6 = Option<Ipv6Route>;
 
 /// Multi-interface network manager
 #[derive(Debug, Default)]
-pub struct NetworkManager {
+pub(crate) struct NetworkManager {
     interfaces: BTreeMap<NetIfId, NetworkInterfaceInfo>,
     virtio_if_map: BTreeMap<u8, NetIfId>,
     routes_v4: Vec<Ipv4Route>,
@@ -99,11 +99,11 @@ pub struct NetworkManager {
 }
 
 impl NetworkManager {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self::default()
     }
 
-    pub fn register_interface(&mut self, name: String) -> NetIfId {
+    fn register_interface(&mut self, name: String) -> NetIfId {
         let if_id = NetIfId(self.next_if_id);
         self.next_if_id = self.next_if_id.wrapping_add(1);
         self.interfaces.insert(
@@ -120,7 +120,7 @@ impl NetworkManager {
     }
 
     /// Register or return an existing VirtIO-backed interface mapping.
-    pub fn register_virtio_port(
+    fn register_virtio_port(
         &mut self,
         virtio_index: u8,
         initial_config: Option<NetworkConfig>,
@@ -146,19 +146,19 @@ impl NetworkManager {
         if_id
     }
 
-    pub fn lookup_if_by_virtio_index(&self, virtio_index: u8) -> Option<NetIfId> {
+    fn lookup_if_by_virtio_index(&self, virtio_index: u8) -> Option<NetIfId> {
         self.virtio_if_map.get(&virtio_index).copied()
     }
 
-    pub fn list_interfaces(&self) -> Vec<NetworkInterfaceInfo> {
+    fn list_interfaces(&self) -> Vec<NetworkInterfaceInfo> {
         self.interfaces.values().cloned().collect()
     }
 
-    pub fn get_interface(&self, if_id: NetIfId) -> Option<&NetworkInterfaceInfo> {
+    fn get_interface(&self, if_id: NetIfId) -> Option<&NetworkInterfaceInfo> {
         self.interfaces.get(&if_id)
     }
 
-    pub fn set_interface_config(
+    fn set_interface_config(
         &mut self,
         if_id: NetIfId,
         config: NetworkConfig,
@@ -172,7 +172,7 @@ impl NetworkManager {
         Ok(())
     }
 
-    pub fn set_interface_up(&mut self, if_id: NetIfId) -> Result<(), NetworkError> {
+    fn set_interface_up(&mut self, if_id: NetIfId) -> Result<(), NetworkError> {
         let iface = self
             .interfaces
             .get_mut(&if_id)
@@ -181,7 +181,7 @@ impl NetworkManager {
         Ok(())
     }
 
-    pub fn set_interface_down(&mut self, if_id: NetIfId) -> Result<(), NetworkError> {
+    fn set_interface_down(&mut self, if_id: NetIfId) -> Result<(), NetworkError> {
         let iface = self
             .interfaces
             .get_mut(&if_id)
@@ -190,7 +190,7 @@ impl NetworkManager {
         Ok(())
     }
 
-    pub fn add_ipv4_route(&mut self, route: Ipv4Route) -> Result<(), NetworkError> {
+    fn add_ipv4_route(&mut self, route: Ipv4Route) -> Result<(), NetworkError> {
         if route.prefix_len > 32 {
             return Err(NetworkError::InvalidAddress);
         }
@@ -207,17 +207,17 @@ impl NetworkManager {
         Ok(())
     }
 
-    pub fn del_ipv4_route(&mut self, route: Ipv4Route) -> bool {
+    fn del_ipv4_route(&mut self, route: Ipv4Route) -> bool {
         let before = self.routes_v4.len();
         self.routes_v4.retain(|r| *r != route);
         self.routes_v4.len() != before
     }
 
-    pub fn list_ipv4_routes(&self) -> Vec<Ipv4Route> {
+    fn list_ipv4_routes(&self) -> Vec<Ipv4Route> {
         self.routes_v4.clone()
     }
 
-    pub fn lookup_ipv4_route(&self, dst: Ipv4Address) -> RouteLookupResultV4 {
+    fn lookup_ipv4_route(&self, dst: Ipv4Address) -> RouteLookupResultV4 {
         for route in &self.routes_v4 {
             if !route.admin_enabled {
                 continue;
@@ -236,7 +236,7 @@ impl NetworkManager {
         None
     }
 
-    pub fn add_ipv6_route(&mut self, route: Ipv6Route) -> Result<(), NetworkError> {
+    fn add_ipv6_route(&mut self, route: Ipv6Route) -> Result<(), NetworkError> {
         if route.prefix_len > 128 {
             return Err(NetworkError::InvalidAddress);
         }
@@ -253,17 +253,17 @@ impl NetworkManager {
         Ok(())
     }
 
-    pub fn del_ipv6_route(&mut self, route: Ipv6Route) -> bool {
+    fn del_ipv6_route(&mut self, route: Ipv6Route) -> bool {
         let before = self.routes_v6.len();
         self.routes_v6.retain(|r| *r != route);
         self.routes_v6.len() != before
     }
 
-    pub fn list_ipv6_routes(&self) -> Vec<Ipv6Route> {
+    fn list_ipv6_routes(&self) -> Vec<Ipv6Route> {
         self.routes_v6.clone()
     }
 
-    pub fn lookup_ipv6_route(&self, dst: Ipv6Address) -> RouteLookupResultV6 {
+    fn lookup_ipv6_route(&self, dst: Ipv6Address) -> RouteLookupResultV6 {
         for route in &self.routes_v6 {
             if !route.admin_enabled {
                 continue;
@@ -282,7 +282,7 @@ impl NetworkManager {
         None
     }
 
-    pub fn set_default_route_v4(
+    fn set_default_route_v4(
         &mut self,
         if_id: NetIfId,
         gateway: Ipv4Address,
@@ -310,7 +310,7 @@ impl NetworkManager {
         Ok(())
     }
 
-    pub fn set_default_route_v6(
+    fn set_default_route_v6(
         &mut self,
         if_id: NetIfId,
         gateway: Ipv6Address,
@@ -471,23 +471,30 @@ fn ipv6_apply_prefix(addr: Ipv6Address, prefix_len: u8) -> Ipv6Address {
 }
 
 pub fn init_network_manager_in(runtime: NetRuntimeHandle) {
-    let mut guard = network_manager_in(runtime).lock_for_init("[NET] NetworkManager init");
+    let mut guard = manager_slot_in(runtime).lock_for_init("[NET] NetworkManager init");
     if guard.is_none() {
         *guard = Some(NetworkManager::new());
     }
 }
 
-pub fn network_manager_in(
-    runtime: NetRuntimeHandle,
-) -> &'static PoisonLock<Option<NetworkManager>> {
+fn manager_slot_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<NetworkManager>> {
     &runtime.context().manager
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) fn swap_network_manager_for_tests_in(
+    runtime: NetRuntimeHandle,
+    replacement: Option<NetworkManager>,
+) -> Option<NetworkManager> {
+    let mut guard = manager_slot_in(runtime).lock_for_init("[TEST][NET] manager swap");
+    core::mem::replace(&mut *guard, replacement)
 }
 
 fn with_manager_mut_in<F, R>(runtime: NetRuntimeHandle, f: F) -> Result<R, NetworkError>
 where
     F: FnOnce(&mut NetworkManager) -> R,
 {
-    match network_manager_in(runtime).lock() {
+    match manager_slot_in(runtime).lock() {
         Ok(mut guard) => {
             let Some(manager) = guard.as_mut() else {
                 return Err(NetworkError::Unknown);
@@ -508,7 +515,7 @@ fn with_manager_in<F, R>(runtime: NetRuntimeHandle, f: F) -> Result<R, NetworkEr
 where
     F: FnOnce(&NetworkManager) -> R,
 {
-    match network_manager_in(runtime).lock() {
+    match manager_slot_in(runtime).lock() {
         Ok(guard) => {
             let Some(manager) = guard.as_ref() else {
                 return Err(NetworkError::Unknown);

@@ -133,13 +133,10 @@ struct ManagerStateGuard {
 
 impl ManagerStateGuard {
     fn new() -> Self {
-        let prev_manager = {
-            let mut guard = crate::net::runtime::manager::network_manager_in(
-                crate::net::runtime::default_runtime(),
-            )
-            .lock_for_init("[TEST][STACK] manager snapshot");
-            core::mem::take(&mut *guard)
-        };
+        let prev_manager = crate::net::runtime::manager::swap_network_manager_for_tests_in(
+            crate::net::runtime::default_runtime(),
+            None,
+        );
         *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
         TEST_TX_FRAMES
             .lock()
@@ -151,11 +148,10 @@ impl ManagerStateGuard {
 
 impl Drop for ManagerStateGuard {
     fn drop(&mut self) {
-        let mut guard = crate::net::runtime::manager::network_manager_in(
+        let _ = crate::net::runtime::manager::swap_network_manager_for_tests_in(
             crate::net::runtime::default_runtime(),
-        )
-        .lock_for_init("[TEST][STACK] manager restore");
-        *guard = self.prev_manager.take();
+            self.prev_manager.take(),
+        );
         *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
         TEST_TX_FRAMES
             .lock()

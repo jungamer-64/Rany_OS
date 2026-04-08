@@ -1,6 +1,6 @@
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::manager::{self, NetIfId};
 use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -234,17 +234,11 @@ pub fn nat_translate_out_in(
     }
 
     // Get actual external IP of the interface
-    let ext_ip = if let Ok(mgr_guard) = runtime.context().manager.lock() {
-        mgr_guard
-            .as_ref()
-            .and_then(|mgr| {
-                mgr.get_interface(if_id)
-                    .and_then(|iface| iface.config.map(|cfg| cfg.ipv4.address))
-            })
-            .unwrap_or(Ipv4Address::new([192, 168, 1, 100]))
-    } else {
-        Ipv4Address::new([192, 168, 1, 100])
-    };
+    let ext_ip = manager::get_interface_in(runtime, if_id)
+        .ok()
+        .flatten()
+        .and_then(|iface| iface.config.map(|cfg| cfg.ipv4.address))
+        .unwrap_or(Ipv4Address::new([192, 168, 1, 100]));
 
     let ext_port = generate_random_port(&table);
 

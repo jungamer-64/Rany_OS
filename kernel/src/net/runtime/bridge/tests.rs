@@ -40,11 +40,8 @@ impl BridgeStateGuard {
                 .write()
                 .unwrap_or_else(|e| e.into_inner()),
         );
-        let prev_manager = {
-            let mut guard = crate::net::runtime::manager::network_manager_in(runtime)
-                .lock_for_init("[TEST][NET BRIDGE] manager snapshot");
-            core::mem::take(&mut *guard)
-        };
+        let prev_manager =
+            crate::net::runtime::manager::swap_network_manager_for_tests_in(runtime, None);
         Self {
             prev_if_stats,
             prev_primary_if,
@@ -67,9 +64,10 @@ impl Drop for BridgeStateGuard {
             .forward_events
             .write()
             .unwrap_or_else(|e| e.into_inner()) = core::mem::take(&mut self.prev_forward_events);
-        let mut guard = crate::net::runtime::manager::network_manager_in(runtime)
-            .lock_for_init("[TEST][NET BRIDGE] manager restore");
-        *guard = self.prev_manager.take();
+        let _ = crate::net::runtime::manager::swap_network_manager_for_tests_in(
+            runtime,
+            self.prev_manager.take(),
+        );
     }
 }
 
@@ -968,76 +966,44 @@ pub fn test_runtime_scoped_bridge_and_nat_state_do_not_leak() {
 
     let runtime_a = crate::net::runtime::default_runtime();
     let runtime_b = crate::net::runtime::create_runtime();
-    let if_a;
-    let if_b;
-
-    {
-        let mut manager = runtime_a
-            .context()
-            .manager
-            .lock_for_init("[TEST][NET BRIDGE] runtime_a manager");
-        *manager = Some(manager::NetworkManager::new());
-    }
-    {
-        let mut manager = runtime_b
-            .context()
-            .manager
-            .lock_for_init("[TEST][NET BRIDGE] runtime_b manager");
-        *manager = Some(manager::NetworkManager::new());
-    }
-
-    {
-        let mut manager = runtime_a
-            .context()
-            .manager
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let manager = manager.as_mut().expect("runtime_a manager");
-        if_a = manager.register_interface("rt-a".into());
-        manager
-            .set_interface_config(
-                if_a,
-                NetworkConfig {
-                    mac: MacAddress::from_octets(0, 1, 2, 3, 4, 20),
-                    ipv4: Ipv4Config {
-                        address: Ipv4Address::new([10, 10, 0, 1]),
-                        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
-                        gateway: Ipv4Address::ANY,
-                        dns: None,
-                    },
-                    ipv6: None,
-                    icmp_echo_enabled: true,
-                    ..NetworkConfig::default()
-                },
-            )
-            .expect("runtime_a config");
-    }
-    {
-        let mut manager = runtime_b
-            .context()
-            .manager
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let manager = manager.as_mut().expect("runtime_b manager");
-        if_b = manager.register_interface("rt-b".into());
-        manager
-            .set_interface_config(
-                if_b,
-                NetworkConfig {
-                    mac: MacAddress::from_octets(0, 1, 2, 3, 4, 21),
-                    ipv4: Ipv4Config {
-                        address: Ipv4Address::new([10, 20, 0, 1]),
-                        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
-                        gateway: Ipv4Address::ANY,
-                        dns: None,
-                    },
-                    ipv6: None,
-                    icmp_echo_enabled: true,
-                    ..NetworkConfig::default()
-                },
-            )
-            .expect("runtime_b config");
-    }
+    manager::init_network_manager_in(runtime_a);
+    manager::init_network_manager_in(runtime_b);
+    let if_a = manager::register_interface_in(runtime_a, "rt-a").expect("runtime_a if");
+    manager::set_interface_config_in(
+        runtime_a,
+        if_a,
+        NetworkConfig {
+            mac: MacAddress::from_octets(0, 1, 2, 3, 4, 20),
+            ipv4: Ipv4Config {
+                address: Ipv4Address::new([10, 10, 0, 1]),
+                subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                gateway: Ipv4Address::ANY,
+                dns: None,
+            },
+            ipv6: None,
+            icmp_echo_enabled: true,
+            ..NetworkConfig::default()
+        },
+    )
+    .expect("runtime_a config");
+    let if_b = manager::register_interface_in(runtime_b, "rt-b").expect("runtime_b if");
+    manager::set_interface_config_in(
+        runtime_b,
+        if_b,
+        NetworkConfig {
+            mac: MacAddress::from_octets(0, 1, 2, 3, 4, 21),
+            ipv4: Ipv4Config {
+                address: Ipv4Address::new([10, 20, 0, 1]),
+                subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+                gateway: Ipv4Address::ANY,
+                dns: None,
+            },
+            ipv6: None,
+            icmp_echo_enabled: true,
+            ..NetworkConfig::default()
+        },
+    )
+    .expect("runtime_b config");
 
     register_stack_glue_interface_in(runtime_a, if_a, Some(0));
     register_stack_glue_interface_in(runtime_b, if_b, Some(1));

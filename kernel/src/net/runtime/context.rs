@@ -195,7 +195,7 @@ pub fn stack_initialized(handle: NetRuntimeHandle) -> bool {
 mod tests {
     use super::*;
     use crate::net::l4::endpoint::event::NetworkEvent;
-    use crate::net::runtime::manager::NetworkManager;
+    use crate::net::runtime::manager;
 
     #[test]
     fn runtimes_keep_manager_and_event_state_isolated() {
@@ -210,16 +210,9 @@ mod tests {
         runtime_a.context().event_queue.reset_for_tests();
         runtime_b.context().event_queue.reset_for_tests();
 
-        {
-            let mut manager = runtime_a
-                .context()
-                .manager
-                .lock_for_init("[TEST][NET] runtime_a manager");
-            *manager = Some(NetworkManager::new());
-        }
-
-        assert!(runtime_a.context().manager.lock().unwrap().is_some());
-        assert!(runtime_b.context().manager.lock().unwrap().is_none());
+        manager::init_network_manager_in(runtime_a);
+        assert!(manager::list_interfaces_in(runtime_a).is_ok());
+        assert!(manager::list_interfaces_in(runtime_b).is_err());
 
         assert!(
             runtime_a
