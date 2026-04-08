@@ -126,35 +126,34 @@ impl EndpointManager {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&fd);
         if let Some(ref s) = removed {
-            if let Some(addr) = s.local_addr() {
-                let family = EndpointFamily::from_addr(addr);
-                let scope = s.inner().lock().unwrap_or_else(|e| e.into_inner()).scope;
-                match s.socket_type() {
-                    EndpointType::Tcp => {
-                        self.tcp_ports
-                            .write()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .remove(&PortBindingKey::new(family, addr.port(), scope));
-                    }
-                    EndpointType::Udp => {
-                        self.udp_ports
-                            .write()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .remove(&PortBindingKey::new(family, addr.port(), scope));
-                    }
-                    EndpointType::Raw => {
-                        self.raw_endpoints
-                            .write()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .remove(&scope);
+            match s.socket_type() {
+                EndpointType::Tcp => {
+                    self.tcp_ports
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .retain(|_, bound_fd| *bound_fd != fd);
+                }
+                EndpointType::Udp => {
+                    self.udp_ports
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .retain(|_, bound_fd| *bound_fd != fd);
+                    if let Some(token) = s
+                        .inner()
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .udp_mut()
+                        .and_then(|udp| udp.token.take())
+                    {
+                        let _ = crate::security::capability::manager().decrement_in_flight(token);
                     }
                 }
-            } else if s.socket_type() == EndpointType::Raw {
-                let scope = s.inner().lock().unwrap_or_else(|e| e.into_inner()).scope;
-                self.raw_endpoints
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&scope);
+                EndpointType::Raw => {
+                    self.raw_endpoints
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .retain(|_, bound_fd| *bound_fd != fd);
+                }
             }
         }
         removed
@@ -192,6 +191,33 @@ impl EndpointManager {
         Ok(())
     }
 
+    pub fn bind_udp_dual_stack(
+        &self,
+        port: u16,
+        scope: InterfaceScope,
+        fd: EndpointFd,
+    ) -> EndpointResult<()> {
+        let mut guard = self.udp_ports.write().unwrap_or_else(|e| e.into_inner());
+        let ipv4 = PortBindingKey::new(EndpointFamily::Ipv4, port, scope);
+        let ipv6 = PortBindingKey::new(EndpointFamily::Ipv6, port, scope);
+        let ipv4_conflict = guard.keys().any(|key| {
+            key.family == EndpointFamily::Ipv4
+                && key.port == port
+                && scopes_conflict(key.scope, scope)
+        });
+        let ipv6_conflict = guard.keys().any(|key| {
+            key.family == EndpointFamily::Ipv6
+                && key.port == port
+                && scopes_conflict(key.scope, scope)
+        });
+        if ipv4_conflict || ipv6_conflict {
+            return Err(EndpointError::PortInUse);
+        }
+        guard.insert(ipv4, fd);
+        guard.insert(ipv6, fd);
+        Ok(())
+    }
+
     pub fn register_raw_scope(&self, scope: InterfaceScope, fd: EndpointFd) -> EndpointResult<()> {
         let mut guard = self
             .raw_endpoints
@@ -222,6 +248,20 @@ impl EndpointManager {
         port: u16,
         ingress_if_id: Option<NetIfId>,
     ) -> Option<Endpoint> {
+        if endpoint_type == EndpointType::Udp {
+            let guard = self.udp_ports.read().unwrap_or_else(|e| e.into_inner());
+            let fd = ingress_if_id
+                .map(|if_id| PortBindingKey::new(family, port, InterfaceScope::Pinned(if_id)))
+                .and_then(|key| guard.get(&key).copied())
+                .or_else(|| {
+                    guard
+                        .get(&PortBindingKey::new(family, port, InterfaceScope::Any))
+                        .copied()
+                })?;
+            drop(guard);
+            return self.get(fd);
+        }
+
         let endpoints = self.endpoints.read().unwrap_or_else(|e| e.into_inner());
         let mut wildcard = None;
         for endpoint in endpoints.values() {
@@ -245,6 +285,28 @@ impl EndpointManager {
             }
         }
         wildcard
+    }
+
+    pub fn unregister_udp_binding(&self, scope: InterfaceScope, port: u16) -> bool {
+        let fds = {
+            let guard = self.udp_ports.read().unwrap_or_else(|e| e.into_inner());
+            let mut unique = alloc::collections::BTreeSet::new();
+            for (key, fd) in guard.iter() {
+                if key.port == port && key.scope == scope {
+                    unique.insert(*fd);
+                }
+            }
+            unique
+        };
+
+        if fds.is_empty() {
+            return false;
+        }
+
+        for fd in fds {
+            let _ = self.unregister(fd);
+        }
+        true
     }
 
     pub fn endpoint_count(&self) -> usize {

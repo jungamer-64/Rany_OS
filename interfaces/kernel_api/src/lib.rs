@@ -377,8 +377,7 @@ mod tests {
     #[test]
     fn driver_context_for_pci_preserves_locator() {
         let locator = PackedPciLocation::new(0x002a, 0x11, 0x03, 0x01);
-        let ctx =
-            DriverContext::for_pci(0xfeed_0000, 17, 0x8086, 0x1234, 0x0001_0802, locator);
+        let ctx = DriverContext::for_pci(0xfeed_0000, 17, 0x8086, 0x1234, 0x0001_0802, locator);
         assert_eq!(ctx.device_address, 0xfeed_0000);
         assert_eq!(ctx.irq, 17);
         assert_eq!(ctx.vendor_id, 0x8086);

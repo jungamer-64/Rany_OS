@@ -25,8 +25,8 @@ pub struct UdpEndpointSnapshot {
 /// UDP processor for handling UDP packets
 
 pub struct UdpProcessor {
-    /// Socket table
-    endpoints: UdpEndpointTable,
+    /// Codec / validation statistics
+    stats: UdpStats,
 }
 
 /// Result of UDP processing
@@ -46,21 +46,56 @@ impl UdpProcessor {
     /// Create a new UDP processor
     pub fn new() -> Self {
         UdpProcessor {
-            endpoints: UdpEndpointTable::new(),
+            stats: UdpStats::default(),
         }
     }
 
-    /// Get socket table
-    pub fn endpoints(&self) -> &UdpEndpointTable {
-        &self.endpoints
+    pub fn stats(&self) -> (u64, u64, u64, u64) {
+        self.stats.snapshot()
     }
 
-    /// Check if a socket exists on the given port
-    pub fn has_endpoint(&self, port: u16) -> bool {
-        let if_id = resolve_ingress_if_id(None);
-        self.endpoints
-            .find(UdpAddressFamily::Ipv4, port, if_id)
-            .is_some()
+    fn deliver_payload(
+        &self,
+        if_id: NetIfId,
+        src: crate::net::l4::endpoint::EndpointAddr,
+        dst_port: u16,
+        ttl: u8,
+        payload: PacketPayload,
+    ) -> bool {
+        let family = if src.is_ipv6() {
+            crate::net::l4::endpoint::manager::EndpointFamily::Ipv6
+        } else {
+            crate::net::l4::endpoint::manager::EndpointFamily::Ipv4
+        };
+
+        let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(manager) = guard.as_ref() else {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+
+        let Some(endpoint) = manager.find_by_port(
+            crate::net::l4::endpoint::EndpointType::Udp,
+            family,
+            dst_port,
+            Some(if_id),
+        ) else {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
+        };
+
+        if endpoint
+            .deliver_udp_payload(if_id, src, ttl, payload)
+            .is_ok()
+        {
+            self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            false
+        }
     }
 
     /// Process an incoming UDP packet (IPv4)
@@ -105,10 +140,7 @@ impl UdpProcessor {
 
         // Verify checksum (optional for IPv4)
         if !packet.verify_checksum(src_ip, dst_ip) {
-            self.endpoints
-                .stats
-                .checksum_errors
-                .fetch_add(1, Ordering::Relaxed);
+            self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
             return UdpResult::ChecksumError;
         }
 
@@ -123,10 +155,11 @@ impl UdpProcessor {
             let buf = pkt_ref.data_mut();
             buf[..payload.len()].copy_from_slice(payload);
 
-            let src = UdpAddr::new(src_ip, packet.src_port());
+            let src =
+                crate::net::l4::endpoint::EndpointAddr::new(src_ip.octets(), packet.src_port());
             let dst_port = packet.dst_port();
 
-            if self.endpoints.deliver(if_id, src, dst_port, ttl, pkt_ref) {
+            if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(pkt_ref)) {
                 UdpResult::Delivered
             } else {
                 UdpResult::NoEndpoint
@@ -177,10 +210,7 @@ impl UdpProcessor {
 
         // Verify checksum (mandatory for IPv6 per RFC 8200)
         if !packet.verify_checksum_v6(src_ip, dst_ip) {
-            self.endpoints
-                .stats
-                .checksum_errors
-                .fetch_add(1, Ordering::Relaxed);
+            self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
             return UdpResult::ChecksumError;
         }
 
@@ -194,10 +224,11 @@ impl UdpProcessor {
             let buf = pkt_ref.data_mut();
             buf[..payload.len()].copy_from_slice(payload);
 
-            let src = UdpAddr::new_v6(src_ip, packet.src_port());
+            let src =
+                crate::net::l4::endpoint::EndpointAddr::new_v6(src_ip.octets(), packet.src_port());
             let dst_port = packet.dst_port();
 
-            if self.endpoints.deliver(if_id, src, dst_port, ttl, pkt_ref) {
+            if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(pkt_ref)) {
                 UdpResult::Delivered
             } else {
                 UdpResult::NoEndpoint
@@ -249,10 +280,7 @@ impl UdpProcessor {
         };
 
         if !packet_view.verify_checksum(src_ip, dst_ip) {
-            self.endpoints
-                .stats
-                .checksum_errors
-                .fetch_add(1, Ordering::Relaxed);
+            self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
             return UdpResult::ChecksumError;
         }
 
@@ -265,10 +293,11 @@ impl UdpProcessor {
         packet.advance(UdpHeader::SIZE);
         packet.set_len(payload_len);
 
-        let src = UdpAddr::new(src_ip, packet_view.src_port());
+        let src =
+            crate::net::l4::endpoint::EndpointAddr::new(src_ip.octets(), packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
-        if self.endpoints.deliver(if_id, src, dst_port, ttl, packet) {
+        if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(packet)) {
             UdpResult::Delivered
         } else {
             UdpResult::NoEndpoint
@@ -321,10 +350,7 @@ impl UdpProcessor {
         if checksum != 0 {
             let pseudo = pseudo_header_checksum(src_ip, dst_ip, IpProtocol::Udp, length as u16);
             if payload_checksum(&view, pseudo) != 0 {
-                self.endpoints
-                    .stats
-                    .checksum_errors
-                    .fetch_add(1, Ordering::Relaxed);
+                self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
                 return UdpResult::ChecksumError;
             }
         }
@@ -332,13 +358,13 @@ impl UdpProcessor {
         let Some(udp_payload) = payload.slice(UdpHeader::SIZE, length - UdpHeader::SIZE) else {
             return UdpResult::Invalid;
         };
-        let src = UdpAddr::new(src_ip, u16::from_be_bytes([header[0], header[1]]));
+        let src = crate::net::l4::endpoint::EndpointAddr::new(
+            src_ip.octets(),
+            u16::from_be_bytes([header[0], header[1]]),
+        );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
 
-        if self
-            .endpoints
-            .deliver_payload(if_id, src, dst_port, ttl, udp_payload)
-        {
+        if self.deliver_payload(if_id, src, dst_port, ttl, udp_payload) {
             UdpResult::Delivered
         } else {
             UdpResult::NoEndpoint
@@ -387,10 +413,7 @@ impl UdpProcessor {
         };
 
         if !packet_view.verify_checksum_v6(src_ip, dst_ip) {
-            self.endpoints
-                .stats
-                .checksum_errors
-                .fetch_add(1, Ordering::Relaxed);
+            self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
             return UdpResult::ChecksumError;
         }
 
@@ -403,10 +426,11 @@ impl UdpProcessor {
         packet.advance(UdpHeader::SIZE);
         packet.set_len(payload_len);
 
-        let src = UdpAddr::new_v6(src_ip, packet_view.src_port());
+        let src =
+            crate::net::l4::endpoint::EndpointAddr::new_v6(src_ip.octets(), packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
-        if self.endpoints.deliver(if_id, src, dst_port, ttl, packet) {
+        if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(packet)) {
             UdpResult::Delivered
         } else {
             UdpResult::NoEndpoint
@@ -462,57 +486,24 @@ impl UdpProcessor {
 
         let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Udp, length as u32);
         if payload_checksum(&view, pseudo) != 0 {
-            self.endpoints
-                .stats
-                .checksum_errors
-                .fetch_add(1, Ordering::Relaxed);
+            self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
             return UdpResult::ChecksumError;
         }
 
         let Some(udp_payload) = payload.slice(UdpHeader::SIZE, length - UdpHeader::SIZE) else {
             return UdpResult::Invalid;
         };
-        let src = UdpAddr::new_v6(src_ip, u16::from_be_bytes([header[0], header[1]]));
+        let src = crate::net::l4::endpoint::EndpointAddr::new_v6(
+            src_ip.octets(),
+            u16::from_be_bytes([header[0], header[1]]),
+        );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
 
-        if self
-            .endpoints
-            .deliver_payload(if_id, src, dst_port, ttl, udp_payload)
-        {
+        if self.deliver_payload(if_id, src, dst_port, ttl, udp_payload) {
             UdpResult::Delivered
         } else {
             UdpResult::NoEndpoint
         }
-    }
-
-    // Legacy `bind` removed; use `bind_with_token(port, None)` instead.
-
-    /// Bind to a port with a capability token
-    pub fn bind_with_token(
-        &self,
-        scope: InterfaceScope,
-        port: u16,
-        token: Option<u64>,
-    ) -> Result<UdpEndpoint, NetworkError> {
-        if let Some(t) = token {
-            // Token present - validate ownership and capability
-            let caller_domain = crate::task::context::current_subject().domain;
-            if !crate::security::capability::manager().validate_token(
-                caller_domain.as_u64(),
-                t,
-                crate::security::capability::CAP_NET_BIND,
-            ) {
-                return Err(NetworkError::PermissionDenied);
-            }
-        }
-        self.endpoints
-            .bind_dual_stack_with_token(scope, port, token)
-            .ok_or(NetworkError::PortInUse)
-    }
-
-    /// Unbind a socket
-    pub fn unbind(&self, scope: InterfaceScope, port: u16) {
-        self.endpoints.unbind(scope, port)
     }
 
     /// Build a UDP packet for transmission

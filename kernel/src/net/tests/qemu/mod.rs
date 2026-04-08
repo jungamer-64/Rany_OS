@@ -246,38 +246,23 @@ pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
     #[cfg(feature = "qemu-test-export")]
     {
         use crate::net::l3::ipv4::Ipv4Address;
+        use crate::net::l4::test_support::shared_counting_waker;
         use crate::net::l4::udp::UdpAddr;
         use crate::net::runtime::manager::NetIfId;
+        use alloc::sync::Arc;
         use core::pin::Pin;
-        use core::ptr;
         use core::sync::atomic::{AtomicUsize, Ordering};
-        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        use core::task::{Context, Poll};
 
-        fn counting_waker(counter: &AtomicUsize) -> Waker {
-            unsafe fn clone(data: *const ()) -> RawWaker {
-                RawWaker::new(data, &VTABLE)
-            }
-            unsafe fn wake(data: *const ()) {
-                let counter = &*(data as *const AtomicUsize);
-                counter.fetch_add(1, Ordering::SeqCst);
-            }
-            unsafe fn wake_by_ref(data: *const ()) {
-                wake(data);
-            }
-            unsafe fn drop_waker(_: *const ()) {}
-
-            static VTABLE: RawWakerVTable =
-                RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
-
-            unsafe { Waker::from_raw(RawWaker::new(counter as *const _ as *const (), &VTABLE)) }
-        }
-
-        let endpoint = udp::UdpEndpoint::new(54322);
+        crate::net::l4::endpoint::manager::init_endpoint_manager();
+        let Ok(endpoint) = udp::UdpEndpoint::new(54322) else {
+            return false;
+        };
         let mut fut1 = endpoint.recv();
         let mut fut2 = endpoint.recv();
 
-        let wake_count = AtomicUsize::new(0);
-        let waker = counting_waker(&wake_count);
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let waker = shared_counting_waker(wake_count.clone());
         let mut cx = Context::from_waker(&waker);
 
         if !matches!(Pin::new(&mut fut1).poll(&mut cx), Poll::Pending) {

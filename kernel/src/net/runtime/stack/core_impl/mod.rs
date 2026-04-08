@@ -745,27 +745,6 @@ impl NetworkStack {
         )
     }
 
-    pub fn bind_udp_scoped(
-        &mut self,
-        scope: crate::net::types::InterfaceScope,
-        port: u16,
-    ) -> Option<UdpEndpoint> {
-        self.udp.bind_with_token(scope, port, None).ok()
-    }
-
-    pub fn bind_udp_with_token_scoped(
-        &mut self,
-        scope: crate::net::types::InterfaceScope,
-        port: u16,
-        token: Option<u64>,
-    ) -> Option<UdpEndpoint> {
-        self.udp.bind_with_token(scope, port, token).ok()
-    }
-
-    pub fn unbind_udp_scoped(&mut self, scope: crate::net::types::InterfaceScope, port: u16) {
-        self.udp.unbind(scope, port);
-    }
-
     pub fn join_multicast_group(
         &mut self,
         group: Ipv4Address,
@@ -781,7 +760,7 @@ impl NetworkStack {
     }
 
     pub fn list_udp_endpoints(&self) -> Vec<crate::net::l4::udp::UdpEndpointSnapshot> {
-        self.udp.endpoints().list_endpoints()
+        UdpEndpoint::list_registered()
     }
 
     /// Update current time (call periodically)

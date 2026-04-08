@@ -45,18 +45,6 @@ pub enum NetworkEvent {
     },
     /// TX 資源が解放された（デバイスが送信可能になった）
     TxAvailable,
-    /// 接続要求 - TCPハンドシェイク開始
-    Connect {
-        fd: EndpointFd,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-    },
-    /// リッスン開始
-    Listen {
-        fd: EndpointFd,
-        local: EndpointAddr,
-        backlog: u32,
-    },
     /// ソケットクローズ
     Close { fd: EndpointFd },
     /// UDP送信
@@ -123,21 +111,6 @@ pub enum NetworkEvent {
         sequence: u16,
         rtt_us: u64,
     },
-    /// 非同期TCP bind（ロック競合回避）
-    TcpBind {
-        local: EndpointAddr,
-        /// Waker通知のための共有チャネル
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-    /// 非同期UDP bind（ロック競合回避）
-    UdpBind {
-        port: u16,
-        scope: InterfaceScope,
-        /// 結果通知用の共有スロット
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
     /// 非同期ARP解決リクエスト
     ///
     /// ARP要求を送信し、解決完了時にWakerで通知する。
@@ -152,13 +125,6 @@ pub enum NetworkEvent {
     },
     /// ARP解決完了通知（ARPキャッシュ更新時に発火）
     ArpResolved { ip: [u8; 4], mac: [u8; 6] },
-    /// 非同期TCP connect（イベントキュー経由・ロック競合回避）
-    TcpConnect {
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
     /// 非同期マルチキャストグループ参加
     MulticastJoin {
         group: [u8; 4],
@@ -168,13 +134,6 @@ pub enum NetworkEvent {
     /// 非同期マルチキャストグループ離脱
     MulticastLeave {
         group: [u8; 4],
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-    /// 非同期UDP unbind（イベントキュー経由・ロック競合回避）
-    UnbindUdp {
-        port: u16,
-        scope: InterfaceScope,
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
@@ -188,21 +147,6 @@ pub enum NetworkEvent {
     /// 非同期TCPリスナー unbind（イベントキュー経由・ロック競合回避）
     UnbindTcpListener {
         fd: EndpointFd,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-    /// 非同期TCP bind with token（イベントキュー経由・ロック競合回避）
-    TcpBindWithToken {
-        local: EndpointAddr,
-        token: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-    /// 非同期UDP bind with token（イベントキュー経由・ロック競合回避）
-    UdpBindWithToken {
-        port: u16,
-        scope: InterfaceScope,
-        token: Option<u64>,
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
@@ -264,6 +208,7 @@ pub enum NetworkEvent {
     TcpConnectStream {
         local: EndpointAddr,
         remote: EndpointAddr,
+        scope: InterfaceScope,
         result_slot: alloc::sync::Arc<
             PoisonLock<
                 Option<Result<crate::net::l4::tcp::TcpStream, crate::net::l4::tcp::TcpError>>,
@@ -274,6 +219,8 @@ pub enum NetworkEvent {
     /// 非同期TCP bind（TcpListenerを返す完全非同期版）
     TcpBindListener {
         local: EndpointAddr,
+        scope: InterfaceScope,
+        backlog: u32,
         result_slot: alloc::sync::Arc<
             PoisonLock<
                 Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>,
@@ -284,6 +231,8 @@ pub enum NetworkEvent {
     /// 非同期TCP bind with token（TcpListenerを返す完全非同期版）
     TcpBindListenerWithToken {
         local: EndpointAddr,
+        scope: InterfaceScope,
+        backlog: u32,
         token: Option<u64>,
         result_slot: alloc::sync::Arc<
             PoisonLock<
@@ -292,22 +241,6 @@ pub enum NetworkEvent {
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
-    /// 非同期UDP bind（UdpEndpointを返す完全非同期版）
-    UdpBindEndpoint {
-        port: u16,
-        scope: InterfaceScope,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::l4::udp::UdpEndpoint>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-    /// 非同期UDP bind with token（UdpEndpointを返す完全非同期版）
-    UdpBindEndpointWithToken {
-        port: u16,
-        scope: InterfaceScope,
-        token: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<crate::net::l4::udp::UdpEndpoint>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-
     // ====================================================================
     // NAT forwarding events (bridge → event queue → handler)
     // ====================================================================
@@ -995,21 +928,8 @@ pub fn send_batch_event(packets: Vec<PacketRef>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-    fn noop_waker() -> Waker {
-        unsafe fn clone(_: *const ()) -> RawWaker {
-            RawWaker::new(core::ptr::null(), &VTABLE)
-        }
-        unsafe fn wake(_: *const ()) {}
-        unsafe fn wake_by_ref(_: *const ()) {}
-        unsafe fn drop(_: *const ()) {}
-
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
-
-        let raw = RawWaker::new(core::ptr::null(), &VTABLE);
-        unsafe { Waker::from_raw(raw) }
-    }
+    use crate::net::l4::test_support::noop_waker;
+    use core::task::{Context, Poll};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]

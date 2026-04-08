@@ -4,9 +4,10 @@
 //! behavior aligned between `#[cfg_attr(test, test_case)]` and QEMU full-boot execution.
 
 use super::{
-    congestion, endpoint_core, flow_control, futures, handler, inner, retransmit, segment, tcb,
-    tests, types, window_scale,
+    congestion, endpoint_core, flow_control, handler, inner, retransmit, segment, tcb, tests,
+    types, window_scale,
 };
+use crate::net::l4::test_support::{new_test_endpoint, tcp_stream_from_endpoint};
 
 fn test_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
@@ -186,17 +187,16 @@ pub fn flow_control_probe_timing_smoke() -> bool {
 }
 
 pub fn futures_write_future_wakes_on_send_smoke() -> bool {
-    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
-    if let Some(s) = sock.endpoint() {
-        let Ok(mut inner) = s.inner().lock() else {
-            return false;
-        };
-        inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 30001));
-        inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
-        let _ = inner.transition_to(super::types::EndpointState::Connected);
-    }
+    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
+    let Ok(mut inner) = sock.inner().lock() else {
+        return false;
+    };
+    inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 30001));
+    inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
+    let _ = inner.transition_to(super::types::EndpointState::Connected);
+    drop(inner);
 
-    let Some(mut stream) = sock.tcp_stream() else {
+    let Some(mut stream) = tcp_stream_from_endpoint(&sock) else {
         return false;
     };
     let payload = [1u8, 2, 3, 4];
@@ -204,40 +204,41 @@ pub fn futures_write_future_wakes_on_send_smoke() -> bool {
     true
 }
 
-pub fn futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
-    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
-    sock.endpoint().is_some()
+pub fn futures_tcp_stream_read_zero_copy_smoke() -> bool {
+    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
+    tcp_stream_from_endpoint(&sock).is_none()
 }
 
-pub fn futures_tcp_packet_stream_multiple_packets_smoke() -> bool {
-    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
-    sock.tcp_packet_stream().is_none()
+pub fn futures_tcp_stream_multiple_reads_smoke() -> bool {
+    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
+    tcp_stream_from_endpoint(&sock).is_none()
 }
 
-pub fn futures_udp_packet_stream_delivered_smoke() -> bool {
-    let processor = crate::net::l4::udp::UdpProcessor::new();
-    processor
-        .bind_with_token(crate::net::types::InterfaceScope::Any, 40123, None)
-        .is_ok()
+pub fn futures_udp_recv_delivered_smoke() -> bool {
+    crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+        crate::net::types::InterfaceScope::Any,
+        40123,
+        None,
+    )
+    .is_ok()
 }
 
 pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
     crate::net::l4::endpoint::manager::init_endpoint_manager();
 
-    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
+    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
     let fd = sock.fd();
 
-    if let Some(s) = sock.endpoint() {
-        let Ok(mut inner) = s.inner().lock() else {
-            return false;
-        };
-        inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
-        inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
-        let _ = inner.send_payload(
-            crate::net::payload::payload_from_bytes(&[1, 2, 3])
-                .expect("allocate packet-backed handler smoke payload"),
-        );
-    }
+    let Ok(mut inner) = sock.inner().lock() else {
+        return false;
+    };
+    inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
+    inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
+    let _ = inner.send_payload(
+        crate::net::payload::payload_from_bytes(&[1, 2, 3])
+            .expect("allocate packet-backed handler smoke payload"),
+    );
+    drop(inner);
 
     let handler = handler::NetworkEventHandler::new();
     if !matches!(
@@ -264,20 +265,19 @@ pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
 pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
     crate::net::l4::endpoint::manager::init_endpoint_manager();
 
-    let sock = crate::net::l4::endpoint::create_tcp_endpoint();
+    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
     let fd = sock.fd();
 
-    if let Some(s) = sock.endpoint() {
-        let Ok(mut inner) = s.inner().lock() else {
-            return false;
-        };
-        inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
-        inner.remote_addr = Some(super::types::EndpointAddr::new([10, 0, 2, 2], 80));
-        let _ = inner.send_payload(
-            crate::net::payload::payload_from_bytes(&[1, 2, 3, 4])
-                .expect("allocate packet-backed handler smoke payload"),
-        );
-    }
+    let Ok(mut inner) = sock.inner().lock() else {
+        return false;
+    };
+    inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 12345));
+    inner.remote_addr = Some(super::types::EndpointAddr::new([10, 0, 2, 2], 80));
+    let _ = inner.send_payload(
+        crate::net::payload::payload_from_bytes(&[1, 2, 3, 4])
+            .expect("allocate packet-backed handler smoke payload"),
+    );
+    drop(inner);
 
     let handler = handler::NetworkEventHandler::new();
     let _ = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::DataReady {
@@ -354,8 +354,8 @@ pub fn segment_tcp_message_length_field_for_checksum_smoke() -> bool {
     run_case!(segment::tests::test_tcp_message_length_field_for_checksum)
 }
 
-pub fn socket_owned_socket_raii_smoke() -> bool {
-    run_case!(endpoint_core::tests::test_owned_socket_raii)
+pub fn socket_registered_endpoint_smoke() -> bool {
+    run_case!(endpoint_core::tests::test_new_registered_endpoint_registers_socket)
 }
 
 pub fn tcb_tcp_connection_state_smoke() -> bool {

@@ -17,29 +17,6 @@ impl NetworkEventHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         match event {
-            NetworkEvent::TcpBind {
-                result_slot, waker, ..
-            } => {
-                let result = Err(EndpointError::InvalidStateTransition);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBind {
-                port,
-                scope,
-                result_slot,
-                waker,
-            } => {
-                let success = stack.bind_udp_scoped(scope, port).is_some();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::ArpResolveRequest { target_ip } => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
                 let current_time = stack.current_time();
@@ -82,23 +59,14 @@ impl NetworkEventHandler {
                 crate::net::l2::arp::notify_arp_resolved(ip, mac);
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpConnect {
-                result_slot, waker, ..
-            } => {
-                let result = Err(EndpointError::InvalidStateTransition);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::TcpConnectStream {
                 local,
                 remote,
+                scope,
                 result_slot,
                 waker,
             } => {
-                let result = self.make_tcp_stream_with_stack(runtime, local, remote, stack);
+                let result = self.make_tcp_stream_with_stack(runtime, local, remote, scope, stack);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -131,19 +99,6 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::UnbindUdp {
-                port,
-                scope,
-                result_slot,
-                waker,
-            } => {
-                stack.unbind_udp_scoped(scope, port);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::UnbindTcp {
                 local,
                 remote,
@@ -172,26 +127,14 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpBindWithToken {
-                result_slot, waker, ..
-            } => {
-                let result = Err(EndpointError::InvalidStateTransition);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::TcpBindListener {
                 local,
+                scope,
+                backlog,
                 result_slot,
                 waker,
             } => {
-                let result = self.make_tcp_listener_with_stack(
-                    runtime,
-                    local,
-                    crate::net::l4::endpoint::inner::EndpointInner::DEFAULT_BACKLOG as u32,
-                );
+                let result = self.make_tcp_listener_with_stack(runtime, local, scope, backlog);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -200,61 +143,16 @@ impl NetworkEventHandler {
             }
             NetworkEvent::TcpBindListenerWithToken {
                 local,
+                scope,
+                backlog,
                 token,
                 result_slot,
                 waker,
             } => {
                 let _ = token;
-                let result = self.make_tcp_listener_with_stack(
-                    runtime,
-                    local,
-                    crate::net::l4::endpoint::inner::EndpointInner::DEFAULT_BACKLOG as u32,
-                );
+                let result = self.make_tcp_listener_with_stack(runtime, local, scope, backlog);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBindWithToken {
-                port,
-                scope,
-                token,
-                result_slot,
-                waker,
-            } => {
-                let success = stack
-                    .bind_udp_with_token_scoped(scope, port, token)
-                    .is_some();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBindEndpoint {
-                port,
-                scope,
-                result_slot,
-                waker,
-            } => {
-                let endpoint = stack.bind_udp_scoped(scope, port);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(endpoint);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBindEndpointWithToken {
-                port,
-                scope,
-                token,
-                result_slot,
-                waker,
-            } => {
-                let endpoint = stack.bind_udp_with_token_scoped(scope, port, token);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(endpoint);
                 }
                 waker.wake();
                 EventHandleResult::Success
@@ -288,7 +186,7 @@ impl NetworkEventHandler {
                 super::super::tcp_rx::flush_delayed_acks();
 
                 // ICMP Echo待ちの期限切れエントリをクリーンアップ
-                crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
+                crate::net::api::icmp::cleanup_icmp_echo_waiters();
                 // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
                 crate::net::l2::arp::cleanup_arp_waiters();
                 // NDP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ

@@ -378,11 +378,7 @@ impl NetworkStack {
             } => {
                 let _ = identifier;
                 let rtt_us = 0;
-                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(
-                    *src_ip.as_bytes(),
-                    sequence,
-                    rtt_us,
-                );
+                crate::net::api::icmp::notify_icmp_echo_reply(*src_ip.as_bytes(), sequence, rtt_us);
                 crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoReply {
                         source: *src_ip.as_bytes(),
@@ -858,7 +854,9 @@ impl NetworkStack {
                             IpProtocol::Udp => {
                                 if let Some(header) = transport_data.read_array::<4>(0) {
                                     let src_port = u16::from_be_bytes([header[0], header[1]]);
-                                    if !self.udp.has_endpoint(src_port) {
+                                    if !crate::net::l4::udp::UdpEndpoint::has_registered_port(
+                                        src_port,
+                                    ) {
                                         log::warn!(
                                             "[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})",
                                             dst,

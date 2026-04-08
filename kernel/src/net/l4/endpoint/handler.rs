@@ -106,8 +106,6 @@ impl NetworkEventHandler {
                 self.handle_data_ready(fd, endpoint_type)
             }
             NetworkEvent::TxAvailable => self.handle_tx_available(),
-            NetworkEvent::Connect { fd, local, remote } => self.handle_connect(fd, local, remote),
-            NetworkEvent::Listen { fd, local, backlog } => self.handle_listen(fd, local, backlog),
             NetworkEvent::Close { fd } => self.handle_close(fd),
             NetworkEvent::SendTo {
                 fd,
@@ -121,7 +119,7 @@ impl NetworkEventHandler {
                 sequence,
                 rtt_us,
             } => {
-                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
+                crate::net::api::icmp::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
             NetworkEvent::ArpResolved { ip, mac } => {
@@ -132,33 +130,6 @@ impl NetworkEventHandler {
             // ============================================================
             // 非同期Futureイベント: スタック不可時はエラーで完了（デッドロック防止）
             // ============================================================
-            NetworkEvent::TcpBind {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(Err(EndpointError::ResourceExhausted));
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBind {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(false);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::TcpConnect {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(Err(EndpointError::ResourceExhausted));
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::TcpConnectStream {
                 result_slot, waker, ..
             } => {
@@ -186,24 +157,6 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::UdpBindEndpoint {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(None);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBindEndpointWithToken {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(None);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::MulticastJoin {
                 result_slot, waker, ..
             } => {
@@ -222,15 +175,6 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::UnbindUdp {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(false);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::UnbindTcp {
                 result_slot, waker, ..
             } => {
@@ -241,24 +185,6 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::UnbindTcpListener {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(false);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::TcpBindWithToken {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(Err(EndpointError::ResourceExhausted));
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UdpBindWithToken {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -398,7 +324,7 @@ impl NetworkEventHandler {
                 // しかし、独立した TCB テーブルのメンテナンスは実行する
                 tcb_table().tick();
 
-                crate::net::l4::endpoint::futures::cleanup_icmp_echo_waiters();
+                crate::net::api::icmp::cleanup_icmp_echo_waiters();
                 crate::net::l2::arp::cleanup_arp_waiters();
                 crate::net::l3::ndp::cleanup_ndp_waiters();
                 EventHandleResult::Success
@@ -559,9 +485,6 @@ impl NetworkEventHandler {
                     EventHandleResult::Success
                 }
             }
-            NetworkEvent::Connect { fd, local, remote } => {
-                self.handle_connect_with_stack(fd, local, remote, stack)
-            }
             NetworkEvent::SendTo {
                 fd,
                 payload,
@@ -592,27 +515,19 @@ impl NetworkEventHandler {
                 rtt_us,
             } => {
                 // ICMP応答をFutureレジストリに通知（スタックロック保持版）
-                crate::net::l4::endpoint::futures::notify_icmp_echo_reply(source, sequence, rtt_us);
+                crate::net::api::icmp::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
-            lifecycle_event @ NetworkEvent::TcpBind { .. }
-            | lifecycle_event @ NetworkEvent::UdpBind { .. }
-            | lifecycle_event @ NetworkEvent::ArpResolveRequest { .. }
+            lifecycle_event @ NetworkEvent::ArpResolveRequest { .. }
             | lifecycle_event @ NetworkEvent::NdpResolveRequest { .. }
             | lifecycle_event @ NetworkEvent::ArpResolved { .. }
-            | lifecycle_event @ NetworkEvent::TcpConnect { .. }
             | lifecycle_event @ NetworkEvent::TcpConnectStream { .. }
             | lifecycle_event @ NetworkEvent::MulticastJoin { .. }
             | lifecycle_event @ NetworkEvent::MulticastLeave { .. }
-            | lifecycle_event @ NetworkEvent::UnbindUdp { .. }
             | lifecycle_event @ NetworkEvent::UnbindTcp { .. }
             | lifecycle_event @ NetworkEvent::UnbindTcpListener { .. }
-            | lifecycle_event @ NetworkEvent::TcpBindWithToken { .. }
             | lifecycle_event @ NetworkEvent::TcpBindListener { .. }
             | lifecycle_event @ NetworkEvent::TcpBindListenerWithToken { .. }
-            | lifecycle_event @ NetworkEvent::UdpBindWithToken { .. }
-            | lifecycle_event @ NetworkEvent::UdpBindEndpoint { .. }
-            | lifecycle_event @ NetworkEvent::UdpBindEndpointWithToken { .. }
             | lifecycle_event @ NetworkEvent::ApplyIpv6Address { .. }
             | lifecycle_event @ NetworkEvent::ProcessTimeouts => {
                 self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack)
@@ -779,9 +694,9 @@ pub mod tests {
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
     use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
     use crate::net::l4::endpoint::{
-        EndpointAddr, EndpointError, EndpointState, create_raw_endpoint, create_tcp_endpoint,
-        create_udp_endpoint,
+        Endpoint, EndpointAddr, EndpointError, EndpointState, EndpointType,
     };
+    use crate::net::l4::test_support::new_test_endpoint;
 
     fn test_payload(data: &[u8]) -> PacketPayload {
         crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
@@ -789,6 +704,14 @@ pub mod tests {
 
     fn test_packet(data: &[u8]) -> crate::net::datapath::mempool::PacketRef {
         crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed test packet")
+    }
+
+    fn new_tcp_socket() -> Endpoint {
+        new_test_endpoint(EndpointType::Tcp)
+    }
+
+    fn new_udp_socket() -> Endpoint {
+        new_test_endpoint(EndpointType::Udp)
     }
 
     fn build_ipv4_udp_frame(
@@ -839,18 +762,17 @@ pub mod tests {
     pub fn test_handle_tx_available_requeues_dataready() {
         init_endpoint_manager();
 
-        let sock = create_tcp_endpoint();
+        let sock = new_tcp_socket();
         let fd = sock.fd();
 
         // Set local and remote so handler proceeds
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(local);
-            inner.remote_addr = Some(remote);
-            let _ = inner.send_payload(test_payload(&[1, 2, 3]));
-        }
+        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+        let _ = inner.send_payload(test_payload(&[1, 2, 3]));
+        drop(inner);
 
         let handler = NetworkEventHandler::new();
         let res = handler.handle_tx_available();
@@ -871,20 +793,19 @@ pub mod tests {
     pub fn test_handle_data_ready_retry_when_no_device() {
         init_endpoint_manager();
 
-        let sock = create_tcp_endpoint();
+        let sock = new_tcp_socket();
         let fd = sock.fd();
 
         // Set local and remote so handler proceeds
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new([10, 0, 2, 2], 80); // likely ARP unresolved
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(local);
-            inner.remote_addr = Some(remote);
-            let _ = inner.send_payload(test_payload(&[1, 2, 3, 4]));
-            let _ = inner.transition_to(EndpointState::Bound);
-            let _ = inner.transition_to(EndpointState::Connected);
-        }
+        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+        let _ = inner.send_payload(test_payload(&[1, 2, 3, 4]));
+        let _ = inner.transition_to(EndpointState::Bound);
+        let _ = inner.transition_to(EndpointState::Connected);
+        drop(inner);
 
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
         tcb.state = TcpConnectionState::Established;
@@ -916,16 +837,15 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_handle_send_to_ipv6_remote_returns_invalid_argument() {
         init_endpoint_manager();
-        let sock = create_udp_endpoint();
+        let sock = new_udp_socket();
         let fd = sock.fd();
 
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            let local = EndpointAddr::new([127, 0, 0, 1], 12345);
-            inner.local_addr = Some(local);
-            inner.ensure_udp().socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
-            let _ = inner.transition_to(EndpointState::Bound);
-        }
+        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let local = EndpointAddr::new([127, 0, 0, 1], 12345);
+        inner.local_addr = Some(local);
+        inner.ensure_udp();
+        let _ = inner.transition_to(EndpointState::Bound);
+        drop(inner);
 
         let remote =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
@@ -940,16 +860,15 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_handle_send_to_ipv4_path_not_invalid_argument() {
         init_endpoint_manager();
-        let sock = create_udp_endpoint();
+        let sock = new_udp_socket();
         let fd = sock.fd();
 
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            let local = EndpointAddr::new([127, 0, 0, 1], 12346);
-            inner.local_addr = Some(local);
-            inner.ensure_udp().socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
-            let _ = inner.transition_to(EndpointState::Bound);
-        }
+        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let local = EndpointAddr::new([127, 0, 0, 1], 12346);
+        inner.local_addr = Some(local);
+        inner.ensure_udp();
+        let _ = inner.transition_to(EndpointState::Bound);
+        drop(inner);
 
         let handler = NetworkEventHandler::new();
         let res = handler.handle_send_to(
@@ -968,22 +887,20 @@ pub mod tests {
         init_endpoint_manager();
         crate::net::runtime::stack::init_default();
 
-        let udp = create_udp_endpoint();
-        if let Some(endpoint) = udp.endpoint() {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            let local = EndpointAddr::new([127, 0, 0, 1], 8088);
-            inner.local_addr = Some(local);
-            inner.ensure_udp().socket = Some(crate::net::l4::udp::UdpEndpoint::new(local.port()));
-            let _ = inner.transition_to(EndpointState::Bound);
-        }
+        let udp = new_udp_socket();
+        let mut inner = udp.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let local = EndpointAddr::new([127, 0, 0, 1], 8088);
+        inner.local_addr = Some(local);
+        inner.ensure_udp();
+        let _ = inner.transition_to(EndpointState::Bound);
+        drop(inner);
 
-        let raw = create_raw_endpoint();
-        if let Some(endpoint) = raw.endpoint() {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.scope = crate::net::types::InterfaceScope::Any;
-            inner.ensure_raw();
-            let _ = inner.transition_to(EndpointState::Bound);
-        }
+        let raw = new_test_endpoint(EndpointType::Raw);
+        let mut inner = raw.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.scope = crate::net::types::InterfaceScope::Any;
+        inner.ensure_raw();
+        let _ = inner.transition_to(EndpointState::Bound);
+        drop(inner);
 
         let manager =
             crate::net::l4::endpoint::manager::endpoint_manager().expect("endpoint manager lock");
@@ -1014,11 +931,7 @@ pub mod tests {
         });
         assert!(matches!(res, EventHandleResult::Success));
 
-        let (payload, if_id) = raw
-            .endpoint()
-            .expect("raw endpoint")
-            .try_recv_raw_payload()
-            .expect("raw payload");
+        let (payload, if_id) = raw.try_recv_raw_payload().expect("raw payload");
         assert_eq!(if_id, ingress_if);
         let mut actual = alloc::vec![0u8; payload.total_len()];
         let copied =
@@ -1028,9 +941,7 @@ pub mod tests {
 
         let mut buf = [0u8; 32];
         assert!(matches!(
-            udp.endpoint()
-                .expect("udp endpoint")
-                .try_recv_from(&mut buf),
+            udp.try_recv_from(&mut buf),
             Err(EndpointError::Timeout)
         ));
     }
@@ -1040,7 +951,7 @@ pub mod tests {
         init_endpoint_manager();
 
         let local = EndpointAddr::new([127, 0, 0, 1], 18080);
-        let listener = create_tcp_endpoint();
+        let listener = new_tcp_socket();
         let fd = listener.fd();
         let handler = NetworkEventHandler::new();
 
@@ -1060,8 +971,7 @@ pub mod tests {
             EventHandleResult::Success
         ));
 
-        let endpoint = listener.endpoint().expect("listener endpoint");
-        let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let inner = listener.inner().lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(inner.state, EndpointState::Closed);
     }
 
@@ -1070,15 +980,14 @@ pub mod tests {
         init_endpoint_manager();
 
         let local = EndpointAddr::new([127, 0, 0, 1], 18081);
-        let stale = create_tcp_endpoint();
+        let stale = new_tcp_socket();
         let stale_fd = stale.fd();
-        if let Some(endpoint) = stale.endpoint() {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(local);
-            let _ = inner.transition_to(EndpointState::Closed);
-        }
+        let mut inner = stale.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        let _ = inner.transition_to(EndpointState::Closed);
+        drop(inner);
 
-        let rebound = create_tcp_endpoint();
+        let rebound = new_tcp_socket();
         let rebound_fd = rebound.fd();
         let handler = NetworkEventHandler::new();
 
@@ -1098,8 +1007,7 @@ pub mod tests {
             EventHandleResult::Success
         ));
 
-        let endpoint = rebound.endpoint().expect("rebound endpoint");
-        let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let inner = rebound.inner().lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(inner.state, EndpointState::Listening);
         assert_eq!(inner.local_addr, Some(local));
     }
@@ -1111,7 +1019,12 @@ pub mod tests {
         let handler = NetworkEventHandler::new();
         let local = EndpointAddr::new([127, 0, 0, 1], 18082);
         let listener = handler
-            .make_tcp_listener_with_stack(crate::net::runtime::default_runtime(), local, 16)
+            .make_tcp_listener_with_stack(
+                crate::net::runtime::default_runtime(),
+                local,
+                crate::net::types::InterfaceScope::Any,
+                16,
+            )
             .expect("listener should bind");
 
         let endpoint = listener.endpoint();
@@ -1143,7 +1056,12 @@ pub mod qemu_tests {
     use crate::net::l4::endpoint::event::{NetworkEvent, event_queue};
     use crate::net::l4::endpoint::manager::init_endpoint_manager;
     use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
-    use crate::net::l4::endpoint::{EndpointAddr, EndpointState, create_tcp_endpoint};
+    use crate::net::l4::endpoint::{Endpoint, EndpointAddr, EndpointState, EndpointType};
+    use crate::net::l4::test_support::new_test_endpoint;
+
+    fn new_tcp_socket() -> Endpoint {
+        new_test_endpoint(EndpointType::Tcp)
+    }
 
     fn test_payload(data: &[u8]) -> PacketPayload {
         crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
@@ -1155,17 +1073,16 @@ pub mod qemu_tests {
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while event_queue().recv().is_some() {}
 
-        let sock = create_tcp_endpoint();
+        let sock = new_tcp_socket();
         let fd = sock.fd();
 
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(local);
-            inner.remote_addr = Some(remote);
-            let _ = inner.send_payload(test_payload(&[1, 2, 3]));
-        }
+        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+        let _ = inner.send_payload(test_payload(&[1, 2, 3]));
+        drop(inner);
 
         let handler = NetworkEventHandler::new();
         if !matches!(handler.handle_tx_available(), EventHandleResult::Success) {
@@ -1188,19 +1105,18 @@ pub mod qemu_tests {
     pub fn handle_data_ready_retry_when_no_device_smoke() -> bool {
         init_endpoint_manager();
 
-        let sock = create_tcp_endpoint();
+        let sock = new_tcp_socket();
         let fd = sock.fd();
 
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new([10, 0, 2, 2], 80);
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(local);
-            inner.remote_addr = Some(remote);
-            let _ = inner.send_payload(test_payload(&[1, 2, 3, 4]));
-            let _ = inner.transition_to(EndpointState::Bound);
-            let _ = inner.transition_to(EndpointState::Connected);
-        }
+        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
+        let _ = inner.send_payload(test_payload(&[1, 2, 3, 4]));
+        let _ = inner.transition_to(EndpointState::Bound);
+        let _ = inner.transition_to(EndpointState::Connected);
+        drop(inner);
 
         let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
         tcb.state = TcpConnectionState::Established;

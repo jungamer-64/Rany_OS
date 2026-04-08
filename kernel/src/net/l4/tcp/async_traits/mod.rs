@@ -1,11 +1,13 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::endpoint::endpoint_core::Endpoint;
-use crate::net::l4::endpoint::event::{NetworkEvent, enqueue_event_ignore_in};
+use crate::net::l4::endpoint::event::{NetworkEvent, enqueue_event_ignore_in, send_event_in};
 use crate::net::l4::endpoint::tcb::tcb_table;
 use crate::net::l4::endpoint::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
 use crate::net::payload::payload_from_bytes;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
+use crate::net::types::InterfaceScope;
+use crate::sync::PoisonLock;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -96,6 +98,180 @@ fn endpoint_inner_stats(endpoint: &Endpoint) -> TcpStats {
         .unwrap_or_default()
 }
 
+type TcpCommandResultSlot<T> = alloc::sync::Arc<PoisonLock<Option<Result<T, TcpError>>>>;
+type TcpCommandWaker = alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>;
+
+fn new_tcp_command_channel<T>() -> (TcpCommandResultSlot<T>, TcpCommandWaker) {
+    (
+        alloc::sync::Arc::new(PoisonLock::new(None)),
+        alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+    )
+}
+
+fn poll_tcp_command_result<T>(
+    result_slot: &TcpCommandResultSlot<T>,
+    waker: &TcpCommandWaker,
+    cx: &mut Context<'_>,
+) -> Poll<Result<T, TcpError>> {
+    if let Ok(mut slot) = result_slot.lock() {
+        if let Some(result) = slot.take() {
+            return Poll::Ready(result);
+        }
+    }
+
+    waker.register(cx.waker());
+
+    if let Ok(mut slot) = result_slot.lock() {
+        if let Some(result) = slot.take() {
+            return Poll::Ready(result);
+        }
+    }
+
+    Poll::Pending
+}
+
+fn poll_tcp_dispatch<T>(
+    runtime: NetRuntimeHandle,
+    sent: &mut bool,
+    result_slot: &TcpCommandResultSlot<T>,
+    waker: &TcpCommandWaker,
+    cx: &mut Context<'_>,
+    event: NetworkEvent,
+) -> Poll<Result<T, TcpError>> {
+    if !*sent {
+        let mut enqueue = send_event_in(runtime, event);
+        match Future::poll(Pin::new(&mut enqueue), cx) {
+            Poll::Ready(Ok(())) => {
+                *sent = true;
+            }
+            Poll::Ready(Err(_)) => return Poll::Ready(Err(TcpError::InvalidState)),
+            Poll::Pending => return Poll::Pending,
+        }
+    }
+
+    poll_tcp_command_result(result_slot, waker, cx)
+}
+
+struct TcpConnectDispatchFuture {
+    runtime: NetRuntimeHandle,
+    result_slot: TcpCommandResultSlot<TcpStream>,
+    waker: TcpCommandWaker,
+    sent: bool,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    scope: InterfaceScope,
+}
+
+impl TcpConnectDispatchFuture {
+    fn new(
+        runtime: NetRuntimeHandle,
+        scope: InterfaceScope,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> Self {
+        let (result_slot, waker) = new_tcp_command_channel();
+        Self {
+            runtime,
+            result_slot,
+            waker,
+            sent: false,
+            local,
+            remote,
+            scope,
+        }
+    }
+}
+
+impl Future for TcpConnectDispatchFuture {
+    type Output = Result<TcpStream, TcpError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let runtime = self.runtime;
+        let local = self.local;
+        let remote = self.remote;
+        let scope = self.scope;
+        let result_slot = self.result_slot.clone();
+        let waker = self.waker.clone();
+        let event = NetworkEvent::TcpConnectStream {
+            local,
+            remote,
+            scope,
+            result_slot: result_slot.clone(),
+            waker: waker.clone(),
+        };
+        let sent = &mut self.sent;
+        poll_tcp_dispatch(runtime, sent, &result_slot, &waker, cx, event)
+    }
+}
+
+struct TcpListenerBindDispatchFuture {
+    runtime: NetRuntimeHandle,
+    result_slot: TcpCommandResultSlot<TcpListener>,
+    waker: TcpCommandWaker,
+    sent: bool,
+    addr: EndpointAddr,
+    scope: InterfaceScope,
+    backlog: u32,
+    token: Option<u64>,
+}
+
+impl TcpListenerBindDispatchFuture {
+    fn new(
+        runtime: NetRuntimeHandle,
+        scope: InterfaceScope,
+        addr: EndpointAddr,
+        backlog: u32,
+        token: Option<u64>,
+    ) -> Self {
+        let (result_slot, waker) = new_tcp_command_channel();
+        Self {
+            runtime,
+            result_slot,
+            waker,
+            sent: false,
+            addr,
+            scope,
+            backlog,
+            token,
+        }
+    }
+}
+
+impl Future for TcpListenerBindDispatchFuture {
+    type Output = Result<TcpListener, TcpError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let runtime = self.runtime;
+        let addr = self.addr;
+        let scope = self.scope;
+        let backlog = self.backlog;
+        let token = self.token;
+        let result_slot = self.result_slot.clone();
+        let waker = self.waker.clone();
+
+        let event = match token {
+            Some(token) => NetworkEvent::TcpBindListenerWithToken {
+                local: addr,
+                scope,
+                backlog,
+                token: Some(token),
+                result_slot: result_slot.clone(),
+                waker: waker.clone(),
+            },
+            None => NetworkEvent::TcpBindListener {
+                local: addr,
+                scope,
+                backlog,
+                result_slot: result_slot.clone(),
+                waker: waker.clone(),
+            },
+        };
+
+        let sent = &mut self.sent;
+        poll_tcp_dispatch(runtime, sent, &result_slot, &waker, cx, event)
+    }
+}
+
 #[derive(Clone)]
 pub struct TcpStream {
     endpoint: Endpoint,
@@ -115,15 +291,20 @@ impl core::fmt::Debug for TcpStream {
 
 impl TcpStream {
     pub(crate) fn from_endpoint(endpoint: Endpoint) -> Self {
-        Self::from_endpoint_with_drop(endpoint, true)
-    }
-
-    pub(crate) fn from_endpoint_with_drop(endpoint: Endpoint, close_on_drop: bool) -> Self {
         debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
         Self {
             runtime: endpoint.runtime(),
             endpoint,
-            close_on_drop,
+            close_on_drop: true,
+        }
+    }
+
+    pub(crate) fn from_retained_endpoint(endpoint: Endpoint) -> Self {
+        debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
+        Self {
+            runtime: endpoint.runtime(),
+            endpoint,
+            close_on_drop: false,
         }
     }
 
@@ -145,14 +326,25 @@ impl TcpStream {
     }
 
     pub async fn dial_in(runtime: NetRuntimeHandle, addr: EndpointAddr) -> Result<Self, TcpError> {
+        Self::dial_scoped_in(runtime, InterfaceScope::Any, addr).await
+    }
+
+    pub async fn dial_scoped(addr: EndpointAddr, scope: InterfaceScope) -> Result<Self, TcpError> {
+        Self::dial_scoped_in(default_runtime(), scope, addr).await
+    }
+
+    pub async fn dial_scoped_in(
+        runtime: NetRuntimeHandle,
+        scope: InterfaceScope,
+        addr: EndpointAddr,
+    ) -> Result<Self, TcpError> {
         let local_addr = if addr.is_ipv6() {
             EndpointAddr::new_v6([0; 16], 0)
         } else {
             EndpointAddr::new([0, 0, 0, 0], 0)
         };
 
-        let stream =
-            crate::net::runtime::stack::connect_tcp_stream_in(runtime, local_addr, addr).await?;
+        let stream = TcpConnectDispatchFuture::new(runtime, scope, local_addr, addr).await?;
         ConnectFuture {
             stream: stream.clone(),
         }
@@ -176,7 +368,7 @@ impl TcpStream {
         };
 
         let stream =
-            crate::net::runtime::stack::connect_tcp_stream_in(runtime, local_addr, addr).await?;
+            TcpConnectDispatchFuture::new(runtime, InterfaceScope::Any, local_addr, addr).await?;
         ConnectTimeoutFuture {
             stream: stream.clone(),
             start_us: crate::time::precise_time_nanos() / 1000,
@@ -469,15 +661,20 @@ impl core::fmt::Debug for TcpListener {
 
 impl TcpListener {
     pub(crate) fn from_endpoint(endpoint: Endpoint) -> Self {
-        Self::from_endpoint_with_drop(endpoint, true)
-    }
-
-    pub(crate) fn from_endpoint_with_drop(endpoint: Endpoint, close_on_drop: bool) -> Self {
         debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
         Self {
             runtime: endpoint.runtime(),
             endpoint,
-            close_on_drop,
+            close_on_drop: true,
+        }
+    }
+
+    pub(crate) fn from_retained_endpoint(endpoint: Endpoint) -> Self {
+        debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
+        Self {
+            runtime: endpoint.runtime(),
+            endpoint,
+            close_on_drop: false,
         }
     }
 
@@ -498,7 +695,30 @@ impl TcpListener {
         runtime: NetRuntimeHandle,
         addr: EndpointAddr,
     ) -> Result<Self, TcpError> {
-        crate::net::runtime::stack::bind_tcp_listener_in(runtime, addr).await
+        Self::listen_on_scoped_in(
+            runtime,
+            InterfaceScope::Any,
+            addr,
+            crate::net::l4::endpoint::inner::EndpointInner::DEFAULT_BACKLOG as u32,
+        )
+        .await
+    }
+
+    pub async fn listen_on_scoped(
+        addr: EndpointAddr,
+        scope: InterfaceScope,
+        backlog: u32,
+    ) -> Result<Self, TcpError> {
+        Self::listen_on_scoped_in(default_runtime(), scope, addr, backlog).await
+    }
+
+    pub async fn listen_on_scoped_in(
+        runtime: NetRuntimeHandle,
+        scope: InterfaceScope,
+        addr: EndpointAddr,
+        backlog: u32,
+    ) -> Result<Self, TcpError> {
+        TcpListenerBindDispatchFuture::new(runtime, scope, addr, backlog, None).await
     }
 
     pub async fn listen_on_with_token(
@@ -513,7 +733,33 @@ impl TcpListener {
         addr: EndpointAddr,
         token: Option<u64>,
     ) -> Result<Self, TcpError> {
-        crate::net::runtime::stack::bind_tcp_listener_with_token_in(runtime, addr, token).await
+        Self::listen_on_scoped_with_token_in(
+            runtime,
+            InterfaceScope::Any,
+            addr,
+            crate::net::l4::endpoint::inner::EndpointInner::DEFAULT_BACKLOG as u32,
+            token,
+        )
+        .await
+    }
+
+    pub async fn listen_on_scoped_with_token(
+        addr: EndpointAddr,
+        scope: InterfaceScope,
+        backlog: u32,
+        token: Option<u64>,
+    ) -> Result<Self, TcpError> {
+        Self::listen_on_scoped_with_token_in(default_runtime(), scope, addr, backlog, token).await
+    }
+
+    pub async fn listen_on_scoped_with_token_in(
+        runtime: NetRuntimeHandle,
+        scope: InterfaceScope,
+        addr: EndpointAddr,
+        backlog: u32,
+        token: Option<u64>,
+    ) -> Result<Self, TcpError> {
+        TcpListenerBindDispatchFuture::new(runtime, scope, addr, backlog, token).await
     }
 
     pub fn local_addr(&self) -> EndpointAddr {

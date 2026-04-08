@@ -303,7 +303,7 @@ mod tests {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async move {
-            crate::net::l4::endpoint::tcp_rx::network_event_task_in(runtime).await;
+            crate::net::l4::endpoint::event_loop::network_event_task_in(runtime).await;
         }));
 
         let mut output = None;
@@ -336,7 +336,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+                crate::net::l4::endpoint::event_loop::network_event_task().await;
             }));
 
             let mut output = None;

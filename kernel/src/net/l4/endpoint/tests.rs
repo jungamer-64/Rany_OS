@@ -30,6 +30,30 @@ pub mod tests {
         out
     }
 
+    fn init_test_ipv6_stack() {
+        crate::net::runtime::stack::init(crate::net::runtime::stack::NetworkConfig {
+            ipv6: Some(crate::net::l3::ipv6::Ipv6Config {
+                link_local: crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
+                global: Some(crate::net::l3::ipv6::Ipv6Address::LOOPBACK),
+                temporary: None,
+                prefix_len: 128,
+                gateway: None,
+                hop_limit: 64,
+            }),
+            ..crate::net::runtime::stack::NetworkConfig::default()
+        });
+
+        if let Ok(mut guard) = crate::net::runtime::stack::stack().lock() {
+            if let Some(ref mut stack) = *guard {
+                stack.set_transmit_fn(
+                    |_if_id,
+                     _packet: crate::net::datapath::mempool::PacketRef,
+                     _meta: kernel_api::service::netdev::NetTxMeta| true,
+                );
+            }
+        }
+    }
+
     fn endpoint_new_with_fd_impl() {
         let fd = EndpointFd::from_raw(42);
         let endpoint = Endpoint::new_with_fd(EndpointType::Tcp, fd);
@@ -236,7 +260,9 @@ pub mod tests {
         crate::net::l4::endpoint::manager::init_endpoint_manager();
         let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
 
-        let sock = crate::net::l4::endpoint::create_tcp_endpoint();
+        let sock = crate::net::l4::test_support::new_test_endpoint(
+            crate::net::l4::endpoint::EndpointType::Tcp,
+        );
         let fd = sock.fd();
         let local = EndpointAddr::new([127, 0, 0, 1], 10000);
         let remote = EndpointAddr::new([127, 0, 0, 1], 10001);
@@ -248,11 +274,9 @@ pub mod tests {
         crate::net::l4::endpoint::tcb::tcb_table().insert(tcb);
 
         // ソケット側のアドレス情報を設定（handlerがTCB検索に使用）
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(local);
-            inner.remote_addr = Some(remote);
-        }
+        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.local_addr = Some(local);
+        inner.remote_addr = Some(remote);
 
         // イベントを処理
         let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::SetNoDelay {
@@ -308,81 +332,94 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_start_listening_v6() {
-        // Ensure manager exists
         crate::net::l4::endpoint::manager::init_endpoint_manager();
+        init_test_ipv6_stack();
 
-        let sock = crate::net::l4::endpoint::create_tcp_endpoint();
+        let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
         let local =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12345);
-        assert!(sock.set_local_addr(local).is_ok());
-        let endpoint = sock.endpoint().expect("endpoint not found").clone();
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
-        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
 
-        let mut executor = crate::task::TestExecutor::new();
-        let result_slot_clone = result_slot.clone();
-        let completed_clone = completed.clone();
-        executor.spawn(crate::task::Task::new(async move {
-            let output = endpoint.start_listening(4).await;
-            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
-            *slot = Some(output);
-            completed_clone.store(true, core::sync::atomic::Ordering::Release);
-        }));
-
-        let mut listen_result = None;
-        for _ in 0..100_000 {
-            executor.drive_once_for_test();
-            if completed.load(core::sync::atomic::Ordering::Acquire) {
-                listen_result = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-                break;
-            }
-        }
-        assert!(
-            listen_result
-                .expect("start_listening test timed out")
-                .is_ok()
+        let res = handler.handle_event(
+            crate::net::l4::endpoint::event::NetworkEvent::TcpBindListener {
+                local,
+                scope: InterfaceScope::Any,
+                backlog: 4,
+                result_slot: result_slot.clone(),
+                waker,
+            },
         );
+        assert!(matches!(
+            res,
+            crate::net::l4::endpoint::handler::EventHandleResult::Success
+        ));
 
-        if let Some(s) = sock.endpoint() {
-            let inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            assert_eq!(inner.local_addr.unwrap(), local);
-            assert_eq!(
-                inner.state,
-                crate::net::l4::endpoint::EndpointState::Listening
-            );
-            assert!(inner.tcp().is_some());
-        } else {
-            panic!("endpoint not found");
-        }
+        let listener = result_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .expect("listener result should be present")
+            .expect("listener bind should succeed");
+
+        let inner = listener
+            .endpoint()
+            .inner()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(inner.local_addr, Some(local));
+        assert_eq!(
+            inner.state,
+            crate::net::l4::endpoint::EndpointState::Listening
+        );
+        assert_eq!(inner.tcp().map_or(0, |tcp| tcp.accept_backlog), 4);
+        assert!(inner.tcp().is_some());
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_handle_connect_creates_tcb_v6() {
         crate::net::l4::endpoint::manager::init_endpoint_manager();
-        let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
+        init_test_ipv6_stack();
 
-        let sock = crate::net::l4::endpoint::create_tcp_endpoint();
-        let fd = sock.fd();
+        let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
         let local =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 2000);
         let remote =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 3000);
+        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
+        let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
 
-        if let Some(s) = sock.endpoint() {
-            let mut inner = s.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.local_addr = Some(local);
-            inner.remote_addr = Some(remote);
-        }
-
-        let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::Connect {
-            fd,
-            local,
-            remote,
-        });
+        let res = handler.handle_event(
+            crate::net::l4::endpoint::event::NetworkEvent::TcpConnectStream {
+                local,
+                remote,
+                scope: InterfaceScope::Any,
+                result_slot: result_slot.clone(),
+                waker,
+            },
+        );
         assert!(matches!(
             res,
             crate::net::l4::endpoint::handler::EventHandleResult::Success
         ));
+
+        let stream = result_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .expect("stream result should be present")
+            .expect("tcp connect should succeed");
+        let inner = stream
+            .endpoint()
+            .inner()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert_eq!(inner.local_addr, Some(local));
+        assert_eq!(inner.remote_addr, Some(remote));
+        assert_eq!(
+            inner.state,
+            crate::net::l4::endpoint::EndpointState::Connecting
+        );
 
         let tcb = crate::net::l4::endpoint::tcb::tcb_table().get(local, remote);
         assert!(tcb.is_some());
@@ -555,21 +592,19 @@ pub mod tests {
     pub fn test_raw_delivery_prefers_pinned_then_falls_back_to_any() {
         crate::net::l4::endpoint::manager::init_endpoint_manager();
 
-        let raw_any = crate::net::l4::endpoint::create_raw_endpoint();
-        if let Some(endpoint) = raw_any.endpoint() {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.scope = InterfaceScope::Any;
-            inner.ensure_raw();
-            let _ = inner.transition_to(EndpointState::Bound);
-        }
+        let raw_any = crate::net::l4::test_support::new_test_endpoint(EndpointType::Raw);
+        let mut inner = raw_any.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.scope = InterfaceScope::Any;
+        inner.ensure_raw();
+        let _ = inner.transition_to(EndpointState::Bound);
+        drop(inner);
 
-        let raw_pinned = crate::net::l4::endpoint::create_raw_endpoint();
-        if let Some(endpoint) = raw_pinned.endpoint() {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.scope = InterfaceScope::Pinned(NetIfId(12));
-            inner.ensure_raw();
-            let _ = inner.transition_to(EndpointState::Bound);
-        }
+        let raw_pinned = crate::net::l4::test_support::new_test_endpoint(EndpointType::Raw);
+        let mut inner = raw_pinned.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.scope = InterfaceScope::Pinned(NetIfId(12));
+        inner.ensure_raw();
+        let _ = inner.transition_to(EndpointState::Bound);
+        drop(inner);
 
         let manager =
             crate::net::l4::endpoint::manager::endpoint_manager().expect("endpoint manager lock");
@@ -592,18 +627,11 @@ pub mod tests {
             NetIfId(12),
             pinned_payload
         ));
-        let (received_pinned, if_id) = raw_pinned
-            .endpoint()
-            .expect("pinned raw endpoint")
-            .try_recv_raw_payload()
-            .expect("pinned delivery");
+        let (received_pinned, if_id) = raw_pinned.try_recv_raw_payload().expect("pinned delivery");
         assert_eq!(if_id, NetIfId(12));
         assert_eq!(payload_bytes(&received_pinned), vec![1, 2, 3, 4]);
         assert!(matches!(
-            raw_any
-                .endpoint()
-                .expect("wildcard raw endpoint")
-                .try_recv_raw_payload(),
+            raw_any.try_recv_raw_payload(),
             Err(EndpointError::Timeout)
         ));
 
@@ -612,11 +640,7 @@ pub mod tests {
             NetIfId(13),
             wildcard_payload
         ));
-        let (received_any, if_id) = raw_any
-            .endpoint()
-            .expect("wildcard raw endpoint")
-            .try_recv_raw_payload()
-            .expect("wildcard delivery");
+        let (received_any, if_id) = raw_any.try_recv_raw_payload().expect("wildcard delivery");
         assert_eq!(if_id, NetIfId(13));
         assert_eq!(payload_bytes(&received_any), vec![9, 8, 7]);
     }

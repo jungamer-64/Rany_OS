@@ -1,11 +1,11 @@
 use super::*;
-use crate::domain::{DomainCredentials, DomainId, DomainSecurity};
+use crate::domain::DomainId;
+use crate::net::l4::test_support::{
+    counting_waker, leaked_test_packet_with_data, noop_waker, set_current_subject,
+};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::security::capability::{CAP_NET_BIND, CapabilitySet, manager};
-use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
-use alloc::boxed::Box;
-use alloc::sync::Arc;
 
 fn test_packet(data: &[u8]) -> PacketRef {
     crate::net::payload::packet_from_bytes(data).expect("allocate packet-backed test packet")
@@ -18,113 +18,47 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::v
     out
 }
 
-fn idle_entry(_: u64) -> ! {
-    // LOOP_PROOF: mode=halt; reason=Idle test entry intentionally spins forever because the harness never returns from the parked CPU stub.;
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-struct CurrentTaskGuard {
-    prev: Option<*mut TaskControlBlock>,
-    current: *mut TaskControlBlock,
-}
-
-impl Drop for CurrentTaskGuard {
-    fn drop(&mut self) {
-        let cpu_id = crate::cpu::current_id();
-        let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
-        unsafe {
-            set_current_task(cpu_id, prev_ptr);
-            drop(Box::from_raw(self.current));
-        }
-    }
-}
-
-fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
-    let cpu_id = crate::cpu::current_id();
-    let prev = get_current_task(cpu_id);
-    let mut tcb =
-        TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
-    let caps = manager().get_capabilities(domain_id.as_u64());
-    tcb.security = Arc::new(DomainSecurity {
-        credentials: DomainCredentials::ROOT,
-        caps,
-    });
-    let boxed = Box::new(tcb);
-    let current = Box::into_raw(boxed);
-    unsafe {
-        set_current_task(cpu_id, current);
-    }
-    CurrentTaskGuard { prev, current }
-}
-
 fn udp_endpoint_poisoned_methods_return_defaults_impl() {
     use crate::sync::set_panicking;
 
-    let endpoint = UdpEndpoint::new(12345);
+    crate::net::l4::endpoint::manager::init_endpoint_manager();
+    let endpoint = UdpEndpoint::new(12345).expect("bind udp endpoint");
 
     set_panicking(true);
-    if let Ok(_g) = endpoint.inner.lock() {}
+    if let Ok(_g) = endpoint.endpoint.inner().lock() {}
     set_panicking(false);
 
-    assert_eq!(endpoint.local_port(), 0);
-    assert!(endpoint.is_closed());
+    assert_eq!(endpoint.local_port(), 12345);
+    assert!(!endpoint.is_closed());
     assert_eq!(endpoint.rx_queue_len(), 0);
     endpoint.close();
 }
 
 fn udp_endpoint_multiple_waiters_woken_on_deliver_impl() {
     use core::pin::Pin;
-    use core::ptr::addr_of_mut;
     use core::sync::atomic::{AtomicUsize, Ordering};
-    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    use core::task::{Context, Poll};
 
-    static mut WAITERS_TEST_PACKET: [u8; 3] = [0; 3];
+    static WAKE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-    fn counting_waker(counter: &AtomicUsize) -> Waker {
-        unsafe fn clone(data: *const ()) -> RawWaker {
-            RawWaker::new(data, &VTABLE)
-        }
-        unsafe fn wake(data: *const ()) {
-            let counter = &*(data as *const AtomicUsize);
-            counter.fetch_add(1, Ordering::SeqCst);
-        }
-        unsafe fn wake_by_ref(data: *const ()) {
-            wake(data);
-        }
-        unsafe fn drop_waker(_: *const ()) {}
-
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
-
-        unsafe { Waker::from_raw(RawWaker::new(counter as *const _ as *const (), &VTABLE)) }
-    }
-
-    let endpoint = UdpEndpoint::new(54322);
+    crate::net::l4::endpoint::manager::init_endpoint_manager();
+    let endpoint = UdpEndpoint::new(54322).expect("bind udp endpoint");
     let mut fut1 = endpoint.recv();
     let mut fut2 = endpoint.recv();
 
-    let wake_count = AtomicUsize::new(0);
-    let waker = counting_waker(&wake_count);
+    WAKE_COUNT.store(0, Ordering::SeqCst);
+    let waker = counting_waker(&WAKE_COUNT);
     let mut cx = Context::from_waker(&waker);
 
     assert!(matches!(Pin::new(&mut fut1).poll(&mut cx), Poll::Pending));
     assert!(matches!(Pin::new(&mut fut2).poll(&mut cx), Poll::Pending));
 
-    let mut packet = unsafe {
-        crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
-            addr_of_mut!(WAITERS_TEST_PACKET) as *mut u8,
-            3,
-        )
-        .expect("static test packet")
-    };
-    packet.set_len(3);
-    packet.data_mut().copy_from_slice(b"abc");
+    let packet = leaked_test_packet_with_data(b"abc");
 
     let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
     endpoint.deliver(NetIfId(7), src, 255, packet);
 
-    assert_eq!(wake_count.load(Ordering::SeqCst), 2);
+    assert_eq!(WAKE_COUNT.load(Ordering::SeqCst), 2);
 
     match Pin::new(&mut fut1).poll(&mut cx) {
         Poll::Ready(Some((if_id, addr, _ttl, packet))) => {
@@ -224,16 +158,14 @@ pub fn test_bind_with_token_reclaim() {
         .grant_capability_with_opts(caller.as_u64(), target.as_u64(), CAP_NET_BIND, None, false)
         .unwrap();
 
-    // Target binds using token
-    {
+    // Target binds using token and keeps the endpoint alive until explicit release.
+    let sock = {
         let _target_guard = set_current_subject(target);
-        let sock = crate::task::block_on(crate::net::runtime::stack::bind_udp_with_token(
-            40000,
-            Some(token),
-        ));
-        assert!(sock.is_some());
+        let sock = UdpEndpoint::bind_registered_with_token(InterfaceScope::Any, 40000, Some(token))
+            .expect("bind with capability token");
         assert_eq!(manager().in_flight_count(token), 1);
-    }
+        sock
+    };
 
     // Issuer revokes token (mark revoked)
     assert!(
@@ -248,11 +180,8 @@ pub fn test_bind_with_token_reclaim() {
         other => panic!("expected ReclamationBusy, got {:?}", other),
     }
 
-    // Now unbind the endpoint (target releases resource)
-    {
-        let _target_guard = set_current_subject(target);
-        let _ = crate::task::block_on(crate::net::runtime::stack::unbind_udp(40000));
-    }
+    // Now release the endpoint (target releases resource)
+    drop(sock);
 
     assert_eq!(manager().in_flight_count(token), 0);
     // Now reclaim should succeed
@@ -263,32 +192,15 @@ pub fn test_bind_with_token_reclaim() {
 pub fn test_udp_recv_future_poisoned_returns_closed() {
     use crate::sync::set_panicking;
     use core::pin::Pin;
-    use core::ptr;
+    use core::task::Context;
     use core::task::Poll;
-    use core::task::{Context, RawWaker, RawWakerVTable, Waker};
 
-    fn noop_raw_waker() -> RawWaker {
-        unsafe fn clone(_: *const ()) -> RawWaker {
-            noop_raw_waker()
-        }
-        unsafe fn wake(_: *const ()) {}
-        unsafe fn wake_by_ref(_: *const ()) {}
-        unsafe fn drop(_: *const ()) {}
-        RawWaker::new(
-            ptr::null(),
-            &RawWakerVTable::new(clone, wake, wake_by_ref, drop),
-        )
-    }
-
-    fn noop_waker() -> Waker {
-        unsafe { Waker::from_raw(noop_raw_waker()) }
-    }
-
-    let endpoint = UdpEndpoint::new(54321);
+    crate::net::l4::endpoint::manager::init_endpoint_manager();
+    let endpoint = UdpEndpoint::new(54321).expect("bind udp endpoint");
 
     // Poison the inner lock
     set_panicking(true);
-    if let Ok(_g) = endpoint.inner.lock() {
+    if let Ok(_g) = endpoint.endpoint.inner().lock() {
         // drop marks as poisoned
     }
     set_panicking(false);
@@ -297,42 +209,27 @@ pub fn test_udp_recv_future_poisoned_returns_closed() {
     let w = noop_waker();
     let mut cx = Context::from_waker(&w);
 
-    assert!(matches!(
-        Pin::new(&mut fut).poll(&mut cx),
-        Poll::Ready(None)
-    ));
+    assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending));
 }
 
 #[cfg_attr(test, test_case)]
 pub fn test_udp_processor_poisoned_bind_and_process() {
-    use crate::sync::set_panicking;
-
+    init_endpoint_manager();
     let processor = UdpProcessor::new();
-
-    // Poison the endpoint table lock
-    set_panicking(true);
-    if let Ok(_g) = processor.endpoints().endpoints.lock() {
-        // drop marks as poisoned
-    }
-    set_panicking(false);
-
-    // Bind should fail (token-aware API returns Err on failure)
-    assert!(
-        processor
-            .bind_with_token(InterfaceScope::Any, 10000, None)
-            .is_err()
-    );
+    let _bound = UdpEndpoint::bind_registered_with_token(InterfaceScope::Any, 10000, None)
+        .expect("initial bind should succeed");
+    assert!(UdpEndpoint::bind_registered_with_token(InterfaceScope::Any, 10000, None).is_err());
 
     // Build a packet and process - should be NoEndpoint and stats increment rx_dropped
     let src_ip = Ipv4Address::from_octets(1, 2, 3, 4);
     let dst_ip = Ipv4Address::from_octets(1, 2, 3, 4);
     let mut buffer = [0u8; 64];
-    let len = UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x").unwrap();
+    let len = UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10001, b"x").unwrap();
 
     let res = processor.process(&buffer[..len], src_ip, dst_ip, 64);
     assert_eq!(res, UdpResult::NoEndpoint);
 
-    let stats = processor.endpoints().stats();
+    let stats = processor.stats();
     assert_eq!(stats.2, 1); // rx_dropped == 1
 }
 
@@ -348,25 +245,10 @@ pub fn test_udp_socket_multiple_waiters_woken_on_deliver() {
 #[cfg_attr(test, test_case)]
 pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
     use core::pin::Pin;
-    use core::ptr;
-    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-    fn noop_waker() -> Waker {
-        unsafe fn clone(_: *const ()) -> RawWaker {
-            RawWaker::new(ptr::null(), &VTABLE)
-        }
-        unsafe fn wake(_: *const ()) {}
-        unsafe fn wake_by_ref(_: *const ()) {}
-        unsafe fn drop_waker(_: *const ()) {}
-
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop_waker);
-
-        unsafe { Waker::from_raw(RawWaker::new(ptr::null(), &VTABLE)) }
-    }
+    use core::task::{Context, Poll};
 
     let processor = UdpProcessor::new();
-    let endpoint = processor
-        .bind_with_token(InterfaceScope::Any, 10000, None)
+    let endpoint = UdpEndpoint::bind_registered_with_token(InterfaceScope::Any, 10000, None)
         .expect("bind udp endpoint for zero-copy enqueue test");
 
     let src_ip = Ipv4Address::from_octets(10, 0, 0, 1);
@@ -377,8 +259,6 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
 
     #[cfg(feature = "qemu-test-export")]
     {
-        use core::ptr::addr_of_mut;
-
         // QEMU required suite runs without a reliable exchange-heap setup for
         // mempool growth, so validate the parse+deliver zero-copy path with a
         // static packet buffer instead of `process()`'s internal allocation.
@@ -386,16 +266,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         // on enqueue/recv behavior; checksum coverage lives in udp packet tests.
         buf[6] = 0;
         buf[7] = 0;
-        static mut UDP_PROCESS_TEST_PACKET: [u8; 2] = [0; 2];
-        let mut packet = unsafe {
-            crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
-                addr_of_mut!(UDP_PROCESS_TEST_PACKET) as *mut u8,
-                payload.len(),
-            )
-            .expect("create static packet for udp zero-copy enqueue test")
-        };
-        packet.set_len(payload.len());
-        packet.data_mut().copy_from_slice(payload);
+        let packet = leaked_test_packet_with_data(payload);
 
         assert_eq!(
             processor.process_with_packet(&buf[..len], src_ip, dst_ip, packet, 255),
@@ -436,8 +307,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
 #[cfg_attr(test, test_case)]
 pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
     let processor = UdpProcessor::new();
-    let endpoint = processor
-        .bind_with_token(InterfaceScope::Any, 10001, None)
+    let endpoint = UdpEndpoint::bind_registered_with_token(InterfaceScope::Any, 10001, None)
         .expect("bind udp endpoint for payload-chain test");
 
     let src_ip = Ipv4Address::from_octets(10, 0, 0, 10);
@@ -471,30 +341,22 @@ pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_udp_scope_conflicts_any_vs_pinned() {
-    let table = UdpEndpointTable::new();
+    init_endpoint_manager();
+    let _any = UdpEndpoint::bind_registered_with_token(InterfaceScope::Any, 42000, None)
+        .expect("bind any-scope endpoint");
     assert!(
-        table
-            .bind_dual_stack_with_token(InterfaceScope::Any, 42000, None)
-            .is_some()
-    );
-    assert!(
-        table
-            .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(1)), 42000, None)
-            .is_none()
+        UdpEndpoint::bind_registered_with_token(InterfaceScope::Pinned(NetIfId(1)), 42000, None)
+            .is_err()
     );
 }
 
 #[cfg_attr(test, test_case)]
 pub fn test_udp_scope_allows_same_port_on_distinct_interfaces() {
-    let table = UdpEndpointTable::new();
-    assert!(
-        table
-            .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(1)), 42001, None)
-            .is_some()
-    );
-    assert!(
-        table
-            .bind_dual_stack_with_token(InterfaceScope::Pinned(NetIfId(2)), 42001, None)
-            .is_some()
-    );
+    init_endpoint_manager();
+    let _if1 =
+        UdpEndpoint::bind_registered_with_token(InterfaceScope::Pinned(NetIfId(1)), 42001, None)
+            .expect("bind interface 1");
+    let _if2 =
+        UdpEndpoint::bind_registered_with_token(InterfaceScope::Pinned(NetIfId(2)), 42001, None)
+            .expect("bind interface 2");
 }

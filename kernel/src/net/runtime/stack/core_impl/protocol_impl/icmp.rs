@@ -673,7 +673,7 @@ impl NetworkStack {
                 }
             }
             17 => {
-                if !self.udp.has_endpoint(src_port) {
+                if !crate::net::l4::udp::UdpEndpoint::has_registered_port(src_port) {
                     return;
                 }
             }
@@ -968,7 +968,7 @@ impl NetworkStack {
                     return;
                 };
                 let src_port = u16::from_be_bytes([header[0], header[1]]);
-                if !self.udp.has_endpoint(src_port) {
+                if !crate::net::l4::udp::UdpEndpoint::has_registered_port(src_port) {
                     return;
                 }
                 // UDP error notification could be implemented here

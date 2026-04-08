@@ -82,7 +82,9 @@ fn call_log(msg: &[u8]) {
 #[inline]
 fn call_panic_abort(msg: &[u8]) -> ! {
     let api = kernel_api();
-    if has_runtime_entries(api) && let Some(panic_abort) = api.panic_abort {
+    if has_runtime_entries(api)
+        && let Some(panic_abort) = api.panic_abort
+    {
         panic_abort(msg.as_ptr(), msg.len());
     }
     panic!("Kernel API panic entry missing ({KERNEL_API_SYMBOL})");

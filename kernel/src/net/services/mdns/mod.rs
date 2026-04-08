@@ -179,10 +179,13 @@ impl MdnsService {
             "[NET][boot] mDNS task entered run loop on CPU {}",
             crate::cpu::try_current_id().unwrap_or(0)
         );
-        // Create socket
-        let socket = crate::net::runtime::stack::bind_udp_endpoint_in(self.runtime, MDNS_PORT)
-            .await
-            .ok_or("Failed to bind mDNS socket")?;
+        let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+            self.runtime,
+            crate::net::types::InterfaceScope::Any,
+            MDNS_PORT,
+            None,
+        )
+        .map_err(|_| "Failed to bind mDNS socket")?;
 
         if self.local_ip.is_any() {
             log::info!("[NET] mDNS: deferring multicast join until IPv4 address is assigned");

@@ -172,16 +172,9 @@ impl KernelServices for ExoKernel {
     {
         Box::pin(async move {
             let remote = endpoint_addr_from_kapi(remote);
-            let owned = crate::net::l4::endpoint::create_tcp_endpoint();
-            let endpoint = owned.endpoint().ok_or(KapiError::NotFound)?.clone();
-            apply_endpoint_scope(&endpoint, scope);
-            endpoint
-                .open_connection(remote)
+            let stream = crate::net::l4::tcp::TcpStream::dial_scoped(remote, stack_scope(scope))
                 .await
-                .map_err(endpoint_error_to_kapi)?;
-
-            let endpoint = owned.into_inner().ok_or(KapiError::NotFound)?;
-            let stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(endpoint, false);
+                .map_err(tcp_error_to_kapi)?;
             let fd = stream.into_retained_handle();
             Ok(kernel_api::resource::net::TcpStream::from_raw_parts(
                 fd.raw() as u64,
@@ -199,20 +192,13 @@ impl KernelServices for ExoKernel {
     {
         Box::pin(async move {
             let local = endpoint_addr_from_kapi(local);
-            let owned = crate::net::l4::endpoint::create_tcp_endpoint();
-            let endpoint = owned.endpoint().ok_or(KapiError::NotFound)?.clone();
-            apply_endpoint_scope(&endpoint, scope);
-            endpoint
-                .set_local_addr(local)
-                .map_err(endpoint_error_to_kapi)?;
-            endpoint
-                .start_listening(backlog)
-                .await
-                .map_err(endpoint_error_to_kapi)?;
-
-            let endpoint = owned.into_inner().ok_or(KapiError::NotFound)?;
-            let listener =
-                crate::net::l4::tcp::TcpListener::from_endpoint_with_drop(endpoint, false);
+            let listener = crate::net::l4::tcp::TcpListener::listen_on_scoped(
+                local,
+                stack_scope(scope),
+                backlog,
+            )
+            .await
+            .map_err(tcp_error_to_kapi)?;
             let fd = listener.into_retained_handle();
             Ok(kernel_api::resource::net::TcpListener::from_raw_parts(
                 fd.raw() as u64,
@@ -226,17 +212,19 @@ impl KernelServices for ExoKernel {
         listener: kernel_api::resource::net::TcpListener,
     ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStream>> + Send>>
     {
+        let default_scope = listener.default_scope();
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(listener.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let (accepted, _addr, _if_id) =
-                socket.accept().await.map_err(endpoint_error_to_kapi)?;
-            let endpoint = accepted.into_inner().ok_or(KapiError::NotFound)?;
-            let stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(endpoint, false);
+            let listener = crate::net::l4::tcp::TcpListener::from_retained_endpoint(socket);
+            let (stream, _addr) = listener
+                .next_connection()
+                .await
+                .map_err(tcp_error_to_kapi)?;
             let fd = stream.into_retained_handle();
             Ok(kernel_api::resource::net::TcpStream::from_raw_parts(
                 fd.raw() as u64,
-                listener.default_scope(),
+                default_scope,
             ))
         })
     }
@@ -267,7 +255,7 @@ impl KernelServices for ExoKernel {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let mut stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(socket, false);
+            let mut stream = crate::net::l4::tcp::TcpStream::from_retained_endpoint(socket);
             match stream.read_zero_copy().await {
                 Some(payload) => Ok(payload),
                 None => Ok(kernel_api::resource::net::PacketPayload::default()),
@@ -283,7 +271,7 @@ impl KernelServices for ExoKernel {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let mut stream = crate::net::l4::tcp::TcpStream::from_endpoint_with_drop(socket, false);
+            let mut stream = crate::net::l4::tcp::TcpStream::from_retained_endpoint(socket);
             let mut sent = 0usize;
             for packet in payload.into_segments() {
                 let len = packet.len();
@@ -316,29 +304,26 @@ impl KernelServices for ExoKernel {
             return Err(KapiError::PermissionDenied);
         }
 
-        use crate::net::l4::endpoint::create_raw_endpoint;
-
-        let owned = create_raw_endpoint();
-        if let Some(endpoint) = owned.endpoint() {
-            apply_endpoint_scope(endpoint, scope);
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            inner.ensure_raw();
-            inner
-                .transition_to(crate::net::l4::endpoint::types::EndpointState::Bound)
-                .map_err(endpoint_error_to_kapi)?;
-        }
+        let endpoint = crate::net::l4::endpoint::endpoint_core::Endpoint::new_registered_in(
+            crate::net::l4::endpoint::EndpointType::Raw,
+            crate::net::runtime::default_runtime(),
+        );
+        apply_endpoint_scope(&endpoint, scope);
+        let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        inner.ensure_raw();
+        inner
+            .transition_to(crate::net::l4::endpoint::types::EndpointState::Bound)
+            .map_err(endpoint_error_to_kapi)?;
+        drop(inner);
 
         if let Some(mgr_lock) = crate::net::l4::endpoint::endpoint_manager() {
             let guard = mgr_lock.read().unwrap_or_else(|e| e.into_inner());
             if let Some(mgr) = guard.as_ref() {
-                mgr.register_raw_scope(stack_scope(scope), owned.fd())
+                mgr.register_raw_scope(stack_scope(scope), endpoint.fd())
                     .map_err(endpoint_error_to_kapi)?;
             }
         }
-        let fd = owned.fd();
-
-        // Detach so it remains registered
-        let _ = owned.into_inner();
+        let fd = endpoint.fd();
 
         Ok(kernel_api::resource::net::RawEndpoint::from_raw_parts(
             fd.raw() as u64,

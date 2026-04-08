@@ -1,5 +1,4 @@
 use super::*;
-use crate::net::l4::endpoint::types::EndpointFd;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::context::{default_runtime, default_runtime_context};
 
@@ -94,7 +93,7 @@ pub fn is_initialized() -> bool {
 }
 
 /// Returns true when the runtime-local network stack has been initialized.
-pub fn is_initialized_in(runtime: NetRuntimeHandle) -> bool {
+fn is_initialized_in(runtime: NetRuntimeHandle) -> bool {
     match stack_in(runtime).lock() {
         Ok(guard) => guard.is_some(),
         Err(_) => false,
@@ -140,7 +139,7 @@ pub async fn send_udp(
     send_udp_in(default_runtime(), src_port, dst_ip, dst_port, payload).await
 }
 
-pub async fn send_udp_in(
+async fn send_udp_in(
     runtime: NetRuntimeHandle,
     src_port: u16,
     dst_ip: Ipv4Address,
@@ -177,38 +176,6 @@ pub async fn send_udp_in(
     completion_future
         .await
         .map_err(|_| crate::net::l4::endpoint::types::EndpointError::ResourceExhausted)
-}
-
-pub fn enqueue_udp_send_scoped_in(
-    runtime: NetRuntimeHandle,
-    scope: crate::net::types::InterfaceScope,
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    payload: kernel_api::resource::net::PacketPayload,
-    ttl: u8,
-) -> bool {
-    if let Some(if_id) = scope.as_if_id() {
-        return enqueue_udp_send_on_with_ttl_in(
-            runtime, if_id, src_port, dst_ip, dst_port, payload, ttl,
-        );
-    }
-    let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-        runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
-            src_port,
-            src_ip: None,
-            dst_ip: *dst_ip.as_bytes(),
-            dst_port,
-            payload,
-            ttl,
-            completion_id: None,
-            result_slot,
-            waker,
-        },
-    );
-    true
 }
 
 pub fn enqueue_udp_send_scoped_with_src_in(
@@ -288,7 +255,7 @@ pub async fn send_tcp(
     send_tcp_in(default_runtime(), src_ip, dst_ip, payload).await
 }
 
-pub async fn send_tcp_in(
+async fn send_tcp_in(
     runtime: NetRuntimeHandle,
     src_ip: Ipv4Address,
     dst_ip: Ipv4Address,
@@ -365,22 +332,6 @@ pub fn enqueue_tcp_v6_send_in(
     true
 }
 
-/// Bind a UDP socket (async, event-queue based)
-///
-/// イベントキュー経由でbindを実行する。NETWORK_STACKロックを取得しない。
-/// スタック初期化前は失敗を返す。
-pub async fn bind_udp(port: u16) -> Option<UdpEndpoint> {
-    bind_udp_scoped(crate::net::types::InterfaceScope::Any, port).await
-}
-
-/// Bind a UDP socket to an explicit interface scope.
-pub async fn bind_udp_scoped(
-    scope: crate::net::types::InterfaceScope,
-    port: u16,
-) -> Option<UdpEndpoint> {
-    bind_udp_endpoint_scoped(scope, port).await
-}
-
 /// Process retransmission timeouts (async, event-queue based)
 ///
 /// イベントキュー経由でタイムアウト処理をリクエストする。
@@ -389,7 +340,7 @@ pub fn process_timeouts(_current_time: u64) {
     process_timeouts_in(default_runtime(), _current_time);
 }
 
-pub fn process_timeouts_in(runtime: NetRuntimeHandle, _current_time: u64) {
+fn process_timeouts_in(runtime: NetRuntimeHandle, _current_time: u64) {
     crate::net::l4::endpoint::event::enqueue_event_ignore_in(
         runtime,
         crate::net::l4::endpoint::event::NetworkEvent::ProcessTimeouts,
@@ -409,7 +360,7 @@ pub async fn timeout_task() {
     timeout_task_in(default_runtime()).await;
 }
 
-pub async fn timeout_task_in(runtime: NetRuntimeHandle) {
+async fn timeout_task_in(runtime: NetRuntimeHandle) {
     log::info!(
         "[NET] timeout_task started on CPU {} (event-queue mode)",
         crate::cpu::try_current_id().unwrap_or(0)
@@ -427,479 +378,6 @@ pub async fn timeout_task_in(runtime: NetRuntimeHandle) {
             runtime,
             crate::net::l4::endpoint::event::NetworkEvent::ProcessTimeouts,
         );
-    }
-}
-
-/// Bind a UDP socket with an optional capability token (async, event-queue based)
-pub async fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpEndpoint> {
-    bind_udp_with_token_scoped(crate::net::types::InterfaceScope::Any, port, token).await
-}
-
-/// Bind a UDP socket with a token and explicit interface scope.
-pub async fn bind_udp_with_token_scoped(
-    scope: crate::net::types::InterfaceScope,
-    port: u16,
-    token: Option<u64>,
-) -> Option<UdpEndpoint> {
-    bind_udp_endpoint_with_token_scoped(scope, port, token).await
-}
-
-pub fn enqueue_apply_ipv6_global_address_in(
-    runtime: NetRuntimeHandle,
-    addr: crate::net::l3::ipv6::Ipv6Address,
-) {
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-        runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::ApplyIpv6Address {
-            addr: addr.octets(),
-            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-}
-
-pub fn enqueue_unbind_tcp_in(
-    runtime: NetRuntimeHandle,
-    local: TcpEndpointAddr,
-    remote: TcpEndpointAddr,
-) {
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-        runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::UnbindTcp {
-            local,
-            remote,
-            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-}
-
-pub fn enqueue_unbind_tcp_listener_in(runtime: NetRuntimeHandle, fd: EndpointFd) {
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-        runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::UnbindTcpListener {
-            fd,
-            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-}
-
-// ============================================================================
-// Multicast Group Management (Global API) - 完全非同期化
-// ============================================================================
-
-/// Join a multicast group (async, event-queue based)
-///
-/// イベントキュー経由でリクエストする。NETWORK_STACKロックを取得しない。
-pub fn join_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
-    join_multicast_group_in(default_runtime(), group)
-}
-
-pub fn join_multicast_group_in(
-    runtime: NetRuntimeHandle,
-    group: Ipv4Address,
-) -> Result<(), IgmpError> {
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-        runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::MulticastJoin {
-            group: *group.as_bytes(),
-            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-    Ok(())
-}
-
-/// Leave a multicast group (async, event-queue based)
-///
-/// イベントキュー経由でリクエストする。NETWORK_STACKロックを取得しない。
-pub fn leave_multicast_group(group: Ipv4Address) -> Result<(), IgmpError> {
-    leave_multicast_group_in(default_runtime(), group)
-}
-
-pub fn leave_multicast_group_in(
-    runtime: NetRuntimeHandle,
-    group: Ipv4Address,
-) -> Result<(), IgmpError> {
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-        runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::MulticastLeave {
-            group: *group.as_bytes(),
-            result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-            waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        },
-    );
-    Ok(())
-}
-
-// ============================================================================
-// 非同期 TCP connect（TcpStreamを返す完全非同期版）
-// ============================================================================
-
-/// 非同期TCP connect Future（TcpStreamを返す）
-///
-/// `connect_tcp()` と異なり、結果として `TcpStream` を返す。
-/// `TcpStream::dial()`から使用される。
-pub struct TcpConnectStreamFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<Result<TcpStream, TcpError>>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    local: TcpEndpointAddr,
-    remote: TcpEndpointAddr,
-}
-
-impl core::future::Future for TcpConnectStreamFuture {
-    type Output = Result<TcpStream, TcpError>;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::TcpConnectStream {
-                    local: self.local,
-                    remote: self.remote,
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => {
-                    return core::task::Poll::Ready(Err(TcpError::InvalidState));
-                }
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期TCP connect（TcpStreamを返す完全非同期版）
-///
-/// イベントキュー経由でconnectリクエストを送信し、イベントハンドラ側で
-/// スタックロックを取得してTcpStreamを作成する。
-pub fn connect_tcp_stream(
-    local: TcpEndpointAddr,
-    remote: TcpEndpointAddr,
-) -> TcpConnectStreamFuture {
-    connect_tcp_stream_in(default_runtime(), local, remote)
-}
-
-pub fn connect_tcp_stream_in(
-    runtime: NetRuntimeHandle,
-    local: TcpEndpointAddr,
-    remote: TcpEndpointAddr,
-) -> TcpConnectStreamFuture {
-    TcpConnectStreamFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        local,
-        remote,
-    }
-}
-
-// ============================================================================
-// 非同期 TCP bind（TcpListenerを返す完全非同期版）
-// ============================================================================
-
-/// 非同期TCP bind Future（TcpListenerを返す）
-pub struct TcpBindListenerFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<Result<TcpListener, TcpError>>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    addr: TcpEndpointAddr,
-}
-
-impl core::future::Future for TcpBindListenerFuture {
-    type Output = Result<TcpListener, TcpError>;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::TcpBindListener {
-                    local: self.addr,
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => {
-                    return core::task::Poll::Ready(Err(TcpError::InvalidState));
-                }
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期TCP bind（TcpListenerを返す完全非同期版）
-pub fn bind_tcp_listener(addr: TcpEndpointAddr) -> TcpBindListenerFuture {
-    bind_tcp_listener_in(default_runtime(), addr)
-}
-
-pub fn bind_tcp_listener_in(
-    runtime: NetRuntimeHandle,
-    addr: TcpEndpointAddr,
-) -> TcpBindListenerFuture {
-    TcpBindListenerFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        addr,
-    }
-}
-
-/// 非同期TCP bind with token Future（TcpListenerを返す）
-pub struct TcpBindListenerWithTokenFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<Result<TcpListener, TcpError>>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    addr: TcpEndpointAddr,
-    token: Option<u64>,
-}
-
-impl core::future::Future for TcpBindListenerWithTokenFuture {
-    type Output = Result<TcpListener, TcpError>;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::TcpBindListenerWithToken {
-                    local: self.addr,
-                    token: self.token,
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => {
-                    return core::task::Poll::Ready(Err(TcpError::InvalidState));
-                }
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期TCP bind with token（TcpListenerを返す完全非同期版）
-pub fn bind_tcp_listener_with_token(
-    addr: TcpEndpointAddr,
-    token: Option<u64>,
-) -> TcpBindListenerWithTokenFuture {
-    bind_tcp_listener_with_token_in(default_runtime(), addr, token)
-}
-
-pub fn bind_tcp_listener_with_token_in(
-    runtime: NetRuntimeHandle,
-    addr: TcpEndpointAddr,
-    token: Option<u64>,
-) -> TcpBindListenerWithTokenFuture {
-    TcpBindListenerWithTokenFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        addr,
-        token,
-    }
-}
-
-// ============================================================================
-// 非同期 UDP bind（UdpEndpointを返す完全非同期版）
-// ============================================================================
-
-/// 非同期UDP bind Future（UdpEndpointを返す）
-pub struct UdpBindEndpointFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<Option<UdpEndpoint>>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    port: u16,
-    scope: crate::net::types::InterfaceScope,
-}
-
-impl core::future::Future for UdpBindEndpointFuture {
-    type Output = Option<UdpEndpoint>;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::UdpBindEndpoint {
-                    port: self.port,
-                    scope: self.scope,
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(None),
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期UDP bind（UdpEndpointを返す完全非同期版）
-///
-/// イベントキュー経由でbindリクエストを送信し、UdpEndpointを返す。
-/// asyncコンテキストからの同期ロック取得を完全に回避する。
-pub fn bind_udp_endpoint(port: u16) -> UdpBindEndpointFuture {
-    bind_udp_endpoint_in(default_runtime(), port)
-}
-
-pub fn bind_udp_endpoint_in(runtime: NetRuntimeHandle, port: u16) -> UdpBindEndpointFuture {
-    bind_udp_endpoint_scoped_in(runtime, crate::net::types::InterfaceScope::Any, port)
-}
-
-/// 非同期UDP bind（UdpEndpointを返す完全非同期版、scope 指定）
-pub fn bind_udp_endpoint_scoped(
-    scope: crate::net::types::InterfaceScope,
-    port: u16,
-) -> UdpBindEndpointFuture {
-    bind_udp_endpoint_scoped_in(default_runtime(), scope, port)
-}
-
-pub fn bind_udp_endpoint_scoped_in(
-    runtime: NetRuntimeHandle,
-    scope: crate::net::types::InterfaceScope,
-    port: u16,
-) -> UdpBindEndpointFuture {
-    UdpBindEndpointFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        port,
-        scope,
-    }
-}
-
-/// 非同期UDP bind with token Future（UdpEndpointを返す）
-pub struct UdpBindEndpointWithTokenFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<Option<UdpEndpoint>>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    port: u16,
-    token: Option<u64>,
-    scope: crate::net::types::InterfaceScope,
-}
-
-impl core::future::Future for UdpBindEndpointWithTokenFuture {
-    type Output = Option<UdpEndpoint>;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::UdpBindEndpointWithToken {
-                    port: self.port,
-                    scope: self.scope,
-                    token: self.token,
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(None),
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期UDP bind with token（UdpEndpointを返す完全非同期版）
-pub fn bind_udp_endpoint_with_token(
-    port: u16,
-    token: Option<u64>,
-) -> UdpBindEndpointWithTokenFuture {
-    bind_udp_endpoint_with_token_in(default_runtime(), port, token)
-}
-
-pub fn bind_udp_endpoint_with_token_in(
-    runtime: NetRuntimeHandle,
-    port: u16,
-    token: Option<u64>,
-) -> UdpBindEndpointWithTokenFuture {
-    bind_udp_endpoint_with_token_scoped_in(
-        runtime,
-        crate::net::types::InterfaceScope::Any,
-        port,
-        token,
-    )
-}
-
-/// 非同期UDP bind with token（UdpEndpointを返す完全非同期版、scope 指定）
-pub fn bind_udp_endpoint_with_token_scoped(
-    scope: crate::net::types::InterfaceScope,
-    port: u16,
-    token: Option<u64>,
-) -> UdpBindEndpointWithTokenFuture {
-    bind_udp_endpoint_with_token_scoped_in(default_runtime(), scope, port, token)
-}
-
-pub fn bind_udp_endpoint_with_token_scoped_in(
-    runtime: NetRuntimeHandle,
-    scope: crate::net::types::InterfaceScope,
-    port: u16,
-    token: Option<u64>,
-) -> UdpBindEndpointWithTokenFuture {
-    UdpBindEndpointWithTokenFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        port,
-        token,
-        scope,
     }
 }
 
@@ -983,14 +461,10 @@ impl core::future::Future for MulticastLeaveFuture {
     }
 }
 
-/// 非同期マルチキャスト参加: イベントキュー経由
-///
-/// 同期版`join_multicast_group()`と異なり、呼び出し元でロックを取得しない。
-pub fn join_multicast(group: Ipv4Address) -> MulticastJoinFuture {
-    join_multicast_in(default_runtime(), group)
-}
-
-pub fn join_multicast_in(runtime: NetRuntimeHandle, group: Ipv4Address) -> MulticastJoinFuture {
+pub(crate) fn join_multicast_in(
+    runtime: NetRuntimeHandle,
+    group: Ipv4Address,
+) -> MulticastJoinFuture {
     MulticastJoinFuture {
         runtime,
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
@@ -1000,14 +474,10 @@ pub fn join_multicast_in(runtime: NetRuntimeHandle, group: Ipv4Address) -> Multi
     }
 }
 
-/// 非同期マルチキャスト離脱: イベントキュー経由
-///
-/// 同期版`leave_multicast_group()`と異なり、呼び出し元でロックを取得しない。
-pub fn leave_multicast(group: Ipv4Address) -> MulticastLeaveFuture {
-    leave_multicast_in(default_runtime(), group)
-}
-
-pub fn leave_multicast_in(runtime: NetRuntimeHandle, group: Ipv4Address) -> MulticastLeaveFuture {
+pub(crate) fn leave_multicast_in(
+    runtime: NetRuntimeHandle,
+    group: Ipv4Address,
+) -> MulticastLeaveFuture {
     MulticastLeaveFuture {
         runtime,
         result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
@@ -1018,264 +488,10 @@ pub fn leave_multicast_in(runtime: NetRuntimeHandle, group: Ipv4Address) -> Mult
 }
 
 // ============================================================================
-// 非同期 unbind API（イベントキュー経由・ロック競合回避）
-// ============================================================================
-
-/// 非同期UDP unbind Future
-pub struct UnbindUdpFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    port: u16,
-    scope: crate::net::types::InterfaceScope,
-}
-
-impl core::future::Future for UnbindUdpFuture {
-    type Output = bool;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::UnbindUdp {
-                    port: self.port,
-                    scope: self.scope,
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期UDP unbind: イベントキュー経由でunbindリクエストを送信
-///
-/// 同期版`unbind_udp()`と異なり、呼び出し元でNETWORK_STACKのロックを
-/// 取得しないため、asyncタスクから安全に呼び出せる。
-pub fn unbind_udp(port: u16) -> UnbindUdpFuture {
-    unbind_udp_in(default_runtime(), port)
-}
-
-pub fn unbind_udp_in(runtime: NetRuntimeHandle, port: u16) -> UnbindUdpFuture {
-    unbind_udp_scoped_in(runtime, crate::net::types::InterfaceScope::Any, port)
-}
-
-/// 非同期UDP unbind: 明示的な interface scope 付き
-pub fn unbind_udp_scoped(scope: crate::net::types::InterfaceScope, port: u16) -> UnbindUdpFuture {
-    unbind_udp_scoped_in(default_runtime(), scope, port)
-}
-
-pub fn unbind_udp_scoped_in(
-    runtime: NetRuntimeHandle,
-    scope: crate::net::types::InterfaceScope,
-    port: u16,
-) -> UnbindUdpFuture {
-    UnbindUdpFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        port,
-        scope,
-    }
-}
-
-/// 非同期TCP unbind Future
-pub struct UnbindTcpFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    local: TcpEndpointAddr,
-    remote: TcpEndpointAddr,
-}
-
-impl core::future::Future for UnbindTcpFuture {
-    type Output = bool;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::UnbindTcp {
-                    local: self.local,
-                    remote: self.remote,
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期TCP unbind: イベントキュー経由でunbindリクエストを送信
-pub fn unbind_tcp(local: TcpEndpointAddr, remote: TcpEndpointAddr) -> UnbindTcpFuture {
-    unbind_tcp_in(default_runtime(), local, remote)
-}
-
-pub fn unbind_tcp_in(
-    runtime: NetRuntimeHandle,
-    local: TcpEndpointAddr,
-    remote: TcpEndpointAddr,
-) -> UnbindTcpFuture {
-    UnbindTcpFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        local,
-        remote,
-    }
-}
-
-/// 非同期TCPリスナー unbind Future
-pub struct UnbindTcpListenerFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    fd: EndpointFd,
-}
-
-impl core::future::Future for UnbindTcpListenerFuture {
-    type Output = bool;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::UnbindTcpListener {
-                    fd: self.fd,
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期TCPリスナー unbind: イベントキュー経由でunbindリクエストを送信
-pub fn unbind_tcp_listener(fd: EndpointFd) -> UnbindTcpListenerFuture {
-    unbind_tcp_listener_in(default_runtime(), fd)
-}
-
-pub fn unbind_tcp_listener_in(
-    runtime: NetRuntimeHandle,
-    fd: EndpointFd,
-) -> UnbindTcpListenerFuture {
-    UnbindTcpListenerFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        fd,
-    }
-}
-
-// ============================================================================
-// 非同期 IPv6アドレス適用 API
-// ============================================================================
-
-/// 非同期IPv6グローバルアドレス適用 Future
-pub struct ApplyIpv6AddressFuture {
-    runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    sent: bool,
-    addr: crate::net::l3::ipv6::Ipv6Address,
-}
-
-impl core::future::Future for ApplyIpv6AddressFuture {
-    type Output = bool;
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
-                self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::ApplyIpv6Address {
-                    addr: self.addr.octets(),
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                },
-            );
-            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
-                core::task::Poll::Ready(Ok(())) => {
-                    self.sent = true;
-                }
-                core::task::Poll::Ready(Err(_)) => return core::task::Poll::Ready(false),
-                core::task::Poll::Pending => return core::task::Poll::Pending,
-            }
-        }
-
-        poll_command_result(&self.result_slot, &self.waker, cx)
-    }
-}
-
-/// 非同期IPv6グローバルアドレス適用: イベントキュー経由
-pub fn apply_ipv6_global_address(
-    addr: crate::net::l3::ipv6::Ipv6Address,
-) -> ApplyIpv6AddressFuture {
-    apply_ipv6_global_address_in(default_runtime(), addr)
-}
-
-pub fn apply_ipv6_global_address_in(
-    runtime: NetRuntimeHandle,
-    addr: crate::net::l3::ipv6::Ipv6Address,
-) -> ApplyIpv6AddressFuture {
-    ApplyIpv6AddressFuture {
-        runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-        sent: false,
-        addr,
-    }
-}
-
-// ============================================================================
 // 非同期 send_*_on API（インターフェース指定送信・イベントキュー経由）
 // ============================================================================
 
-pub fn enqueue_udp_send_on_with_ttl_in(
+fn enqueue_udp_send_on_with_ttl_in(
     runtime: NetRuntimeHandle,
     if_id: super::NetIfId,
     src_port: u16,
@@ -1303,7 +519,7 @@ pub fn enqueue_udp_send_on_with_ttl_in(
     true
 }
 
-pub fn enqueue_udp_send_on_with_src_in(
+pub(crate) fn enqueue_udp_send_on_with_src_in(
     runtime: NetRuntimeHandle,
     if_id: super::NetIfId,
     src_ip: Ipv4Address,
@@ -1332,7 +548,7 @@ pub fn enqueue_udp_send_on_with_src_in(
     true
 }
 
-pub fn enqueue_tcp_send_on_in(
+pub(crate) fn enqueue_tcp_send_on_in(
     runtime: NetRuntimeHandle,
     if_id: super::NetIfId,
     src_ip: Ipv4Address,
@@ -1355,7 +571,7 @@ pub fn enqueue_tcp_send_on_in(
     true
 }
 
-pub fn enqueue_udp_v6_send_on_in(
+fn enqueue_udp_v6_send_on_in(
     runtime: NetRuntimeHandle,
     if_id: super::NetIfId,
     src_port: u16,
@@ -1384,7 +600,7 @@ pub fn enqueue_udp_v6_send_on_in(
     true
 }
 
-pub fn enqueue_tcp_v6_send_on_in(
+pub(crate) fn enqueue_tcp_v6_send_on_in(
     runtime: NetRuntimeHandle,
     if_id: super::NetIfId,
     src_ip: crate::net::l3::ipv6::Ipv6Address,

@@ -5,7 +5,7 @@
 //!
 //! ## Design Philosophy
 //! - Fine-grained locking: Arc<Mutex<EndpointInner>> for per-socket locking
-//! - RAII resource management: OwnedEndpoint for automatic close
+//! - Endpoint-centered resource management with test-only RAII helpers
 //! - Payload-backed FIFO queues: packet ownership moves without eager flattening
 //! - Read parallelization: RwLock for EndpointManager concurrent reads
 //! - State transition guards: Compile-time detection of invalid transitions
@@ -15,10 +15,11 @@
 //!
 //! ### 汎用ソケット基盤 (プロトコル非依存)
 //! - `types`          — `EndpointFd`, `EndpointAddr`, `EndpointState` 等の基本型
-//! - `endpoint_core`  — `Endpoint` / `OwnedEndpoint` (ソケットのライフサイクル管理)
+//! - `endpoint_core`  — `Endpoint` (ソケットのライフサイクル管理)
 //! - `inner`          — `EndpointInner` / `ProtocolState` (TCP/UDP排他状態)
 //! - `manager`        — `EndpointManager` (FDテーブル・ポート管理)
 //! - `event`          — `NetworkEvent` / イベントキュー
+//! - `event_loop`     — 汎用イベント待機・バッチ処理タスク
 //!
 //! ### TCP 固有サブモジュール
 //! - `tcb`            — `TcpControlBlockEntry` / `TcbTable` (接続追跡テーブル)
@@ -31,11 +32,12 @@
 //! - `ooo_queue`      — Out-of-order セグメントキュー
 //! - `window_scale`   — TCP Window Scaling (RFC 7323)
 //! - `timer_wheel`    — タイマーホイール
-//! - `futures`        — async TcpStream/TcpListener の Future 実装
+// ALLOW: endpoint namespace still exposes several test-only/internal submodules while the L4 split is in progress.
 #![allow(dead_code)]
 // ── 汎用ソケット基盤 ───────────────────────────────────
 pub mod endpoint_core;
 pub mod event;
+pub mod event_loop;
 pub mod inner;
 pub mod manager;
 pub mod types;
@@ -43,7 +45,6 @@ pub mod types;
 // ── TCP 固有サブモジュール ──────────────────────────────
 pub mod congestion;
 pub mod flow_control;
-pub mod futures;
 pub mod handler;
 pub mod ooo_queue;
 pub mod retransmit;
@@ -53,6 +54,8 @@ pub mod tcp_rx;
 pub mod timer_wheel;
 pub mod window_scale;
 
+#[cfg(any(test, feature = "qemu-test-export"))]
+mod async_tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -64,29 +67,8 @@ pub use types::{EndpointAddr, EndpointError, EndpointFd, EndpointState, Endpoint
 // Re-exports: tcb
 pub use tcb::{TcpConnectionState, tcb_table};
 
-// Re-exports: retransmit
-
-// Re-exports: segment
-
 // Re-exports: manager
 pub use manager::{endpoint_manager, init_endpoint_manager, is_endpoint_manager_initialized};
 
-// Re-exports: endpoint
-pub use endpoint_core::{
-    OwnedEndpoint, create_raw_endpoint, create_raw_endpoint_in, create_tcp_endpoint,
-    create_tcp_endpoint_in, create_tcp_server, create_tcp_server_in, create_udp_endpoint,
-    create_udp_endpoint_bound, create_udp_endpoint_bound_in, create_udp_endpoint_in,
-    open_tcp_connection, open_tcp_connection_in,
-};
-// Re-exports: futures
-
 // Re-exports: handler
 pub use event::NetworkEvent;
-
-// Re-exports: tcp_rx
-
-// Re-exports: congestion
-
-// Re-exports: window_scale
-
-// Re-exports: flow_control

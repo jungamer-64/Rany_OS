@@ -1046,7 +1046,7 @@ pub(crate) fn spawn_core_runtime_tasks() {
     spawn_early_network_task(
         "network event task",
         crate::task::Priority::High,
-        crate::net::l4::endpoint::tcp_rx::network_event_task(),
+        crate::net::l4::endpoint::event_loop::network_event_task(),
     );
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)

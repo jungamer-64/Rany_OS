@@ -131,19 +131,19 @@ pub fn net_endpoint_flow_control_probe_timing_smoke() -> bool {
 }
 
 pub fn net_endpoint_futures_write_future_wakes_on_send_smoke() -> bool {
-    crate::net::l4::endpoint::futures::qemu_tests::write_future_wakes_on_send_smoke()
+    crate::net::l4::endpoint::qemu_tests::futures_write_future_wakes_on_send_smoke()
 }
 
-pub fn net_endpoint_futures_recv_packet_zero_copy_via_owned_socket_smoke() -> bool {
-    crate::net::l4::endpoint::futures::qemu_tests::recv_packet_zero_copy_via_owned_socket_smoke()
+pub fn net_endpoint_futures_tcp_stream_read_zero_copy_smoke() -> bool {
+    crate::net::l4::endpoint::qemu_tests::futures_tcp_stream_read_zero_copy_smoke()
 }
 
-pub fn net_endpoint_futures_tcp_packet_stream_multiple_packets_smoke() -> bool {
-    crate::net::l4::endpoint::futures::qemu_tests::tcp_packet_stream_multiple_packets_smoke()
+pub fn net_endpoint_futures_tcp_stream_multiple_reads_smoke() -> bool {
+    crate::net::l4::endpoint::qemu_tests::futures_tcp_stream_multiple_reads_smoke()
 }
 
-pub fn net_endpoint_futures_udp_packet_stream_delivered_smoke() -> bool {
-    crate::net::l4::endpoint::futures::qemu_tests::udp_packet_stream_delivered_smoke()
+pub fn net_endpoint_futures_udp_recv_delivered_smoke() -> bool {
+    crate::net::l4::endpoint::qemu_tests::futures_udp_recv_delivered_smoke()
 }
 
 pub fn net_endpoint_handler_handle_tx_available_requeues_dataready_smoke() -> bool {
@@ -210,8 +210,8 @@ pub fn net_endpoint_segment_tcp_message_length_field_for_checksum_smoke() -> boo
     crate::net::l4::endpoint::segment::qemu_tests::tcp_message_length_field_for_checksum_smoke()
 }
 
-pub fn net_endpoint_socket_owned_socket_raii_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::socket_owned_socket_raii_smoke()
+pub fn net_endpoint_socket_registered_endpoint_smoke() -> bool {
+    crate::net::l4::endpoint::qemu_tests::socket_registered_endpoint_smoke()
 }
 
 pub fn net_endpoint_tcb_tcp_connection_state_smoke() -> bool {

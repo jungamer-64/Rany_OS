@@ -17,7 +17,7 @@ use crate::net::l3::icmp::{
     DestUnreachCode, IcmpEchoBuilder, IcmpProcessor, IcmpResult, RedirectCode,
 };
 use crate::net::l3::icmpv6::{Icmpv6Builder, Icmpv6Processor, Icmpv6Result, Icmpv6Type};
-use crate::net::l3::igmp::{IgmpError, IgmpProcessor, IgmpResult, multicast_ip_to_mac};
+use crate::net::l3::igmp::{IgmpProcessor, IgmpResult, multicast_ip_to_mac};
 use crate::net::l3::ipv4::{
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult,
     Ipv4Processor,
@@ -27,7 +27,7 @@ use crate::net::l3::ipv6::{
     Ipv6PmtuCache, Ipv6ProcessResult, Ipv6Processor,
 };
 use crate::net::l3::ndp::{NdpProcessor, NdpResult};
-use crate::net::l4::tcp::{EndpointAddr as TcpEndpointAddr, TcpError, TcpListener, TcpStream};
+use crate::net::l4::tcp::{EndpointAddr as TcpEndpointAddr, TcpError, TcpStream};
 
 use crate::net::l4::udp::{UdpEndpoint, UdpProcessor, UdpResult};
 use crate::net::obs::{

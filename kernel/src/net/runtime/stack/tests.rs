@@ -177,7 +177,7 @@ where
         completed_clone.store(true, core::sync::atomic::Ordering::Release);
     }));
     executor.spawn(crate::task::Task::new(async {
-        crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+        crate::net::l4::endpoint::event_loop::network_event_task().await;
     }));
 
     let mut output = None;
@@ -213,7 +213,7 @@ where
         completed_clone.store(true, core::sync::atomic::Ordering::Release);
     }));
     executor.spawn(crate::task::Task::new(async move {
-        crate::net::l4::endpoint::tcp_rx::network_event_task_in(runtime).await;
+        crate::net::l4::endpoint::event_loop::network_event_task_in(runtime).await;
     }));
 
     let mut output = None;
@@ -254,8 +254,8 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
     }
     set_panicking(false);
 
-    // Runtime APIs should fail conservatively when the global lock is poisoned
-    // NOTE: These intentionally test the deprecated sync APIs for graceful failure.
+    // Runtime APIs should fail conservatively when the global lock is poisoned.
+    // UDP bind is now handled by the endpoint facade and should remain available.
     assert!(
         run_with_event_task(send_udp(
             1234,
@@ -273,7 +273,12 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
         ))
         .is_err()
     );
-    assert!(run_with_event_task(bind_udp(1234)).is_none());
+    let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+        crate::net::types::InterfaceScope::Any,
+        1234,
+        None,
+    );
+    assert!(socket.is_ok());
 }
 
 #[cfg_attr(test, test_case)]
@@ -307,7 +312,7 @@ pub fn test_send_udp_event_task_zero_copy() {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async {
-            crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+            crate::net::l4::endpoint::event_loop::network_event_task().await;
         }));
 
         let mut output = None;
@@ -366,7 +371,7 @@ pub fn test_send_icmp_event_dispatch_smoke() {
         completed_clone.store(true, core::sync::atomic::Ordering::Release);
     }));
     executor.spawn(crate::task::Task::new(async {
-        crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+        crate::net::l4::endpoint::event_loop::network_event_task().await;
     }));
 
     for _ in 0..100_000 {
@@ -575,7 +580,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async {
-            crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+            crate::net::l4::endpoint::event_loop::network_event_task().await;
         }));
 
         let mut output = None;
@@ -624,7 +629,7 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async {
-            crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+            crate::net::l4::endpoint::event_loop::network_event_task().await;
         }));
 
         let mut output = None;

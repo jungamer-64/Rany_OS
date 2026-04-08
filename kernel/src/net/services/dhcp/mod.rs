@@ -351,17 +351,21 @@ async fn dhcp_v4_drive_task(runtime: Arc<DhcpInterfaceRuntime>) {
 }
 
 async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
-    let socket =
-        match crate::net::runtime::stack::bind_udp_endpoint_in(runtime, DHCP_CLIENT_PORT).await {
-            Some(socket) => socket,
-            None => {
-                log::error!("[NET] DHCPv4 dispatcher failed to bind UDP port 68");
-                runtime_state_for(runtime)
-                    .v4_dispatcher_started
-                    .store(false, Ordering::Release);
-                return;
-            }
-        };
+    let socket = match crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+        runtime,
+        crate::net::types::InterfaceScope::Any,
+        DHCP_CLIENT_PORT,
+        None,
+    ) {
+        Ok(socket) => socket,
+        Err(_) => {
+            log::error!("[NET] DHCPv4 dispatcher failed to bind UDP port 68");
+            runtime_state_for(runtime)
+                .v4_dispatcher_started
+                .store(false, Ordering::Release);
+            return;
+        }
+    };
 
     log::info!("[NET] DHCPv4 dispatcher task started");
 

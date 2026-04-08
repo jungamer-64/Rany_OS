@@ -9,7 +9,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::net::runtime::stack::{bind_udp_endpoint, bind_udp_endpoint_with_token};
 use crate::security::capability::{CAP_NET_ADMIN, CAP_NET_BIND, CAP_NET_RAW, manager};
 use crate::shell::exoshell::types::ExoValue;
 use alloc::boxed::Box;
@@ -1212,17 +1211,25 @@ impl NetNamespace {
             if !grants.iter().any(|g| g.id == t) {
                 return ExoValue::Error(String::from("Permission denied: token not owned"));
             }
-            match bind_udp_endpoint_with_token(port, Some(t)).await {
-                Some(_) => ExoValue::Bool(true),
-                None => ExoValue::Error(String::from("open failed")),
+            match crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+                crate::net::types::InterfaceScope::Any,
+                port,
+                Some(t),
+            ) {
+                Ok(_) => ExoValue::Bool(true),
+                Err(_) => ExoValue::Error(String::from("open failed")),
             }
         } else {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
                 return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
             }
-            match bind_udp_endpoint(port).await {
-                Some(_) => ExoValue::Bool(true),
-                None => ExoValue::Error(String::from("open failed")),
+            match crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+                crate::net::types::InterfaceScope::Any,
+                port,
+                None,
+            ) {
+                Ok(_) => ExoValue::Bool(true),
+                Err(_) => ExoValue::Error(String::from("open failed")),
             }
         }
     }

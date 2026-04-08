@@ -51,7 +51,7 @@ impl NetworkEventHandler {
                 Some(ingress_if_id),
             ) {
                 if let Some(payload) = udp_segment_payload.slice(8, data.len()) {
-                    socket.push_packet_payload(ingress_if_id, remote, payload);
+                    socket.push_packet_payload(ingress_if_id, remote, ttl, payload);
                 } else {
                     log::warn!(
                         "[NET] UDP ingress payload allocation failed for {}:{} -> {}:{}",
@@ -62,19 +62,6 @@ impl NetworkEventHandler {
                     );
                     return EventHandleResult::Success;
                 }
-                found = true;
-            }
-        }
-
-        if !found {
-            // Fallback: try the stack-level UdpProcessor endpoint table.
-            // This handles endpoints created via stack.bind_udp() (e.g. sync DHCP during boot).
-            use crate::net::l3::ipv4::Ipv4Address;
-            let src_v4 = Ipv4Address::new(src_ip);
-            let dst_v4 = Ipv4Address::new(dst_ip);
-            let result = stack.udp_process_raw_payload(udp_segment_payload, src_v4, dst_v4, ttl);
-
-            if matches!(result, crate::net::l4::udp::UdpResult::Delivered) {
                 found = true;
             }
         }
@@ -277,12 +264,8 @@ impl NetworkEventHandler {
             }
         };
 
-        if inner.udp().map_or(false, |u| u.socket.is_some()) {
-            let ttl = inner
-                .udp()
-                .and_then(|u| u.socket.as_ref())
-                .map(|s| s.ttl())
-                .unwrap_or(64);
+        if inner.udp().is_some() {
+            let ttl = inner.udp().map(|udp| udp.ttl).unwrap_or(64);
             let payload_len = payload.total_len();
             if let Err(e) = self.send_udp_payload(local, remote, payload, ttl) {
                 log::info!("UDP: Failed to send packet: {:?}", e);

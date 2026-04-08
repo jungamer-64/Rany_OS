@@ -162,17 +162,19 @@ impl NetworkEventHandler {
         runtime: NetRuntimeHandle,
         local: EndpointAddr,
         remote: EndpointAddr,
+        scope: crate::net::types::InterfaceScope,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> Result<crate::net::l4::tcp::TcpStream, crate::net::l4::tcp::TcpError> {
-        let owned = crate::net::l4::endpoint::create_tcp_endpoint_in(runtime);
-        let endpoint = owned
-            .into_inner()
-            .ok_or(crate::net::l4::tcp::TcpError::InvalidState)?;
+        let endpoint = crate::net::l4::endpoint::endpoint_core::Endpoint::new_registered_in(
+            crate::net::l4::endpoint::EndpointType::Tcp,
+            runtime,
+        );
 
         {
             let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
+            inner.scope = scope;
             inner.ensure_tcp();
             let _ = inner.transition_to(EndpointState::Connecting);
         }
@@ -196,16 +198,18 @@ impl NetworkEventHandler {
         &self,
         runtime: NetRuntimeHandle,
         local: EndpointAddr,
+        scope: crate::net::types::InterfaceScope,
         backlog: u32,
     ) -> Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError> {
-        let owned = crate::net::l4::endpoint::create_tcp_endpoint_in(runtime);
-        let endpoint = owned
-            .into_inner()
-            .ok_or(crate::net::l4::tcp::TcpError::InvalidState)?;
+        let endpoint = crate::net::l4::endpoint::endpoint_core::Endpoint::new_registered_in(
+            crate::net::l4::endpoint::EndpointType::Tcp,
+            runtime,
+        );
 
         {
             let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.local_addr = Some(local);
+            inner.scope = scope;
             inner.ensure_tcp().accept_backlog = backlog as usize;
             inner
                 .transition_to(EndpointState::Bound)

@@ -4,8 +4,9 @@ use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, Ipv4Config, Ipv4PacketMut};
 use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
 use crate::net::l4::endpoint::{
-    EndpointAddr as TcpEndpointAddr, EndpointState, create_tcp_endpoint, init_endpoint_manager,
+    Endpoint, EndpointAddr as TcpEndpointAddr, EndpointState, init_endpoint_manager,
 };
+use crate::net::l4::test_support::new_test_endpoint;
 use crate::net::runtime::manager;
 use crate::net::runtime::stack::{self, NetworkConfig};
 use alloc::collections::BTreeMap;
@@ -87,18 +88,15 @@ fn qemu_prepare_zero_copy_env() -> BridgeStateGuard {
 fn qemu_insert_established_tcp_endpoint(
     local: TcpEndpointAddr,
     remote: TcpEndpointAddr,
-) -> Option<crate::net::l4::endpoint::OwnedEndpoint> {
+) -> Option<Endpoint> {
     init_endpoint_manager();
-    let sock = create_tcp_endpoint();
-    if let Some(endpoint) = sock.endpoint() {
-        let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.local_addr = Some(local);
-        inner.remote_addr = Some(remote);
-        let _ = inner.transition_to(EndpointState::Bound);
-        let _ = inner.transition_to(EndpointState::Connected);
-    } else {
-        return None;
-    }
+    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
+    let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
+    inner.local_addr = Some(local);
+    inner.remote_addr = Some(remote);
+    let _ = inner.transition_to(EndpointState::Bound);
+    let _ = inner.transition_to(EndpointState::Connected);
+    drop(inner);
 
     let _ = tcb_table().remove(local, remote);
     let mut tcb = TcpControlBlockEntry::new(sock.fd(), local, remote);
@@ -110,15 +108,15 @@ fn qemu_insert_established_tcp_endpoint(
 
 #[cfg(feature = "qemu-test-export")]
 fn qemu_zero_copy_prereq_postcheck(
-    sock: &crate::net::l4::endpoint::OwnedEndpoint,
+    sock: &Endpoint,
     local: TcpEndpointAddr,
     remote: TcpEndpointAddr,
 ) -> bool {
     check_batch_timeout(100_000, 1);
-    let endpoint_ready = sock.endpoint().map_or(false, |endpoint| {
-        let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+    let endpoint_ready = {
+        let inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
         inner.state == EndpointState::Connected && inner.recv_payload_bytes() == 0
-    });
+    };
     let tcb_ready = matches!(
         tcb_table().get(local, remote),
         Some(entry) if entry.state == TcpConnectionState::Established && entry.rcv_nxt == 1

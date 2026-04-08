@@ -9,17 +9,21 @@
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
+use crate::net::l4::endpoint::EndpointAddr;
+use crate::net::l4::endpoint::endpoint_core::Endpoint;
+use crate::net::l4::endpoint::event::EventDispatch;
+use crate::net::l4::endpoint::manager::ENDPOINT_MANAGER;
+use crate::net::l4::endpoint::types::{EndpointError, EndpointState, EndpointType};
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::net::types::InterfaceScope;
 use crate::net::types::NetworkError;
-use crate::sync::PoisonLock;
-use alloc::collections::VecDeque;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::task::{Context, Poll};
 use kernel_api::resource::net::PacketPayload;
 
 extern crate alloc;
@@ -76,7 +80,6 @@ fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
 /// UDP header
 mod types;
 pub use types::*;
-mod endpoint_table_impl;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 #[derive(Debug, Clone, Copy)]
@@ -399,436 +402,450 @@ impl UdpAddr {
     }
 }
 
-impl core::fmt::Debug for UdpEndpointInner {
+fn udp_addr_from_endpoint(addr: EndpointAddr) -> UdpAddr {
+    match addr {
+        EndpointAddr::V4 { ip, port } => UdpAddr::new(Ipv4Address::new(ip), port),
+        EndpointAddr::V6 { ip, port } => UdpAddr::new_v6(Ipv6Address::new(ip), port),
+    }
+}
+
+fn endpoint_addr_from_udp(addr: UdpAddr) -> EndpointAddr {
+    match addr {
+        UdpAddr::V4 { ip, port } => EndpointAddr::new(ip.octets(), port),
+        UdpAddr::V6 { ip, port } => EndpointAddr::new_v6(ip.octets(), port),
+    }
+}
+
+fn endpoint_error_to_network(err: EndpointError) -> NetworkError {
+    match err {
+        EndpointError::PermissionDenied => NetworkError::PermissionDenied,
+        EndpointError::PortInUse | EndpointError::AddressInUse | EndpointError::AlreadyBound => {
+            NetworkError::PortInUse
+        }
+        EndpointError::Timeout => NetworkError::Timeout,
+        EndpointError::NotConnected => NetworkError::ConnectionClosed,
+        EndpointError::NetworkUnreachable
+        | EndpointError::HostUnreachable
+        | EndpointError::ProtocolUnreachable => NetworkError::NetworkUnreachable,
+        EndpointError::BufferFull => NetworkError::BufferTooSmall,
+        EndpointError::ResourceExhausted | EndpointError::Internal => NetworkError::LockPoisoned,
+        EndpointError::InvalidArgument
+        | EndpointError::InvalidStateTransition
+        | EndpointError::NotFound
+        | EndpointError::AlreadyConnected
+        | EndpointError::ConnectionRefused
+        | EndpointError::Interrupted => NetworkError::Unknown,
+    }
+}
+
+fn validate_udp_bind_permission(port: u16, token: Option<u64>) -> Result<(), NetworkError> {
+    if port == 0 || port >= 1024 {
+        return Ok(());
+    }
+
+    let subject = crate::task::context::current_subject();
+    let caller = subject.domain.as_u64();
+    if subject.domain == crate::domain::DomainId::KERNEL
+        || crate::security::capability::manager()
+            .has_capability(caller, crate::security::capability::CAP_NET_BIND)
+    {
+        return Ok(());
+    }
+
+    if let Some(token) = token {
+        if crate::security::capability::manager().validate_token(
+            caller,
+            token,
+            crate::security::capability::CAP_NET_BIND,
+        ) {
+            return Ok(());
+        }
+    }
+
+    Err(NetworkError::PermissionDenied)
+}
+
+fn configure_udp_endpoint(
+    endpoint: &Endpoint,
+    scope: InterfaceScope,
+    port: u16,
+    token: Option<u64>,
+) -> Result<(), NetworkError> {
+    let mut inner = endpoint
+        .inner()
+        .lock()
+        .map_err(|_| NetworkError::LockPoisoned)?;
+    inner.local_addr = Some(EndpointAddr::new_v6([0; 16], port));
+    inner.scope = scope;
+    inner.last_ingress_if_id = None;
+    let udp = inner.ensure_udp();
+    udp.ttl = 64;
+    udp.token = token;
+    inner
+        .transition_to(EndpointState::Bound)
+        .map_err(endpoint_error_to_network)
+}
+
+#[derive(Clone)]
+pub struct UdpEndpoint {
+    endpoint: Endpoint,
+    runtime: NetRuntimeHandle,
+    registered: bool,
+}
+
+impl core::fmt::Debug for UdpEndpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("UdpEndpointInner")
-            .field("local_port", &self.local_port)
-            .field("rx_queue_bytes", &self.rx_queue_bytes)
-            .field("closed", &self.closed)
-            .field("token", &self.token)
+        f.debug_struct("UdpEndpoint")
+            .field("fd", &self.endpoint.fd().raw())
+            .field("local_addr", &self.endpoint.local_addr())
+            .field("scope", &self.scope())
             .finish()
     }
 }
 
-/// UDP endpoint state
-pub(crate) struct UdpEndpointInner {
-    /// Local port
-    local_port: u16,
-    /// Interface selection policy for egress
-    scope: InterfaceScope,
-    /// Most recent ingress interface
-    last_ingress_if_id: Option<NetIfId>,
-    /// Receive queue (zero-copy payload + source addr + IP TTL/HopLimit)
-    rx_packet_queue: VecDeque<(NetIfId, UdpAddr, u8, PacketPayload)>,
-    /// Total bytes in receive queue
-    rx_queue_bytes: usize,
-    /// Wakers for async receive
-    wakers: Vec<Waker>,
-    /// Is endpoint closed
-    closed: bool,
-    /// Default TTL for outgoing packets
-    pub(crate) ttl: u8,
-    /// Optional associated grant token id used to authorize this binding
-    token: Option<u64>,
-}
+impl UdpEndpoint {
+    pub(crate) fn bind_registered_with_token(
+        scope: InterfaceScope,
+        port: u16,
+        token: Option<u64>,
+    ) -> Result<Self, NetworkError> {
+        Self::bind_registered_with_token_in(default_runtime(), scope, port, token)
+    }
 
-/// Maximum UDP receive queue size in bytes (e.g., 256 KB per endpoint)
-const MAX_UDP_RX_QUEUE_BYTES: usize = 256 * 1024;
-/// UDP endpoint (async)
-#[derive(Debug)]
-pub struct UdpEndpoint {
-    inner: Arc<PoisonLock<UdpEndpointInner>>,
-}
+    pub(crate) fn bind_registered_with_token_in(
+        runtime: NetRuntimeHandle,
+        scope: InterfaceScope,
+        port: u16,
+        token: Option<u64>,
+    ) -> Result<Self, NetworkError> {
+        validate_udp_bind_permission(port, token)?;
 
-impl Clone for UdpEndpoint {
-    fn clone(&self) -> Self {
-        UdpEndpoint {
-            inner: self.inner.clone(),
+        let guard = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+        let manager = guard.as_ref().ok_or(NetworkError::LockPoisoned)?;
+        let local_port = if port == 0 {
+            manager
+                .allocate_ephemeral_port(EndpointType::Udp)
+                .ok_or(NetworkError::PortInUse)?
+        } else {
+            port
+        };
+
+        if let Some(token) = token {
+            crate::security::capability::manager()
+                .increment_in_flight(token)
+                .map_err(|_| NetworkError::PermissionDenied)?;
+        }
+
+        let endpoint = Endpoint::new_in(EndpointType::Udp, runtime);
+        if let Err(error) = configure_udp_endpoint(&endpoint, scope, local_port, token) {
+            if let Some(token) = token {
+                let _ = crate::security::capability::manager().decrement_in_flight(token);
+            }
+            return Err(error);
+        }
+
+        manager.register(endpoint.clone());
+        if let Err(error) = manager.bind_udp_dual_stack(local_port, scope, endpoint.fd()) {
+            let _ = manager.unregister(endpoint.fd());
+            return Err(endpoint_error_to_network(error));
+        }
+
+        Ok(Self {
+            endpoint,
+            runtime,
+            registered: true,
+        })
+    }
+
+    fn close_internal(&self) {
+        let _ = self.endpoint.close_immediate();
+        if self.registered {
+            if let Some(manager) = ENDPOINT_MANAGER
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                let _ = manager.unregister(self.endpoint.fd());
+            }
+        }
+    }
+
+    pub(crate) fn unregister_scope(scope: InterfaceScope, port: u16) {
+        if let Some(manager) = ENDPOINT_MANAGER
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            let _ = manager.unregister_udp_binding(scope, port);
+        }
+    }
+
+    pub(crate) fn list_registered() -> alloc::vec::Vec<UdpEndpointSnapshot> {
+        let mut snapshots = alloc::vec::Vec::new();
+        if let Some(manager) = ENDPOINT_MANAGER
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            manager.for_each(|endpoint| {
+                if endpoint.socket_type() != EndpointType::Udp {
+                    return;
+                }
+                let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let Some(local_addr) = inner.local_addr else {
+                    return;
+                };
+                let Some(udp) = inner.udp() else {
+                    return;
+                };
+                snapshots.push(UdpEndpointSnapshot {
+                    local_port: local_addr.port(),
+                    rx_queue_len: udp.pending_packets.len(),
+                });
+            });
+        }
+        snapshots
+    }
+
+    pub(crate) fn has_registered_port(port: u16) -> bool {
+        let guard = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+        let Some(manager) = guard.as_ref() else {
+            return false;
+        };
+
+        manager
+            .find_by_port(
+                EndpointType::Udp,
+                crate::net::l4::endpoint::manager::EndpointFamily::Ipv4,
+                port,
+                None,
+            )
+            .is_some()
+            || manager
+                .find_by_port(
+                    EndpointType::Udp,
+                    crate::net::l4::endpoint::manager::EndpointFamily::Ipv6,
+                    port,
+                    None,
+                )
+                .is_some()
+    }
+
+    pub fn new(local_port: u16) -> Result<Self, NetworkError> {
+        Self::new_with_token_and_scope(local_port, None, InterfaceScope::Any)
+    }
+
+    pub fn new_with_scope(local_port: u16, scope: InterfaceScope) -> Result<Self, NetworkError> {
+        Self::new_with_token_and_scope(local_port, None, scope)
+    }
+
+    pub fn new_with_token(local_port: u16, token: Option<u64>) -> Result<Self, NetworkError> {
+        Self::new_with_token_and_scope(local_port, token, InterfaceScope::Any)
+    }
+
+    pub fn new_with_token_and_scope(
+        local_port: u16,
+        token: Option<u64>,
+        scope: InterfaceScope,
+    ) -> Result<Self, NetworkError> {
+        Self::bind_registered_with_token_in(default_runtime(), scope, local_port, token)
+    }
+
+    pub fn scope(&self) -> InterfaceScope {
+        self.endpoint
+            .inner()
+            .lock()
+            .map(|inner| inner.scope)
+            .unwrap_or(InterfaceScope::Any)
+    }
+
+    pub fn local_port(&self) -> u16 {
+        self.endpoint
+            .local_addr()
+            .map(|addr| addr.port())
+            .unwrap_or(0)
+    }
+
+    pub fn set_ttl(&self, ttl: u8) {
+        if let Ok(mut inner) = self.endpoint.inner().lock() {
+            inner.ensure_udp().ttl = ttl;
+        }
+    }
+
+    pub fn ttl(&self) -> u8 {
+        self.endpoint
+            .inner()
+            .lock()
+            .ok()
+            .and_then(|inner| inner.udp().map(|udp| udp.ttl))
+            .unwrap_or(64)
+    }
+
+    pub fn recv(&self) -> UdpRecvFuture {
+        UdpRecvFuture {
+            endpoint: self.endpoint.clone(),
+        }
+    }
+
+    pub fn try_recv(&self) -> Option<(NetIfId, UdpAddr, u8, PacketPayload)> {
+        self.endpoint
+            .try_recv_udp_payload()
+            .ok()
+            .map(|(if_id, addr, ttl, payload)| (if_id, udp_addr_from_endpoint(addr), ttl, payload))
+    }
+
+    pub fn deliver(&self, if_id: NetIfId, src: UdpAddr, ttl: u8, packet: PacketRef) {
+        let _ = self
+            .endpoint
+            .deliver_udp_packet(if_id, endpoint_addr_from_udp(src), ttl, packet);
+    }
+
+    pub fn deliver_payload(&self, if_id: NetIfId, src: UdpAddr, ttl: u8, payload: PacketPayload) {
+        let _ = self
+            .endpoint
+            .deliver_udp_payload(if_id, endpoint_addr_from_udp(src), ttl, payload);
+    }
+
+    pub fn close(&self) {
+        self.close_internal();
+    }
+
+    pub fn is_closed(&self) -> bool {
+        matches!(
+            self.endpoint.state(),
+            EndpointState::Closed | EndpointState::Closing
+        )
+    }
+
+    pub fn join_multicast_group(
+        &self,
+        group: Ipv4Address,
+    ) -> crate::net::runtime::stack::MulticastJoinFuture {
+        crate::net::runtime::stack::join_multicast_in(self.runtime, group)
+    }
+
+    pub fn leave_multicast_group(
+        &self,
+        group: Ipv4Address,
+    ) -> crate::net::runtime::stack::MulticastLeaveFuture {
+        crate::net::runtime::stack::leave_multicast_in(self.runtime, group)
+    }
+
+    pub fn rx_queue_len(&self) -> usize {
+        self.endpoint
+            .inner()
+            .lock()
+            .ok()
+            .and_then(|inner| inner.udp().map(|udp| udp.pending_packets.len()))
+            .unwrap_or(0)
+    }
+
+    pub fn send(&self, payload: PacketPayload, dst: UdpAddr) -> UdpSendFuture {
+        let payload_len = payload.total_len();
+        UdpSendFuture {
+            endpoint: self.endpoint.clone(),
+            payload: Some(payload),
+            payload_len,
+            dst: endpoint_addr_from_udp(dst),
+            dispatch: EventDispatch::new_in(self.runtime),
         }
     }
 }
 
 impl Drop for UdpEndpoint {
     fn drop(&mut self) {
-        // Automatically unbind the port when the last endpoint handle is dropped.
-        // The global table holds one reference (count=1), so if strong_count is 2,
-        // this is the last external handle.
-        // イベントキュー経由で非同期unbindを送信（Drop内では同期ロックを回避）
-        if Arc::strong_count(&self.inner) == 2 {
-            let (port, scope) = match self.inner.lock() {
-                Ok(g) => (g.local_port, g.scope),
-                Err(_) => (0, InterfaceScope::Any),
-            };
-            if port != 0 {
-                crate::net::l4::endpoint::event::enqueue_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::UnbindUdp {
-                        port,
-                        scope,
-                        result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
-                        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-                    },
-                );
-            }
+        let threshold = if self.registered { 2 } else { 1 };
+        if Arc::strong_count(self.endpoint.inner()) > threshold {
+            return;
         }
+
+        self.close_internal();
     }
 }
 
-impl UdpEndpoint {
-    /// Create a new UDP endpoint bound to a port
-    pub fn new(local_port: u16) -> Self {
-        Self::new_with_token_and_scope(local_port, None, InterfaceScope::Any)
-    }
-
-    /// Create a new UDP endpoint bound to a port with a specific scope.
-    pub fn new_with_scope(local_port: u16, scope: InterfaceScope) -> Self {
-        Self::new_with_token_and_scope(local_port, None, scope)
-    }
-
-    /// Create a new UDP endpoint bound to a port and associated with an optional capability token
-    pub fn new_with_token(local_port: u16, token: Option<u64>) -> Self {
-        Self::new_with_token_and_scope(local_port, token, InterfaceScope::Any)
-    }
-
-    /// Create a new UDP endpoint with token and scope.
-    pub fn new_with_token_and_scope(
-        local_port: u16,
-        token: Option<u64>,
-        scope: InterfaceScope,
-    ) -> Self {
-        UdpEndpoint {
-            inner: Arc::new(PoisonLock::new(UdpEndpointInner {
-                local_port,
-                scope,
-                last_ingress_if_id: None,
-                rx_packet_queue: VecDeque::with_capacity(64),
-                rx_queue_bytes: 0,
-                wakers: Vec::new(),
-                closed: false,
-                ttl: 64,
-                token,
-            })),
-        }
-    }
-
-    /// Get the configured interface scope for this endpoint.
-    pub fn scope(&self) -> InterfaceScope {
-        match self.inner.lock() {
-            Ok(g) => g.scope,
-            Err(_) => InterfaceScope::Any,
-        }
-    }
-
-    fn default_send_scope(&self) -> InterfaceScope {
-        match self.inner.lock() {
-            Ok(g) => match g.scope {
-                InterfaceScope::Pinned(if_id) => InterfaceScope::Pinned(if_id),
-                InterfaceScope::Any => g
-                    .last_ingress_if_id
-                    .map(InterfaceScope::Pinned)
-                    .unwrap_or(InterfaceScope::Any),
-            },
-            Err(_) => InterfaceScope::Any,
-        }
-    }
-
-    /// Get local port
-    pub fn local_port(&self) -> u16 {
-        match self.inner.lock() {
-            Ok(g) => g.local_port,
-            Err(_) => {
-                log::error!("[NET] UDP Endpoint poisoned (local_port)");
-                0
-            }
-        }
-    }
-
-    /// Set default TTL for outgoing packets
-    pub fn set_ttl(&self, ttl: u8) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.ttl = ttl;
-        }
-    }
-
-    /// Get default TTL for outgoing packets
-    pub fn ttl(&self) -> u8 {
-        self.inner.lock().map(|g| g.ttl).unwrap_or(64)
-    }
-
-    /// Receive a datagram (async, zero-copy)
-    pub fn recv(&self) -> UdpRecvFuture {
-        UdpRecvFuture {
-            endpoint: self.inner.clone(),
-        }
-    }
-
-    /// Try to receive a datagram synchronously (non-blocking).
-    ///
-    /// ブートストラップ同期コンテキスト（async executor 未起動時）で使用する。
-    /// キューにパケットがなければ `None` を返す。
-    pub fn try_recv(&self) -> Option<(NetIfId, UdpAddr, u8, PacketPayload)> {
-        match self.inner.lock() {
-            Ok(mut inner) => {
-                if let Some((if_id, addr, ttl, pkt)) = inner.rx_packet_queue.pop_front() {
-                    inner.last_ingress_if_id = Some(if_id);
-                    inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(pkt.total_len());
-                    Some((if_id, addr, ttl, pkt))
-                } else {
-                    None
-                }
-            }
-            Err(_) => {
-                log::error!("[NET] UDP Endpoint poisoned (try_recv)");
-                None
-            }
-        }
-    }
-
-    /// Deliver a packet to this socket (called by the network stack)
-    pub fn deliver(&self, if_id: NetIfId, src: UdpAddr, ttl: u8, packet: PacketRef) {
-        self.deliver_payload(if_id, src, ttl, PacketPayload::single(packet));
-    }
-
-    /// Deliver a packet payload to this socket without flattening chained payloads.
-    pub fn deliver_payload(&self, if_id: NetIfId, src: UdpAddr, ttl: u8, payload: PacketPayload) {
-        match self.inner.lock() {
-            Ok(mut inner) => {
-                if inner.closed {
-                    return;
-                }
-
-                let pkt_len = payload.total_len();
-                if inner.rx_packet_queue.len() < 64
-                    && inner.rx_queue_bytes + pkt_len <= MAX_UDP_RX_QUEUE_BYTES
-                {
-                    inner.last_ingress_if_id = Some(if_id);
-                    inner.rx_queue_bytes += pkt_len;
-                    inner.rx_packet_queue.push_back((if_id, src, ttl, payload));
-
-                    for waker in inner.wakers.drain(..) {
-                        waker.wake();
-                    }
-                } else {
-                    log::warn!(
-                        "[NET] UDP socket queue full, dropping packet (len={}, queue_bytes={})",
-                        pkt_len,
-                        inner.rx_queue_bytes
-                    );
-                }
-            }
-            Err(_) => log::error!("[NET] UDP Endpoint poisoned during deliver - dropping packet"),
-        }
-    }
-
-    /// Close the socket
-    pub fn close(&self) {
-        match self.inner.lock() {
-            Ok(mut inner) => {
-                inner.closed = true;
-                inner.rx_packet_queue.clear();
-
-                for waker in inner.wakers.drain(..) {
-                    waker.wake();
-                }
-            }
-            Err(_) => log::error!("[NET] UDP Endpoint poisoned during close - no-op"),
-        }
-    }
-
-    /// Check if socket is closed
-    pub fn is_closed(&self) -> bool {
-        match self.inner.lock() {
-            Ok(g) => g.closed,
-            Err(_) => {
-                log::error!("[NET] UDP Endpoint poisoned (is_closed)");
-                true
-            }
-        }
-    }
-
-    /// Join a multicast group (async, event-queue based)
-    ///
-    /// NETWORK_STACKロックを取得せず、イベントキュー経由で処理する。
-    pub fn join_multicast_group(
-        &self,
-        group: Ipv4Address,
-    ) -> crate::net::runtime::stack::MulticastJoinFuture {
-        crate::net::runtime::stack::join_multicast(group)
-    }
-
-    /// Leave a multicast group (async, event-queue based)
-    ///
-    /// NETWORK_STACKロックを取得せず、イベントキュー経由で処理する。
-    pub fn leave_multicast_group(
-        &self,
-        group: Ipv4Address,
-    ) -> crate::net::runtime::stack::MulticastLeaveFuture {
-        crate::net::runtime::stack::leave_multicast(group)
-    }
-
-    /// Get receive queue length
-    pub fn rx_queue_len(&self) -> usize {
-        match self.inner.lock() {
-            Ok(g) => g.rx_packet_queue.len(),
-            Err(_) => {
-                log::error!("[NET] UDP Endpoint poisoned (rx_queue_len)");
-                0
-            }
-        }
-    }
-
-    /// 【設計書 6.2準拠】非同期UDP送信 (async/await対応)
-    ///
-    /// イベントキュー経由で送信を試みる。async/await構文で利用できる。
-    ///
-    /// # 使用例
-    /// ```ignore
-    /// let sent = socket.send(data, dst).await?;
-    /// ```
-    pub fn send(&self, payload: PacketPayload, dst: UdpAddr) -> UdpSendFuture {
-        UdpSendFuture {
-            inner: self.inner.clone(),
-            payload: Some(payload),
-            dst,
-        }
-    }
-}
-
-/// Future for receiving UDP datagrams
 pub struct UdpRecvFuture {
-    endpoint: Arc<PoisonLock<UdpEndpointInner>>,
+    endpoint: Endpoint,
 }
 
 impl Future for UdpRecvFuture {
     type Output = Option<(NetIfId, UdpAddr, u8, PacketPayload)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.endpoint.lock() {
-            Ok(mut inner) => {
-                if inner.closed {
-                    return Poll::Ready(None);
-                }
-
-                if let Some((if_id, addr, ttl, packet)) = inner.rx_packet_queue.pop_front() {
-                    inner.last_ingress_if_id = Some(if_id);
-                    inner.rx_queue_bytes = inner.rx_queue_bytes.saturating_sub(packet.total_len());
-                    Poll::Ready(Some((if_id, addr, ttl, packet)))
-                } else {
-                    inner.wakers.push(cx.waker().clone());
-                    Poll::Pending
-                }
+        match self.endpoint.try_recv_udp_payload() {
+            Ok((if_id, addr, ttl, payload)) => {
+                Poll::Ready(Some((if_id, udp_addr_from_endpoint(addr), ttl, payload)))
             }
-            Err(_) => {
-                log::error!("[NET] UDP Endpoint poisoned in recv future - returning closed");
-                Poll::Ready(None)
+            Err(EndpointError::Timeout) => {
+                self.endpoint.register_recv_waker(cx.waker().clone());
+                Poll::Pending
             }
+            Err(
+                EndpointError::NotConnected
+                | EndpointError::InvalidStateTransition
+                | EndpointError::NotFound,
+            ) => Poll::Ready(None),
+            Err(_) => Poll::Ready(None),
         }
     }
 }
 
-/// 【設計書 6.2準拠】非同期UDP送信Future
-///
-/// イベントキューが満杯の場合はバックプレッシャーを適用し、
-/// TxAvailableイベントで再ポーリングされるまで待機する。
 pub struct UdpSendFuture {
-    inner: Arc<PoisonLock<UdpEndpointInner>>,
+    endpoint: Endpoint,
     payload: Option<PacketPayload>,
-    dst: UdpAddr,
+    payload_len: usize,
+    dst: EndpointAddr,
+    dispatch: EventDispatch,
 }
 
 impl Future for UdpSendFuture {
     type Output = Result<usize, NetworkError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        // まずエンドポイントの状態を確認
-        let (local_port, ttl, scope) = match this.inner.lock() {
-            Ok(g) => {
-                if g.closed {
-                    return Poll::Ready(Err(NetworkError::ConnectionClosed));
-                }
-                let scope = match g.scope {
-                    InterfaceScope::Pinned(if_id) => InterfaceScope::Pinned(if_id),
-                    InterfaceScope::Any => g
-                        .last_ingress_if_id
-                        .map(InterfaceScope::Pinned)
-                        .unwrap_or(InterfaceScope::Any),
-                };
-                (g.local_port, g.ttl, scope)
+        {
+            let inner = this
+                .endpoint
+                .inner()
+                .lock()
+                .map_err(|_| NetworkError::LockPoisoned)?;
+            if !matches!(inner.state, EndpointState::Bound | EndpointState::Connected) {
+                return Poll::Ready(Err(NetworkError::ConnectionClosed));
             }
-            Err(_) => return Poll::Ready(Err(NetworkError::LockPoisoned)),
-        };
+        }
 
-        let Some(payload) = this.payload.take() else {
-            return Poll::Ready(Err(NetworkError::TransmitFailed));
-        };
-        let payload_len = payload.total_len();
-
-        // イベントキュー経由で非同期送信を試行
-        let sent = match this.dst {
-            UdpAddr::V4 { ip, port } => crate::net::runtime::stack::enqueue_udp_send_scoped_in(
-                crate::net::runtime::default_runtime(),
-                scope,
-                local_port,
-                ip,
-                port,
-                payload,
-                ttl,
-            ),
-            UdpAddr::V6 { ip, port } => crate::net::runtime::stack::enqueue_udp_v6_send_scoped_in(
-                crate::net::runtime::default_runtime(),
-                scope,
-                local_port,
-                Ipv6Address::UNSPECIFIED,
-                ip,
-                port,
-                payload,
-                ttl,
-            ),
-        };
-
-        if sent {
-            Poll::Ready(Ok(payload_len))
-        } else {
-            Poll::Ready(Err(NetworkError::TransmitFailed))
+        match this.dispatch.poll(cx, || {
+            crate::net::l4::endpoint::event::NetworkEvent::SendTo {
+                fd: this.endpoint.fd(),
+                payload: this
+                    .payload
+                    .take()
+                    .expect("UdpSendFuture payload already dispatched"),
+                remote: this.dst,
+            }
+        }) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(this.payload_len)),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(endpoint_error_to_network(err))),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
 
-/// Maximum UDP sockets
-const MAX_UDP_ENDPOINTS: usize = 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum UdpAddressFamily {
-    Ipv4,
-    Ipv6,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct UdpBindingKey {
-    pub(crate) family: UdpAddressFamily,
-    pub(crate) port: u16,
-    pub(crate) scope: InterfaceScope,
-}
-
-/// UDP socket table
-pub struct UdpEndpointTable {
-    /// Sockets indexed by local port
-    endpoints:
-        PoisonLock<alloc::collections::BTreeMap<UdpBindingKey, Arc<PoisonLock<UdpEndpointInner>>>>,
-    /// Statistics
-    stats: UdpStats,
-}
-
-/// UDP statistics
 #[derive(Debug, Default)]
 pub struct UdpStats {
-    /// Datagrams received
-    pub rx_datagrams: core::sync::atomic::AtomicU64,
-    /// Datagrams transmitted
-    pub tx_datagrams: core::sync::atomic::AtomicU64,
-    /// Datagrams dropped (no socket)
-    pub rx_dropped: core::sync::atomic::AtomicU64,
-    /// Checksum errors
-    pub checksum_errors: core::sync::atomic::AtomicU64,
+    pub rx_datagrams: AtomicU64,
+    pub tx_datagrams: AtomicU64,
+    pub rx_dropped: AtomicU64,
+    pub checksum_errors: AtomicU64,
+}
+
+impl UdpStats {
+    pub fn snapshot(&self) -> (u64, u64, u64, u64) {
+        (
+            self.rx_datagrams.load(Ordering::Relaxed),
+            self.tx_datagrams.load(Ordering::Relaxed),
+            self.rx_dropped.load(Ordering::Relaxed),
+            self.checksum_errors.load(Ordering::Relaxed),
+        )
+    }
 }

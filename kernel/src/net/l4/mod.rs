@@ -4,4 +4,6 @@
 
 pub mod endpoint;
 pub mod tcp;
+#[cfg(any(test, feature = "qemu-test-export"))]
+pub(crate) mod test_support;
 pub mod udp;

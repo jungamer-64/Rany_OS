@@ -135,10 +135,12 @@ impl NtpClient {
         let server_ip = self.server.ok_or(EndpointError::InvalidArgument)?;
         let remote = UdpAddr::new(server_ip, NTP_PORT);
 
-        // 非同期UDPバインド: イベントキュー経由でNETWORK_STACKロックを回避
-        let socket = crate::net::runtime::stack::bind_udp_endpoint(0)
-            .await
-            .ok_or(EndpointError::Internal)?;
+        let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token(
+            crate::net::types::InterfaceScope::Any,
+            0,
+            None,
+        )
+        .map_err(|_| EndpointError::Internal)?;
 
         let mut req = NtpHeader::new_client_request();
 

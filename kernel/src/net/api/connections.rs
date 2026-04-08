@@ -69,7 +69,7 @@ impl Future for GetArpCacheFuture {
     type Output = Vec<ArpCacheEntry>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
 
         if !this.sent {
             let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
@@ -127,7 +127,7 @@ impl Future for GetUdpEndpointsFuture {
     type Output = Vec<UdpEndpointInfo>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
 
         if !this.sent {
             let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
@@ -175,7 +175,7 @@ impl Future for GetTcpConnectionsFuture {
     type Output = Vec<TcpConnectionInfo>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
 
         if !this.sent {
             let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
@@ -220,7 +220,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+                crate::net::l4::endpoint::event_loop::network_event_task().await;
             }));
 
             let mut output = None;
@@ -249,7 +249,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+                crate::net::l4::endpoint::event_loop::network_event_task().await;
             }));
 
             let mut output = None;
@@ -277,7 +277,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::tcp_rx::network_event_task().await;
+                crate::net::l4::endpoint::event_loop::network_event_task().await;
             }));
 
             let mut output = None;

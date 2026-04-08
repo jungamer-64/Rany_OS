@@ -181,10 +181,10 @@ impl AccelPreference {
             Some(value) if value.eq_ignore_ascii_case("auto") => Ok(Self::Auto),
             Some(value) if value.eq_ignore_ascii_case("kvm") => Ok(Self::Kvm),
             Some(value) if value.eq_ignore_ascii_case("tcg") => Ok(Self::Tcg),
-            Some(value) => Err(RunError::InvalidAccel(format!(
-                "unsupported QEMU_TEST_ACCEL='{value}'. Expected one of: auto, kvm, tcg."
-            )
-            .into_boxed_str())),
+            Some(value) => Err(RunError::InvalidAccel(
+                format!("unsupported QEMU_TEST_ACCEL='{value}'. Expected one of: auto, kvm, tcg.")
+                    .into_boxed_str(),
+            )),
         }
     }
 }
@@ -742,11 +742,13 @@ fn select_fullboot_accel(
                     AccelPreference::Kvm => "QEMU_TEST_ACCEL=kvm",
                     AccelPreference::Tcg => unreachable!(),
                 };
-                Err(RunError::AccelUnavailable(format!(
-                    "KVM acceleration is unavailable for full-boot tests ({mode}). \
+                Err(RunError::AccelUnavailable(
+                    format!(
+                        "KVM acceleration is unavailable for full-boot tests ({mode}). \
 Set QEMU_TEST_ACCEL=tcg to enable the slower software-emulated path explicitly."
-                )
-                .into_boxed_str()))
+                    )
+                    .into_boxed_str(),
+                ))
             }
         }
         AccelPreference::Tcg => Ok(FullbootAccel::Tcg),
@@ -763,12 +765,14 @@ fn ensure_ovmf_assets(root: &Path) -> Result<(PathBuf, PathBuf), RunError> {
     let code = ovmf_dir.join("OVMF_CODE.fd");
     let vars = ovmf_dir.join("OVMF_VARS.fd");
     if !code.exists() || !vars.exists() {
-        return Err(RunError::FirmwareMissing(format!(
-            "OVMF firmware is missing. Expected '{}' and '{}'.",
-            code.display(),
-            vars.display()
-        )
-        .into_boxed_str()));
+        return Err(RunError::FirmwareMissing(
+            format!(
+                "OVMF firmware is missing. Expected '{}' and '{}'.",
+                code.display(),
+                vars.display()
+            )
+            .into_boxed_str(),
+        ));
     }
     Ok((code, vars))
 }

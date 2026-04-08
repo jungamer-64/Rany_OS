@@ -13,7 +13,6 @@
 use alloc::collections::VecDeque;
 
 use crate::net::l4::tcp::TcpStats;
-use crate::net::l4::udp::UdpEndpoint as RawUdpSocket;
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
@@ -81,18 +80,21 @@ impl Default for TcpProtocolState {
 
 /// UDP固有のプロトコル状態
 pub struct UdpProtocolState {
-    /// UDPソケット
-    pub socket: Option<RawUdpSocket>,
     /// 保留中のパケット
-    pub pending_packets: VecDeque<(NetIfId, EndpointAddr, PacketPayload)>,
+    pub pending_packets: VecDeque<(NetIfId, EndpointAddr, u8, PacketPayload)>,
+    /// 送信時に使うデフォルト TTL / Hop Limit
+    pub ttl: u8,
+    /// この bind に関連付けられた capability token
+    pub token: Option<u64>,
 }
 
 impl UdpProtocolState {
     /// 新規作成
     pub fn new() -> Self {
         Self {
-            socket: None,
             pending_packets: VecDeque::with_capacity(16),
+            ttl: 64,
+            token: None,
         }
     }
 }

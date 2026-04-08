@@ -183,10 +183,13 @@ impl DhcpV6Client {
 
     /// DHCPv6 クライアントのメインループ（非同期）
     pub async fn run(&self) -> Result<(), &'static str> {
-        let socket =
-            crate::net::runtime::stack::bind_udp_endpoint_in(self.runtime, DHCPV6_CLIENT_PORT)
-                .await
-                .ok_or("Failed to bind DHCPv6 socket")?;
+        let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+            self.runtime,
+            crate::net::types::InterfaceScope::Any,
+            DHCPV6_CLIENT_PORT,
+            None,
+        )
+        .map_err(|_| "Failed to bind DHCPv6 socket")?;
 
         log::info!("[NET] DHCPv6 client task started");
 

@@ -123,7 +123,7 @@ This document lists symbols that have been marked deprecated and recommended mig
       - `crate::net::send_icmp_echo` -> `crate::net::api::shell::enqueue_icmp_echo` (sync版は削除済み)
       - `crate::net::get_arp_cache` -> `crate::net::api::shell::get_arp_cache`
   - POSIX-style socket compatibility methods (e.g., `Socket::bind`, `Socket::connect`, `Socket::listen`, `Socket::accept`, `TcpStream::connect`, `TcpListener::bind`/`accept`) ❌ **removed**
-    - Removal: These compatibility wrappers have been removed; migrate to the async-first APIs: `set_local_addr()`, `open_connection()`, `start_listening()`/`next_connection()`, and `dial()`/`TcpStream::dial()`.
+    - Removal: These compatibility wrappers have been removed; migrate to the typed async APIs: `TcpStream::dial()` / `TcpStream::dial_scoped()`, `TcpListener::listen_on()` / `TcpListener::listen_on_scoped()`, `TcpListener::next_connection()`, and `UdpEndpoint::new()` / `UdpEndpoint::new_in()`.
   - `TcpListener::new` ❌ **removed** (was deprecated)
     - Migration: Use `TcpListener::listen_on(addr)`.
   - Legacy TCP processor / control-block internals ❌ **removed**
