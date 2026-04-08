@@ -51,6 +51,24 @@ impl Ipv4Header {
         self.identification = id.to_be_bytes();
     }
 
+    /// Set IPv4 fragmentation flags and fragment offset.
+    pub fn set_fragmentation(
+        &mut self,
+        dont_fragment: bool,
+        more_fragments: bool,
+        fragment_offset: u16,
+    ) {
+        let offset = fragment_offset & 0x1FFF;
+        let mut flags = 0u8;
+        if dont_fragment {
+            flags |= 0x40;
+        }
+        if more_fragments {
+            flags |= 0x20;
+        }
+        self.flags_fragment = [flags | ((offset >> 8) as u8), offset as u8];
+    }
+
     /// Get flags
     pub fn flags(&self) -> u8 {
         self.flags_fragment[0] >> 5

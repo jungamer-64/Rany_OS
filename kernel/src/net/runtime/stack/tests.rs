@@ -1203,6 +1203,95 @@ pub fn test_send_udp_v6_payload_fragments_with_reduced_pmtu() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_send_udp_v4_payload_fragments_with_reduced_pmtu() {
+    reset_test_tx_capture();
+
+    let src_mac = MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x52);
+    let cfg = NetworkConfig {
+        mac: src_mac,
+        ipv4: Ipv4Config {
+            address: Ipv4Address::new([10, 0, 0, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Ipv4Address::ANY,
+            dns: None,
+        },
+        ..NetworkConfig::default()
+    };
+    let mut stack = NetworkStack::new(cfg.clone());
+    stack.set_transmit_fn(record_test_tx_frame);
+
+    let dst = Ipv4Address::new([10, 0, 0, 99]);
+    let dst_mac = MacAddress::from_octets(0x52, 0x54, 0x00, 0xaa, 0xbb, 0xce);
+    let now = stack.current_time();
+    stack.arp.cache().insert(dst, dst_mac, now);
+    stack.ipv4.update_pmtu(dst, 576, now);
+
+    let data = alloc::vec![0xabu8; 2000];
+    let payload = test_payload(&data);
+    let payload_view = crate::net::payload::PacketPayloadView::new(&payload);
+
+    let result = stack.send_udp_raw_payload_scoped_with_src_ttl(
+        crate::net::types::InterfaceScope::Any,
+        cfg.ipv4.address,
+        12345,
+        dst,
+        8080,
+        &payload_view,
+        64,
+    );
+    assert!(result);
+
+    let frames = TEST_TX_FRAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    assert!(frames.len() >= 2);
+
+    let mut expected_offset_units = 0u16;
+    let mut total_fragment_payload = 0usize;
+    let mut identification = None;
+    for (index, frame) in frames.iter().enumerate() {
+        let ipv4_offset = EthernetHeader::SIZE;
+        assert!(frame.len() >= ipv4_offset + crate::net::l3::ipv4::Ipv4Header::MIN_SIZE);
+        assert_eq!(frame[ipv4_offset] >> 4, 4);
+        assert_eq!(frame[ipv4_offset + 9], 17);
+
+        let total_len =
+            u16::from_be_bytes([frame[ipv4_offset + 2], frame[ipv4_offset + 3]]) as usize;
+        assert!(total_len <= 576);
+        let header_len = ((frame[ipv4_offset] & 0x0f) as usize) * 4;
+        let off_and_flags = u16::from_be_bytes([frame[ipv4_offset + 6], frame[ipv4_offset + 7]]);
+        let offset_units = off_and_flags & 0x1fff;
+        let more_fragments = (off_and_flags & 0x2000) != 0;
+        let dont_fragment = (off_and_flags & 0x4000) != 0;
+        assert_eq!(offset_units, expected_offset_units);
+        assert!(!dont_fragment);
+        if index + 1 == frames.len() {
+            assert!(!more_fragments);
+        } else {
+            assert!(more_fragments);
+        }
+
+        let current_id = u16::from_be_bytes([frame[ipv4_offset + 4], frame[ipv4_offset + 5]]);
+        if let Some(id) = identification {
+            assert_eq!(id, current_id);
+        } else {
+            identification = Some(current_id);
+        }
+
+        let fragment_payload_len = total_len.saturating_sub(header_len);
+        if index + 1 != frames.len() {
+            assert_eq!(fragment_payload_len % 8, 0);
+        }
+        total_fragment_payload += fragment_payload_len;
+        expected_offset_units =
+            expected_offset_units.saturating_add((fragment_payload_len / 8) as u16);
+    }
+
+    assert_eq!(total_fragment_payload, 8 + data.len());
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_send_tcp_v6_payload_fragments_with_reduced_pmtu() {
     reset_test_tx_capture();
 
@@ -1292,6 +1381,91 @@ pub fn test_send_tcp_v6_payload_fragments_with_reduced_pmtu() {
         let ipv6_payload_len =
             u16::from_be_bytes([frame[ipv6_offset + 4], frame[ipv6_offset + 5]]) as usize;
         let fragment_payload_len = ipv6_payload_len.saturating_sub(8);
+        if index + 1 != frames.len() {
+            assert_eq!(fragment_payload_len % 8, 0);
+        }
+        total_fragment_payload += fragment_payload_len;
+        expected_offset_units =
+            expected_offset_units.saturating_add((fragment_payload_len / 8) as u16);
+    }
+
+    assert_eq!(total_fragment_payload, segment.len());
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_send_tcp_v4_payload_fragments_with_reduced_pmtu() {
+    reset_test_tx_capture();
+
+    let src_mac = MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x53);
+    let cfg = NetworkConfig {
+        mac: src_mac,
+        ipv4: Ipv4Config {
+            address: Ipv4Address::new([10, 1, 0, 1]),
+            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+            gateway: Ipv4Address::ANY,
+            dns: None,
+        },
+        ..NetworkConfig::default()
+    };
+    let mut stack = NetworkStack::new(cfg.clone());
+    stack.set_transmit_fn(record_test_tx_frame);
+
+    let dst = Ipv4Address::new([10, 1, 0, 88]);
+    let dst_mac = MacAddress::from_octets(0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcf);
+    let now = stack.current_time();
+    stack.arp.cache().insert(dst, dst_mac, now);
+    stack.ipv4.update_pmtu(dst, 576, now);
+
+    let mut segment = alloc::vec![0u8; 2200];
+    segment[0..2].copy_from_slice(&1234u16.to_be_bytes());
+    segment[2..4].copy_from_slice(&443u16.to_be_bytes());
+    segment[12] = 5u8 << 4;
+    segment[13] = 0x18;
+    let segment_payload = test_payload(&segment);
+    let segment_view = crate::net::payload::PacketPayloadView::new(&segment_payload);
+
+    let result = stack.send_tcp_payload(cfg.ipv4.address, dst, &segment_view);
+    assert!(result);
+
+    let frames = TEST_TX_FRAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    assert!(frames.len() >= 2);
+
+    let mut expected_offset_units = 0u16;
+    let mut total_fragment_payload = 0usize;
+    let mut identification = None;
+    for (index, frame) in frames.iter().enumerate() {
+        let ipv4_offset = EthernetHeader::SIZE;
+        assert!(frame.len() >= ipv4_offset + crate::net::l3::ipv4::Ipv4Header::MIN_SIZE);
+        assert_eq!(frame[ipv4_offset] >> 4, 4);
+        assert_eq!(frame[ipv4_offset + 9], 6);
+
+        let total_len =
+            u16::from_be_bytes([frame[ipv4_offset + 2], frame[ipv4_offset + 3]]) as usize;
+        assert!(total_len <= 576);
+        let header_len = ((frame[ipv4_offset] & 0x0f) as usize) * 4;
+        let off_and_flags = u16::from_be_bytes([frame[ipv4_offset + 6], frame[ipv4_offset + 7]]);
+        let offset_units = off_and_flags & 0x1fff;
+        let more_fragments = (off_and_flags & 0x2000) != 0;
+        let dont_fragment = (off_and_flags & 0x4000) != 0;
+        assert_eq!(offset_units, expected_offset_units);
+        assert!(!dont_fragment);
+        if index + 1 == frames.len() {
+            assert!(!more_fragments);
+        } else {
+            assert!(more_fragments);
+        }
+
+        let current_id = u16::from_be_bytes([frame[ipv4_offset + 4], frame[ipv4_offset + 5]]);
+        if let Some(id) = identification {
+            assert_eq!(id, current_id);
+        } else {
+            identification = Some(current_id);
+        }
+
+        let fragment_payload_len = total_len.saturating_sub(header_len);
         if index + 1 != frames.len() {
             assert_eq!(fragment_payload_len % 8, 0);
         }

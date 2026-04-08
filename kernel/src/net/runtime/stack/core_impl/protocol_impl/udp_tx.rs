@@ -70,53 +70,41 @@ impl NetworkStack {
         }
 
         let current_time = self.current_time();
-        let dst_mac = match self.resolve_mac(if_id, dst_ip, config, current_time) {
-            Some(mac) => mac,
-            None => return false,
-        };
-
-        let udp_total_len = 8 + payload.total_len();
-        let mut packet =
-            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + udp_total_len) {
-                Some(packet) => packet,
+        let dst_mac = if dst_ip.is_loopback() {
+            config.mac
+        } else {
+            match self.resolve_mac(if_id, dst_ip, config, current_time) {
+                Some(mac) => mac,
                 None => return false,
-            };
-        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv4);
-
-            let eth_payload = frame.payload_mut();
-            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                ip_packet
-                    .init_header()
-                    .set_source(src_ip)
-                    .set_destination(dst_ip)
-                    .set_protocol(IpProtocol::Udp)
-                    .set_identification(self.ipv4.next_id(dst_ip))
-                    .set_ttl(ttl);
-
-                let ip_payload = ip_packet.payload_mut();
-                if let Some(udp_len) = crate::net::l4::udp::UdpProcessor::build_packet_view(
-                    ip_payload, src_ip, src_port, dst_ip, dst_port, payload,
-                ) {
-                    ip_packet.finalize(udp_len);
-
-                    let ip_len = ip_packet.total_len();
-                    frame.set_payload_len(ip_len);
-
-                    let frame_len = frame.as_bytes().len();
-                    drop(frame);
-                    packet.set_len(frame_len);
-                    if self.transmit_packet_on(if_id, packet) {
-                        return true;
-                    }
-                }
             }
-        }
+        };
+        let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
+        let Some(udp_buffer_len) = 8usize.checked_add(payload.total_len()) else {
+            return false;
+        };
+        let mut udp_datagram = alloc::vec![0u8; udp_buffer_len];
+        let Some(mut udp_packet) = crate::net::l4::udp::UdpPacketMut::new(&mut udp_datagram) else {
+            return false;
+        };
+        udp_packet
+            .set_src_port(src_port)
+            .set_dst_port(dst_port)
+            .write_payload_view(payload);
+        let udp_len = udp_packet.finalize(src_ip, dst_ip);
+        udp_datagram.truncate(udp_len);
 
-        false
+        self.send_ipv4_l4_payload_with_pmtu(
+            if_id,
+            config.mac,
+            dst_mac,
+            src_ip,
+            dst_ip,
+            IpProtocol::Udp,
+            ttl,
+            &udp_datagram,
+            path_mtu,
+        )
+        .is_ok()
     }
 
     pub fn send_udp_raw_payload_scoped_auto_ttl(
@@ -301,13 +289,20 @@ impl NetworkStack {
                     d_ip,
                 )?;
 
-                // Resolve MAC address
-                let dst_mac = self
-                    .resolve_mac(if_id, d_ip, &config, current_time)
-                    .ok_or(crate::net::types::NetworkError::ArpResolutionPending)?;
+                let dst_mac = if d_ip.is_loopback() {
+                    config.mac
+                } else {
+                    self.resolve_mac(if_id, d_ip, &config, current_time)
+                        .ok_or(crate::net::types::NetworkError::ArpResolutionPending)?
+                };
+                let path_mtu = self.effective_ipv4_pmtu(d_ip, current_time);
+                let can_send_unfragmented = data
+                    .len()
+                    .checked_add(8)
+                    .is_some_and(|udp_len| udp_len <= path_mtu.saturating_sub(20));
 
                 // Try zero-copy first
-                if if_id.is_none() {
+                if if_id.is_none() && !d_ip.is_loopback() && can_send_unfragmented {
                     if let Some(result) = self.try_send_udp_zero_copy(
                         &config, src_ip, s_port, d_ip, dst_mac, d_port, data,
                     ) {

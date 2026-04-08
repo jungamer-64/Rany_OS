@@ -611,6 +611,156 @@ impl NetworkStack {
         crate::net::payload::alloc_packet_with_headroom(frame_len.max(60), 0)
     }
 
+    fn effective_ipv4_pmtu(&mut self, dst_ip: Ipv4Address, current_time: u64) -> usize {
+        self.ipv4
+            .get_pmtu(dst_ip, current_time)
+            .max(crate::net::l3::ipv4::PmtuEntry::MIN_MTU)
+            .min(crate::net::runtime::stack::MTU as u16) as usize
+    }
+
+    fn send_ipv4_l4_payload_with_pmtu(
+        &mut self,
+        if_id: Option<NetIfId>,
+        src_mac: MacAddress,
+        dst_mac: MacAddress,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        protocol: IpProtocol,
+        ttl: u8,
+        payload: &[u8],
+        path_mtu: usize,
+    ) -> Result<(), crate::net::types::NetworkError> {
+        const IPV4_HEADER_LEN: usize = crate::net::l3::ipv4::Ipv4Header::MIN_SIZE;
+        const MAX_IPV4_PAYLOAD_LEN: usize = (u16::MAX as usize) - IPV4_HEADER_LEN;
+
+        if payload.len() > MAX_IPV4_PAYLOAD_LEN {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+
+        let Some(unfragmented_payload_limit) = path_mtu.checked_sub(IPV4_HEADER_LEN) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        let identification = self.ipv4.next_id(dst_ip);
+
+        if payload.len() <= unfragmented_payload_limit {
+            let mut packet = self
+                .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV4_HEADER_LEN + payload.len())
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            frame
+                .set_destination(dst_mac)
+                .set_source(src_mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let eth_payload = frame.payload_mut();
+            let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            ip_packet
+                .init_header()
+                .set_source(src_ip)
+                .set_destination(dst_ip)
+                .set_protocol(protocol)
+                .set_identification(identification)
+                .set_ttl(ttl);
+
+            let payload_buf = ip_packet.payload_mut();
+            if payload_buf.len() < payload.len() {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
+            payload_buf[..payload.len()].copy_from_slice(payload);
+            ip_packet.finalize(payload.len());
+
+            let total_len = ip_packet.total_len();
+            frame.set_payload_len(total_len);
+            let frame_len = frame.as_bytes().len();
+            drop(frame);
+            packet.set_len(frame_len);
+
+            if self.transmit_packet_on(if_id, packet) {
+                return Ok(());
+            }
+            return Err(crate::net::types::NetworkError::TransmitFailed);
+        }
+
+        let non_last_fragment_len = unfragmented_payload_limit & !0x7;
+        if non_last_fragment_len == 0 {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
+
+        let mut offset = 0usize;
+        while offset < payload.len() {
+            let remaining = payload.len() - offset;
+            let fragment_data_len = if remaining > unfragmented_payload_limit {
+                non_last_fragment_len.min(remaining)
+            } else {
+                remaining
+            };
+            if fragment_data_len == 0 {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
+            let more_fragments = offset + fragment_data_len < payload.len();
+            if more_fragments && (fragment_data_len % 8 != 0) {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
+
+            let mut packet = self
+                .alloc_ethernet_frame_packet(
+                    EthernetHeader::SIZE + IPV4_HEADER_LEN + fragment_data_len,
+                )
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            frame
+                .set_destination(dst_mac)
+                .set_source(src_mac)
+                .set_ether_type(EtherType::Ipv4);
+
+            let eth_payload = frame.payload_mut();
+            let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            ip_packet
+                .init_header()
+                .set_source(src_ip)
+                .set_destination(dst_ip)
+                .set_protocol(protocol)
+                .set_identification(identification)
+                .set_ttl(ttl);
+            let fragment_offset_units = u16::try_from(offset / 8)
+                .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
+            let Some(header) = ip_packet.header_mut() else {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            };
+            header.set_fragmentation(false, more_fragments, fragment_offset_units);
+
+            let payload_buf = ip_packet.payload_mut();
+            if payload_buf.len() < fragment_data_len {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
+            payload_buf[..fragment_data_len]
+                .copy_from_slice(&payload[offset..offset + fragment_data_len]);
+            ip_packet.finalize(fragment_data_len);
+
+            let total_len = ip_packet.total_len();
+            frame.set_payload_len(total_len);
+            let frame_len = frame.as_bytes().len();
+            drop(frame);
+            packet.set_len(frame_len);
+
+            if !self.transmit_packet_on(if_id, packet) {
+                return Err(crate::net::types::NetworkError::TransmitFailed);
+            }
+
+            offset += fragment_data_len;
+        }
+
+        Ok(())
+    }
+
     fn send_tcp_raw_scoped_with_ttl_payload(
         &mut self,
         scope: crate::net::types::InterfaceScope,
@@ -645,57 +795,34 @@ impl NetworkStack {
             return false;
         };
 
+        let current_time = self.current_time();
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
-            match self.resolve_mac(if_id, dst_ip, &config, self.current_time()) {
+            match self.resolve_mac(if_id, dst_ip, &config, current_time) {
                 Some(mac) => mac,
                 None => return false,
             }
         };
 
         let segment_len = tcp_segment.total_len();
-        let mut packet =
-            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + segment_len) {
-                Some(packet) => packet,
-                None => return false,
-            };
-        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv4);
-
-            let eth_payload = frame.payload_mut();
-            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                ip_packet
-                    .init_header()
-                    .set_source(resolved_src)
-                    .set_destination(dst_ip)
-                    .set_protocol(IpProtocol::Tcp)
-                    .set_identification(self.ipv4.next_id(dst_ip))
-                    .set_ttl(ttl);
-
-                let payload_buf = ip_packet.payload_mut();
-                if payload_buf.len() < segment_len {
-                    return false;
-                }
-                if tcp_segment.copy_all_into(&mut payload_buf[..segment_len]) != segment_len {
-                    return false;
-                }
-
-                ip_packet.finalize(segment_len);
-                let total_len = ip_packet.total_len();
-                let _ = ip_packet;
-                frame.set_payload_len(total_len);
-                let frame_len = frame.as_bytes().len();
-                drop(frame);
-                packet.set_len(frame_len);
-                return self.transmit_packet_on(if_id, packet);
-            }
+        let mut tcp_bytes = alloc::vec![0u8; segment_len];
+        if tcp_segment.copy_all_into(&mut tcp_bytes) != segment_len {
+            return false;
         }
-
-        false
+        let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
+        self.send_ipv4_l4_payload_with_pmtu(
+            if_id,
+            config.mac,
+            dst_mac,
+            resolved_src,
+            dst_ip,
+            IpProtocol::Tcp,
+            ttl,
+            &tcp_bytes,
+            path_mtu,
+        )
+        .is_ok()
     }
 
     pub fn send_tcp_payload(
