@@ -2,7 +2,7 @@
 
 - Status: Reference
 - Audience: scheduler、公平性、OOM、帯域制御の現行方針を確認したい contributor
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [api-reference.md](api-reference.md), [deprecations.md](deprecations.md)
+- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [resilience-recovery.md](resilience-recovery.md), [api-reference.md](api-reference.md), [deprecations.md](deprecations.md)
 
 この文書は ExoRust の runtime QoS / resource accounting の reference です。競合時は
 [../ARCHITECTURE.md](../ARCHITECTURE.md) と
@@ -14,6 +14,9 @@
 - runtime QoS は authority とは別の policy である。
 - Capability や署名検証は「何が許されるか」を決め、quota / OOM / bandwidth shaping は「どの程度まで資源を使えるか」を決める。
 - canonical baseline では、resource accounting は domain 単位で行う。
+- replication / checkpoint / restart policy などの resilience は
+  [resilience-recovery.md](resilience-recovery.md)
+  に分離して扱う。
 
 ## 現行実装
 
@@ -61,22 +64,22 @@
 
 - Capability と priority を結び付けて権限昇格を決めること
 - multi-tenant SLA scheduler を現行 canonical として固定すること
-- 高可用性フェイルオーバー設計を現行 runtime QoS に含めること
 - ad hoc な subsystem ごとの独自 OOM killer を増やすこと
 
 ## 旧設計案からの読み替え
 
 | 旧設計案の項目 | 現行の扱い |
 | --- | --- |
-| CPU 時間クォータ | 現行 reference / 実装あり |
-| メモリ上限 | 現行 reference / 実装あり |
-| OOM victim selection | 現行 reference / 実装あり |
-| I/O 帯域制限（token bucket） | 現行 reference / 実装あり |
-| 高可用性 / レプリケーション | 将来課題。現行 canonical では未採択 |
+| CPU 時間クォータ | Canonical requirement |
+| メモリ上限 | Canonical requirement |
+| OOM victim selection | Canonical requirement |
+| I/O 帯域制限（token bucket） | Canonical requirement |
+| 高可用性 / レプリケーション | [resilience-recovery.md](resilience-recovery.md) の Canonical target |
 
 ## 関連文書
 
 - [../ARCHITECTURE.md](../ARCHITECTURE.md)
 - [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [resilience-recovery.md](resilience-recovery.md)
 - [api-reference.md](api-reference.md)
 - [deprecations.md](deprecations.md)

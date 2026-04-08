@@ -54,6 +54,10 @@
 | [ADR-0005](ADR-0005-exchange-heap-rref-domain-transfer.md) | Exchange Heap + RRef Domain Transfer | Accepted | 2026-04-07 |
 | [ADR-0006](ADR-0006-iommu-mandatory-for-dma.md) | IOMMU Mandatory for DMA | Accepted | 2026-04-07 |
 | [ADR-0007](ADR-0007-variant-a-as-canonical-baseline.md) | Variant A as Canonical Baseline | Accepted | 2026-04-07 |
+| [ADR-0008](ADR-0008-durability-baseline-expands-to-cow-and-dax.md) | Durability Baseline Expands to CoW Snapshot + DAX | Accepted | 2026-04-09 |
+| [ADR-0009](ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md) | Observability Baseline Includes Tracing + Reproducibility | Accepted | 2026-04-09 |
+| [ADR-0010](ADR-0010-runtime-resilience-baseline.md) | Runtime Resilience Baseline | Accepted | 2026-04-09 |
+| [ADR-0011](ADR-0011-locality-power-and-fault-hardening-baseline.md) | Locality / Power / Fault Hardening Baseline | Accepted | 2026-04-09 |
 
 ## 関連文書
 

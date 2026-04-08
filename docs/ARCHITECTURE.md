@@ -29,6 +29,7 @@ ExoRust は、次の三原則を採用します。
 - 実行単位は `Future` ベースのタスクとする。
 - I/O 待機は `await` で表現し、ブロッキング API を避ける。
 - 公平性の最終担保は APIC タイマーによる強制プリエンプションで行う。
+- executor locality は同一 NUMA ノードを優先し、cross-node 移動は最終手段にする。
 - Fuel や静的解析は最適化であり、停止性の唯一の前提にはしない。
 
 ### 1.4 運用前提とハードウェア要件
@@ -69,6 +70,10 @@ ExoRust は、次の三原則を採用します。
 
 この三層をベースに、NUMA ローカル割り当てと per-core 高速化を両立する。
 
+- 既定ポリシーは first-touch と同一 NUMA 優先配置とする。
+- `alloc_on_numa_node(node_id, layout)` 相当の明示ノード指定は canonical target interface とする。
+- task placement、memory placement、device locality は可能な限り同一 NUMA ノードへ寄せる。
+
 ### 3.2 Exchange Heap
 
 - ドメイン間で移動するデータは Exchange Heap に置く。
@@ -84,8 +89,9 @@ ExoRust は、次の三原則を採用します。
 ### 3.4 Durability
 
 - 永続性保証は公開 `fs` API とは分離された `durability` 層で扱う。
-- 現行の reference 対象は WAL と PMEM persist ordering（`clwb` + `sfence`）である。
-- CoW や snapshot は一部ファイルシステム実装で使えても、canonical durability contract の唯一前提にはしない。
+- WAL、recovery / checkpoint、PMEM persist ordering（`clwb` + `sfence`）は canonical requirement とする。
+- CoW snapshot と DAX / PMEM direct mapping は canonical target とする。未実装部分は `implementation pending` と明記する。
+- snapshot や DAX を導入しても、ordering と recovery の authoritative source は durability 層に残す。
 - 詳細は [reference/durability.md](reference/durability.md) を参照する。
 
 ## 4. ドメイン分離と authority
@@ -147,6 +153,13 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 - quota は公平性と資源保護のために使い、Capability や署名検証の代替にしない。
 - 詳細は [reference/runtime-qos.md](reference/runtime-qos.md) を参照する。
 
+### 5.2 Locality と adaptive power
+
+- executor は同一 NUMA ノード内の task / memory / device locality を優先する。
+- task affinity mask と same-node-first scheduling は canonical target interface とする。
+- adaptive polling / interrupt switching と C-state 制御は baseline の一部とする。
+- idle path は HLT / MWAIT 相当の低電力待機を優先し、割り込み到着で即時復帰できることを要求する。
+
 ## 6. ライブアップデートの制約
 
 ライブアップデートは「セル全体の差し替え」と「状態移行」を前提とする。GOT のアトミックスワップだけで安全とはみなさない。
@@ -199,12 +212,22 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 - panic はドメイン境界で封じ込め、呼び出し側には `Err` として返す。
 - ガードページでスタックオーバーフローを捕捉する。
 - 共有ロックは `PoisonLock<T>` を使い、パニック後の連鎖障害を防ぐ。
+- driver domain は restart policy と fault history を持つ recovery unit とする。
+- panic path は double panic を検出し、allocation-free な縮退経路へ切り替える。
+- double fault handler は dedicated IST stack で実行し、triple fault 化を防ぐ。
 
-### 7.1 最低限の可観測性
+### 7.1 Resilience / recovery
 
-- runtime は structured log、watchdog、metrics / snapshot、backtrace を最低限維持する。
+- watchdog / heartbeat / restart policy により、faulted domain を監視して回復判断する。
+- durability checkpoint は canonical requirement とし、domain / cell checkpoint と replication は canonical target とする。
+- driver-domain recovery、secondary promotion、traffic reroute は resilience policy として統一し、QoS には混在させない。
+- 詳細は [reference/resilience-recovery.md](reference/resilience-recovery.md) を参照する。
+
+### 7.2 最低限の可観測性
+
+- runtime は structured log、serial structured log、watchdog、metrics / snapshot、backtrace、static tracepoint、trace ring buffer export を最低限維持する。
 - panic、OOM、watchdog timeout のような縮退経路でも、最小診断情報を残せることを優先する。
-- tracing / BPF / reproducible build のような拡張は baseline では参考扱いとする。
+- safe dynamic tracing と reproducible release artifacts は canonical target とする。
 - 詳細は [reference/observability-debug.md](reference/observability-debug.md) を参照する。
 
 ## 8. セキュリティモデル
@@ -247,14 +270,29 @@ ExoRust では、authority の根は次の組み合わせで定義する。
   [reference/durability.md](reference/durability.md)
 - runtime QoS / resource accounting:
   [reference/runtime-qos.md](reference/runtime-qos.md)
+- resilience / recovery:
+  [reference/resilience-recovery.md](reference/resilience-recovery.md)
 - observability / debug:
   [reference/observability-debug.md](reference/observability-debug.md)
+- benchmark / performance targets:
+  [reference/performance-targets.md](reference/performance-targets.md)
 - ExoLoader / Secure Boot detail:
   [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)
 - 設計サンプル:
   [exorust_design/README.md](exorust_design/README.md)
 
-## 10. 規範文書と参考文書の境界
+## 10. 規範文書と語彙の境界
+
+- `Canonical requirement`:
+  現行 baseline で必須の要件
+- `Canonical target`:
+  採択済みだが段階実装中の目標。未実装部分は `implementation pending` と明記する
+- `Reference`:
+  実装整理、補助設計、公開面の読み替え
+- `Component detail`:
+  下位コンポーネントの詳細実装
+- `Historical archive`:
+  履歴資料。現行正本ではない
 
 - 規範（canonical）:
   - 本書 `ARCHITECTURE.md`

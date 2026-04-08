@@ -13,6 +13,14 @@
 - [kernel_boot_sequence.md](kernel_boot_sequence.md): ブート経路と runtime handoff
 - [LINKER_GUIDELINES.md](LINKER_GUIDELINES.md): リンカ設定と CI 安全策
 
+## 規範ラベル
+
+- `Canonical requirement`: 現行 baseline で必須の要件
+- `Canonical target`: 採択済みだが段階実装中の目標。未実装部分は `implementation pending` と明記する
+- `Reference`: 実装整理、補助設計、公開面の読み替え
+- `Component detail`: 下位コンポーネントの詳細実装
+- `Historical archive`: 履歴資料。現行正本ではない
+
 ## 推奨参照順（最短ルート）
 
 1. [ARCHITECTURE.md](ARCHITECTURE.md)（正本）
@@ -43,6 +51,10 @@
 
 - [decisions/README.md](decisions/README.md): Architecture Decision Record（ADR）索引
 - [decisions/ADR-0007-variant-a-as-canonical-baseline.md](decisions/ADR-0007-variant-a-as-canonical-baseline.md): 既定案（Variant A）採択記録
+- [decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md](decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md): durability baseline 拡張
+- [decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md](decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md): observability baseline 拡張
+- [decisions/ADR-0010-runtime-resilience-baseline.md](decisions/ADR-0010-runtime-resilience-baseline.md): runtime resilience baseline
+- [decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md](decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md): NUMA / power / fault hardening baseline
 - [decisions/archive/README.md](decisions/archive/README.md): superseded / archived ADR 履歴
 
 ## Reference
@@ -50,7 +62,9 @@
 - [reference/api-reference.md](reference/api-reference.md): 公開 API と設計意図
 - [reference/durability.md](reference/durability.md): durability / persistence の現行整理
 - [reference/runtime-qos.md](reference/runtime-qos.md): runtime QoS / resource accounting の現行整理
+- [reference/resilience-recovery.md](reference/resilience-recovery.md): checkpoint / restart / replication / panic hardening の現行整理
 - [reference/observability-debug.md](reference/observability-debug.md): observability / debug の現行整理
+- [reference/performance-targets.md](reference/performance-targets.md): ベンチマーク目標と測定基準
 - [reference/deprecations.md](reference/deprecations.md): 廃止済み API と移行ガイド
 - [reference/lru-block-cache.md](reference/lru-block-cache.md): LRU ブロックキャッシュ実装リファレンス
 

@@ -14,6 +14,8 @@
 - [運用向けアーキテクチャ概要](ARCHITECTURE.md)
 - [開発ガイドライン](kernel_development_guidelines.md)
 - [Capability 設計](capabilities.md)
+- [Resilience / Recovery Reference](reference/resilience-recovery.md)
+- [Performance Targets Reference](reference/performance-targets.md)
 - [設計サンプルコードの位置付け](exorust_design/README.md)
 
 ## 推奨参照順
@@ -37,6 +39,7 @@ Variant B/C や `docs/exorust_design/` は、正本を補う研究・参考資�
 - ドメイン境界 ABI は `#[repr(C)]` 型、opaque handle、token、明示的なシリアライズ形式に限定する。
 - ISR では `wake()` を直接呼ばず、deferred wake で通常コンテキストへ橋渡しする。
 - 通常の障害通知は `Result` ベースとし、panic は最終封じ込め手段として扱う。
+- 採択済みだが段階実装中の項目は `Canonical target / implementation pending` と明記し、保留中の論点と混同しない。
 
 ## 意思決定記録（ADR）
 
@@ -49,6 +52,10 @@ Variant B/C や `docs/exorust_design/` は、正本を補う研究・参考資�
 - [ADR-0005: Exchange Heap + RRef Domain Transfer](decisions/ADR-0005-exchange-heap-rref-domain-transfer.md)
 - [ADR-0006: IOMMU Mandatory for DMA](decisions/ADR-0006-iommu-mandatory-for-dma.md)
 - [ADR-0007: Variant A as Canonical Baseline](decisions/ADR-0007-variant-a-as-canonical-baseline.md)
+- [ADR-0008: Durability Baseline Expands to CoW + DAX](decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md)
+- [ADR-0009: Observability Baseline Includes Tracing + Reproducibility](decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md)
+- [ADR-0010: Runtime Resilience Baseline](decisions/ADR-0010-runtime-resilience-baseline.md)
+- [ADR-0011: Locality / Power / Fault Hardening Baseline](decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md)
 
 ## 推奨案
 

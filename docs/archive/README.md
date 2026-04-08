@@ -22,12 +22,15 @@
 | Capability-first authority | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../capabilities.md](../capabilities.md), [../decisions/ADR-0003-capability-first-authority-model.md](../decisions/ADR-0003-capability-first-authority-model.md) |
 | Exchange Heap / `RRef` | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../decisions/ADR-0005-exchange-heap-rref-domain-transfer.md](../decisions/ADR-0005-exchange-heap-rref-domain-transfer.md) |
 | DMA / IOMMU 必須 | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../decisions/ADR-0006-iommu-mandatory-for-dma.md](../decisions/ADR-0006-iommu-mandatory-for-dma.md) |
-| Durability / persistence（WAL / PMEM / CoW の位置付け） | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../reference/durability.md](../reference/durability.md) |
+| Durability / persistence（WAL / PMEM / CoW / DAX） | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../reference/durability.md](../reference/durability.md), [../decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md](../decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md) |
 | Runtime QoS / resource accounting | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../reference/runtime-qos.md](../reference/runtime-qos.md), [../kernel_development_guidelines.md](../kernel_development_guidelines.md) |
-| Live Update 実運用観点 | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../runbooks/driver-cell-qemu.md](../runbooks/driver-cell-qemu.md) |
-| 実装規約（unsafe 境界、ISR、panic 封じ込め） | [../kernel_development_guidelines.md](../kernel_development_guidelines.md) |
+| Resilience / recovery（checkpoint / restart / replication） | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../reference/resilience-recovery.md](../reference/resilience-recovery.md), [../decisions/ADR-0010-runtime-resilience-baseline.md](../decisions/ADR-0010-runtime-resilience-baseline.md) |
+| Live Update 実運用観点 | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../reference/resilience-recovery.md](../reference/resilience-recovery.md), [../runbooks/driver-cell-qemu.md](../runbooks/driver-cell-qemu.md) |
+| NUMA / power / fault hardening | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../kernel_development_guidelines.md](../kernel_development_guidelines.md), [../decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md](../decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md) |
+| 実装規約（unsafe 境界、ISR、panic 封じ込め、tracing） | [../kernel_development_guidelines.md](../kernel_development_guidelines.md), [../reference/observability-debug.md](../reference/observability-debug.md) |
 | Secure Boot / loader chain | [../ARCHITECTURE.md](../ARCHITECTURE.md), [../../bootloader/FUTURE_ROADMAP.md](../../bootloader/FUTURE_ROADMAP.md) |
-| デバッグ / 可観測性 | [../kernel_development_guidelines.md](../kernel_development_guidelines.md), [../reference/observability-debug.md](../reference/observability-debug.md) |
+| デバッグ / 可観測性 / tracing | [../kernel_development_guidelines.md](../kernel_development_guidelines.md), [../reference/observability-debug.md](../reference/observability-debug.md), [../decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md](../decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md) |
+| ベンチマーク目標 / 成功基準 | [../reference/performance-targets.md](../reference/performance-targets.md) |
 | 参考実装コード | [../exorust_design/README.md](../exorust_design/README.md) |
 | 研究案（HW支援強化） | [../design_variants/variant-b-hybrid-hardware-accelerated.md](../design_variants/variant-b-hybrid-hardware-accelerated.md), [../design_variants/variant-c-pks-mandatory.md](../design_variants/variant-c-pks-mandatory.md) |
 
@@ -36,7 +39,9 @@
 - Secure Boot の canonical requirement は `docs/` 側で要約し、UEFI / Shim / MOK / db / dbx の詳細は
   [../../bootloader/FUTURE_ROADMAP.md](../../bootloader/FUTURE_ROADMAP.md)
   を component detail として参照してください。
-- 旧設計案の roadmap / benchmark / 高可用性設計は、そのまま現行 canonical へ昇格していません。
+- 旧設計案の benchmark / resilience / tracing のうち採択済み項目は、
+  `Canonical requirement` または `Canonical target / implementation pending`
+  として現行 docs に再配置されています。
 
 ## 収録文書
 

@@ -62,12 +62,14 @@ ExoRust Kernelは、従来のPOSIX APIパラダイムを**意図的に排除**�
 
 | 操作 | 目標レイテンシ（ターゲット） | 達成手段 |
 | --- | --- | --- |
-| メモリ割り当て | < 100ns | Buddy Allocator (O(log n)) |
-| ドメイン間IPC | < 50ns | ゼロコピー所有権移動 |
-| syscall相当 | ~10 cycles | 関数呼び出しのみ（Ring遷移なし） |
+| ローカル allocator fast path | < 50ns | per-core allocator / NUMA-local allocation |
+| task handoff / context switch | < 500ns | executor benchmark / runtime trace |
+| syscall相当の direct call | < 100ns | 関数呼び出しのみ（Ring遷移なし） |
 
 > [!NOTE]
-> この表は設計時ターゲットであり、環境・構成・実装段階で実測は変動します。
+> この表は設計時ターゲットの要約です。詳細な benchmark 目標、測定経路、CI gate の扱いは
+> [performance-targets.md](performance-targets.md)
+> を参照してください。
 
 ---
 
@@ -101,6 +103,17 @@ pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024; // Huge Page (PDE)
 pub const PAGE_SIZE_1G: usize = 1024 * 1024 * 1024; // Giga Page (PDPTE)
 ```
 
+#### NUMA-aware allocation（Canonical target）
+
+```rust
+use exorust::mm::numa::alloc_on_numa_node;
+
+// 明示的にNUMAノードを指定した割り当て
+let local = alloc_on_numa_node(node_id, layout)?;
+```
+
+同一 NUMA ノードでの locality を既定とし、cross-node fallback は最終手段として扱います。
+
 #### Exchange Heap（ドメイン間ゼロコピー転送）
 
 ```rust
@@ -133,13 +146,14 @@ let handle: JoinHandle<i32> = spawn(async {
 let result = handle.await?;
 ```
 
-#### Per-Core Executor（Work Stealing）
+#### Per-Core Executor（NUMA-local First Scheduling）
 
 ```rust
 use exorust::task::per_core_executor::PerCoreExecutor;
 
 // 各CPUコアに専用Executor
-// Work Stealingにより負荷分散
+// 同一NUMAノード内を優先して負荷分散し、
+// cross-node migration は最終手段にする
 PerCoreExecutor::current().spawn_local(async {
     // このコアで実行
 });

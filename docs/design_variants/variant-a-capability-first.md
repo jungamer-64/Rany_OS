@@ -11,6 +11,7 @@ ExoRust の canonical baseline です。分離の主軸は Capability、型安�
 | authority の根 | Capability、署名検証、ローダー方針、IOMMU、Framework 境界 |
 | 必要 CPU / HW | x86_64、IOMMU 必須。MPK/PKU/PKS は任意 |
 | live update をまたげるもの | `#[repr(C)]` 状態、handle、token、バージョン付きシリアライズ状態 |
+| 採択済み target | CoW snapshot、DAX / PMEM mapping、replication、dynamic tracing |
 | 位置付け | 既定案 |
 
 ## 1. SAS/SPL の前提
@@ -43,6 +44,8 @@ ExoRust の canonical baseline です。分離の主軸は Capability、型安�
 - 実行単位は `Future` ベースのタスクとする。
 - ISR は event queue に積むだけにし、通常コンテキストで deferred wake する。
 - APIC タイマーによる強制プリエンプションを公平性の下限とする。
+- executor locality は同一 NUMA ノードを優先する。
+- adaptive polling / interrupt switching と C-state 制御を baseline に含める。
 - Fuel や静的解析は追加最適化であり、進行保証の唯一条件にしない。
 
 ## 6. メモリ / DMA
@@ -51,6 +54,8 @@ ExoRust の canonical baseline です。分離の主軸は Capability、型安�
 - DMA は `alloc_dma_buffer()` のような Framework API と IOMMU を必須にする。
 - `Arc<Mutex<T>>` による跨ドメイン共有を既定経路にしない。
 - NUMA ローカル割り当てと per-core cache を優先する。
+- `alloc_on_numa_node(node_id, layout)` 相当の明示ノード指定を canonical target interface とする。
+- WAL / PMEM persist ordering は requirement、CoW snapshot と DAX / PMEM direct mapping は canonical target とする。
 
 ## 7. ライブアップデート
 
@@ -66,6 +71,9 @@ ExoRust の canonical baseline です。分離の主軸は Capability、型安�
 - 通常エラーは `Result` で返す。
 - panic はドメイン境界で封じ込め、呼び出し側には `Err` として通知する。
 - ガードページと `PoisonLock<T>` を使って連鎖障害を抑える。
+- driver domain は restart policy と fault history を持つ recovery unit とする。
+- double panic 検出と dedicated IST stack による double fault hardening を baseline に含める。
+- checkpoint / recovery / replication は canonical target とし、未実装部分は `implementation pending` と明記する。
 
 ## 9. セキュリティ
 
@@ -77,6 +85,7 @@ ExoRust の canonical baseline です。分離の主軸は Capability、型安�
 
 - 主対象は x86_64 サーバー / VM 環境。
 - IOMMU は必須。
+- NUMA トポロジ情報、PMU、ACPI power management は推奨前提。
 - MPK/PKU/PKS は optional feature として扱う。
 
 ## 関連文書

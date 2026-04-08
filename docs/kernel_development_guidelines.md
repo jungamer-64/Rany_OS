@@ -18,6 +18,10 @@ ExoRust カーネルの canonical baseline は
 - [ADR-0005: Exchange Heap + RRef Domain Transfer](decisions/ADR-0005-exchange-heap-rref-domain-transfer.md)
 - [ADR-0006: IOMMU Mandatory for DMA](decisions/ADR-0006-iommu-mandatory-for-dma.md)
 - [ADR-0007: Variant A as Canonical Baseline](decisions/ADR-0007-variant-a-as-canonical-baseline.md)
+- [ADR-0008: Durability Baseline Expands to CoW + DAX](decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md)
+- [ADR-0009: Observability Baseline Includes Tracing + Reproducibility](decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md)
+- [ADR-0010: Runtime Resilience Baseline](decisions/ADR-0010-runtime-resilience-baseline.md)
+- [ADR-0011: Locality / Power / Fault Hardening Baseline](decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md)
 
 ---
 
@@ -45,20 +49,23 @@ ExoRust カーネルの canonical baseline は
 - Exchange Heap を使用してドメイン間でデータを転送する
 - ドメイン内のローカルヒープは該当ドメインのクラッシュ時に自動回収できるよう owner を追跡する
 - DMA バッファは IOMMU 保護下で確保する
+- NUMA ローカル割り当てを既定にし、局所性が必要な箇所では `alloc_on_numa_node(...)` 相当を使う
 
 ### ❌ DON'T
 
 - 生ポインタをドメイン境界の公開 API に載せない
 - Exchange Heap 以外でドメイン間共有メモリを既定経路にしない
 - 任意アドレス DMA や IOMMU バイパスを許可しない
+- locality を無視した ad hoc な cross-node 割り当てを既定化しない
 
 ### 2.1 永続性 / durability
 
 - DO: WAL / PMEM / recovery は `durability` 層に集約する。
 - DO: PMEM の永続化順序は `persist_range()` / `persist_ordered()` 相当の helper 経由で表現する。
-- DO: CoW / snapshot を使う場合も、ファイルシステム局所の実装技法として説明し、canonical durability guarantee と混同しない。
+- DO: CoW / snapshot と DAX / PMEM mapping は `Canonical target` として扱い、未実装部分は `implementation pending` と明記する。
+- DO: checkpoint / recovery contract は durability 層の authoritative source として保つ。
 - DON'T: ファイルシステムやサービス側で durability ordering を ad hoc に再定義しない。
-- DON'T: CoW snapshot を WAL や recovery の代替だとみなさない。
+- DON'T: CoW snapshot や DAX mapping を durability contract の外側にある局所 hack として文書化しない。
 
 ---
 
@@ -112,6 +119,13 @@ fn executor_loop() {
 - DO: OOM victim selection は domain priority と使用量に基づく既定方針を前提にする。
 - DON'T: capability 付与を理由に quota bypass を黙認しない。
 - DON'T: ad hoc な OOM 判定や帯域制御を各 subsystem に重複実装しない。
+
+### 3.4 NUMA locality / power
+
+- DO: executor、memory、device の locality を同一 NUMA ノード優先で設計する。
+- DO: same-node-first scheduling と task affinity mask は `Canonical target` として文書化する。
+- DO: adaptive polling / interrupt switching と C-state 制御を latency floor と両立させる。
+- DON'T: cross-node migration や power policy を driver ごとの ad hoc heuristic に閉じ込めない。
 
 ---
 
@@ -183,6 +197,13 @@ fn call_cross_domain<R>(f: impl FnOnce() -> R) -> Result<R, DomainError> {
 }
 ```
 
+### 6.2 Double panic / fault hardening
+
+- DO: panic path で double panic を検出し、allocation-free な縮退経路へ切り替える。
+- DO: Double Fault ハンドラは dedicated IST stack で動作させる。
+- DO: fatal fault handler では最小ログ経路のみを使い、通常 runtime と同じ複雑性を持ち込まない。
+- DON'T: fatal fault path にヒープ確保や再入可能でないロック取得を追加しない。
+
 ---
 
 ## 7. セキュリティとハードウェア支援
@@ -240,21 +261,24 @@ impl Migratable for DriverStateV2 {
 ### ✅ DO
 
 - 構造化ログを出力する
+- static tracepoint と trace ring buffer export を baseline の一部として維持する
 - DWARF アンワインド情報を保持し、バックトレース取得を可能にする
 - ウォッチドッグ、メトリクス、ハートビートで異常検知を補助する
 - GDB / KGDB の transport と有効化条件を boot 設定と一致させる
+- reproducible release artifacts は `Canonical target` として扱う
 
 ### ❌ DON'T
 
 - デバッグ専用ビルドだけに障害情報出力を依存させない
 - panic / OOM / watchdog timeout の経路で診断ログを欠落させない
-- tracepoint / BPF / reproducible build を canonical requirement として扱わない
+- safe dynamic tracing を canonical target から外さない
+- tracepoint / reproducible build の責務を subsystem ごとに再定義しない
 
 ### 9.1 可観測性 / panic diagnostics のレビュー観点
 
 - DO: `sys.monitor()` / `sys.watchdog()` / `sys.power()` の summary surface を壊さない。
 - DO: panic path で最小ログ経路と backtrace capture が維持されることを確認する。
-- DO: profiler / monitor / watchdog / gdb stub の責務境界を崩さない。
+- DO: profiler / monitor / watchdog / gdb stub / diag(tracepoint) の責務境界を崩さない。
 - DON'T: 内部計測 API の細部を public ABI と誤認させる文書化をしない。
 
 ---
@@ -263,6 +287,7 @@ impl Migratable for DriverStateV2 {
 
 | バージョン | 日付 | 変更内容 |
 | --- | --- | --- |
+| 1.2 | 2026-04-09 | Canonical target / requirement 語彙を導入し、durability、resilience、tracing、NUMA / power、fault hardening の baseline を更新 |
 | 1.1 | 2026-03-28 | Variant A 基準へ再編。Capability-first、live update 制約、optional hardware protection を反映 |
 | 1.0 | 2024-12-16 | 初版: MPK, Quiescent State, ABI, 燃料チェック, 署名を追加 |
 
