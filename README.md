@@ -4,7 +4,7 @@
 - Audience: リポジトリを初めて開く開発者、設計方針を確認したい contributor
 - Related: [ドキュメントハブ](docs/README.md), [アーキテクチャ概要](docs/ARCHITECTURE.md), [設計ハブ](docs/design-hub.md)
 
-ExoRust は、Linux / POSIX 互換を前提にせず、Rust の所有権モデルと型安全性を中核に据えて設計する x86_64 向けカーネル研究プロジェクトです。リポジトリ名は `Rany_OS` ですが、公開文書では `ExoRust` を主表記とします。
+ExoRust は、Linux / POSIX 互換を前提にせず、Rust の所有権モデルと型安全性を中核に据えて設計する x86_64 向けカーネル研究プロジェクトです。
 
 ## プロジェクト概要
 
