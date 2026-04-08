@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::net::l3::icmp::{IcmpBuilder, IcmpPacket, IcmpType};
+use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
 
 impl NetworkStack {
     /// Send ICMP timestamp reply (RFC 792)

@@ -113,7 +113,7 @@ impl NetworkEventHandler {
         }
     }
 
-    pub(super) fn close_endpoint_for_unbind(&self, fd: EndpointFd) {
+    pub(super) fn close_endpoint_now(&self, fd: EndpointFd) {
         let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
         let Some(ref mgr) = *manager else {
             return;
@@ -138,6 +138,9 @@ impl NetworkEventHandler {
             waker.wake();
         }
         let _ = inner.transition_to(EndpointState::Closed);
+        drop(inner);
+
+        let _ = mgr.unregister(fd);
     }
 
     /// ICMP Echo Requestイベント処理（イベントキュー経由で非同期処理）

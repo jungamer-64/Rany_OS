@@ -27,8 +27,6 @@ use crate::net::l3::ipv6::{
     Ipv6PmtuCache, Ipv6ProcessResult, Ipv6Processor,
 };
 use crate::net::l3::ndp::{NdpProcessor, NdpResult};
-use crate::net::l4::tcp::{EndpointAddr as TcpEndpointAddr, TcpError, TcpStream};
-
 use crate::net::l4::udp::{UdpEndpoint, UdpProcessor, UdpResult};
 use crate::net::obs::{
     counters,

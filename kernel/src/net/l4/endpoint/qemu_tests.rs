@@ -242,7 +242,10 @@ pub fn handler_handle_tx_available_requeues_dataready_smoke() -> bool {
 
     let handler = handler::NetworkEventHandler::new();
     if !matches!(
-        handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::TxAvailable),
+        handler.handle_event_in(
+            crate::net::runtime::default_runtime(),
+            crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
+        ),
         handler::EventHandleResult::Success
     ) {
         return false;
@@ -280,10 +283,13 @@ pub fn handler_handle_data_ready_retry_when_no_device_smoke() -> bool {
     drop(inner);
 
     let handler = handler::NetworkEventHandler::new();
-    let _ = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::DataReady {
-        fd,
-        endpoint_type: super::types::EndpointType::Tcp,
-    });
+    let _ = handler.handle_event_in(
+        crate::net::runtime::default_runtime(),
+        crate::net::l4::endpoint::event::NetworkEvent::DataReady {
+            fd,
+            endpoint_type: super::types::EndpointType::Tcp,
+        },
+    );
     true
 }
 

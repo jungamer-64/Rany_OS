@@ -86,7 +86,7 @@ impl Future for GetArpCacheFuture {
             }
         }
 
-        crate::net::runtime::stack::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -144,7 +144,7 @@ impl Future for GetUdpEndpointsFuture {
             }
         }
 
-        crate::net::runtime::stack::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -192,7 +192,7 @@ impl Future for GetTcpConnectionsFuture {
             }
         }
 
-        crate::net::runtime::stack::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 

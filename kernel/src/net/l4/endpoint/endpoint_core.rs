@@ -6,20 +6,15 @@
 //! Socket と関連ヘルパー関数
 
 use alloc::sync::Arc;
-use core::future::Future;
-use core::pin::Pin;
 use core::sync::atomic::Ordering;
-use core::task::{Context, Poll};
 
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::sync::poison_lock::PoisonLock;
 use kernel_api::resource::net::PacketPayload;
 
-use crate::net::l4::tcp::TcpStream;
-
-use super::event::{EventDispatch, NetworkEvent, enqueue_event_ignore_in, enqueue_event_in};
+use super::event::{NetworkEvent, enqueue_event_ignore_in, enqueue_event_in};
 use super::inner::EndpointInner;
 use super::manager::ENDPOINT_MANAGER;
 use super::types::{
@@ -45,11 +40,6 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// 新規エンドポイント作成
-    pub fn new(endpoint_type: EndpointType) -> Self {
-        Self::new_in(endpoint_type, default_runtime())
-    }
-
     /// 指定ランタイムの新規エンドポイント作成
     pub fn new_in(endpoint_type: EndpointType, runtime: NetRuntimeHandle) -> Self {
         let fd = EndpointFd::from_raw(NEXT_FD.fetch_add(1, Ordering::Relaxed));
@@ -69,11 +59,6 @@ impl Endpoint {
         let endpoint = Self::new_in(endpoint_type, runtime);
         register_endpoint(&endpoint);
         endpoint
-    }
-
-    /// 指定FDでエンドポイント作成（Accept用）
-    pub fn new_with_fd(endpoint_type: EndpointType, fd: EndpointFd) -> Self {
-        Self::new_with_fd_in(endpoint_type, fd, default_runtime())
     }
 
     /// 指定FD・ランタイムでエンドポイント作成（Accept用）
@@ -138,21 +123,6 @@ impl Endpoint {
         &self.inner
     }
 
-    /// ローカルアドレスを設定（推奨API）
-    ///
-    /// 【設計書】POSIXのbind()ではなく、set_local_addr()を使用
-    pub fn set_local_addr(&self, addr: EndpointAddr) -> EndpointResult<()> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-        if !inner.state.can_bind() {
-            return Err(EndpointError::AlreadyBound);
-        }
-
-        // ポートの重複チェックはEndpointManagerで行う
-        inner.local_addr = Some(addr);
-        inner.transition_to(EndpointState::Bound)
-    }
-
     /// 次の接続を取得（同期バッファ読み取り）
     ///
     /// Acceptキューから接続を取得する。NETWORK_STACKロックは使用しない。
@@ -207,39 +177,6 @@ impl Endpoint {
         inner.recv_waker = Some(waker);
     }
 
-    /// 送信待ちWakerを登録（非同期用）
-    pub fn register_send_waker(&self, waker: core::task::Waker) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.send_waker = Some(waker);
-    }
-
-    /// 接続受け入れ（内部用 - バックログ経由）
-    pub fn accept_from_backlog(
-        &self,
-        _stream: TcpStream,
-        remote_addr: EndpointAddr,
-    ) -> EndpointResult<Endpoint> {
-        if self.endpoint_type != EndpointType::Tcp {
-            return Err(EndpointError::InvalidArgument);
-        }
-
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-        if inner.state != EndpointState::Listening {
-            return Err(EndpointError::InvalidStateTransition);
-        }
-
-        let new_socket = Endpoint::new_in(EndpointType::Tcp, self.runtime);
-        {
-            let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
-            new_inner.local_addr = inner.local_addr;
-            new_inner.remote_addr = Some(remote_addr);
-            let _ = new_inner.transition_to(EndpointState::Connected);
-        }
-
-        Ok(new_socket)
-    }
-
     /// データ受信（同期バッファ読み取り）
     ///
     /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
@@ -256,27 +193,6 @@ impl Endpoint {
         } else {
             Err(EndpointError::Timeout)
         }
-    }
-
-    /// UDP受信（同期バッファ読み取り）
-    ///
-    /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
-    pub fn try_recv_from(&self, buf: &mut [u8]) -> EndpointResult<(usize, EndpointAddr, NetIfId)> {
-        if self.endpoint_type != EndpointType::Udp {
-            return Err(EndpointError::InvalidArgument);
-        }
-
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-        if let Some((if_id, addr, _ttl, mut data)) =
-            inner.udp_mut().and_then(|u| u.pending_packets.pop_front())
-        {
-            inner.last_ingress_if_id = Some(if_id);
-            let len = data.copy_into(buf);
-            return Ok((len, addr, if_id));
-        }
-
-        Err(EndpointError::Timeout)
     }
 
     /// 受信バッファにデータ追加（内部用）
@@ -312,30 +228,6 @@ impl Endpoint {
             w.wake();
         }
         pushed
-    }
-
-    /// UDPパケット追加（内部用）
-    pub fn push_packet_payload(
-        &self,
-        if_id: NetIfId,
-        addr: EndpointAddr,
-        ttl: u8,
-        payload: PacketPayload,
-    ) {
-        let waker = {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.last_ingress_if_id = Some(if_id);
-            let udp = inner.ensure_udp();
-            udp.ttl = ttl;
-            udp.pending_packets.push_back((if_id, addr, ttl, payload));
-            // 待機中のタスクを起こす準備
-            inner.recv_waker.take()
-        };
-
-        // ロック外でWakerを起こす
-        if let Some(w) = waker {
-            w.wake();
-        }
     }
 
     /// UDPパケット追加（ゼロコピー内部キュー優先）
@@ -479,33 +371,6 @@ impl Endpoint {
         Ok(())
     }
 
-    /// 受信バッファのデータ量
-    #[inline]
-    pub fn recv_buffer_len(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .recv_payload_bytes()
-    }
-
-    /// 送信バッファのデータ量
-    #[inline]
-    pub fn send_buffer_len(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .send_payload_bytes()
-    }
-
-    /// 受信データがあるか
-    #[inline]
-    pub fn has_data(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .has_recv_data()
-    }
-
     /// TCP_NODELAY (Nagleアルゴリズム無効化) を設定
     pub fn set_nodelay(&self, nodelay: bool) -> EndpointResult<()> {
         if self.endpoint_type != EndpointType::Tcp {
@@ -542,79 +407,6 @@ impl Endpoint {
                 priority: priority & 0x3F,
             },
         )
-    }
-
-    /// 非同期クローズ（推奨API）
-    ///
-    /// エンドポイントの状態をクリーンアップし、
-    /// イベントキュー経由でCloseを送出する。
-    ///
-    /// # 使用例
-    /// ```ignore
-    /// endpoint.close().await?;
-    /// ```
-    pub fn close(&self) -> impl core::future::Future<Output = EndpointResult<()>> {
-        CloseFuture::new(self.clone())
-    }
-}
-
-struct CloseFuture {
-    endpoint: Endpoint,
-    cleaned_up: bool,
-    dispatch: EventDispatch,
-}
-
-impl CloseFuture {
-    fn new(endpoint: Endpoint) -> Self {
-        let runtime = endpoint.runtime();
-        Self {
-            endpoint,
-            cleaned_up: false,
-            dispatch: EventDispatch::new_in(runtime),
-        }
-    }
-}
-
-impl Future for CloseFuture {
-    type Output = EndpointResult<()>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-
-        if !this.cleaned_up {
-            {
-                let mut inner = this
-                    .endpoint
-                    .inner()
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-
-                inner.clear_tcp_payload_queues();
-                inner.clear_protocol();
-
-                if let Some(waker) = inner.recv_waker.take() {
-                    waker.wake();
-                }
-                if let Some(waker) = inner.send_waker.take() {
-                    waker.wake();
-                }
-                if let Some(waker) = inner.connect_waker.take() {
-                    waker.wake();
-                }
-
-                let _ = inner.transition_to(EndpointState::Closed);
-            }
-
-            this.cleaned_up = true;
-        }
-
-        match this.dispatch.poll(cx, || NetworkEvent::Close {
-            fd: this.endpoint.fd(),
-        }) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-            Poll::Pending => Poll::Pending,
-        }
     }
 }
 

@@ -371,7 +371,7 @@ pub(crate) fn dhcp_state_snapshot_in(runtime: NetRuntimeHandle) -> DhcpRuntimeSt
 
 pub async fn get_dhcp_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
-        crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
+        crate::net::l4::endpoint::event::new_command_channel::<DhcpRuntimeState>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetDhcpState {
         if_id: Some(if_id.0),
         result_slot,
@@ -382,8 +382,9 @@ pub async fn get_dhcp_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Dhc
 }
 
 pub async fn list_dhcp_states_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceDhcpState> {
-    let (result_slot, waker, command_future) =
-        crate::net::runtime::stack::new_command_channel::<alloc::vec::Vec<InterfaceDhcpState>>();
+    let (result_slot, waker, command_future) = crate::net::l4::endpoint::event::new_command_channel::<
+        alloc::vec::Vec<InterfaceDhcpState>,
+    >();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::ListDhcpStates { result_slot, waker };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
@@ -392,7 +393,7 @@ pub async fn list_dhcp_states_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<I
 
 pub async fn dhcp_state_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
-        crate::net::runtime::stack::new_command_channel::<DhcpRuntimeState>();
+        crate::net::l4::endpoint::event::new_command_channel::<DhcpRuntimeState>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetDhcpState {
         if_id: None,
         result_slot,
@@ -444,7 +445,7 @@ impl Future for DhcpRenewFuture {
             }
         }
 
-        stack::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -492,7 +493,7 @@ impl Future for DhcpReleaseFuture {
             }
         }
 
-        stack::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -540,7 +541,7 @@ impl Future for DhcpDiscoverFuture {
             }
         }
 
-        stack::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -588,7 +589,7 @@ impl Future for DhcpLastDeclinedFuture {
             }
         }
 
-        stack::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -636,7 +637,7 @@ impl Future for DhcpLastReleasedFuture {
             }
         }
 
-        stack::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 

@@ -495,10 +495,16 @@ pub struct UdpEndpoint {
 
 impl core::fmt::Debug for UdpEndpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let scope = self
+            .endpoint
+            .inner()
+            .lock()
+            .map(|inner| inner.scope)
+            .unwrap_or(InterfaceScope::Any);
         f.debug_struct("UdpEndpoint")
             .field("fd", &self.endpoint.fd().raw())
             .field("local_addr", &self.endpoint.local_addr())
-            .field("scope", &self.scope())
+            .field("scope", &scope)
             .finish()
     }
 }
@@ -651,14 +657,6 @@ impl UdpEndpoint {
         Self::bind_registered_with_token_in(default_runtime(), scope, local_port, token)
     }
 
-    pub fn scope(&self) -> InterfaceScope {
-        self.endpoint
-            .inner()
-            .lock()
-            .map(|inner| inner.scope)
-            .unwrap_or(InterfaceScope::Any)
-    }
-
     pub fn local_port(&self) -> u16 {
         self.endpoint
             .local_addr()
@@ -670,15 +668,6 @@ impl UdpEndpoint {
         if let Ok(mut inner) = self.endpoint.inner().lock() {
             inner.ensure_udp().ttl = ttl;
         }
-    }
-
-    pub fn ttl(&self) -> u8 {
-        self.endpoint
-            .inner()
-            .lock()
-            .ok()
-            .and_then(|inner| inner.udp().map(|udp| udp.ttl))
-            .unwrap_or(64)
     }
 
     pub fn recv(&self) -> UdpRecvFuture {
@@ -694,29 +683,6 @@ impl UdpEndpoint {
             .map(|(if_id, addr, ttl, payload)| (if_id, udp_addr_from_endpoint(addr), ttl, payload))
     }
 
-    pub fn deliver(&self, if_id: NetIfId, src: UdpAddr, ttl: u8, packet: PacketRef) {
-        let _ = self
-            .endpoint
-            .deliver_udp_packet(if_id, endpoint_addr_from_udp(src), ttl, packet);
-    }
-
-    pub fn deliver_payload(&self, if_id: NetIfId, src: UdpAddr, ttl: u8, payload: PacketPayload) {
-        let _ = self
-            .endpoint
-            .deliver_udp_payload(if_id, endpoint_addr_from_udp(src), ttl, payload);
-    }
-
-    pub fn close(&self) {
-        self.close_internal();
-    }
-
-    pub fn is_closed(&self) -> bool {
-        matches!(
-            self.endpoint.state(),
-            EndpointState::Closed | EndpointState::Closing
-        )
-    }
-
     pub fn join_multicast_group(
         &self,
         group: Ipv4Address,
@@ -729,15 +695,6 @@ impl UdpEndpoint {
         group: Ipv4Address,
     ) -> crate::net::runtime::stack::MulticastLeaveFuture {
         crate::net::runtime::stack::leave_multicast_in(self.runtime, group)
-    }
-
-    pub fn rx_queue_len(&self) -> usize {
-        self.endpoint
-            .inner()
-            .lock()
-            .ok()
-            .and_then(|inner| inner.udp().map(|udp| udp.pending_packets.len()))
-            .unwrap_or(0)
     }
 
     pub fn send(&self, payload: PacketPayload, dst: UdpAddr) -> UdpSendFuture {

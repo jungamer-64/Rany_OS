@@ -193,20 +193,6 @@ impl NetworkStack {
         }
     }
 
-    /// Try to deliver a raw UDP segment (with header) to a stack-level UdpEndpoint.
-    ///
-    /// This is used as a fallback when ENDPOINT_MANAGER doesn't have a matching
-    /// socket. Returns the UdpResult so the caller can decide what to do on miss.
-    pub fn udp_process_raw_payload(
-        &self,
-        udp_segment: PacketPayload,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        ttl: u8,
-    ) -> UdpResult {
-        self.udp.process_payload(udp_segment, src_ip, dst_ip, ttl)
-    }
-
     pub(crate) fn process_udp_payload_v6(
         &mut self,
         if_id: Option<crate::net::runtime::manager::NetIfId>,
@@ -262,32 +248,12 @@ impl NetworkStack {
             }
         }
     }
-
-    /// Connect to a remote TCP address
-    pub fn connect_tcp(
-        &mut self,
-        local_addr: TcpEndpointAddr,
-        remote_addr: TcpEndpointAddr,
-    ) -> Result<TcpStream, TcpError> {
-        let _ = (local_addr, remote_addr);
-        Err(TcpError::InvalidState)
-    }
-
-    /// Connect to a remote TCP address in a specific runtime
-    pub fn connect_tcp_in(
-        &mut self,
-        runtime: crate::net::runtime::NetRuntimeHandle,
-        local_addr: TcpEndpointAddr,
-        remote_addr: TcpEndpointAddr,
-    ) -> Result<TcpStream, TcpError> {
-        let _ = (runtime, local_addr, remote_addr);
-        Err(TcpError::InvalidState)
-    }
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 mod family_guard_tests {
     use super::*;
+    use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
 
     #[cfg_attr(test, test_case)]
     fn tcp_ipv4_pair_rejects_mixed_family() {

@@ -56,7 +56,7 @@ pub mod tests {
 
     fn endpoint_new_with_fd_impl() {
         let fd = EndpointFd::from_raw(42);
-        let endpoint = Endpoint::new_with_fd(EndpointType::Tcp, fd);
+        let endpoint = Endpoint::new_with_fd_in(EndpointType::Tcp, fd, default_runtime());
 
         assert_eq!(endpoint.fd(), fd);
         assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
@@ -64,7 +64,7 @@ pub mod tests {
     }
 
     fn endpoint_accept_empty_queue_impl() {
-        let endpoint = Endpoint::new(EndpointType::Tcp);
+        let endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
 
         {
             let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -78,7 +78,7 @@ pub mod tests {
     }
 
     fn endpoint_accept_with_connection_impl() {
-        let listen_endpoint = Endpoint::new(EndpointType::Tcp);
+        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
 
         {
             let mut inner = listen_endpoint
@@ -143,7 +143,7 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_accept_with_connection_v6() {
-        let listen_endpoint = Endpoint::new(EndpointType::Tcp);
+        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
 
         // Bound -> Listening
         {
@@ -215,7 +215,7 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_nodelay_inheritance() {
-        let listen_endpoint = Endpoint::new(EndpointType::Tcp);
+        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
         listen_endpoint.set_nodelay(true).unwrap();
 
         // Listening状態に
@@ -279,10 +279,10 @@ pub mod tests {
         inner.remote_addr = Some(remote);
 
         // イベントを処理
-        let res = handler.handle_event(crate::net::l4::endpoint::event::NetworkEvent::SetNoDelay {
-            fd,
-            nodelay: true,
-        });
+        let res = handler.handle_event_in(
+            crate::net::runtime::default_runtime(),
+            crate::net::l4::endpoint::event::NetworkEvent::SetNoDelay { fd, nodelay: true },
+        );
         assert!(matches!(
             res,
             crate::net::l4::endpoint::handler::EventHandleResult::Success
@@ -297,7 +297,7 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_accept_backlog_limit() {
-        let endpoint = Endpoint::new(EndpointType::Tcp);
+        let endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
 
         // Listening状態に
         {
@@ -341,7 +341,8 @@ pub mod tests {
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
 
-        let res = handler.handle_event(
+        let res = handler.handle_event_in(
+            crate::net::runtime::default_runtime(),
             crate::net::l4::endpoint::event::NetworkEvent::TcpBindListener {
                 local,
                 scope: InterfaceScope::Any,
@@ -389,7 +390,8 @@ pub mod tests {
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
 
-        let res = handler.handle_event(
+        let res = handler.handle_event_in(
+            crate::net::runtime::default_runtime(),
             crate::net::l4::endpoint::event::NetworkEvent::TcpConnectStream {
                 local,
                 remote,
@@ -431,7 +433,7 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_next_incoming_pins_scope_to_ingress_interface() {
-        let listen_endpoint = Endpoint::new(EndpointType::Tcp);
+        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
         {
             let mut inner = listen_endpoint
                 .inner()
@@ -550,7 +552,11 @@ pub mod tests {
     pub fn test_raw_endpoint_prefers_pinned_scope_over_any() {
         let manager = crate::net::l4::endpoint::manager::EndpointManager::new();
 
-        let wildcard = Endpoint::new_with_fd(EndpointType::Raw, EndpointFd::from_raw(920));
+        let wildcard = Endpoint::new_with_fd_in(
+            EndpointType::Raw,
+            EndpointFd::from_raw(920),
+            default_runtime(),
+        );
         {
             let mut inner = wildcard.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.scope = InterfaceScope::Any;
@@ -564,7 +570,11 @@ pub mod tests {
                 .is_ok()
         );
 
-        let pinned = Endpoint::new_with_fd(EndpointType::Raw, EndpointFd::from_raw(921));
+        let pinned = Endpoint::new_with_fd_in(
+            EndpointType::Raw,
+            EndpointFd::from_raw(921),
+            default_runtime(),
+        );
         {
             let mut inner = pinned.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.scope = InterfaceScope::Pinned(NetIfId(7));

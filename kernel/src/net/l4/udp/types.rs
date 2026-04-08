@@ -111,16 +111,6 @@ impl UdpProcessor {
         self.process_impl(resolved_if_id, data, src_ip, dst_ip, ttl)
     }
 
-    pub fn process(
-        &self,
-        data: &[u8],
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        ttl: u8,
-    ) -> UdpResult {
-        self.process_on(None, data, src_ip, dst_ip, ttl)
-    }
-
     fn process_impl(
         &self,
         if_id: NetIfId,
@@ -183,16 +173,6 @@ impl UdpProcessor {
         self.process_v6_impl(resolved_if_id, data, src_ip, dst_ip, ttl)
     }
 
-    pub fn process_v6(
-        &self,
-        data: &[u8],
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        ttl: u8,
-    ) -> UdpResult {
-        self.process_v6_on(None, data, src_ip, dst_ip, ttl)
-    }
-
     fn process_v6_impl(
         &self,
         if_id: NetIfId,
@@ -252,17 +232,6 @@ impl UdpProcessor {
         self.process_with_packet_impl(resolved_if_id, data, src_ip, dst_ip, packet, ttl)
     }
 
-    pub fn process_with_packet(
-        &self,
-        data: &[u8],
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        packet: PacketRef,
-        ttl: u8,
-    ) -> UdpResult {
-        self.process_with_packet_on(None, data, src_ip, dst_ip, packet, ttl)
-    }
-
     fn process_with_packet_impl(
         &self,
         if_id: NetIfId,
@@ -315,16 +284,6 @@ impl UdpProcessor {
     ) -> UdpResult {
         let resolved_if_id = resolve_ingress_if_id(if_id);
         self.process_payload_impl(resolved_if_id, payload, src_ip, dst_ip, ttl)
-    }
-
-    pub fn process_payload(
-        &self,
-        payload: PacketPayload,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        ttl: u8,
-    ) -> UdpResult {
-        self.process_payload_on(None, payload, src_ip, dst_ip, ttl)
     }
 
     fn process_payload_impl(
@@ -385,17 +344,6 @@ impl UdpProcessor {
         self.process_with_packet_v6_impl(resolved_if_id, data, src_ip, dst_ip, packet, ttl)
     }
 
-    pub fn process_with_packet_v6(
-        &self,
-        data: &[u8],
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        packet: PacketRef,
-        ttl: u8,
-    ) -> UdpResult {
-        self.process_with_packet_v6_on(None, data, src_ip, dst_ip, packet, ttl)
-    }
-
     fn process_with_packet_v6_impl(
         &self,
         if_id: NetIfId,
@@ -448,16 +396,6 @@ impl UdpProcessor {
     ) -> UdpResult {
         let resolved_if_id = resolve_ingress_if_id(if_id);
         self.process_payload_v6_impl(resolved_if_id, payload, src_ip, dst_ip, ttl)
-    }
-
-    pub fn process_payload_v6(
-        &self,
-        payload: PacketPayload,
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        ttl: u8,
-    ) -> UdpResult {
-        self.process_payload_v6_on(None, payload, src_ip, dst_ip, ttl)
     }
 
     fn process_payload_v6_impl(

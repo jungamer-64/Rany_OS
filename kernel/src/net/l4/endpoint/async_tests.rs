@@ -379,7 +379,7 @@ pub fn test_udp_recv_delivered() {
     packet.set_len(len);
 
     let packet_data = alloc::vec::Vec::from(packet.data());
-    let res = processor.process_with_packet(&packet_data, src_ip, dst_ip, packet, 255);
+    let res = processor.process_with_packet_on(None, &packet_data, src_ip, dst_ip, packet, 255);
     assert_eq!(res, crate::net::l4::udp::UdpResult::Delivered);
 
     static WAKE_COUNT2: AtomicUsize = AtomicUsize::new(0);
@@ -422,13 +422,14 @@ pub fn test_udp_try_recv_from_reads_zero_copy_socket_queue() {
     packet.set_len(len);
 
     let packet_data = alloc::vec::Vec::from(packet.data());
-    let res = processor.process_with_packet(&packet_data, src_ip, dst_ip, packet, 128);
+    let res = processor.process_with_packet_on(None, &packet_data, src_ip, dst_ip, packet, 128);
     assert_eq!(res, crate::net::l4::udp::UdpResult::Delivered);
 
+    let (if_id, addr, _ttl, payload) = endpoint
+        .try_recv_udp_payload()
+        .expect("try_recv_udp_payload should read UDP socket queue");
     let mut buf = [0u8; 32];
-    let (len, addr, if_id) = endpoint
-        .try_recv_from(&mut buf)
-        .expect("try_recv_from should read UDP socket queue");
+    let len = crate::net::payload::PacketPayloadView::new(&payload).copy_into(&mut buf);
     assert_eq!(&buf[..len], b"zero-copy");
     assert_eq!(addr, EndpointAddr::new([127, 0, 0, 1], 54321));
     assert_eq!(if_id, crate::net::runtime::manager::NetIfId::default());
@@ -464,13 +465,14 @@ pub fn test_udp_try_recv_from_reads_zero_copy_socket_queue_v6() {
     packet.set_len(len);
 
     let packet_data = alloc::vec::Vec::from(packet.data());
-    let res = processor.process_with_packet_v6(&packet_data, src_ip, dst_ip, packet, 64);
+    let res = processor.process_with_packet_v6_on(None, &packet_data, src_ip, dst_ip, packet, 64);
     assert_eq!(res, crate::net::l4::udp::UdpResult::Delivered);
 
+    let (if_id, addr, _ttl, payload) = endpoint
+        .try_recv_udp_payload()
+        .expect("try_recv_udp_payload should read UDP socket queue");
     let mut buf = [0u8; 32];
-    let (len, addr, if_id) = endpoint
-        .try_recv_from(&mut buf)
-        .expect("try_recv_from should read UDP socket queue");
+    let len = crate::net::payload::PacketPayloadView::new(&payload).copy_into(&mut buf);
     assert_eq!(&buf[..len], b"zero-copy-v6");
     assert_eq!(
         addr,

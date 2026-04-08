@@ -212,7 +212,6 @@ struct TcpListenerBindDispatchFuture {
     addr: EndpointAddr,
     scope: InterfaceScope,
     backlog: u32,
-    token: Option<u64>,
 }
 
 impl TcpListenerBindDispatchFuture {
@@ -221,7 +220,6 @@ impl TcpListenerBindDispatchFuture {
         scope: InterfaceScope,
         addr: EndpointAddr,
         backlog: u32,
-        token: Option<u64>,
     ) -> Self {
         let (result_slot, waker) = new_tcp_command_channel();
         Self {
@@ -232,7 +230,6 @@ impl TcpListenerBindDispatchFuture {
             addr,
             scope,
             backlog,
-            token,
         }
     }
 }
@@ -245,26 +242,14 @@ impl Future for TcpListenerBindDispatchFuture {
         let addr = self.addr;
         let scope = self.scope;
         let backlog = self.backlog;
-        let token = self.token;
         let result_slot = self.result_slot.clone();
         let waker = self.waker.clone();
-
-        let event = match token {
-            Some(token) => NetworkEvent::TcpBindListenerWithToken {
-                local: addr,
-                scope,
-                backlog,
-                token: Some(token),
-                result_slot: result_slot.clone(),
-                waker: waker.clone(),
-            },
-            None => NetworkEvent::TcpBindListener {
-                local: addr,
-                scope,
-                backlog,
-                result_slot: result_slot.clone(),
-                waker: waker.clone(),
-            },
+        let event = NetworkEvent::TcpBindListener {
+            local: addr,
+            scope,
+            backlog,
+            result_slot: result_slot.clone(),
+            waker: waker.clone(),
         };
 
         let sent = &mut self.sent;
@@ -718,48 +703,7 @@ impl TcpListener {
         addr: EndpointAddr,
         backlog: u32,
     ) -> Result<Self, TcpError> {
-        TcpListenerBindDispatchFuture::new(runtime, scope, addr, backlog, None).await
-    }
-
-    pub async fn listen_on_with_token(
-        addr: EndpointAddr,
-        token: Option<u64>,
-    ) -> Result<Self, TcpError> {
-        Self::listen_on_with_token_in(default_runtime(), addr, token).await
-    }
-
-    pub async fn listen_on_with_token_in(
-        runtime: NetRuntimeHandle,
-        addr: EndpointAddr,
-        token: Option<u64>,
-    ) -> Result<Self, TcpError> {
-        Self::listen_on_scoped_with_token_in(
-            runtime,
-            InterfaceScope::Any,
-            addr,
-            crate::net::l4::endpoint::inner::EndpointInner::DEFAULT_BACKLOG as u32,
-            token,
-        )
-        .await
-    }
-
-    pub async fn listen_on_scoped_with_token(
-        addr: EndpointAddr,
-        scope: InterfaceScope,
-        backlog: u32,
-        token: Option<u64>,
-    ) -> Result<Self, TcpError> {
-        Self::listen_on_scoped_with_token_in(default_runtime(), scope, addr, backlog, token).await
-    }
-
-    pub async fn listen_on_scoped_with_token_in(
-        runtime: NetRuntimeHandle,
-        scope: InterfaceScope,
-        addr: EndpointAddr,
-        backlog: u32,
-        token: Option<u64>,
-    ) -> Result<Self, TcpError> {
-        TcpListenerBindDispatchFuture::new(runtime, scope, addr, backlog, token).await
+        TcpListenerBindDispatchFuture::new(runtime, scope, addr, backlog).await
     }
 
     pub fn local_addr(&self) -> EndpointAddr {
@@ -789,10 +733,8 @@ impl Drop for TcpListener {
 
         enqueue_event_ignore_in(
             self.runtime,
-            NetworkEvent::UnbindTcpListener {
+            NetworkEvent::Close {
                 fd: self.endpoint.fd(),
-                result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
-                waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
             },
         );
     }

@@ -15,8 +15,8 @@ use super::tcb::tcb_table;
 use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use kernel_api::resource::net::PacketPayload;
 
 mod common;
@@ -49,30 +49,12 @@ impl NetworkEventHandler {
         }
     }
 
-    /// イベントを処理（フォールバックパス）
-    ///
-    /// ## 概要
-    /// スタックロックの取得を試み、成功時は`handle_event_with_stack()`に委譲する。
-    /// ロック取得に失敗した場合のみ、スタック非依存の`handle_event_stackless()`へ。
-    ///
-    /// ## ⚠️ 使用上の注意
-    /// 通常の非同期パスでは `network_event_task()` がスタックロックを保持した状態で
-    /// 直接 `handle_event_with_stack()` を呼び出すため、この関数は呼ばれない。
-    /// この関数は以下のケースでのみ使用される：
-    /// - `network_event_task()` のフォールバックパス（スタック初期化前）
-    /// - テスト/異常系でイベント処理を直接呼び出した場合
-    ///
-    /// asyncコンテキストから直接呼び出す場合、スタックロックの二重取得に注意すること。
-    pub fn handle_event(&self, event: NetworkEvent) -> EventHandleResult {
-        self.handle_event_in(default_runtime(), event)
-    }
-
     pub fn handle_event_in(
         &self,
         runtime: NetRuntimeHandle,
         event: NetworkEvent,
     ) -> EventHandleResult {
-        // 最適パス: スタックロックを1回取得し、handle_event_with_stack() に委譲
+        // 最適パス: スタックロックを1回取得し、handle_event_with_stack_in() に委譲
         // これにより、各イベントが個別にロックを取得する非効率なパターンを排除する
         if let Ok(mut stack_guard) = runtime.context().stack.lock() {
             if let Some(ref mut stack) = *stack_guard {
@@ -83,14 +65,6 @@ impl NetworkEventHandler {
         // フォールバック: スタック未初期化またはロック取得失敗時
         // スタック非依存のイベントのみ処理する（ロック再取得を完全に回避）
         self.handle_event_stackless_in(runtime, event)
-    }
-
-    /// スタックロックなしで処理可能なイベントのみを処理するフォールバックパス
-    ///
-    /// スタック依存のイベントはエラーを返すか、結果スロットにエラーを書き込んで
-    /// Wakerを起床する。これにより、非同期Futureがデッドロックせずに完了する。
-    fn handle_event_stackless(&self, event: NetworkEvent) -> EventHandleResult {
-        self.handle_event_stackless_in(default_runtime(), event)
     }
 
     fn handle_event_stackless_in(
@@ -107,11 +81,9 @@ impl NetworkEventHandler {
             }
             NetworkEvent::TxAvailable => self.handle_tx_available(),
             NetworkEvent::Close { fd } => self.handle_close(fd),
-            NetworkEvent::SendTo {
-                fd,
-                payload,
-                remote,
-            } => self.handle_send_to(fd, remote, payload),
+            NetworkEvent::SendTo { .. } => {
+                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
+            }
             NetworkEvent::SetNoDelay { fd, nodelay } => self.handle_set_nodelay(fd, nodelay),
             NetworkEvent::SetPriority { fd, priority } => self.handle_set_priority(fd, priority),
             NetworkEvent::IcmpEchoReply {
@@ -148,15 +120,6 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpBindListenerWithToken {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(Err(crate::net::l4::tcp::TcpError::InvalidState));
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::MulticastJoin {
                 result_slot, waker, ..
             } => {
@@ -167,24 +130,6 @@ impl NetworkEventHandler {
                 EventHandleResult::Success
             }
             NetworkEvent::MulticastLeave {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(false);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UnbindTcp {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(false);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UnbindTcpListener {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -453,15 +398,6 @@ impl NetworkEventHandler {
         }
     }
 
-    /// スタックロック保持状態でイベントを処理（効率化用）
-    pub fn handle_event_with_stack(
-        &self,
-        event: NetworkEvent,
-        stack: &mut crate::net::runtime::stack::NetworkStack,
-    ) -> EventHandleResult {
-        self.handle_event_with_stack_in(default_runtime(), event, stack)
-    }
-
     pub fn handle_event_with_stack_in(
         &self,
         runtime: NetRuntimeHandle,
@@ -524,10 +460,7 @@ impl NetworkEventHandler {
             | lifecycle_event @ NetworkEvent::TcpConnectStream { .. }
             | lifecycle_event @ NetworkEvent::MulticastJoin { .. }
             | lifecycle_event @ NetworkEvent::MulticastLeave { .. }
-            | lifecycle_event @ NetworkEvent::UnbindTcp { .. }
-            | lifecycle_event @ NetworkEvent::UnbindTcpListener { .. }
             | lifecycle_event @ NetworkEvent::TcpBindListener { .. }
-            | lifecycle_event @ NetworkEvent::TcpBindListenerWithToken { .. }
             | lifecycle_event @ NetworkEvent::ApplyIpv6Address { .. }
             | lifecycle_event @ NetworkEvent::ProcessTimeouts => {
                 self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack)
@@ -669,7 +602,7 @@ impl NetworkEventHandler {
             }
 
             // その他のイベントはスタック非依存（再帰的ロック取得を回避）
-            other => self.handle_event_stackless(other),
+            other => self.handle_event_stackless_in(runtime, other),
         }
     }
 
@@ -822,63 +755,24 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_send_udp_packet_rejects_mixed_family() {
-        let handler = NetworkEventHandler::new();
-        let local = EndpointAddr::new([127, 0, 0, 1], 12345);
-        let remote =
-            EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
-
-        assert!(matches!(
-            handler.send_udp_payload(local, remote, test_payload(&[0u8; 8]), 64,),
-            Err(EndpointError::InvalidArgument)
-        ));
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_handle_send_to_ipv6_remote_returns_invalid_argument() {
+    pub fn test_stackless_send_to_requires_stack() {
         init_endpoint_manager();
+
         let sock = new_udp_socket();
         let fd = sock.fd();
-
-        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
-        let local = EndpointAddr::new([127, 0, 0, 1], 12345);
-        inner.local_addr = Some(local);
-        inner.ensure_udp();
-        let _ = inner.transition_to(EndpointState::Bound);
-        drop(inner);
-
-        let remote =
-            EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 8080);
         let handler = NetworkEventHandler::new();
-        let res = handler.handle_send_to(fd, remote, test_payload(&[1, 2, 3]));
-        assert!(matches!(
-            res,
-            EventHandleResult::ProtocolError(EndpointError::InvalidArgument)
-        ));
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_handle_send_to_ipv4_path_not_invalid_argument() {
-        init_endpoint_manager();
-        let sock = new_udp_socket();
-        let fd = sock.fd();
-
-        let mut inner = sock.inner().lock().unwrap_or_else(|e| e.into_inner());
-        let local = EndpointAddr::new([127, 0, 0, 1], 12346);
-        inner.local_addr = Some(local);
-        inner.ensure_udp();
-        let _ = inner.transition_to(EndpointState::Bound);
-        drop(inner);
-
-        let handler = NetworkEventHandler::new();
-        let res = handler.handle_send_to(
-            fd,
-            EndpointAddr::new([127, 0, 0, 1], 8081),
-            test_payload(&[9]),
+        let res = handler.handle_event_in(
+            crate::net::runtime::default_runtime(),
+            NetworkEvent::SendTo {
+                fd,
+                payload: test_payload(&[9]),
+                remote: EndpointAddr::new([127, 0, 0, 1], 8081),
+            },
         );
-        assert!(!matches!(
+
+        assert!(matches!(
             res,
-            EventHandleResult::ProtocolError(EndpointError::InvalidArgument)
+            EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
         ));
     }
 
@@ -925,10 +819,13 @@ pub mod tests {
         );
 
         let handler = NetworkEventHandler::new();
-        let res = handler.handle_event(NetworkEvent::IngressPacket {
-            if_id: Some(ingress_if),
-            packet: test_packet(&frame),
-        });
+        let res = handler.handle_event_in(
+            crate::net::runtime::default_runtime(),
+            NetworkEvent::IngressPacket {
+                if_id: Some(ingress_if),
+                packet: test_packet(&frame),
+            },
+        );
         assert!(matches!(res, EventHandleResult::Success));
 
         let (payload, if_id) = raw.try_recv_raw_payload().expect("raw payload");
@@ -939,15 +836,14 @@ pub mod tests {
         actual.truncate(copied);
         assert_eq!(actual, ip_bytes);
 
-        let mut buf = [0u8; 32];
         assert!(matches!(
-            udp.try_recv_from(&mut buf),
+            udp.try_recv_udp_payload(),
             Err(EndpointError::Timeout)
         ));
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_unbind_tcp_listener_closes_exact_fd_only() {
+    pub fn test_close_listener_closes_exact_fd_only() {
         init_endpoint_manager();
 
         let local = EndpointAddr::new([127, 0, 0, 1], 18080);
@@ -960,14 +856,11 @@ pub mod tests {
             EventHandleResult::Success
         ));
 
-        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
-        let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
         assert!(matches!(
-            handler.handle_event(NetworkEvent::UnbindTcpListener {
-                fd,
-                result_slot,
-                waker,
-            }),
+            handler.handle_event_in(
+                crate::net::runtime::default_runtime(),
+                NetworkEvent::Close { fd },
+            ),
             EventHandleResult::Success
         ));
 
@@ -976,7 +869,7 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_unbind_tcp_listener_does_not_close_rebound_listener() {
+    pub fn test_close_listener_does_not_close_rebound_listener() {
         init_endpoint_manager();
 
         let local = EndpointAddr::new([127, 0, 0, 1], 18081);
@@ -996,14 +889,11 @@ pub mod tests {
             EventHandleResult::Success
         ));
 
-        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
-        let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
         assert!(matches!(
-            handler.handle_event(NetworkEvent::UnbindTcpListener {
-                fd: stale_fd,
-                result_slot,
-                waker,
-            }),
+            handler.handle_event_in(
+                crate::net::runtime::default_runtime(),
+                NetworkEvent::Close { fd: stale_fd },
+            ),
             EventHandleResult::Success
         ));
 

@@ -1,64 +1,9 @@
 use super::*;
+use crate::net::l4::endpoint::event::{
+    new_command_channel, new_detached_command_channel, poll_command_result,
+};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::context::{default_runtime, default_runtime_context};
-
-pub(crate) struct CommandFuture<T> {
-    result_slot: alloc::sync::Arc<PoisonLock<Option<T>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-}
-
-impl<T> core::future::Future for CommandFuture<T> {
-    type Output = T;
-
-    fn poll(
-        self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        let this = self.get_mut();
-        poll_command_result(&this.result_slot, &this.waker, cx)
-    }
-}
-
-pub(crate) fn poll_command_result<T>(
-    result_slot: &alloc::sync::Arc<PoisonLock<Option<T>>>,
-    waker: &alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    cx: &mut core::task::Context<'_>,
-) -> core::task::Poll<T> {
-    if let Ok(mut slot) = result_slot.lock() {
-        if let Some(result) = slot.take() {
-            return core::task::Poll::Ready(result);
-        }
-    }
-    waker.register(cx.waker());
-    if let Ok(mut slot) = result_slot.lock() {
-        if let Some(result) = slot.take() {
-            return core::task::Poll::Ready(result);
-        }
-    }
-    core::task::Poll::Pending
-}
-
-pub(crate) fn new_command_channel<T>() -> (
-    alloc::sync::Arc<PoisonLock<Option<T>>>,
-    alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    CommandFuture<T>,
-) {
-    let result_slot = alloc::sync::Arc::new(PoisonLock::new(None));
-    let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
-    let future = CommandFuture {
-        result_slot: result_slot.clone(),
-        waker: waker.clone(),
-    };
-    (result_slot, waker, future)
-}
-
-pub(crate) fn new_detached_command_channel<T>() -> (
-    alloc::sync::Arc<PoisonLock<Option<T>>>,
-    alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-) {
-    let (result_slot, waker, _future) = new_command_channel();
-    (result_slot, waker)
-}
 
 /// Initialize the global network stack
 pub fn init(config: NetworkConfig) {
@@ -85,29 +30,6 @@ pub fn stack() -> &'static PoisonLock<Option<NetworkStack>> {
 /// Get the runtime-local network stack
 pub fn stack_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<NetworkStack>> {
     &runtime.context().stack
-}
-
-/// Returns true when the global network stack has been initialized.
-pub fn is_initialized() -> bool {
-    is_initialized_in(default_runtime())
-}
-
-/// Returns true when the runtime-local network stack has been initialized.
-fn is_initialized_in(runtime: NetRuntimeHandle) -> bool {
-    match stack_in(runtime).lock() {
-        Ok(guard) => guard.is_some(),
-        Err(_) => false,
-    }
-}
-
-/// Process a batch of received packets
-pub fn receive_batch(batch: PacketBatch) {
-    receive_batch_on_in(crate::net::runtime::default_runtime(), None, batch);
-}
-
-/// Process a batch of received packets and preserve the ingress interface when known.
-pub fn receive_batch_on(if_id: Option<super::NetIfId>, batch: PacketBatch) {
-    receive_batch_on_in(crate::net::runtime::default_runtime(), if_id, batch);
 }
 
 /// Process a batch of received packets on a specific runtime.
@@ -332,24 +254,9 @@ pub fn enqueue_tcp_v6_send_in(
     true
 }
 
-/// Process retransmission timeouts (async, event-queue based)
-///
-/// イベントキュー経由でタイムアウト処理をリクエストする。
-/// NETWORK_STACKロックを取得しない。
-pub fn process_timeouts(_current_time: u64) {
-    process_timeouts_in(default_runtime(), _current_time);
-}
-
-fn process_timeouts_in(runtime: NetRuntimeHandle, _current_time: u64) {
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-        runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::ProcessTimeouts,
-    );
-}
-
 /// 非同期タイムアウト処理タスク
 ///
-/// 定期的に`process_timeouts()`を実行する常駐タスク。
+/// 定期的に `NetworkEvent::ProcessTimeouts` を投入する常駐タスク。
 /// TCPリトランスミッション、Keep-Alive、TIME_WAIT、ARP期限切れ等の
 /// タイマー処理をイベントキュー経由で非同期コンテキストで実行する。
 ///

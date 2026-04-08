@@ -6,11 +6,9 @@
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::handler::common::{
-    endpoint_error_from_network, endpoint_ipv4_pair, endpoint_is_native_v6_pair,
-    resolve_ingress_if_id_in,
+    endpoint_error_from_network, resolve_ingress_if_id_in,
 };
 use crate::net::l4::endpoint::manager::EndpointFamily;
-use crate::net::l4::endpoint::types::EndpointResult;
 use crate::net::payload::PacketPayloadView;
 
 impl NetworkEventHandler {
@@ -51,7 +49,7 @@ impl NetworkEventHandler {
                 Some(ingress_if_id),
             ) {
                 if let Some(payload) = udp_segment_payload.slice(8, data.len()) {
-                    socket.push_packet_payload(ingress_if_id, remote, ttl, payload);
+                    let _ = socket.deliver_udp_payload(ingress_if_id, remote, ttl, payload);
                 } else {
                     log::warn!(
                         "[NET] UDP ingress payload allocation failed for {}:{} -> {}:{}",
@@ -233,114 +231,5 @@ impl NetworkEventHandler {
         } else {
             EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable)
         }
-    }
-
-    /// SendToイベント処理
-    /// UDPパケットを送信
-    pub(super) fn handle_send_to(
-        &self,
-        fd: EndpointFd,
-        remote: EndpointAddr,
-        payload: PacketPayload,
-    ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-        let local = match inner.local_addr {
-            Some(addr) => addr,
-            None => {
-                // ローカルアドレスが未設定の場合はエフェメラルポートを使用
-                let port = mgr
-                    .allocate_ephemeral_port(EndpointType::Udp)
-                    .unwrap_or(49152);
-                EndpointAddr::new([0, 0, 0, 0], port)
-            }
-        };
-
-        if inner.udp().is_some() {
-            let ttl = inner.udp().map(|udp| udp.ttl).unwrap_or(64);
-            let payload_len = payload.total_len();
-            if let Err(e) = self.send_udp_payload(local, remote, payload, ttl) {
-                log::info!("UDP: Failed to send packet: {:?}", e);
-                return EventHandleResult::ProtocolError(match e {
-                    EndpointError::InvalidArgument => EndpointError::InvalidArgument,
-                    _ => EndpointError::Internal,
-                });
-            }
-
-            log::info!(
-                "UDP: Sent {} bytes to {} from port {}",
-                payload_len,
-                remote,
-                local.port()
-            );
-
-            EventHandleResult::Success
-        } else {
-            EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition)
-        }
-    }
-
-    /// UDPパケット送信（非同期イベントキュー経由）
-    pub(super) fn send_udp_payload(
-        &self,
-        src: EndpointAddr,
-        dst: EndpointAddr,
-        payload: PacketPayload,
-        ttl: u8,
-    ) -> EndpointResult<()> {
-        let runtime = default_runtime();
-        let (result_slot, waker) = crate::net::runtime::stack::new_detached_command_channel();
-
-        // IPv4パス
-        if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(src, dst) {
-            let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
-            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
-            crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-                runtime,
-                NetworkEvent::RawUdpSend {
-                    src_port: src.port(),
-                    src_ip: (!src_ip.is_any()).then_some(src_ip.octets()),
-                    dst_ip: dst_ip.octets(),
-                    dst_port: dst.port(),
-                    payload,
-                    ttl,
-                    completion_id: None,
-                    result_slot,
-                    waker,
-                },
-            );
-            return Ok(());
-        }
-
-        // IPv6パス
-        if endpoint_is_native_v6_pair(src, dst) {
-            let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(src.as_ipv6());
-            let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(dst.as_ipv6());
-            crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-                runtime,
-                NetworkEvent::RawUdpV6Send {
-                    src_port: src.port(),
-                    src_ip: src_v6.octets(),
-                    dst_ip: dst_v6.octets(),
-                    dst_port: dst.port(),
-                    payload,
-                    ttl,
-                    completion_id: None,
-                    result_slot,
-                    waker,
-                },
-            );
-            return Ok(());
-        }
-
-        Err(EndpointError::InvalidArgument)
     }
 }

@@ -205,7 +205,7 @@ pub async fn primary_interface_config_in(
     runtime: NetRuntimeHandle,
 ) -> Option<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
-        stack::new_command_channel::<Option<InterfaceConfigSnapshot>>();
+        crate::net::l4::endpoint::event::new_command_channel::<Option<InterfaceConfigSnapshot>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetPrimaryInterfaceConfig {
         result_slot,
         waker,
@@ -219,7 +219,7 @@ pub async fn get_interface_config_in(
     if_id: NetIfId,
 ) -> Option<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
-        stack::new_command_channel::<Option<InterfaceConfigSnapshot>>();
+        crate::net::l4::endpoint::event::new_command_channel::<Option<InterfaceConfigSnapshot>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetInterfaceConfig {
         if_id: if_id.0,
         result_slot,
@@ -232,8 +232,9 @@ pub async fn get_interface_config_in(
 pub async fn list_interface_configs_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceConfigSnapshot> {
-    let (result_slot, waker, command_future) =
-        stack::new_command_channel::<alloc::vec::Vec<InterfaceConfigSnapshot>>();
+    let (result_slot, waker, command_future) = crate::net::l4::endpoint::event::new_command_channel::<
+        alloc::vec::Vec<InterfaceConfigSnapshot>,
+    >();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceConfigs { result_slot, waker };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
@@ -245,7 +246,7 @@ pub async fn get_interface_stats_in(
     if_id: NetIfId,
 ) -> Option<InterfaceStatsSnapshot> {
     let (result_slot, waker, command_future) =
-        stack::new_command_channel::<Option<InterfaceStatsSnapshot>>();
+        crate::net::l4::endpoint::event::new_command_channel::<Option<InterfaceStatsSnapshot>>();
     let event = crate::net::l4::endpoint::event::NetworkEvent::GetInterfaceStats {
         if_id: if_id.0,
         result_slot,
@@ -258,8 +259,9 @@ pub async fn get_interface_stats_in(
 pub async fn list_interface_stats_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
-    let (result_slot, waker, command_future) =
-        stack::new_command_channel::<alloc::vec::Vec<InterfaceStatsSnapshot>>();
+    let (result_slot, waker, command_future) = crate::net::l4::endpoint::event::new_command_channel::<
+        alloc::vec::Vec<InterfaceStatsSnapshot>,
+    >();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceStats { result_slot, waker };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
@@ -267,8 +269,9 @@ pub async fn list_interface_stats_in(
 }
 
 pub async fn list_interfaces_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceSnapshot> {
-    let (result_slot, waker, command_future) =
-        stack::new_command_channel::<alloc::vec::Vec<InterfaceSnapshot>>();
+    let (result_slot, waker, command_future) = crate::net::l4::endpoint::event::new_command_channel::<
+        alloc::vec::Vec<InterfaceSnapshot>,
+    >();
     let event =
         crate::net::l4::endpoint::event::NetworkEvent::ListInterfaces { result_slot, waker };
     let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;

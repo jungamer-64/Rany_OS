@@ -565,11 +565,14 @@ impl NetworkEventHandler {
         let remote = match inner.remote_addr {
             Some(addr) => addr,
             None => {
-                // リモートアドレスがない場合（Listenソケットなど）は直接クローズ
+                // リモートアドレスがない場合（Listenソケットなど）は即時クローズ
                 tcb_table().remove_by_fd(fd);
+                drop(inner);
+                self.close_endpoint_now(fd);
                 return EventHandleResult::Success;
             }
         };
+        drop(inner);
 
         // TCBエントリの状態を取得
         let state = tcb_table()
@@ -647,6 +650,7 @@ impl NetworkEventHandler {
             TcpConnectionState::Listen | TcpConnectionState::SynSent => {
                 // まだ接続が確立していない場合は即座にクローズ
                 tcb_table().remove(local, remote);
+                self.close_endpoint_now(fd);
             }
             _ => {
                 // 他の状態では何もしない（既にクローズ処理中など）

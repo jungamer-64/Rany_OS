@@ -29,9 +29,9 @@ fn udp_endpoint_poisoned_methods_return_defaults_impl() {
     set_panicking(false);
 
     assert_eq!(endpoint.local_port(), 12345);
-    assert!(!endpoint.is_closed());
-    assert_eq!(endpoint.rx_queue_len(), 0);
-    endpoint.close();
+    assert!(matches!(endpoint.endpoint.state(), EndpointState::Bound));
+    endpoint.close_internal();
+    assert!(matches!(endpoint.endpoint.state(), EndpointState::Closed));
 }
 
 fn udp_endpoint_multiple_waiters_woken_on_deliver_impl() {
@@ -56,7 +56,10 @@ fn udp_endpoint_multiple_waiters_woken_on_deliver_impl() {
     let packet = leaked_test_packet_with_data(b"abc");
 
     let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
-    endpoint.deliver(NetIfId(7), src, 255, packet);
+    let _ =
+        endpoint
+            .endpoint
+            .deliver_udp_packet(NetIfId(7), endpoint_addr_from_udp(src), 255, packet);
 
     assert_eq!(WAKE_COUNT.load(Ordering::SeqCst), 2);
 
@@ -226,7 +229,7 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
     let mut buffer = [0u8; 64];
     let len = UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10001, b"x").unwrap();
 
-    let res = processor.process(&buffer[..len], src_ip, dst_ip, 64);
+    let res = processor.process_on(None, &buffer[..len], src_ip, dst_ip, 64);
     assert_eq!(res, UdpResult::NoEndpoint);
 
     let stats = processor.stats();
@@ -269,7 +272,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         let packet = leaked_test_packet_with_data(payload);
 
         assert_eq!(
-            processor.process_with_packet(&buf[..len], src_ip, dst_ip, packet, 255),
+            processor.process_with_packet_on(None, &buf[..len], src_ip, dst_ip, packet, 255),
             UdpResult::Delivered
         );
     }
@@ -286,7 +289,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
         }
 
         assert_eq!(
-            processor.process(&buf[..len], src_ip, dst_ip, 255),
+            processor.process_on(None, &buf[..len], src_ip, dst_ip, 255),
             UdpResult::Delivered
         );
     }
@@ -322,7 +325,8 @@ pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
     let chain = kernel_api::resource::net::PacketChain::from_segments(alloc::vec![header, body]);
 
     assert_eq!(
-        processor.process_payload(
+        processor.process_payload_on(
+            None,
             kernel_api::resource::net::PacketPayload::chain(chain),
             src_ip,
             dst_ip,

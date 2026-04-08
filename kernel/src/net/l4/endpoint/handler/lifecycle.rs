@@ -99,34 +99,6 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::UnbindTcp {
-                local,
-                remote,
-                result_slot,
-                waker,
-            } => {
-                if let Some(entry) = tcb_table().remove(local, remote) {
-                    self.close_endpoint_for_unbind(entry.fd);
-                }
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::UnbindTcpListener {
-                fd,
-                result_slot,
-                waker,
-            } => {
-                let _ = tcb_table().remove_by_fd(fd);
-                self.close_endpoint_for_unbind(fd);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::TcpBindListener {
                 local,
                 scope,
@@ -134,22 +106,6 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                let result = self.make_tcp_listener_with_stack(runtime, local, scope, backlog);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
-            NetworkEvent::TcpBindListenerWithToken {
-                local,
-                scope,
-                backlog,
-                token,
-                result_slot,
-                waker,
-            } => {
-                let _ = token;
                 let result = self.make_tcp_listener_with_stack(runtime, local, scope, backlog);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);

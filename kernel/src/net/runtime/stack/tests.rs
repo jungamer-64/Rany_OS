@@ -420,7 +420,7 @@ pub fn test_runtime_scoped_event_task_reads_runtime_local_stack() {
 
     let link_local = run_with_event_task_in(other_runtime, async move {
         let (result_slot, waker, command_future) =
-            crate::net::runtime::stack::new_command_channel::<Option<[u8; 16]>>();
+            crate::net::l4::endpoint::event::new_command_channel::<Option<[u8; 16]>>();
         let _ = crate::net::l4::endpoint::event::send_event_in(
             other_runtime,
             crate::net::l4::endpoint::event::NetworkEvent::GetLinkLocal { result_slot, waker },
@@ -532,7 +532,8 @@ pub fn test_dhcp_v4_ack_updates_stack_config_via_udp_hook() {
 
     let packet = crate::net::payload::packet_from_bytes(eth.as_bytes()).expect("ingress packet");
     let handler = crate::net::l4::endpoint::handler::NetworkEventHandler::new();
-    let result = handler.handle_event(
+    let result = handler.handle_event_in(
+        crate::net::runtime::default_runtime(),
         crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
             if_id: None,
             packet,

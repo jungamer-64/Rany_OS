@@ -237,7 +237,7 @@ pub fn udp_udp_processor_poisoned_bind_and_process_smoke() -> bool {
         return false;
     };
     matches!(
-        processor.process(&buffer[..len], src_ip, dst_ip, 64),
+        processor.process_on(None, &buffer[..len], src_ip, dst_ip, 64),
         udp::UdpResult::NoEndpoint | udp::UdpResult::ChecksumError
     )
 }
@@ -272,9 +272,32 @@ pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
             return false;
         }
 
-        let packet = test_packet(b"abc");
+        let processor = udp::UdpProcessor::new();
         let src = UdpAddr::new(Ipv4Address::from_octets(1, 2, 3, 4), 9999);
-        endpoint.deliver(NetIfId(7), src, 255, packet);
+        let dst_ip = Ipv4Address::from_octets(1, 2, 3, 5);
+        let mut buf = [0u8; 64];
+        let Ok(len) = udp::UdpProcessor::build_packet(
+            &mut buf,
+            src.ip_v4().expect("ipv4 src"),
+            src.port(),
+            dst_ip,
+            54322,
+            b"abc",
+        ) else {
+            return false;
+        };
+        let packet = test_packet(&buf[..len]);
+        if processor.process_with_packet_on(
+            None,
+            &buf[..len],
+            src.ip_v4().expect("ipv4 src"),
+            dst_ip,
+            packet,
+            255,
+        ) != udp::UdpResult::Delivered
+        {
+            return false;
+        }
 
         if wake_count.load(Ordering::SeqCst) != 2 {
             return false;
@@ -319,7 +342,7 @@ pub fn udp_udp_processor_process_enqueues_zero_copy_packet_smoke() -> bool {
         };
 
         let packet = test_packet(&buf[..len]);
-        if processor.process_with_packet(&buf[..len], src_ip, dst_ip, packet, 255)
+        if processor.process_with_packet_on(None, &buf[..len], src_ip, dst_ip, packet, 255)
             != UdpResult::Delivered
         {
             return false;

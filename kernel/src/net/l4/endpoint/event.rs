@@ -137,19 +137,6 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
-    /// 非同期TCP unbind（イベントキュー経由・ロック競合回避）
-    UnbindTcp {
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-    /// 非同期TCPリスナー unbind（イベントキュー経由・ロック競合回避）
-    UnbindTcpListener {
-        fd: EndpointFd,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
     /// 非同期IPv6グローバルアドレス適用
     ApplyIpv6Address {
         addr: [u8; 16],
@@ -221,19 +208,6 @@ pub enum NetworkEvent {
         local: EndpointAddr,
         scope: InterfaceScope,
         backlog: u32,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<
-                Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>,
-            >,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
-    /// 非同期TCP bind with token（TcpListenerを返す完全非同期版）
-    TcpBindListenerWithToken {
-        local: EndpointAddr,
-        scope: InterfaceScope,
-        backlog: u32,
-        token: Option<u64>,
         result_slot: alloc::sync::Arc<
             PoisonLock<
                 Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>,
@@ -478,6 +452,64 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
+}
+
+pub(crate) struct CommandFuture<T> {
+    result_slot: alloc::sync::Arc<PoisonLock<Option<T>>>,
+    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+}
+
+impl<T> Future for CommandFuture<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        poll_command_result(&this.result_slot, &this.waker, cx)
+    }
+}
+
+pub(crate) fn poll_command_result<T>(
+    result_slot: &alloc::sync::Arc<PoisonLock<Option<T>>>,
+    waker: &alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    cx: &mut Context<'_>,
+) -> Poll<T> {
+    if let Ok(mut slot) = result_slot.lock() {
+        if let Some(result) = slot.take() {
+            return Poll::Ready(result);
+        }
+    }
+
+    waker.register(cx.waker());
+
+    if let Ok(mut slot) = result_slot.lock() {
+        if let Some(result) = slot.take() {
+            return Poll::Ready(result);
+        }
+    }
+
+    Poll::Pending
+}
+
+pub(crate) fn new_command_channel<T>() -> (
+    alloc::sync::Arc<PoisonLock<Option<T>>>,
+    alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    CommandFuture<T>,
+) {
+    let result_slot = alloc::sync::Arc::new(PoisonLock::new(None));
+    let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
+    let future = CommandFuture {
+        result_slot: result_slot.clone(),
+        waker: waker.clone(),
+    };
+    (result_slot, waker, future)
+}
+
+pub(crate) fn new_detached_command_channel<T>() -> (
+    alloc::sync::Arc<PoisonLock<Option<T>>>,
+    alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+) {
+    let (result_slot, waker, _future) = new_command_channel();
+    (result_slot, waker)
 }
 
 // ============================================================================

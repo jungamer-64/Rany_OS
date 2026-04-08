@@ -13,9 +13,9 @@ impl NetworkEventHandler {
     /// IngressPacketイベント処理
     ///
     /// 【完全非同期化】このメソッドはイベントキュー経由でのみ呼び出されるべき。
-    /// `handle_event()` → `handle_event_with_stack()` のパスで呼ばれる場合は
+    /// `handle_event()` → `handle_event_with_stack_in()` のパスで呼ばれる場合は
     /// 既にスタックロックが保持されている。
-    /// `handle_event()` → `handle_event_stackless()` のパスで呼ばれた場合は
+    /// `handle_event()` → stackless パスで呼ばれた場合は
     /// イベントを再エンキューして非同期パスに委譲する。
     pub(super) fn handle_ingress_packet(
         &self,
@@ -570,7 +570,8 @@ impl NetworkEventHandler {
             crate::net::l3::ipv4::Ipv4ProcessResult::Reassembled(payload) => {
                 // 再組立てパケットを再帰的に処理
                 let _ = src_mac;
-                self.handle_event_with_stack(
+                self.handle_event_with_stack_in(
+                    runtime,
                     NetworkEvent::ReassembledPacket { if_id, payload },
                     stack,
                 );
