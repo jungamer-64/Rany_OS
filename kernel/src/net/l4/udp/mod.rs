@@ -15,8 +15,8 @@ use crate::net::l4::endpoint::event::EventDispatch;
 use crate::net::l4::endpoint::manager::ENDPOINT_MANAGER;
 use crate::net::l4::endpoint::types::{EndpointError, EndpointState, EndpointType};
 use crate::net::payload::PacketPayloadView;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::net::types::InterfaceScope;
 use crate::net::types::NetworkError;
 use alloc::sync::Arc;
@@ -566,26 +566,6 @@ impl UdpEndpoint {
                 let _ = manager.unregister(self.endpoint.fd());
             }
         }
-    }
-
-    pub fn new(local_port: u16) -> Result<Self, NetworkError> {
-        Self::new_with_token_and_scope(local_port, None, InterfaceScope::Any)
-    }
-
-    pub fn new_with_scope(local_port: u16, scope: InterfaceScope) -> Result<Self, NetworkError> {
-        Self::new_with_token_and_scope(local_port, None, scope)
-    }
-
-    pub fn new_with_token(local_port: u16, token: Option<u64>) -> Result<Self, NetworkError> {
-        Self::new_with_token_and_scope(local_port, token, InterfaceScope::Any)
-    }
-
-    pub fn new_with_token_and_scope(
-        local_port: u16,
-        token: Option<u64>,
-        scope: InterfaceScope,
-    ) -> Result<Self, NetworkError> {
-        Self::bind_registered_with_token_in(default_runtime(), scope, local_port, token)
     }
 
     pub fn set_ttl(&self, ttl: u8) {

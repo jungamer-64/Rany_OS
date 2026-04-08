@@ -5,7 +5,6 @@
 //! ネットワークドライバと NetworkStack を接続する stack glue モジュール。
 //! deferred RX、batch/NAT、PacketRef の stack 受け渡しを担当します。
 
-use crate::net::api::config::InterfaceConfigSnapshot;
 use crate::net::datapath::optimization::{BatchConfig, BatchProcessor};
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::obs::{
@@ -449,12 +448,6 @@ pub fn get_stack_glue_stats() -> StackGlueStats {
         rx_packets: state.rx_packets.load(Ordering::Relaxed),
         tx_packets: state.tx_packets.load(Ordering::Relaxed),
     }
-}
-
-pub fn primary_interface_config() -> Option<InterfaceConfigSnapshot> {
-    crate::net::api::config::primary_interface_config_from_runtime_in(
-        crate::net::runtime::default_runtime(),
-    )
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]

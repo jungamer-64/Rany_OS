@@ -134,8 +134,10 @@ struct ManagerStateGuard {
 impl ManagerStateGuard {
     fn new() -> Self {
         let prev_manager = {
-            let mut guard = crate::net::runtime::manager::network_manager()
-                .lock_for_init("[TEST][STACK] manager snapshot");
+            let mut guard = crate::net::runtime::manager::network_manager_in(
+                crate::net::runtime::default_runtime(),
+            )
+            .lock_for_init("[TEST][STACK] manager snapshot");
             core::mem::take(&mut *guard)
         };
         *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -149,8 +151,10 @@ impl ManagerStateGuard {
 
 impl Drop for ManagerStateGuard {
     fn drop(&mut self) {
-        let mut guard = crate::net::runtime::manager::network_manager()
-            .lock_for_init("[TEST][STACK] manager restore");
+        let mut guard = crate::net::runtime::manager::network_manager_in(
+            crate::net::runtime::default_runtime(),
+        )
+        .lock_for_init("[TEST][STACK] manager restore");
         *guard = self.prev_manager.take();
         *TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner()) = None;
         TEST_TX_FRAMES
@@ -220,12 +224,14 @@ fn build_ipv6_raw_udp_packet(
 fn install_primary_dhcp_v4_client(
     mac: MacAddress,
 ) -> alloc::sync::Arc<crate::net::services::dhcp::DhcpClient> {
-    manager::init_network_manager();
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
 
-    let if_id = manager::register_interface("dhcp-test0").expect("register dhcp test interface");
+    let if_id = manager::register_interface_in(runtime, "dhcp-test0")
+        .expect("register dhcp test interface");
     let mut config = NetworkConfig::default();
     config.mac = mac;
-    manager::set_interface_config(if_id, config).expect("set dhcp test config");
+    manager::set_interface_config_in(runtime, if_id, config).expect("set dhcp test config");
     crate::net::services::dhcp::ensure_interface_runtime(if_id, config)
         .expect("init dhcp interface runtime");
     crate::net::services::dhcp::mark_primary_interface(if_id);
@@ -743,14 +749,12 @@ pub fn test_dhcp_runtime_public_apis_smoke() {
 #[cfg_attr(test, test_case)]
 pub fn test_send_udp_raw_uses_route_selected_interface() {
     let _guard = ManagerStateGuard::new();
-    manager::init_network_manager();
-    init_in(
-        crate::net::runtime::default_runtime(),
-        NetworkConfig::default(),
-    );
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
+    init_in(runtime, NetworkConfig::default());
 
-    let if0 = manager::register_interface("if0").expect("register if0");
-    let if1 = manager::register_interface("if1").expect("register if1");
+    let if0 = manager::register_interface_in(runtime, "if0").expect("register if0");
+    let if1 = manager::register_interface_in(runtime, "if1").expect("register if1");
     let cfg0 = NetworkConfig {
         mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 1),
         ipv4: Ipv4Config {
@@ -771,8 +775,8 @@ pub fn test_send_udp_raw_uses_route_selected_interface() {
         },
         ..NetworkConfig::default()
     };
-    manager::set_interface_config(if0, cfg0).expect("cfg if0");
-    manager::set_interface_config(if1, cfg1).expect("cfg if1");
+    manager::set_interface_config_in(runtime, if0, cfg0).expect("cfg if0");
+    manager::set_interface_config_in(runtime, if1, cfg1).expect("cfg if1");
 
     if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
@@ -812,13 +816,11 @@ pub fn test_send_udp_raw_uses_route_selected_interface() {
 #[cfg_attr(test, test_case)]
 pub fn test_send_udp_raw_without_route_does_not_fallback() {
     let _guard = ManagerStateGuard::new();
-    manager::init_network_manager();
-    init_in(
-        crate::net::runtime::default_runtime(),
-        NetworkConfig::default(),
-    );
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
+    init_in(runtime, NetworkConfig::default());
 
-    let if0 = manager::register_interface("if0").expect("register if0");
+    let if0 = manager::register_interface_in(runtime, "if0").expect("register if0");
     let cfg0 = NetworkConfig {
         mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 3),
         ipv4: Ipv4Config {
@@ -829,7 +831,7 @@ pub fn test_send_udp_raw_without_route_does_not_fallback() {
         },
         ..NetworkConfig::default()
     };
-    manager::set_interface_config(if0, cfg0).expect("cfg if0");
+    manager::set_interface_config_in(runtime, if0, cfg0).expect("cfg if0");
 
     if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
@@ -856,13 +858,11 @@ pub fn test_send_udp_raw_without_route_does_not_fallback() {
 #[cfg_attr(test, test_case)]
 pub fn test_send_raw_ipv4_payload_rejects_bad_checksum() {
     let _guard = ManagerStateGuard::new();
-    manager::init_network_manager();
-    init_in(
-        crate::net::runtime::default_runtime(),
-        NetworkConfig::default(),
-    );
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
+    init_in(runtime, NetworkConfig::default());
 
-    let if0 = manager::register_interface("raw0").expect("register raw0");
+    let if0 = manager::register_interface_in(runtime, "raw0").expect("register raw0");
     let cfg0 = NetworkConfig {
         mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 5),
         ipv4: Ipv4Config {
@@ -873,7 +873,7 @@ pub fn test_send_raw_ipv4_payload_rejects_bad_checksum() {
         },
         ..NetworkConfig::default()
     };
-    manager::set_interface_config(if0, cfg0).expect("cfg raw0");
+    manager::set_interface_config_in(runtime, if0, cfg0).expect("cfg raw0");
 
     if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
@@ -905,13 +905,11 @@ pub fn test_send_raw_ipv4_payload_rejects_bad_checksum() {
 #[cfg_attr(test, test_case)]
 pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
     let _guard = ManagerStateGuard::new();
-    manager::init_network_manager();
-    init_in(
-        crate::net::runtime::default_runtime(),
-        NetworkConfig::default(),
-    );
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
+    init_in(runtime, NetworkConfig::default());
 
-    let if0 = manager::register_interface("raw-pin0").expect("register raw-pin0");
+    let if0 = manager::register_interface_in(runtime, "raw-pin0").expect("register raw-pin0");
     let cfg0 = NetworkConfig {
         mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 6),
         ipv4: Ipv4Config {
@@ -922,7 +920,7 @@ pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
         },
         ..NetworkConfig::default()
     };
-    manager::set_interface_config(if0, cfg0).expect("cfg raw-pin0");
+    manager::set_interface_config_in(runtime, if0, cfg0).expect("cfg raw-pin0");
 
     if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
@@ -967,13 +965,11 @@ pub fn test_send_raw_ipv4_payload_respects_pinned_scope() {
 #[cfg_attr(test, test_case)]
 pub fn test_send_raw_ipv6_payload_rejects_length_mismatch() {
     let _guard = ManagerStateGuard::new();
-    manager::init_network_manager();
-    init_in(
-        crate::net::runtime::default_runtime(),
-        NetworkConfig::default(),
-    );
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
+    init_in(runtime, NetworkConfig::default());
 
-    let if0 = manager::register_interface("raw6").expect("register raw6");
+    let if0 = manager::register_interface_in(runtime, "raw6").expect("register raw6");
     let ipv6_cfg =
         crate::net::l3::ipv6::Ipv6Config::from_mac(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x33]);
     let cfg0 = NetworkConfig {
@@ -982,7 +978,7 @@ pub fn test_send_raw_ipv6_payload_rejects_length_mismatch() {
         ipv6: Some(ipv6_cfg),
         ..NetworkConfig::default()
     };
-    manager::set_interface_config(if0, cfg0).expect("cfg raw6");
+    manager::set_interface_config_in(runtime, if0, cfg0).expect("cfg raw6");
 
     if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");
@@ -1013,13 +1009,11 @@ pub fn test_send_raw_ipv6_payload_rejects_length_mismatch() {
 #[cfg_attr(test, test_case)]
 pub fn test_process_arp_replies_on_ingress_interface() {
     let _guard = ManagerStateGuard::new();
-    manager::init_network_manager();
-    init_in(
-        crate::net::runtime::default_runtime(),
-        NetworkConfig::default(),
-    );
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
+    init_in(runtime, NetworkConfig::default());
 
-    let if0 = manager::register_interface("if0").expect("register if0");
+    let if0 = manager::register_interface_in(runtime, "if0").expect("register if0");
     let cfg0 = NetworkConfig {
         mac: MacAddress::from_octets(0x02, 0, 0, 0, 0, 4),
         ipv4: Ipv4Config {
@@ -1030,7 +1024,7 @@ pub fn test_process_arp_replies_on_ingress_interface() {
         },
         ..NetworkConfig::default()
     };
-    manager::set_interface_config(if0, cfg0).expect("cfg if0");
+    manager::set_interface_config_in(runtime, if0, cfg0).expect("cfg if0");
 
     if let Ok(mut guard) = stack_in(crate::net::runtime::default_runtime()).lock() {
         let stack = guard.as_mut().expect("stack");

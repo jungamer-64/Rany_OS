@@ -15,7 +15,11 @@ pub fn test_multicast_mac() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_mdns_service_new() {
-    let service = MdnsService::new(String::from("myhost"), Ipv4Address::new([192, 168, 1, 100]));
+    let service = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("myhost"),
+        Ipv4Address::new([192, 168, 1, 100]),
+    );
     assert_eq!(service.hostname(), "myhost");
     assert_eq!(service.fqdn(), "myhost.local");
     assert_eq!(service.local_ip(), Ipv4Address::new([192, 168, 1, 100]));
@@ -80,7 +84,11 @@ pub fn test_build_response() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_process_query_for_our_hostname() {
-    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("myhost"),
+        Ipv4Address::new([10, 0, 0, 5]),
+    );
 
     // Build a query for "myhost.local"
     let mut query_buf = [0u8; 256];
@@ -105,7 +113,11 @@ pub fn test_process_query_for_our_hostname() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_process_query_for_other_hostname() {
-    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("myhost"),
+        Ipv4Address::new([10, 0, 0, 5]),
+    );
 
     // Build a query for a different host
     let mut query_buf = [0u8; 256];
@@ -127,7 +139,11 @@ pub fn test_process_query_for_other_hostname() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_process_response_updates_cache() {
-    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("myhost"),
+        Ipv4Address::new([10, 0, 0, 5]),
+    );
 
     // Build a response for "other.local" -> 10.0.0.42
     let mut resp_buf = [0u8; 256];
@@ -165,7 +181,11 @@ pub fn test_process_response_updates_cache() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_cleanup_expired() {
-    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("myhost"),
+        Ipv4Address::new([10, 0, 0, 5]),
+    );
 
     // Manually insert a cache entry that will expire
     service.cache.insert(
@@ -198,7 +218,11 @@ pub fn test_cleanup_expired() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_invalid_packet_too_short() {
-    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("myhost"),
+        Ipv4Address::new([10, 0, 0, 5]),
+    );
 
     // Packet shorter than DNS header
     let short_data = [0u8; 6];
@@ -264,8 +288,16 @@ pub fn test_encode_dns_name_label_too_long() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_roundtrip_query_response() {
-    let mut server = MdnsService::new(String::from("server"), Ipv4Address::new([192, 168, 1, 10]));
-    let mut client = MdnsService::new(String::from("client"), Ipv4Address::new([192, 168, 1, 20]));
+    let mut server = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("server"),
+        Ipv4Address::new([192, 168, 1, 10]),
+    );
+    let mut client = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("client"),
+        Ipv4Address::new([192, 168, 1, 20]),
+    );
 
     // Client builds a query for server.local
     let mut query_buf = [0u8; 512];
@@ -315,7 +347,11 @@ pub fn test_roundtrip_query_response() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_mdns_reject_invalid_ttl() {
-    let mut service = MdnsService::new(String::from("myhost"), Ipv4Address::new([10, 0, 0, 5]));
+    let mut service = MdnsService::new_in(
+        crate::net::runtime::default_runtime(),
+        String::from("myhost"),
+        Ipv4Address::new([10, 0, 0, 5]),
+    );
     let mut query_buf = [0u8; 256];
     let query_len = MdnsService::build_query(&mut query_buf, "myhost.local").expect("build_query");
 

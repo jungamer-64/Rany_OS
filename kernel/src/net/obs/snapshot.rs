@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use crate::net::obs::counters;
 use crate::net::obs::trace::{NetTraceEvent, recent_events};
-use crate::net::runtime::{bridge, manager};
+use crate::net::runtime::{bridge, default_runtime, manager};
 
 extern crate alloc;
 
@@ -27,10 +27,11 @@ pub struct NetSnapshot {
 }
 
 fn collect_interface_snapshots() -> Vec<InterfaceSnapshot> {
+    let runtime = default_runtime();
     let mut interfaces = Vec::new();
     let mut index_by_if = BTreeMap::new();
 
-    if let Ok(ifaces) = manager::list_interfaces() {
+    if let Ok(ifaces) = manager::list_interfaces_in(runtime) {
         for iface in ifaces {
             let idx = interfaces.len();
             interfaces.push(InterfaceSnapshot {
@@ -51,7 +52,7 @@ fn collect_interface_snapshots() -> Vec<InterfaceSnapshot> {
             continue;
         }
 
-        let name = manager::get_interface(stats.if_id)
+        let name = manager::get_interface_in(runtime, stats.if_id)
             .ok()
             .flatten()
             .map(|iface| iface.name)
@@ -119,8 +120,9 @@ mod tests {
 
     #[cfg_attr(test, test_case)]
     fn snapshot_contains_registered_interface_entries() {
-        manager::init_network_manager();
-        assert!(manager::register_interface("obs-snapshot-if").is_ok());
+        let runtime = default_runtime();
+        manager::init_network_manager_in(runtime);
+        assert!(manager::register_interface_in(runtime, "obs-snapshot-if").is_ok());
 
         let snap = snapshot();
         assert!(

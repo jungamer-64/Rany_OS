@@ -172,9 +172,13 @@ impl KernelServices for ExoKernel {
     {
         Box::pin(async move {
             let remote = endpoint_addr_from_kapi(remote);
-            let stream = crate::net::l4::tcp::TcpStream::dial_scoped(remote, stack_scope(scope))
-                .await
-                .map_err(tcp_error_to_kapi)?;
+            let stream = crate::net::l4::tcp::TcpStream::dial_scoped_in(
+                crate::net::runtime::default_runtime(),
+                stack_scope(scope),
+                remote,
+            )
+            .await
+            .map_err(tcp_error_to_kapi)?;
             let fd = stream.into_retained_handle();
             Ok(kernel_api::resource::net::TcpStream::from_raw_parts(
                 fd.raw() as u64,
@@ -192,9 +196,10 @@ impl KernelServices for ExoKernel {
     {
         Box::pin(async move {
             let local = endpoint_addr_from_kapi(local);
-            let listener = crate::net::l4::tcp::TcpListener::listen_on_scoped(
-                local,
+            let listener = crate::net::l4::tcp::TcpListener::listen_on_scoped_in(
+                crate::net::runtime::default_runtime(),
                 stack_scope(scope),
+                local,
                 backlog,
             )
             .await

@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
-use crate::net::runtime::{NetRuntimeHandle, context::default_runtime_context, default_runtime};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::PoisonLock;
 
 extern crate alloc;
@@ -159,10 +159,6 @@ impl MdnsService {
     /// # Arguments
     /// - `hostname` - 自ホスト名 (".local" 接尾辞なし)
     /// - `local_ip` - 自ホストのIPアドレス
-    pub fn new(hostname: String, local_ip: Ipv4Address) -> Self {
-        Self::new_in(default_runtime(), hostname, local_ip)
-    }
-
     pub fn new_in(runtime: NetRuntimeHandle, hostname: String, local_ip: Ipv4Address) -> Self {
         Self {
             runtime,
@@ -1035,17 +1031,8 @@ impl MdnsRuntimeState {
     }
 }
 
-pub(crate) fn runtime_state() -> &'static MdnsRuntimeState {
-    &default_runtime_context().mdns
-}
-
 pub(crate) fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static MdnsRuntimeState {
     &runtime.context().mdns
-}
-
-/// mDNSサービスを初期化
-pub fn init(hostname: String, local_ip: Ipv4Address) {
-    init_in(default_runtime(), hostname, local_ip);
 }
 
 pub fn init_in(runtime: NetRuntimeHandle, hostname: String, local_ip: Ipv4Address) {
@@ -1053,11 +1040,6 @@ pub fn init_in(runtime: NetRuntimeHandle, hostname: String, local_ip: Ipv4Addres
     if let Ok(mut guard) = runtime_state_for(runtime).service.lock() {
         *guard = Some(service);
     }
-}
-
-/// mDNSサービスを取得
-pub fn service() -> &'static PoisonLock<Option<MdnsService>> {
-    &runtime_state().service
 }
 
 pub fn service_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<MdnsService>> {

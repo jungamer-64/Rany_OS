@@ -370,16 +370,17 @@ impl NetPortRuntime for PortRuntimeHandle {
     }
 
     fn update_link(&self, up: bool) -> Result<(), &'static str> {
+        let runtime = default_runtime();
         let if_id = self.current_if_id();
         let result = if up {
-            manager::set_interface_up(if_id)
+            manager::set_interface_up_in(runtime, if_id)
         } else {
-            manager::set_interface_down(if_id)
+            manager::set_interface_down_in(runtime, if_id)
         };
         result.map_err(|_| "failed to update interface link state")?;
 
         if up {
-            if let Ok(Some(iface)) = manager::get_interface(if_id) {
+            if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
                 if let Some(config) = iface.config {
                     let _ = crate::net::services::dhcp::ensure_interface_runtime(if_id, config);
                 }
@@ -481,7 +482,7 @@ impl NetDeviceHandle {
         if primary_if_in(default_runtime()) == Some(binding.if_id) {
             info.flags |= NETDEV_FLAG_PRIMARY;
         }
-        if let Ok(Some(interface)) = manager::get_interface(binding.if_id) {
+        if let Ok(Some(interface)) = manager::get_interface_in(default_runtime(), binding.if_id) {
             if interface.admin_up {
                 info.flags |= NETDEV_FLAG_ADMIN_UP;
             } else {
@@ -652,7 +653,7 @@ fn apply_runtime_network_config(config: &NetworkConfig) {
 }
 
 fn sync_runtime_config_for_interface(if_id: NetIfId) {
-    let config = match manager::get_interface(if_id) {
+    let config = match manager::get_interface_in(default_runtime(), if_id) {
         Ok(Some(iface)) => iface.config,
         _ => None,
     };
@@ -686,7 +687,7 @@ fn interface_supports_failover(if_id: NetIfId) -> bool {
         return true;
     }
 
-    manager::get_interface(if_id)
+    manager::get_interface_in(default_runtime(), if_id)
         .ok()
         .flatten()
         .and_then(|iface| iface.config)
@@ -704,7 +705,7 @@ fn select_surviving_primary(excluding_if: NetIfId) -> Option<NetIfId> {
         .collect();
 
     candidates.into_iter().find(|if_id| {
-        manager::get_interface(*if_id)
+        manager::get_interface_in(default_runtime(), *if_id)
             .ok()
             .flatten()
             .is_some_and(|iface| iface.admin_up && interface_supports_failover(*if_id))
@@ -723,13 +724,14 @@ fn set_primary_slot_in(runtime: NetRuntimeHandle, primary: Option<NetIfId>) {
 }
 
 fn apply_primary_runtime_for_interface(if_id: NetIfId) -> Result<(), &'static str> {
+    let runtime = default_runtime();
     if let Some(lease) = crate::net::services::dhcp::lease_for_interface(if_id) {
-        let mut guard = stack::stack_in(default_runtime())
+        let mut guard = stack::stack_in(runtime)
             .lock()
             .map_err(|_| "network stack poisoned")?;
         let stack = guard.as_mut().ok_or("network stack unavailable")?;
         stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, true);
-        if let Ok(Some(iface)) = manager::get_interface(if_id) {
+        if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
             if let Some(config) = iface.config {
                 crate::net::services::dhcp::update_runtime_mac(config.mac);
             }
@@ -746,7 +748,7 @@ fn clear_interface_runtime_for_failover(if_id: NetIfId, clear_primary_runtime: b
         if let Some(stack) = guard.as_mut() {
             stack.clear_dhcp_v4_lease_for_interface(if_id, clear_primary_runtime);
             if clear_primary_runtime {
-                if let Ok(Some(iface)) = manager::get_interface(if_id) {
+                if let Ok(Some(iface)) = manager::get_interface_in(default_runtime(), if_id) {
                     if let Some(config) = iface.config {
                         crate::net::services::dhcp::update_runtime_mac(config.mac);
                     }
@@ -821,6 +823,7 @@ fn handle_interface_departure(if_id: NetIfId, reason: FailoverReason) {
 }
 
 pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static str> {
+    let runtime = default_runtime();
     if runtime_context().stack_initialized.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -837,10 +840,10 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
         log::warn!(target: "net::device", "mempool init failed: {}", err);
     }
 
-    stack::init_in(default_runtime(), config);
-    manager::init_network_manager();
+    stack::init_in(runtime, config);
+    manager::init_network_manager_in(runtime);
 
-    match stack::stack_in(default_runtime()).lock() {
+    match stack::stack_in(runtime).lock() {
         Ok(mut guard) => {
             let Some(stack) = guard.as_mut() else {
                 runtime_context()
@@ -877,17 +880,20 @@ fn interface_for_key(
     config: NetworkConfig,
     port_name: &'static str,
 ) -> Result<NetIfId, &'static str> {
+    let runtime = default_runtime();
     let if_id = match key {
-        NetDeviceKey::Virtio(index) => manager::register_virtio_port(index, Some(config))
-            .map_err(|_| "failed to register virtio interface")?,
+        NetDeviceKey::Virtio(index) => {
+            manager::register_virtio_port_in(runtime, index, Some(config))
+                .map_err(|_| "failed to register virtio interface")?
+        }
         NetDeviceKey::Mlx5(_) => {
-            if let Some(existing) = lookup_if_by_key_in(default_runtime(), key) {
-                let _ = manager::set_interface_config(existing, config);
+            if let Some(existing) = lookup_if_by_key_in(runtime, key) {
+                let _ = manager::set_interface_config_in(runtime, existing, config);
                 existing
             } else {
-                let if_id = manager::register_interface(port_name)
+                let if_id = manager::register_interface_in(runtime, port_name)
                     .map_err(|_| "failed to register network interface")?;
-                let _ = manager::set_interface_config(if_id, config);
+                let _ = manager::set_interface_config_in(runtime, if_id, config);
                 if_id
             }
         }
@@ -1045,7 +1051,7 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
     };
 
     if let Some(handle) = handle {
-        let _ = manager::set_interface_down(if_id);
+        let _ = manager::set_interface_down_in(default_runtime(), if_id);
         handle_interface_departure(if_id, FailoverReason::Unregister);
         crate::net::services::dhcp::unregister_interface_runtime(if_id);
         if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
@@ -1566,7 +1572,7 @@ mod tests {
             stack.apply_dhcp_v4_lease_for_interface(&lease_b, if_b, false);
         }
 
-        assert!(manager::set_interface_down(if_a).is_ok());
+        assert!(manager::set_interface_down_in(default_runtime(), if_a).is_ok());
         handle_interface_departure(if_a, FailoverReason::LinkDown);
 
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
@@ -1584,7 +1590,7 @@ mod tests {
         assert_eq!(cfg.ipv4.gateway, lease_b.gateway.expect("gateway"));
         assert_eq!(cfg.ipv4.dns, lease_b.dns_servers.first().copied());
 
-        let old_cfg = manager::get_interface(if_a)
+        let old_cfg = manager::get_interface_in(default_runtime(), if_a)
             .expect("manager query")
             .expect("interface a")
             .config
@@ -1593,9 +1599,10 @@ mod tests {
         assert!(old_cfg.ipv4.gateway.is_any());
         assert!(old_cfg.ipv4.dns.is_none());
 
-        let route = manager::lookup_ipv4_route(Ipv4Address::new([8, 8, 8, 8]))
-            .expect("lookup route")
-            .expect("default route");
+        let route =
+            manager::lookup_ipv4_route_in(default_runtime(), Ipv4Address::new([8, 8, 8, 8]))
+                .expect("lookup route")
+                .expect("default route");
         assert_eq!(route.if_id, if_b);
 
         assert!(unregister_port(if_b));
@@ -1654,11 +1661,11 @@ mod tests {
             stack.apply_dhcp_v4_lease_for_interface(&lease_b, if_b, false);
         }
 
-        assert!(manager::set_interface_down(if_a).is_ok());
+        assert!(manager::set_interface_down_in(default_runtime(), if_a).is_ok());
         handle_interface_departure(if_a, FailoverReason::LinkDown);
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
 
-        assert!(manager::set_interface_up(if_a).is_ok());
+        assert!(manager::set_interface_up_in(default_runtime(), if_a).is_ok());
         assert!(!claim_bound_primary_slot_in(default_runtime(), if_a));
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
 

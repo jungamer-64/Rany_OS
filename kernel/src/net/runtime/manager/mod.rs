@@ -1,10 +1,7 @@
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::stack::NetworkConfig;
-use crate::net::runtime::{
-    NetRuntimeHandle,
-    context::{default_runtime, default_runtime_context},
-};
 use crate::net::types::NetworkError;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -473,21 +470,11 @@ fn ipv6_apply_prefix(addr: Ipv6Address, prefix_len: u8) -> Ipv6Address {
     Ipv6Address::new(octets)
 }
 
-/// Initialize the global `NetworkManager` (idempotent).
-pub fn init_network_manager() {
-    init_network_manager_in(default_runtime());
-}
-
 pub fn init_network_manager_in(runtime: NetRuntimeHandle) {
     let mut guard = network_manager_in(runtime).lock_for_init("[NET] NetworkManager init");
     if guard.is_none() {
         *guard = Some(NetworkManager::new());
     }
-}
-
-/// Access the global `NetworkManager` lock.
-pub fn network_manager() -> &'static PoisonLock<Option<NetworkManager>> {
-    &default_runtime_context().manager
 }
 
 pub fn network_manager_in(
@@ -517,13 +504,6 @@ where
     }
 }
 
-fn with_manager_mut<F, R>(f: F) -> Result<R, NetworkError>
-where
-    F: FnOnce(&mut NetworkManager) -> R,
-{
-    with_manager_mut_in(default_runtime(), f)
-}
-
 fn with_manager_in<F, R>(runtime: NetRuntimeHandle, f: F) -> Result<R, NetworkError>
 where
     F: FnOnce(&NetworkManager) -> R,
@@ -545,31 +525,11 @@ where
     }
 }
 
-fn with_manager<F, R>(f: F) -> Result<R, NetworkError>
-where
-    F: FnOnce(&NetworkManager) -> R,
-{
-    with_manager_in(default_runtime(), f)
-}
-
-/// Register a generic interface.
-pub fn register_interface(name: &str) -> Result<NetIfId, NetworkError> {
-    register_interface_in(default_runtime(), name)
-}
-
 pub fn register_interface_in(
     runtime: NetRuntimeHandle,
     name: &str,
 ) -> Result<NetIfId, NetworkError> {
     with_manager_mut_in(runtime, |m| m.register_interface(String::from(name)))
-}
-
-/// Register a VirtIO-backed interface and return its `NetIfId`.
-pub fn register_virtio_port(
-    virtio_index: u8,
-    initial_config: Option<NetworkConfig>,
-) -> Result<NetIfId, NetworkError> {
-    register_virtio_port_in(default_runtime(), virtio_index, initial_config)
 }
 
 pub fn register_virtio_port_in(
@@ -592,18 +552,10 @@ pub fn lookup_if_by_virtio_index_in(
         .flatten()
 }
 
-pub fn list_interfaces() -> Result<Vec<NetworkInterfaceInfo>, NetworkError> {
-    list_interfaces_in(default_runtime())
-}
-
 pub fn list_interfaces_in(
     runtime: NetRuntimeHandle,
 ) -> Result<Vec<NetworkInterfaceInfo>, NetworkError> {
     with_manager_in(runtime, |m| m.list_interfaces())
-}
-
-pub fn get_interface(if_id: NetIfId) -> Result<Option<NetworkInterfaceInfo>, NetworkError> {
-    get_interface_in(default_runtime(), if_id)
 }
 
 pub fn get_interface_in(
@@ -611,10 +563,6 @@ pub fn get_interface_in(
     if_id: NetIfId,
 ) -> Result<Option<NetworkInterfaceInfo>, NetworkError> {
     with_manager_in(runtime, |m| m.get_interface(if_id).cloned())
-}
-
-pub fn set_interface_config(if_id: NetIfId, config: NetworkConfig) -> Result<(), NetworkError> {
-    set_interface_config_in(default_runtime(), if_id, config)
 }
 
 pub fn set_interface_config_in(
@@ -625,16 +573,8 @@ pub fn set_interface_config_in(
     with_manager_mut_in(runtime, |m| m.set_interface_config(if_id, config)).and_then(|r| r)
 }
 
-pub fn set_interface_up(if_id: NetIfId) -> Result<(), NetworkError> {
-    set_interface_up_in(default_runtime(), if_id)
-}
-
 pub fn set_interface_up_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Result<(), NetworkError> {
     with_manager_mut_in(runtime, |m| m.set_interface_up(if_id)).and_then(|r| r)
-}
-
-pub fn set_interface_down(if_id: NetIfId) -> Result<(), NetworkError> {
-    set_interface_down_in(default_runtime(), if_id)
 }
 
 pub fn set_interface_down_in(
@@ -644,16 +584,8 @@ pub fn set_interface_down_in(
     with_manager_mut_in(runtime, |m| m.set_interface_down(if_id)).and_then(|r| r)
 }
 
-pub fn add_ipv4_route(route: Ipv4Route) -> Result<(), NetworkError> {
-    add_ipv4_route_in(default_runtime(), route)
-}
-
 pub fn add_ipv4_route_in(runtime: NetRuntimeHandle, route: Ipv4Route) -> Result<(), NetworkError> {
     with_manager_mut_in(runtime, |m| m.add_ipv4_route(route)).and_then(|r| r)
-}
-
-pub fn del_ipv4_route(route: Ipv4Route) -> Result<bool, NetworkError> {
-    del_ipv4_route_in(default_runtime(), route)
 }
 
 pub fn del_ipv4_route_in(
@@ -663,10 +595,6 @@ pub fn del_ipv4_route_in(
     with_manager_mut_in(runtime, |m| m.del_ipv4_route(route))
 }
 
-pub fn lookup_ipv4_route(dst: Ipv4Address) -> Result<RouteLookupResultV4, NetworkError> {
-    lookup_ipv4_route_in(default_runtime(), dst)
-}
-
 pub fn lookup_ipv4_route_in(
     runtime: NetRuntimeHandle,
     dst: Ipv4Address,
@@ -674,24 +602,12 @@ pub fn lookup_ipv4_route_in(
     with_manager_in(runtime, |m| m.lookup_ipv4_route(dst))
 }
 
-pub fn list_ipv4_routes() -> Result<Vec<Ipv4Route>, NetworkError> {
-    list_ipv4_routes_in(default_runtime())
-}
-
 pub fn list_ipv4_routes_in(runtime: NetRuntimeHandle) -> Result<Vec<Ipv4Route>, NetworkError> {
     with_manager_in(runtime, |m| m.list_ipv4_routes())
 }
 
-pub fn add_ipv6_route(route: Ipv6Route) -> Result<(), NetworkError> {
-    add_ipv6_route_in(default_runtime(), route)
-}
-
 pub fn add_ipv6_route_in(runtime: NetRuntimeHandle, route: Ipv6Route) -> Result<(), NetworkError> {
     with_manager_mut_in(runtime, |m| m.add_ipv6_route(route)).and_then(|r| r)
-}
-
-pub fn del_ipv6_route(route: Ipv6Route) -> Result<bool, NetworkError> {
-    del_ipv6_route_in(default_runtime(), route)
 }
 
 pub fn del_ipv6_route_in(
@@ -701,10 +617,6 @@ pub fn del_ipv6_route_in(
     with_manager_mut_in(runtime, |m| m.del_ipv6_route(route))
 }
 
-pub fn lookup_ipv6_route(dst: Ipv6Address) -> Result<RouteLookupResultV6, NetworkError> {
-    lookup_ipv6_route_in(default_runtime(), dst)
-}
-
 pub fn lookup_ipv6_route_in(
     runtime: NetRuntimeHandle,
     dst: Ipv6Address,
@@ -712,20 +624,8 @@ pub fn lookup_ipv6_route_in(
     with_manager_in(runtime, |m| m.lookup_ipv6_route(dst))
 }
 
-pub fn list_ipv6_routes() -> Result<Vec<Ipv6Route>, NetworkError> {
-    list_ipv6_routes_in(default_runtime())
-}
-
 pub fn list_ipv6_routes_in(runtime: NetRuntimeHandle) -> Result<Vec<Ipv6Route>, NetworkError> {
     with_manager_in(runtime, |m| m.list_ipv6_routes())
-}
-
-pub fn set_default_route_v4(
-    if_id: NetIfId,
-    gateway: Ipv4Address,
-    metric: u32,
-) -> Result<(), NetworkError> {
-    set_default_route_v4_in(default_runtime(), if_id, gateway, metric)
 }
 
 pub fn set_default_route_v4_in(
@@ -735,14 +635,6 @@ pub fn set_default_route_v4_in(
     metric: u32,
 ) -> Result<(), NetworkError> {
     with_manager_mut_in(runtime, |m| m.set_default_route_v4(if_id, gateway, metric)).and_then(|r| r)
-}
-
-pub fn set_default_route_v6(
-    if_id: NetIfId,
-    gateway: Ipv6Address,
-    metric: u32,
-) -> Result<(), NetworkError> {
-    set_default_route_v6_in(default_runtime(), if_id, gateway, metric)
 }
 
 pub fn set_default_route_v6_in(

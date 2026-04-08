@@ -30,7 +30,10 @@ impl NetworkStack {
                 }
             }
 
-            if let Ok(Some(route)) = crate::net::runtime::manager::lookup_ipv4_route(dst_ip) {
+            if let Ok(Some(route)) = crate::net::runtime::manager::lookup_ipv4_route_in(
+                crate::net::runtime::default_runtime(),
+                dst_ip,
+            ) {
                 if route.if_id == if_id {
                     return Some(route.gateway.unwrap_or(dst_ip));
                 }

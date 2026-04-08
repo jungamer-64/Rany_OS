@@ -592,7 +592,10 @@ impl NetNamespace {
             Some(ExoValue::Int(n)) => crate::net::runtime::manager::NetIfId(*n as u16),
             _ => return ExoValue::Error(String::from("usage: net.if_up(interface_id)")),
         };
-        match crate::net::runtime::manager::set_interface_up(if_id) {
+        match crate::net::runtime::manager::set_interface_up_in(
+            crate::net::runtime::default_runtime(),
+            if_id,
+        ) {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(format!("Failed: {:?}", e)),
         }
@@ -608,7 +611,10 @@ impl NetNamespace {
             Some(ExoValue::Int(n)) => crate::net::runtime::manager::NetIfId(*n as u16),
             _ => return ExoValue::Error(String::from("usage: net.if_down(interface_id)")),
         };
-        match crate::net::runtime::manager::set_interface_down(if_id) {
+        match crate::net::runtime::manager::set_interface_down_in(
+            crate::net::runtime::default_runtime(),
+            if_id,
+        ) {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(format!("Failed: {:?}", e)),
         }
@@ -626,7 +632,9 @@ impl NetNamespace {
         let mut entries = Vec::new();
 
         // IPv4 routes
-        if let Ok(routes) = crate::net::runtime::manager::list_ipv4_routes() {
+        if let Ok(routes) = crate::net::runtime::manager::list_ipv4_routes_in(
+            crate::net::runtime::default_runtime(),
+        ) {
             for r in routes {
                 let mut map = BTreeMap::new();
                 map.insert(
@@ -668,7 +676,9 @@ impl NetNamespace {
         }
 
         // IPv6 routes
-        if let Ok(routes) = crate::net::runtime::manager::list_ipv6_routes() {
+        if let Ok(routes) = crate::net::runtime::manager::list_ipv6_routes_in(
+            crate::net::runtime::default_runtime(),
+        ) {
             for r in routes {
                 let mut map = BTreeMap::new();
                 map.insert(
@@ -764,7 +774,10 @@ impl NetNamespace {
             admin_enabled: true,
             managed_by_interface: false,
         };
-        match crate::net::runtime::manager::add_ipv4_route(route) {
+        match crate::net::runtime::manager::add_ipv4_route_in(
+            crate::net::runtime::default_runtime(),
+            route,
+        ) {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(format!("Failed to add route: {:?}", e)),
         }
@@ -808,7 +821,10 @@ impl NetNamespace {
             admin_enabled: true,
             managed_by_interface: false,
         };
-        match crate::net::runtime::manager::del_ipv4_route(route) {
+        match crate::net::runtime::manager::del_ipv4_route_in(
+            crate::net::runtime::default_runtime(),
+            route,
+        ) {
             Ok(deleted) => ExoValue::Bool(deleted),
             Err(e) => ExoValue::Error(format!("Failed to delete route: {:?}", e)),
         }

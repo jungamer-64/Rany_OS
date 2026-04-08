@@ -103,7 +103,7 @@ impl HttpClient {
         // 2. TCP接続確立
         let remote_addr = EndpointAddr::new(ip_addr.octets(), port);
 
-        let mut stream = TcpStream::dial(remote_addr)
+        let mut stream = TcpStream::dial_in(crate::net::runtime::default_runtime(), remote_addr)
             .await
             .map_err(|_| HttpClientError::ConnectionFailed)?;
 

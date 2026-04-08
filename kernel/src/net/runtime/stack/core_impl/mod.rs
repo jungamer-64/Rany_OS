@@ -15,10 +15,13 @@ mod send_v6;
 impl NetworkStack {
     pub(crate) fn interface_config_or_runtime(&self, if_id: NetIfId) -> Option<NetworkConfig> {
         self.interface_config(if_id).or_else(|| {
-            crate::net::runtime::manager::get_interface(if_id)
-                .ok()
-                .flatten()
-                .and_then(|iface| iface.config)
+            crate::net::runtime::manager::get_interface_in(
+                crate::net::runtime::default_runtime(),
+                if_id,
+            )
+            .ok()
+            .flatten()
+            .and_then(|iface| iface.config)
         })
     }
 
@@ -105,13 +108,16 @@ impl NetworkStack {
             })
             .transpose()?
             .or_else(|| {
-                crate::net::runtime::manager::lookup_ipv4_route(dst_ip)
-                    .ok()
-                    .flatten()
-                    .and_then(|route| {
-                        self.interface_config_or_runtime(route.if_id)
-                            .map(|cfg| (Some(route.if_id), cfg))
-                    })
+                crate::net::runtime::manager::lookup_ipv4_route_in(
+                    crate::net::runtime::default_runtime(),
+                    dst_ip,
+                )
+                .ok()
+                .flatten()
+                .and_then(|route| {
+                    self.interface_config_or_runtime(route.if_id)
+                        .map(|cfg| (Some(route.if_id), cfg))
+                })
             })
             .or_else(|| self.bootstrap_runtime_config())
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
@@ -138,13 +144,16 @@ impl NetworkStack {
             })
             .transpose()?
             .or_else(|| {
-                crate::net::runtime::manager::lookup_ipv6_route(dst_ip)
-                    .ok()
-                    .flatten()
-                    .and_then(|route| {
-                        self.interface_config_or_runtime(route.if_id)
-                            .map(|cfg| (Some(route.if_id), cfg))
-                    })
+                crate::net::runtime::manager::lookup_ipv6_route_in(
+                    crate::net::runtime::default_runtime(),
+                    dst_ip,
+                )
+                .ok()
+                .flatten()
+                .and_then(|route| {
+                    self.interface_config_or_runtime(route.if_id)
+                        .map(|cfg| (Some(route.if_id), cfg))
+                })
             })
             .or_else(|| self.bootstrap_runtime_config())
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
@@ -159,9 +168,11 @@ impl NetworkStack {
         }
         self.primary_interface
             .or_else(|| {
-                crate::net::runtime::manager::list_interfaces()
-                    .ok()
-                    .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+                crate::net::runtime::manager::list_interfaces_in(
+                    crate::net::runtime::default_runtime(),
+                )
+                .ok()
+                .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
             })
             .unwrap_or_default()
     }

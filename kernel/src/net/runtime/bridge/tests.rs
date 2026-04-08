@@ -41,7 +41,7 @@ impl BridgeStateGuard {
                 .unwrap_or_else(|e| e.into_inner()),
         );
         let prev_manager = {
-            let mut guard = crate::net::runtime::manager::network_manager()
+            let mut guard = crate::net::runtime::manager::network_manager_in(runtime)
                 .lock_for_init("[TEST][NET BRIDGE] manager snapshot");
             core::mem::take(&mut *guard)
         };
@@ -67,7 +67,7 @@ impl Drop for BridgeStateGuard {
             .forward_events
             .write()
             .unwrap_or_else(|e| e.into_inner()) = core::mem::take(&mut self.prev_forward_events);
-        let mut guard = crate::net::runtime::manager::network_manager()
+        let mut guard = crate::net::runtime::manager::network_manager_in(runtime)
             .lock_for_init("[TEST][NET BRIDGE] manager restore");
         *guard = self.prev_manager.take();
     }
@@ -174,13 +174,14 @@ fn qemu_zero_copy_prereq_ipv6_heapless_smoke() -> bool {
 #[cfg(feature = "qemu-test-export")]
 fn qemu_routing_nat_heapless_smoke() -> bool {
     let _guard = BridgeStateGuard::new();
-    manager::init_network_manager();
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
 
-    let if1 = match manager::register_interface("qemu-if-a") {
+    let if1 = match manager::register_interface_in(runtime, "qemu-if-a") {
         Ok(id) => id,
         Err(_) => return false,
     };
-    let if2 = match manager::register_interface("qemu-if-b") {
+    let if2 = match manager::register_interface_in(runtime, "qemu-if-b") {
         Ok(id) => id,
         Err(_) => return false,
     };
@@ -209,8 +210,8 @@ fn qemu_routing_nat_heapless_smoke() -> bool {
         icmp_echo_enabled: true,
         ..NetworkConfig::default()
     };
-    if manager::set_interface_config(if1, cfg1).is_err()
-        || manager::set_interface_config(if2, cfg2).is_err()
+    if manager::set_interface_config_in(runtime, if1, cfg1).is_err()
+        || manager::set_interface_config_in(runtime, if2, cfg2).is_err()
     {
         return false;
     }
@@ -225,12 +226,12 @@ fn qemu_routing_nat_heapless_smoke() -> bool {
         admin_enabled: true,
         managed_by_interface: false,
     };
-    if manager::add_ipv4_route(route).is_err() {
+    if manager::add_ipv4_route_in(runtime, route).is_err() {
         return false;
     }
 
     let route_ok = matches!(
-        manager::lookup_ipv4_route(Ipv4Address::new([10, 0, 1, 5])),
+        manager::lookup_ipv4_route_in(runtime, Ipv4Address::new([10, 0, 1, 5])),
         Ok(Some(r)) if r.if_id == if2
     );
     if !route_ok {
@@ -363,11 +364,12 @@ pub fn test_routing_and_nat() {
     // setup environment
     let _guard = BridgeStateGuard::new();
     let _ = mempool::init_net_mempool(4);
-    manager::init_network_manager();
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
 
     // create two interfaces
-    let if1 = manager::register_interface("if1").expect("register if1");
-    let if2 = manager::register_interface("if2").expect("register if2");
+    let if1 = manager::register_interface_in(runtime, "if1").expect("register if1");
+    let if2 = manager::register_interface_in(runtime, "if2").expect("register if2");
     // configure addresses
     let cfg1 = NetworkConfig {
         mac: MacAddress::from_octets(0, 1, 2, 3, 4, 5),
@@ -393,8 +395,8 @@ pub fn test_routing_and_nat() {
         icmp_echo_enabled: true,
         ..NetworkConfig::default()
     };
-    let _ = manager::set_interface_config(if1, cfg1);
-    let _ = manager::set_interface_config(if2, cfg2);
+    let _ = manager::set_interface_config_in(runtime, if1, cfg1);
+    let _ = manager::set_interface_config_in(runtime, if2, cfg2);
 
     // add route 10.0.1.0/24 via if2
     let route = manager::Ipv4Route {
@@ -407,7 +409,7 @@ pub fn test_routing_and_nat() {
         admin_enabled: true,
         managed_by_interface: false,
     };
-    let _ = manager::add_ipv4_route(route);
+    let _ = manager::add_ipv4_route_in(runtime, route);
 
     // craft a UDP packet from 10.0.0.2:1234 to 10.0.1.5:80 arriving on if1
     let header_size = virtio_driver::net::VirtioNetHeader::SIZE;
@@ -482,10 +484,11 @@ pub fn test_routing_and_nat() {
 #[cfg_attr(test, test_case)]
 pub fn test_nat_inbound_roundtrip_is_protocol_scoped() {
     let _guard = BridgeStateGuard::new();
-    manager::init_network_manager();
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
 
-    let wan_if = manager::register_interface("wan0").expect("register wan0");
-    let other_wan_if = manager::register_interface("wan1").expect("register wan1");
+    let wan_if = manager::register_interface_in(runtime, "wan0").expect("register wan0");
+    let other_wan_if = manager::register_interface_in(runtime, "wan1").expect("register wan1");
     let wan_cfg = NetworkConfig {
         mac: MacAddress::from_octets(0, 1, 2, 3, 4, 42),
         ipv4: Ipv4Config {
@@ -498,8 +501,9 @@ pub fn test_nat_inbound_roundtrip_is_protocol_scoped() {
         icmp_echo_enabled: true,
         ..NetworkConfig::default()
     };
-    let _ = manager::set_interface_config(wan_if, wan_cfg);
-    let _ = manager::set_interface_config(
+    let _ = manager::set_interface_config_in(runtime, wan_if, wan_cfg);
+    let _ = manager::set_interface_config_in(
+        runtime,
         other_wan_if,
         NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 43),
@@ -592,10 +596,12 @@ pub fn test_nat_inbound_roundtrip_is_protocol_scoped() {
 #[cfg_attr(test, test_case)]
 pub fn test_nat_gc_expires_idle_entries() {
     let _guard = BridgeStateGuard::new();
-    manager::init_network_manager();
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
 
-    let wan_if = manager::register_interface("wan0").expect("register wan0");
-    let _ = manager::set_interface_config(
+    let wan_if = manager::register_interface_in(runtime, "wan0").expect("register wan0");
+    let _ = manager::set_interface_config_in(
+        runtime,
         wan_if,
         NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 44),
@@ -654,10 +660,12 @@ pub fn test_nat_gc_expires_idle_entries() {
 #[cfg_attr(test, test_case)]
 pub fn test_nat_icmp_echo() {
     let _guard = BridgeStateGuard::new();
-    manager::init_network_manager();
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
 
-    let wan_if = manager::register_interface("wan0").expect("register wan0");
-    let _ = manager::set_interface_config(
+    let wan_if = manager::register_interface_in(runtime, "wan0").expect("register wan0");
+    let _ = manager::set_interface_config_in(
+        runtime,
         wan_if,
         NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 45),
@@ -701,10 +709,12 @@ pub fn test_nat_icmp_echo() {
 #[cfg_attr(test, test_case)]
 pub fn test_nat_icmp_error() {
     let _guard = BridgeStateGuard::new();
-    manager::init_network_manager();
+    let runtime = crate::net::runtime::default_runtime();
+    manager::init_network_manager_in(runtime);
 
-    let wan_if = manager::register_interface("wan0").expect("register wan0");
-    let _ = manager::set_interface_config(
+    let wan_if = manager::register_interface_in(runtime, "wan0").expect("register wan0");
+    let _ = manager::set_interface_config_in(
+        runtime,
         wan_if,
         NetworkConfig {
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, 46),
@@ -900,24 +910,20 @@ pub fn test_per_interface_bridge_stats_are_separated() {
 #[cfg_attr(test, test_case)]
 pub fn test_register_virtio_port_is_idempotent_and_records_mapping() {
     let _guard = BridgeStateGuard::new();
+    let runtime = crate::net::runtime::default_runtime();
 
-    let if0 = manager::register_virtio_port(0, None).expect("register vnet0");
-    let if0_again = manager::register_virtio_port(0, None).expect("register vnet0 again");
-    let if1 = manager::register_virtio_port(1, None).expect("register vnet1");
+    let if0 = manager::register_virtio_port_in(runtime, 0, None).expect("register vnet0");
+    let if0_again =
+        manager::register_virtio_port_in(runtime, 0, None).expect("register vnet0 again");
+    let if1 = manager::register_virtio_port_in(runtime, 1, None).expect("register vnet1");
 
-    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if0, Some(0));
-    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if1, Some(1));
+    register_stack_glue_interface_in(runtime, if0, Some(0));
+    register_stack_glue_interface_in(runtime, if1, Some(1));
 
     assert_eq!(if0, if0_again);
     assert_ne!(if0, if1);
-    assert_eq!(
-        manager::lookup_if_by_virtio_index_in(crate::net::runtime::default_runtime(), 0),
-        Some(if0)
-    );
-    assert_eq!(
-        manager::lookup_if_by_virtio_index_in(crate::net::runtime::default_runtime(), 1),
-        Some(if1)
-    );
+    assert_eq!(manager::lookup_if_by_virtio_index_in(runtime, 0), Some(if0));
+    assert_eq!(manager::lookup_if_by_virtio_index_in(runtime, 1), Some(if1));
 
     let s0 = get_stack_glue_stats_for_interface(if0).expect("if0 stats");
     let s1 = get_stack_glue_stats_for_interface(if1).expect("if1 stats");
@@ -929,27 +935,19 @@ pub fn test_register_virtio_port_is_idempotent_and_records_mapping() {
 #[cfg_attr(test, test_case)]
 pub fn test_register_virtio_port_prefers_vnet0_as_primary() {
     let _guard = BridgeStateGuard::new();
+    let runtime = crate::net::runtime::default_runtime();
 
-    let if1 = manager::register_virtio_port(1, None).expect("register vnet1");
-    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if1, Some(1));
-    assert_eq!(
-        primary_stack_glue_if_in(crate::net::runtime::default_runtime()),
-        Some(if1)
-    );
+    let if1 = manager::register_virtio_port_in(runtime, 1, None).expect("register vnet1");
+    register_stack_glue_interface_in(runtime, if1, Some(1));
+    assert_eq!(primary_stack_glue_if_in(runtime), Some(if1));
 
-    let if0 = manager::register_virtio_port(0, None).expect("register vnet0");
-    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if0, Some(0));
-    assert_eq!(
-        primary_stack_glue_if_in(crate::net::runtime::default_runtime()),
-        Some(if0)
-    );
+    let if0 = manager::register_virtio_port_in(runtime, 0, None).expect("register vnet0");
+    register_stack_glue_interface_in(runtime, if0, Some(0));
+    assert_eq!(primary_stack_glue_if_in(runtime), Some(if0));
 
-    let if2 = manager::register_virtio_port(2, None).expect("register vnet2");
-    register_stack_glue_interface_in(crate::net::runtime::default_runtime(), if2, Some(2));
-    assert_eq!(
-        primary_stack_glue_if_in(crate::net::runtime::default_runtime()),
-        Some(if0)
-    );
+    let if2 = manager::register_virtio_port_in(runtime, 2, None).expect("register vnet2");
+    register_stack_glue_interface_in(runtime, if2, Some(2));
+    assert_eq!(primary_stack_glue_if_in(runtime), Some(if0));
 }
 
 #[cfg_attr(test, test_case)]

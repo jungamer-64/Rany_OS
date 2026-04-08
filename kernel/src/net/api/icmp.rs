@@ -150,10 +150,6 @@ pub struct IcmpEchoFuture {
 }
 
 impl IcmpEchoFuture {
-    pub fn new(target: [u8; 4], sequence: u16) -> Self {
-        Self::new_in(crate::net::runtime::default_runtime(), target, sequence)
-    }
-
     pub fn new_in(runtime: NetRuntimeHandle, target: [u8; 4], sequence: u16) -> Self {
         Self {
             runtime,
@@ -164,15 +160,6 @@ impl IcmpEchoFuture {
             timeout_us: 5_000_000,
             dispatch: EventDispatch::new_in(runtime),
         }
-    }
-
-    pub fn with_timeout(target: [u8; 4], sequence: u16, timeout_us: u64) -> Self {
-        Self::with_timeout_in(
-            crate::net::runtime::default_runtime(),
-            target,
-            sequence,
-            timeout_us,
-        )
     }
 
     pub fn with_timeout_in(

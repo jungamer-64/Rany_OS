@@ -106,7 +106,8 @@ impl NetworkStack {
         if_id: crate::net::runtime::manager::NetIfId,
         update_primary_runtime: bool,
     ) {
-        let base_config = crate::net::runtime::manager::get_interface(if_id)
+        let runtime = crate::net::runtime::default_runtime();
+        let base_config = crate::net::runtime::manager::get_interface_in(runtime, if_id)
             .ok()
             .flatten()
             .and_then(|iface| iface.config)
@@ -133,7 +134,7 @@ impl NetworkStack {
         }
 
         self.register_interface_state(if_id, iface_config);
-        let _ = crate::net::runtime::manager::set_interface_config(if_id, iface_config);
+        let _ = crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config);
     }
 
     pub fn clear_dhcp_v4_lease_for_interface(
@@ -141,7 +142,8 @@ impl NetworkStack {
         if_id: crate::net::runtime::manager::NetIfId,
         clear_primary_runtime: bool,
     ) {
-        let base_config = crate::net::runtime::manager::get_interface(if_id)
+        let runtime = crate::net::runtime::default_runtime();
+        let base_config = crate::net::runtime::manager::get_interface_in(runtime, if_id)
             .ok()
             .flatten()
             .and_then(|iface| iface.config)
@@ -158,7 +160,7 @@ impl NetworkStack {
         }
 
         self.register_interface_state(if_id, iface_config);
-        let _ = crate::net::runtime::manager::set_interface_config(if_id, iface_config);
+        let _ = crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config);
     }
 
     pub fn process_udp_payload(

@@ -241,9 +241,10 @@ impl DnsClient {
         use crate::net::l4::endpoint::types::EndpointAddr;
         let dest = EndpointAddr::new(server.octets(), DNS_PORT);
 
-        let mut stream = crate::net::l4::tcp::TcpStream::dial(dest)
-            .await
-            .map_err(|_| "TCP connection failed")?;
+        let mut stream =
+            crate::net::l4::tcp::TcpStream::dial_in(crate::net::runtime::default_runtime(), dest)
+                .await
+                .map_err(|_| "TCP connection failed")?;
 
         let mut buffer = [0u8; 1024];
         let query_len = self.build_tcp_query(&mut buffer, name, qtype)?;

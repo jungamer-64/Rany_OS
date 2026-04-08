@@ -5,7 +5,7 @@ use crate::net::l4::endpoint::event::{NetworkEvent, enqueue_event_ignore_in, sen
 use crate::net::l4::endpoint::tcb::tcb_table;
 use crate::net::l4::endpoint::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
 use crate::net::payload::payload_from_bytes;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::types::InterfaceScope;
 use crate::sync::PoisonLock;
 use core::future::Future;
@@ -306,16 +306,8 @@ impl TcpStream {
         self.endpoint.fd()
     }
 
-    pub async fn dial(addr: EndpointAddr) -> Result<Self, TcpError> {
-        Self::dial_in(default_runtime(), addr).await
-    }
-
     pub async fn dial_in(runtime: NetRuntimeHandle, addr: EndpointAddr) -> Result<Self, TcpError> {
         Self::dial_scoped_in(runtime, InterfaceScope::Any, addr).await
-    }
-
-    pub async fn dial_scoped(addr: EndpointAddr, scope: InterfaceScope) -> Result<Self, TcpError> {
-        Self::dial_scoped_in(default_runtime(), scope, addr).await
     }
 
     pub async fn dial_scoped_in(
@@ -335,10 +327,6 @@ impl TcpStream {
         }
         .await?;
         Ok(stream)
-    }
-
-    pub async fn dial_timeout(addr: EndpointAddr, timeout_us: u64) -> Result<Self, TcpError> {
-        Self::dial_timeout_in(default_runtime(), addr, timeout_us).await
     }
 
     pub async fn dial_timeout_in(
@@ -672,10 +660,6 @@ impl TcpListener {
         self.endpoint.fd()
     }
 
-    pub async fn listen_on(addr: EndpointAddr) -> Result<Self, TcpError> {
-        Self::listen_on_in(default_runtime(), addr).await
-    }
-
     pub async fn listen_on_in(
         runtime: NetRuntimeHandle,
         addr: EndpointAddr,
@@ -687,14 +671,6 @@ impl TcpListener {
             crate::net::l4::endpoint::inner::EndpointInner::DEFAULT_BACKLOG as u32,
         )
         .await
-    }
-
-    pub async fn listen_on_scoped(
-        addr: EndpointAddr,
-        scope: InterfaceScope,
-        backlog: u32,
-    ) -> Result<Self, TcpError> {
-        Self::listen_on_scoped_in(default_runtime(), scope, addr, backlog).await
     }
 
     pub async fn listen_on_scoped_in(

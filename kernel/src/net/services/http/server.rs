@@ -110,9 +110,11 @@ fn http_network_ready() -> bool {
         return false;
     }
 
-    crate::net::runtime::bridge::primary_interface_config()
-        .as_ref()
-        .is_some_and(http_config_usable)
+    crate::net::api::config::primary_interface_config_from_runtime_in(
+        crate::net::runtime::default_runtime(),
+    )
+    .as_ref()
+    .is_some_and(http_config_usable)
 }
 
 async fn wait_for_http_network_ready() {
@@ -157,7 +159,11 @@ fn log_http_restart(cause: ServiceRestartCause, consecutive_failures: u32, backo
 }
 
 async fn bind_http_listener() -> Result<TcpListener, TcpError> {
-    TcpListener::listen_on(EndpointAddr::new([0, 0, 0, 0], 80)).await
+    TcpListener::listen_on_in(
+        crate::net::runtime::default_runtime(),
+        EndpointAddr::new([0, 0, 0, 0], 80),
+    )
+    .await
 }
 
 async fn run_service_supervisor() {

@@ -18,13 +18,14 @@ macro_rules! run_case {
 fn install_default_runtime_dhcp_v4_client(
     mac: crate::net::l2::ethernet::MacAddress,
 ) -> alloc::sync::Arc<crate::net::services::dhcp::DhcpClient> {
-    crate::net::runtime::manager::init_network_manager();
+    let runtime = crate::net::runtime::default_runtime();
+    crate::net::runtime::manager::init_network_manager_in(runtime);
 
-    let if_id = crate::net::runtime::manager::register_interface("dhcp-qemu-test0")
+    let if_id = crate::net::runtime::manager::register_interface_in(runtime, "dhcp-qemu-test0")
         .expect("register dhcp qemu test interface");
     let mut config = crate::net::runtime::stack::NetworkConfig::default();
     config.mac = mac;
-    crate::net::runtime::manager::set_interface_config(if_id, config)
+    crate::net::runtime::manager::set_interface_config_in(runtime, if_id, config)
         .expect("set dhcp qemu test config");
     crate::net::services::dhcp::ensure_interface_runtime(if_id, config)
         .expect("init dhcp qemu interface runtime");

@@ -22,7 +22,13 @@ fn udp_endpoint_poisoned_methods_return_defaults_impl() {
     use crate::sync::set_panicking;
 
     crate::net::l4::endpoint::manager::init_endpoint_manager();
-    let endpoint = UdpEndpoint::new(12345).expect("bind udp endpoint");
+    let endpoint = UdpEndpoint::bind_registered_with_token_in(
+        crate::net::runtime::default_runtime(),
+        InterfaceScope::Any,
+        12345,
+        None,
+    )
+    .expect("bind udp endpoint");
 
     set_panicking(true);
     if let Ok(_g) = endpoint.endpoint.inner().lock() {}
@@ -45,7 +51,13 @@ fn udp_endpoint_multiple_waiters_woken_on_deliver_impl() {
     static WAKE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     crate::net::l4::endpoint::manager::init_endpoint_manager();
-    let endpoint = UdpEndpoint::new(54322).expect("bind udp endpoint");
+    let endpoint = UdpEndpoint::bind_registered_with_token_in(
+        crate::net::runtime::default_runtime(),
+        InterfaceScope::Any,
+        54322,
+        None,
+    )
+    .expect("bind udp endpoint");
     let mut fut1 = endpoint.recv();
     let mut fut2 = endpoint.recv();
 
@@ -207,7 +219,13 @@ pub fn test_udp_recv_future_poisoned_returns_closed() {
     use core::task::Poll;
 
     crate::net::l4::endpoint::manager::init_endpoint_manager();
-    let endpoint = UdpEndpoint::new(54321).expect("bind udp endpoint");
+    let endpoint = UdpEndpoint::bind_registered_with_token_in(
+        crate::net::runtime::default_runtime(),
+        InterfaceScope::Any,
+        54321,
+        None,
+    )
+    .expect("bind udp endpoint");
 
     // Poison the inner lock
     set_panicking(true);

@@ -91,11 +91,14 @@ pub fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u
 /// この関数は一度だけ呼ばれるブートストラップ処理であり、
 /// 同期ロック取得は許容される。
 pub fn init_dhcp_runtime() -> Result<(), String> {
-    let interfaces = manager::list_interfaces().ok().unwrap_or_default();
+    let runtime = default_runtime();
+    let interfaces = manager::list_interfaces_in(runtime)
+        .ok()
+        .unwrap_or_default();
     let bootstrap_config = interfaces
         .iter()
         .find_map(|iface| iface.config)
-        .or_else(|| match stack::stack_in(default_runtime()).lock() {
+        .or_else(|| match stack::stack_in(runtime).lock() {
             Ok(guard) => guard.as_ref().map(|stack_guard| stack_guard.config()),
             Err(_) => None,
         })
@@ -118,7 +121,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     }
 
     if ipv6_enabled {
-        dhcp::init_v6_in(default_runtime(), mac);
+        dhcp::init_v6_in(runtime, mac);
     } else {
         log::info!("[NET] DHCPv6 runtime disabled: IPv6 is not configured");
     }
@@ -130,7 +133,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     };
     let hostname = String::from("ranyos");
     let ip = bootstrap_config.ipv4.address;
-    crate::net::services::mdns::init(hostname, ip);
+    crate::net::services::mdns::init_in(runtime, hostname, ip);
 
     // DNS 初期化
     crate::net::services::dns::init(1000);
@@ -149,11 +152,12 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
 }
 
 pub(crate) fn start_background_service_tasks() {
-    let has_dhcpv6 = dhcp::primary_v6_client_lock_in(default_runtime())
+    let runtime = default_runtime();
+    let has_dhcpv6 = dhcp::primary_v6_client_lock_in(runtime)
         .lock()
         .ok()
         .is_some_and(|guard| guard.is_some());
-    let has_mdns = crate::net::services::mdns::service()
+    let has_mdns = crate::net::services::mdns::service_in(runtime)
         .lock()
         .ok()
         .is_some_and(|guard| guard.is_some());
@@ -177,7 +181,7 @@ pub(crate) fn start_background_service_tasks() {
                 crate::cpu::try_current_id().unwrap_or(0)
             );
             let client_ref: Option<&'static dhcp::DhcpV6Client> = {
-                let guard = match dhcp::primary_v6_client_lock_in(default_runtime()).lock() {
+                let guard = match dhcp::primary_v6_client_lock_in(runtime).lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };
@@ -201,7 +205,7 @@ pub(crate) fn start_background_service_tasks() {
                 crate::cpu::try_current_id().unwrap_or(0)
             );
             let svc_ref: Option<&'static mut crate::net::services::mdns::MdnsService> = {
-                let mut guard = match crate::net::services::mdns::service().lock() {
+                let mut guard = match crate::net::services::mdns::service_in(runtime).lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };

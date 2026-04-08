@@ -70,7 +70,7 @@ fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
     }
     crate::net::runtime::device::primary_if_in(crate::net::runtime::default_runtime())
         .or_else(|| {
-            crate::net::runtime::manager::list_interfaces()
+            crate::net::runtime::manager::list_interfaces_in(crate::net::runtime::default_runtime())
                 .ok()
                 .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
         })
