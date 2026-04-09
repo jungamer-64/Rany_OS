@@ -309,33 +309,39 @@ const fn connection_deadline_reached_at(now_tick_ms: u64, deadline_tick_ms: u64)
     now_tick_ms >= deadline_tick_ms
 }
 
-struct RequestResponse {
-    // None は「通常レスポンスと 503 fallback の両方の構築に失敗したため、
-    // 書き込みを行わず接続を終了すべき」ことを表す。
-    payload: Option<PacketPayload>,
-    keep_alive: bool,
+enum RequestResponse {
+    Respond {
+        payload: PacketPayload,
+        keep_alive: bool,
+    },
+    // 通常レスポンスと 503 fallback の両方の構築に失敗したため、
+    // 書き込みを行わず接続を終了すべき状態。
+    Close,
 }
 
 fn build_request_response_or_fallback(request: &super::types::HttpRequestView) -> RequestResponse {
-    let mut keep_alive = keep_alive_for_request(request);
-    let payload = match build_response_for_request(request, keep_alive) {
-        Ok(payload) => Some(payload),
+    let keep_alive = keep_alive_for_request(request);
+
+    match build_response_for_request(request, keep_alive) {
+        Ok(payload) => RequestResponse::Respond {
+            payload,
+            keep_alive,
+        },
         Err(err) => {
             log::error!("[HOST-HTTP] response build failed: {:?}", err);
-            keep_alive = false;
-            let fallback = build_service_unavailable_response_or_log();
-            if fallback.is_none() {
-                log::error!(
-                    "[HOST-HTTP] failed to build 503 fallback response; closing connection"
-                );
+            match build_service_unavailable_response_or_log() {
+                Some(payload) => RequestResponse::Respond {
+                    payload,
+                    keep_alive: false,
+                },
+                None => {
+                    log::error!(
+                        "[HOST-HTTP] failed to build 503 fallback response; closing connection"
+                    );
+                    RequestResponse::Close
+                }
             }
-            fallback
         }
-    };
-
-    RequestResponse {
-        payload,
-        keep_alive,
     }
 }
 
@@ -367,22 +373,29 @@ async fn handle_client(mut client: TcpConnection) {
         // まずバッファ内のデータだけでパースできるか試す（パイプライン処理対応）
         if response_payload.is_none() {
             match parser.try_parse_request() {
-            Ok(Some(request)) => {
+                Ok(Some(request)) => {
                     let response = build_request_response_or_fallback(&request);
-                    keep_alive = response.keep_alive;
-                    response_payload = response.payload;
-                if response_payload.is_none() {
-                    break;
+                    match response {
+                        RequestResponse::Respond {
+                            payload,
+                            keep_alive: next_keep_alive,
+                        } => {
+                            keep_alive = next_keep_alive;
+                            response_payload = Some(payload);
+                        }
+                        RequestResponse::Close => {
+                            break;
+                        }
+                    }
                 }
-            }
-            Ok(None) => {} // データ不足
-            Err(err) => {
-                log::warn!("[HOST-HTTP] parse error: {:?}", err);
-                response_payload = build_bad_request_response_or_log();
-                if response_payload.is_none() {
-                    break;
+                Ok(None) => {} // データ不足
+                Err(err) => {
+                    log::warn!("[HOST-HTTP] parse error: {:?}", err);
+                    response_payload = build_bad_request_response_or_log();
+                    if response_payload.is_none() {
+                        break;
+                    }
                 }
-            }
             }
         }
 
@@ -433,10 +446,17 @@ async fn handle_client(mut client: TcpConnection) {
                         match parser.try_parse_request() {
                             Ok(Some(request)) => {
                                 let response = build_request_response_or_fallback(&request);
-                                keep_alive = response.keep_alive;
-                                response_payload = response.payload;
-                                if response_payload.is_none() {
-                                    abort_connection = true;
+                                match response {
+                                    RequestResponse::Respond {
+                                        payload,
+                                        keep_alive: next_keep_alive,
+                                    } => {
+                                        keep_alive = next_keep_alive;
+                                        response_payload = Some(payload);
+                                    }
+                                    RequestResponse::Close => {
+                                        abort_connection = true;
+                                    }
                                 }
                                 break;
                             }
