@@ -3,7 +3,8 @@
 // ============================================================================
 
 use super::types::{
-    HttpHeaderView, HttpMethod, HttpRequestView, HttpResponseView, HttpStatusCode, HttpVersion,
+    HttpHeaderView, HttpInboundRequest, HttpInboundResponse, HttpMethod, HttpStatusCode,
+    HttpVersion,
 };
 use crate::net::payload::{PayloadSequence, PayloadSpan, append_payload, payload_range};
 use alloc::vec::Vec;
@@ -48,7 +49,7 @@ impl HttpParser {
         append_payload(&mut self.buffer, payload);
     }
 
-    pub fn try_parse_request(&mut self) -> Result<Option<HttpRequestView>, HttpParseError> {
+    pub fn try_parse_request(&mut self) -> Result<Option<HttpInboundRequest>, HttpParseError> {
         let Some((full, header_end)) = self.read_message_span()? else {
             return Ok(None);
         };
@@ -64,7 +65,7 @@ impl HttpParser {
 
         self.consume_prefix(consumed_len);
 
-        Ok(Some(HttpRequestView {
+        Ok(Some(HttpInboundRequest {
             method,
             uri,
             version,
@@ -73,7 +74,7 @@ impl HttpParser {
         }))
     }
 
-    pub fn try_parse(&mut self) -> Result<Option<HttpResponseView>, HttpParseError> {
+    pub fn try_parse(&mut self) -> Result<Option<HttpInboundResponse>, HttpParseError> {
         self.try_parse_response_with_mode(false)
     }
 
@@ -83,14 +84,14 @@ impl HttpParser {
     /// close-delimited body として扱う。
     pub fn try_parse_response_on_eof(
         &mut self,
-    ) -> Result<Option<HttpResponseView>, HttpParseError> {
+    ) -> Result<Option<HttpInboundResponse>, HttpParseError> {
         self.try_parse_response_with_mode(true)
     }
 
     fn try_parse_response_with_mode(
         &mut self,
         eof_terminates_body: bool,
-    ) -> Result<Option<HttpResponseView>, HttpParseError> {
+    ) -> Result<Option<HttpInboundResponse>, HttpParseError> {
         let Some((full, header_end)) = self.read_message_span()? else {
             return Ok(None);
         };
@@ -106,7 +107,7 @@ impl HttpParser {
 
         self.consume_prefix(consumed_len);
 
-        Ok(Some(HttpResponseView {
+        Ok(Some(HttpInboundResponse {
             version,
             status_code,
             reason_phrase,

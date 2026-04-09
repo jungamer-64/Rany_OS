@@ -772,7 +772,7 @@ impl HttpRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct HttpRequestView {
+pub struct HttpInboundRequest {
     pub method: HttpMethod,
     pub uri: PayloadSpan,
     pub version: HttpVersion,
@@ -780,7 +780,7 @@ pub struct HttpRequestView {
     pub body: Option<PayloadSpan>,
 }
 
-impl HttpRequestView {
+impl HttpInboundRequest {
     pub fn get_header(&self, name: &str) -> Option<&PayloadSpan> {
         self.headers.iter().find_map(|header| {
             if header.name_eq(name) {
@@ -883,7 +883,7 @@ impl HttpResponse {
 }
 
 #[derive(Debug, Clone)]
-pub struct HttpResponseView {
+pub struct HttpInboundResponse {
     pub version: HttpVersion,
     pub status_code: HttpStatusCode,
     pub reason_phrase: PayloadSpan,
@@ -891,7 +891,7 @@ pub struct HttpResponseView {
     pub body: Option<PayloadSpan>,
 }
 
-impl HttpResponseView {
+impl HttpInboundResponse {
     pub fn get_header(&self, name: &str) -> Option<&PayloadSpan> {
         self.headers.iter().find_map(|header| {
             if header.name_eq(name) {

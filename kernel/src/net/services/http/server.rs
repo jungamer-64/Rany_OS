@@ -288,7 +288,7 @@ fn try_acquire_connection_slot() -> Option<u32> {
     }
 }
 
-fn keep_alive_for_request(request: &super::types::HttpRequestView) -> bool {
+fn keep_alive_for_request(request: &super::types::HttpInboundRequest) -> bool {
     let default_keep_alive = request.version == super::types::HttpVersion::Http1_1;
 
     match request.connection_directive() {
@@ -346,7 +346,9 @@ enum RequestResponse {
     Close,
 }
 
-fn build_request_response_or_fallback(request: &super::types::HttpRequestView) -> RequestResponse {
+fn build_request_response_or_fallback(
+    request: &super::types::HttpInboundRequest,
+) -> RequestResponse {
     let keep_alive = keep_alive_for_request(request);
 
     match build_response_for_request(request, keep_alive) {
@@ -642,7 +644,7 @@ fn build_health_response(keep_alive: bool) -> Result<PacketPayload, HttpResponse
 }
 
 fn build_response_for_request(
-    request: &super::types::HttpRequestView,
+    request: &super::types::HttpInboundRequest,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
     TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
@@ -659,7 +661,7 @@ fn build_response_for_request(
 }
 
 fn build_get_response(
-    request: &super::types::HttpRequestView,
+    request: &super::types::HttpInboundRequest,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
     if request.uri_eq("/") {
@@ -688,7 +690,7 @@ fn build_get_response(
 }
 
 fn build_echo_response(
-    request: &super::types::HttpRequestView,
+    request: &super::types::HttpInboundRequest,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
     if let Some(body) = request.body_payload() {
