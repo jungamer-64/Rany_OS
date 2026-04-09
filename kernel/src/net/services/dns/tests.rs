@@ -74,7 +74,7 @@ pub fn test_dns_header_not_truncated() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_build_tcp_query() {
+pub fn test_build_tcp_query_payload() {
     let client = DnsClient::new(100);
     let payload = client
         .build_tcp_query_payload("example.com", DnsQueryType::A)

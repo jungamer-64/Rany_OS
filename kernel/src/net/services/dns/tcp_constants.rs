@@ -93,7 +93,7 @@ pub fn build_tcp_query_payload(
             }
         }
         Err(_) => {
-            log::error!("[NET] DNS Global lock poisoned (build_tcp_query)");
+            log::error!("[NET] DNS Global lock poisoned (build_tcp_query_payload)");
             Err("DNS lock poisoned")
         }
     }

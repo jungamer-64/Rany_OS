@@ -326,8 +326,8 @@ pub fn dns_dns_header_not_truncated_smoke() -> bool {
     run_case!(dns::tests::test_dns_header_not_truncated)
 }
 
-pub fn dns_build_tcp_query_smoke() -> bool {
-    run_case!(dns::tests::test_build_tcp_query)
+pub fn dns_build_tcp_query_payload_smoke() -> bool {
+    run_case!(dns::tests::test_build_tcp_query_payload)
 }
 
 pub fn dns_needs_tcp_fallback_truncated_smoke() -> bool {

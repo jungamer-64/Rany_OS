@@ -88,6 +88,7 @@ This document lists deprecated symbols and recent removals that still matter for
 
 - `kernel/src/net` (TCP/Socket APIs)
   - Note: この節は core network surface に関わる deprecated / removed API だけを扱います。便宜的な naming や非正規 surface は canonical docs の対象外です。
+  - Note: ここに残る旧シンボル名は migration 履歴のために保持しています。現行の canonical surface は `TcpConnection` / `TcpAcceptor` と payload-native DNS/TLS API（`*_payload` 系）です。
   - `interfaces/kernel_api::resource::net` の method-based TCP/RAW wrappers (`TcpConnection::connect`, `TcpConnection::recv_payload`, `TcpConnection::send_payload`, `TcpAcceptor::listen_on`, `TcpAcceptor::accept`, `TcpAcceptor::poll_accept`, `RawEndpoint::open`, `RawEndpoint::recv_payload`, `RawEndpoint::send_payload`) ❌ **removed**
     - Migration: Use the handle-first module functions `tcp_connection_dial(...)`, `tcp_acceptor_bind(...)`, `tcp_acceptor_next_connection(...)`, `tcp_connection_recv_payload(&connection)`, `tcp_connection_send_payload(&connection, payload)`, `raw_endpoint_open(...)`, `raw_endpoint_recv_payload(&endpoint)`, and `raw_endpoint_send_payload(&endpoint, payload)`.
   - `interfaces/kernel_api::services::KernelServices` legacy open/accept/raw names (`net_open_tcp_stream`, `net_open_tcp_listener`, `net_tcp_acceptor_accept`, `net_close_tcp_stream`, `net_close_tcp_listener`, `net_open_raw_endpoint`, `net_close_raw_endpoint`, `net_raw_recv_payload`, `net_raw_send_payload`) ❌ **removed**

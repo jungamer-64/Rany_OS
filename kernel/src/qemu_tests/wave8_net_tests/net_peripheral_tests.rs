@@ -105,8 +105,8 @@ pub fn net_peripheral_dns_dns_header_not_truncated_smoke() -> bool {
     crate::net::qemu_tests::dns_dns_header_not_truncated_smoke()
 }
 
-pub fn net_peripheral_dns_build_tcp_query_smoke() -> bool {
-    crate::net::qemu_tests::dns_build_tcp_query_smoke()
+pub fn net_peripheral_dns_build_tcp_query_payload_smoke() -> bool {
+    crate::net::qemu_tests::dns_build_tcp_query_payload_smoke()
 }
 
 pub fn net_peripheral_dns_needs_tcp_fallback_truncated_smoke() -> bool {
