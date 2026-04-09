@@ -32,7 +32,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 - `socket()` / `bind()` / `listen()` をネットワーク設計の中心に置かない。
 - 型付き endpoint、packet-backed payload、queue submission、capability 検証を優先する。
-- `AsyncRead` / `AsyncWrite` 相当の利用形態が存在しても、それ自体を core canonical model とみなさない。
+- network API の評価軸は packet ownership / payload handoff / queue submission に置く。
 
 ### 1.2 Normative: ネットワークは ownership-based datapath として扱う
 
@@ -42,9 +42,9 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 ### 1.3 Canonical target: TCP でも zero-copy fast path を第一級に扱う
 
-- TCP は byte-stream semantics を提供し得るが、core の性能モデルは packet-backed payload handoff を優先する。
-- `AsyncRead` / `AsyncWrite` は ergonomic surface として存在し得るが、datapath の正規面は ownership / payload / queue に置く。
-- end-to-end zero-copy が達成できていない経路は `implementation pending` として扱い、stream-oriented copy path を canonical baseline とみなさない。
+- TCP でも core の性能モデルは packet-backed payload handoff を優先する。
+- datapath の正規面は ownership / payload / queue に置く。
+- end-to-end zero-copy が達成できていない経路は `implementation pending` として扱い、copy path を canonical baseline とみなさない。
 
 ## 2. Core vocabulary
 
@@ -89,7 +89,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 - TCP は connection semantics を持つが、core では packet-backed payload queue と endpoint-owned state を中心に扱う。
 - UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先する。
-- byte-stream convenience は存在し得るが、core canonical docs はそこを前提に語彙を組み立てない。
+- core canonical docs は packet / endpoint / ownership vocabulary を前提に語彙を組み立てる。
 
 ### 4.3 implementation pending
 

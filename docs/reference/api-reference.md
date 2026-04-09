@@ -279,10 +279,10 @@ let completed: Buffer = virtqueue.poll().await;
 ### 設計原則（ネットワーク）
 
 - **Normative:** POSIXソケット（`socket`, `bind`, `listen`）は提供しません。
-- **Normative:** ネットワークの主語は byte-stream convenience ではなく packet-backed payload です。
+- **Normative:** ネットワークの主語は packet-backed payload です。
 - **Normative:** `PacketPayload`、packet pool、queue ownership、endpoint-owned state を中心に語彙を整理します。
 - **Canonical target:** TCP を含む end-to-end zero-copy path を第一級に扱います。
-- **Guidance:** `AsyncRead` / `AsyncWrite` 相当の surface が存在しても、core canonical model は datapath / ownership semantics に置きます。
+- **Guidance:** network core の公開語彙は datapath / ownership semantics に固定します。
 
 ### モジュール: `exorust::net`
 
@@ -314,8 +314,8 @@ submit_payload(payload).await?;
 
 > [!IMPORTANT]
 > TCP を含む全経路で packet-backed payload を end-to-end に維持することは
-> `Canonical target` です。stream convenience や一部 copy path が残る場合でも、
-> それを network core の正規面とはみなしません。
+> `Canonical target` です。未達成の経路が残る場合でも、network core の正規面は
+> packet-backed / ownership-first の語彙に固定します。
 
 #### Canonical target: packet-backed TCP fast path
 
