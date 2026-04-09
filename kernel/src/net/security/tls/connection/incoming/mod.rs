@@ -39,8 +39,8 @@ impl TlsConnection {
                 .recv_buffer
                 .take_prefix(5 + length)
                 .ok_or(TlsError::DecodeError)?;
-            let record_payload =
-                crate::net::payload::payload_range(&record, 5, length).ok_or(TlsError::DecodeError)?;
+            let record_payload = crate::net::payload::payload_range(&record, 5, length)
+                .ok_or(TlsError::DecodeError)?;
             self.process_single_record(content_type, &record_payload, &mut plaintext)?;
         }
 

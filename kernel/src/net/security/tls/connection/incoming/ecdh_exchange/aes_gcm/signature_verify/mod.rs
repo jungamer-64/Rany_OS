@@ -168,14 +168,18 @@ impl TlsConnection {
             let mut chs = [0u8; 48];
             chs.copy_from_slice(&self.client_hs_traffic_secret[..48]);
             let finished_key = tls13_finished_key_sha384(&chs);
-            (tls13_verify_data_sha384(&finished_key, &transcript), SHA384_OUTPUT_SIZE)
+            (
+                tls13_verify_data_sha384(&finished_key, &transcript),
+                SHA384_OUTPUT_SIZE,
+            )
         } else {
             let transcript = self.transcript_hash_sha256();
             let mut chs = [0u8; 32];
             chs.copy_from_slice(&self.client_hs_traffic_secret[..32]);
             let finished_key = tls13_finished_key(&chs);
             let mut out = [0u8; 48];
-            out[..SHA256_OUTPUT_SIZE].copy_from_slice(&tls13_verify_data(&finished_key, &transcript));
+            out[..SHA256_OUTPUT_SIZE]
+                .copy_from_slice(&tls13_verify_data(&finished_key, &transcript));
             (out, SHA256_OUTPUT_SIZE)
         }
     }
@@ -258,8 +262,7 @@ impl TlsConnection {
         } else {
             // フォールバック: 以前の挙動
             let client_finished_len = 4 + hash_len;
-            self.transcript_len()
-                .saturating_sub(client_finished_len)
+            self.transcript_len().saturating_sub(client_finished_len)
         };
 
         if use_384 {

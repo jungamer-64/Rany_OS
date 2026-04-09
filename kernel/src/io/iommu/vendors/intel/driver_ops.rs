@@ -253,13 +253,7 @@ impl IntelIommuDriver {
                 if let Some(domain_arc) = controller.domain(domain_id) {
                     let iova = allocate_iova_for_device(controller, device, size)?;
                     return unsafe {
-                        apply_mapping_async(
-                            controller,
-                            &domain_arc,
-                            iova,
-                            phys_addr.as_u64(),
-                            size,
-                        )
+                        apply_mapping_async(controller, &domain_arc, iova, phys_addr.as_u64(), size)
                     }
                     .await;
                 }

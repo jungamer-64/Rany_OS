@@ -797,14 +797,11 @@ impl HttpRequestView {
 
     pub fn connection_is(&self, value: &str) -> bool {
         if let Some(directive) = self.connection_directive() {
-            return directive
-                .as_header_value()
-                .eq_ignore_ascii_case(value);
+            return directive.as_header_value().eq_ignore_ascii_case(value);
         }
 
-        self.get_header("Connection").is_some_and(|span| {
-            span.eq_ignore_ascii_case(value.as_bytes())
-        })
+        self.get_header("Connection")
+            .is_some_and(|span| span.eq_ignore_ascii_case(value.as_bytes()))
     }
 
     pub fn connection_directive(&self) -> Option<ConnectionDirective> {

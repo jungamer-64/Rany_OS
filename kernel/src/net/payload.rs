@@ -92,7 +92,8 @@ impl PayloadSpan {
         if self.len != bytes.len() {
             return false;
         }
-        bytes.iter()
+        bytes
+            .iter()
             .enumerate()
             .all(|(index, expected)| self.byte_at(index) == Some(*expected))
     }
@@ -137,9 +138,10 @@ impl PayloadSpan {
             return None;
         }
         (start..=max_start).find(|candidate| {
-            pattern.iter().enumerate().all(|(index, expected)| {
-                self.byte_at(*candidate + index) == Some(*expected)
-            })
+            pattern
+                .iter()
+                .enumerate()
+                .all(|(index, expected)| self.byte_at(*candidate + index) == Some(*expected))
         })
     }
 
@@ -153,7 +155,9 @@ impl PayloadSpan {
             if !digit.is_ascii_digit() {
                 return None;
             }
-            value = value.checked_mul(10)?.checked_add((digit - b'0') as usize)?;
+            value = value
+                .checked_mul(10)?
+                .checked_add((digit - b'0') as usize)?;
         }
         Some(value)
     }
@@ -299,7 +303,9 @@ pub fn append_payload(target: &mut PacketPayload, payload: PacketPayload) {
     *target = if segments.len() == 1 {
         PacketPayload::single(segments.remove(0))
     } else {
-        PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(segments))
+        PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
+            segments,
+        ))
     };
 }
 

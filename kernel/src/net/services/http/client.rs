@@ -48,7 +48,6 @@ async fn send_tls12_client_handshake_flight(
     send_payload(connection, finished).await
 }
 
-
 #[derive(Debug)]
 pub enum HttpClientError {
     DnsResolutionFailed,

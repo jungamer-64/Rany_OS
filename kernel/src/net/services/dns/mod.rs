@@ -6,14 +6,14 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
-use crate::net::runtime::context::default_runtime_context;
 use crate::net::payload::PayloadSpan;
+use crate::net::runtime::context::default_runtime_context;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::net::l3::ipv4::Ipv4Address;

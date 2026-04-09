@@ -77,7 +77,9 @@ impl TlsConnection {
     ///
     /// クライアントの一時公開鍵をサーバーに送信する。
     /// `process_server_key_exchange()` の後に呼び出す。
-    pub fn build_client_key_exchange_payload(&mut self) -> Option<kernel_api::resource::net::PacketPayload> {
+    pub fn build_client_key_exchange_payload(
+        &mut self,
+    ) -> Option<kernel_api::resource::net::PacketPayload> {
         let keypair = self.local_ecdh_keypair.as_ref()?;
         let pubkey_bytes = keypair.public_key_bytes();
 

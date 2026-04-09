@@ -11,9 +11,7 @@ use alloc::vec::Vec;
 use super::crypto::*;
 use super::error::{TlsError, TlsResult};
 use super::types::*;
-use crate::net::payload::{
-    append_payload, PacketPayloadBuilder, PacketPayloadView, PayloadSpan,
-};
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpan, append_payload};
 use crate::net::security::ecdh;
 use kernel_api::resource::net::PacketPayload;
 

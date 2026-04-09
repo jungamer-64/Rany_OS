@@ -260,8 +260,7 @@ impl KernelServices for ExoKernel {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let mut connection =
-                crate::net::l4::tcp::TcpConnection::from_retained_endpoint(socket);
+            let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_endpoint(socket);
             match connection.recv_payload().await {
                 Some(payload) => Ok(payload),
                 None => Ok(kernel_api::resource::net::PacketPayload::default()),
@@ -277,8 +276,7 @@ impl KernelServices for ExoKernel {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let mut connection =
-                crate::net::l4::tcp::TcpConnection::from_retained_endpoint(socket);
+            let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_endpoint(socket);
             connection
                 .send_payload(payload)
                 .await

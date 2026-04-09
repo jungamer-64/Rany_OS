@@ -115,7 +115,10 @@ pub fn test_send_payload_future_wakes_on_send() {
 
     match pinned.as_mut().poll(&mut cx) {
         Poll::Ready(Ok(())) => {}
-        other => panic!("send_payload future returned unexpected result: {:?}", other),
+        other => panic!(
+            "send_payload future returned unexpected result: {:?}",
+            other
+        ),
     }
 
     let queued = sock
@@ -195,7 +198,10 @@ pub fn test_send_payload_future_wakes_on_send_v6() {
 
     match pinned.as_mut().poll(&mut cx) {
         Poll::Ready(Ok(())) => {}
-        other => panic!("send_payload future returned unexpected result: {:?}", other),
+        other => panic!(
+            "send_payload future returned unexpected result: {:?}",
+            other
+        ),
     }
 
     let queued = sock

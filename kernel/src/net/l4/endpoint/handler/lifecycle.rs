@@ -66,7 +66,8 @@ impl NetworkEventHandler {
                 result_slot,
                 waker,
             } => {
-                let result = self.make_tcp_connection_with_stack(runtime, local, remote, scope, stack);
+                let result =
+                    self.make_tcp_connection_with_stack(runtime, local, remote, scope, stack);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }

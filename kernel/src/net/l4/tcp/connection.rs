@@ -630,7 +630,9 @@ impl<'a> Future for AcceptFuture<'a> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.acceptor.endpoint.try_next_incoming() {
-            Ok((endpoint, addr, _if_id)) => Poll::Ready(Ok((TcpConnection::from_endpoint(endpoint), addr))),
+            Ok((endpoint, addr, _if_id)) => {
+                Poll::Ready(Ok((TcpConnection::from_endpoint(endpoint), addr)))
+            }
             Err(EndpointError::Timeout) => {
                 self.acceptor
                     .endpoint
@@ -697,14 +699,15 @@ impl<'a> Future for SendPayloadFuture<'a> {
         }
 
         let queued_bytes = inner.send_payload_bytes();
-        let available = inner
-            .send_buffer_limit
-            .saturating_sub(queued_bytes)
-            .min(endpoint_send_budget(
-                inner.local_addr,
-                inner.remote_addr,
-                queued_bytes,
-            ));
+        let available =
+            inner
+                .send_buffer_limit
+                .saturating_sub(queued_bytes)
+                .min(endpoint_send_budget(
+                    inner.local_addr,
+                    inner.remote_addr,
+                    queued_bytes,
+                ));
 
         if available < payload_len {
             let has_queued_data = inner.has_send_data();

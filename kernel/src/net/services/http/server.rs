@@ -2,7 +2,7 @@ use alloc::string::{String, ToString};
 use alloc::{format, vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::net::l4::tcp::{EndpointAddr, TcpError, TcpAcceptor, TcpConnection};
+use crate::net::l4::tcp::{EndpointAddr, TcpAcceptor, TcpConnection, TcpError};
 use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
 use crate::task::{self, Task, TimeoutResult};
 use kernel_api::resource::net::PacketPayload;
@@ -596,10 +596,7 @@ async fn write_response(
         .send_payload(response)
         .await
         .map_err(|_| "socket write error")?;
-    client
-        .drain_tx()
-        .await
-        .map_err(|_| "socket drain error")?;
+    client.drain_tx().await.map_err(|_| "socket drain error")?;
     BYTES_TX.fetch_add(total_len as u64, Ordering::Relaxed);
     Ok(())
 }

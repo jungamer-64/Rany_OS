@@ -5,7 +5,7 @@
 use super::types::{
     HttpHeaderView, HttpMethod, HttpRequestView, HttpResponseView, HttpStatusCode, HttpVersion,
 };
-use crate::net::payload::{append_payload, payload_range, PayloadSequence, PayloadSpan};
+use crate::net::payload::{PayloadSequence, PayloadSpan, append_payload, payload_range};
 use alloc::vec::Vec;
 use kernel_api::resource::net::PacketPayload;
 
@@ -73,7 +73,9 @@ impl HttpParser {
     ///
     /// Content-Length/Transfer-Encoding がない場合、ヘッダー終端以降の残り全体を
     /// close-delimited body として扱う。
-    pub fn try_parse_response_on_eof(&mut self) -> Result<Option<HttpResponseView>, HttpParseError> {
+    pub fn try_parse_response_on_eof(
+        &mut self,
+    ) -> Result<Option<HttpResponseView>, HttpParseError> {
         self.try_parse_response_with_mode(true)
     }
 
@@ -149,7 +151,8 @@ impl HttpParser {
         )
         .ok_or(HttpParseError::UnsupportedVersion)?;
 
-        let status_code = self.parse_status_code_from_line(&status_line, first_space, second_space)?;
+        let status_code =
+            self.parse_status_code_from_line(&status_line, first_space, second_space)?;
         let reason_phrase = self.parse_reason_phrase_from_line(&status_line, second_space)?;
 
         Ok((version, status_code, reason_phrase, status_line_end))
@@ -273,13 +276,8 @@ impl HttpParser {
         Ok(version)
     }
 
-    fn find_first_two_spaces(
-        &self,
-        line: &PayloadSpan,
-    ) -> Result<(usize, usize), HttpParseError> {
-        let first_space = line
-            .find_bytes(b" ")
-            .ok_or(HttpParseError::InvalidFormat)?;
+    fn find_first_two_spaces(&self, line: &PayloadSpan) -> Result<(usize, usize), HttpParseError> {
+        let first_space = line.find_bytes(b" ").ok_or(HttpParseError::InvalidFormat)?;
         let second_space = line
             .find_bytes_from(b" ", first_space + 1)
             .ok_or(HttpParseError::InvalidFormat)?;
@@ -296,7 +294,8 @@ impl HttpParser {
         let header_start = first_line_end
             .checked_add(2)
             .ok_or(HttpParseError::InvalidFormat)?;
-        let (headers, content_length, chunked) = self.parse_headers(full, header_start, header_end)?;
+        let (headers, content_length, chunked) =
+            self.parse_headers(full, header_start, header_end)?;
         if chunked && content_length.is_some() {
             return Err(HttpParseError::InvalidFormat);
         }
@@ -304,14 +303,13 @@ impl HttpParser {
         let body_start = header_end
             .checked_add(4)
             .ok_or(HttpParseError::InvalidFormat)?;
-        let Some((body, consumed_len)) =
-            self.parse_optional_body(
-                full,
-                body_start,
-                content_length,
-                chunked,
-                eof_terminates_body,
-            )?
+        let Some((body, consumed_len)) = self.parse_optional_body(
+            full,
+            body_start,
+            content_length,
+            chunked,
+            eof_terminates_body,
+        )?
         else {
             return Ok(None);
         };
@@ -350,7 +348,10 @@ impl HttpParser {
         let Some((payload, consumed_len)) = self.parse_chunked_body(full, body_start)? else {
             return Ok(None);
         };
-        Ok(Some((Some(PayloadSpan::from_payload(payload)), consumed_len)))
+        Ok(Some((
+            Some(PayloadSpan::from_payload(payload)),
+            consumed_len,
+        )))
     }
 
     fn parse_fixed_length_body(
@@ -423,7 +424,8 @@ impl HttpParser {
                 &mut headers,
                 &mut content_length,
                 &mut chunked,
-            )? else {
+            )?
+            else {
                 break;
             };
             cursor = next_cursor;
@@ -559,7 +561,8 @@ impl HttpParser {
                 return self.finish_chunked_body(full, cursor, body);
             }
 
-            let Some(next_cursor) = self.append_chunk_data(full, &mut body, cursor, chunk_size)? else {
+            let Some(next_cursor) = self.append_chunk_data(full, &mut body, cursor, chunk_size)?
+            else {
                 return Ok(None);
             };
             cursor = next_cursor;
@@ -671,9 +674,7 @@ impl HttpParser {
         // Trailer ヘッダーは現時点では検証のみ行い、レスポンス構造体には保持しない。
         HttpHeaderView::try_new(name, value).ok_or(HttpParseError::InvalidFormat)?;
 
-        line_end
-            .checked_add(2)
-            .ok_or(HttpParseError::InvalidFormat)
+        line_end.checked_add(2).ok_or(HttpParseError::InvalidFormat)
     }
 }
 
@@ -704,7 +705,8 @@ mod tests {
     fn chunked_trailer_waits_for_final_crlf() {
         let mut parser = HttpParser::new();
 
-        let first = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\nX-Test: 1\r\n";
+        let first =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\nX-Test: 1\r\n";
         parser.push_payload(payload_from_bytes(first).expect("test payload must be allocated"));
         assert!(parser.try_parse().expect("parse should not fail").is_none());
 

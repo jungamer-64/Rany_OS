@@ -2,10 +2,10 @@
 // tls/types.rs - TLS Type Definitions
 // ============================================================================
 
+use crate::net::payload::{PayloadSpan, payload_from_bytes};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::net::payload::{PayloadSpan, payload_from_bytes};
 use kernel_api::resource::net::PacketPayload;
 
 // ============================================================================

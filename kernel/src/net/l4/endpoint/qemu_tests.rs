@@ -4,8 +4,8 @@
 //! behavior aligned between `#[cfg_attr(test, test_case)]` and QEMU full-boot execution.
 
 use super::{
-    async_tests, congestion, endpoint_core, flow_control, handler, inner, retransmit, segment,
-    tcb, tests, types, window_scale,
+    async_tests, congestion, endpoint_core, flow_control, handler, inner, retransmit, segment, tcb,
+    tests, types, window_scale,
 };
 use crate::net::l4::test_support::new_test_endpoint;
 

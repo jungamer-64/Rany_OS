@@ -14,11 +14,11 @@ use super::AmdIommuDriver;
 use super::cmd;
 
 #[cfg(not(test))]
+use super::fault::AMD_CMD_WAITERS;
+#[cfg(not(test))]
 use core::future::poll_fn;
 #[cfg(not(test))]
 use core::task::Poll;
-#[cfg(not(test))]
-use super::fault::AMD_CMD_WAITERS;
 
 // ---------------------------------------------------------------------------
 // AmdCommandWaitToken

@@ -11,8 +11,9 @@ impl DnsClient {
         len: usize,
     ) -> DnsRecordData {
         DnsRecordData::Raw(
-            PayloadSpan::from_range(payload.clone(), offset, len)
-                .unwrap_or_else(|| PayloadSpan::from_payload(kernel_api::resource::net::PacketPayload::default())),
+            PayloadSpan::from_range(payload.clone(), offset, len).unwrap_or_else(|| {
+                PayloadSpan::from_payload(kernel_api::resource::net::PacketPayload::default())
+            }),
         )
     }
 
@@ -261,16 +262,21 @@ impl DnsClient {
             if stash.total_len() < len {
                 return Ok(None);
             }
-            stash.take_prefix(len).ok_or("TCP payload prefix split failed").map(Some)
+            stash
+                .take_prefix(len)
+                .ok_or("TCP payload prefix split failed")
+                .map(Some)
         }
 
         use crate::net::l4::endpoint::types::EndpointAddr;
         let dest = EndpointAddr::new(server.octets(), DNS_PORT);
 
-        let mut connection =
-            crate::net::l4::tcp::TcpConnection::dial_in(crate::net::runtime::default_runtime(), dest)
-                .await
-                .map_err(|_| "TCP connection failed")?;
+        let mut connection = crate::net::l4::tcp::TcpConnection::dial_in(
+            crate::net::runtime::default_runtime(),
+            dest,
+        )
+        .await
+        .map_err(|_| "TCP connection failed")?;
 
         let payload = self.build_tcp_query_payload(name, qtype)?;
         connection
@@ -564,8 +570,7 @@ impl DnsClient {
             if view.read_array::<2>(next_off + 2).is_none() {
                 return Err(DnsResponseCode::FormatError);
             }
-            if qname.eq_ignore_ascii_case(expected_name) && qtype == expected_type as u16
-            {
+            if qname.eq_ignore_ascii_case(expected_name) && qtype == expected_type as u16 {
                 matched_question = true;
             }
             offset = next_off + 4;
@@ -798,7 +803,9 @@ impl DnsClient {
                     .map(|(exchange, _)| DnsRecordData::MX(preference, exchange))
                     .unwrap_or_else(|_| raw_span())
             }
-            Some(DnsQueryType::TXT) => self.parse_txt_record_payload(payload, view, rdata_offset, rdlength),
+            Some(DnsQueryType::TXT) => {
+                self.parse_txt_record_payload(payload, view, rdata_offset, rdlength)
+            }
             Some(DnsQueryType::SRV) if rdlength >= 7 => {
                 let Some(priority) = view.read_array::<2>(rdata_offset).map(u16::from_be_bytes)
                 else {
@@ -810,7 +817,9 @@ impl DnsClient {
                 else {
                     return raw_span();
                 };
-                let Some(port) = view.read_array::<2>(rdata_offset + 4).map(u16::from_be_bytes)
+                let Some(port) = view
+                    .read_array::<2>(rdata_offset + 4)
+                    .map(u16::from_be_bytes)
                 else {
                     return raw_span();
                 };
@@ -851,7 +860,8 @@ impl DnsClient {
             if offset + txt_len > rdlength {
                 return self.raw_record_span(payload, rdata_offset, rdlength);
             }
-            let Some(label) = PayloadSpan::from_range(payload.clone(), rdata_offset + offset, txt_len)
+            let Some(label) =
+                PayloadSpan::from_range(payload.clone(), rdata_offset + offset, txt_len)
             else {
                 return self.raw_record_span(payload, rdata_offset, rdlength);
             };
