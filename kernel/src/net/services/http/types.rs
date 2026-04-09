@@ -37,6 +37,36 @@ fn is_valid_header_value(value: &str) -> bool {
         .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
 }
 
+fn is_valid_header_name_span(span: &PayloadSpan) -> bool {
+    if span.is_empty() {
+        return false;
+    }
+
+    for index in 0..span.total_len() {
+        let Some(byte) = span.byte_at(index) else {
+            return false;
+        };
+        if !is_http_token_char(byte) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn is_valid_header_value_span(span: &PayloadSpan) -> bool {
+    for index in 0..span.total_len() {
+        let Some(byte) = span.byte_at(index) else {
+            return false;
+        };
+        if byte == b'\r' || byte == b'\n' || byte == 0 {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn is_valid_request_target(value: &str) -> bool {
     if value.is_empty() {
         return false;
@@ -373,6 +403,7 @@ impl fmt::Display for HttpScheme {
 pub struct HttpPort(u16);
 
 impl HttpPort {
+    /// HTTP文脈ではポート0を「未指定」と見なすため受け付けない。
     pub fn new(port: u16) -> Option<Self> {
         (port != 0).then_some(Self(port))
     }
@@ -627,6 +658,16 @@ pub struct HttpHeaderView {
 }
 
 impl HttpHeaderView {
+    pub fn try_new(name: PayloadSpan, value: PayloadSpan) -> Option<Self> {
+        let header = Self { name, value };
+
+        if !is_valid_header_name_span(&header.name) || !is_valid_header_value_span(&header.value) {
+            return None;
+        }
+
+        Some(header)
+    }
+
     pub fn name_eq(&self, name: &str) -> bool {
         self.name.eq_ignore_ascii_case(name.as_bytes())
     }
@@ -850,7 +891,7 @@ pub struct HttpResponseView {
     pub status_code: HttpStatusCode,
     pub reason_phrase: PayloadSpan,
     pub headers: Vec<HttpHeaderView>,
-    pub body: PayloadSpan,
+    pub body: Option<PayloadSpan>,
 }
 
 impl HttpResponseView {
@@ -865,7 +906,7 @@ impl HttpResponseView {
     }
 
     pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body.to_payload()
+        self.body.as_ref().and_then(PayloadSpan::to_payload)
     }
 }
 

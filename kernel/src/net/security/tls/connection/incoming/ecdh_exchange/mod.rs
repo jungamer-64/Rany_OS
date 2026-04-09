@@ -218,7 +218,10 @@ impl TlsConnection {
     /// `build_change_cipher_spec_payload()` の後に呼び出し、鍵が有効な状態で使用する。
 
     /// Finishedメッセージを暗号スイートに応じて暗号化する (TLS 1.2)
-    pub(super) fn encrypt_finished_tls12(&mut self, finished_msg: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_finished_tls12(
+        &mut self,
+        finished_msg: &[u8],
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
@@ -260,7 +263,6 @@ impl TlsConnection {
 
         // Finishedは暗号化して送信
         self.encrypt_finished_tls12(&finished_msg)
-            .map(Self::packet_payload_from_vec)
     }
 
     /// TLS 1.2 鍵ブロック導出
@@ -352,7 +354,10 @@ impl TlsConnection {
     }
 
     /// AES-GCM ハンドシェイクメッセージ暗号化（TLS 1.2 Finished用）
-    pub(super) fn encrypt_aes_gcm_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_aes_gcm_handshake(
+        &mut self,
+        data: &[u8],
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         if self.write_key.is_empty() || self.write_iv.len() < 4 {
@@ -384,14 +389,14 @@ impl TlsConnection {
         record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(record)
+        Ok(Self::packet_payload_from_vec(record))
     }
 
     /// ChaCha20-Poly1305 ハンドシェイクメッセージ暗号化（TLS 1.2 Finished用）
     pub(super) fn encrypt_chacha20_poly1305_handshake(
         &mut self,
         data: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
             return Err(TlsError::CryptoError);
         }
@@ -426,7 +431,7 @@ impl TlsConnection {
         record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(record)
+        Ok(Self::packet_payload_from_vec(record))
     }
 
     // ========================================================================
@@ -434,7 +439,10 @@ impl TlsConnection {
     // ========================================================================
 
     /// CBC ハンドシェイクメッセージ暗号化（TLS 1.0/1.1/1.2 Finished用）
-    pub(super) fn encrypt_cbc_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_cbc_handshake(
+        &mut self,
+        data: &[u8],
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         self.encrypt_cbc_record(ContentType::Handshake as u8, data)
     }
 
@@ -448,7 +456,7 @@ impl TlsConnection {
         &mut self,
         content_type: u8,
         data: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         if self.write_key.is_empty() {
             return Err(TlsError::CryptoError);
         }
@@ -522,7 +530,7 @@ impl TlsConnection {
         record.extend_from_slice(&payload);
 
         self.write_seq += 1;
-        Ok(record)
+        Ok(Self::packet_payload_from_vec(record))
     }
 
     /// CBC復号用: IVと暗号文を分離し、TLS 1.0の暗黙IVも処理
@@ -626,7 +634,7 @@ impl TlsConnection {
         &mut self,
         data: &[u8],
         content_type: u8,
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         if self.read_key.is_empty() {
             return Err(TlsError::CryptoError);
         }
@@ -653,7 +661,7 @@ impl TlsConnection {
             self.verify_cbc_padding_and_mac(&decrypted, content_type, version, use_sha1, mac_len)?;
 
         self.read_seq += 1;
-        Ok(decrypted[..fragment_len].to_vec())
+        Ok(Self::packet_payload_from_slice(&decrypted[..fragment_len]))
     }
 
     // ========================================================================
@@ -756,6 +764,5 @@ impl TlsConnection {
         } else {
             self.encrypt_aes_gcm_record(ContentType::ApplicationData as u8, &data)
         }
-        .map(Self::packet_payload_from_vec)
     }
 }

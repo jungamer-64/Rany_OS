@@ -471,7 +471,7 @@ impl TlsConnection {
     }
 
     /// ClientHelloを構築
-    fn build_client_hello_bytes(&mut self) -> Vec<u8> {
+    fn build_client_hello_payload(&mut self) -> PacketPayload {
         self.prepare_tls13_ecdh_keypair();
         self.init_transcript_hash();
 
@@ -535,11 +535,11 @@ impl TlsConnection {
         record.extend_from_slice(&message);
 
         self.state = TlsState::ClientHelloSent;
-        record
+        Self::packet_payload_from_vec(record)
     }
 
     pub fn build_client_hello(&mut self) -> PacketPayload {
-        Self::packet_payload_from_vec(self.build_client_hello_bytes())
+        self.build_client_hello_payload()
     }
 
     /// 0-RTTアーリーデータを暗号化して送信 (RFC 8446 Section 4.2.10)
@@ -549,13 +549,13 @@ impl TlsConnection {
     ///
     /// # Returns
     /// 暗号化されたTLSレコード列。鍵未導出時やサイズ超過時は空。
-    fn send_early_data_bytes(&mut self, data: &[u8]) -> Vec<u8> {
+    fn send_early_data_record_payload(&mut self, data: &[u8]) -> PacketPayload {
         if self.early_write_key.is_empty() || self.early_write_iv.len() < 12 {
-            return Vec::new();
+            return PacketPayload::default();
         }
 
         if data.is_empty() {
-            return Vec::new();
+            return PacketPayload::default();
         }
 
         let cipher = self
@@ -600,7 +600,7 @@ impl TlsConnection {
 
         self.early_write_seq += 1;
         self.early_data_sent = true;
-        record
+        Self::packet_payload_from_vec(record)
     }
 
     pub fn send_early_data_payload(&mut self, payload: &PacketPayload) -> PacketPayload {
@@ -612,7 +612,7 @@ impl TlsConnection {
         let Ok(data) = Self::vec_from_payload(payload) else {
             return PacketPayload::default();
         };
-        Self::packet_payload_from_vec(self.send_early_data_bytes(&data))
+        self.send_early_data_record_payload(&data)
     }
 
     /// サーバーに拒否されたEarly Dataの平文を取得

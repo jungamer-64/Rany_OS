@@ -67,7 +67,9 @@ impl TlsConnection {
     }
 
     /// EndOfEarlyDataレコードを構築する (RFC 8446 Section 4.5)
-    pub(super) fn build_end_of_early_data_record(&mut self) -> TlsResult<Option<Vec<u8>>> {
+    pub(super) fn build_end_of_early_data_record(
+        &mut self,
+    ) -> TlsResult<Option<kernel_api::resource::net::PacketPayload>> {
         if !self.early_data_sent || !self.early_data_accepted {
             return Ok(None);
         }
@@ -120,11 +122,13 @@ impl TlsConnection {
         eoed_record.extend_from_slice(&auth_tag);
 
         self.early_write_seq += 1;
-        Ok(Some(eoed_record))
+        Ok(Some(Self::packet_payload_from_vec(eoed_record)))
     }
 
     /// 空のCertificateメッセージレコードを構築する (RFC 8446 Section 4.4.2)
-    pub(super) fn build_empty_certificate_record(&mut self) -> TlsResult<Option<Vec<u8>>> {
+    pub(super) fn build_empty_certificate_record(
+        &mut self,
+    ) -> TlsResult<Option<kernel_api::resource::net::PacketPayload>> {
         if !self.client_auth_requested {
             return Ok(None);
         }
@@ -157,20 +161,22 @@ impl TlsConnection {
     }
 
     /// TLS 1.3 クライアントFinished verify_data を計算する
-    pub(super) fn compute_tls13_client_verify_data(&self) -> Vec<u8> {
+    pub(super) fn compute_tls13_client_verify_data(&self) -> ([u8; 48], usize) {
         let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
         if use_384 {
             let transcript = self.transcript_hash_sha384();
             let mut chs = [0u8; 48];
             chs.copy_from_slice(&self.client_hs_traffic_secret[..48]);
             let finished_key = tls13_finished_key_sha384(&chs);
-            tls13_verify_data_sha384(&finished_key, &transcript).to_vec()
+            (tls13_verify_data_sha384(&finished_key, &transcript), SHA384_OUTPUT_SIZE)
         } else {
             let transcript = self.transcript_hash_sha256();
             let mut chs = [0u8; 32];
             chs.copy_from_slice(&self.client_hs_traffic_secret[..32]);
             let finished_key = tls13_finished_key(&chs);
-            tls13_verify_data(&finished_key, &transcript).to_vec()
+            let mut out = [0u8; 48];
+            out[..SHA256_OUTPUT_SIZE].copy_from_slice(&tls13_verify_data(&finished_key, &transcript));
+            (out, SHA256_OUTPUT_SIZE)
         }
     }
 
@@ -179,13 +185,15 @@ impl TlsConnection {
     /// サーバーFinished受信後に呼び出す。
     /// アプリケーション鍵の導出も同時に行う。
     /// EndOfEarlyData + 空Certificateなど、Finished前のレコードを構築する
-    pub(super) fn build_pre_finished_records_tls13(&mut self) -> TlsResult<Vec<u8>> {
-        let mut records = Vec::new();
+    pub(super) fn build_pre_finished_records_tls13(
+        &mut self,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let mut records = kernel_api::resource::net::PacketPayload::default();
         if let Some(eoed_record) = self.build_end_of_early_data_record()? {
-            records.extend_from_slice(&eoed_record);
+            crate::net::payload::append_payload(&mut records, eoed_record);
         }
         if let Some(cert_record) = self.build_empty_certificate_record()? {
-            records.extend_from_slice(&cert_record);
+            crate::net::payload::append_payload(&mut records, cert_record);
         }
         Ok(records)
     }
@@ -199,7 +207,7 @@ impl TlsConnection {
 
         let mut records = self.build_pre_finished_records_tls13()?;
 
-        let verify_data_vec = self.compute_tls13_client_verify_data();
+        let (verify_data, verify_len) = self.compute_tls13_client_verify_data();
         let hash_len = self.hash_len();
 
         // Finished ハンドシェイクメッセージ
@@ -208,7 +216,7 @@ impl TlsConnection {
         finished_msg.push(0);
         finished_msg.push(0);
         finished_msg.push(hash_len as u8);
-        finished_msg.extend_from_slice(&verify_data_vec);
+        finished_msg.extend_from_slice(&verify_data[..verify_len]);
 
         // トランスクリプトハッシュを更新（クライアントFinished含む）
         if let Some(ref mut hasher) = self.transcript_hash {
@@ -225,8 +233,8 @@ impl TlsConnection {
         // アプリケーション鍵の導出
         self.tls13_derive_application_keys()?;
 
-        records.extend_from_slice(&encrypted);
-        Ok(Self::packet_payload_from_vec(records))
+        crate::net::payload::append_payload(&mut records, encrypted);
+        Ok(records)
     }
 
     /// TLS 1.3: アプリケーショントラフィック鍵を導出
@@ -342,14 +350,17 @@ impl TlsConnection {
         aad: &[u8],
         ciphertext: &[u8],
         tag: &[u8; 16],
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         if cipher.is_chacha20_poly1305() {
             let mut key_arr = [0u8; 32];
             key_arr.copy_from_slice(&key[..32]);
             chacha20_poly1305_decrypt(&key_arr, nonce, aad, ciphertext, tag)
+                .map(Self::packet_payload_from_vec)
                 .ok_or(TlsError::DecryptError)
         } else {
-            aes_gcm_decrypt(key, nonce, aad, ciphertext, tag).ok_or(TlsError::DecryptError)
+            aes_gcm_decrypt(key, nonce, aad, ciphertext, tag)
+                .map(Self::packet_payload_from_vec)
+                .ok_or(TlsError::DecryptError)
         }
     }
 
@@ -361,9 +372,9 @@ impl TlsConnection {
     /// `is_handshake`: trueの場合ハンドシェイク鍵、falseの場合アプリケーション鍵を使用
     pub(crate) fn tls13_decrypt_record(
         &mut self,
-        data: &[u8],
+        data: &kernel_api::resource::net::PacketPayload,
         is_handshake: bool,
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
@@ -379,16 +390,17 @@ impl TlsConnection {
             return Err(TlsError::DecryptError);
         }
 
-        let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv, seq, data.len());
+        let data_bytes = Self::vec_from_payload(data)?;
+        let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv, seq, data_bytes.len());
 
-        if data.len() < 16 {
+        if data_bytes.len() < 16 {
             return Err(TlsError::DecryptError);
         }
 
-        let ciphertext_len = data.len() - 16;
-        let ciphertext = &data[..ciphertext_len];
+        let ciphertext_len = data_bytes.len() - 16;
+        let ciphertext = &data_bytes[..ciphertext_len];
         let mut tag = [0u8; 16];
-        tag.copy_from_slice(&data[ciphertext_len..]);
+        tag.copy_from_slice(&data_bytes[ciphertext_len..]);
 
         let plaintext = Self::decrypt_aead(cipher, key, &nonce, &aad, ciphertext, &tag)?;
 
@@ -411,7 +423,7 @@ impl TlsConnection {
         &mut self,
         inner_plaintext: &[u8],
         is_handshake: bool,
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
@@ -466,7 +478,7 @@ impl TlsConnection {
             self.write_seq += 1;
         }
 
-        Ok(record)
+        Ok(Self::packet_payload_from_vec(record))
     }
 
     /// TLS 1.3 アプリケーションデータ暗号化
@@ -480,7 +492,6 @@ impl TlsConnection {
         inner.extend_from_slice(&data);
         inner.push(ContentType::ApplicationData as u8);
         self.tls13_encrypt_record(&inner, false)
-            .map(Self::packet_payload_from_vec)
     }
 
     /// フルハンドシェイク完了後にセッションをキャッシュに保存する
@@ -542,22 +553,31 @@ impl TlsConnection {
     }
 
     /// レコードを復号
-    pub(crate) fn decrypt_record(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
+    pub(crate) fn decrypt_record(
+        &mut self,
+        data: &kernel_api::resource::net::PacketPayload,
+        content_type: u8,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let data_bytes = Self::vec_from_payload(data)?;
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         if cipher.is_cbc() {
-            self.decrypt_cbc_record(data, content_type)
+            self.decrypt_cbc_record(&data_bytes, content_type)
         } else if cipher.is_chacha20_poly1305() {
-            self.decrypt_chacha20_poly1305(data, content_type)
+            self.decrypt_chacha20_poly1305(&data_bytes, content_type)
         } else {
-            self.decrypt_aes_gcm(data, content_type)
+            self.decrypt_aes_gcm(&data_bytes, content_type)
         }
     }
 
     /// AES-GCM record decryption (TLS 1.2)
-    pub(super) fn decrypt_aes_gcm(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
+    pub(super) fn decrypt_aes_gcm(
+        &mut self,
+        data: &[u8],
+        content_type: u8,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // レコード構造:
         // - explicit_nonce (8 bytes, TLS 1.2)
         // - ciphertext (variable)
@@ -606,7 +626,7 @@ impl TlsConnection {
         match aes_gcm_decrypt(&self.read_key, &nonce, &aad, ciphertext, &tag) {
             Some(plaintext) => {
                 self.read_seq += 1;
-                Ok(plaintext)
+                Ok(Self::packet_payload_from_vec(plaintext))
             }
             None => Err(TlsError::DecryptError),
         }
@@ -626,7 +646,7 @@ impl TlsConnection {
         &mut self,
         data: &[u8],
         content_type: u8,
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         if data.len() < 16 {
             // Minimum: tag(16), no ciphertext is allowed (empty message)
             return Err(TlsError::DecodeError);
@@ -668,7 +688,7 @@ impl TlsConnection {
         match chacha20_poly1305_decrypt(&key, &nonce, &aad, ciphertext, &tag) {
             Some(plaintext) => {
                 self.read_seq += 1;
-                Ok(plaintext)
+                Ok(Self::packet_payload_from_vec(plaintext))
             }
             None => Err(TlsError::DecryptError),
         }

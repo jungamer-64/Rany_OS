@@ -9,11 +9,19 @@ use crate::net::payload::{append_payload, payload_range, PayloadSequence, Payloa
 use alloc::vec::Vec;
 use kernel_api::resource::net::PacketPayload;
 
+const MAX_TOTAL_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+const MAX_PARTIAL_HEADER_SIZE: usize = 8192;
+const MAX_URI_SIZE: usize = 4096;
+const MAX_REASON_PHRASE_SIZE: usize = 1024;
+const MAX_HEADER_COUNT: usize = 100;
+const MAX_HEADER_NAME_SIZE: usize = 256;
+const MAX_HEADER_VALUE_SIZE: usize = 4096;
+const MAX_CONTENT_LENGTH: usize = 10 * 1024 * 1024;
+
 #[derive(Debug)]
 pub enum HttpParseError {
     InvalidFormat,
     IncompleteMessage,
-    InvalidEncoding,
     UnsupportedVersion,
 }
 
@@ -33,90 +41,17 @@ impl HttpParser {
     }
 
     pub fn try_parse_request(&mut self) -> Result<Option<HttpRequestView>, HttpParseError> {
-        const MAX_TOTAL_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
-        if self.buffer.total_len() > MAX_TOTAL_MESSAGE_SIZE {
-            return Err(HttpParseError::InvalidFormat);
-        }
-
-        let full = PayloadSpan::from_payload(self.buffer.clone());
-        let header_end = match full.find_bytes(b"\r\n\r\n") {
-            Some(index) => index,
-            None => {
-                if full.total_len() > 8192 {
-                    return Err(HttpParseError::InvalidFormat);
-                }
-                return Ok(None);
-            }
+        let Some((full, header_end)) = self.read_message_span()? else {
+            return Ok(None);
         };
 
-        let request_line_end = self
-            .find_line_end(&full, 0)
-            .ok_or(HttpParseError::IncompleteMessage)?;
-        if request_line_end > header_end {
-            return Err(HttpParseError::InvalidFormat);
-        }
+        let (method, uri, version, request_line_end) =
+            self.parse_request_line(&full, header_end)?;
 
-        let request_line = full
-            .slice(0, request_line_end)
-            .ok_or(HttpParseError::InvalidFormat)?;
-        let first_space = request_line
-            .find_bytes(b" ")
-            .ok_or(HttpParseError::InvalidFormat)?;
-        let second_space = request_line
-            .find_bytes_from(b" ", first_space + 1)
-            .ok_or(HttpParseError::InvalidFormat)?;
-
-        let method = HttpMethod::parse_span(
-            &request_line
-                .slice(0, first_space)
-                .ok_or(HttpParseError::InvalidFormat)?,
-        )
-        .ok_or(HttpParseError::InvalidFormat)?;
-        let uri = request_line
-            .slice(first_space + 1, second_space.saturating_sub(first_space + 1))
-            .ok_or(HttpParseError::InvalidFormat)?;
-        if uri.total_len() > 4096 {
-            return Err(HttpParseError::InvalidFormat);
-        }
-        let version = HttpVersion::parse_span(
-            &request_line
-                .slice(
-                    second_space + 1,
-                    request_line.total_len().saturating_sub(second_space + 1),
-                )
-                .ok_or(HttpParseError::InvalidFormat)?
-                .trim_ascii_whitespace(),
-        )
-        .ok_or(HttpParseError::UnsupportedVersion)?;
-
-        let (headers, content_length, chunked) =
-            self.parse_headers(&full, request_line_end + 2, header_end)?;
-        if chunked && content_length.is_some() {
-            return Err(HttpParseError::InvalidFormat);
-        }
-
-        let body_start = header_end + 4;
-        let (body, consumed_len) = if chunked {
-            let Some((payload, consumed_len)) = self.parse_chunked_body(&full, body_start)? else {
-                return Ok(None);
-            };
-            (
-                Some(PayloadSpan::from_payload(payload)),
-                consumed_len,
-            )
-        } else if let Some(len) = content_length {
-            if full.total_len() < body_start + len {
-                return Ok(None);
-            }
-            (
-                Some(
-                    full.slice(body_start, len)
-                        .ok_or(HttpParseError::InvalidFormat)?,
-                ),
-                body_start + len,
-            )
-        } else {
-            (None, body_start)
+        let Some((headers, body, consumed_len)) =
+            self.parse_message_payload(&full, request_line_end, header_end, false)?
+        else {
+            return Ok(None);
         };
 
         self.consume_prefix(consumed_len);
@@ -131,90 +66,32 @@ impl HttpParser {
     }
 
     pub fn try_parse(&mut self) -> Result<Option<HttpResponseView>, HttpParseError> {
-        const MAX_TOTAL_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
-        if self.buffer.total_len() > MAX_TOTAL_MESSAGE_SIZE {
-            return Err(HttpParseError::InvalidFormat);
-        }
+        self.try_parse_response_with_mode(false)
+    }
 
-        let full = PayloadSpan::from_payload(self.buffer.clone());
-        let header_end = match full.find_bytes(b"\r\n\r\n") {
-            Some(index) => index,
-            None => {
-                if full.total_len() > 8192 {
-                    return Err(HttpParseError::InvalidFormat);
-                }
-                return Ok(None);
-            }
+    /// EOFでメッセージ終端が確定したレスポンスをパースする。
+    ///
+    /// Content-Length/Transfer-Encoding がない場合、ヘッダー終端以降の残り全体を
+    /// close-delimited body として扱う。
+    pub fn try_parse_response_on_eof(&mut self) -> Result<Option<HttpResponseView>, HttpParseError> {
+        self.try_parse_response_with_mode(true)
+    }
+
+    fn try_parse_response_with_mode(
+        &mut self,
+        eof_terminates_body: bool,
+    ) -> Result<Option<HttpResponseView>, HttpParseError> {
+        let Some((full, header_end)) = self.read_message_span()? else {
+            return Ok(None);
         };
 
-        let status_line_end = self
-            .find_line_end(&full, 0)
-            .ok_or(HttpParseError::IncompleteMessage)?;
-        if status_line_end > header_end {
-            return Err(HttpParseError::InvalidFormat);
-        }
+        let (version, status_code, reason_phrase, status_line_end) =
+            self.parse_status_line(&full, header_end)?;
 
-        let status_line = full
-            .slice(0, status_line_end)
-            .ok_or(HttpParseError::InvalidFormat)?;
-        let first_space = status_line
-            .find_bytes(b" ")
-            .ok_or(HttpParseError::InvalidFormat)?;
-        let second_space = status_line
-            .find_bytes_from(b" ", first_space + 1)
-            .ok_or(HttpParseError::InvalidFormat)?;
-
-        let version = HttpVersion::parse_span(
-            &status_line
-                .slice(0, first_space)
-                .ok_or(HttpParseError::InvalidFormat)?,
-        )
-        .ok_or(HttpParseError::UnsupportedVersion)?;
-        let status_code = HttpStatusCode::parse_span(
-            &status_line
-                .slice(first_space + 1, second_space.saturating_sub(first_space + 1))
-                .ok_or(HttpParseError::InvalidFormat)?
-                .trim_ascii_whitespace(),
-        )
-        .ok_or(HttpParseError::InvalidFormat)?;
-        let reason_phrase = status_line
-            .slice(
-                second_space + 1,
-                status_line.total_len().saturating_sub(second_space + 1),
-            )
-            .ok_or(HttpParseError::InvalidFormat)?
-            .trim_ascii_whitespace();
-        if reason_phrase.total_len() > 1024 {
-            return Err(HttpParseError::InvalidFormat);
-        }
-
-        let (headers, content_length, chunked) =
-            self.parse_headers(&full, status_line_end + 2, header_end)?;
-        if chunked && content_length.is_some() {
-            return Err(HttpParseError::InvalidFormat);
-        }
-
-        let body_start = header_end + 4;
-        let (body, consumed_len) = if chunked {
-            let Some((payload, consumed_len)) = self.parse_chunked_body(&full, body_start)? else {
-                return Ok(None);
-            };
-            (PayloadSpan::from_payload(payload), consumed_len)
-        } else if let Some(len) = content_length {
-            if full.total_len() < body_start + len {
-                return Ok(None);
-            }
-            (
-                full.slice(body_start, len)
-                    .ok_or(HttpParseError::InvalidFormat)?,
-                body_start + len,
-            )
-        } else {
-            (
-                full.slice(body_start, 0)
-                    .ok_or(HttpParseError::InvalidFormat)?,
-                body_start,
-            )
+        let Some((headers, body, consumed_len)) =
+            self.parse_message_payload(&full, status_line_end, header_end, eof_terminates_body)?
+        else {
+            return Ok(None);
         };
 
         self.consume_prefix(consumed_len);
@@ -228,8 +105,291 @@ impl HttpParser {
         }))
     }
 
-    pub fn try_parse_wrapped(&mut self) -> Result<Option<HttpResponseView>, HttpParseError> {
-        self.try_parse()
+    fn read_message_span(&self) -> Result<Option<(PayloadSpan, usize)>, HttpParseError> {
+        if self.buffer.total_len() > MAX_TOTAL_MESSAGE_SIZE {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        let full = PayloadSpan::from_payload(self.buffer.clone());
+        let Some(header_end) = full.find_bytes(b"\r\n\r\n") else {
+            if full.total_len() > MAX_PARTIAL_HEADER_SIZE {
+                return Err(HttpParseError::InvalidFormat);
+            }
+            return Ok(None);
+        };
+
+        Ok(Some((full, header_end)))
+    }
+
+    fn parse_request_line(
+        &self,
+        full: &PayloadSpan,
+        header_end: usize,
+    ) -> Result<(HttpMethod, PayloadSpan, HttpVersion, usize), HttpParseError> {
+        let (request_line, request_line_end) = self.parse_start_line(full, header_end)?;
+        let (first_space, second_space) = self.find_first_two_spaces(&request_line)?;
+        let method = self.parse_method_from_line(&request_line, first_space)?;
+        let uri = self.parse_request_uri_from_line(&request_line, first_space, second_space)?;
+        let version = self.parse_http_version_from_line(&request_line, second_space)?;
+        Ok((method, uri, version, request_line_end))
+    }
+
+    fn parse_status_line(
+        &self,
+        full: &PayloadSpan,
+        header_end: usize,
+    ) -> Result<(HttpVersion, HttpStatusCode, PayloadSpan, usize), HttpParseError> {
+        let (status_line, status_line_end) = self.parse_start_line(full, header_end)?;
+        let (first_space, second_space) = self.find_first_two_spaces(&status_line)?;
+
+        let version = HttpVersion::parse_span(
+            &status_line
+                .slice(0, first_space)
+                .ok_or(HttpParseError::InvalidFormat)?,
+        )
+        .ok_or(HttpParseError::UnsupportedVersion)?;
+
+        let status_code = self.parse_status_code_from_line(&status_line, first_space, second_space)?;
+        let reason_phrase = self.parse_reason_phrase_from_line(&status_line, second_space)?;
+
+        Ok((version, status_code, reason_phrase, status_line_end))
+    }
+
+    fn parse_start_line(
+        &self,
+        full: &PayloadSpan,
+        header_end: usize,
+    ) -> Result<(PayloadSpan, usize), HttpParseError> {
+        let line_end = self
+            .find_line_end(full, 0)
+            .ok_or(HttpParseError::IncompleteMessage)?;
+        if line_end > header_end {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        let line = full
+            .slice(0, line_end)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        Ok((line, line_end))
+    }
+
+    fn parse_method_from_line(
+        &self,
+        line: &PayloadSpan,
+        first_space: usize,
+    ) -> Result<HttpMethod, HttpParseError> {
+        HttpMethod::parse_span(
+            &line
+                .slice(0, first_space)
+                .ok_or(HttpParseError::InvalidFormat)?,
+        )
+        .ok_or(HttpParseError::InvalidFormat)
+    }
+
+    fn parse_request_uri_from_line(
+        &self,
+        line: &PayloadSpan,
+        first_space: usize,
+        second_space: usize,
+    ) -> Result<PayloadSpan, HttpParseError> {
+        let uri_offset = first_space
+            .checked_add(1)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let uri_len = second_space.saturating_sub(uri_offset);
+        if uri_len == 0 {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        let uri = line
+            .slice(uri_offset, uri_len)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        if uri.total_len() > MAX_URI_SIZE {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        Ok(uri)
+    }
+
+    fn parse_status_code_from_line(
+        &self,
+        line: &PayloadSpan,
+        first_space: usize,
+        second_space: usize,
+    ) -> Result<HttpStatusCode, HttpParseError> {
+        let status_start = first_space
+            .checked_add(1)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let status_len = second_space
+            .checked_sub(status_start)
+            .ok_or(HttpParseError::InvalidFormat)?;
+
+        HttpStatusCode::parse_span(
+            &line
+                .slice(status_start, status_len)
+                .ok_or(HttpParseError::InvalidFormat)?
+                .trim_ascii_whitespace(),
+        )
+        .ok_or(HttpParseError::InvalidFormat)
+    }
+
+    fn parse_reason_phrase_from_line(
+        &self,
+        line: &PayloadSpan,
+        second_space: usize,
+    ) -> Result<PayloadSpan, HttpParseError> {
+        let phrase = line
+            .slice(
+                second_space + 1,
+                line.total_len().saturating_sub(second_space + 1),
+            )
+            .ok_or(HttpParseError::InvalidFormat)?
+            .trim_ascii_whitespace();
+
+        if phrase.total_len() > MAX_REASON_PHRASE_SIZE {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        Ok(phrase)
+    }
+
+    fn parse_http_version_from_line(
+        &self,
+        line: &PayloadSpan,
+        second_space: usize,
+    ) -> Result<HttpVersion, HttpParseError> {
+        let version_offset = second_space
+            .checked_add(1)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let version = HttpVersion::parse_span(
+            &line
+                .slice(
+                    version_offset,
+                    line.total_len().saturating_sub(version_offset),
+                )
+                .ok_or(HttpParseError::InvalidFormat)?
+                .trim_ascii_whitespace(),
+        )
+        .ok_or(HttpParseError::UnsupportedVersion)?;
+        Ok(version)
+    }
+
+    fn find_first_two_spaces(
+        &self,
+        line: &PayloadSpan,
+    ) -> Result<(usize, usize), HttpParseError> {
+        let first_space = line
+            .find_bytes(b" ")
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let second_space = line
+            .find_bytes_from(b" ", first_space + 1)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        Ok((first_space, second_space))
+    }
+
+    fn parse_message_payload(
+        &self,
+        full: &PayloadSpan,
+        first_line_end: usize,
+        header_end: usize,
+        eof_terminates_body: bool,
+    ) -> Result<Option<(Vec<HttpHeaderView>, Option<PayloadSpan>, usize)>, HttpParseError> {
+        let header_start = first_line_end
+            .checked_add(2)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let (headers, content_length, chunked) = self.parse_headers(full, header_start, header_end)?;
+        if chunked && content_length.is_some() {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        let body_start = header_end
+            .checked_add(4)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let Some((body, consumed_len)) =
+            self.parse_optional_body(
+                full,
+                body_start,
+                content_length,
+                chunked,
+                eof_terminates_body,
+            )?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some((headers, body, consumed_len)))
+    }
+
+    fn parse_optional_body(
+        &self,
+        full: &PayloadSpan,
+        body_start: usize,
+        content_length: Option<usize>,
+        chunked: bool,
+        eof_terminates_body: bool,
+    ) -> Result<Option<(Option<PayloadSpan>, usize)>, HttpParseError> {
+        if chunked {
+            return self.parse_chunked_optional_body(full, body_start);
+        }
+
+        if let Some(len) = content_length {
+            return self.parse_fixed_length_body(full, body_start, len);
+        }
+
+        if eof_terminates_body {
+            return self.parse_close_delimited_body(full, body_start);
+        }
+
+        Ok(Some((None, body_start)))
+    }
+
+    fn parse_chunked_optional_body(
+        &self,
+        full: &PayloadSpan,
+        body_start: usize,
+    ) -> Result<Option<(Option<PayloadSpan>, usize)>, HttpParseError> {
+        let Some((payload, consumed_len)) = self.parse_chunked_body(full, body_start)? else {
+            return Ok(None);
+        };
+        Ok(Some((Some(PayloadSpan::from_payload(payload)), consumed_len)))
+    }
+
+    fn parse_fixed_length_body(
+        &self,
+        full: &PayloadSpan,
+        body_start: usize,
+        len: usize,
+    ) -> Result<Option<(Option<PayloadSpan>, usize)>, HttpParseError> {
+        let body_end = body_start
+            .checked_add(len)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        if full.total_len() < body_end {
+            return Ok(None);
+        }
+
+        let body = full
+            .slice(body_start, len)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        Ok(Some((Some(body), body_end)))
+    }
+
+    fn parse_close_delimited_body(
+        &self,
+        full: &PayloadSpan,
+        body_start: usize,
+    ) -> Result<Option<(Option<PayloadSpan>, usize)>, HttpParseError> {
+        if body_start > full.total_len() {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        let remaining_len = full.total_len().saturating_sub(body_start);
+        if remaining_len == 0 {
+            return Ok(Some((None, full.total_len())));
+        }
+
+        let body = full
+            .slice(body_start, remaining_len)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        Ok(Some((Some(body), full.total_len())))
     }
 
     fn consume_prefix(&mut self, consumed_len: usize) {
@@ -256,57 +416,130 @@ impl HttpParser {
         let mut chunked = false;
 
         while cursor < header_end {
-            let line_end = self
-                .find_line_end(full, cursor)
-                .ok_or(HttpParseError::IncompleteMessage)?;
-            if line_end > header_end {
-                return Err(HttpParseError::InvalidFormat);
-            }
-            if line_end == cursor {
+            let Some(next_cursor) = self.parse_header_line(
+                full,
+                cursor,
+                header_end,
+                &mut headers,
+                &mut content_length,
+                &mut chunked,
+            )? else {
                 break;
-            }
-
-            let line = full
-                .slice(cursor, line_end - cursor)
-                .ok_or(HttpParseError::InvalidFormat)?;
-            let colon = line.find_bytes(b":").ok_or(HttpParseError::InvalidFormat)?;
-            let name = line
-                .slice(0, colon)
-                .ok_or(HttpParseError::InvalidFormat)?
-                .trim_ascii_whitespace();
-            let value = line
-                .slice(colon + 1, line.total_len().saturating_sub(colon + 1))
-                .ok_or(HttpParseError::InvalidFormat)?
-                .trim_ascii_whitespace();
-
-            if headers.len() >= 100 || name.total_len() > 256 || value.total_len() > 4096 {
-                return Err(HttpParseError::InvalidFormat);
-            }
-
-            if name.eq_ignore_ascii_case(b"Content-Length") {
-                let len = value
-                    .parse_ascii_usize()
-                    .ok_or(HttpParseError::InvalidFormat)?;
-                if len > 10 * 1024 * 1024 {
-                    return Err(HttpParseError::InvalidFormat);
-                }
-                content_length = Some(len);
-            } else if name.eq_ignore_ascii_case(b"Transfer-Encoding")
-                && value.contains_ascii_case(b"chunked")
-            {
-                chunked = true;
-            }
-
-            let header = HttpHeaderView { name, value };
-            if header.typed_name().is_none() || header.typed_value().is_none() {
-                return Err(HttpParseError::InvalidFormat);
-            }
-
-            headers.push(header);
-            cursor = line_end + 2;
+            };
+            cursor = next_cursor;
         }
 
         Ok((headers, content_length, chunked))
+    }
+
+    fn parse_header_line(
+        &self,
+        full: &PayloadSpan,
+        cursor: usize,
+        header_end: usize,
+        headers: &mut Vec<HttpHeaderView>,
+        content_length: &mut Option<usize>,
+        chunked: &mut bool,
+    ) -> Result<Option<usize>, HttpParseError> {
+        let Some(line_end) = self.resolve_header_line_end(full, cursor, header_end)? else {
+            return Ok(None);
+        };
+
+        let line = full
+            .slice(cursor, line_end - cursor)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let (name, value) = self.parse_header_name_value(&line)?;
+        self.validate_header_name_value(headers.len(), &name, &value)?;
+        self.apply_content_headers(&name, &value, content_length, chunked)?;
+
+        let header = HttpHeaderView::try_new(name, value).ok_or(HttpParseError::InvalidFormat)?;
+        headers.push(header);
+
+        line_end
+            .checked_add(2)
+            .ok_or(HttpParseError::InvalidFormat)
+            .map(Some)
+    }
+
+    fn resolve_header_line_end(
+        &self,
+        full: &PayloadSpan,
+        cursor: usize,
+        header_end: usize,
+    ) -> Result<Option<usize>, HttpParseError> {
+        let line_end = self
+            .find_line_end(full, cursor)
+            .ok_or(HttpParseError::IncompleteMessage)?;
+        if line_end > header_end {
+            return Err(HttpParseError::InvalidFormat);
+        }
+        if line_end == cursor {
+            return Ok(None);
+        }
+        Ok(Some(line_end))
+    }
+
+    fn parse_header_name_value(
+        &self,
+        line: &PayloadSpan,
+    ) -> Result<(PayloadSpan, PayloadSpan), HttpParseError> {
+        let colon = line.find_bytes(b":").ok_or(HttpParseError::InvalidFormat)?;
+        let name = line
+            .slice(0, colon)
+            .ok_or(HttpParseError::InvalidFormat)?
+            .trim_ascii_whitespace();
+        let value = line
+            .slice(colon + 1, line.total_len().saturating_sub(colon + 1))
+            .ok_or(HttpParseError::InvalidFormat)?
+            .trim_ascii_whitespace();
+        Ok((name, value))
+    }
+
+    fn validate_header_name_value(
+        &self,
+        header_count: usize,
+        name: &PayloadSpan,
+        value: &PayloadSpan,
+    ) -> Result<(), HttpParseError> {
+        if header_count >= MAX_HEADER_COUNT
+            || name.total_len() > MAX_HEADER_NAME_SIZE
+            || value.total_len() > MAX_HEADER_VALUE_SIZE
+        {
+            return Err(HttpParseError::InvalidFormat);
+        }
+        Ok(())
+    }
+
+    fn apply_content_headers(
+        &self,
+        name: &PayloadSpan,
+        value: &PayloadSpan,
+        content_length: &mut Option<usize>,
+        chunked: &mut bool,
+    ) -> Result<(), HttpParseError> {
+        if name.eq_ignore_ascii_case(b"Content-Length") {
+            let len = value
+                .parse_ascii_usize()
+                .ok_or(HttpParseError::InvalidFormat)?;
+            if len > MAX_CONTENT_LENGTH {
+                return Err(HttpParseError::InvalidFormat);
+            }
+            *content_length = Some(len);
+            return Ok(());
+        }
+
+        if name.eq_ignore_ascii_case(b"Transfer-Encoding") && value.contains_ascii_case(b"chunked")
+        {
+            *chunked = true;
+        }
+
+        Ok(())
+    }
+
+    fn parse_chunk_size(&self, line: &PayloadSpan) -> Option<usize> {
+        let semicolon = line.find_bytes(b";").unwrap_or(line.total_len());
+        let size = line.slice(0, semicolon)?.trim_ascii_whitespace();
+        size.parse_ascii_hex_usize()
     }
 
     fn parse_chunked_body(
@@ -317,57 +550,188 @@ impl HttpParser {
         let mut body = PayloadSequence::new();
 
         loop {
-            let chunk_len_end = match self.find_line_end(full, cursor) {
+            let Some((chunk_size, next_cursor)) = self.read_chunk_header(full, cursor)? else {
+                return Ok(None);
+            };
+            cursor = next_cursor;
+
+            if chunk_size == 0 {
+                return self.finish_chunked_body(full, cursor, body);
+            }
+
+            let Some(next_cursor) = self.append_chunk_data(full, &mut body, cursor, chunk_size)? else {
+                return Ok(None);
+            };
+            cursor = next_cursor;
+        }
+    }
+
+    fn read_chunk_header(
+        &self,
+        full: &PayloadSpan,
+        cursor: usize,
+    ) -> Result<Option<(usize, usize)>, HttpParseError> {
+        let Some(chunk_len_end) = self.find_line_end(full, cursor) else {
+            return Ok(None);
+        };
+        let chunk_len = full
+            .slice(cursor, chunk_len_end - cursor)
+            .ok_or(HttpParseError::InvalidFormat)?
+            .trim_ascii_whitespace();
+        let chunk_size = self
+            .parse_chunk_size(&chunk_len)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let next_cursor = chunk_len_end
+            .checked_add(2)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        Ok(Some((chunk_size, next_cursor)))
+    }
+
+    fn append_chunk_data(
+        &self,
+        full: &PayloadSpan,
+        body: &mut PayloadSequence,
+        cursor: usize,
+        chunk_size: usize,
+    ) -> Result<Option<usize>, HttpParseError> {
+        let next_body_len = body
+            .total_len()
+            .checked_add(chunk_size)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        if next_body_len > MAX_CONTENT_LENGTH {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        let data_end = cursor
+            .checked_add(chunk_size)
+            .and_then(|value| value.checked_add(2))
+            .ok_or(HttpParseError::InvalidFormat)?;
+        if full.total_len() < data_end {
+            return Ok(None);
+        }
+
+        body.push(
+            full.slice(cursor, chunk_size)
+                .ok_or(HttpParseError::InvalidFormat)?,
+        );
+        if !full
+            .slice(cursor + chunk_size, 2)
+            .ok_or(HttpParseError::InvalidFormat)?
+            .eq_bytes(b"\r\n")
+        {
+            return Err(HttpParseError::InvalidFormat);
+        }
+
+        Ok(Some(data_end))
+    }
+
+    fn finish_chunked_body(
+        &self,
+        full: &PayloadSpan,
+        cursor: usize,
+        body: PayloadSequence,
+    ) -> Result<Option<(PacketPayload, usize)>, HttpParseError> {
+        let Some(trailer_end) = self.parse_chunked_trailers(full, cursor)? else {
+            return Ok(None);
+        };
+        Ok(Some((body.into_payload().unwrap_or_default(), trailer_end)))
+    }
+
+    fn parse_chunked_trailers(
+        &self,
+        full: &PayloadSpan,
+        mut cursor: usize,
+    ) -> Result<Option<usize>, HttpParseError> {
+        loop {
+            let line_end = match self.find_line_end(full, cursor) {
                 Some(index) => index,
                 None => return Ok(None),
             };
-            let chunk_len = full
-                .slice(cursor, chunk_len_end - cursor)
-                .ok_or(HttpParseError::InvalidFormat)?
-                .trim_ascii_whitespace();
-            let chunk_size = chunk_len
-                .parse_ascii_hex_usize()
-                .ok_or(HttpParseError::InvalidFormat)?;
-            cursor = chunk_len_end + 2;
 
-            if chunk_size == 0 {
-                let trailer_end = cursor.checked_add(2).ok_or(HttpParseError::InvalidFormat)?;
-                if full.total_len() < trailer_end {
-                    return Ok(None);
-                }
-                if !full
-                    .slice(cursor, 2)
-                    .ok_or(HttpParseError::InvalidFormat)?
-                    .eq_bytes(b"\r\n")
-                {
-                    return Err(HttpParseError::InvalidFormat);
-                }
-                return Ok(Some((
-                    body.into_payload().unwrap_or_default(),
-                    trailer_end,
-                )));
+            if line_end == cursor {
+                let message_end = cursor.checked_add(2).ok_or(HttpParseError::InvalidFormat)?;
+                return Ok(Some(message_end));
             }
 
-            let data_end = cursor
-                .checked_add(chunk_size)
-                .and_then(|value| value.checked_add(2))
-                .ok_or(HttpParseError::InvalidFormat)?;
-            if full.total_len() < data_end {
-                return Ok(None);
-            }
-
-            body.push(
-                full.slice(cursor, chunk_size)
-                    .ok_or(HttpParseError::InvalidFormat)?,
-            );
-            if !full
-                .slice(cursor + chunk_size, 2)
-                .ok_or(HttpParseError::InvalidFormat)?
-                .eq_bytes(b"\r\n")
-            {
-                return Err(HttpParseError::InvalidFormat);
-            }
-            cursor = data_end;
+            cursor = self.parse_non_empty_trailer_line(full, cursor, line_end)?;
         }
+    }
+
+    fn parse_non_empty_trailer_line(
+        &self,
+        full: &PayloadSpan,
+        cursor: usize,
+        line_end: usize,
+    ) -> Result<usize, HttpParseError> {
+        let line = full
+            .slice(cursor, line_end - cursor)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let (name, value) = self.parse_header_name_value(&line)?;
+        self.validate_header_name_value(0, &name, &value)?;
+        // Trailer ヘッダーは現時点では検証のみ行い、レスポンス構造体には保持しない。
+        HttpHeaderView::try_new(name, value).ok_or(HttpParseError::InvalidFormat)?;
+
+        line_end
+            .checked_add(2)
+            .ok_or(HttpParseError::InvalidFormat)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpParser;
+    use crate::net::payload::payload_from_bytes;
+    use alloc::vec;
+
+    #[test]
+    fn chunked_response_with_trailer_is_parsed() {
+        let response = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\nX-Trailer: yes\r\n\r\n";
+
+        let mut parser = HttpParser::new();
+        parser.push_payload(payload_from_bytes(response).expect("test payload must be allocated"));
+
+        let parsed = parser
+            .try_parse()
+            .expect("parse should not fail")
+            .expect("response should be complete");
+        let body = parsed.body.expect("chunked response must have body");
+        let mut body_bytes = vec![0u8; body.total_len()];
+        assert_eq!(body.copy_into(&mut body_bytes), body_bytes.len());
+        assert_eq!(body_bytes, b"Wikipedia");
+    }
+
+    #[test]
+    fn chunked_trailer_waits_for_final_crlf() {
+        let mut parser = HttpParser::new();
+
+        let first = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\nX-Test: 1\r\n";
+        parser.push_payload(payload_from_bytes(first).expect("test payload must be allocated"));
+        assert!(parser.try_parse().expect("parse should not fail").is_none());
+
+        let second = b"\r\n";
+        parser.push_payload(payload_from_bytes(second).expect("test payload must be allocated"));
+
+        let parsed = parser
+            .try_parse()
+            .expect("parse should not fail")
+            .expect("response should be complete");
+        let body = parsed.body.expect("chunked response must have body");
+        let mut body_bytes = vec![0u8; body.total_len()];
+        assert_eq!(body.copy_into(&mut body_bytes), body_bytes.len());
+        assert_eq!(body_bytes, b"a");
+    }
+
+    #[test]
+    fn response_without_length_or_chunked_has_no_body() {
+        let response = b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
+
+        let mut parser = HttpParser::new();
+        parser.push_payload(payload_from_bytes(response).expect("test payload must be allocated"));
+
+        let parsed = parser
+            .try_parse()
+            .expect("parse should not fail")
+            .expect("response should be complete");
+        assert!(parsed.body.is_none());
     }
 }

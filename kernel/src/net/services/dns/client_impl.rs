@@ -1,13 +1,19 @@
 use super::*;
 use crate::net::l4::udp::UdpAddr;
-use crate::net::payload::{PayloadSpan, payload_from_bytes};
+use crate::net::payload::PayloadSpan;
 use crate::task::{self, TimeoutResult};
 
 impl DnsClient {
-    fn raw_record_data(&self, rdata: &[u8]) -> DnsRecordData {
-        DnsRecordData::Raw(PayloadSpan::from_payload(
-            payload_from_bytes(rdata).unwrap_or_default(),
-        ))
+    fn raw_record_span(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        offset: usize,
+        len: usize,
+    ) -> DnsRecordData {
+        DnsRecordData::Raw(
+            PayloadSpan::from_range(payload.clone(), offset, len)
+                .unwrap_or_else(|| PayloadSpan::from_payload(kernel_api::resource::net::PacketPayload::default())),
+        )
     }
 
     /// 新しいDNSクライアントを作成
@@ -127,7 +133,7 @@ impl DnsClient {
 
         // Security: 結果を名前でフィルタリング (RFC 5452)
         for record in records {
-            if record.name.to_lowercase() == name.to_lowercase() {
+            if record.name.eq_ignore_ascii_case(name) {
                 if let DnsRecordData::A(ip) = record.data {
                     return Some(ip);
                 }
@@ -160,7 +166,7 @@ impl DnsClient {
 
         // Security: 結果を名前でフィルタリング (RFC 5452)
         for record in records {
-            if record.name.to_lowercase() == name.to_lowercase() {
+            if record.name.eq_ignore_ascii_case(name) {
                 if let DnsRecordData::AAAA(ip) = record.data {
                     return Some(ip);
                 }
@@ -422,7 +428,7 @@ impl DnsClient {
                 let mut groups: BTreeMap<String, Vec<DnsRecord>> = BTreeMap::new();
                 for record in records {
                     groups
-                        .entry(record.name.clone())
+                        .entry(record.name.to_lowercase_string())
                         .or_insert_with(Vec::new)
                         .push(record.clone());
                 }
@@ -439,143 +445,6 @@ impl DnsClient {
         }
     }
 
-    /// DNS応答を解析
-    fn parse_response_bytes(
-        &self,
-        data: &[u8],
-        current_tick: u64,
-        expected_name: &str,
-        expected_type: DnsQueryType,
-    ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
-        if data.len() < DnsHeader::SIZE {
-            return Err(DnsResponseCode::FormatError);
-        }
-
-        let header =
-            crate::util::get_ref::<DnsHeader>(data, 0).ok_or(DnsResponseCode::FormatError)?;
-
-        if !header.is_response() {
-            return Err(DnsResponseCode::FormatError);
-        }
-
-        // Security: トランザクションIDを検証 (RFC 5452 キャッシュポイズニング防止)
-        let response_id = header.id();
-        let id_valid = match self.pending_ids.lock() {
-            Ok(mut pending) => pending.remove(&response_id).is_some(),
-            Err(_) => {
-                log::error!("[NET] DNS pending_ids lock poisoned - dropping response for security");
-                false // ロックが汚染されている場合はセキュリティのため拒否
-            }
-        };
-        if !id_valid {
-            log::warn!(
-                "[NET] DNS: Response with unexpected transaction ID 0x{:04x}, dropping (possible cache poisoning attempt)",
-                response_id
-            );
-            self.stats.errors.fetch_add(1, Ordering::Relaxed);
-            return Err(DnsResponseCode::FormatError);
-        }
-
-        let rcode = header.rcode();
-        if rcode as u8 != DnsResponseCode::NoError as u8 {
-            self.stats.errors.fetch_add(1, Ordering::Relaxed);
-            return Err(rcode);
-        }
-
-        let qcount = header.question_count() as usize;
-        let acount = header.answer_count() as usize;
-        let nscount = u16::from_be_bytes(header.nscount) as usize;
-        let arcount = u16::from_be_bytes(header.arcount) as usize;
-
-        // Security: Overall record count limit to prevent CPU exhaustion DoS (RFC 1035 doesn't specify, but 512-1024 is reasonable)
-        if qcount > 64 || acount > 1024 || nscount > 1024 || arcount > 1024 {
-            log::warn!(
-                "[NET] DNS: Response with excessive record counts (Q: {}, A: {}, NS: {}, AR: {}), dropping",
-                qcount,
-                acount,
-                nscount,
-                arcount
-            );
-            return Err(DnsResponseCode::FormatError);
-        }
-
-        // 質問セクションを解析して検証 (RFC 5452 Section 3.1)
-        let mut offset = DnsHeader::SIZE;
-        let mut matched_question = false;
-        for _ in 0..qcount {
-            let (qname, next_off) = self.parse_name(data, offset)?;
-            if next_off + 4 > data.len() {
-                return Err(DnsResponseCode::FormatError);
-            }
-            let qtype = u16::from_be_bytes([data[next_off], data[next_off + 1]]);
-            let _qclass = u16::from_be_bytes([data[next_off + 2], data[next_off + 3]]);
-
-            // 期待される質問と一致するかチェック (Case-insensitive comparison for name)
-            if qname.to_lowercase() == expected_name.to_lowercase() && qtype == expected_type as u16
-            {
-                matched_question = true;
-            }
-
-            offset = next_off + 4; // QTYPE + QCLASS
-        }
-
-        if !matched_question && qcount > 0 {
-            log::warn!(
-                "[NET] DNS: Response Question section does not match query ({:?} vs {}), dropping for security",
-                expected_type,
-                expected_name
-            );
-            return Err(DnsResponseCode::FormatError);
-        }
-
-        // 回答セクションを解析
-        let records = self.parse_answer_section(data, &mut offset, acount)?;
-
-        // 権威セクションをスキップ (キャッシュ対象外とする)
-        for _ in 0..nscount {
-            if offset >= data.len() {
-                break;
-            }
-            offset = self.skip_name(data, offset)?;
-            if offset + 10 > data.len() {
-                break;
-            }
-            let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
-            offset += 10 + rdlength;
-        }
-
-        // 追加セクションを解析 (解析は行うがキャッシュには慎重に扱う)
-        let _additional_records = self.parse_answer_section(data, &mut offset, arcount)?;
-
-        // ====================================================================
-        // Security Fix: Cache Filtering (DNS Cache Poisoning Prevention)
-        // ====================================================================
-        // 1. 回答セクションのうち、クエリ名と一致するもの（またはCNAMEチェーン）のみキャッシュ
-        // 2. 追加セクションは原則キャッシュしない（または非常に厳格なGlue検証が必要）
-        // ここでは単純化のため、クエリ名と一致する回答のみをキャッシュ対象とする。
-
-        let mut filter_cache_records = Vec::new();
-        for rec in &records {
-            if rec.name.to_lowercase() == expected_name.to_lowercase() {
-                filter_cache_records.push(rec.clone());
-            }
-        }
-
-        // CNAME チェーンの追跡などは複雑なため、現状は完全一致のみをサポート
-        // (将来的に再帰リゾルバを実装する場合はここを拡張する)
-
-        self.stats
-            .responses_received
-            .fetch_add(1, Ordering::Relaxed);
-
-        // フィルタリングされたレコードのみをキャッシュに追加
-        if !filter_cache_records.is_empty() {
-            self.cache_dns_records(&filter_cache_records, current_tick);
-        }
-
-        Ok(records)
-    }
-
     pub fn parse_response_payload(
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
@@ -583,31 +452,15 @@ impl DnsClient {
         expected_name: &str,
         expected_type: DnsQueryType,
     ) -> Option<Result<Vec<DnsRecord>, DnsResponseCode>> {
-        match payload {
-            kernel_api::resource::net::PacketPayload::Single(packet) => {
-                if self.needs_tcp_fallback(packet.data()) {
-                    None
-                } else {
-                        Some(self.parse_response_bytes(
-                            packet.data(),
-                            current_tick,
-                            expected_name,
-                        expected_type,
-                    ))
-                }
-            }
-            kernel_api::resource::net::PacketPayload::Chain(_) => {
-                if self.needs_tcp_fallback_payload(payload) {
-                    None
-                } else {
-                    Some(self.parse_response_payload_chained(
-                        payload,
-                        current_tick,
-                        expected_name,
-                        expected_type,
-                    ))
-                }
-            }
+        if self.needs_tcp_fallback_payload(payload) {
+            None
+        } else {
+            Some(self.parse_response_payload_chained(
+                payload,
+                current_tick,
+                expected_name,
+                expected_type,
+            ))
         }
     }
 
@@ -703,7 +556,7 @@ impl DnsClient {
         let mut offset = DnsHeader::SIZE;
         let mut matched_question = false;
         for _ in 0..qcount {
-            let (qname, next_off) = self.parse_name_payload(&view, offset)?;
+            let (qname, next_off) = self.parse_name_payload(payload, &view, offset)?;
             let qtype = view
                 .read_array::<2>(next_off)
                 .map(u16::from_be_bytes)
@@ -711,7 +564,7 @@ impl DnsClient {
             if view.read_array::<2>(next_off + 2).is_none() {
                 return Err(DnsResponseCode::FormatError);
             }
-            if qname.to_lowercase() == expected_name.to_lowercase() && qtype == expected_type as u16
+            if qname.eq_ignore_ascii_case(expected_name) && qtype == expected_type as u16
             {
                 matched_question = true;
             }
@@ -749,7 +602,7 @@ impl DnsClient {
 
         let mut filter_cache_records = Vec::new();
         for rec in &records {
-            if rec.name.to_lowercase() == expected_name.to_lowercase() {
+            if rec.name.eq_ignore_ascii_case(expected_name) {
                 filter_cache_records.push(rec.clone());
             }
         }
@@ -765,10 +618,11 @@ impl DnsClient {
 
     fn parse_name_payload(
         &self,
+        payload: &kernel_api::resource::net::PacketPayload,
         view: &crate::net::payload::PacketPayloadView<'_>,
         mut offset: usize,
-    ) -> Result<(String, usize), DnsResponseCode> {
-        let mut name = String::new();
+    ) -> Result<(DnsNameView, usize), DnsResponseCode> {
+        let mut labels = Vec::new();
         let mut jumped = false;
         let mut final_offset = offset;
         let mut jump_count = 0usize;
@@ -807,21 +661,16 @@ impl DnsClient {
                 return Err(DnsResponseCode::FormatError);
             }
 
-            let label = view.read_vec(offset + 1, len as usize);
-            if label.len() != len as usize {
-                return Err(DnsResponseCode::FormatError);
-            }
-            if !name.is_empty() {
-                name.push('.');
-            }
-            name.push_str(&String::from_utf8_lossy(&label));
+            let label = PayloadSpan::from_range(payload.clone(), offset + 1, len as usize)
+                .ok_or(DnsResponseCode::FormatError)?;
+            labels.push(label);
             offset += 1 + len as usize;
             if !jumped {
                 final_offset = offset;
             }
         }
 
-        Ok((name, final_offset))
+        Ok((DnsNameView::from_labels(labels), final_offset))
     }
 
     fn skip_name_payload(
@@ -868,7 +717,7 @@ impl DnsClient {
                 break;
             }
 
-            let (name, new_offset) = self.parse_name_payload(view, *offset)?;
+            let (name, new_offset) = self.parse_name_payload(payload, view, *offset)?;
             *offset = new_offset;
             if *offset + 10 > view.total_len() {
                 break;
@@ -923,11 +772,7 @@ impl DnsClient {
         rdlength: usize,
         rdata_offset: usize,
     ) -> DnsRecordData {
-        let raw_span = || {
-            crate::net::payload::PayloadSpan::from_range(payload.clone(), rdata_offset, rdlength)
-                .map(DnsRecordData::Raw)
-                .unwrap_or_else(|| self.raw_record_data(&[]))
-        };
+        let raw_span = || self.raw_record_span(payload, rdata_offset, rdlength);
 
         match DnsQueryType::from_u16(rtype) {
             Some(DnsQueryType::A) if rdlength == 4 => view
@@ -941,7 +786,7 @@ impl DnsClient {
                 .map(DnsRecordData::AAAA)
                 .unwrap_or_else(raw_span),
             Some(DnsQueryType::CNAME) | Some(DnsQueryType::NS) | Some(DnsQueryType::PTR) => self
-                .parse_name_payload(view, rdata_offset)
+                .parse_name_payload(payload, view, rdata_offset)
                 .map(|(name, _)| DnsRecordData::Name(name))
                 .unwrap_or_else(|_| raw_span()),
             Some(DnsQueryType::MX) if rdlength >= 3 => {
@@ -949,7 +794,7 @@ impl DnsClient {
                 else {
                     return raw_span();
                 };
-                self.parse_name_payload(view, rdata_offset + 2)
+                self.parse_name_payload(payload, view, rdata_offset + 2)
                     .map(|(exchange, _)| DnsRecordData::MX(preference, exchange))
                     .unwrap_or_else(|_| raw_span())
             }
@@ -969,7 +814,7 @@ impl DnsClient {
                 else {
                     return raw_span();
                 };
-                self.parse_name_payload(view, rdata_offset + 6)
+                self.parse_name_payload(payload, view, rdata_offset + 6)
                     .map(|(target, _)| DnsRecordData::SRV {
                         priority,
                         weight,
@@ -990,183 +835,30 @@ impl DnsClient {
         rdlength: usize,
     ) -> DnsRecordData {
         if rdlength == 0 {
-            return crate::net::payload::PayloadSpan::from_range(payload.clone(), rdata_offset, rdlength)
-                .map(DnsRecordData::Raw)
-                .unwrap_or_else(|| self.raw_record_data(&[]));
+            return DnsRecordData::TXT(DnsTxtView::from_spans(Vec::new()));
         }
 
-        let mut txt_content = String::new();
+        let mut spans = Vec::new();
         let mut offset = 0usize;
         while offset < rdlength {
             let Some(txt_len) = view
                 .read_array::<1>(rdata_offset + offset)
                 .map(|bytes| bytes[0] as usize)
             else {
-                return crate::net::payload::PayloadSpan::from_range(payload.clone(), rdata_offset, rdlength)
-                    .map(DnsRecordData::Raw)
-                    .unwrap_or_else(|| self.raw_record_data(&[]));
+                return self.raw_record_span(payload, rdata_offset, rdlength);
             };
             offset += 1;
             if offset + txt_len > rdlength {
-                return crate::net::payload::PayloadSpan::from_range(payload.clone(), rdata_offset, rdlength)
-                    .map(DnsRecordData::Raw)
-                    .unwrap_or_else(|| self.raw_record_data(&[]));
+                return self.raw_record_span(payload, rdata_offset, rdlength);
             }
-            let label = view.read_vec(rdata_offset + offset, txt_len);
-            if label.len() != txt_len {
-                return crate::net::payload::PayloadSpan::from_range(payload.clone(), rdata_offset, rdlength)
-                    .map(DnsRecordData::Raw)
-                    .unwrap_or_else(|| self.raw_record_data(&[]));
-            }
-            txt_content.push_str(&String::from_utf8_lossy(&label));
+            let Some(label) = PayloadSpan::from_range(payload.clone(), rdata_offset + offset, txt_len)
+            else {
+                return self.raw_record_span(payload, rdata_offset, rdlength);
+            };
+            spans.push(label);
             offset += txt_len;
         }
-        DnsRecordData::TXT(txt_content)
-    }
-
-    /// 回答セクションをパースする
-    pub(super) fn parse_answer_section(
-        &self,
-        data: &[u8],
-        offset: &mut usize,
-        acount: usize,
-    ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
-        let mut records = Vec::new();
-        for _ in 0..acount {
-            if *offset >= data.len() {
-                break;
-            }
-
-            let (name, new_offset) = self.parse_name(data, *offset)?;
-            *offset = new_offset;
-
-            if *offset + 10 > data.len() {
-                break;
-            }
-
-            let rtype = u16::from_be_bytes([data[*offset], data[*offset + 1]]);
-            let rclass = u16::from_be_bytes([data[*offset + 2], data[*offset + 3]]);
-            let ttl = u32::from_be_bytes([
-                data[*offset + 4],
-                data[*offset + 5],
-                data[*offset + 6],
-                data[*offset + 7],
-            ]);
-            let rdlength = u16::from_be_bytes([data[*offset + 8], data[*offset + 9]]) as usize;
-            *offset += 10;
-
-            if *offset + rdlength > data.len() {
-                break;
-            }
-
-            let rdata = &data[*offset..*offset + rdlength];
-            *offset += rdlength;
-
-            if records.len() < DNS_MAX_ANSWER_COUNT {
-                let record_data = self.parse_record_data(data, rdata, rtype, rdlength, *offset);
-
-                records.push(DnsRecord {
-                    name,
-                    rtype: DnsQueryType::from_u16(rtype).unwrap_or(DnsQueryType::A),
-                    rclass: if rclass == 1 {
-                        DnsQueryClass::IN
-                    } else {
-                        DnsQueryClass::IN
-                    },
-                    ttl,
-                    data: record_data,
-                });
-            }
-        }
-        Ok(records)
-    }
-
-    /// レコードデータ（RDATA）をパースする
-    pub(super) fn parse_record_data(
-        &self,
-        data: &[u8],
-        rdata: &[u8],
-        rtype: u16,
-        rdlength: usize,
-        offset_after_rdata: usize,
-    ) -> DnsRecordData {
-        match DnsQueryType::from_u16(rtype) {
-            Some(DnsQueryType::A) if rdlength == 4 => {
-                let mut bytes = [0u8; 4];
-                bytes.copy_from_slice(rdata);
-                DnsRecordData::A(Ipv4Address::new(bytes))
-            }
-            Some(DnsQueryType::AAAA) if rdlength == 16 => {
-                let mut bytes = [0u8; 16];
-                bytes.copy_from_slice(rdata);
-                DnsRecordData::AAAA(Ipv6Address::new(bytes))
-            }
-            Some(DnsQueryType::CNAME) | Some(DnsQueryType::NS) | Some(DnsQueryType::PTR) => {
-                if let Ok((cname, _)) = self.parse_name(data, offset_after_rdata - rdlength) {
-                    DnsRecordData::Name(cname)
-                } else {
-                    self.raw_record_data(rdata)
-                }
-            }
-            Some(DnsQueryType::MX) if rdlength >= 3 => {
-                let preference = u16::from_be_bytes([rdata[0], rdata[1]]);
-                if let Ok((exchange, _)) = self.parse_name(data, offset_after_rdata - rdlength + 2)
-                {
-                    DnsRecordData::MX(preference, exchange)
-                } else {
-                    self.raw_record_data(rdata)
-                }
-            }
-            Some(DnsQueryType::TXT) => self.parse_txt_record(rdata, rdlength),
-            Some(DnsQueryType::SRV) if rdlength >= 7 => {
-                let priority = u16::from_be_bytes([rdata[0], rdata[1]]);
-                let weight = u16::from_be_bytes([rdata[2], rdata[3]]);
-                let port = u16::from_be_bytes([rdata[4], rdata[5]]);
-                if let Ok((target, _)) = self.parse_name(data, offset_after_rdata - rdlength + 6) {
-                    DnsRecordData::SRV {
-                        priority,
-                        weight,
-                        port,
-                        target,
-                    }
-                } else {
-                    self.raw_record_data(rdata)
-                }
-            }
-            _ => self.raw_record_data(rdata),
-        }
-    }
-
-    /// TXTレコードをパースする
-    pub(super) fn parse_txt_record(&self, rdata: &[u8], rdlength: usize) -> DnsRecordData {
-        if rdata.is_empty() {
-            return self.raw_record_data(rdata);
-        }
-
-        // RFC 1035: TXT RDATA consists of one or more <character-string>s.
-        // Each <character-string> has a 1-byte length followed by data.
-        let mut txt_content = String::new();
-        let mut offset = 0;
-
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while offset < rdlength && offset < rdata.len() {
-            let txt_len = rdata[offset] as usize;
-            offset += 1;
-
-            if offset + txt_len > rdata.len() || offset + txt_len > rdlength {
-                // Malformed TXT record, but we've already started parsing.
-                // If we have nothing yet, return Raw. Otherwise return what we have.
-                if txt_content.is_empty() {
-                    return self.raw_record_data(rdata);
-                }
-                break;
-            }
-
-            txt_content.push_str(&String::from_utf8_lossy(&rdata[offset..offset + txt_len]));
-            offset += txt_len;
-        }
-
-        DnsRecordData::TXT(txt_content)
+        DnsRecordData::TXT(DnsTxtView::from_spans(spans))
     }
 
     /// ドメイン名をスキップ

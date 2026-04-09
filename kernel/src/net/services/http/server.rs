@@ -23,6 +23,12 @@ const HOST_HTTP_RETRY_MAX_MS: u64 = 5_000;
 // 100ms << 6 = 6400ms となり、HOST_HTTP_RETRY_MAX_MS(5000ms) にクランプされる。
 const HOST_HTTP_BACKOFF_CAP_SHIFT: u32 = 6;
 const HOST_HTTP_CONNECTION_TIMEOUT_MS: u64 = 10_000;
+const HOST_HTTP_READ_TRIES: usize = 20;
+const HOST_HTTP_READ_TIMEOUT_MS: u64 = 100;
+const HOST_HTTP_MAX_READ_WAIT_MS: u64 = HOST_HTTP_READ_TRIES as u64 * HOST_HTTP_READ_TIMEOUT_MS;
+// Invariant: リクエスト読み取りの最大待機時間は接続寿命を超えないこと。
+const _HOST_HTTP_READ_BUDGET_GUARD: [(); 1] =
+    [(); (HOST_HTTP_MAX_READ_WAIT_MS <= HOST_HTTP_CONNECTION_TIMEOUT_MS) as usize];
 // deadline 判定コストを抑えるため、読み取り試行ごとではなく N 回ごとにチェックする。
 // READ_TIMEOUT_MS(100ms) * STRIDE(2) = 最長 200ms の判定遅延を許容する代わりに、
 // 高頻度 current_tick() 呼び出しを抑制する。
@@ -71,7 +77,8 @@ pub fn start_once() {
 /// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
 async fn run_net_poller() {
     let mut consecutive_idle: u32 = 0;
-    // TODO(net/http): runtime device poll hook が入ったらここで実ポーリングを統合する。
+    // TODO(net/http, issue: runtime-poller-hook):
+    // runtime device poll hook が入ったらここで実ポーリングを統合する。
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         // ISR + network_event_taskが非同期にパケット処理を行うため
@@ -231,24 +238,22 @@ async fn run_service(acceptor: TcpAcceptor) -> Result<(), TcpError> {
                 task::yield_now().await;
             }
             TimeoutResult::Completed(Ok((client, peer))) => {
-                let active_before = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::AcqRel);
-                if active_before >= MAX_CONCURRENT_CONNECTIONS {
-                    ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::AcqRel);
+                let Some(active_after) = try_acquire_connection_slot() else {
                     log::warn!(
                         "[HOST-HTTP] connection limit reached ({}), rejecting {:?}",
-                        active_before,
+                        ACTIVE_CONNECTIONS.load(Ordering::Acquire),
                         peer
                     );
                     // 接続を閉じて次を受け付ける
                     let mut rejected = client;
                     let _ = rejected.close();
                     continue;
-                }
+                };
 
                 log::info!(
                     "[HOST-HTTP] accepted connection from {:?} (active: {})",
                     peer,
-                    active_before + 1
+                    active_after
                 );
 
                 // 【設計書準拠】各接続を独立タスクとしてspawn（並行処理）
@@ -261,6 +266,25 @@ async fn run_service(acceptor: TcpAcceptor) -> Result<(), TcpError> {
                 return Err(err);
             }
         }
+    }
+}
+
+fn try_acquire_connection_slot() -> Option<u32> {
+    loop {
+        let current = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
+        if current >= MAX_CONCURRENT_CONNECTIONS {
+            return None;
+        }
+
+        let next = current.checked_add(1)?;
+        if ACTIVE_CONNECTIONS
+            .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return Some(next);
+        }
+
+        core::hint::spin_loop();
     }
 }
 
@@ -404,13 +428,10 @@ async fn handle_client(mut client: TcpConnection) {
 
         // バッファ内のデータだけでリクエストが完成しなかった場合のみ、ソケットから読み込みを行う
         if response_payload.is_none() {
-            const READ_TRIES: usize = 20;
-            const READ_TIMEOUT_MS: u64 = 100;
-
             let mut read_success = false;
             let mut abort_connection = false;
 
-            for attempt in 0..READ_TRIES {
+            for attempt in 0..HOST_HTTP_READ_TRIES {
                 // こちらは「読み取り待機中」に寿命超過を検出するための判定。
                 // ループ先頭判定だけだと、recv 待ちが続く間に期限超過を見逃すため、
                 // stride 間隔で再確認する。
@@ -431,7 +452,7 @@ async fn handle_client(mut client: TcpConnection) {
                     }
                 }
 
-                match task::with_timeout(client.recv_payload(), READ_TIMEOUT_MS).await {
+                match task::with_timeout(client.recv_payload(), HOST_HTTP_READ_TIMEOUT_MS).await {
                     TimeoutResult::TimedOut => {
                         task::yield_now().await;
                     }

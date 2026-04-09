@@ -6,7 +6,7 @@ impl TlsConnection {
     /// データを暗号化して送信
     ///
     /// Dispatches between TLS 1.3 record layer and TLS 1.2 cipher suites.
-    pub fn encrypt(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub fn encrypt(&mut self, data: &[u8]) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // TLS 1.3: inner content type付きでAEAD暗号化
         if self.is_tls13 {
             if self.state != TlsState::Established && self.state != TlsState::Handshaking {
@@ -41,7 +41,11 @@ impl TlsConnection {
     /// - explicit_nonce (8 bytes)
     /// - ciphertext (same length as plaintext)
     /// - auth_tag (16 bytes)
-    pub(super) fn encrypt_aes_gcm(&mut self, data: &[u8], content_type: u8) -> TlsResult<Vec<u8>> {
+    pub(super) fn encrypt_aes_gcm(
+        &mut self,
+        data: &[u8],
+        content_type: u8,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         // Keys not set — return error (encryption requires valid keys)
@@ -78,7 +82,7 @@ impl TlsConnection {
         record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(record)
+        Ok(Self::packet_payload_from_vec(record))
     }
 
     /// ChaCha20-Poly1305 record encryption (RFC 7905 for TLS 1.2)
@@ -93,7 +97,7 @@ impl TlsConnection {
         &mut self,
         data: &[u8],
         content_type: u8,
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // Keys not set — return error (encryption requires valid keys)
         let (ciphertext, auth_tag) =
             if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
@@ -134,7 +138,7 @@ impl TlsConnection {
         record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(record)
+        Ok(Self::packet_payload_from_vec(record))
     }
 
     /// TLS 1.3: 復号されたレコードから内部コンテントタイプを除去し平文を返す
@@ -427,9 +431,7 @@ impl TlsConnection {
         inner.extend_from_slice(&key_update_msg);
         inner.push(ContentType::Handshake as u8);
 
-        self.tls13_encrypt_record(&inner, false)
-            .ok()
-            .map(Self::packet_payload_from_vec)
+        self.tls13_encrypt_record(&inner, false).ok()
     }
 
     /// TLS 1.3 モードかどうか
@@ -453,7 +455,7 @@ impl TlsConnection {
             inner.push(AlertDescription::CloseNotify as u8);
             inner.push(ContentType::Alert as u8);
             if let Ok(record) = self.tls13_encrypt_record(&inner, false) {
-                return Self::packet_payload_from_vec(record);
+                return record;
             }
         }
 
@@ -470,8 +472,8 @@ impl TlsConnection {
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn handshake_messages_ref(&self) -> alloc::vec::Vec<u8> {
-        Self::vec_from_payload(&self.handshake_transcript).unwrap_or_default()
+    pub fn handshake_transcript_len(&self) -> usize {
+        self.handshake_transcript.total_len()
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]

@@ -13,6 +13,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::net::l3::ipv4::Ipv4Address;
@@ -184,11 +185,91 @@ impl DnsHeader {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct DnsNameView {
+    labels: Vec<PayloadSpan>,
+    text_len: usize,
+}
+
+impl DnsNameView {
+    pub fn from_labels(labels: Vec<PayloadSpan>) -> Self {
+        let text_len = labels
+            .iter()
+            .map(PayloadSpan::total_len)
+            .sum::<usize>()
+            .saturating_add(labels.len().saturating_sub(1));
+        Self { labels, text_len }
+    }
+
+    pub fn eq_ignore_ascii_case(&self, name: &str) -> bool {
+        let mut parts = name.split('.');
+        for label in &self.labels {
+            let Some(part) = parts.next() else {
+                return false;
+            };
+            if !label.eq_ignore_ascii_case(part.as_bytes()) {
+                return false;
+            }
+        }
+        parts.next().is_none()
+    }
+
+    pub fn to_owned_string(&self) -> String {
+        let mut out = String::with_capacity(self.text_len);
+        for (index, label) in self.labels.iter().enumerate() {
+            if index > 0 {
+                out.push('.');
+            }
+            if let Some(slice) = label.as_contiguous_slice() {
+                out.push_str(&String::from_utf8_lossy(slice));
+            } else {
+                let mut bytes = vec![0u8; label.total_len()];
+                let copied = label.copy_into(&mut bytes);
+                bytes.truncate(copied);
+                out.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+        out
+    }
+
+    pub fn to_lowercase_string(&self) -> String {
+        self.to_owned_string().to_ascii_lowercase()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DnsTxtView {
+    spans: Vec<PayloadSpan>,
+    text_len: usize,
+}
+
+impl DnsTxtView {
+    pub fn from_spans(spans: Vec<PayloadSpan>) -> Self {
+        let text_len = spans.iter().map(PayloadSpan::total_len).sum();
+        Self { spans, text_len }
+    }
+
+    pub fn to_owned_string(&self) -> String {
+        let mut out = String::with_capacity(self.text_len);
+        for span in &self.spans {
+            if let Some(slice) = span.as_contiguous_slice() {
+                out.push_str(&String::from_utf8_lossy(slice));
+            } else {
+                let mut bytes = vec![0u8; span.total_len()];
+                let copied = span.copy_into(&mut bytes);
+                bytes.truncate(copied);
+                out.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+        out
+    }
+}
+
 /// DNSリソースレコード (解析済み)
 #[derive(Debug, Clone)]
 pub struct DnsRecord {
     /// レコード名
-    pub name: String,
+    pub name: DnsNameView,
     /// レコードタイプ
     pub rtype: DnsQueryType,
     /// レコードクラス
@@ -207,17 +288,17 @@ pub enum DnsRecordData {
     /// IPv6アドレス (AAAAレコード)
     AAAA(Ipv6Address),
     /// ドメイン名 (CNAME, NS, PTRなど)
-    Name(String),
+    Name(DnsNameView),
     /// MXレコード (優先度, ドメイン名)
-    MX(u16, String),
+    MX(u16, DnsNameView),
     /// TXTレコード
-    TXT(String),
+    TXT(DnsTxtView),
     /// SRVレコード (優先度, ウェイト, ポート, ターゲット)
     SRV {
         priority: u16,
         weight: u16,
         port: u16,
-        target: String,
+        target: DnsNameView,
     },
     /// その他/未解析
     Raw(PayloadSpan),

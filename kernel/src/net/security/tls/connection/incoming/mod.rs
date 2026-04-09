@@ -41,12 +41,7 @@ impl TlsConnection {
                 .ok_or(TlsError::DecodeError)?;
             let record_payload =
                 crate::net::payload::payload_range(&record, 5, length).ok_or(TlsError::DecodeError)?;
-            if let kernel_api::resource::net::PacketPayload::Single(packet) = &record_payload {
-                self.process_single_record(content_type, packet.data(), &mut plaintext)?;
-            } else {
-                let data = Self::vec_from_payload(&record_payload)?;
-                self.process_single_record(content_type, &data, &mut plaintext)?;
-            }
+            self.process_single_record(content_type, &record_payload, &mut plaintext)?;
         }
 
         Ok(plaintext)
@@ -56,7 +51,7 @@ impl TlsConnection {
     pub(super) fn process_single_record(
         &mut self,
         content_type: u8,
-        payload: &[u8],
+        payload: &kernel_api::resource::net::PacketPayload,
         plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
         let ct = match ContentType::from_u8(content_type) {
@@ -75,14 +70,14 @@ impl TlsConnection {
         };
 
         let final_payload = if let Some(ref decrypted) = decrypted_storage_opt {
-            decrypted.as_slice()
+            decrypted
         } else {
             payload
         };
-
         match ct {
             ContentType::Handshake => {
-                self.process_handshake(final_payload)?;
+                let data = Self::vec_from_payload(final_payload)?;
+                self.process_handshake(&data)?;
             }
             ContentType::ChangeCipherSpec => {
                 // TLS 1.2 略式ハンドシェイク: CCS受信で鍵導出
@@ -96,7 +91,8 @@ impl TlsConnection {
                 // TLS 1.3では無視
             }
             ContentType::Alert => {
-                self.handle_alert(final_payload)?;
+                let data = Self::vec_from_payload(final_payload)?;
+                self.handle_alert(&data)?;
             }
             ContentType::ApplicationData => {
                 self.process_app_data(payload, plaintext)?;
@@ -127,7 +123,7 @@ impl TlsConnection {
     /// 確立済みセッションでレコードを復号する
     pub(super) fn decrypt_established_data(
         &mut self,
-        payload: &[u8],
+        payload: &kernel_api::resource::net::PacketPayload,
         content_type: u8,
         plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
@@ -136,7 +132,7 @@ impl TlsConnection {
             self.dispatch_tls13_inner_content(&decrypted, plaintext)?;
         } else {
             let decrypted = self.decrypt_record(payload, content_type)?;
-            crate::net::payload::append_payload(plaintext, Self::packet_payload_from_vec(decrypted));
+            crate::net::payload::append_payload(plaintext, decrypted);
         }
         Ok(())
     }
@@ -144,12 +140,13 @@ impl TlsConnection {
     /// ApplicationDataレコードを処理する
     pub(super) fn process_app_data(
         &mut self,
-        payload: &[u8],
+        payload: &kernel_api::resource::net::PacketPayload,
         plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
         if self.is_tls13 && self.state != TlsState::Established {
             // TLS 1.3: 暗号化ハンドシェイクメッセージ
-            let app_data = self.tls13_process_encrypted_handshake(payload)?;
+            let data = Self::vec_from_payload(payload)?;
+            let app_data = self.tls13_process_encrypted_handshake(&data)?;
             if !app_data.is_empty() {
                 crate::net::payload::append_payload(plaintext, app_data);
             }
@@ -164,10 +161,11 @@ impl TlsConnection {
     /// TLS 1.3復号後の内部コンテントタイプを処理する
     pub(super) fn dispatch_tls13_inner_content(
         &mut self,
-        decrypted: &[u8],
+        decrypted: &kernel_api::resource::net::PacketPayload,
         plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
-        if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type(decrypted) {
+        let decrypted_bytes = Self::vec_from_payload(decrypted)?;
+        if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type(&decrypted_bytes) {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
                     crate::net::payload::append_payload(

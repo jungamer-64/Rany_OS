@@ -7,7 +7,7 @@ impl TlsConnection {
         &mut self,
         content_type: u8,
         data: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         if self.write_key.is_empty() || self.write_iv.len() < 4 {
@@ -39,7 +39,7 @@ impl TlsConnection {
         record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(record)
+        Ok(Self::packet_payload_from_vec(record))
     }
 
     /// ChaCha20-Poly1305 レコード暗号化 (TLS 1.2)
@@ -47,7 +47,7 @@ impl TlsConnection {
         &mut self,
         content_type: u8,
         data: &[u8],
-    ) -> TlsResult<Vec<u8>> {
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
             return Err(TlsError::CryptoError);
         }
@@ -82,7 +82,7 @@ impl TlsConnection {
         record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(record)
+        Ok(Self::packet_payload_from_vec(record))
     }
 
     // ========================================================================
@@ -197,7 +197,7 @@ impl TlsConnection {
         data: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // ハンドシェイクトラフィック鍵で復号
-        let decrypted = self.tls13_decrypt_record(data, true)?;
+        let decrypted = self.tls13_decrypt_record(&Self::packet_payload_from_slice(data), true)?;
 
         if decrypted.is_empty() {
             return Err(TlsError::DecodeError);
@@ -205,17 +205,18 @@ impl TlsConnection {
 
         // 内部コンテントタイプ = 最後の非ゼロバイト
         // TLS 1.3 record format: plaintext || content_type || zeros
+        let decrypted_bytes = Self::vec_from_payload(&decrypted)?;
         let mut inner_content_type = 0u8;
-        let mut plaintext_len = decrypted.len();
-        for i in (0..decrypted.len()).rev() {
-            if decrypted[i] != 0 {
-                inner_content_type = decrypted[i];
+        let mut plaintext_len = decrypted_bytes.len();
+        for i in (0..decrypted_bytes.len()).rev() {
+            if decrypted_bytes[i] != 0 {
+                inner_content_type = decrypted_bytes[i];
                 plaintext_len = i;
                 break;
             }
         }
 
-        let inner_data = &decrypted[..plaintext_len];
+        let inner_data = &decrypted_bytes[..plaintext_len];
 
         match ContentType::from_u8(inner_content_type) {
             Some(ContentType::Handshake) => {
@@ -569,33 +570,41 @@ impl TlsConnection {
             return Ok(());
         }
 
-        let verify_content =
-            self.build_tls13_cv_verify_content(b"TLS 1.3, server CertificateVerify");
-
-        self.dispatch_tls13_signature_verification(sig_algorithm, &verify_content, signature)?;
+        self.verify_tls13_certificate_verify(sig_algorithm, signature)?;
 
         self.state = TlsState::Tls13WaitFinished;
         Ok(())
     }
 
-    /// TLS 1.3 CertificateVerify用の検証対象コンテンツを構築
-    ///
-    /// RFC 8446 Section 4.4.3:
-    /// content = 64 * 0x20 || label || 0x00 || transcript_hash
-    pub(super) fn build_tls13_cv_verify_content(&self, label: &[u8]) -> Vec<u8> {
+    fn verify_tls13_certificate_verify(
+        &self,
+        sig_algorithm: u16,
+        signature: &[u8],
+    ) -> TlsResult<()> {
+        const LABEL: &[u8] = b"TLS 1.3, server CertificateVerify";
         let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
-        let transcript_hash: Vec<u8> = if use_384 {
-            self.transcript_hash_sha384().to_vec()
+        let mut content = [0u8; 64 + LABEL.len() + 1 + SHA384_OUTPUT_SIZE];
+        content[..64].fill(0x20);
+        let mut offset = 64;
+        content[offset..offset + LABEL.len()].copy_from_slice(LABEL);
+        offset += LABEL.len();
+        content[offset] = 0x00;
+        offset += 1;
+        let hash_len = if use_384 {
+            let hash = self.transcript_hash_sha384();
+            content[offset..offset + SHA384_OUTPUT_SIZE].copy_from_slice(&hash);
+            SHA384_OUTPUT_SIZE
         } else {
-            self.transcript_hash_sha256().to_vec()
+            let hash = self.transcript_hash_sha256();
+            content[offset..offset + SHA256_OUTPUT_SIZE].copy_from_slice(&hash);
+            SHA256_OUTPUT_SIZE
         };
 
-        let mut content = Vec::with_capacity(64 + label.len() + 1 + transcript_hash.len());
-        content.extend_from_slice(&[0x20u8; 64]);
-        content.extend_from_slice(label);
-        content.push(0x00);
-        content.extend_from_slice(&transcript_hash);
-        content
+        self.dispatch_tls13_signature_verification(
+            sig_algorithm,
+            &content[..offset + hash_len],
+            signature,
+        )
     }
 
     /// 署名アルゴリズムに基づくTLS 1.3署名検証ディスパッチ

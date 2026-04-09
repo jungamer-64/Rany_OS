@@ -29,6 +29,25 @@ async fn send_payload(
         .map_err(|_| HttpClientError::WriteError)
 }
 
+async fn send_tls12_client_handshake_flight(
+    tls: &mut TlsConnection,
+    connection: &mut TcpConnection,
+) -> Result<(), HttpClientError> {
+    let key_exchange = tls
+        .build_client_key_exchange_payload()
+        .or_else(|| tls.build_client_key_exchange_rsa_payload())
+        .ok_or(HttpClientError::TlsHandshakeFailed)?;
+    send_payload(connection, key_exchange).await?;
+
+    let ccs = tls.build_change_cipher_spec_payload();
+    send_payload(connection, ccs).await?;
+
+    let finished = tls
+        .build_client_finished_tls12_payload()
+        .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
+    send_payload(connection, finished).await
+}
+
 
 #[derive(Debug)]
 pub enum HttpClientError {
@@ -80,8 +99,12 @@ impl HttpClient {
 
     /// リクエストを非同期で送信し、レスポンスを取得する
     pub async fn send(&self, mut req: HttpRequest) -> Result<HttpResponseView, HttpClientError> {
+        let original_uri = core::mem::replace(
+            &mut req.uri,
+            HttpRequestUri::OriginForm(HttpRequestTarget::root()),
+        );
         let (host, port, path, is_https) =
-            Self::split_request_uri(req.uri.clone()).ok_or(HttpClientError::InvalidUrl)?;
+            Self::split_request_uri(original_uri).ok_or(HttpClientError::InvalidUrl)?;
 
         // リクエストURIをホスト部を除いたパスに書き換える
         req.uri = HttpRequestUri::OriginForm(path);
@@ -129,6 +152,7 @@ impl HttpClient {
             send_payload(&mut connection, client_hello).await?;
 
             // ハンドシェイク
+            let mut tls12_client_flight_sent = false;
             // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while tls.state() != TlsState::Established && tls.state() != TlsState::Error {
                 let Some(in_payload) = connection.recv_payload().await else {
@@ -143,18 +167,10 @@ impl HttpClient {
                 // 状態遷移に応じた応答を構築して送信
                 match tls.state() {
                     TlsState::Handshaking => {
-                        // TLS 1.2: ServerHelloDone 受信後
-                        if let Some(cke) = tls.build_client_key_exchange_payload() {
-                            send_payload(&mut connection, cke).await?;
-                        } else if let Some(cke_rsa) = tls.build_client_key_exchange_rsa_payload() {
-                            send_payload(&mut connection, cke_rsa).await?;
-                        }
-
-                        let ccs = tls.build_change_cipher_spec_payload();
-                        send_payload(&mut connection, ccs).await?;
-
-                        if let Ok(fin) = tls.build_client_finished_tls12_payload() {
-                            send_payload(&mut connection, fin).await?;
+                        // TLS 1.2: ServerHelloDone 受信後に送るクライアントフライトは1回のみ。
+                        if !tls12_client_flight_sent && !tls.is_tls13() {
+                            send_tls12_client_handshake_flight(&mut tls, &mut connection).await?;
+                            tls12_client_flight_sent = true;
                         }
                     }
                     TlsState::Tls13ServerFinishedReceived => {
@@ -222,6 +238,11 @@ impl HttpClient {
 
         // EOFまで読み切ってパース完了しなかった場合
         if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
+            Ok(response)
+        } else if let Some(response) = parser
+            .try_parse_response_on_eof()
+            .map_err(HttpClientError::ParseError)?
+        {
             Ok(response)
         } else {
             Err(HttpClientError::ParseError(
