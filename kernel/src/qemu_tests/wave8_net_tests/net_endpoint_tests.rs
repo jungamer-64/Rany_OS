@@ -130,16 +130,16 @@ pub fn net_endpoint_flow_control_probe_timing_smoke() -> bool {
     crate::net::l4::endpoint::flow_control::qemu_tests::probe_timing_smoke()
 }
 
-pub fn net_endpoint_futures_write_future_wakes_on_send_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::futures_write_future_wakes_on_send_smoke()
+pub fn net_endpoint_futures_send_payload_future_wakes_on_send_smoke() -> bool {
+    crate::net::l4::endpoint::qemu_tests::futures_send_payload_future_wakes_on_send_smoke()
 }
 
-pub fn net_endpoint_futures_tcp_stream_read_zero_copy_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::futures_tcp_stream_read_zero_copy_smoke()
+pub fn net_endpoint_futures_tcp_connection_recv_payload_smoke() -> bool {
+    crate::net::l4::endpoint::qemu_tests::futures_tcp_connection_recv_payload_smoke()
 }
 
-pub fn net_endpoint_futures_tcp_stream_multiple_reads_smoke() -> bool {
-    crate::net::l4::endpoint::qemu_tests::futures_tcp_stream_multiple_reads_smoke()
+pub fn net_endpoint_futures_tcp_connection_multiple_recv_payloads_smoke() -> bool {
+    crate::net::l4::endpoint::qemu_tests::futures_tcp_connection_multiple_recv_payloads_smoke()
 }
 
 pub fn net_endpoint_futures_udp_recv_delivered_smoke() -> bool {

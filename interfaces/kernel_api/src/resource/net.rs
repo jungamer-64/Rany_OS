@@ -6,45 +6,48 @@ pub use crate::types_impl::{
     PacketPayload, PacketRef, PacketRefStorage, PacketRefVTable, PacketType, PhysicalAddress,
 };
 
-pub async fn tcp_stream_dial(
+pub async fn tcp_connection_dial(
     remote: NetSocketAddr,
     scope: InterfaceScope,
-) -> KapiResult<TcpStream> {
-    kernel::instance().net_tcp_stream_dial(remote, scope).await
+) -> KapiResult<TcpConnection> {
+    kernel::instance().net_tcp_connection_dial(remote, scope).await
 }
 
-pub async fn tcp_listener_listen_on(
+pub async fn tcp_acceptor_bind(
     local: NetSocketAddr,
     scope: InterfaceScope,
     backlog: u32,
-) -> KapiResult<TcpListener> {
+) -> KapiResult<TcpAcceptor> {
     kernel::instance()
-        .net_tcp_listener_listen_on(local, scope, backlog)
+        .net_tcp_acceptor_bind(local, scope, backlog)
         .await
 }
 
-pub async fn tcp_listener_next_connection(listener: &TcpListener) -> KapiResult<TcpStream> {
+pub async fn tcp_acceptor_next_connection(acceptor: &TcpAcceptor) -> KapiResult<TcpConnection> {
     kernel::instance()
-        .net_tcp_listener_next_connection(TcpListener::from_raw_parts(
-            listener.id,
-            listener.default_scope,
+        .net_tcp_acceptor_next_connection(TcpAcceptor::from_raw_parts(
+            acceptor.id,
+            acceptor.default_scope,
         ))
         .await
 }
 
-pub async fn tcp_stream_recv_payload(stream: &TcpStream) -> KapiResult<PacketPayload> {
+pub async fn tcp_connection_recv_payload(connection: &TcpConnection) -> KapiResult<PacketPayload> {
     kernel::instance()
-        .net_tcp_stream_recv_payload(TcpStream::from_raw_parts(stream.id, stream.default_scope))
+        .net_tcp_connection_recv_payload(TcpConnection::from_raw_parts(
+            connection.id,
+            connection.default_scope,
+        ))
         .await
 }
 
-pub async fn tcp_stream_send_payload(
-    stream: &TcpStream,
+pub async fn tcp_connection_send_payload(
+    connection: &TcpConnection,
     payload: PacketPayload,
-) -> KapiResult<usize> {
+) -> KapiResult<()> {
     kernel::instance()
-        .net_tcp_stream_send_payload(
-            TcpStream::from_raw_parts(stream.id, stream.default_scope),
+        .net_tcp_connection_send_payload(
+            TcpConnection::from_raw_parts(connection.id, connection.default_scope),
             payload,
         )
         .await
@@ -76,21 +79,21 @@ pub async fn raw_endpoint_send_payload(
 }
 
 #[derive(Default)]
-pub struct TcpStream {
+pub struct TcpConnection {
     id: u64,
     default_scope: InterfaceScope,
 }
 
-impl core::fmt::Debug for TcpStream {
+impl core::fmt::Debug for TcpConnection {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TcpStream")
+        f.debug_struct("TcpConnection")
             .field("id", &self.id)
             .field("default_scope", &self.default_scope)
             .finish()
     }
 }
 
-impl TcpStream {
+impl TcpConnection {
     pub const fn from_raw_parts(id: u64, default_scope: InterfaceScope) -> Self {
         Self { id, default_scope }
     }
@@ -104,26 +107,26 @@ impl TcpStream {
     }
 
     pub fn close(self) -> KapiResult<()> {
-        kernel::instance().net_tcp_stream_close(self)
+        kernel::instance().net_tcp_connection_close(self)
     }
 }
 
 #[derive(Default)]
-pub struct TcpListener {
+pub struct TcpAcceptor {
     id: u64,
     default_scope: InterfaceScope,
 }
 
-impl core::fmt::Debug for TcpListener {
+impl core::fmt::Debug for TcpAcceptor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TcpListener")
+        f.debug_struct("TcpAcceptor")
             .field("id", &self.id)
             .field("default_scope", &self.default_scope)
             .finish()
     }
 }
 
-impl TcpListener {
+impl TcpAcceptor {
     pub const fn from_raw_parts(id: u64, default_scope: InterfaceScope) -> Self {
         Self { id, default_scope }
     }
@@ -137,7 +140,7 @@ impl TcpListener {
     }
 
     pub fn close(self) -> KapiResult<()> {
-        kernel::instance().net_tcp_listener_close(self)
+        kernel::instance().net_tcp_acceptor_close(self)
     }
 }
 

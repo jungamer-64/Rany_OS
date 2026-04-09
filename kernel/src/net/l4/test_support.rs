@@ -1,7 +1,7 @@
 use crate::domain::{DomainCredentials, DomainId, DomainSecurity};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::endpoint::{Endpoint, EndpointState, EndpointType};
-use crate::net::l4::tcp::TcpStream;
+use crate::net::l4::tcp::TcpConnection;
 use crate::net::runtime::default_runtime;
 use crate::security::capability::manager;
 use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
@@ -62,9 +62,9 @@ pub(crate) fn new_test_endpoint(endpoint_type: EndpointType) -> Endpoint {
     Endpoint::new_registered_in(endpoint_type, default_runtime())
 }
 
-pub(crate) fn tcp_stream_from_endpoint(endpoint: &Endpoint) -> Option<TcpStream> {
+pub(crate) fn tcp_connection_from_endpoint(endpoint: &Endpoint) -> Option<TcpConnection> {
     (endpoint.socket_type() == EndpointType::Tcp && endpoint.state() == EndpointState::Connected)
-        .then(|| TcpStream::from_retained_endpoint(endpoint.clone()))
+        .then(|| TcpConnection::from_retained_endpoint(endpoint.clone()))
 }
 
 fn idle_entry(_: u64) -> ! {

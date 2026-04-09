@@ -1,9 +1,9 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/tests.rs
 // ============================================================================
-//! # テスト - Accept関連テスト
+//! # テスト - TcpAcceptor 関連テスト
 //!
-//! Accept機能の単体テスト
+//! `TcpAcceptor::next_connection` を中心とした単体テスト
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
@@ -68,7 +68,7 @@ pub mod tests {
         assert_eq!(endpoint.state(), EndpointState::Created);
     }
 
-    fn endpoint_accept_empty_queue_impl() {
+    fn endpoint_next_connection_empty_queue_impl() {
         let endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
 
         {
@@ -82,11 +82,11 @@ pub mod tests {
         assert!(matches!(result, Err(EndpointError::Timeout)));
     }
 
-    fn endpoint_accept_with_connection_impl() {
-        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
+    fn endpoint_next_connection_with_queued_connection_impl() {
+        let acceptor_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
 
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -102,14 +102,14 @@ pub mod tests {
         let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(0), tcb);
 
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
-        let result = endpoint_accept_internal(&listen_endpoint);
+        let result = endpoint_next_connection_internal(&acceptor_endpoint);
         assert!(result.is_some());
         let (new_endpoint, addr, if_id) = result.unwrap();
         assert_eq!(addr, remote);
@@ -137,22 +137,22 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_endpoint_accept_empty_queue() {
-        endpoint_accept_empty_queue_impl();
+    pub fn test_endpoint_next_connection_empty_queue() {
+        endpoint_next_connection_empty_queue_impl();
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_endpoint_accept_with_connection() {
-        endpoint_accept_with_connection_impl();
+    pub fn test_endpoint_next_connection_with_connection() {
+        endpoint_next_connection_with_queued_connection_impl();
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_endpoint_accept_with_connection_v6() {
-        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
+    pub fn test_endpoint_next_connection_with_connection_v6() {
+        let acceptor_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
 
         // Bound -> Listening
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -174,15 +174,15 @@ pub mod tests {
         let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(1), tcb);
 
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
-        // accept成功 (IPv6)
-        let result = endpoint_accept_internal(&listen_endpoint);
+        // next_connection 成功 (IPv6)
+        let result = endpoint_next_connection_internal(&acceptor_endpoint);
         assert!(result.is_some());
         let (new_endpoint, addr, if_id) = result.unwrap();
         assert_eq!(addr, remote);
@@ -190,8 +190,10 @@ pub mod tests {
         assert_eq!(if_id, NetIfId(1));
     }
 
-    /// 内部テスト用: EndpointManager登録をスキップしてaccept
-    fn endpoint_accept_internal(endpoint: &Endpoint) -> Option<(Endpoint, EndpointAddr, NetIfId)> {
+    /// 内部テスト用: EndpointManager登録をスキップして `next_connection` を実行
+    fn endpoint_next_connection_internal(
+        endpoint: &Endpoint,
+    ) -> Option<(Endpoint, EndpointAddr, NetIfId)> {
         let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         if inner.state != EndpointState::Listening {
@@ -220,12 +222,12 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_nodelay_inheritance() {
-        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
-        listen_endpoint.set_nodelay(true).unwrap();
+        let acceptor_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
+        acceptor_endpoint.set_nodelay(true).unwrap();
 
         // Listening状態に
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -242,15 +244,15 @@ pub mod tests {
         let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(2), tcb);
 
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
-        // Accept
-        let (new_endpoint, _, _) = endpoint_accept_internal(&listen_endpoint).unwrap();
+        // next_connection
+        let (new_endpoint, _, _) = endpoint_next_connection_internal(&acceptor_endpoint).unwrap();
 
         // 設定が引き継がれているか確認
         let inner = new_endpoint
@@ -348,7 +350,7 @@ pub mod tests {
 
         let res = handler.handle_event_in(
             crate::net::runtime::default_runtime(),
-            crate::net::l4::endpoint::event::NetworkEvent::TcpBindListener {
+            crate::net::l4::endpoint::event::NetworkEvent::TcpBindAcceptor {
                 local,
                 scope: InterfaceScope::Any,
                 backlog: 4,
@@ -361,14 +363,14 @@ pub mod tests {
             crate::net::l4::endpoint::handler::EventHandleResult::Success
         ));
 
-        let listener = result_slot
+        let acceptor = result_slot
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
-            .expect("listener result should be present")
-            .expect("listener bind should succeed");
+            .expect("acceptor result should be present")
+            .expect("acceptor bind should succeed");
 
-        let inner = listener
+        let inner = acceptor
             .endpoint()
             .inner()
             .lock()
@@ -397,7 +399,7 @@ pub mod tests {
 
         let res = handler.handle_event_in(
             crate::net::runtime::default_runtime(),
-            crate::net::l4::endpoint::event::NetworkEvent::TcpConnectStream {
+            crate::net::l4::endpoint::event::NetworkEvent::TcpDialConnection {
                 local,
                 remote,
                 scope: InterfaceScope::Any,
@@ -410,13 +412,13 @@ pub mod tests {
             crate::net::l4::endpoint::handler::EventHandleResult::Success
         ));
 
-        let stream = result_slot
+        let connection = result_slot
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take()
-            .expect("stream result should be present")
+            .expect("connection result should be present")
             .expect("tcp connect should succeed");
-        let inner = stream
+        let inner = connection
             .endpoint()
             .inner()
             .lock()
@@ -438,9 +440,9 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_next_incoming_pins_scope_to_ingress_interface() {
-        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
+        let acceptor_endpoint = Endpoint::new_in(EndpointType::Tcp, default_runtime());
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -456,14 +458,16 @@ pub mod tests {
         let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(4), tcb);
 
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
-        let (accepted, _, if_id) = listen_endpoint.try_next_incoming().expect("accept");
+        let (accepted, _, if_id) = acceptor_endpoint
+            .try_next_incoming()
+            .expect("next_connection");
         assert_eq!(if_id, NetIfId(4));
         let inner = accepted.inner().lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(inner.scope, InterfaceScope::Pinned(NetIfId(4)));
@@ -496,15 +500,15 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_accept_inherits_listener_runtime() {
+    pub fn test_next_connection_inherits_acceptor_runtime() {
         reset_runtime_registry_for_tests();
 
         let _runtime_a = default_runtime();
         let runtime_b = create_runtime();
 
-        let listen_endpoint = Endpoint::new_in(EndpointType::Tcp, runtime_b);
+        let acceptor_endpoint = Endpoint::new_in(EndpointType::Tcp, runtime_b);
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -520,14 +524,16 @@ pub mod tests {
         let conn = AcceptedConnection::new(accepted_fd, local, remote, NetIfId(5), tcb);
 
         {
-            let mut inner = listen_endpoint
+            let mut inner = acceptor_endpoint
                 .inner()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             inner.ensure_tcp().accept_queue.push_back(conn);
         }
 
-        let (accepted, _, _) = listen_endpoint.try_next_incoming().expect("accept");
+        let (accepted, _, _) = acceptor_endpoint
+            .try_next_incoming()
+            .expect("next_connection");
         assert_eq!(accepted.runtime().id(), runtime_b.id());
     }
 

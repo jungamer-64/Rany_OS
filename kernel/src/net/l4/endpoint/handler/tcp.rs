@@ -157,14 +157,14 @@ impl NetworkEventHandler {
         EventHandleResult::Success
     }
 
-    pub(super) fn make_tcp_stream_with_stack(
+    pub(super) fn make_tcp_connection_with_stack(
         &self,
         runtime: NetRuntimeHandle,
         local: EndpointAddr,
         remote: EndpointAddr,
         scope: crate::net::types::InterfaceScope,
         stack: &mut crate::net::runtime::stack::NetworkStack,
-    ) -> Result<crate::net::l4::tcp::TcpStream, crate::net::l4::tcp::TcpError> {
+    ) -> Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError> {
         let endpoint = crate::net::l4::endpoint::endpoint_core::Endpoint::new_registered_in(
             crate::net::l4::endpoint::EndpointType::Tcp,
             runtime,
@@ -181,7 +181,7 @@ impl NetworkEventHandler {
 
         match self.handle_connect_with_stack(endpoint.fd(), local, remote, stack) {
             EventHandleResult::Success => {
-                Ok(crate::net::l4::tcp::TcpStream::from_endpoint(endpoint))
+                Ok(crate::net::l4::tcp::TcpConnection::from_endpoint(endpoint))
             }
             EventHandleResult::ProtocolError(err) => {
                 self.unregister_endpoint(endpoint.fd());
@@ -194,13 +194,13 @@ impl NetworkEventHandler {
         }
     }
 
-    pub(super) fn make_tcp_listener_with_stack(
+    pub(super) fn make_tcp_acceptor_with_stack(
         &self,
         runtime: NetRuntimeHandle,
         local: EndpointAddr,
         scope: crate::net::types::InterfaceScope,
         backlog: u32,
-    ) -> Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError> {
+    ) -> Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError> {
         let endpoint = crate::net::l4::endpoint::endpoint_core::Endpoint::new_registered_in(
             crate::net::l4::endpoint::EndpointType::Tcp,
             runtime,
@@ -218,7 +218,7 @@ impl NetworkEventHandler {
 
         match self.handle_listen(endpoint.fd(), local, backlog) {
             EventHandleResult::Success => {
-                Ok(crate::net::l4::tcp::TcpListener::from_endpoint(endpoint))
+                Ok(crate::net::l4::tcp::TcpAcceptor::from_endpoint(endpoint))
             }
             EventHandleResult::ProtocolError(err) => {
                 self.unregister_endpoint(endpoint.fd());

@@ -238,35 +238,72 @@ impl DnsClient {
         name: &str,
         qtype: DnsQueryType,
     ) -> Result<Vec<DnsRecord>, &'static str> {
+        fn payload_to_vec(
+            payload: &kernel_api::resource::net::PacketPayload,
+        ) -> Result<alloc::vec::Vec<u8>, &'static str> {
+            let view = crate::net::payload::PacketPayloadView::new(payload);
+            let len = view.total_len();
+            let mut buf = alloc::vec![0u8; len];
+            if view.copy_all_into(&mut buf) != len {
+                return Err("TCP payload copy failed");
+            }
+            Ok(buf)
+        }
+
+        async fn read_exact_payload(
+            connection: &mut crate::net::l4::tcp::TcpConnection,
+            stash: &mut alloc::vec::Vec<u8>,
+            dst: &mut [u8],
+        ) -> Result<usize, &'static str> {
+            let mut copied = 0usize;
+            while copied < dst.len() {
+                if !stash.is_empty() {
+                    let take = (dst.len() - copied).min(stash.len());
+                    dst[copied..copied + take].copy_from_slice(&stash[..take]);
+                    stash.drain(..take);
+                    copied += take;
+                    continue;
+                }
+
+                let Some(payload) = connection.recv_payload().await else {
+                    break;
+                };
+                let bytes = payload_to_vec(&payload)?;
+                if bytes.is_empty() {
+                    break;
+                }
+                stash.extend_from_slice(&bytes);
+            }
+            Ok(copied)
+        }
+
         use crate::net::l4::endpoint::types::EndpointAddr;
         let dest = EndpointAddr::new(server.octets(), DNS_PORT);
 
-        let mut stream =
-            crate::net::l4::tcp::TcpStream::dial_in(crate::net::runtime::default_runtime(), dest)
+        let mut connection =
+            crate::net::l4::tcp::TcpConnection::dial_in(crate::net::runtime::default_runtime(), dest)
                 .await
                 .map_err(|_| "TCP connection failed")?;
 
         let mut buffer = [0u8; 1024];
         let query_len = self.build_tcp_query(&mut buffer, name, qtype)?;
 
-        stream
-            .write(&buffer[..query_len])
+        let payload = crate::net::payload::payload_from_bytes(&buffer[..query_len])
+            .ok_or("TCP payload allocation failed")?;
+        connection
+            .send_payload(payload)
             .await
             .map_err(|_| "TCP write failed")?;
+        connection
+            .drain_tx()
+            .await
+            .map_err(|_| "TCP write drain failed")?;
+
+        let mut stash = alloc::vec::Vec::new();
 
         // Read 2-byte length prefix
         let mut len_buf = [0u8; 2];
-        let mut len_read = 0;
-        while len_read < 2 {
-            let n = stream
-                .read(&mut len_buf[len_read..])
-                .await
-                .map_err(|_| "TCP read failed")?;
-            if n == 0 {
-                break;
-            }
-            len_read += n;
-        }
+        let len_read = read_exact_payload(&mut connection, &mut stash, &mut len_buf).await?;
         if len_read != 2 {
             return Err("TCP read length prefix failed (connection closed or incomplete)");
         }
@@ -277,17 +314,7 @@ impl DnsClient {
         }
 
         let mut msg_data = alloc::vec![0u8; msg_len];
-        let mut total_read = 0;
-        while total_read < msg_len {
-            let n = stream
-                .read(&mut msg_data[total_read..])
-                .await
-                .map_err(|_| "TCP read message failed")?;
-            if n == 0 {
-                break;
-            }
-            total_read += n;
-        }
+        let total_read = read_exact_payload(&mut connection, &mut stash, &mut msg_data).await?;
 
         if total_read != msg_len {
             return Err("TCP read incomplete message");
@@ -1113,7 +1140,7 @@ impl DnsClient {
     /// Used for reading TCP DNS messages which may be fragmented.
     ///
     /// # Arguments
-    /// - `length_prefix`: First 2 bytes of TCP stream
+    /// - `length_prefix`: First 2 bytes carried over the TCP connection payload sequence
     ///
     /// # Returns
     /// Expected total message length (excluding prefix)

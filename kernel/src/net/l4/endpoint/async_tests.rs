@@ -3,7 +3,7 @@ use crate::net::l4::endpoint::manager::init_endpoint_manager;
 use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry};
 use crate::net::l4::endpoint::{Endpoint, EndpointState, EndpointType, NetworkEvent};
 use crate::net::l4::test_support::{
-    counting_waker, new_test_endpoint, noop_waker, tcp_stream_from_endpoint,
+    counting_waker, new_test_endpoint, noop_waker, tcp_connection_from_endpoint,
 };
 use crate::net::runtime::stack;
 use core::future::Future;
@@ -65,9 +65,9 @@ fn configure_bound_udp_endpoint(sock: &Endpoint, local: EndpointAddr) {
         .expect("bind UDP endpoint");
 }
 
-// Simple test that verifies TcpStream::write queues payload and posts DataReady.
+// Simple test that verifies TcpConnection::send_payload queues a payload and posts DataReady.
 #[cfg_attr(test, test_case)]
-pub fn test_write_future_wakes_on_send() {
+pub fn test_send_payload_future_wakes_on_send() {
     init_endpoint_manager();
 
     // Initialize stack and set a dummy transmit function that always succeeds
@@ -106,16 +106,16 @@ pub fn test_write_future_wakes_on_send() {
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
 
-    let Some(mut stream) = tcp_stream_from_endpoint(&sock) else {
-        panic!("tcp stream should exist");
+    let Some(mut connection) = tcp_connection_from_endpoint(&sock) else {
+        panic!("tcp connection should exist");
     };
     let data = [1u8, 2u8, 3u8, 4u8];
-    let mut fut = stream.write(&data);
+    let mut fut = connection.send_payload(test_payload(&data));
     let mut pinned = Pin::new(&mut fut);
 
     match pinned.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(n)) => assert_eq!(n, data.len()),
-        other => panic!("write future returned unexpected result: {:?}", other),
+        Poll::Ready(Ok(())) => {}
+        other => panic!("send_payload future returned unexpected result: {:?}", other),
     }
 
     let queued = sock
@@ -140,7 +140,7 @@ pub fn test_write_future_wakes_on_send() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_write_future_wakes_on_send_v6() {
+pub fn test_send_payload_future_wakes_on_send_v6() {
     init_endpoint_manager();
 
     // Initialize stack with IPv6 enabled and set transmit to always succeed
@@ -186,16 +186,16 @@ pub fn test_write_future_wakes_on_send_v6() {
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
 
-    let Some(mut stream) = tcp_stream_from_endpoint(&sock) else {
-        panic!("tcp stream should exist");
+    let Some(mut connection) = tcp_connection_from_endpoint(&sock) else {
+        panic!("tcp connection should exist");
     };
     let data = [9u8, 8u8, 7u8, 6u8];
-    let mut fut = stream.write(&data);
+    let mut fut = connection.send_payload(test_payload(&data));
     let mut pinned = Pin::new(&mut fut);
 
     match pinned.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(n)) => assert_eq!(n, data.len()),
-        other => panic!("write future returned unexpected result: {:?}", other),
+        Poll::Ready(Ok(())) => {}
+        other => panic!("send_payload future returned unexpected result: {:?}", other),
     }
 
     let queued = sock
@@ -220,7 +220,7 @@ pub fn test_write_future_wakes_on_send_v6() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_tcp_stream_read_zero_copy() {
+pub fn test_tcp_connection_recv_payload() {
     init_endpoint_manager();
 
     // Initialize stack (some operations rely on stack state)
@@ -240,10 +240,10 @@ pub fn test_tcp_stream_read_zero_copy() {
     let waker = counting_waker(&WAKE_COUNT);
     let mut cx = Context::from_waker(&waker);
 
-    let Some(mut stream) = tcp_stream_from_endpoint(&sock) else {
-        panic!("tcp_stream should exist");
+    let Some(mut connection) = tcp_connection_from_endpoint(&sock) else {
+        panic!("tcp connection should exist");
     };
-    let mut fut = stream.read_zero_copy();
+    let mut fut = connection.recv_payload();
     let mut pinned = Pin::new(&mut fut);
 
     match pinned.as_mut().poll(&mut cx) {
@@ -254,7 +254,7 @@ pub fn test_tcp_stream_read_zero_copy() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_tcp_stream_read_zero_copy_v6() {
+pub fn test_tcp_connection_recv_payload_v6() {
     init_endpoint_manager();
 
     // Initialize stack (some operations rely on stack state)
@@ -274,10 +274,10 @@ pub fn test_tcp_stream_read_zero_copy_v6() {
     let waker = counting_waker(&WAKE_COUNT_V6);
     let mut cx = Context::from_waker(&waker);
 
-    let Some(mut stream) = tcp_stream_from_endpoint(&sock) else {
-        panic!("tcp_stream should exist");
+    let Some(mut connection) = tcp_connection_from_endpoint(&sock) else {
+        panic!("tcp connection should exist");
     };
-    let mut fut = stream.read_zero_copy();
+    let mut fut = connection.recv_payload();
     let mut pinned = Pin::new(&mut fut);
 
     match pinned.as_mut().poll(&mut cx) {
@@ -288,7 +288,7 @@ pub fn test_tcp_stream_read_zero_copy_v6() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_tcp_stream_multiple_reads() {
+pub fn test_tcp_connection_multiple_recv_payloads() {
     init_endpoint_manager();
     stack::init_in(
         crate::net::runtime::default_runtime(),
@@ -303,8 +303,8 @@ pub fn test_tcp_stream_multiple_reads() {
     let d1 = [10u8, 11u8];
     let d2 = [20u8, 21u8, 22u8];
 
-    let Some(mut stream) = tcp_stream_from_endpoint(&sock) else {
-        panic!("tcp_stream should exist");
+    let Some(mut connection) = tcp_connection_from_endpoint(&sock) else {
+        panic!("tcp connection should exist");
     };
 
     static WAKE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -312,7 +312,7 @@ pub fn test_tcp_stream_multiple_reads() {
     let mut cx = Context::from_waker(&waker);
 
     push_tcp_bytes(&sock, &d1);
-    let mut fut1 = stream.read_zero_copy();
+    let mut fut1 = connection.recv_payload();
     let mut pinned1 = Pin::new(&mut fut1);
     match pinned1.as_mut().poll(&mut cx) {
         Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), d1),
@@ -320,7 +320,7 @@ pub fn test_tcp_stream_multiple_reads() {
     }
 
     push_tcp_bytes(&sock, &d2);
-    let mut fut2 = stream.read_zero_copy();
+    let mut fut2 = connection.recv_payload();
     let mut pinned2 = Pin::new(&mut fut2);
     match pinned2.as_mut().poll(&mut cx) {
         Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), d2),
@@ -329,7 +329,7 @@ pub fn test_tcp_stream_multiple_reads() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_tcp_stream_multiple_reads_v6() {
+pub fn test_tcp_connection_multiple_recv_payloads_v6() {
     init_endpoint_manager();
     stack::init_in(
         crate::net::runtime::default_runtime(),
@@ -344,8 +344,8 @@ pub fn test_tcp_stream_multiple_reads_v6() {
     let d1 = [10u8, 11u8];
     let d2 = [20u8, 21u8, 22u8];
 
-    let Some(mut stream) = tcp_stream_from_endpoint(&sock) else {
-        panic!("tcp_stream should exist");
+    let Some(mut connection) = tcp_connection_from_endpoint(&sock) else {
+        panic!("tcp connection should exist");
     };
 
     static WAKE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -353,7 +353,7 @@ pub fn test_tcp_stream_multiple_reads_v6() {
     let mut cx = Context::from_waker(&waker);
 
     push_tcp_bytes(&sock, &d1);
-    let mut fut1 = stream.read_zero_copy();
+    let mut fut1 = connection.recv_payload();
     let mut pinned1 = Pin::new(&mut fut1);
     match pinned1.as_mut().poll(&mut cx) {
         Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), d1),
@@ -361,7 +361,7 @@ pub fn test_tcp_stream_multiple_reads_v6() {
     }
 
     push_tcp_bytes(&sock, &d2);
-    let mut fut2 = stream.read_zero_copy();
+    let mut fut2 = connection.recv_payload();
     let mut pinned2 = Pin::new(&mut fut2);
     match pinned2.as_mut().poll(&mut cx) {
         Poll::Ready(Some(pkt)) => assert_eq!(payload_bytes(&pkt), d2),

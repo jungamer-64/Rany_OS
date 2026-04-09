@@ -1,7 +1,8 @@
 use alloc::{format, vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::net::l4::tcp::{EndpointAddr, TcpError, TcpListener, TcpStream};
+use crate::net::l4::tcp::{EndpointAddr, TcpError, TcpAcceptor, TcpConnection};
+use crate::net::payload::{PacketPayloadView, payload_from_bytes};
 use crate::task::{self, Task, TimeoutResult};
 
 static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
@@ -17,11 +18,12 @@ const MAX_CONCURRENT_CONNECTIONS: u32 = 16;
 const HOST_HTTP_READY_POLL_MS: u64 = 100;
 const HOST_HTTP_RETRY_BASE_MS: u64 = 100;
 const HOST_HTTP_RETRY_MAX_MS: u64 = 5_000;
+const HTTP_TCP_SEND_CHUNK: usize = 1400;
 
 #[derive(Debug, Clone, Copy)]
 enum ServiceRestartCause {
-    Listen(TcpError),
-    Accept(TcpError),
+    Bind(TcpError),
+    NextConnection(TcpError),
 }
 
 pub fn start_once() {
@@ -139,17 +141,17 @@ fn log_http_restart(cause: ServiceRestartCause, consecutive_failures: u32, backo
     }
 
     match cause {
-        ServiceRestartCause::Listen(err) => {
+        ServiceRestartCause::Bind(err) => {
             log::warn!(
-                "[HOST-HTTP] listen_on failed on port 80: {:?} (restart #{}, backoff={}ms)",
+                "[HOST-HTTP] bind failed on port 80: {:?} (restart #{}, backoff={}ms)",
                 err,
                 consecutive_failures + 1,
                 backoff_ms
             );
         }
-        ServiceRestartCause::Accept(err) => {
+        ServiceRestartCause::NextConnection(err) => {
             log::warn!(
-                "[HOST-HTTP] accept error: {:?} (rebind #{}, backoff={}ms)",
+                "[HOST-HTTP] next_connection error: {:?} (rebind #{}, backoff={}ms)",
                 err,
                 consecutive_failures + 1,
                 backoff_ms
@@ -158,8 +160,15 @@ fn log_http_restart(cause: ServiceRestartCause, consecutive_failures: u32, backo
     }
 }
 
-async fn bind_http_listener() -> Result<TcpListener, TcpError> {
-    TcpListener::listen_on_in(
+fn payload_to_vec(payload: &kernel_api::resource::net::PacketPayload) -> Option<Vec<u8>> {
+    let view = PacketPayloadView::new(payload);
+    let len = view.total_len();
+    let mut buf = vec![0u8; len];
+    (view.copy_all_into(&mut buf) == len).then_some(buf)
+}
+
+async fn bind_http_acceptor() -> Result<TcpAcceptor, TcpError> {
+    TcpAcceptor::bind_in(
         crate::net::runtime::default_runtime(),
         EndpointAddr::new([0, 0, 0, 0], 80),
     )
@@ -172,22 +181,22 @@ async fn run_service_supervisor() {
     loop {
         wait_for_http_network_ready().await;
 
-        let listener = match bind_http_listener().await {
-            Ok(listener) => {
+        let acceptor = match bind_http_acceptor().await {
+            Ok(acceptor) => {
                 if consecutive_failures > 0 {
                     log::info!(
-                        "[HOST-HTTP] listener recovered after {} restart attempt(s)",
+                        "[HOST-HTTP] acceptor recovered after {} restart attempt(s)",
                         consecutive_failures
                     );
                 }
                 consecutive_failures = 0;
-                log::info!("[HOST-HTTP] listening on 0.0.0.0:80");
-                listener
+                log::info!("[HOST-HTTP] accepting connections on 0.0.0.0:80");
+                acceptor
             }
             Err(err) => {
                 let backoff_ms = http_supervisor_backoff_ms(consecutive_failures);
                 log_http_restart(
-                    ServiceRestartCause::Listen(err),
+                    ServiceRestartCause::Bind(err),
                     consecutive_failures,
                     backoff_ms,
                 );
@@ -197,10 +206,10 @@ async fn run_service_supervisor() {
             }
         };
 
-        if let Err(err) = run_service(listener).await {
+        if let Err(err) = run_service(acceptor).await {
             let backoff_ms = http_supervisor_backoff_ms(consecutive_failures);
             log_http_restart(
-                ServiceRestartCause::Accept(err),
+                ServiceRestartCause::NextConnection(err),
                 consecutive_failures,
                 backoff_ms,
             );
@@ -210,10 +219,10 @@ async fn run_service_supervisor() {
     }
 }
 
-async fn run_service(listener: TcpListener) -> Result<(), TcpError> {
+async fn run_service(acceptor: TcpAcceptor) -> Result<(), TcpError> {
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
-        match task::with_timeout(listener.next_connection(), 500).await {
+        match task::with_timeout(acceptor.next_connection(), 500).await {
             TimeoutResult::TimedOut => {
                 task::yield_now().await;
             }
@@ -227,7 +236,7 @@ async fn run_service(listener: TcpListener) -> Result<(), TcpError> {
                     );
                     // 接続を閉じて次を受け付ける
                     let mut rejected = client;
-                    let _ = rejected.shutdown().await;
+                    let _ = rejected.close();
                     continue;
                 }
 
@@ -251,7 +260,7 @@ async fn run_service(listener: TcpListener) -> Result<(), TcpError> {
     }
 }
 
-async fn handle_client(mut client: TcpStream) {
+async fn handle_client(mut client: TcpConnection) {
     let mut parser = super::parser::HttpParser::new();
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
@@ -291,30 +300,33 @@ async fn handle_client(mut client: TcpStream) {
             const READ_TRIES: usize = 20;
             const READ_TIMEOUT_MS: u64 = 100;
 
-            let mut buffer = [0u8; 2048];
             let mut read_success = false;
 
             for _ in 0..READ_TRIES {
-                match task::with_timeout(client.read(&mut buffer), READ_TIMEOUT_MS).await {
+                match task::with_timeout(client.recv_payload(), READ_TIMEOUT_MS).await {
                     TimeoutResult::TimedOut => {
                         task::yield_now().await;
                     }
-                    TimeoutResult::Completed(Err(_)) => {
-                        log::warn!("[HOST-HTTP] read error");
-                        response_bytes = Some(build_json_response(
-                            "500 Internal Server Error",
-                            "{\"status\":\"error\"}",
-                            false,
-                        ));
+                    TimeoutResult::Completed(None) => {
                         break;
                     }
-                    TimeoutResult::Completed(Ok(0)) => {
-                        break;
-                    }
-                    TimeoutResult::Completed(Ok(len)) => {
+                    TimeoutResult::Completed(Some(payload)) => {
+                        let Some(chunk) = payload_to_vec(&payload) else {
+                            log::warn!("[HOST-HTTP] payload copy error");
+                            response_bytes = Some(build_json_response(
+                                "500 Internal Server Error",
+                                "{\"status\":\"error\"}",
+                                false,
+                            ));
+                            break;
+                        };
+                        let len = chunk.len();
+                        if len == 0 {
+                            break;
+                        }
                         read_success = true;
                         BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
-                        parser.push_data(&buffer[..len]);
+                        parser.push_data(&chunk);
                         match parser.try_parse_request() {
                             Ok(Some(request)) => {
                                 let req_keep_alive = request
@@ -373,7 +385,7 @@ async fn handle_client(mut client: TcpStream) {
         }
     }
 
-    let _ = client.shutdown().await;
+    let _ = client.close();
 }
 
 #[cfg(test)]
@@ -425,19 +437,22 @@ mod tests {
     }
 }
 
-async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &'static str> {
+async fn write_response(client: &mut TcpConnection, response: &[u8]) -> Result<(), &'static str> {
     const IO_TIMEOUT_MS: u64 = 200;
     const MAX_TIMEOUT_RETRIES: usize = 25;
 
     let mut sent = 0usize;
     let mut write_timeouts = 0usize;
     while sent < response.len() {
+        let end = (sent + HTTP_TCP_SEND_CHUNK).min(response.len());
+        let chunk = &response[sent..end];
+        let payload = payload_from_bytes(chunk).ok_or("socket payload allocation failed")?;
         log::info!(
             "[HOST-HTTP] write attempt: offset={} remaining={}",
             sent,
             response.len().saturating_sub(sent)
         );
-        match task::with_timeout(client.write(&response[sent..]), IO_TIMEOUT_MS).await {
+        match task::with_timeout(client.send_payload(payload), IO_TIMEOUT_MS).await {
             TimeoutResult::TimedOut => {
                 write_timeouts = write_timeouts.saturating_add(1);
                 if write_timeouts >= MAX_TIMEOUT_RETRIES {
@@ -447,32 +462,31 @@ async fn write_response(client: &mut TcpStream, response: &[u8]) -> Result<(), &
                 continue;
             }
             TimeoutResult::Completed(Err(_)) => return Err("socket write error"),
-            TimeoutResult::Completed(Ok(0)) => return Err("socket closed while sending"),
-            TimeoutResult::Completed(Ok(written)) => {
+            TimeoutResult::Completed(Ok(())) => {
                 write_timeouts = 0;
-                log::info!("[HOST-HTTP] wrote {} bytes", written);
-                sent += written;
-                BYTES_TX.fetch_add(written as u64, Ordering::Relaxed);
+                log::info!("[HOST-HTTP] wrote {} bytes", chunk.len());
+                sent = end;
+                BYTES_TX.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                 // yieldでExecutorに制御を渡し、ISR駆動のVirtIO処理を促進
                 task::yield_now().await;
             }
         }
     }
 
-    log::info!("[HOST-HTTP] flushing response");
-    let mut flush_timeouts = 0usize;
+    log::info!("[HOST-HTTP] draining response queue");
+    let mut drain_timeouts = 0usize;
     loop {
-        match task::with_timeout(client.flush(), IO_TIMEOUT_MS).await {
+        match task::with_timeout(client.drain_tx(), IO_TIMEOUT_MS).await {
             TimeoutResult::TimedOut => {
-                flush_timeouts = flush_timeouts.saturating_add(1);
-                if flush_timeouts >= MAX_TIMEOUT_RETRIES {
-                    return Err("socket flush timeout");
+                drain_timeouts = drain_timeouts.saturating_add(1);
+                if drain_timeouts >= MAX_TIMEOUT_RETRIES {
+                    return Err("socket drain timeout");
                 }
                 task::yield_now().await;
             }
-            TimeoutResult::Completed(Err(_)) => return Err("socket flush error"),
+            TimeoutResult::Completed(Err(_)) => return Err("socket drain error"),
             TimeoutResult::Completed(Ok(())) => {
-                log::info!("[HOST-HTTP] flush complete");
+                log::info!("[HOST-HTTP] drain complete");
                 return Ok(());
             }
         }

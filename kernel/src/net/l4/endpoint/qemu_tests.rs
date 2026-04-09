@@ -4,10 +4,10 @@
 //! behavior aligned between `#[cfg_attr(test, test_case)]` and QEMU full-boot execution.
 
 use super::{
-    congestion, endpoint_core, flow_control, handler, inner, retransmit, segment, tcb, tests,
-    types, window_scale,
+    async_tests, congestion, endpoint_core, flow_control, handler, inner, retransmit, segment,
+    tcb, tests, types, window_scale,
 };
-use crate::net::l4::test_support::{new_test_endpoint, tcp_stream_from_endpoint};
+use crate::net::l4::test_support::new_test_endpoint;
 
 fn test_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
@@ -186,32 +186,16 @@ pub fn flow_control_probe_timing_smoke() -> bool {
     }
 }
 
-pub fn futures_write_future_wakes_on_send_smoke() -> bool {
-    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
-    let Ok(mut inner) = sock.inner().lock() else {
-        return false;
-    };
-    inner.local_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 30001));
-    inner.remote_addr = Some(super::types::EndpointAddr::new([127, 0, 0, 1], 80));
-    let _ = inner.transition_to(super::types::EndpointState::Connected);
-    drop(inner);
-
-    let Some(mut stream) = tcp_stream_from_endpoint(&sock) else {
-        return false;
-    };
-    let payload = [1u8, 2, 3, 4];
-    let _ = stream.write(&payload);
-    true
+pub fn futures_send_payload_future_wakes_on_send_smoke() -> bool {
+    run_case!(async_tests::test_send_payload_future_wakes_on_send)
 }
 
-pub fn futures_tcp_stream_read_zero_copy_smoke() -> bool {
-    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
-    tcp_stream_from_endpoint(&sock).is_none()
+pub fn futures_tcp_connection_recv_payload_smoke() -> bool {
+    run_case!(async_tests::test_tcp_connection_recv_payload)
 }
 
-pub fn futures_tcp_stream_multiple_reads_smoke() -> bool {
-    let sock = new_test_endpoint(crate::net::l4::endpoint::EndpointType::Tcp);
-    tcp_stream_from_endpoint(&sock).is_none()
+pub fn futures_tcp_connection_multiple_recv_payloads_smoke() -> bool {
+    run_case!(async_tests::test_tcp_connection_multiple_recv_payloads)
 }
 
 pub fn futures_udp_recv_delivered_smoke() -> bool {
@@ -386,11 +370,11 @@ pub fn core_socket_new_with_fd_smoke() -> bool {
 }
 
 pub fn core_socket_accept_empty_queue_smoke() -> bool {
-    run_case!(tests::tests::test_endpoint_accept_empty_queue)
+    run_case!(tests::tests::test_endpoint_next_connection_empty_queue)
 }
 
 pub fn core_socket_accept_with_connection_smoke() -> bool {
-    run_case!(tests::tests::test_endpoint_accept_with_connection)
+    run_case!(tests::tests::test_endpoint_next_connection_with_connection)
 }
 
 pub fn core_accept_backlog_limit_smoke() -> bool {

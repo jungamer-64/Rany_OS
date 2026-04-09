@@ -321,9 +321,9 @@ submit_payload(payload).await?;
 
 ```rust
 // handle-first の KAPI で packet-backed payload を受け渡す
-let stream = tcp_stream_dial(remote, scope).await?;
-let payload: PacketPayload = tcp_stream_recv_payload(&stream).await?;
-tcp_stream_send_payload(&stream, payload).await?;
+let connection = tcp_connection_dial(remote, scope).await?;
+let payload: PacketPayload = tcp_connection_recv_payload(&connection).await?;
+tcp_connection_send_payload(&connection, payload).await?;
 ```
 
 #### batch / scatter-gather / polling

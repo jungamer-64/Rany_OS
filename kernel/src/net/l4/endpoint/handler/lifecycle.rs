@@ -59,14 +59,14 @@ impl NetworkEventHandler {
                 crate::net::l2::arp::notify_arp_resolved(ip, mac);
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpConnectStream {
+            NetworkEvent::TcpDialConnection {
                 local,
                 remote,
                 scope,
                 result_slot,
                 waker,
             } => {
-                let result = self.make_tcp_stream_with_stack(runtime, local, remote, scope, stack);
+                let result = self.make_tcp_connection_with_stack(runtime, local, remote, scope, stack);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }
@@ -99,14 +99,14 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpBindListener {
+            NetworkEvent::TcpBindAcceptor {
                 local,
                 scope,
                 backlog,
                 result_slot,
                 waker,
             } => {
-                let result = self.make_tcp_listener_with_stack(runtime, local, scope, backlog);
+                let result = self.make_tcp_acceptor_with_stack(runtime, local, scope, backlog);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
                 }

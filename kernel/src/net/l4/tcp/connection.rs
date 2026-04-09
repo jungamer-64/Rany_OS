@@ -1,10 +1,8 @@
 use super::*;
-use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::endpoint::endpoint_core::Endpoint;
 use crate::net::l4::endpoint::event::{NetworkEvent, enqueue_event_ignore_in, send_event_in};
 use crate::net::l4::endpoint::tcb::tcb_table;
 use crate::net::l4::endpoint::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
-use crate::net::payload::payload_from_bytes;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::types::InterfaceScope;
 use crate::sync::PoisonLock;
@@ -13,29 +11,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use kernel_api::resource::net::PacketPayload;
 
-/// Non-POSIX async read API for TCP streams.
-pub trait AsyncRead {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, TcpError>>;
-}
-
-/// Non-POSIX async write API for TCP streams.
-pub trait AsyncWrite {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, TcpError>>;
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>>;
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>>;
-}
-
-/// Public TCP error surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpError {
     ConnectionClosed,
@@ -77,7 +52,7 @@ fn endpoint_send_budget(
     }
 }
 
-fn on_read_progress(local: Option<EndpointAddr>, remote: Option<EndpointAddr>, len: usize) {
+fn on_recv_progress(local: Option<EndpointAddr>, remote: Option<EndpointAddr>, len: usize) {
     if len == 0 {
         return;
     }
@@ -152,9 +127,9 @@ fn poll_tcp_dispatch<T>(
     poll_tcp_command_result(result_slot, waker, cx)
 }
 
-struct TcpConnectDispatchFuture {
+struct TcpDialDispatchFuture {
     runtime: NetRuntimeHandle,
-    result_slot: TcpCommandResultSlot<TcpStream>,
+    result_slot: TcpCommandResultSlot<TcpConnection>,
     waker: TcpCommandWaker,
     sent: bool,
     local: EndpointAddr,
@@ -162,7 +137,7 @@ struct TcpConnectDispatchFuture {
     scope: InterfaceScope,
 }
 
-impl TcpConnectDispatchFuture {
+impl TcpDialDispatchFuture {
     fn new(
         runtime: NetRuntimeHandle,
         scope: InterfaceScope,
@@ -182,8 +157,8 @@ impl TcpConnectDispatchFuture {
     }
 }
 
-impl Future for TcpConnectDispatchFuture {
-    type Output = Result<TcpStream, TcpError>;
+impl Future for TcpDialDispatchFuture {
+    type Output = Result<TcpConnection, TcpError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let runtime = self.runtime;
@@ -192,7 +167,7 @@ impl Future for TcpConnectDispatchFuture {
         let scope = self.scope;
         let result_slot = self.result_slot.clone();
         let waker = self.waker.clone();
-        let event = NetworkEvent::TcpConnectStream {
+        let event = NetworkEvent::TcpDialConnection {
             local,
             remote,
             scope,
@@ -204,9 +179,9 @@ impl Future for TcpConnectDispatchFuture {
     }
 }
 
-struct TcpListenerBindDispatchFuture {
+struct TcpAcceptorBindDispatchFuture {
     runtime: NetRuntimeHandle,
-    result_slot: TcpCommandResultSlot<TcpListener>,
+    result_slot: TcpCommandResultSlot<TcpAcceptor>,
     waker: TcpCommandWaker,
     sent: bool,
     addr: EndpointAddr,
@@ -214,7 +189,7 @@ struct TcpListenerBindDispatchFuture {
     backlog: u32,
 }
 
-impl TcpListenerBindDispatchFuture {
+impl TcpAcceptorBindDispatchFuture {
     fn new(
         runtime: NetRuntimeHandle,
         scope: InterfaceScope,
@@ -234,8 +209,8 @@ impl TcpListenerBindDispatchFuture {
     }
 }
 
-impl Future for TcpListenerBindDispatchFuture {
-    type Output = Result<TcpListener, TcpError>;
+impl Future for TcpAcceptorBindDispatchFuture {
+    type Output = Result<TcpAcceptor, TcpError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let runtime = self.runtime;
@@ -244,7 +219,7 @@ impl Future for TcpListenerBindDispatchFuture {
         let backlog = self.backlog;
         let result_slot = self.result_slot.clone();
         let waker = self.waker.clone();
-        let event = NetworkEvent::TcpBindListener {
+        let event = NetworkEvent::TcpBindAcceptor {
             local: addr,
             scope,
             backlog,
@@ -258,15 +233,15 @@ impl Future for TcpListenerBindDispatchFuture {
 }
 
 #[derive(Clone)]
-pub struct TcpStream {
+pub struct TcpConnection {
     endpoint: Endpoint,
     runtime: NetRuntimeHandle,
     close_on_drop: bool,
 }
 
-impl core::fmt::Debug for TcpStream {
+impl core::fmt::Debug for TcpConnection {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TcpStream")
+        f.debug_struct("TcpConnection")
             .field("fd", &self.endpoint.fd().raw())
             .field("local_addr", &self.endpoint.local_addr())
             .field("peer_addr", &self.endpoint.remote_addr())
@@ -274,7 +249,7 @@ impl core::fmt::Debug for TcpStream {
     }
 }
 
-impl TcpStream {
+impl TcpConnection {
     pub(crate) fn from_endpoint(endpoint: Endpoint) -> Self {
         debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
         Self {
@@ -321,12 +296,12 @@ impl TcpStream {
             EndpointAddr::new([0, 0, 0, 0], 0)
         };
 
-        let stream = TcpConnectDispatchFuture::new(runtime, scope, local_addr, addr).await?;
+        let connection = TcpDialDispatchFuture::new(runtime, scope, local_addr, addr).await?;
         ConnectFuture {
-            stream: stream.clone(),
+            connection: connection.clone(),
         }
         .await?;
-        Ok(stream)
+        Ok(connection)
     }
 
     pub async fn dial_timeout_in(
@@ -340,15 +315,15 @@ impl TcpStream {
             EndpointAddr::new([0, 0, 0, 0], 0)
         };
 
-        let stream =
-            TcpConnectDispatchFuture::new(runtime, InterfaceScope::Any, local_addr, addr).await?;
+        let connection =
+            TcpDialDispatchFuture::new(runtime, InterfaceScope::Any, local_addr, addr).await?;
         ConnectTimeoutFuture {
-            stream: stream.clone(),
+            connection: connection.clone(),
             start_us: crate::time::precise_time_nanos() / 1000,
             timeout_us,
         }
         .await?;
-        Ok(stream)
+        Ok(connection)
     }
 
     pub const fn runtime(&self) -> NetRuntimeHandle {
@@ -369,15 +344,11 @@ impl TcpStream {
         endpoint_inner_stats(&self.endpoint)
     }
 
-    pub fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> ReadFuture<'a> {
-        ReadFuture { stream: self, buf }
+    pub async fn recv_payload(&mut self) -> Option<PacketPayload> {
+        RecvPayloadFuture { connection: self }.await
     }
 
-    pub async fn read_zero_copy(&mut self) -> Option<PacketPayload> {
-        ZeroCopyReadFuture { stream: self }.await
-    }
-
-    pub fn poll_recv_zero_copy(&self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
+    pub fn poll_recv_payload(&self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
         let mut inner = self
             .endpoint
             .inner()
@@ -386,7 +357,7 @@ impl TcpStream {
 
         if let Some(err) = inner.last_error.take() {
             log::warn!(
-                "[NET][tcp] zero-copy receive observed endpoint error: {:?}",
+                "[NET][tcp] payload receive observed endpoint error: {:?}",
                 err
             );
         }
@@ -394,7 +365,7 @@ impl TcpStream {
         if inner.has_recv_data() {
             let local = inner.local_addr;
             let remote = inner.remote_addr;
-            let Some(payload) = inner.recv_payload(Some(1500)) else {
+            let Some(payload) = inner.recv_payload(None) else {
                 inner.recv_waker = Some(cx.waker().clone());
                 return Poll::Pending;
             };
@@ -403,7 +374,7 @@ impl TcpStream {
                 tcp.stats.record_rx_delivered(delivered_len);
             }
             drop(inner);
-            on_read_progress(local, remote, delivered_len);
+            on_recv_progress(local, remote, delivered_len);
             return Poll::Ready(Some(payload));
         }
 
@@ -415,28 +386,45 @@ impl TcpStream {
         Poll::Pending
     }
 
-    pub fn write<'a>(&'a mut self, buf: &'a [u8]) -> WriteFuture<'a> {
-        WriteFuture { stream: self, buf }
-    }
-
-    pub fn flush(&mut self) -> FlushFuture<'_> {
-        FlushFuture { stream: self }
-    }
-
-    pub async fn write_zero_copy(&mut self, packet: PacketRef) -> Result<(), TcpError> {
-        ZeroCopyWriteFuture {
-            stream: self,
-            packet: Some(packet),
+    pub async fn send_payload(&mut self, payload: PacketPayload) -> Result<(), TcpError> {
+        SendPayloadFuture {
+            connection: self,
+            payload: Some(payload),
         }
         .await
     }
 
-    pub async fn shutdown(&mut self) -> Result<(), TcpError> {
-        ShutdownFuture { stream: self }.await
+    pub async fn drain_tx(&mut self) -> Result<(), TcpError> {
+        DrainTxFuture { connection: self }.await
+    }
+
+    pub fn close(&mut self) -> Result<(), TcpError> {
+        let mut inner = self
+            .endpoint
+            .inner()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        match inner.state {
+            EndpointState::Closed | EndpointState::Closing => return Ok(()),
+            EndpointState::Connected | EndpointState::Connecting => {
+                let _ = inner.transition_to(EndpointState::Closing);
+            }
+            _ => return Err(TcpError::InvalidState),
+        }
+        drop(inner);
+
+        enqueue_event_ignore_in(
+            self.runtime,
+            NetworkEvent::Close {
+                fd: self.endpoint.fd(),
+            },
+        );
+        Ok(())
     }
 }
 
-impl Drop for TcpStream {
+impl Drop for TcpConnection {
     fn drop(&mut self) {
         if !self.close_on_drop {
             return;
@@ -455,184 +443,23 @@ impl Drop for TcpStream {
     }
 }
 
-impl AsyncRead for TcpStream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, TcpError>> {
-        let this = self.get_mut();
-        let mut inner = this
-            .endpoint
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        if let Some(err) = inner.last_error.take() {
-            return Poll::Ready(Err(tcp_error_from_endpoint(err)));
-        }
-
-        if inner.has_recv_data() {
-            let local = inner.local_addr;
-            let remote = inner.remote_addr;
-            let len = inner.recv_from_buffer(buf);
-            if let Some(tcp) = inner.tcp_mut() {
-                tcp.stats.record_rx_delivered(len);
-            }
-            drop(inner);
-            on_read_progress(local, remote, len);
-            return Poll::Ready(Ok(len));
-        }
-
-        if matches!(inner.state, EndpointState::Closed | EndpointState::Closing) {
-            return Poll::Ready(Ok(0));
-        }
-
-        if !inner.state.can_receive() {
-            return Poll::Ready(Err(TcpError::InvalidState));
-        }
-
-        inner.recv_waker = Some(cx.waker().clone());
-        Poll::Pending
-    }
-}
-
-impl AsyncWrite for TcpStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, TcpError>> {
-        let this = self.get_mut();
-        let mut inner = this
-            .endpoint
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        if let Some(err) = inner.last_error.take() {
-            return Poll::Ready(Err(tcp_error_from_endpoint(err)));
-        }
-
-        if matches!(inner.state, EndpointState::Closed | EndpointState::Closing) {
-            return Poll::Ready(Err(TcpError::ConnectionClosed));
-        }
-
-        if !inner.state.can_send() {
-            return Poll::Ready(Err(TcpError::InvalidState));
-        }
-
-        let send_buffer_limit = inner.send_buffer_limit;
-        let queued_bytes = inner.send_payload_bytes();
-        let available = send_buffer_limit
-            .saturating_sub(queued_bytes)
-            .min(endpoint_send_budget(
-                inner.local_addr,
-                inner.remote_addr,
-                queued_bytes,
-            ));
-
-        if available == 0 {
-            inner.send_waker = Some(cx.waker().clone());
-            return Poll::Pending;
-        }
-
-        let len = available.min(buf.len());
-        let Some(payload) = payload_from_bytes(&buf[..len]) else {
-            return Poll::Ready(Err(TcpError::BufferFull));
-        };
-        match inner.send_payload(payload) {
-            Ok(queued) => {
-                if let Some(tcp) = inner.tcp_mut() {
-                    tcp.stats.record_tx_enqueued(queued);
-                }
-            }
-            Err(err) => return Poll::Ready(Err(tcp_error_from_endpoint(err))),
-        }
-        drop(inner);
-
-        enqueue_event_ignore_in(
-            this.runtime,
-            NetworkEvent::DataReady {
-                fd: this.endpoint.fd(),
-                endpoint_type: EndpointType::Tcp,
-            },
-        );
-
-        Poll::Ready(Ok(len))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
-        let this = self.get_mut();
-        let mut inner = this
-            .endpoint
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        if !inner.has_send_data() {
-            return Poll::Ready(Ok(()));
-        }
-
-        inner.send_waker = Some(cx.waker().clone());
-        drop(inner);
-
-        enqueue_event_ignore_in(
-            this.runtime,
-            NetworkEvent::DataReady {
-                fd: this.endpoint.fd(),
-                endpoint_type: EndpointType::Tcp,
-            },
-        );
-
-        Poll::Pending
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
-        let this = self.get_mut();
-        let mut inner = this
-            .endpoint
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        match inner.state {
-            EndpointState::Connected => {
-                let _ = inner.transition_to(EndpointState::Closing);
-            }
-            EndpointState::Closing | EndpointState::Closed => return Poll::Ready(Ok(())),
-            _ => return Poll::Ready(Err(TcpError::InvalidState)),
-        }
-        drop(inner);
-
-        enqueue_event_ignore_in(
-            this.runtime,
-            NetworkEvent::Close {
-                fd: this.endpoint.fd(),
-            },
-        );
-
-        Poll::Ready(Ok(()))
-    }
-}
-
 #[derive(Clone)]
-pub struct TcpListener {
+pub struct TcpAcceptor {
     endpoint: Endpoint,
     runtime: NetRuntimeHandle,
     close_on_drop: bool,
 }
 
-impl core::fmt::Debug for TcpListener {
+impl core::fmt::Debug for TcpAcceptor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TcpListener")
+        f.debug_struct("TcpAcceptor")
             .field("fd", &self.endpoint.fd().raw())
             .field("local_addr", &self.endpoint.local_addr())
             .finish()
     }
 }
 
-impl TcpListener {
+impl TcpAcceptor {
     pub(crate) fn from_endpoint(endpoint: Endpoint) -> Self {
         debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
         Self {
@@ -660,11 +487,8 @@ impl TcpListener {
         self.endpoint.fd()
     }
 
-    pub async fn listen_on_in(
-        runtime: NetRuntimeHandle,
-        addr: EndpointAddr,
-    ) -> Result<Self, TcpError> {
-        Self::listen_on_scoped_in(
+    pub async fn bind_in(runtime: NetRuntimeHandle, addr: EndpointAddr) -> Result<Self, TcpError> {
+        Self::bind_scoped_in(
             runtime,
             InterfaceScope::Any,
             addr,
@@ -673,13 +497,13 @@ impl TcpListener {
         .await
     }
 
-    pub async fn listen_on_scoped_in(
+    pub async fn bind_scoped_in(
         runtime: NetRuntimeHandle,
         scope: InterfaceScope,
         addr: EndpointAddr,
         backlog: u32,
     ) -> Result<Self, TcpError> {
-        TcpListenerBindDispatchFuture::new(runtime, scope, addr, backlog).await
+        TcpAcceptorBindDispatchFuture::new(runtime, scope, addr, backlog).await
     }
 
     pub fn local_addr(&self) -> EndpointAddr {
@@ -692,12 +516,12 @@ impl TcpListener {
         self.runtime
     }
 
-    pub async fn next_connection(&self) -> Result<(TcpStream, EndpointAddr), TcpError> {
-        AcceptFuture { listener: self }.await
+    pub async fn next_connection(&self) -> Result<(TcpConnection, EndpointAddr), TcpError> {
+        AcceptFuture { acceptor: self }.await
     }
 }
 
-impl Drop for TcpListener {
+impl Drop for TcpAcceptor {
     fn drop(&mut self) {
         if !self.close_on_drop {
             return;
@@ -717,7 +541,7 @@ impl Drop for TcpListener {
 }
 
 pub(crate) struct ConnectFuture {
-    stream: TcpStream,
+    connection: TcpConnection,
 }
 
 impl Future for ConnectFuture {
@@ -726,7 +550,7 @@ impl Future for ConnectFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut inner = this
-            .stream
+            .connection
             .endpoint
             .inner()
             .lock()
@@ -751,7 +575,7 @@ impl Future for ConnectFuture {
 }
 
 pub(crate) struct ConnectTimeoutFuture {
-    stream: TcpStream,
+    connection: TcpConnection,
     start_us: u64,
     timeout_us: u64,
 }
@@ -762,7 +586,7 @@ impl Future for ConnectTimeoutFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut inner = this
-            .stream
+            .connection
             .endpoint
             .inner()
             .lock()
@@ -782,9 +606,9 @@ impl Future for ConnectTimeoutFuture {
                 if now.saturating_sub(this.start_us) >= this.timeout_us {
                     drop(inner);
                     enqueue_event_ignore_in(
-                        this.stream.runtime,
+                        this.connection.runtime,
                         NetworkEvent::Close {
-                            fd: this.stream.endpoint.fd(),
+                            fd: this.connection.endpoint.fd(),
                         },
                     );
                     return Poll::Ready(Err(TcpError::Timeout));
@@ -797,61 +621,18 @@ impl Future for ConnectTimeoutFuture {
     }
 }
 
-pub struct ReadFuture<'a> {
-    stream: &'a mut TcpStream,
-    buf: &'a mut [u8],
-}
-
-impl<'a> Future for ReadFuture<'a> {
-    type Output = Result<usize, TcpError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = &mut *self;
-        Pin::new(&mut *this.stream).poll_read(cx, this.buf)
-    }
-}
-
-pub struct WriteFuture<'a> {
-    stream: &'a mut TcpStream,
-    buf: &'a [u8],
-}
-
-impl<'a> Future for WriteFuture<'a> {
-    type Output = Result<usize, TcpError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = &mut *self;
-        Pin::new(&mut *this.stream).poll_write(cx, this.buf)
-    }
-}
-
-pub struct FlushFuture<'a> {
-    stream: &'a mut TcpStream,
-}
-
-impl<'a> Future for FlushFuture<'a> {
-    type Output = Result<(), TcpError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = &mut *self;
-        Pin::new(&mut *this.stream).poll_flush(cx)
-    }
-}
-
 pub(crate) struct AcceptFuture<'a> {
-    listener: &'a TcpListener,
+    acceptor: &'a TcpAcceptor,
 }
 
 impl<'a> Future for AcceptFuture<'a> {
-    type Output = Result<(TcpStream, EndpointAddr), TcpError>;
+    type Output = Result<(TcpConnection, EndpointAddr), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.listener.endpoint.try_next_incoming() {
-            Ok((endpoint, addr, _if_id)) => {
-                Poll::Ready(Ok((TcpStream::from_endpoint(endpoint), addr)))
-            }
+        match self.acceptor.endpoint.try_next_incoming() {
+            Ok((endpoint, addr, _if_id)) => Poll::Ready(Ok((TcpConnection::from_endpoint(endpoint), addr))),
             Err(EndpointError::Timeout) => {
-                self.listener
+                self.acceptor
                     .endpoint
                     .register_accept_waker(cx.waker().clone());
                 Poll::Pending
@@ -861,54 +642,45 @@ impl<'a> Future for AcceptFuture<'a> {
     }
 }
 
-pub(crate) struct ShutdownFuture<'a> {
-    stream: &'a mut TcpStream,
+pub(crate) struct RecvPayloadFuture<'a> {
+    connection: &'a mut TcpConnection,
 }
 
-impl<'a> Future for ShutdownFuture<'a> {
-    type Output = Result<(), TcpError>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = &mut *self;
-        Pin::new(&mut *this.stream).poll_shutdown(cx)
-    }
-}
-
-pub(crate) struct ZeroCopyReadFuture<'a> {
-    stream: &'a mut TcpStream,
-}
-
-impl<'a> Future for ZeroCopyReadFuture<'a> {
+impl<'a> Future for RecvPayloadFuture<'a> {
     type Output = Option<PacketPayload>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.stream.poll_recv_zero_copy(cx)
+        self.connection.poll_recv_payload(cx)
     }
 }
 
-pub(crate) struct ZeroCopyWriteFuture<'a> {
-    stream: &'a mut TcpStream,
-    packet: Option<PacketRef>,
+pub(crate) struct SendPayloadFuture<'a> {
+    connection: &'a mut TcpConnection,
+    payload: Option<PacketPayload>,
 }
 
-impl<'a> Future for ZeroCopyWriteFuture<'a> {
+impl<'a> Future for SendPayloadFuture<'a> {
     type Output = Result<(), TcpError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
-        let Some(packet) = this.packet.take() else {
+        let Some(payload) = this.payload.take() else {
             return Poll::Ready(Err(TcpError::InvalidState));
         };
+        let payload_len = payload.total_len();
+        if payload_len == 0 {
+            return Poll::Ready(Ok(()));
+        }
 
         let mut inner = this
-            .stream
+            .connection
             .endpoint
             .inner()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
         if let Some(err) = inner.last_error.take() {
-            this.packet = Some(packet);
+            this.payload = Some(payload);
             return Poll::Ready(Err(tcp_error_from_endpoint(err)));
         }
 
@@ -920,24 +692,38 @@ impl<'a> Future for ZeroCopyWriteFuture<'a> {
             return Poll::Ready(Err(TcpError::InvalidState));
         }
 
-        let send_buffer_limit = inner.send_buffer_limit;
+        if payload_len > inner.send_buffer_limit {
+            return Poll::Ready(Err(TcpError::BufferFull));
+        }
+
         let queued_bytes = inner.send_payload_bytes();
-        let available = send_buffer_limit
+        let available = inner
+            .send_buffer_limit
             .saturating_sub(queued_bytes)
             .min(endpoint_send_budget(
                 inner.local_addr,
                 inner.remote_addr,
                 queued_bytes,
             ));
-        let len = packet.data().len();
 
-        if available < len {
+        if available < payload_len {
+            let has_queued_data = inner.has_send_data();
             inner.send_waker = Some(cx.waker().clone());
-            this.packet = Some(packet);
+            drop(inner);
+            if has_queued_data {
+                enqueue_event_ignore_in(
+                    this.connection.runtime,
+                    NetworkEvent::DataReady {
+                        fd: this.connection.endpoint.fd(),
+                        endpoint_type: EndpointType::Tcp,
+                    },
+                );
+            }
+            this.payload = Some(payload);
             return Poll::Pending;
         }
 
-        match inner.send_payload(PacketPayload::single(packet)) {
+        match inner.send_payload(payload) {
             Ok(queued) => {
                 if let Some(tcp) = inner.tcp_mut() {
                     tcp.stats.record_tx_enqueued(queued);
@@ -948,13 +734,51 @@ impl<'a> Future for ZeroCopyWriteFuture<'a> {
         drop(inner);
 
         enqueue_event_ignore_in(
-            this.stream.runtime,
+            this.connection.runtime,
             NetworkEvent::DataReady {
-                fd: this.stream.endpoint.fd(),
+                fd: this.connection.endpoint.fd(),
                 endpoint_type: EndpointType::Tcp,
             },
         );
 
         Poll::Ready(Ok(()))
+    }
+}
+
+pub(crate) struct DrainTxFuture<'a> {
+    connection: &'a mut TcpConnection,
+}
+
+impl<'a> Future for DrainTxFuture<'a> {
+    type Output = Result<(), TcpError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        let mut inner = this
+            .connection
+            .endpoint
+            .inner()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        if let Some(err) = inner.last_error.take() {
+            return Poll::Ready(Err(tcp_error_from_endpoint(err)));
+        }
+
+        if !inner.has_send_data() {
+            return Poll::Ready(Ok(()));
+        }
+
+        inner.send_waker = Some(cx.waker().clone());
+        drop(inner);
+
+        enqueue_event_ignore_in(
+            this.connection.runtime,
+            NetworkEvent::DataReady {
+                fd: this.connection.endpoint.fd(),
+                endpoint_type: EndpointType::Tcp,
+            },
+        );
+        Poll::Pending
     }
 }

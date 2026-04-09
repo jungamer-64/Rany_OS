@@ -191,26 +191,26 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), super::types::EndpointError>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
-    /// 非同期TCP connect（TcpStreamを返す完全非同期版）
-    TcpConnectStream {
+    /// 非同期TCP connect（TcpConnectionを返す完全非同期版）
+    TcpDialConnection {
         local: EndpointAddr,
         remote: EndpointAddr,
         scope: InterfaceScope,
         result_slot: alloc::sync::Arc<
             PoisonLock<
-                Option<Result<crate::net::l4::tcp::TcpStream, crate::net::l4::tcp::TcpError>>,
+                Option<Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError>>,
             >,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
-    /// 非同期TCP bind（TcpListenerを返す完全非同期版）
-    TcpBindListener {
+    /// 非同期TCP bind（TcpAcceptorを返す完全非同期版）
+    TcpBindAcceptor {
         local: EndpointAddr,
         scope: InterfaceScope,
         backlog: u32,
         result_slot: alloc::sync::Arc<
             PoisonLock<
-                Option<Result<crate::net::l4::tcp::TcpListener, crate::net::l4::tcp::TcpError>>,
+                Option<Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError>>,
             >,
         >,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,

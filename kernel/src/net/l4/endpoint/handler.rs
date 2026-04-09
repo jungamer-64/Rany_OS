@@ -102,7 +102,7 @@ impl NetworkEventHandler {
             // ============================================================
             // 非同期Futureイベント: スタック不可時はエラーで完了（デッドロック防止）
             // ============================================================
-            NetworkEvent::TcpConnectStream {
+            NetworkEvent::TcpDialConnection {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -111,7 +111,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpBindListener {
+            NetworkEvent::TcpBindAcceptor {
                 result_slot, waker, ..
             } => {
                 if let Ok(mut slot) = result_slot.lock() {
@@ -457,10 +457,10 @@ impl NetworkEventHandler {
             lifecycle_event @ NetworkEvent::ArpResolveRequest { .. }
             | lifecycle_event @ NetworkEvent::NdpResolveRequest { .. }
             | lifecycle_event @ NetworkEvent::ArpResolved { .. }
-            | lifecycle_event @ NetworkEvent::TcpConnectStream { .. }
+            | lifecycle_event @ NetworkEvent::TcpDialConnection { .. }
             | lifecycle_event @ NetworkEvent::MulticastJoin { .. }
             | lifecycle_event @ NetworkEvent::MulticastLeave { .. }
-            | lifecycle_event @ NetworkEvent::TcpBindListener { .. }
+            | lifecycle_event @ NetworkEvent::TcpBindAcceptor { .. }
             | lifecycle_event @ NetworkEvent::ApplyIpv6Address { .. }
             | lifecycle_event @ NetworkEvent::ProcessTimeouts => {
                 self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack)
@@ -846,12 +846,12 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_close_listener_closes_exact_fd_only() {
+    pub fn test_close_acceptor_closes_exact_fd_only() {
         init_endpoint_manager();
 
         let local = EndpointAddr::new([127, 0, 0, 1], 18080);
-        let listener = new_tcp_socket();
-        let fd = listener.fd();
+        let acceptor_endpoint = new_tcp_socket();
+        let fd = acceptor_endpoint.fd();
         let handler = NetworkEventHandler::new();
 
         assert!(matches!(
@@ -867,12 +867,15 @@ pub mod tests {
             EventHandleResult::Success
         ));
 
-        let inner = listener.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let inner = acceptor_endpoint
+            .inner()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         assert_eq!(inner.state, EndpointState::Closed);
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_close_listener_does_not_close_rebound_listener() {
+    pub fn test_close_acceptor_does_not_close_rebound_acceptor() {
         init_endpoint_manager();
 
         let local = EndpointAddr::new([127, 0, 0, 1], 18081);
@@ -906,21 +909,21 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_make_tcp_listener_with_stack_returns_listening_listener() {
+    pub fn test_make_tcp_acceptor_with_stack_returns_listening_acceptor() {
         init_endpoint_manager();
 
         let handler = NetworkEventHandler::new();
         let local = EndpointAddr::new([127, 0, 0, 1], 18082);
-        let listener = handler
-            .make_tcp_listener_with_stack(
+        let acceptor = handler
+            .make_tcp_acceptor_with_stack(
                 crate::net::runtime::default_runtime(),
                 local,
                 crate::net::types::InterfaceScope::Any,
                 16,
             )
-            .expect("listener should bind");
+            .expect("acceptor should bind");
 
-        let endpoint = listener.endpoint();
+        let endpoint = acceptor.endpoint();
         assert_eq!(endpoint.state(), EndpointState::Listening);
         assert_eq!(endpoint.local_addr(), Some(local));
         assert!(matches!(

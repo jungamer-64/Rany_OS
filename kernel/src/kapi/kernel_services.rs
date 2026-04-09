@@ -164,15 +164,15 @@ impl KernelServices for ExoKernel {
     // Network (Connected to network stack)
     // ========================================================================
 
-    fn net_tcp_stream_dial(
+    fn net_tcp_connection_dial(
         &self,
         remote: kernel_api::resource::net::NetSocketAddr,
         scope: kernel_api::resource::net::InterfaceScope,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStream>> + Send>>
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpConnection>> + Send>>
     {
         Box::pin(async move {
             let remote = endpoint_addr_from_kapi(remote);
-            let stream = crate::net::l4::tcp::TcpStream::dial_scoped_in(
+            let stream = crate::net::l4::tcp::TcpConnection::dial_scoped_in(
                 crate::net::runtime::default_runtime(),
                 stack_scope(scope),
                 remote,
@@ -180,23 +180,23 @@ impl KernelServices for ExoKernel {
             .await
             .map_err(tcp_error_to_kapi)?;
             let fd = stream.into_retained_handle();
-            Ok(kernel_api::resource::net::TcpStream::from_raw_parts(
+            Ok(kernel_api::resource::net::TcpConnection::from_raw_parts(
                 fd.raw() as u64,
                 scope,
             ))
         })
     }
 
-    fn net_tcp_listener_listen_on(
+    fn net_tcp_acceptor_bind(
         &self,
         local: kernel_api::resource::net::NetSocketAddr,
         scope: kernel_api::resource::net::InterfaceScope,
         backlog: u32,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpListener>> + Send>>
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpAcceptor>> + Send>>
     {
         Box::pin(async move {
             let local = endpoint_addr_from_kapi(local);
-            let listener = crate::net::l4::tcp::TcpListener::listen_on_scoped_in(
+            let acceptor = crate::net::l4::tcp::TcpAcceptor::bind_scoped_in(
                 crate::net::runtime::default_runtime(),
                 stack_scope(scope),
                 local,
@@ -204,92 +204,85 @@ impl KernelServices for ExoKernel {
             )
             .await
             .map_err(tcp_error_to_kapi)?;
-            let fd = listener.into_retained_handle();
-            Ok(kernel_api::resource::net::TcpListener::from_raw_parts(
+            let fd = acceptor.into_retained_handle();
+            Ok(kernel_api::resource::net::TcpAcceptor::from_raw_parts(
                 fd.raw() as u64,
                 scope,
             ))
         })
     }
 
-    fn net_tcp_listener_next_connection(
+    fn net_tcp_acceptor_next_connection(
         &self,
-        listener: kernel_api::resource::net::TcpListener,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStream>> + Send>>
+        listener: kernel_api::resource::net::TcpAcceptor,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpConnection>> + Send>>
     {
         let default_scope = listener.default_scope();
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(listener.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let listener = crate::net::l4::tcp::TcpListener::from_retained_endpoint(socket);
-            let (stream, _addr) = listener
+            let acceptor = crate::net::l4::tcp::TcpAcceptor::from_retained_endpoint(socket);
+            let (connection, _addr) = acceptor
                 .next_connection()
                 .await
                 .map_err(tcp_error_to_kapi)?;
-            let fd = stream.into_retained_handle();
-            Ok(kernel_api::resource::net::TcpStream::from_raw_parts(
+            let fd = connection.into_retained_handle();
+            Ok(kernel_api::resource::net::TcpConnection::from_raw_parts(
                 fd.raw() as u64,
                 default_scope,
             ))
         })
     }
 
-    fn net_tcp_stream_close(
+    fn net_tcp_connection_close(
         &self,
-        stream: kernel_api::resource::net::TcpStream,
+        stream: kernel_api::resource::net::TcpConnection,
     ) -> Result<(), KapiError> {
         close_endpoint_handle(crate::net::l4::endpoint::EndpointFd::from_raw(
             stream.id() as u32
         ))
     }
 
-    fn net_tcp_listener_close(
+    fn net_tcp_acceptor_close(
         &self,
-        listener: kernel_api::resource::net::TcpListener,
+        listener: kernel_api::resource::net::TcpAcceptor,
     ) -> Result<(), KapiError> {
         close_endpoint_handle(crate::net::l4::endpoint::EndpointFd::from_raw(
             listener.id() as u32,
         ))
     }
 
-    fn net_tcp_stream_recv_payload(
+    fn net_tcp_connection_recv_payload(
         &self,
-        stream: kernel_api::resource::net::TcpStream,
+        stream: kernel_api::resource::net::TcpConnection,
     ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::PacketPayload>> + Send>>
     {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let mut stream = crate::net::l4::tcp::TcpStream::from_retained_endpoint(socket);
-            match stream.read_zero_copy().await {
+            let mut connection =
+                crate::net::l4::tcp::TcpConnection::from_retained_endpoint(socket);
+            match connection.recv_payload().await {
                 Some(payload) => Ok(payload),
                 None => Ok(kernel_api::resource::net::PacketPayload::default()),
             }
         })
     }
 
-    fn net_tcp_stream_send_payload(
+    fn net_tcp_connection_send_payload(
         &self,
-        stream: kernel_api::resource::net::TcpStream,
+        stream: kernel_api::resource::net::TcpConnection,
         payload: kernel_api::resource::net::PacketPayload,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<usize>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
             let fd = crate::net::l4::endpoint::EndpointFd::from_raw(stream.id() as u32);
             let socket = lookup_endpoint(fd)?;
-            let mut stream = crate::net::l4::tcp::TcpStream::from_retained_endpoint(socket);
-            let mut sent = 0usize;
-            for packet in payload.into_segments() {
-                let len = packet.len();
-                if len == 0 {
-                    continue;
-                }
-                stream
-                    .write_zero_copy(packet)
-                    .await
-                    .map_err(tcp_error_to_kapi)?;
-                sent = sent.saturating_add(len);
-            }
-            Ok(sent)
+            let mut connection =
+                crate::net::l4::tcp::TcpConnection::from_retained_endpoint(socket);
+            connection
+                .send_payload(payload)
+                .await
+                .map_err(tcp_error_to_kapi)
         })
     }
 

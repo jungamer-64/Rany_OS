@@ -126,7 +126,7 @@ impl Endpoint {
     /// 次の接続を取得（同期バッファ読み取り）
     ///
     /// Acceptキューから接続を取得する。NETWORK_STACKロックは使用しない。
-    /// 空の場合はTimeoutを返す。`TcpListener::next_connection()` が内部で使用する。
+    /// 空の場合はTimeoutを返す。`TcpAcceptor::next_connection()` が内部で使用する。
     pub fn try_next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr, NetIfId)> {
         if self.endpoint_type != EndpointType::Tcp {
             return Err(EndpointError::InvalidArgument);
@@ -140,10 +140,10 @@ impl Endpoint {
 
         // Acceptキューから接続を取得
         if let Some(conn) = inner.tcp_mut().and_then(|t| t.accept_queue.pop_front()) {
-            // 新しいソケットを作成
-            let new_socket = Endpoint::new_with_fd_in(EndpointType::Tcp, conn.fd, self.runtime);
+            // 新しい接続エンドポイントを作成
+            let new_endpoint = Endpoint::new_with_fd_in(EndpointType::Tcp, conn.fd, self.runtime);
             {
-                let mut new_inner = new_socket.inner.lock().unwrap_or_else(|e| e.into_inner());
+                let mut new_inner = new_endpoint.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 new_inner.scope = crate::net::types::InterfaceScope::Pinned(conn.if_id);
@@ -153,12 +153,12 @@ impl Endpoint {
                 let _ = new_inner.transition_to(EndpointState::Connected);
             }
 
-            // ソケットマネージャに登録
-            register_endpoint(&new_socket);
+            // エンドポイントマネージャに登録
+            register_endpoint(&new_endpoint);
 
             log::info!("TCP: Accepted connection from {}", conn.remote_addr);
 
-            return Ok((new_socket, conn.remote_addr, conn.if_id));
+            return Ok((new_endpoint, conn.remote_addr, conn.if_id));
         }
 
         // キューが空の場合はPending（Timeout）を返す

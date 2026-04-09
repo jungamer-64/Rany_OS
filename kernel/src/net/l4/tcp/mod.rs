@@ -3,11 +3,11 @@
 // ============================================================================
 //! TCP public facade backed by the endpoint subsystem.
 
-mod async_traits;
+mod connection;
 
 pub use crate::net::l4::endpoint::types::EndpointAddr;
 pub use crate::net::types::Ipv4Addr;
-pub use async_traits::*;
+pub use connection::*;
 
 /// TCP state machine values shared with the endpoint TCB table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

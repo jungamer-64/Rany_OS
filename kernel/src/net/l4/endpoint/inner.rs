@@ -47,7 +47,7 @@ pub struct TcpProtocolState {
     pub urgent_pending: bool,
     /// 輻輳制御アルゴリズム選択（TCB作成時に使用）
     pub congestion_algorithm: Option<CongestionAlgorithm>,
-    /// TCP statistics snapshot for the endpoint-backed stream API.
+    /// TCP statistics snapshot for the endpoint-backed connection API.
     pub stats: TcpStats,
 }
 
