@@ -557,14 +557,13 @@ impl NetworkStack {
                 // so the sender can identify the datagram via the Identification field.
                 let mut quoted = unfragmentable;
                 if let Some(fh) = frag_header {
-                    quoted.extend_from_slice(&fh);
+                    crate::net::payload::append_payload(
+                        &mut quoted,
+                        crate::net::payload::payload_from_bytes(&fh).unwrap_or_default(),
+                    );
                 }
-                if let Some(quoted) = crate::net::payload::packet_from_bytes(&quoted)
-                    .map(kernel_api::resource::net::PacketPayload::single)
-                {
-                    let quoted = crate::net::payload::PacketPayloadView::new(&quoted);
-                    self.send_icmpv6_time_exceeded(src, 1, &quoted);
-                }
+                let quoted = crate::net::payload::PacketPayloadView::new(&quoted);
+                self.send_icmpv6_time_exceeded(src, 1, &quoted);
             }
             Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => {
                 match err {
@@ -582,14 +581,7 @@ impl NetworkStack {
                             "IPv6: Invalid fragment size (not multiple of 8) from {} - sending ICMPv6 Parameter Problem (RFC 8200)",
                             src
                         );
-                        if let Some(quoted_packet) =
-                            crate::net::payload::packet_from_bytes(&quoted_packet)
-                                .map(kernel_api::resource::net::PacketPayload::single)
-                        {
-                            self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
-                        } else {
-                            self.stats.record_rx_error();
-                        }
+                        self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
                         // RFC 8200: If the reassembled packet would be larger than 65,535 octets,
@@ -598,38 +590,24 @@ impl NetworkStack {
                             "IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem (RFC 8200)",
                             src
                         );
-                        if let Some(quoted_packet) =
-                            crate::net::payload::packet_from_bytes(&quoted_packet)
-                                .map(kernel_api::resource::net::PacketPayload::single)
-                        {
-                            self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
-                        } else {
-                            self.stats.record_rx_error();
-                        }
+                        self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
                     }
                     crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
                         // RFC 7112: Send ICMPv6 Parameter Problem (Code 0), pointing to the first octet
                         // of the Fragment Header.
                         // quoted_packet contains unfragmentable + 8-byte fragment header.
                         let fragment_header_pointer =
-                            (quoted_packet.len() as u32).saturating_sub(8);
+                            (quoted_packet.total_len() as u32).saturating_sub(8);
                         log::warn!(
                             "IPv6: Incomplete header chain in first fragment from {} - sending ICMPv6 Parameter Problem (RFC 7112)",
                             src
                         );
-                        if let Some(quoted_packet) =
-                            crate::net::payload::packet_from_bytes(&quoted_packet)
-                                .map(kernel_api::resource::net::PacketPayload::single)
-                        {
-                            self.send_icmpv6_parameter_problem_payload(
-                                src,
-                                0,
-                                fragment_header_pointer,
-                                &quoted_packet,
-                            );
-                        } else {
-                            self.stats.record_rx_error();
-                        }
+                        self.send_icmpv6_parameter_problem_payload(
+                            src,
+                            0,
+                            fragment_header_pointer,
+                            &quoted_packet,
+                        );
                     }
                 }
             }

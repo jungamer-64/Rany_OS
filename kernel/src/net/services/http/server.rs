@@ -265,10 +265,13 @@ async fn run_service(acceptor: TcpAcceptor) -> Result<(), TcpError> {
 }
 
 fn keep_alive_for_request(request: &super::types::HttpRequestView) -> bool {
-    let req_keep_alive = request.connection_is("keep-alive");
     let default_keep_alive = request.version == super::types::HttpVersion::Http1_1;
-    let conn_close = request.connection_is("close");
-    (req_keep_alive || default_keep_alive) && !conn_close
+
+    match request.connection_directive() {
+        Some(super::types::ConnectionDirective::Close) => false,
+        Some(super::types::ConnectionDirective::KeepAlive) => true,
+        None => default_keep_alive,
+    }
 }
 
 fn build_service_unavailable_response_or_log() -> Option<PacketPayload> {

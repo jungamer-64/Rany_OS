@@ -580,7 +580,7 @@ impl Ipv6FragmentReassembler {
         current_time: u64,
     ) -> (
         Result<Option<PacketPayload>, Ipv6ReassemblyError>,
-        Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)>,
+        Vec<(Ipv6Address, Ipv6Address, PacketPayload, Option<[u8; 8]>)>,
     ) {
         self.stats.fragments_received += 1;
 
@@ -645,19 +645,21 @@ impl Ipv6FragmentReassembler {
     pub fn evict_expired(
         &mut self,
         current_time: u64,
-    ) -> Vec<(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>)> {
+    ) -> Vec<(Ipv6Address, Ipv6Address, PacketPayload, Option<[u8; 8]>)> {
         let mut expired_with_first = Vec::new();
         let mut keys_to_remove = Vec::new();
 
         for (key, buf) in self.buffers.iter() {
             if buf.is_expired(current_time) {
                 if let Some(ref unfrag) = buf.unfragmentable_part {
-                    expired_with_first.push((
-                        key.src,
-                        key.dst,
-                        unfrag.clone(),
-                        buf.first_frag_header,
-                    ));
+                    if let Some(unfrag_payload) = crate::net::payload::payload_from_bytes(unfrag) {
+                        expired_with_first.push((
+                            key.src,
+                            key.dst,
+                            unfrag_payload,
+                            buf.first_frag_header,
+                        ));
+                    }
                 }
                 keys_to_remove.push(*key);
             }

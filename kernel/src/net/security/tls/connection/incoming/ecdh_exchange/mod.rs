@@ -95,7 +95,8 @@ impl TlsConnection {
         message.extend_from_slice(&body);
 
         // ハンドシェイクメッセージを記録（Finished verify用）
-        self.handshake_messages.extend_from_slice(&message);
+        self.append_transcript_bytes(&message)
+            .expect("tls12 client key exchange transcript append");
 
         // TLSレコードヘッダ
         let mut record = Vec::with_capacity(5 + message.len());
@@ -174,14 +175,13 @@ impl TlsConnection {
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
-        let handshake_hash = if cipher.uses_sha384() {
-            crate::crypto::sha384::compute(&self.handshake_messages).to_vec()
-        } else {
-            crate::crypto::sha256::compute(&self.handshake_messages).to_vec()
-        };
-
         let mut verify_data = [0u8; 12];
         if version <= TlsVersion::TLS_1_1 {
+            let handshake_hash = if cipher.uses_sha384() {
+                self.transcript_hash_sha384().to_vec()
+            } else {
+                self.transcript_hash_sha256().to_vec()
+            };
             tls10_prf(
                 &self.master_secret,
                 label,
@@ -189,6 +189,7 @@ impl TlsConnection {
                 &mut verify_data,
             );
         } else if cipher.uses_sha384() {
+            let handshake_hash = self.transcript_hash_sha384();
             tls12_prf_sha384(
                 &self.master_secret,
                 label,
@@ -196,6 +197,7 @@ impl TlsConnection {
                 &mut verify_data,
             );
         } else {
+            let handshake_hash = self.transcript_hash_sha256();
             tls12_prf(
                 &self.master_secret,
                 label,
@@ -248,7 +250,8 @@ impl TlsConnection {
         finished_msg.extend_from_slice(&verify_data);
 
         // ハンドシェイクメッセージを記録
-        self.handshake_messages.extend_from_slice(&finished_msg);
+        self.append_transcript_bytes(&finished_msg)
+            .expect("tls12 finished transcript append");
 
         // 鍵ブロック導出（まだ行っていない場合）
         if self.write_key.is_empty() {
@@ -711,7 +714,8 @@ impl TlsConnection {
         message.extend_from_slice(&body);
 
         // ハンドシェイクメッセージを記録
-        self.handshake_messages.extend_from_slice(&message);
+        self.append_transcript_bytes(&message)
+            .expect("rsa client key exchange transcript append");
 
         // TLSレコードヘッダ
         let version_rec = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);

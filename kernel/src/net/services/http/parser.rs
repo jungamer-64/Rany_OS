@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::types::{
-    HttpHeaderView, HttpMethod, HttpRequestView, HttpResponseView, HttpVersion,
+    HttpHeaderView, HttpMethod, HttpRequestView, HttpResponseView, HttpStatusCode, HttpVersion,
 };
 use crate::net::payload::{append_payload, payload_range, PayloadSequence, PayloadSpan};
 use alloc::vec::Vec;
@@ -170,12 +170,13 @@ impl HttpParser {
                 .ok_or(HttpParseError::InvalidFormat)?,
         )
         .ok_or(HttpParseError::UnsupportedVersion)?;
-        let status_code = status_line
-            .slice(first_space + 1, second_space.saturating_sub(first_space + 1))
-            .ok_or(HttpParseError::InvalidFormat)?
-            .trim_ascii_whitespace()
-            .parse_ascii_usize()
-            .ok_or(HttpParseError::InvalidFormat)? as u16;
+        let status_code = HttpStatusCode::parse_span(
+            &status_line
+                .slice(first_space + 1, second_space.saturating_sub(first_space + 1))
+                .ok_or(HttpParseError::InvalidFormat)?
+                .trim_ascii_whitespace(),
+        )
+        .ok_or(HttpParseError::InvalidFormat)?;
         let reason_phrase = status_line
             .slice(
                 second_space + 1,
@@ -296,7 +297,12 @@ impl HttpParser {
                 chunked = true;
             }
 
-            headers.push(HttpHeaderView { name, value });
+            let header = HttpHeaderView { name, value };
+            if header.typed_name().is_none() || header.typed_value().is_none() {
+                return Err(HttpParseError::InvalidFormat);
+            }
+
+            headers.push(header);
             cursor = line_end + 2;
         }
 

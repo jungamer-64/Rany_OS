@@ -16,7 +16,6 @@
 #![allow(dead_code)]
 
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -1117,9 +1116,19 @@ pub enum Ipv6ProcessResult<'a> {
     /// Fragment received, reassembly in progress
     FragmentPending,
     /// Reassembly timeout (src, dst, unfragmentable_part, fragment_header for ICMPv6)
-    ReassemblyTimeout(Ipv6Address, Ipv6Address, Vec<u8>, Option<[u8; 8]>),
+    ReassemblyTimeout(
+        Ipv6Address,
+        Ipv6Address,
+        kernel_api::resource::net::PacketPayload,
+        Option<[u8; 8]>,
+    ),
     /// Reassembly error (type, src, dst, unfragmentable_part + fragment_header)
-    ReassemblyError(Ipv6ReassemblyError, Ipv6Address, Ipv6Address, Vec<u8>),
+    ReassemblyError(
+        Ipv6ReassemblyError,
+        Ipv6Address,
+        Ipv6Address,
+        kernel_api::resource::net::PacketPayload,
+    ),
     /// Unknown Next Header encountered (RFC 4443 Parameter Problem Code 1)
     UnknownNextHeader(u8, u32, Ipv6Address, Ipv6Address, &'a [u8]),
     /// Hop Limit exceeded (RFC 4443 Time Exceeded Code 0)

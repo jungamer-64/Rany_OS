@@ -470,8 +470,8 @@ impl TlsConnection {
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn handshake_messages_ref(&self) -> &[u8] {
-        &self.handshake_messages
+    pub fn handshake_messages_ref(&self) -> alloc::vec::Vec<u8> {
+        Self::vec_from_payload(&self.handshake_transcript).unwrap_or_default()
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]

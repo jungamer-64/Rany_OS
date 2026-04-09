@@ -3,10 +3,12 @@
 // ============================================================================
 
 use alloc::boxed::Box;
-use alloc::string::String;
 
 use super::parser::{HttpParseError, HttpParser};
-use super::types::{HttpRequest, HttpResponseView};
+use super::types::{
+    ConnectionDirective, HttpHeader, HttpHeaderName, HttpHeaderValue, HttpRequest,
+    HttpRequestTarget, HttpRequestUri, HttpResponseView,
+};
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
 use crate::net::security::tls::connection::TlsConnection;
 use crate::net::security::tls::types::{TlsConfig, TlsState};
@@ -32,6 +34,7 @@ async fn send_payload(
 pub enum HttpClientError {
     DnsResolutionFailed,
     ConnectionFailed,
+    InvalidUrl,
     TlsHandshakeFailed,
     WriteError,
     ReadError,
@@ -55,60 +58,48 @@ impl HttpClient {
         self
     }
 
-    /// URLをパースして、ホスト名、ポート、パス、そしてHTTPSかどうかを返す
-    fn parse_url(url: &str) -> Option<(String, u16, String, bool)> {
-        let (is_https, rest) = if url.starts_with("https://") {
-            (true, &url[8..])
-        } else if url.starts_with("http://") {
-            (false, &url[7..])
-        } else {
-            return None; // スキーム不正
-        };
-
-        let slash_idx = rest.find('/').unwrap_or(rest.len());
-        let host_port_str = &rest[..slash_idx];
-        let path_str = if slash_idx == rest.len() {
-            "/"
-        } else {
-            &rest[slash_idx..]
-        };
-
-        let (host, port) = if let Some(colon_idx) = host_port_str.find(':') {
-            let p: u16 = host_port_str[colon_idx + 1..].parse().ok()?;
-            (String::from(&host_port_str[..colon_idx]), p)
-        } else {
-            (String::from(host_port_str), if is_https { 443 } else { 80 })
-        };
-
-        Some((host, port, String::from(path_str), is_https))
+    /// クライアント送信用 URI を分解する
+    fn split_request_uri(
+        uri: HttpRequestUri,
+    ) -> Option<(alloc::string::String, u16, HttpRequestTarget, bool)> {
+        match uri {
+            HttpRequestUri::Absolute {
+                scheme,
+                host,
+                port,
+                target,
+            } => Some((
+                alloc::string::String::from(host.as_str()),
+                port.as_u16(),
+                target,
+                scheme.is_https(),
+            )),
+            HttpRequestUri::OriginForm(_) => None,
+        }
     }
 
     /// リクエストを非同期で送信し、レスポンスを取得する
     pub async fn send(&self, mut req: HttpRequest) -> Result<HttpResponseView, HttpClientError> {
         let (host, port, path, is_https) =
-            Self::parse_url(&req.uri).unwrap_or((req.uri.clone(), 80, String::from("/"), false));
+            Self::split_request_uri(req.uri.clone()).ok_or(HttpClientError::InvalidUrl)?;
 
         // リクエストURIをホスト部を除いたパスに書き換える
-        req.uri = path;
+        req.uri = HttpRequestUri::OriginForm(path);
 
         // Hostヘッダが存在しなければ追加
-        if !req
-            .headers
-            .iter()
-            .any(|h| h.name.eq_ignore_ascii_case("Host"))
-        {
-            req.headers
-                .push(super::types::HttpHeader::new("Host", &host));
+        if !req.has_header_name(HttpHeaderName::Host) {
+            req.headers.push(HttpHeader::new(
+                HttpHeaderName::Host,
+                HttpHeaderValue::parse(&host).ok_or(HttpClientError::InvalidUrl)?,
+            ));
         }
 
         // Connection: close を追加（現在持続的接続は未対応のため）
-        if !req
-            .headers
-            .iter()
-            .any(|h| h.name.eq_ignore_ascii_case("Connection"))
-        {
-            req.headers
-                .push(super::types::HttpHeader::new("Connection", "close"));
+        if !req.has_header_name(HttpHeaderName::Connection) {
+            req.headers.push(HttpHeader::new(
+                HttpHeaderName::Connection,
+                HttpHeaderValue::from_static(ConnectionDirective::Close.as_header_value()),
+            ));
         }
 
         // 1. DNS解決（非同期Global APIを使用）

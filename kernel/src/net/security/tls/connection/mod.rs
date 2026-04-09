@@ -75,8 +75,8 @@ pub struct TlsConnection {
     write_seq: u64,
     /// 受信バッファ
     recv_buffer: PacketPayload,
-    /// ハンドシェイクメッセージ（verify用）
-    handshake_messages: Vec<u8>,
+    /// ハンドシェイクトランスクリプト（verify用）
+    handshake_transcript: PacketPayload,
     /// Pre-master secret (from key exchange, used to derive master secret)
     pre_master_secret: Vec<u8>,
     /// ECDH一時鍵ペア（ClientKeyExchange送信用）
@@ -207,6 +207,60 @@ impl TlsConnection {
         PayloadSpan::from_bytes(data).ok_or(TlsError::DecodeError)
     }
 
+    fn payload_hash_sha256(payload: &PacketPayload) -> [u8; SHA256_OUTPUT_SIZE] {
+        let mut hasher = crate::crypto::sha256::Sha256::new();
+        PacketPayloadView::new(payload).for_each_chunk(|chunk| hasher.update(chunk));
+        hasher.finalize()
+    }
+
+    fn payload_hash_sha384(payload: &PacketPayload) -> [u8; SHA384_OUTPUT_SIZE] {
+        let mut hasher = crate::crypto::sha384::Sha384::new();
+        PacketPayloadView::new(payload).for_each_chunk(|chunk| hasher.update(chunk));
+        hasher.finalize()
+    }
+
+    fn transcript_len(&self) -> usize {
+        self.handshake_transcript.total_len()
+    }
+
+    fn append_transcript_bytes(&mut self, data: &[u8]) -> TlsResult<()> {
+        let payload = Self::packet_payload_from_slice(data);
+        if !data.is_empty() && payload.is_empty() {
+            return Err(TlsError::DecodeError);
+        }
+        append_payload(&mut self.handshake_transcript, payload);
+        Ok(())
+    }
+
+    fn replace_transcript_bytes(&mut self, data: &[u8]) -> TlsResult<()> {
+        let payload = Self::packet_payload_from_slice(data);
+        if !data.is_empty() && payload.is_empty() {
+            return Err(TlsError::DecodeError);
+        }
+        self.handshake_transcript = payload;
+        Ok(())
+    }
+
+    fn transcript_hash_sha256(&self) -> [u8; SHA256_OUTPUT_SIZE] {
+        Self::payload_hash_sha256(&self.handshake_transcript)
+    }
+
+    fn transcript_hash_sha384(&self) -> [u8; SHA384_OUTPUT_SIZE] {
+        Self::payload_hash_sha384(&self.handshake_transcript)
+    }
+
+    fn transcript_prefix_hash_sha256(&self, len: usize) -> TlsResult<[u8; SHA256_OUTPUT_SIZE]> {
+        let prefix = crate::net::payload::payload_range(&self.handshake_transcript, 0, len)
+            .ok_or(TlsError::DecodeError)?;
+        Ok(Self::payload_hash_sha256(&prefix))
+    }
+
+    fn transcript_prefix_hash_sha384(&self, len: usize) -> TlsResult<[u8; SHA384_OUTPUT_SIZE]> {
+        let prefix = crate::net::payload::payload_range(&self.handshake_transcript, 0, len)
+            .ok_or(TlsError::DecodeError)?;
+        Ok(Self::payload_hash_sha384(&prefix))
+    }
+
     /// 新しいTLS接続を作成
     pub fn new(config: TlsConfig) -> Self {
         // RNGのセキュリティ状態をチェック
@@ -235,7 +289,7 @@ impl TlsConnection {
             read_seq: 0,
             write_seq: 0,
             recv_buffer: PacketPayload::default(),
-            handshake_messages: Vec::new(),
+            handshake_transcript: PacketPayload::default(),
             pre_master_secret: Vec::new(),
             local_ecdh_keypair: None,
             server_public_key: None,
@@ -319,9 +373,8 @@ impl TlsConnection {
     /// トランスクリプトハッシュを初期化する（HRR後の再送にも対応）
     fn init_transcript_hash(&mut self) {
         let mut hasher = crate::crypto::sha256::Sha256::new();
-        if !self.handshake_messages.is_empty() {
-            hasher.update(&self.handshake_messages);
-        }
+        PacketPayloadView::new(&self.handshake_transcript)
+            .for_each_chunk(|chunk| hasher.update(chunk));
         self.transcript_hash = Some(TranscriptHash::Sha256(hasher));
     }
 
@@ -401,18 +454,14 @@ impl TlsConnection {
 
         if use_384 {
             let early_secret = tls13_early_secret_sha384(Some(psk));
-            let ch_hash = crate::crypto::sha384::compute(&self.handshake_messages);
+            let ch_hash = self.transcript_hash_sha384();
             let cets = tls13_derive_secret_sha384(&early_secret, b"c e traffic", &ch_hash);
             let (ew_key, ew_iv) = tls13_derive_traffic_keys_sha384(&cets, key_len);
             self.early_write_key = ew_key;
             self.early_write_iv = ew_iv;
         } else {
             let early_secret = tls13_early_secret(Some(psk));
-            let ch_hash = {
-                let mut h = crate::crypto::sha256::Sha256::new();
-                h.update(&self.handshake_messages);
-                h.finalize()
-            };
+            let ch_hash = self.transcript_hash_sha256();
             let cets = tls13_derive_secret(&early_secret, b"c e traffic", &ch_hash);
             let (ew_key, ew_iv) = tls13_derive_traffic_keys(&cets, key_len);
             self.early_write_key = ew_key;
@@ -464,7 +513,8 @@ impl TlsConnection {
         self.compute_psk_binders(&mut message);
 
         // ハンドシェイクメッセージを記録
-        self.handshake_messages.extend_from_slice(&message);
+        self.append_transcript_bytes(&message)
+            .expect("client hello transcript append");
 
         // トランスクリプトハッシュにClientHelloを追加
         if let Some(ref mut hasher) = self.transcript_hash {

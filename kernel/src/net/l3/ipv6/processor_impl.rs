@@ -145,14 +145,20 @@ impl Ipv6Processor {
                     Err(e) => {
                         // RFC 8200 Error handling
                         // Include the fragment header in the quoted packet so ICMP error can point to it
-                        let mut quoted = unfragmentable.to_vec();
+                        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                        if builder.push_bytes(unfragmentable).is_none() {
+                            return Ipv6ProcessResult::Error;
+                        }
                         let frag_header_offset = unfragmentable.len();
                         if data.len() >= frag_header_offset + 8 {
-                            quoted.extend_from_slice(
-                                &data[frag_header_offset..frag_header_offset + 8],
-                            );
+                            if builder
+                                .push_bytes(&data[frag_header_offset..frag_header_offset + 8])
+                                .is_none()
+                            {
+                                return Ipv6ProcessResult::Error;
+                            }
                         }
-                        Ipv6ProcessResult::ReassemblyError(e, src, dst, quoted)
+                        Ipv6ProcessResult::ReassemblyError(e, src, dst, builder.build())
                     }
                 }
             }

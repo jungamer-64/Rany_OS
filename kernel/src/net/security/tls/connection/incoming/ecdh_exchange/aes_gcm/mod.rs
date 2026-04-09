@@ -105,7 +105,7 @@ impl TlsConnection {
 
         if use_384 {
             // SHA-384ベース鍵スケジュール
-            let transcript_ch_sh = crate::crypto::sha384::compute(&self.handshake_messages);
+            let transcript_ch_sh = self.transcript_hash_sha384();
 
             let psk_ref = if self.tls13_using_psk {
                 self.tls13_psk.as_deref()
@@ -137,7 +137,8 @@ impl TlsConnection {
             self.master_secret[..48].copy_from_slice(&ms);
 
             let mut hasher = crate::crypto::sha384::Sha384::new();
-            hasher.update(&self.handshake_messages);
+            PacketPayloadView::new(&self.handshake_transcript)
+                .for_each_chunk(|chunk| hasher.update(chunk));
             self.transcript_hash = Some(TranscriptHash::Sha384(hasher));
         } else {
             // SHA-256ベース鍵スケジュール
@@ -145,7 +146,8 @@ impl TlsConnection {
 
             let transcript_ch_sh = {
                 let mut hasher = sha256::Sha256::new();
-                hasher.update(&self.handshake_messages);
+                PacketPayloadView::new(&self.handshake_transcript)
+                    .for_each_chunk(|chunk| hasher.update(chunk));
                 hasher.finalize()
             };
 
@@ -176,7 +178,8 @@ impl TlsConnection {
             self.master_secret[..32].copy_from_slice(&master_secret_bytes);
 
             let mut new_hasher = sha256::Sha256::new();
-            new_hasher.update(&self.handshake_messages);
+            PacketPayloadView::new(&self.handshake_transcript)
+                .for_each_chunk(|chunk| new_hasher.update(chunk));
             self.transcript_hash = Some(TranscriptHash::Sha256(new_hasher));
         }
 
@@ -189,7 +192,10 @@ impl TlsConnection {
     /// TLS 1.3では ServerHello 以降のハンドシェイクメッセージは
     /// ApplicationData レコードとして暗号化されて送信される。
     /// 復号後、内部コンテントタイプ（最終の非ゼロバイト）に基づいて処理する。
-    pub(crate) fn tls13_process_encrypted_handshake(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(crate) fn tls13_process_encrypted_handshake(
+        &mut self,
+        data: &[u8],
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // ハンドシェイクトラフィック鍵で復号
         let decrypted = self.tls13_decrypt_record(data, true)?;
 
@@ -214,7 +220,7 @@ impl TlsConnection {
         match ContentType::from_u8(inner_content_type) {
             Some(ContentType::Handshake) => {
                 self.tls13_process_handshake_messages(inner_data)?;
-                Ok(Vec::new())
+                Ok(kernel_api::resource::net::PacketPayload::default())
             }
             Some(ContentType::Alert) => {
                 if inner_data.len() >= 2 {
@@ -226,11 +232,11 @@ impl TlsConnection {
                         return Err(TlsError::Alert(description));
                     }
                 }
-                Ok(Vec::new())
+                Ok(kernel_api::resource::net::PacketPayload::default())
             }
             Some(ContentType::ApplicationData) => {
                 // ハンドシェイク完了後のアプリデータ
-                Ok(inner_data.to_vec())
+                Ok(Self::packet_payload_from_slice(inner_data))
             }
             _ => Err(TlsError::UnexpectedMessage),
         }
@@ -265,12 +271,12 @@ impl TlsConnection {
             if let Some(ref mut hasher) = self.transcript_hash {
                 hasher.update(full_msg);
             }
-            self.handshake_messages.extend_from_slice(full_msg);
+            self.append_transcript_bytes(full_msg)?;
 
             // server Finished追加後のオフセットを記録
             // (アプリケーション鍵導出で「server Finishedまで」のトランスクリプトとして使用)
             if msg_type == 20 {
-                self.server_finished_offset = self.handshake_messages.len();
+                self.server_finished_offset = self.transcript_len();
             }
 
             offset = body_end;
@@ -579,9 +585,9 @@ impl TlsConnection {
     pub(super) fn build_tls13_cv_verify_content(&self, label: &[u8]) -> Vec<u8> {
         let use_384 = self.negotiated_cipher.map_or(false, |c| c.uses_sha384());
         let transcript_hash: Vec<u8> = if use_384 {
-            crate::crypto::sha384::compute(&self.handshake_messages).to_vec()
+            self.transcript_hash_sha384().to_vec()
         } else {
-            crate::crypto::sha256::compute(&self.handshake_messages).to_vec()
+            self.transcript_hash_sha256().to_vec()
         };
 
         let mut content = Vec::with_capacity(64 + label.len() + 1 + transcript_hash.len());
@@ -643,25 +649,25 @@ impl TlsConnection {
             _ => return Err(TlsError::CertificateError),
         };
 
-        let digest = match hash_alg {
+        match hash_alg {
             crate::net::security::rsa::HashAlgorithm::Sha256 => {
-                let h = crate::crypto::sha256::compute(message);
-                h.to_vec()
+                let digest = crate::crypto::sha256::compute(message);
+                crate::net::security::rsa::rsa_pss_verify(&pubkey, hash_alg, &digest, signature)
+                    .map_err(|_| TlsError::CryptoError)
             }
             crate::net::security::rsa::HashAlgorithm::Sha384 => {
-                let h = crate::crypto::sha384::compute(message);
-                h.to_vec()
+                let digest = crate::crypto::sha384::compute(message);
+                crate::net::security::rsa::rsa_pss_verify(&pubkey, hash_alg, &digest, signature)
+                    .map_err(|_| TlsError::CryptoError)
             }
             crate::net::security::rsa::HashAlgorithm::Sha512 => {
-                let h = crate::crypto::sha512::compute(message);
-                h.to_vec()
+                let digest = crate::crypto::sha512::compute(message);
+                crate::net::security::rsa::rsa_pss_verify(&pubkey, hash_alg, &digest, signature)
+                    .map_err(|_| TlsError::CryptoError)
             }
             // Security: SHA-1 is not supported for PSS in TLS 1.3.
-            _ => return Err(TlsError::CryptoError),
-        };
-
-        crate::net::security::rsa::rsa_pss_verify(&pubkey, hash_alg, &digest, signature)
-            .map_err(|_| TlsError::CryptoError)
+            _ => Err(TlsError::CryptoError),
+        }
     }
 
     /// ECDSA P-256 署名検証ヘルパー

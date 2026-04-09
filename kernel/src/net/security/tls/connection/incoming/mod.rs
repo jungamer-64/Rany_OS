@@ -16,7 +16,7 @@ impl TlsConnection {
         }
         crate::net::payload::append_payload(&mut self.recv_buffer, payload.clone());
 
-        let mut plaintext = Vec::new();
+        let mut plaintext = kernel_api::resource::net::PacketPayload::default();
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.recv_buffer.total_len() >= 5 {
@@ -49,7 +49,7 @@ impl TlsConnection {
             }
         }
 
-        Ok(Self::packet_payload_from_vec(plaintext))
+        Ok(plaintext)
     }
 
     /// 単一のTLSレコードを処理する
@@ -57,7 +57,7 @@ impl TlsConnection {
         &mut self,
         content_type: u8,
         payload: &[u8],
-        plaintext: &mut Vec<u8>,
+        plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
         let ct = match ContentType::from_u8(content_type) {
             Some(c) => c,
@@ -129,14 +129,14 @@ impl TlsConnection {
         &mut self,
         payload: &[u8],
         content_type: u8,
-        plaintext: &mut Vec<u8>,
+        plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
         if self.is_tls13 {
             let decrypted = self.tls13_decrypt_record(payload, false)?;
             self.dispatch_tls13_inner_content(&decrypted, plaintext)?;
         } else {
             let decrypted = self.decrypt_record(payload, content_type)?;
-            plaintext.extend_from_slice(&decrypted);
+            crate::net::payload::append_payload(plaintext, Self::packet_payload_from_vec(decrypted));
         }
         Ok(())
     }
@@ -145,13 +145,13 @@ impl TlsConnection {
     pub(super) fn process_app_data(
         &mut self,
         payload: &[u8],
-        plaintext: &mut Vec<u8>,
+        plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
         if self.is_tls13 && self.state != TlsState::Established {
             // TLS 1.3: 暗号化ハンドシェイクメッセージ
             let app_data = self.tls13_process_encrypted_handshake(payload)?;
             if !app_data.is_empty() {
-                plaintext.extend_from_slice(&app_data);
+                crate::net::payload::append_payload(plaintext, app_data);
             }
         } else if self.state == TlsState::Established
             || (!self.is_tls13 && self.read_encryption_active)
@@ -165,12 +165,15 @@ impl TlsConnection {
     pub(super) fn dispatch_tls13_inner_content(
         &mut self,
         decrypted: &[u8],
-        plaintext: &mut Vec<u8>,
+        plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
         if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type(decrypted) {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
-                    plaintext.extend_from_slice(inner_data);
+                    crate::net::payload::append_payload(
+                        plaintext,
+                        Self::packet_payload_from_slice(inner_data),
+                    );
                 }
                 Some(ContentType::Handshake) => {
                     // Post-handshake: NewSessionTicket, KeyUpdate
@@ -210,11 +213,11 @@ impl TlsConnection {
         // Security: Limit cumulative handshake messages to prevent memory DoS.
         // 128KB is the limit for a single message, so we allow 256KB total for the whole handshake.
         const MAX_HANDSHAKE_ACCUMULATOR: usize = 262144;
-        if self.handshake_messages.len() + msg_data.len() > MAX_HANDSHAKE_ACCUMULATOR {
+        if self.transcript_len() + msg_data.len() > MAX_HANDSHAKE_ACCUMULATOR {
             return Err(TlsError::DecodeError);
         }
 
-        self.handshake_messages.extend_from_slice(msg_data);
+        self.append_transcript_bytes(msg_data)?;
         if let Some(ref mut hasher) = self.transcript_hash {
             hasher.update(msg_data);
         }
@@ -295,7 +298,7 @@ impl TlsConnection {
             _legacy_version,
             &mut self.tls13_using_psk,
             self.tls13_psk.is_some(),
-        );
+        )?;
 
         self.negotiated_version = Some(actual_version);
 
@@ -351,12 +354,12 @@ impl TlsConnection {
         default_version: TlsVersion,
         tls13_using_psk: &mut bool,
         has_psk: bool,
-    ) -> (TlsVersion, Option<(u16, Vec<u8>)>) {
+    ) -> TlsResult<(TlsVersion, Option<(u16, PayloadSpan)>)> {
         let mut actual_version = default_version;
-        let mut server_key_share: Option<(u16, Vec<u8>)> = None;
+        let mut server_key_share: Option<(u16, PayloadSpan)> = None;
 
         if ext_offset + 2 > data.len() {
-            return (actual_version, server_key_share);
+            return Ok((actual_version, server_key_share));
         }
 
         let extensions_len = ((data[ext_offset] as usize) << 8) | data[ext_offset + 1] as usize;
@@ -382,12 +385,12 @@ impl TlsConnection {
                 &mut server_key_share,
                 tls13_using_psk,
                 has_psk,
-            );
+            )?;
 
             eoff += ext_len;
         }
 
-        (actual_version, server_key_share)
+        Ok((actual_version, server_key_share))
     }
 
     /// Process a single ServerHello extension by type.
@@ -397,10 +400,10 @@ impl TlsConnection {
         ext_type: u16,
         ext_len: usize,
         actual_version: &mut TlsVersion,
-        server_key_share: &mut Option<(u16, Vec<u8>)>,
+        server_key_share: &mut Option<(u16, PayloadSpan)>,
         tls13_using_psk: &mut bool,
         has_psk: bool,
-    ) {
+    ) -> TlsResult<()> {
         match ext_type {
             43 if ext_len >= 2 => {
                 *actual_version = TlsVersion(((data[eoff] as u16) << 8) | data[eoff + 1] as u16);
@@ -415,18 +418,22 @@ impl TlsConnection {
                 let group = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
                 let key_len = ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
                 if ext_len >= 4 + key_len {
-                    *server_key_share = Some((group, data[eoff + 4..eoff + 4 + key_len].to_vec()));
+                    *server_key_share = Some((
+                        group,
+                        Self::span_from_bytes(&data[eoff + 4..eoff + 4 + key_len])?,
+                    ));
                 }
             }
             _ => {}
         }
+        Ok(())
     }
 
     /// Handle TLS 1.3 ServerHello key exchange.
     pub(super) fn handle_tls13_hello(
         &mut self,
         cipher: CipherSuite,
-        server_key_share: Option<(u16, Vec<u8>)>,
+        server_key_share: Option<(u16, PayloadSpan)>,
     ) -> TlsResult<()> {
         self.is_tls13 = true;
 
@@ -454,6 +461,9 @@ impl TlsConnection {
             return Err(TlsError::HandshakeFailure);
         }
 
+        let server_pubkey = server_pubkey
+            .as_contiguous_slice()
+            .ok_or(TlsError::DecodeError)?;
         let shared_secret = local_keypair
             .shared_secret(&server_pubkey)
             .map_err(|_| TlsError::CryptoError)?;
@@ -496,16 +506,15 @@ impl TlsConnection {
     pub(super) fn process_hello_retry_request(
         &mut self,
         cipher: CipherSuite,
-        _server_key_share: &Option<(u16, Vec<u8>)>,
+        _server_key_share: &Option<(u16, PayloadSpan)>,
     ) -> TlsResult<()> {
         // RFC 8446 Section 4.4.1: synthetic message_hash に置き換え
         // MessageHash = Handshake(254, Hash(messages_so_far))
         let use_384 = cipher.uses_sha384();
-        let current_hash: Vec<u8> = if use_384 {
-            crate::crypto::sha384::compute(&self.handshake_messages).to_vec()
+        let current_hash = if use_384 {
+            self.transcript_hash_sha384().to_vec()
         } else {
-            let h = crate::crypto::sha256::compute(&self.handshake_messages);
-            h.to_vec()
+            self.transcript_hash_sha256().to_vec()
         };
         let hash_len = current_hash.len();
 
@@ -518,8 +527,7 @@ impl TlsConnection {
         synthetic.extend_from_slice(&current_hash);
 
         // ハンドシェイクメッセージをsynthetic message_hashに置き換え
-        self.handshake_messages.clear();
-        self.handshake_messages.extend_from_slice(&synthetic);
+        self.replace_transcript_bytes(&synthetic)?;
 
         // サーバーが要求するグループで新しい鍵ペアを生成
         // HRR の key_share 拡張はグループIDのみ含む（公開鍵なし）
@@ -686,20 +694,29 @@ impl TlsConnection {
             _ => return Err(TlsError::CertificateError),
         };
 
-        let (hash_alg, digest) = match alg_selector {
+        match alg_selector {
             2 => {
-                let d = crate::crypto::sha256::compute(signed_data);
-                (crate::net::security::rsa::HashAlgorithm::Sha256, d.to_vec())
+                let digest = crate::crypto::sha256::compute(signed_data);
+                crate::net::security::rsa::rsa_pkcs1_verify(
+                    &pubkey,
+                    crate::net::security::rsa::HashAlgorithm::Sha256,
+                    &digest,
+                    signature,
+                )
+                .map_err(|_| TlsError::CryptoError)
             }
             3 => {
-                let d = crate::crypto::sha384::compute(signed_data);
-                (crate::net::security::rsa::HashAlgorithm::Sha384, d.to_vec())
+                let digest = crate::crypto::sha384::compute(signed_data);
+                crate::net::security::rsa::rsa_pkcs1_verify(
+                    &pubkey,
+                    crate::net::security::rsa::HashAlgorithm::Sha384,
+                    &digest,
+                    signature,
+                )
+                .map_err(|_| TlsError::CryptoError)
             }
-            _ => return Err(TlsError::CryptoError),
-        };
-
-        crate::net::security::rsa::rsa_pkcs1_verify(&pubkey, hash_alg, &digest, signature)
-            .map_err(|_| TlsError::CryptoError)
+            _ => Err(TlsError::CryptoError),
+        }
     }
 
     /// ECDSA P-256署名でServerKeyExchangeを検証
