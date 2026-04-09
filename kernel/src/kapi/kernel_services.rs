@@ -164,7 +164,7 @@ impl KernelServices for ExoKernel {
     // Network (Connected to network stack)
     // ========================================================================
 
-    fn net_open_tcp_stream(
+    fn net_tcp_stream_dial(
         &self,
         remote: kernel_api::resource::net::NetSocketAddr,
         scope: kernel_api::resource::net::InterfaceScope,
@@ -187,7 +187,7 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_open_tcp_listener(
+    fn net_tcp_listener_listen_on(
         &self,
         local: kernel_api::resource::net::NetSocketAddr,
         scope: kernel_api::resource::net::InterfaceScope,
@@ -212,7 +212,7 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_tcp_listener_accept(
+    fn net_tcp_listener_next_connection(
         &self,
         listener: kernel_api::resource::net::TcpListener,
     ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpStream>> + Send>>
@@ -234,7 +234,7 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_close_tcp_stream(
+    fn net_tcp_stream_close(
         &self,
         stream: kernel_api::resource::net::TcpStream,
     ) -> Result<(), KapiError> {
@@ -243,7 +243,7 @@ impl KernelServices for ExoKernel {
         ))
     }
 
-    fn net_close_tcp_listener(
+    fn net_tcp_listener_close(
         &self,
         listener: kernel_api::resource::net::TcpListener,
     ) -> Result<(), KapiError> {
@@ -293,7 +293,7 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_open_raw_endpoint(
+    fn net_raw_endpoint_open(
         &self,
         scope: kernel_api::resource::net::InterfaceScope,
     ) -> Result<kernel_api::resource::net::RawEndpoint, KapiError> {
@@ -336,7 +336,7 @@ impl KernelServices for ExoKernel {
         ))
     }
 
-    fn net_close_raw_endpoint(
+    fn net_raw_endpoint_close(
         &self,
         endpoint: kernel_api::resource::net::RawEndpoint,
     ) -> Result<(), KapiError> {
@@ -345,7 +345,7 @@ impl KernelServices for ExoKernel {
         ))
     }
 
-    fn net_raw_recv_payload(
+    fn net_raw_endpoint_recv_payload(
         &self,
         endpoint: kernel_api::resource::net::RawEndpoint,
     ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::PacketPayload>> + Send>>
@@ -378,7 +378,7 @@ impl KernelServices for ExoKernel {
         })
     }
 
-    fn net_raw_send_payload(
+    fn net_raw_endpoint_send_payload(
         &self,
         endpoint: kernel_api::resource::net::RawEndpoint,
         payload: kernel_api::resource::net::PacketPayload,

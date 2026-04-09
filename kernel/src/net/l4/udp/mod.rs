@@ -510,7 +510,7 @@ impl core::fmt::Debug for UdpEndpoint {
 }
 
 impl UdpEndpoint {
-    pub(crate) fn bind_registered_with_token_in(
+    pub(crate) fn bind_in(
         runtime: NetRuntimeHandle,
         scope: InterfaceScope,
         port: u16,

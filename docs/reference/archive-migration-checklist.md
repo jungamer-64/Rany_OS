@@ -2,9 +2,11 @@
 
 - Status: Reference
 - Audience: 旧設計案から新 docs への対応関係を確認したい reviewer、移行漏れを棚卸ししたい contributor
-- Related: [../design-overview.md](../design-overview.md), [execution-fairness.md](execution-fairness.md), [../design_variants/hardware-assisted-security-notes.md](../design_variants/hardware-assisted-security-notes.md), [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md)
+- Related: [../design-overview.md](../design-overview.md), [execution-fairness.md](execution-fairness.md), [network-core.md](network-core.md), [../design_variants/hardware-assisted-security-notes.md](../design_variants/hardware-assisted-security-notes.md), [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md)
 
 この checklist は、旧設計案の未移行クラスタ 4.4 / 9.2 / 11 / 13 が、non-archive docs のどこへ再配置されたかを追跡します。
+特に network 4a-4d / 4b / 4c では、単なる移設ではなく、旧設計案の network 原則を
+`network-core.md` に昇格して再表現したことを `Promoted` として扱います。
 
 ## Checklist
 
@@ -24,9 +26,9 @@
 | 11.1.1 | ブートストラップシーケンス詳細 | [../kernel-boot-sequence.md](../kernel-boot-sequence.md) + [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
 | 11 フェーズ 2 | Async Executor と割り込み基盤 | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) + [execution-fairness.md](execution-fairness.md) | Moved |
 | 11 フェーズ 3 | セルローダーと分離機構 | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
-| 11 フェーズ 4a | VirtIO-net 基本実装 | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
-| 11 フェーズ 4b | ゼロコピー最適化 / mempool / scatter-gather | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) + [api-reference.md](api-reference.md) | Moved |
-| 11 フェーズ 4c | polling / batch processing | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) + [api-reference.md](api-reference.md) | Moved |
+| 11 フェーズ 4a | VirtIO-net 基本実装 | [network-core.md](network-core.md) + [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Promoted |
+| 11 フェーズ 4b | ゼロコピー最適化 / mempool / scatter-gather | [network-core.md](network-core.md) + [api-reference.md](api-reference.md) + [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Promoted |
+| 11 フェーズ 4c | polling / batch processing | [network-core.md](network-core.md) + [api-reference.md](api-reference.md) + [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Promoted |
 | 11 フェーズ 4d | 実 NIC 対応 / SR-IOV / offload | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
 | 13.1 | threat model / formal assurance / unsafe audit | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
 | 13.2 | benchmark target / success criteria | [../reference/performance-targets.md](../reference/performance-targets.md) + [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
@@ -39,5 +41,6 @@
 
 - [../design-overview.md](../design-overview.md)
 - [execution-fairness.md](execution-fairness.md)
+- [network-core.md](network-core.md)
 - [../design_variants/hardware-assisted-security-notes.md](../design_variants/hardware-assisted-security-notes.md)
 - [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md)

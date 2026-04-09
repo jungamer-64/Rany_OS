@@ -135,7 +135,7 @@ impl NtpClient {
         let server_ip = self.server.ok_or(EndpointError::InvalidArgument)?;
         let remote = UdpAddr::new(server_ip, NTP_PORT);
 
-        let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+        let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
             crate::net::runtime::default_runtime(),
             crate::net::types::InterfaceScope::Any,
             0,

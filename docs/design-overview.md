@@ -15,6 +15,7 @@
 - [運用向けアーキテクチャ概要](architecture.md)
 - [開発ガイドライン](kernel-development-guidelines.md)
 - [Capability 設計](capabilities.md)
+- [Network Core Reference](reference/network-core.md)
 - [Execution Fairness Reference](reference/execution-fairness.md)
 - [Resilience / Recovery Reference](reference/resilience-recovery.md)
 - [Performance Targets Reference](reference/performance-targets.md)
@@ -79,6 +80,7 @@ Variant B/C や `docs/design-samples/` は、正本を補う研究・参考資�
 
 - 旧 4.4 の starvation / fairness 詳細は [reference/execution-fairness.md](reference/execution-fairness.md) に集約する。
 - 旧 9.2 の Spectre / MPK / LFENCE / cache partitioning 詳細は [design_variants/hardware-assisted-security-notes.md](design_variants/hardware-assisted-security-notes.md) に移す。
+- 旧 11 フェーズ 4a-4d の network / datapath 原則は [reference/network-core.md](reference/network-core.md) に昇格し、実装順序と出口条件は [proposals/kernel-roadmap.md](proposals/kernel-roadmap.md) に残す。
 - 旧 11 / 13 のロードマップと将来課題は [proposals/kernel-roadmap.md](proposals/kernel-roadmap.md) に現代化して移す。
 - 対応表全体は [reference/archive-migration-checklist.md](reference/archive-migration-checklist.md) を正とする。
 

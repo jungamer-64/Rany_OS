@@ -255,7 +255,7 @@ pub fn udp_udp_socket_multiple_waiters_woken_on_deliver_smoke() -> bool {
         use core::task::{Context, Poll};
 
         crate::net::l4::endpoint::manager::init_endpoint_manager();
-        let Ok(endpoint) = udp::UdpEndpoint::bind_registered_with_token_in(
+        let Ok(endpoint) = udp::UdpEndpoint::bind_in(
             crate::net::runtime::default_runtime(),
             crate::net::types::InterfaceScope::Any,
             54322,

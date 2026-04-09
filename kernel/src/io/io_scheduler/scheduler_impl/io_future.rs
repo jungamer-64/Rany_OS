@@ -390,7 +390,6 @@ impl HybridIoCoordinator {
         self.interrupt_bridge.clone()
     }
 
-    #[allow(deprecated)]
     pub fn submit_io(
         &self,
         device: DeviceId,

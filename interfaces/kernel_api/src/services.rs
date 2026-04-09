@@ -150,14 +150,14 @@ pub trait KernelServices: Send + Sync {
     // ========================================================================
 
     /// Open a TCP connection and return a stream object.
-    fn net_open_tcp_stream(
+    fn net_tcp_stream_dial(
         &self,
         remote: NetSocketAddr,
         scope: InterfaceScope,
     ) -> Pin<Box<dyn Future<Output = KapiResult<TcpStream>> + Send>>;
 
     /// Start listening for TCP connections and return a listener object.
-    fn net_open_tcp_listener(
+    fn net_tcp_listener_listen_on(
         &self,
         local: NetSocketAddr,
         scope: InterfaceScope,
@@ -165,16 +165,16 @@ pub trait KernelServices: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = KapiResult<TcpListener>> + Send>>;
 
     /// Accept a new TCP connection from a listener.
-    fn net_tcp_listener_accept(
+    fn net_tcp_listener_next_connection(
         &self,
         listener: TcpListener,
     ) -> Pin<Box<dyn Future<Output = KapiResult<TcpStream>> + Send>>;
 
     /// Close a connected TCP stream.
-    fn net_close_tcp_stream(&self, stream: TcpStream) -> KapiResult<()>;
+    fn net_tcp_stream_close(&self, stream: TcpStream) -> KapiResult<()>;
 
     /// Close a listening TCP socket.
-    fn net_close_tcp_listener(&self, listener: TcpListener) -> KapiResult<()>;
+    fn net_tcp_listener_close(&self, listener: TcpListener) -> KapiResult<()>;
 
     /// Receive a zero-copy payload from a TCP stream.
     fn net_tcp_stream_recv_payload(
@@ -189,19 +189,19 @@ pub trait KernelServices: Send + Sync {
         payload: PacketPayload,
     ) -> Pin<Box<dyn Future<Output = KapiResult<usize>> + Send>>;
     /// Create a raw (packet-oriented) endpoint.
-    fn net_open_raw_endpoint(&self, scope: InterfaceScope) -> KapiResult<RawEndpoint>;
+    fn net_raw_endpoint_open(&self, scope: InterfaceScope) -> KapiResult<RawEndpoint>;
 
     /// Close a raw endpoint.
-    fn net_close_raw_endpoint(&self, endpoint: RawEndpoint) -> KapiResult<()>;
+    fn net_raw_endpoint_close(&self, endpoint: RawEndpoint) -> KapiResult<()>;
 
     /// Receive a raw payload (async).
-    fn net_raw_recv_payload(
+    fn net_raw_endpoint_recv_payload(
         &self,
         endpoint: RawEndpoint,
     ) -> Pin<Box<dyn Future<Output = KapiResult<PacketPayload>> + Send>>;
 
     /// Send a raw payload (async).
-    fn net_raw_send_payload(
+    fn net_raw_endpoint_send_payload(
         &self,
         endpoint: RawEndpoint,
         payload: PacketPayload,
@@ -829,7 +829,7 @@ mod standalone {
             }
         }
 
-        fn net_open_tcp_stream(
+        fn net_tcp_stream_dial(
             &self,
             remote: NetSocketAddr,
             scope: InterfaceScope,
@@ -838,7 +838,7 @@ mod standalone {
             unsupported_future()
         }
 
-        fn net_open_tcp_listener(
+        fn net_tcp_listener_listen_on(
             &self,
             local: NetSocketAddr,
             scope: InterfaceScope,
@@ -848,7 +848,7 @@ mod standalone {
             unsupported_future()
         }
 
-        fn net_tcp_listener_accept(
+        fn net_tcp_listener_next_connection(
             &self,
             listener: TcpListener,
         ) -> Pin<Box<dyn Future<Output = KapiResult<TcpStream>> + Send>> {
@@ -856,12 +856,12 @@ mod standalone {
             unsupported_future()
         }
 
-        fn net_close_tcp_stream(&self, stream: TcpStream) -> KapiResult<()> {
+        fn net_tcp_stream_close(&self, stream: TcpStream) -> KapiResult<()> {
             let _ = stream;
             Err(KapiError::NotSupported)
         }
 
-        fn net_close_tcp_listener(&self, listener: TcpListener) -> KapiResult<()> {
+        fn net_tcp_listener_close(&self, listener: TcpListener) -> KapiResult<()> {
             let _ = listener;
             Err(KapiError::NotSupported)
         }
@@ -883,17 +883,17 @@ mod standalone {
             unsupported_future()
         }
 
-        fn net_open_raw_endpoint(&self, scope: InterfaceScope) -> KapiResult<RawEndpoint> {
+        fn net_raw_endpoint_open(&self, scope: InterfaceScope) -> KapiResult<RawEndpoint> {
             let _ = scope;
             Err(KapiError::NotSupported)
         }
 
-        fn net_close_raw_endpoint(&self, endpoint: RawEndpoint) -> KapiResult<()> {
+        fn net_raw_endpoint_close(&self, endpoint: RawEndpoint) -> KapiResult<()> {
             let _ = endpoint;
             Err(KapiError::NotSupported)
         }
 
-        fn net_raw_recv_payload(
+        fn net_raw_endpoint_recv_payload(
             &self,
             endpoint: RawEndpoint,
         ) -> Pin<Box<dyn Future<Output = KapiResult<PacketPayload>> + Send>> {
@@ -901,7 +901,7 @@ mod standalone {
             unsupported_future()
         }
 
-        fn net_raw_send_payload(
+        fn net_raw_endpoint_send_payload(
             &self,
             endpoint: RawEndpoint,
             payload: PacketPayload,

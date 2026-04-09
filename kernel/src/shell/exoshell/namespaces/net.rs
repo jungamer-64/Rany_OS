@@ -1227,7 +1227,7 @@ impl NetNamespace {
             if !grants.iter().any(|g| g.id == t) {
                 return ExoValue::Error(String::from("Permission denied: token not owned"));
             }
-            match crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+            match crate::net::l4::udp::UdpEndpoint::bind_in(
                 crate::net::runtime::default_runtime(),
                 crate::net::types::InterfaceScope::Any,
                 port,
@@ -1240,7 +1240,7 @@ impl NetNamespace {
             if !manager().has_capability(domain_id, CAP_NET_BIND) {
                 return ExoValue::Error(String::from("Permission denied: CAP_NET_BIND required"));
             }
-            match crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+            match crate::net::l4::udp::UdpEndpoint::bind_in(
                 crate::net::runtime::default_runtime(),
                 crate::net::types::InterfaceScope::Any,
                 port,

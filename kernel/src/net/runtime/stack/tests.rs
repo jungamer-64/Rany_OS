@@ -354,7 +354,7 @@ pub fn test_network_stack_poisoned_runtime_apis_fail() {
         ))
         .is_err()
     );
-    let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+    let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         crate::net::types::InterfaceScope::Any,
         1234,

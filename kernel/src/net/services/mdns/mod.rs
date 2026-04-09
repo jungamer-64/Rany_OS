@@ -175,7 +175,7 @@ impl MdnsService {
             "[NET][boot] mDNS task entered run loop on CPU {}",
             crate::cpu::try_current_id().unwrap_or(0)
         );
-        let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+        let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
             self.runtime,
             crate::net::types::InterfaceScope::Any,
             MDNS_PORT,

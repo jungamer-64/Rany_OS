@@ -22,7 +22,7 @@ fn udp_endpoint_poisoned_methods_return_defaults_impl() {
     use crate::sync::set_panicking;
 
     crate::net::l4::endpoint::manager::init_endpoint_manager();
-    let endpoint = UdpEndpoint::bind_registered_with_token_in(
+    let endpoint = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Any,
         12345,
@@ -51,7 +51,7 @@ fn udp_endpoint_multiple_waiters_woken_on_deliver_impl() {
     static WAKE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
     crate::net::l4::endpoint::manager::init_endpoint_manager();
-    let endpoint = UdpEndpoint::bind_registered_with_token_in(
+    let endpoint = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Any,
         54322,
@@ -179,7 +179,7 @@ pub fn test_bind_with_token_reclaim() {
     // Target binds using token and keeps the endpoint alive until explicit release.
     let sock = {
         let _target_guard = set_current_subject(target);
-        let sock = UdpEndpoint::bind_registered_with_token_in(
+        let sock = UdpEndpoint::bind_in(
             crate::net::runtime::default_runtime(),
             InterfaceScope::Any,
             40000,
@@ -219,7 +219,7 @@ pub fn test_udp_recv_future_poisoned_returns_closed() {
     use core::task::Poll;
 
     crate::net::l4::endpoint::manager::init_endpoint_manager();
-    let endpoint = UdpEndpoint::bind_registered_with_token_in(
+    let endpoint = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Any,
         54321,
@@ -245,7 +245,7 @@ pub fn test_udp_recv_future_poisoned_returns_closed() {
 pub fn test_udp_processor_poisoned_bind_and_process() {
     init_endpoint_manager();
     let processor = UdpProcessor::new();
-    let _bound = UdpEndpoint::bind_registered_with_token_in(
+    let _bound = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Any,
         10000,
@@ -253,7 +253,7 @@ pub fn test_udp_processor_poisoned_bind_and_process() {
     )
     .expect("initial bind should succeed");
     assert!(
-        UdpEndpoint::bind_registered_with_token_in(
+        UdpEndpoint::bind_in(
             crate::net::runtime::default_runtime(),
             InterfaceScope::Any,
             10000,
@@ -290,7 +290,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
     use core::task::{Context, Poll};
 
     let processor = UdpProcessor::new();
-    let endpoint = UdpEndpoint::bind_registered_with_token_in(
+    let endpoint = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Any,
         10000,
@@ -354,7 +354,7 @@ pub fn test_udp_processor_process_enqueues_zero_copy_packet() {
 #[cfg_attr(test, test_case)]
 pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
     let processor = UdpProcessor::new();
-    let endpoint = UdpEndpoint::bind_registered_with_token_in(
+    let endpoint = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Any,
         10001,
@@ -395,7 +395,7 @@ pub fn test_udp_processor_process_payload_chain_delivers_without_flattening() {
 #[cfg_attr(test, test_case)]
 pub fn test_udp_scope_conflicts_any_vs_pinned() {
     init_endpoint_manager();
-    let _any = UdpEndpoint::bind_registered_with_token_in(
+    let _any = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Any,
         42000,
@@ -403,7 +403,7 @@ pub fn test_udp_scope_conflicts_any_vs_pinned() {
     )
     .expect("bind any-scope endpoint");
     assert!(
-        UdpEndpoint::bind_registered_with_token_in(
+        UdpEndpoint::bind_in(
             crate::net::runtime::default_runtime(),
             InterfaceScope::Pinned(NetIfId(1)),
             42000,
@@ -416,14 +416,14 @@ pub fn test_udp_scope_conflicts_any_vs_pinned() {
 #[cfg_attr(test, test_case)]
 pub fn test_udp_scope_allows_same_port_on_distinct_interfaces() {
     init_endpoint_manager();
-    let _if1 = UdpEndpoint::bind_registered_with_token_in(
+    let _if1 = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Pinned(NetIfId(1)),
         42001,
         None,
     )
     .expect("bind interface 1");
-    let _if2 = UdpEndpoint::bind_registered_with_token_in(
+    let _if2 = UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         InterfaceScope::Pinned(NetIfId(2)),
         42001,

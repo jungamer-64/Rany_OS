@@ -373,7 +373,7 @@ pub fn test_udp_recv_delivered() {
     init_endpoint_manager();
 
     let port = 40000u16;
-    let sock = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+    let sock = crate::net::l4::udp::UdpEndpoint::bind_in(
         crate::net::runtime::default_runtime(),
         crate::net::types::InterfaceScope::Any,
         port,

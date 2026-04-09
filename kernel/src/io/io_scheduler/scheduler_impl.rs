@@ -75,7 +75,6 @@ impl IoScheduler {
     }
 
     /// I/Oリクエストをサブミット
-    #[allow(deprecated)]
     pub fn submit(
         &self,
         device: DeviceId,
@@ -142,7 +141,6 @@ impl IoScheduler {
     ///
     /// `IoCommand` を使用し、デバイス固有形式（PRP/SGL等）は
     /// ドライバの `DeviceOps::submit` 内で変換される。
-    #[allow(deprecated)]
     pub fn submit_command(
         &self,
         device: DeviceId,

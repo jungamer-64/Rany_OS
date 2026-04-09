@@ -39,7 +39,7 @@ impl DhcpClient {
     /// 指定されたポートでUDPソケットをバインドし、DHCP状態機械を駆動します。
     pub async fn run(&self) -> Result<(), &'static str> {
         // DHCPクライアントポート(68)でバインド
-        let socket = crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+        let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
             self.runtime,
             crate::net::types::InterfaceScope::Any,
             DHCP_CLIENT_PORT,

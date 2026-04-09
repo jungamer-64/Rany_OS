@@ -2,7 +2,7 @@
 
 - Status: Proposal
 - Audience: 実装順序、workstream の切り分け、archive 由来の今後の課題を整理したい contributor
-- Related: [../kernel-boot-sequence.md](../kernel-boot-sequence.md), [../reference/performance-targets.md](../reference/performance-targets.md), [../reference/resilience-recovery.md](../reference/resilience-recovery.md), [../../bootloader/future-roadmap.md](../../bootloader/future-roadmap.md)
+- Related: [../kernel-boot-sequence.md](../kernel-boot-sequence.md), [../reference/network-core.md](../reference/network-core.md), [../reference/performance-targets.md](../reference/performance-targets.md), [../reference/resilience-recovery.md](../reference/resilience-recovery.md), [../../bootloader/future-roadmap.md](../../bootloader/future-roadmap.md)
 
 この文書は、旧設計案 11 / 13 のロードマップと将来課題を、月数ベースではなく workstream ベースへ現代化した proposal です。
 canonical baseline や release commitment を定義する文書ではありません。
@@ -30,10 +30,11 @@ canonical baseline や release commitment を定義する文書ではありま�
 - 目的:
   zero-copy datapath、packet pool、batch processing、scatter-gather submission を整理し、測定可能な network path へ育てる。
 - 依存する正本:
+  [../reference/network-core.md](../reference/network-core.md),
   [../reference/api-reference.md](../reference/api-reference.md),
   [../reference/performance-targets.md](../reference/performance-targets.md)
 - 代表テーマ:
-  RAW endpoint / datapath の語彙統一、ownership-based buffering、throughput / latency measurement、polling coexistence。
+  RAW endpoint / datapath の語彙統一、ownership-based buffering、end-to-end zero-copy、throughput / latency measurement、polling coexistence。
 
 ### 3. Real NIC enablement
 
@@ -80,7 +81,7 @@ canonical baseline や release commitment を定義する文書ではありま�
 | 11.1.1 ブートストラップシーケンス詳細 | [../kernel-boot-sequence.md](../kernel-boot-sequence.md) + bootloader component detail |
 | 11 フェーズ 2: Async Executor と割り込み基盤 | Boot / runtime bring-up + [../reference/execution-fairness.md](../reference/execution-fairness.md) |
 | 11 フェーズ 3: セルローダーと分離機構 | Boot / runtime bring-up + authority / live update 正本群 |
-| 11 フェーズ 4a-4d: 高性能ドライバとネットワーク | Network / datapath maturity + Real NIC enablement |
+| 11 フェーズ 4a-4d: 高性能ドライバとネットワーク | [../reference/network-core.md](../reference/network-core.md) + Network / datapath maturity + Real NIC enablement |
 | 13.1 セキュリティモデルの形式化 | Assurance / threat model / unsafe audit |
 | 13.2 性能ベンチマーク計画 | [../reference/performance-targets.md](../reference/performance-targets.md) + Network / datapath maturity |
 | 13.3 高可用性設計 | Resilience / replication workstream |

@@ -2,7 +2,7 @@
 
 - Status: Reference
 - Audience: 公開 API の形と設計意図を確認する実装者、レビュー担当者
-- Related: [ドキュメントハブ](../README.md), [アーキテクチャ概要](../architecture.md), [設計比較ガイド](../design-overview.md)
+- Related: [ドキュメントハブ](../README.md), [アーキテクチャ概要](../architecture.md), [Network Core Reference](network-core.md), [設計比較ガイド](../design-overview.md)
 
 ExoRust Kernel の公開 API リファレンスドキュメントです。
 
@@ -32,7 +32,7 @@ ExoRust Kernel の公開 API リファレンスドキュメントです。
 3. [タスク管理 API](#タスク管理-api)
 4. [IPC API（所有権移動ベース）](#ipc-api所有権移動ベース)
 5. [I/O API（ゼロコピー）](#io-apiゼロコピー)
-6. [ネットワーク API（TCPストリーム + RAWパケット）](#ネットワーク-apitcpストリーム--rawパケット)
+6. [ネットワーク API（ownership-based datapath）](#ネットワーク-apiownership-based-datapath)
 7. [ファイルシステム API](#ファイルシステム-api)
 8. [静的ケイパビリティ](#静的ケイパビリティ)
 9. [ドメインシステム](#ドメインシステム)
@@ -47,7 +47,7 @@ ExoRust Kernelは、従来のPOSIX APIパラダイムを**意図的に排除**�
 
 | POSIX | ExoRust | 理由 |
 | --- | --- | --- |
-| `socket()` / `bind()` / `listen()` | `TcpStream` / `TcpListener` + `RawEndpoint` | TCPはストリームAPI、パケット所有権交換はRAWに限定 |
+| `socket()` / `bind()` / `listen()` | packet-backed endpoint + payload queue + typed handle | POSIX socket ではなく ownership-based datapath を正規面にする |
 | `read()` / `write()` | 所有権移動（`Transfer<T>`） | syscallごとのコピーを排除 |
 | 旧メモリマップ + シグナル | 明示的な非同期API | シグナルは協調的タスクと相性が悪い |
 | ファイルディスクリプタ | 型付きハンドル + ケイパビリティ | 整数FDは型安全でない |
@@ -268,117 +268,69 @@ let completed: Buffer = virtqueue.poll().await;
 
 ---
 
-## ネットワーク API（TCPストリーム + RAWパケット）
+## ネットワーク API（ownership-based datapath）
+
+### 位置付け
+
+[network-core.md](network-core.md) がネットワークの canonical reference vocabulary を定義します。
+本節は広域 API リファレンス内の要約であり、network core の語彙・優先順位・性能モデルは
+`network-core.md` を正として読んでください。
 
 ### 設計原則（ネットワーク）
 
-**POSIXソケット（`socket`, `bind`, `listen`）は提供しません。**
-
-TCPは `TcpStream` / `TcpListener` によるAsync-firstなストリームAPIを提供し、
-パケット単位での所有権交換はRAW endpointとdatapathに限定します。
-これはRedLeafやio_uringの設計哲学に近いアプローチです。
+- **Normative:** POSIXソケット（`socket`, `bind`, `listen`）は提供しません。
+- **Normative:** ネットワークの主語は byte-stream convenience ではなく packet-backed payload です。
+- **Normative:** `PacketPayload`、packet pool、queue ownership、endpoint-owned state を中心に語彙を整理します。
+- **Canonical target:** TCP を含む end-to-end zero-copy path を第一級に扱います。
+- **Guidance:** `AsyncRead` / `AsyncWrite` 相当の surface が存在しても、core canonical model は datapath / ownership semantics に置きます。
 
 ### モジュール: `exorust::net`
 
-#### RAW / datapath パケットプール
+#### Canonical network vocabulary
 
-```rust
-use exorust::net::mempool::{PacketPool, Packet};
-
-// パケットプールからバッファを取得（所有権を取得）
-let mut packet: Packet = pool.alloc()?;
-
-// パケットにデータを書き込み
-packet.write_header(&eth_header);
-packet.write_payload(&data);
-```
-
-#### RAW / datapath 送信キュー（所有権を放棄）
-
-```rust
-use exorust::net::tx_queue::TxQueue;
-
-// パケットを送信キューに投入（所有権を放棄）
-tx_queue.submit(packet);  // packetは消費される
-
-// 送信完了を待機
-tx_queue.poll_completion().await;
-```
-
-#### RAW / datapath 受信キュー（所有権を取得）
-
-```rust
-use exorust::net::rx_queue::RxQueue;
-
-// 受信パケットの所有権を取得
-let packet: Packet = rx_queue.recv().await;
-
-// パケットを処理
-let eth_header = packet.eth_header();
-let payload = packet.payload();
-
-// 処理完了後、パケットをプールに返却（所有権を放棄）
-pool.free(packet);
-```
-
-#### TCPストリーム / リスナー（非POSIX）
-
-従来のBerkeley Sockets風APIではなく、
-`AsyncRead` / `AsyncWrite` 相当のストリームAPIを正規面として提供します。
-RAW endpointのような packet ownership exchange はTCPでは使いません。
-
-```rust
-use exorust::net::tcp::{TcpListener, TcpStream};
-
-// クライアント接続
-let mut connection = TcpStream::dial(remote_addr).await?;
-
-// 送信
-connection.write(b"hello").await?;
-
-// 受信
-let mut buf = [0u8; 2048];
-let n = connection.read(&mut buf).await?;
-
-// リスナー
-let listener = TcpListener::listen_on(local_addr).await?;
-let (mut accepted, peer) = listener.next_connection().await?;
-
-// ゼロコピー補助はストリームの延長として提供
-let packetish_chunk = accepted.read_zero_copy().await;
-```
-
-#### RAW endpoint KAPI
-
-TCP KAPIは `TcpStreamHandle` / `TcpListenerHandle` / `TcpChunk` を使う
-ストリーム指向APIです。`Packet` と `RawEndpointHandle` は
-RAW endpoint (`net_create_raw_endpoint`, `net_recv_raw_packet`, `net_send_raw_packet`) 専用です。
-
-#### 10Gbps最適化API
-
-```rust
-use exorust::net::optimization::{PacketBatch, BatchProcessor};
-
-// 64パケットのバッチ処理
-let mut batch = PacketBatch::new();
-while batch.len() < 64 {
-    if let Some(pkt) = rx_queue.try_recv() {
-        batch.push(pkt);
-    }
-}
-
-// バッチ処理（SIMD最適化）
-processor.process_batch(&mut batch);
-```
-
-#### 旧設計案との用語対応
-
-| 旧設計案の用語 | 現行 reference の語彙 |
+| 用語 | 本書での意味 |
 | --- | --- |
-| mempool | `PacketPool` / RAW / datapath packet pool |
-| batch processing | `PacketBatch` / `BatchProcessor` |
-| scatter-gather I/O | descriptor chaining を伴う multi-buffer DMA / queue submission |
-| zero-copy datapath | RAW endpoint / packet ownership exchange |
+| packet pool / mempool | NIC DMA と packet 再利用のための固定長バッファプール |
+| `PacketPayload` | packet-backed payload の受け渡し単位 |
+| ownership-based buffering | queue / endpoint / protocol 層で payload 所有権を明示して移動する設計 |
+| adaptive polling | interrupt / hybrid / busy polling の切替モデル |
+| batch processing | `PacketBatch` 等による複数 packet のまとめ処理 |
+| scatter-gather | multi-buffer DMA / descriptor chaining による送受信 |
+
+#### packet pool と payload handoff
+
+```rust
+// packet-backed payload を受信・移動する
+let packet: PacketRef = obtain_packet_from_pool()?;
+let payload = PacketPayload::single(packet);
+submit_payload(payload).await?;
+```
+
+#### TCP / UDP / RAW の読み分け
+
+- `RAW endpoint` は packet ownership exchange を直接露出する正規面です。
+- TCP は connection semantics を持ちますが、core の fast path は packet-backed payload queue を中心に整理します。
+- UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先します。
+
+> [!IMPORTANT]
+> TCP を含む全経路で packet-backed payload を end-to-end に維持することは
+> `Canonical target` です。stream convenience や一部 copy path が残る場合でも、
+> それを network core の正規面とはみなしません。
+
+#### Canonical target: packet-backed TCP fast path
+
+```rust
+// handle-first の KAPI で packet-backed payload を受け渡す
+let stream = tcp_stream_dial(remote, scope).await?;
+let payload: PacketPayload = tcp_stream_recv_payload(&stream).await?;
+tcp_stream_send_payload(&stream, payload).await?;
+```
+
+#### batch / scatter-gather / polling
+
+- adaptive polling、batch processing、scatter-gather、offload は network runtime / datapath の baseline として扱います。
+- 実装順序や workstream の詳細は [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) を参照してください。
+- benchmark target と測定 gate は [performance-targets.md](performance-targets.md) を参照してください。
 
 ---
 

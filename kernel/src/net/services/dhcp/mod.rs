@@ -351,7 +351,7 @@ async fn dhcp_v4_drive_task(runtime: Arc<DhcpInterfaceRuntime>) {
 }
 
 async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
-    let socket = match crate::net::l4::udp::UdpEndpoint::bind_registered_with_token_in(
+    let socket = match crate::net::l4::udp::UdpEndpoint::bind_in(
         runtime,
         crate::net::types::InterfaceScope::Any,
         DHCP_CLIENT_PORT,

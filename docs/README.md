@@ -11,9 +11,10 @@
 1. [architecture.md](architecture.md): 現行アーキテクチャの正本
 2. [decisions/README.md](decisions/README.md): 採択済みの設計判断と境界条件
 3. [kernel-development-guidelines.md](kernel-development-guidelines.md): 実装規約
-4. [reference/api-reference.md](reference/api-reference.md): 公開 API と設計意図
-5. [design-overview.md](design-overview.md): Variant 比較と補助的な設計整理
-6. [archive/README.md](archive/README.md): 履歴資料の入口
+4. [reference/network-core.md](reference/network-core.md): ネットワークの canonical reference vocabulary
+5. [reference/api-reference.md](reference/api-reference.md): 広域の公開 API 形状と設計意図
+6. [design-overview.md](design-overview.md): Variant 比較と補助的な設計整理
+7. [archive/README.md](archive/README.md): 履歴資料の入口
 
 ## 規範ラベル
 
@@ -53,6 +54,7 @@
 
 ## Reference
 
+- [reference/network-core.md](reference/network-core.md): ネットワークの core 語彙、ownership-based datapath、polling / batch / scatter-gather の整理
 - [reference/api-reference.md](reference/api-reference.md): 公開 API と設計意図
 - [reference/durability.md](reference/durability.md): durability / persistence の現行整理
 - [reference/execution-fairness.md](reference/execution-fairness.md): fuel / loop-bound / APIC fairness の現行整理
@@ -81,7 +83,8 @@ archive 由来の残存細部の着地点:
 
 - 旧 4.4: [reference/execution-fairness.md](reference/execution-fairness.md)
 - 旧 9.2: [design_variants/hardware-assisted-security-notes.md](design_variants/hardware-assisted-security-notes.md)
-- 旧 11 / 13: [proposals/kernel-roadmap.md](proposals/kernel-roadmap.md)
+- 旧 11 フェーズ 4a-4d（ネットワーク / datapath）: [reference/network-core.md](reference/network-core.md) + [proposals/kernel-roadmap.md](proposals/kernel-roadmap.md)
+- 旧 11 / 13 の workstream 整理: [proposals/kernel-roadmap.md](proposals/kernel-roadmap.md)
 - 完全対応表: [reference/archive-migration-checklist.md](reference/archive-migration-checklist.md)
 
 ## Runbooks

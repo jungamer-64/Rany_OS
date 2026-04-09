@@ -413,8 +413,7 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
     interrupts::init();
 
     // Serial driver initialization is handled later via the DriverRegistry.
-    // Avoid calling the deprecated `io::serial::init()` here to keep
-    // initialization centralized and ensure drivers are started via
+    // Keep initialization centralized and ensure drivers are started via
     // `driver_registry::register_driver` (see serial registration below).
     info!(target: "init", "Interrupt system initialized");
 

@@ -14,9 +14,7 @@ use core::fmt;
 use core::marker::PhantomData;
 use core::mem::{MaybeUninit, align_of, size_of};
 use core::ops::{Add, AddAssign};
-use core::pin::Pin;
 use core::ptr;
-use core::task::{Context, Poll};
 
 /// Task handle - opaque reference to a spawned task
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -888,7 +886,7 @@ impl ChannelHandle {
     }
 }
 
-/// Shared socket address for stream-oriented KAPI TCP operations.
+/// Shared socket address for KAPI TCP endpoint operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetSocketAddr {
     V4 { ip: [u8; 4], port: u16 },
@@ -913,39 +911,6 @@ impl NetSocketAddr {
     pub const fn is_ipv6(self) -> bool {
         matches!(self, Self::V6 { .. })
     }
-}
-
-pub trait AsyncRead {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Result<usize, TcpError>>;
-}
-
-pub trait AsyncWrite {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, TcpError>>;
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>>;
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>>;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TcpError {
-    ConnectionClosed,
-    ConnectionRefused,
-    ConnectionReset,
-    Timeout,
-    AddressInUse,
-    BufferFull,
-    InvalidState,
-    NetworkUnreachable,
-    PermissionDenied,
 }
 
 // ============================================================================
