@@ -3,14 +3,18 @@ use super::*;
 mod ecdh_exchange;
 impl TlsConnection {
     /// データを受信して処理
-    pub fn process_incoming(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub fn process_incoming_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // Security: Limit receive buffer size to prevent DoS.
         // Handshake messages can be up to 128KB, so we allow 128KB + overhead.
         const MAX_RECV_BUFFER: usize = 131072 + 2048;
-        if self.recv_buffer.len() + data.len() > MAX_RECV_BUFFER {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        if self.recv_buffer.len() + view.total_len() > MAX_RECV_BUFFER {
             return Err(TlsError::DecodeError);
         }
-        self.recv_buffer.extend_from_slice(data);
+        view.for_each_chunk(|chunk| self.recv_buffer.extend_from_slice(chunk));
 
         let mut plaintext = Vec::new();
 
@@ -35,7 +39,7 @@ impl TlsConnection {
             self.process_single_record(content_type, payload, &mut plaintext)?;
         }
 
-        Ok(plaintext)
+        Ok(Self::packet_payload_from_vec(plaintext))
     }
 
     /// 単一のTLSレコードを処理する
@@ -522,7 +526,7 @@ impl TlsConnection {
     ///
     /// `process_hello_retry_request()` で状態が `HelloRetryReceived` に
     /// 遷移した後に呼び出す。
-    pub fn build_client_hello_retry(&mut self) -> Option<Vec<u8>> {
+    pub fn build_client_hello_retry(&mut self) -> Option<kernel_api::resource::net::PacketPayload> {
         if self.state != TlsState::HelloRetryReceived {
             return None;
         }

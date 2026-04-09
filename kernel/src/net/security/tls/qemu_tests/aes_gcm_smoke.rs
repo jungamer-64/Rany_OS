@@ -2,6 +2,14 @@ use super::*;
 use crate::net::security::tls::crypto::aes_core::aes_key_expansion;
 use crate::net::security::tls::error::TlsError;
 
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+    let view = crate::net::payload::PacketPayloadView::new(payload);
+    let mut bytes = alloc::vec![0u8; view.total_len()];
+    let copied = view.copy_all_into(&mut bytes);
+    bytes.truncate(copied);
+    bytes
+}
+
 pub fn wave8_tls_aes_gcm_empty_plaintext_smoke() -> bool {
     let key = [0x11u8; 16];
     let nonce = [0x22u8; 12];
@@ -369,7 +377,7 @@ pub fn wave8_tls_tls_connection_initial_state_smoke() -> bool {
 pub fn wave8_tls_tls_connection_client_hello_smoke() -> bool {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
-    let hello = conn.build_client_hello();
+    let hello = payload_bytes(&conn.build_client_hello());
     hello.len() >= 3
         && hello[0] == ContentType::Handshake as u8
         && hello[1] == 0x03

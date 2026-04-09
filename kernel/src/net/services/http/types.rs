@@ -2,10 +2,12 @@
 // kernel/src/net/services/http/types.rs
 // ============================================================================
 
+use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 use core::str::FromStr;
+use kernel_api::resource::net::PacketPayload;
 
 /// HTTPメソッド
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +19,28 @@ pub enum HttpMethod {
     Head,
     Options,
     Patch,
+}
+
+impl HttpMethod {
+    pub fn parse_span(span: &PayloadSpan) -> Option<Self> {
+        if span.eq_ignore_ascii_case(b"GET") {
+            Some(Self::Get)
+        } else if span.eq_ignore_ascii_case(b"POST") {
+            Some(Self::Post)
+        } else if span.eq_ignore_ascii_case(b"PUT") {
+            Some(Self::Put)
+        } else if span.eq_ignore_ascii_case(b"DELETE") {
+            Some(Self::Delete)
+        } else if span.eq_ignore_ascii_case(b"HEAD") {
+            Some(Self::Head)
+        } else if span.eq_ignore_ascii_case(b"OPTIONS") {
+            Some(Self::Options)
+        } else if span.eq_ignore_ascii_case(b"PATCH") {
+            Some(Self::Patch)
+        } else {
+            None
+        }
+    }
 }
 
 impl fmt::Display for HttpMethod {
@@ -35,6 +59,7 @@ impl fmt::Display for HttpMethod {
 
 impl FromStr for HttpMethod {
     type Err = ();
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_uppercase().as_str() {
             "GET" => Ok(HttpMethod::Get),
@@ -56,6 +81,18 @@ pub enum HttpVersion {
     Http1_1,
 }
 
+impl HttpVersion {
+    pub fn parse_span(span: &PayloadSpan) -> Option<Self> {
+        if span.eq_bytes(b"HTTP/1.0") {
+            Some(Self::Http1_0)
+        } else if span.eq_bytes(b"HTTP/1.1") {
+            Some(Self::Http1_1)
+        } else {
+            None
+        }
+    }
+}
+
 impl fmt::Display for HttpVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -67,6 +104,7 @@ impl fmt::Display for HttpVersion {
 
 impl FromStr for HttpVersion {
     type Err = ();
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "HTTP/1.0" => Ok(HttpVersion::Http1_0),
@@ -76,7 +114,6 @@ impl FromStr for HttpVersion {
     }
 }
 
-/// HTTPヘッダ
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpHeader {
     pub name: String,
@@ -92,14 +129,25 @@ impl HttpHeader {
     }
 }
 
-/// HTTPリクエストビルダー
+#[derive(Debug, Clone)]
+pub struct HttpHeaderView {
+    pub name: PayloadSpan,
+    pub value: PayloadSpan,
+}
+
+impl HttpHeaderView {
+    pub fn name_eq(&self, name: &str) -> bool {
+        self.name.eq_ignore_ascii_case(name.as_bytes())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
     pub method: HttpMethod,
     pub uri: String,
     pub version: HttpVersion,
     pub headers: Vec<HttpHeader>,
-    pub body: Option<Vec<u8>>,
+    pub body: Option<PacketPayload>,
 }
 
 impl HttpRequest {
@@ -126,59 +174,96 @@ impl HttpRequest {
         self
     }
 
-    pub fn body(mut self, data: Vec<u8>) -> Self {
-        self.headers.push(HttpHeader::new(
-            "Content-Length",
-            data.len().to_string().as_str(),
-        ));
-        self.body = Some(data);
+    pub fn body_payload(mut self, payload: PacketPayload) -> Self {
+        self.headers
+            .push(HttpHeader::new("Content-Length", payload.total_len().to_string()));
+        self.body = Some(payload);
         self
     }
 
-    /// バイト列にシリアライズ
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = String::new();
-        out.push_str(&alloc::format!(
-            "{} {} {}\r\n",
-            self.method,
-            self.uri,
-            self.version
-        ));
-
-        for header in &self.headers {
-            out.push_str(&alloc::format!("{}: {}\r\n", header.name, header.value));
-        }
-
-        out.push_str("\r\n");
-        let mut bytes = out.into_bytes();
-
-        if let Some(body) = &self.body {
-            bytes.extend_from_slice(body);
-        }
-
-        bytes
+    pub fn body_bytes(self, data: &[u8]) -> Option<Self> {
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_bytes(data)?;
+        Some(self.body_payload(builder.build()))
     }
 
-    /// 特定のヘッダの値を取得（大文字小文字を区別しない）
     pub fn get_header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find_map(|h| {
-            if h.name.eq_ignore_ascii_case(name) {
-                Some(h.value.as_str())
+        self.headers.iter().find_map(|header| {
+            if header.name.eq_ignore_ascii_case(name) {
+                Some(header.value.as_str())
             } else {
                 None
             }
         })
     }
+
+    pub fn into_payload(self) -> Option<PacketPayload> {
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_str(&alloc::format!(
+            "{} {} {}\r\n",
+            self.method,
+            self.uri,
+            self.version
+        ))?;
+        for header in &self.headers {
+            builder.push_str(&header.name)?;
+            builder.push_str(": ")?;
+            builder.push_str(&header.value)?;
+            builder.push_str("\r\n")?;
+        }
+        builder.push_str("\r\n")?;
+        if let Some(body) = self.body {
+            builder.push_payload(body);
+        }
+        Some(builder.build())
+    }
 }
 
-/// HTTPレスポンス
+#[derive(Debug, Clone)]
+pub struct HttpRequestView {
+    pub method: HttpMethod,
+    pub uri: PayloadSpan,
+    pub version: HttpVersion,
+    pub headers: Vec<HttpHeaderView>,
+    pub body: Option<PayloadSpan>,
+}
+
+impl HttpRequestView {
+    pub fn get_header(&self, name: &str) -> Option<&PayloadSpan> {
+        self.headers.iter().find_map(|header| {
+            if header.name_eq(name) {
+                Some(&header.value)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn uri_eq(&self, uri: &str) -> bool {
+        self.uri.eq_bytes(uri.as_bytes())
+    }
+
+    pub fn connection_is(&self, value: &str) -> bool {
+        self.get_header("Connection")
+            .is_some_and(|span| span.eq_ignore_ascii_case(value.as_bytes()))
+    }
+
+    pub fn content_type(&self) -> Option<PayloadSpan> {
+        self.get_header("Content-Type").cloned()
+    }
+
+    pub fn body_payload(&self) -> Option<PacketPayload> {
+        self.body.as_ref().and_then(PayloadSpan::to_payload)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
     pub version: HttpVersion,
     pub status_code: u16,
     pub reason_phrase: String,
     pub headers: Vec<HttpHeader>,
-    pub body: Vec<u8>,
+    pub body: PacketPayload,
 }
 
 impl HttpResponse {
@@ -188,7 +273,7 @@ impl HttpResponse {
             status_code,
             reason_phrase: reason_phrase.to_string(),
             headers: Vec::new(),
-            body: Vec::new(),
+            body: PacketPayload::default(),
         }
     }
 
@@ -197,47 +282,60 @@ impl HttpResponse {
         self
     }
 
-    pub fn body(mut self, data: impl Into<Vec<u8>>) -> Self {
-        let body_data = data.into();
-        self.headers.push(HttpHeader::new(
-            "Content-Length",
-            body_data.len().to_string().as_str(),
-        ));
-        self.body = body_data;
+    pub fn body_payload(mut self, payload: PacketPayload) -> Self {
+        self.headers
+            .push(HttpHeader::new("Content-Length", payload.total_len().to_string()));
+        self.body = payload;
         self
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = String::new();
-        out.push_str(&alloc::format!(
+    pub fn body_bytes(self, data: &[u8]) -> Option<Self> {
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_bytes(data)?;
+        Some(self.body_payload(builder.build()))
+    }
+
+    pub fn into_payload(self) -> Option<PacketPayload> {
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_str(&alloc::format!(
             "{} {} {}\r\n",
             self.version,
             self.status_code,
             self.reason_phrase
-        ));
-
+        ))?;
         for header in &self.headers {
-            out.push_str(&alloc::format!("{}: {}\r\n", header.name, header.value));
+            builder.push_str(&header.name)?;
+            builder.push_str(": ")?;
+            builder.push_str(&header.value)?;
+            builder.push_str("\r\n")?;
         }
-
-        out.push_str("\r\n");
-        let mut bytes = out.into_bytes();
-
-        if !self.body.is_empty() {
-            bytes.extend_from_slice(&self.body);
-        }
-
-        bytes
+        builder.push_str("\r\n")?;
+        builder.push_payload(self.body);
+        Some(builder.build())
     }
+}
 
-    /// 特定のヘッダの値を取得（大文字小文字を区別しない）
-    pub fn get_header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find_map(|h| {
-            if h.name.eq_ignore_ascii_case(name) {
-                Some(h.value.as_str())
+#[derive(Debug, Clone)]
+pub struct HttpResponseView {
+    pub version: HttpVersion,
+    pub status_code: u16,
+    pub reason_phrase: PayloadSpan,
+    pub headers: Vec<HttpHeaderView>,
+    pub body: PayloadSpan,
+}
+
+impl HttpResponseView {
+    pub fn get_header(&self, name: &str) -> Option<&PayloadSpan> {
+        self.headers.iter().find_map(|header| {
+            if header.name_eq(name) {
+                Some(&header.value)
             } else {
                 None
             }
         })
+    }
+
+    pub fn body_payload(&self) -> Option<PacketPayload> {
+        self.body.to_payload()
     }
 }

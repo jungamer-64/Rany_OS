@@ -23,12 +23,13 @@ pub fn test_primary_server_poisoned_returns_none() {
 #[cfg_attr(test, test_case)]
 pub fn test_build_query_with_edns0() {
     let client = DnsClient::new(100);
-    let mut buffer = [0u8; 512];
     let name = "example.com";
 
-    let len = client
-        .build_query(&mut buffer, name, DnsQueryType::A)
-        .unwrap();
+    let payload = client.build_query_payload(name, DnsQueryType::A).unwrap();
+    let view = crate::net::payload::PacketPayloadView::new(&payload);
+    let len = view.total_len();
+    let mut buffer = vec![0u8; len];
+    assert_eq!(view.copy_all_into(&mut buffer), len);
 
     // Header check
     let header = crate::util::get_ref::<DnsHeader>(&buffer, 0).unwrap();
@@ -75,11 +76,13 @@ pub fn test_dns_header_not_truncated() {
 #[cfg_attr(test, test_case)]
 pub fn test_build_tcp_query() {
     let client = DnsClient::new(100);
-    let mut buffer = [0u8; 256];
-
-    let len = client
-        .build_tcp_query(&mut buffer, "example.com", DnsQueryType::A)
+    let payload = client
+        .build_tcp_query_payload("example.com", DnsQueryType::A)
         .unwrap();
+    let view = crate::net::payload::PacketPayloadView::new(&payload);
+    let len = view.total_len();
+    let mut buffer = vec![0u8; len];
+    assert_eq!(view.copy_all_into(&mut buffer), len);
 
     // Length prefix should be first 2 bytes
     let msg_len = u16::from_be_bytes([buffer[0], buffer[1]]) as usize;
@@ -175,8 +178,10 @@ pub fn test_parse_aaaa_record() {
         pending.insert(0x1234, 0);
     }
 
+    let payload = crate::net::payload::payload_from_bytes(&data).expect("dns test packet");
     let records = client
-        .parse_response(&data, 1000, "example.com", DnsQueryType::AAAA)
+        .parse_response_payload(&payload, 1000, "example.com", DnsQueryType::AAAA)
+        .expect("dns payload parse result")
         .unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].name, "example.com");

@@ -192,7 +192,9 @@ impl TlsConnection {
         Ok(records)
     }
 
-    pub fn build_client_finished_tls13(&mut self) -> TlsResult<Vec<u8>> {
+    pub fn build_client_finished_tls13_payload(
+        &mut self,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         if !self.is_tls13 || self.state != TlsState::Tls13ServerFinishedReceived {
             return Err(TlsError::UnexpectedMessage);
         }
@@ -226,7 +228,7 @@ impl TlsConnection {
         self.tls13_derive_application_keys()?;
 
         records.extend_from_slice(&encrypted);
-        Ok(records)
+        Ok(Self::packet_payload_from_vec(records))
     }
 
     /// TLS 1.3: アプリケーショントラフィック鍵を導出
@@ -480,12 +482,17 @@ impl TlsConnection {
     }
 
     /// TLS 1.3 アプリケーションデータ暗号化
-    pub(crate) fn tls13_encrypt_application_data(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub(crate) fn tls13_encrypt_application_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let data = Self::vec_from_payload(payload)?;
         // inner plaintext = data + content_type
         let mut inner = Vec::with_capacity(data.len() + 1);
-        inner.extend_from_slice(data);
+        inner.extend_from_slice(&data);
         inner.push(ContentType::ApplicationData as u8);
         self.tls13_encrypt_record(&inner, false)
+            .map(Self::packet_payload_from_vec)
     }
 
     /// フルハンドシェイク完了後にセッションをキャッシュに保存する

@@ -80,17 +80,14 @@ pub async fn resolve_ipv4(name: &str) -> Option<Ipv4Address> {
 }
 
 /// Build a DNS query for TCP transport (global API)
-///
-/// Returns the total length including the 2-byte length prefix.
-pub fn build_tcp_query(
-    buffer: &mut [u8],
+pub fn build_tcp_query_payload(
     name: &str,
     qtype: DnsQueryType,
-) -> Result<usize, &'static str> {
+) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
     match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
-                client.build_tcp_query(buffer, name, qtype)
+                client.build_tcp_query_payload(name, qtype)
             } else {
                 Err("DNS client not initialized")
             }
@@ -103,8 +100,8 @@ pub fn build_tcp_query(
 }
 
 /// Parse a DNS response received over TCP (global API)
-pub fn parse_tcp_response(
-    data: &[u8],
+pub fn parse_tcp_response_payload(
+    payload: &kernel_api::resource::net::PacketPayload,
     current_tick: u64,
     expected_name: &str,
     expected_type: DnsQueryType,
@@ -112,13 +109,18 @@ pub fn parse_tcp_response(
     match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
-                client.parse_tcp_response(data, current_tick, expected_name, expected_type)
+                client.parse_tcp_response_payload(
+                    payload,
+                    current_tick,
+                    expected_name,
+                    expected_type,
+                )
             } else {
                 Err(DnsResponseCode::ServerFailure)
             }
         }
         Err(_) => {
-            log::error!("[NET] DNS Global lock poisoned (parse_tcp_response)");
+            log::error!("[NET] DNS Global lock poisoned (parse_tcp_response_payload)");
             Err(DnsResponseCode::ServerFailure)
         }
     }

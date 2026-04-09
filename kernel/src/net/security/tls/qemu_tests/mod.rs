@@ -2,6 +2,14 @@
 // tls/qemu_tests.rs - QEMU Integration Tests
 // ============================================================================
 use super::*;
+
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+    let view = crate::net::payload::PacketPayloadView::new(payload);
+    let mut bytes = alloc::vec![0u8; view.total_len()];
+    let copied = view.copy_all_into(&mut bytes);
+    bytes.truncate(copied);
+    bytes
+}
 use crate::net::security::tls::connection::TlsConnection;
 use crate::net::security::tls::crypto::aes_core::{aes_ctr, gf_mul};
 use crate::net::security::tls::crypto::aes_gcm::gf128_mul;
@@ -389,7 +397,7 @@ pub fn wave8_tls_tls13_initial_state_smoke() -> bool {
 pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
-    let hello = conn.build_client_hello();
+    let hello = payload_bytes(&conn.build_client_hello());
 
     if !conn.has_local_ecdh_keypair() || !conn.has_transcript_hash() {
         return false;
@@ -414,7 +422,7 @@ pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
 pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
-    let hello = conn.build_client_hello();
+    let hello = payload_bytes(&conn.build_client_hello());
     let Some(hello_payload) = hello.get(5..) else {
         return false;
     };
@@ -436,7 +444,7 @@ pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
 pub fn wave8_tls_tls13_client_hello_psk_modes_smoke() -> bool {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
-    let hello = conn.build_client_hello();
+    let hello = payload_bytes(&conn.build_client_hello());
     let Some(hello_payload) = hello.get(5..) else {
         return false;
     };

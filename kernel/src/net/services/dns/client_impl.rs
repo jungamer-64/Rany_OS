@@ -1,8 +1,15 @@
 use super::*;
 use crate::net::l4::udp::UdpAddr;
+use crate::net::payload::{PayloadSpan, payload_from_bytes};
 use crate::task::{self, TimeoutResult};
 
 impl DnsClient {
+    fn raw_record_data(&self, rdata: &[u8]) -> DnsRecordData {
+        DnsRecordData::Raw(PayloadSpan::from_payload(
+            payload_from_bytes(rdata).unwrap_or_default(),
+        ))
+    }
+
     /// 新しいDNSクライアントを作成
     pub fn new(tick_rate: u64) -> Self {
         Self {
@@ -181,13 +188,10 @@ impl DnsClient {
             None,
         )
         .map_err(|_| "Failed to bind UDP")?;
-        let mut buffer = [0u8; 512];
-        let query_len = self.build_query(&mut buffer, name, qtype)?;
+        let query_payload = self.build_query_payload(name, qtype)?;
 
         let dest = UdpAddr::new(server, DNS_PORT);
-        let query_payload = crate::net::payload::payload_from_bytes(&buffer[..query_len])
-            .ok_or("UDP send failed")?;
-        if socket.send(query_payload, dest).await.is_err() {
+        if socket.send(query_payload.clone(), dest).await.is_err() {
             return Err("UDP send failed");
         }
 
@@ -207,11 +211,7 @@ impl DnsClient {
                 _ => {
                     attempt += 1;
                     if attempt < DNS_MAX_RETRIES {
-                        if let Some(query_payload) =
-                            crate::net::payload::payload_from_bytes(&buffer[..query_len])
-                        {
-                            let _ = socket.send(query_payload, dest).await;
-                        }
+                        let _ = socket.send(query_payload.clone(), dest).await;
                     }
                 }
             }
@@ -238,43 +238,24 @@ impl DnsClient {
         name: &str,
         qtype: DnsQueryType,
     ) -> Result<Vec<DnsRecord>, &'static str> {
-        fn payload_to_vec(
-            payload: &kernel_api::resource::net::PacketPayload,
-        ) -> Result<alloc::vec::Vec<u8>, &'static str> {
-            let view = crate::net::payload::PacketPayloadView::new(payload);
-            let len = view.total_len();
-            let mut buf = alloc::vec![0u8; len];
-            if view.copy_all_into(&mut buf) != len {
-                return Err("TCP payload copy failed");
-            }
-            Ok(buf)
-        }
-
         async fn read_exact_payload(
             connection: &mut crate::net::l4::tcp::TcpConnection,
-            stash: &mut alloc::vec::Vec<u8>,
-            dst: &mut [u8],
-        ) -> Result<usize, &'static str> {
-            let mut copied = 0usize;
-            while copied < dst.len() {
-                if !stash.is_empty() {
-                    let take = (dst.len() - copied).min(stash.len());
-                    dst[copied..copied + take].copy_from_slice(&stash[..take]);
-                    stash.drain(..take);
-                    copied += take;
-                    continue;
-                }
-
+            stash: &mut kernel_api::resource::net::PacketPayload,
+            len: usize,
+        ) -> Result<Option<kernel_api::resource::net::PacketPayload>, &'static str> {
+            while stash.total_len() < len {
                 let Some(payload) = connection.recv_payload().await else {
                     break;
                 };
-                let bytes = payload_to_vec(&payload)?;
-                if bytes.is_empty() {
+                if payload.total_len() == 0 {
                     break;
                 }
-                stash.extend_from_slice(&bytes);
+                crate::net::payload::append_payload(stash, payload);
             }
-            Ok(copied)
+            if stash.total_len() < len {
+                return Ok(None);
+            }
+            stash.take_prefix(len).ok_or("TCP payload prefix split failed").map(Some)
         }
 
         use crate::net::l4::endpoint::types::EndpointAddr;
@@ -285,11 +266,7 @@ impl DnsClient {
                 .await
                 .map_err(|_| "TCP connection failed")?;
 
-        let mut buffer = [0u8; 1024];
-        let query_len = self.build_tcp_query(&mut buffer, name, qtype)?;
-
-        let payload = crate::net::payload::payload_from_bytes(&buffer[..query_len])
-            .ok_or("TCP payload allocation failed")?;
+        let payload = self.build_tcp_query_payload(name, qtype)?;
         connection
             .send_payload(payload)
             .await
@@ -299,12 +276,16 @@ impl DnsClient {
             .await
             .map_err(|_| "TCP write drain failed")?;
 
-        let mut stash = alloc::vec::Vec::new();
+        let mut stash = kernel_api::resource::net::PacketPayload::default();
 
         // Read 2-byte length prefix
-        let mut len_buf = [0u8; 2];
-        let len_read = read_exact_payload(&mut connection, &mut stash, &mut len_buf).await?;
-        if len_read != 2 {
+        let len_payload = read_exact_payload(&mut connection, &mut stash, 2)
+            .await?
+            .ok_or("TCP read length prefix failed (connection closed or incomplete)")?;
+        let len_buf = crate::net::payload::PacketPayloadView::new(&len_payload)
+            .read_array::<2>(0)
+            .ok_or("TCP length prefix parse failed")?;
+        if len_buf == [0, 0] {
             return Err("TCP read length prefix failed (connection closed or incomplete)");
         }
 
@@ -313,15 +294,13 @@ impl DnsClient {
             return Err("TCP message too long");
         }
 
-        let mut msg_data = alloc::vec![0u8; msg_len];
-        let total_read = read_exact_payload(&mut connection, &mut stash, &mut msg_data).await?;
-
-        if total_read != msg_len {
-            return Err("TCP read incomplete message");
-        }
+        let msg_data = read_exact_payload(&mut connection, &mut stash, msg_len)
+            .await?
+            .ok_or("TCP read incomplete message")?;
 
         let tick = crate::task::current_tick();
-        self.parse_response(&msg_data, tick, name, qtype)
+        self.parse_response_payload(&msg_data, tick, name, qtype)
+            .ok_or("TCP fallback requested unexpectedly")?
             .map_err(|_| "Parse error")
     }
 
@@ -335,32 +314,35 @@ impl DnsClient {
         }
     }
 
-    /// DNSクエリパケットを構築
-    pub fn build_query(
+    /// DNSクエリパケットを packet-backed payload として構築
+    pub fn build_query_payload(
         &self,
-        buffer: &mut [u8],
         name: &str,
         qtype: DnsQueryType,
-    ) -> Result<usize, &'static str> {
-        if buffer.len() < DnsHeader::SIZE + name.len() + 6 {
-            return Err("Buffer too small");
-        }
-
+    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
         // トランザクションIDを生成 (RFC 5452: 予測困難なIDを使用)
         let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         let id = u16::from_le_bytes([random_bytes[0], random_bytes[1]]);
 
-        // ヘッダを構築
-        buffer[0..2].copy_from_slice(&id.to_be_bytes());
-        // フラグ: 標準クエリ、再帰希望
-        buffer[2..4].copy_from_slice(&0x0100u16.to_be_bytes());
-        buffer[4..6].copy_from_slice(&1u16.to_be_bytes()); // QDCOUNT = 1
-        buffer[6..8].copy_from_slice(&0u16.to_be_bytes()); // ANCOUNT = 0
-        buffer[8..10].copy_from_slice(&0u16.to_be_bytes()); // NSCOUNT = 0
-        buffer[10..12].copy_from_slice(&1u16.to_be_bytes()); // ARCOUNT = 1 (EDNS0)
-
-        // 質問セクション - ドメイン名をエンコード
-        let mut offset = DnsHeader::SIZE;
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder
+            .push_bytes(&id.to_be_bytes())
+            .ok_or("Failed to allocate DNS header")?;
+        builder
+            .push_bytes(&0x0100u16.to_be_bytes())
+            .ok_or("Failed to allocate DNS header")?;
+        builder
+            .push_bytes(&1u16.to_be_bytes())
+            .ok_or("Failed to allocate DNS header")?;
+        builder
+            .push_bytes(&0u16.to_be_bytes())
+            .ok_or("Failed to allocate DNS header")?;
+        builder
+            .push_bytes(&0u16.to_be_bytes())
+            .ok_or("Failed to allocate DNS header")?;
+        builder
+            .push_bytes(&1u16.to_be_bytes())
+            .ok_or("Failed to allocate DNS header")?;
 
         for label in name.split('.') {
             if label.is_empty() {
@@ -370,54 +352,38 @@ impl DnsClient {
             if len > 63 {
                 return Err("Label too long");
             }
-            // Security: Check bounds before writing
-            if offset + 1 + len > buffer.len() {
-                return Err("Buffer too small for name");
-            }
-            buffer[offset] = len as u8;
-            offset += 1;
-            buffer[offset..offset + len].copy_from_slice(label.as_bytes());
-            offset += len;
+            builder
+                .push_bytes(&[len as u8])
+                .ok_or("Failed to allocate DNS label")?;
+            builder
+                .push_bytes(label.as_bytes())
+                .ok_or("Failed to allocate DNS label")?;
         }
 
-        // 終端のゼロ
-        if offset >= buffer.len() {
-            return Err("Buffer too small for zero terminator");
-        }
-        buffer[offset] = 0;
-        offset += 1;
-
-        // QTYPE
-        if offset + 2 > buffer.len() {
-            return Err("Buffer too small for QTYPE");
-        }
-        buffer[offset..offset + 2].copy_from_slice(&(qtype as u16).to_be_bytes());
-        offset += 2;
-
-        // QCLASS (IN = 1)
-        if offset + 2 > buffer.len() {
-            return Err("Buffer too small for QCLASS");
-        }
-        buffer[offset..offset + 2].copy_from_slice(&(DnsQueryClass::IN as u16).to_be_bytes());
-        offset += 2;
-
-        // EDNS0 OPT RR (RFC 6891)
-        if offset + 11 > buffer.len() {
-            return Err("Buffer too small for EDNS0 OPT");
-        }
-        buffer[offset] = 0; // Name: root (empty)
-        offset += 1;
-        buffer[offset..offset + 2].copy_from_slice(&(DnsQueryType::OPT as u16).to_be_bytes());
-        offset += 2;
-        // UDP Payload Size: 4096 (0x1000)
-        buffer[offset..offset + 2].copy_from_slice(&4096u16.to_be_bytes());
-        offset += 2;
-        // Extended RCODE and flags
-        buffer[offset..offset + 4].copy_from_slice(&0u32.to_be_bytes());
-        offset += 4;
-        // RDLENGTH: 0
-        buffer[offset..offset + 2].copy_from_slice(&0u16.to_be_bytes());
-        offset += 2;
+        builder
+            .push_bytes(&[0])
+            .ok_or("Failed to allocate DNS terminator")?;
+        builder
+            .push_bytes(&(qtype as u16).to_be_bytes())
+            .ok_or("Failed to allocate DNS qtype")?;
+        builder
+            .push_bytes(&(DnsQueryClass::IN as u16).to_be_bytes())
+            .ok_or("Failed to allocate DNS qclass")?;
+        builder
+            .push_bytes(&[0])
+            .ok_or("Failed to allocate EDNS0 root name")?;
+        builder
+            .push_bytes(&(DnsQueryType::OPT as u16).to_be_bytes())
+            .ok_or("Failed to allocate EDNS0 type")?;
+        builder
+            .push_bytes(&4096u16.to_be_bytes())
+            .ok_or("Failed to allocate EDNS0 payload size")?;
+        builder
+            .push_bytes(&0u32.to_be_bytes())
+            .ok_or("Failed to allocate EDNS0 flags")?;
+        builder
+            .push_bytes(&0u16.to_be_bytes())
+            .ok_or("Failed to allocate EDNS0 rdlength")?;
 
         self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
 
@@ -435,78 +401,12 @@ impl DnsClient {
             pending.insert(id, 0); // tickは呼び出し元で設定可
         }
 
-        Ok(offset)
+        Ok(builder.build())
     }
 
     /// Check if a DNS query should be retried based on attempt count and elapsed time
     pub fn should_retry(&self, attempt: u8, elapsed_ms: u64) -> bool {
         attempt < DNS_MAX_RETRIES && elapsed_ms >= DNS_RETRY_TIMEOUT_MS
-    }
-
-    /// Build a retry query using the same transaction ID
-    pub fn build_retry_query(
-        &self,
-        buffer: &mut [u8],
-        name: &str,
-        qtype: DnsQueryType,
-        transaction_id: u16,
-    ) -> Result<usize, &'static str> {
-        if buffer.len() < DnsHeader::SIZE + name.len() + 6 {
-            return Err("Buffer too small");
-        }
-
-        // Use provided transaction ID (same as original query for correlation)
-        buffer[0..2].copy_from_slice(&transaction_id.to_be_bytes());
-        buffer[2..4].copy_from_slice(&0x0100u16.to_be_bytes());
-        buffer[4..6].copy_from_slice(&1u16.to_be_bytes());
-        buffer[6..8].copy_from_slice(&0u16.to_be_bytes());
-        buffer[8..10].copy_from_slice(&0u16.to_be_bytes());
-        buffer[10..12].copy_from_slice(&0u16.to_be_bytes());
-
-        let mut offset = DnsHeader::SIZE;
-
-        for label in name.split('.') {
-            if label.is_empty() {
-                continue;
-            }
-            let len = label.len();
-            if len > 63 {
-                return Err("Label too long");
-            }
-            // Security: Check bounds before writing
-            if offset + 1 + len > buffer.len() {
-                return Err("Buffer too small for name");
-            }
-            buffer[offset] = len as u8;
-            offset += 1;
-            buffer[offset..offset + len].copy_from_slice(label.as_bytes());
-            offset += len;
-        }
-
-        // 終端のゼロ
-        if offset >= buffer.len() {
-            return Err("Buffer too small for zero terminator");
-        }
-        buffer[offset] = 0;
-        offset += 1;
-
-        // QTYPE
-        if offset + 2 > buffer.len() {
-            return Err("Buffer too small for QTYPE");
-        }
-        buffer[offset..offset + 2].copy_from_slice(&(qtype as u16).to_be_bytes());
-        offset += 2;
-
-        // QCLASS (IN = 1)
-        if offset + 2 > buffer.len() {
-            return Err("Buffer too small for QCLASS");
-        }
-        buffer[offset..offset + 2].copy_from_slice(&(DnsQueryClass::IN as u16).to_be_bytes());
-        offset += 2;
-
-        self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
-
-        Ok(offset)
     }
 
     /// DNSレコードをキャッシュに追加する
@@ -540,7 +440,7 @@ impl DnsClient {
     }
 
     /// DNS応答を解析
-    pub fn parse_response(
+    fn parse_response_bytes(
         &self,
         data: &[u8],
         current_tick: u64,
@@ -689,10 +589,10 @@ impl DnsClient {
                 if self.needs_tcp_fallback(packet.data()) {
                     None
                 } else {
-                    Some(self.parse_response(
-                        packet.data(),
-                        current_tick,
-                        expected_name,
+                        Some(self.parse_response_bytes(
+                            packet.data(),
+                            current_tick,
+                            expected_name,
                         expected_type,
                     ))
                 }
@@ -706,7 +606,7 @@ impl DnsClient {
                 if self.needs_tcp_fallback(packet.data()) {
                     None
                 } else {
-                    Some(self.parse_response(
+                    Some(self.parse_response_bytes(
                         packet.data(),
                         current_tick,
                         expected_name,
@@ -798,7 +698,7 @@ impl DnsClient {
                 if let Ok((cname, _)) = self.parse_name(data, offset_after_rdata - rdlength) {
                     DnsRecordData::Name(cname)
                 } else {
-                    DnsRecordData::Raw(rdata.to_vec())
+                    self.raw_record_data(rdata)
                 }
             }
             Some(DnsQueryType::MX) if rdlength >= 3 => {
@@ -807,7 +707,7 @@ impl DnsClient {
                 {
                     DnsRecordData::MX(preference, exchange)
                 } else {
-                    DnsRecordData::Raw(rdata.to_vec())
+                    self.raw_record_data(rdata)
                 }
             }
             Some(DnsQueryType::TXT) => self.parse_txt_record(rdata, rdlength),
@@ -823,17 +723,17 @@ impl DnsClient {
                         target,
                     }
                 } else {
-                    DnsRecordData::Raw(rdata.to_vec())
+                    self.raw_record_data(rdata)
                 }
             }
-            _ => DnsRecordData::Raw(rdata.to_vec()),
+            _ => self.raw_record_data(rdata),
         }
     }
 
     /// TXTレコードをパースする
     pub(super) fn parse_txt_record(&self, rdata: &[u8], rdlength: usize) -> DnsRecordData {
         if rdata.is_empty() {
-            return DnsRecordData::Raw(rdata.to_vec());
+            return self.raw_record_data(rdata);
         }
 
         // RFC 1035: TXT RDATA consists of one or more <character-string>s.
@@ -850,7 +750,7 @@ impl DnsClient {
                 // Malformed TXT record, but we've already started parsing.
                 // If we have nothing yet, return Raw. Otherwise return what we have.
                 if txt_content.is_empty() {
-                    return DnsRecordData::Raw(rdata.to_vec());
+                    return self.raw_record_data(rdata);
                 }
                 break;
             }
@@ -1030,37 +930,19 @@ impl DnsClient {
     // DNS over TCP Support (RFC 7766)
     // ========================================================================
 
-    /// Build a DNS query for TCP transport
-    ///
-    /// DNS over TCP requires a 2-byte length prefix before the message.
-    /// RFC 7766 specifies that all DNS implementations should support TCP.
-    ///
-    /// # Arguments
-    /// - `buffer`: Output buffer (must be at least message_len + 2)
-    /// - `name`: Domain name to query
-    /// - `qtype`: Query type (A, AAAA, etc.)
-    ///
-    /// # Returns
-    /// Total length including the 2-byte length prefix
-    pub fn build_tcp_query(
+    /// Build a DNS query for TCP transport as a packet-backed payload.
+    pub fn build_tcp_query_payload(
         &self,
-        buffer: &mut [u8],
         name: &str,
         qtype: DnsQueryType,
-    ) -> Result<usize, &'static str> {
-        if buffer.len() < 2 {
-            return Err("Buffer too small for TCP length prefix");
-        }
-
-        // Build the DNS message after the length prefix
-        let msg_len = self.build_query(&mut buffer[2..], name, qtype)?;
-
-        // Prepend the 2-byte length prefix (network byte order)
-        let len_bytes = (msg_len as u16).to_be_bytes();
-        buffer[0] = len_bytes[0];
-        buffer[1] = len_bytes[1];
-
-        Ok(2 + msg_len)
+    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
+        let message = self.build_query_payload(name, qtype)?;
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder
+            .push_bytes(&(message.total_len() as u16).to_be_bytes())
+            .ok_or("Buffer too small for TCP length prefix")?;
+        builder.push_payload(message);
+        Ok(builder.build())
     }
 
     /// Parse a DNS response received over TCP
@@ -1074,31 +956,31 @@ impl DnsClient {
     ///
     /// # Returns
     /// Parsed DNS records or error code
-    pub fn parse_tcp_response(
+    pub fn parse_tcp_response_payload(
         &self,
-        data: &[u8],
+        payload: &kernel_api::resource::net::PacketPayload,
         current_tick: u64,
         expected_name: &str,
         expected_type: DnsQueryType,
     ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
-        // TCP responses have a 2-byte length prefix
-        if data.len() < 2 {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        if view.total_len() < 2 {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let msg_len = u16::from_be_bytes([data[0], data[1]]) as usize;
+        let len = view
+            .read_array::<2>(0)
+            .ok_or(DnsResponseCode::FormatError)?;
+        let msg_len = u16::from_be_bytes(len) as usize;
 
-        if data.len() < 2 + msg_len {
+        if view.total_len() < 2 + msg_len {
             return Err(DnsResponseCode::FormatError);
         }
 
-        // Parse the actual DNS message (skip length prefix)
-        self.parse_response(
-            &data[2..2 + msg_len],
-            current_tick,
-            expected_name,
-            expected_type,
-        )
+        let message = crate::net::payload::payload_range(payload, 2, msg_len)
+            .ok_or(DnsResponseCode::FormatError)?;
+        self.parse_response_payload(&message, current_tick, expected_name, expected_type)
+            .ok_or(DnsResponseCode::FormatError)?
     }
 
     /// Check if a UDP response requires TCP fallback

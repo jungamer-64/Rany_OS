@@ -6,46 +6,27 @@ use alloc::boxed::Box;
 use alloc::string::String;
 
 use super::parser::{HttpParseError, HttpParser};
-use super::types::{HttpRequest, HttpResponse};
+use super::types::{HttpRequest, HttpResponseView};
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
-use crate::net::payload::{PacketPayloadView, payload_from_bytes};
 use crate::net::security::tls::connection::TlsConnection;
 use crate::net::security::tls::types::{TlsConfig, TlsState};
 use crate::net::services::dns::resolve_ipv4;
+use kernel_api::resource::net::PacketPayload;
 
-const HTTP_TCP_SEND_CHUNK: usize = 1400;
-
-async fn send_all_payload(
+async fn send_payload(
     connection: &mut TcpConnection,
-    buf: &[u8],
+    payload: PacketPayload,
 ) -> Result<(), HttpClientError> {
-    for chunk in buf.chunks(HTTP_TCP_SEND_CHUNK) {
-        let payload = payload_from_bytes(chunk).ok_or(HttpClientError::WriteError)?;
-        connection
-            .send_payload(payload)
-            .await
-            .map_err(|_| HttpClientError::WriteError)?;
-    }
+    connection
+        .send_payload(payload)
+        .await
+        .map_err(|_| HttpClientError::WriteError)?;
     connection
         .drain_tx()
         .await
         .map_err(|_| HttpClientError::WriteError)
 }
 
-async fn recv_payload_bytes(
-    connection: &mut TcpConnection,
-) -> Result<Option<alloc::vec::Vec<u8>>, HttpClientError> {
-    let Some(payload) = connection.recv_payload().await else {
-        return Ok(None);
-    };
-    let view = PacketPayloadView::new(&payload);
-    let len = view.total_len();
-    let mut buf = alloc::vec![0u8; len];
-    if view.copy_all_into(&mut buf) != len {
-        return Err(HttpClientError::ReadError);
-    }
-    Ok(Some(buf))
-}
 
 #[derive(Debug)]
 pub enum HttpClientError {
@@ -103,7 +84,7 @@ impl HttpClient {
     }
 
     /// リクエストを非同期で送信し、レスポンスを取得する
-    pub async fn send(&self, mut req: HttpRequest) -> Result<HttpResponse, HttpClientError> {
+    pub async fn send(&self, mut req: HttpRequest) -> Result<HttpResponseView, HttpClientError> {
         let (host, port, path, is_https) =
             Self::parse_url(&req.uri).unwrap_or((req.uri.clone(), 80, String::from("/"), false));
 
@@ -143,7 +124,7 @@ impl HttpClient {
                 .await
                 .map_err(|_| HttpClientError::ConnectionFailed)?;
 
-        let request_bytes = req.to_bytes();
+        let request_payload = req.into_payload().ok_or(HttpClientError::WriteError)?;
         let mut parser = HttpParser::new();
 
         // 3. 通信 (TLS or 平文)
@@ -154,41 +135,41 @@ impl HttpClient {
 
             // ClientHello 送信
             let client_hello = tls.build_client_hello();
-            send_all_payload(&mut connection, &client_hello).await?;
+            send_payload(&mut connection, client_hello).await?;
 
             // ハンドシェイク
             // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while tls.state() != TlsState::Established && tls.state() != TlsState::Error {
-                let Some(in_buf) = recv_payload_bytes(&mut connection).await? else {
+                let Some(in_payload) = connection.recv_payload().await else {
                     return Err(HttpClientError::TlsHandshakeFailed);
                 };
 
                 // 受信データを処理
                 let _app_data = tls
-                    .process_incoming(&in_buf)
+                    .process_incoming_payload(&in_payload)
                     .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
 
                 // 状態遷移に応じた応答を構築して送信
                 match tls.state() {
                     TlsState::Handshaking => {
                         // TLS 1.2: ServerHelloDone 受信後
-                        if let Some(cke) = tls.build_client_key_exchange() {
-                            send_all_payload(&mut connection, &cke).await?;
-                        } else if let Some(cke_rsa) = tls.build_client_key_exchange_rsa() {
-                            send_all_payload(&mut connection, &cke_rsa).await?;
+                        if let Some(cke) = tls.build_client_key_exchange_payload() {
+                            send_payload(&mut connection, cke).await?;
+                        } else if let Some(cke_rsa) = tls.build_client_key_exchange_rsa_payload() {
+                            send_payload(&mut connection, cke_rsa).await?;
                         }
 
-                        let ccs = tls.build_change_cipher_spec();
-                        send_all_payload(&mut connection, &ccs).await?;
+                        let ccs = tls.build_change_cipher_spec_payload();
+                        send_payload(&mut connection, ccs).await?;
 
-                        if let Ok(fin) = tls.build_client_finished_tls12() {
-                            send_all_payload(&mut connection, &fin).await?;
+                        if let Ok(fin) = tls.build_client_finished_tls12_payload() {
+                            send_payload(&mut connection, fin).await?;
                         }
                     }
                     TlsState::Tls13ServerFinishedReceived => {
                         // TLS 1.3: Server Finished 受信後
-                        if let Ok(fin) = tls.build_client_finished_tls13() {
-                            send_all_payload(&mut connection, &fin).await?;
+                        if let Ok(fin) = tls.build_client_finished_tls13_payload() {
+                            send_payload(&mut connection, fin).await?;
                         }
                     }
                     _ => {}
@@ -201,28 +182,28 @@ impl HttpClient {
 
             // HTTPリクエストの暗号化と送信
             let encrypted_request = tls
-                .encrypt_application_data(&request_bytes)
+                .encrypt_application_payload(&request_payload)
                 .map_err(|_| HttpClientError::WriteError)?;
-            send_all_payload(&mut connection, &encrypted_request).await?;
+            send_payload(&mut connection, encrypted_request).await?;
 
             // HTTPレスポンスの受信と復号
             // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
-                let Some(in_buf) = recv_payload_bytes(&mut connection).await? else {
+                let Some(in_payload) = connection.recv_payload().await else {
                     break; // EOF
                 };
 
                 let app_data = tls
-                    .process_incoming(&in_buf)
+                    .process_incoming_payload(&in_payload)
                     .map_err(|_| HttpClientError::ReadError)?;
 
                 // KeyUpdate 等のポストハンドシェイク応答があれば送信
-                if let Some(resp) = tls.build_key_update_response() {
-                    send_all_payload(&mut connection, &resp).await?;
+                if let Some(resp) = tls.build_key_update_response_payload() {
+                    send_payload(&mut connection, resp).await?;
                 }
 
                 if !app_data.is_empty() {
-                    parser.push_data(&app_data);
+                    parser.push_payload(app_data);
 
                     if let Some(response) =
                         parser.try_parse().map_err(HttpClientError::ParseError)?
@@ -233,15 +214,15 @@ impl HttpClient {
             }
         } else {
             // HTTP
-            send_all_payload(&mut connection, &request_bytes).await?;
+            send_payload(&mut connection, request_payload).await?;
 
             // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
             loop {
-                let Some(in_buf) = recv_payload_bytes(&mut connection).await? else {
+                let Some(in_payload) = connection.recv_payload().await else {
                     break; // EOF
                 };
 
-                parser.push_data(&in_buf);
+                parser.push_payload(in_payload);
                 if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
                     return Ok(response);
                 }

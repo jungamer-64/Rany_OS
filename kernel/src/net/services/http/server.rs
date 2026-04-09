@@ -1,9 +1,11 @@
-use alloc::{format, vec, vec::Vec};
+use alloc::string::{String, ToString};
+use alloc::{format, vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::net::l4::tcp::{EndpointAddr, TcpError, TcpAcceptor, TcpConnection};
-use crate::net::payload::{PacketPayloadView, payload_from_bytes};
+use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
 use crate::task::{self, Task, TimeoutResult};
+use kernel_api::resource::net::PacketPayload;
 
 static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -160,13 +162,6 @@ fn log_http_restart(cause: ServiceRestartCause, consecutive_failures: u32, backo
     }
 }
 
-fn payload_to_vec(payload: &kernel_api::resource::net::PacketPayload) -> Option<Vec<u8>> {
-    let view = PacketPayloadView::new(payload);
-    let len = view.total_len();
-    let mut buf = vec![0u8; len];
-    (view.copy_all_into(&mut buf) == len).then_some(buf)
-}
-
 async fn bind_http_acceptor() -> Result<TcpAcceptor, TcpError> {
     TcpAcceptor::bind_in(
         crate::net::runtime::default_runtime(),
@@ -265,29 +260,23 @@ async fn handle_client(mut client: TcpConnection) {
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
-        let mut response_bytes = None;
+        let mut response_payload = None;
         let mut keep_alive = false;
 
         // まずバッファ内のデータだけでパースできるか試す（パイプライン処理対応）
         match parser.try_parse_request() {
             Ok(Some(request)) => {
-                let req_keep_alive = request
-                    .get_header("Connection")
-                    .map(|v| v.eq_ignore_ascii_case("keep-alive"))
-                    .unwrap_or(false);
+                let req_keep_alive = request.connection_is("keep-alive");
                 let default_keep_alive = request.version == super::types::HttpVersion::Http1_1;
-                let conn_close = request
-                    .get_header("Connection")
-                    .map(|v| v.eq_ignore_ascii_case("close"))
-                    .unwrap_or(false);
+                let conn_close = request.connection_is("close");
                 keep_alive = (req_keep_alive || default_keep_alive) && !conn_close;
 
-                response_bytes = Some(build_response_for_request(&request, keep_alive));
+                response_payload = Some(build_response_for_request(&request, keep_alive));
             }
             Ok(None) => {} // データ不足
             Err(err) => {
                 log::warn!("[HOST-HTTP] parse error: {:?}", err);
-                response_bytes = Some(build_json_response(
+                response_payload = Some(build_json_response(
                     "400 Bad Request",
                     "{\"status\":\"bad_request\"}",
                     false,
@@ -296,7 +285,7 @@ async fn handle_client(mut client: TcpConnection) {
         }
 
         // バッファ内のデータだけでリクエストが完成しなかった場合のみ、ソケットから読み込みを行う
-        if response_bytes.is_none() {
+        if response_payload.is_none() {
             const READ_TRIES: usize = 20;
             const READ_TIMEOUT_MS: u64 = 100;
 
@@ -311,37 +300,22 @@ async fn handle_client(mut client: TcpConnection) {
                         break;
                     }
                     TimeoutResult::Completed(Some(payload)) => {
-                        let Some(chunk) = payload_to_vec(&payload) else {
-                            log::warn!("[HOST-HTTP] payload copy error");
-                            response_bytes = Some(build_json_response(
-                                "500 Internal Server Error",
-                                "{\"status\":\"error\"}",
-                                false,
-                            ));
-                            break;
-                        };
-                        let len = chunk.len();
+                        let len = payload.total_len();
                         if len == 0 {
                             break;
                         }
                         read_success = true;
                         BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
-                        parser.push_data(&chunk);
+                        parser.push_payload(payload);
                         match parser.try_parse_request() {
                             Ok(Some(request)) => {
-                                let req_keep_alive = request
-                                    .get_header("Connection")
-                                    .map(|v| v.eq_ignore_ascii_case("keep-alive"))
-                                    .unwrap_or(false);
+                                let req_keep_alive = request.connection_is("keep-alive");
                                 let default_keep_alive =
                                     request.version == super::types::HttpVersion::Http1_1;
-                                let conn_close = request
-                                    .get_header("Connection")
-                                    .map(|v| v.eq_ignore_ascii_case("close"))
-                                    .unwrap_or(false);
+                                let conn_close = request.connection_is("close");
                                 keep_alive = (req_keep_alive || default_keep_alive) && !conn_close;
 
-                                response_bytes =
+                                response_payload =
                                     Some(build_response_for_request(&request, keep_alive));
                                 break;
                             }
@@ -350,7 +324,7 @@ async fn handle_client(mut client: TcpConnection) {
                             }
                             Err(err) => {
                                 log::warn!("[HOST-HTTP] parse error: {:?}", err);
-                                response_bytes = Some(build_json_response(
+                                response_payload = Some(build_json_response(
                                     "400 Bad Request",
                                     "{\"status\":\"bad_request\"}",
                                     false,
@@ -362,20 +336,23 @@ async fn handle_client(mut client: TcpConnection) {
                 }
             }
 
-            if !read_success && response_bytes.is_none() {
+            if !read_success && response_payload.is_none() {
                 // クライアントが正常に接続を閉じた場合
                 break;
             }
         }
 
-        let response = response_bytes.unwrap_or_else(|| {
+        let response = response_payload.unwrap_or_else(|| {
             log::warn!("[HOST-HTTP] request read timeout or client closed connection early");
             build_json_response("408 Request Timeout", "{\"status\":\"timeout\"}", false)
         });
 
-        log::info!("[HOST-HTTP] preparing response: {} bytes", response.len());
+        log::info!(
+            "[HOST-HTTP] preparing response: {} bytes",
+            response.total_len()
+        );
 
-        if let Err(err) = write_response(&mut client, response.as_slice()).await {
+        if let Err(err) = write_response(&mut client, response).await {
             log::warn!("[HOST-HTTP] send error: {}", err);
             break;
         }
@@ -437,60 +414,20 @@ mod tests {
     }
 }
 
-async fn write_response(client: &mut TcpConnection, response: &[u8]) -> Result<(), &'static str> {
-    const IO_TIMEOUT_MS: u64 = 200;
-    const MAX_TIMEOUT_RETRIES: usize = 25;
-
-    let mut sent = 0usize;
-    let mut write_timeouts = 0usize;
-    while sent < response.len() {
-        let end = (sent + HTTP_TCP_SEND_CHUNK).min(response.len());
-        let chunk = &response[sent..end];
-        let payload = payload_from_bytes(chunk).ok_or("socket payload allocation failed")?;
-        log::info!(
-            "[HOST-HTTP] write attempt: offset={} remaining={}",
-            sent,
-            response.len().saturating_sub(sent)
-        );
-        match task::with_timeout(client.send_payload(payload), IO_TIMEOUT_MS).await {
-            TimeoutResult::TimedOut => {
-                write_timeouts = write_timeouts.saturating_add(1);
-                if write_timeouts >= MAX_TIMEOUT_RETRIES {
-                    return Err("socket write timeout");
-                }
-                task::yield_now().await;
-                continue;
-            }
-            TimeoutResult::Completed(Err(_)) => return Err("socket write error"),
-            TimeoutResult::Completed(Ok(())) => {
-                write_timeouts = 0;
-                log::info!("[HOST-HTTP] wrote {} bytes", chunk.len());
-                sent = end;
-                BYTES_TX.fetch_add(chunk.len() as u64, Ordering::Relaxed);
-                // yieldでExecutorに制御を渡し、ISR駆動のVirtIO処理を促進
-                task::yield_now().await;
-            }
-        }
-    }
-
-    log::info!("[HOST-HTTP] draining response queue");
-    let mut drain_timeouts = 0usize;
-    loop {
-        match task::with_timeout(client.drain_tx(), IO_TIMEOUT_MS).await {
-            TimeoutResult::TimedOut => {
-                drain_timeouts = drain_timeouts.saturating_add(1);
-                if drain_timeouts >= MAX_TIMEOUT_RETRIES {
-                    return Err("socket drain timeout");
-                }
-                task::yield_now().await;
-            }
-            TimeoutResult::Completed(Err(_)) => return Err("socket drain error"),
-            TimeoutResult::Completed(Ok(())) => {
-                log::info!("[HOST-HTTP] drain complete");
-                return Ok(());
-            }
-        }
-    }
+async fn write_response(
+    client: &mut TcpConnection,
+    response: PacketPayload,
+) -> Result<(), &'static str> {
+    let total_len = response.total_len();
+    client
+        .send_payload(response)
+        .await
+        .map_err(|_| "socket write error")?;
+    BYTES_TX.fetch_add(total_len as u64, Ordering::Relaxed);
+    client
+        .drain_tx()
+        .await
+        .map_err(|_| "socket drain error")
 }
 
 fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
@@ -515,7 +452,7 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
     (keys.len(), rx_packets, tx_packets, tx_errors, rx_errors)
 }
 
-fn build_health_response(keep_alive: bool) -> Vec<u8> {
+fn build_health_response(keep_alive: bool) -> PacketPayload {
     let (ports, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
     let body = format!(
         "{{\"status\":\"ok\",\"port_runtime\":{},\"ports\":{},\"rx\":{},\"tx\":{},\"tx_errors\":{},\"rx_errors\":{}}}",
@@ -533,22 +470,36 @@ fn build_health_response(keep_alive: bool) -> Vec<u8> {
     build_json_response("200 OK", &body, keep_alive)
 }
 
-fn build_response_for_request(request: &super::types::HttpRequest, keep_alive: bool) -> Vec<u8> {
+fn build_response_for_request(
+    request: &super::types::HttpRequestView,
+    keep_alive: bool,
+) -> PacketPayload {
     TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
 
     if request.method == super::types::HttpMethod::Get {
-        match request.uri.as_str() {
-            "/" => return build_index_response(keep_alive),
-            "/health" => return build_health_response(keep_alive),
-            "/stats" => return build_stats_response(keep_alive),
-            "/info" => return build_info_response(keep_alive),
-            "/logs" => return build_log_response(keep_alive),
-            "/executors" => return build_executor_stats_response(keep_alive),
-            "/memory" => return build_memory_info_response(keep_alive),
-            _ => {}
+        if request.uri_eq("/") {
+            return build_index_response(keep_alive);
+        }
+        if request.uri_eq("/health") {
+            return build_health_response(keep_alive);
+        }
+        if request.uri_eq("/stats") {
+            return build_stats_response(keep_alive);
+        }
+        if request.uri_eq("/info") {
+            return build_info_response(keep_alive);
+        }
+        if request.uri_eq("/logs") {
+            return build_log_response(keep_alive);
+        }
+        if request.uri_eq("/executors") {
+            return build_executor_stats_response(keep_alive);
+        }
+        if request.uri_eq("/memory") {
+            return build_memory_info_response(keep_alive);
         }
     } else if request.method == super::types::HttpMethod::Post {
-        if request.uri.as_str() == "/echo" {
+        if request.uri_eq("/echo") {
             return build_echo_response(request, keep_alive);
         }
     }
@@ -556,13 +507,17 @@ fn build_response_for_request(request: &super::types::HttpRequest, keep_alive: b
     build_json_response("404 Not Found", "{\"status\":\"not_found\"}", keep_alive)
 }
 
-fn build_echo_response(request: &super::types::HttpRequest, keep_alive: bool) -> Vec<u8> {
-    if let Some(body) = &request.body {
-        let content_type = request
-            .get_header("Content-Type")
-            .unwrap_or("application/json");
-        let body_str = core::str::from_utf8(body).unwrap_or("{\"error\": \"invalid utf-8\"}");
-        build_custom_response("200 OK", content_type, body_str, keep_alive)
+fn build_echo_response(
+    request: &super::types::HttpRequestView,
+    keep_alive: bool,
+) -> PacketPayload {
+    if let Some(body) = request.body_payload() {
+        build_payload_response(
+            "200 OK",
+            HeaderValue::PayloadOrDefault(request.content_type()),
+            body,
+            keep_alive,
+        )
     } else {
         build_json_response(
             "400 Bad Request",
@@ -572,7 +527,7 @@ fn build_echo_response(request: &super::types::HttpRequest, keep_alive: bool) ->
     }
 }
 
-fn build_index_response(keep_alive: bool) -> Vec<u8> {
+fn build_index_response(keep_alive: bool) -> PacketPayload {
     let html = r#"<!DOCTYPE html>
 <html>
 <head>
@@ -615,7 +570,7 @@ fn build_index_response(keep_alive: bool) -> Vec<u8> {
     build_html_response("200 OK", html, keep_alive)
 }
 
-fn build_log_response(keep_alive: bool) -> Vec<u8> {
+fn build_log_response(keep_alive: bool) -> PacketPayload {
     let len = crate::io::log::get_log_len();
     // 16KB までのログを返却
     let max_len = core::cmp::min(len, 16 * 1024);
@@ -634,7 +589,7 @@ fn build_log_response(keep_alive: bool) -> Vec<u8> {
     build_custom_response("200 OK", "text/plain; charset=utf-8", logs, keep_alive)
 }
 
-fn build_executor_stats_response(keep_alive: bool) -> Vec<u8> {
+fn build_executor_stats_response(keep_alive: bool) -> PacketPayload {
     let manager = crate::task::executor_manager();
     let all_stats = manager.all_stats();
 
@@ -665,7 +620,7 @@ fn build_executor_stats_response(keep_alive: bool) -> Vec<u8> {
     build_json_response("200 OK", &json, keep_alive)
 }
 
-fn build_memory_info_response(keep_alive: bool) -> Vec<u8> {
+fn build_memory_info_response(keep_alive: bool) -> PacketPayload {
     let stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
     let total_kb = (stats.total_frames as u64) * 4;
     let free_kb = (stats.free_frames as u64) * 4;
@@ -704,7 +659,7 @@ fn build_memory_info_response(keep_alive: bool) -> Vec<u8> {
     build_json_response("200 OK", &json, keep_alive)
 }
 
-fn build_stats_response(keep_alive: bool) -> Vec<u8> {
+fn build_stats_response(keep_alive: bool) -> PacketPayload {
     let requests = TOTAL_REQUESTS.load(Ordering::Relaxed);
     let bytes_rx = BYTES_RX.load(Ordering::Relaxed);
     let bytes_tx = BYTES_TX.load(Ordering::Relaxed);
@@ -735,7 +690,7 @@ fn build_stats_response(keep_alive: bool) -> Vec<u8> {
     build_json_response("200 OK", &json, keep_alive)
 }
 
-fn build_info_response(keep_alive: bool) -> Vec<u8> {
+fn build_info_response(keep_alive: bool) -> PacketPayload {
     let domain_stats = crate::domain::get_domain_stats();
     let sas_stats = crate::sas::stats();
     let spectre = crate::security::spectre::status_summary();
@@ -780,12 +735,77 @@ fn build_info_response(keep_alive: bool) -> Vec<u8> {
     build_json_response("200 OK", &json, keep_alive)
 }
 
-fn build_json_response(status: &str, body: &str, keep_alive: bool) -> Vec<u8> {
+fn build_json_response(status: &str, body: &str, keep_alive: bool) -> PacketPayload {
     build_custom_response(status, "application/json", body, keep_alive)
 }
 
-fn build_html_response(status: &str, body: &str, keep_alive: bool) -> Vec<u8> {
+fn build_html_response(status: &str, body: &str, keep_alive: bool) -> PacketPayload {
     build_custom_response(status, "text/html; charset=utf-8", body, keep_alive)
+}
+
+enum HeaderValue {
+    Text(String),
+    PayloadOrDefault(Option<PayloadSpan>),
+}
+
+fn body_payload_from_bytes(body: &[u8]) -> PacketPayload {
+    let mut builder = PacketPayloadBuilder::new();
+    builder
+        .push_bytes(body)
+        .expect("HTTP response body allocation failed");
+    builder.build()
+}
+
+fn build_payload_response(
+    status: &str,
+    content_type: HeaderValue,
+    body: PacketPayload,
+    keep_alive: bool,
+) -> PacketPayload {
+    let connection_header = if keep_alive { "keep-alive" } else { "close" };
+    let mut builder = PacketPayloadBuilder::new();
+    builder.push_str("HTTP/1.1 ").expect("HTTP status write failed");
+    builder.push_str(status).expect("HTTP status write failed");
+    builder.push_str("\r\n").expect("HTTP status write failed");
+    builder
+        .push_str("Content-Type: ")
+        .expect("HTTP content-type write failed");
+    match content_type {
+        HeaderValue::Text(value) => {
+            builder
+                .push_str(&value)
+                .expect("HTTP content-type write failed");
+        }
+        HeaderValue::PayloadOrDefault(Some(value)) => {
+            builder.push_payload(
+                value
+                    .to_payload()
+                    .expect("HTTP content-type payload conversion failed"),
+            );
+        }
+        HeaderValue::PayloadOrDefault(None) => {
+            builder
+                .push_str("application/octet-stream")
+                .expect("HTTP content-type write failed");
+        }
+    }
+    builder.push_str("\r\n").expect("HTTP header write failed");
+    builder
+        .push_str("Connection: ")
+        .expect("HTTP header write failed");
+    builder
+        .push_str(connection_header)
+        .expect("HTTP header write failed");
+    builder.push_str("\r\n").expect("HTTP header write failed");
+    builder
+        .push_str("Content-Length: ")
+        .expect("HTTP header write failed");
+    builder
+        .push_str(&format!("{}", body.total_len()))
+        .expect("HTTP header write failed");
+    builder.push_str("\r\n\r\n").expect("HTTP header write failed");
+    builder.push_payload(body);
+    builder.build()
 }
 
 fn build_custom_response(
@@ -793,15 +813,11 @@ fn build_custom_response(
     content_type: &str,
     body: &str,
     keep_alive: bool,
-) -> Vec<u8> {
-    let connection_header = if keep_alive { "keep-alive" } else { "close" };
-    let mut parts = status.splitn(2, ' ');
-    let status_code: u16 = parts.next().unwrap_or("200").parse().unwrap_or(200);
-    let reason_phrase = parts.next().unwrap_or("");
-
-    super::types::HttpResponse::new(status_code, reason_phrase)
-        .header("Content-Type", content_type)
-        .header("Connection", connection_header)
-        .body(body.as_bytes().to_vec())
-        .to_bytes()
+) -> PacketPayload {
+    build_payload_response(
+        status,
+        HeaderValue::Text(content_type.to_string()),
+        body_payload_from_bytes(body.as_bytes()),
+        keep_alive,
+    )
 }

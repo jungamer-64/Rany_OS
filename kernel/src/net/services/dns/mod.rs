@@ -7,6 +7,7 @@
 //! 簡易的なキャッシュ機能付き。
 
 use crate::net::runtime::context::default_runtime_context;
+use crate::net::payload::PayloadSpan;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -219,7 +220,7 @@ pub enum DnsRecordData {
         target: String,
     },
     /// その他/未解析
-    Raw(Vec<u8>),
+    Raw(PayloadSpan),
 }
 
 /// DNSキャッシュエントリ

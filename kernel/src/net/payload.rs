@@ -4,6 +4,291 @@ use alloc::vec::Vec;
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 use kernel_api::resource::net::{PacketPayload, PacketRef};
 
+#[derive(Debug, Clone)]
+pub struct PayloadSpan {
+    payload: PacketPayload,
+    offset: usize,
+    len: usize,
+}
+
+impl PayloadSpan {
+    pub fn from_payload(payload: PacketPayload) -> Self {
+        let len = payload.total_len();
+        Self {
+            payload,
+            offset: 0,
+            len,
+        }
+    }
+
+    pub fn from_range(payload: PacketPayload, offset: usize, len: usize) -> Option<Self> {
+        let total_len = payload.total_len();
+        if offset > total_len || len > total_len.saturating_sub(offset) {
+            return None;
+        }
+        Some(Self {
+            payload,
+            offset,
+            len,
+        })
+    }
+
+    pub fn payload(&self) -> &PacketPayload {
+        &self.payload
+    }
+
+    pub fn total_len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub fn to_payload(&self) -> Option<PacketPayload> {
+        payload_range(&self.payload, self.offset, self.len)
+    }
+
+    pub fn slice(&self, offset: usize, len: usize) -> Option<Self> {
+        if offset > self.len || len > self.len.saturating_sub(offset) {
+            return None;
+        }
+        Self::from_range(self.payload.clone(), self.offset + offset, len)
+    }
+
+    pub fn byte_at(&self, index: usize) -> Option<u8> {
+        if index >= self.len {
+            return None;
+        }
+        PacketPayloadView::new(&self.payload)
+            .read_array::<1>(self.offset + index)
+            .map(|bytes| bytes[0])
+    }
+
+    pub fn copy_into(&self, dst: &mut [u8]) -> usize {
+        let len = self.len.min(dst.len());
+        PacketPayloadView::new(&self.payload).copy_range(self.offset, &mut dst[..len])
+    }
+
+    pub fn eq_bytes(&self, bytes: &[u8]) -> bool {
+        if self.len != bytes.len() {
+            return false;
+        }
+        bytes.iter()
+            .enumerate()
+            .all(|(index, expected)| self.byte_at(index) == Some(*expected))
+    }
+
+    pub fn eq_ignore_ascii_case(&self, bytes: &[u8]) -> bool {
+        if self.len != bytes.len() {
+            return false;
+        }
+        bytes.iter().enumerate().all(|(index, expected)| {
+            self.byte_at(index)
+                .map(|actual| actual.eq_ignore_ascii_case(expected))
+                .unwrap_or(false)
+        })
+    }
+
+    pub fn contains_ascii_case(&self, needle: &[u8]) -> bool {
+        if needle.is_empty() {
+            return true;
+        }
+        let Some(max_start) = self.len.checked_sub(needle.len()) else {
+            return false;
+        };
+        (0..=max_start).any(|start| {
+            needle.iter().enumerate().all(|(index, expected)| {
+                self.byte_at(start + index)
+                    .map(|actual| actual.eq_ignore_ascii_case(expected))
+                    .unwrap_or(false)
+            })
+        })
+    }
+
+    pub fn find_bytes(&self, pattern: &[u8]) -> Option<usize> {
+        self.find_bytes_from(pattern, 0)
+    }
+
+    pub fn find_bytes_from(&self, pattern: &[u8], start: usize) -> Option<usize> {
+        if pattern.is_empty() {
+            return (start <= self.len).then_some(start);
+        }
+        let max_start = self.len.checked_sub(pattern.len())?;
+        if start > max_start {
+            return None;
+        }
+        (start..=max_start).find(|candidate| {
+            pattern.iter().enumerate().all(|(index, expected)| {
+                self.byte_at(*candidate + index) == Some(*expected)
+            })
+        })
+    }
+
+    pub fn parse_ascii_usize(&self) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut value = 0usize;
+        for index in 0..self.len {
+            let digit = self.byte_at(index)?;
+            if !digit.is_ascii_digit() {
+                return None;
+            }
+            value = value.checked_mul(10)?.checked_add((digit - b'0') as usize)?;
+        }
+        Some(value)
+    }
+
+    pub fn parse_ascii_hex_usize(&self) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut value = 0usize;
+        for index in 0..self.len {
+            let digit = self.byte_at(index)?;
+            let nibble = match digit {
+                b'0'..=b'9' => (digit - b'0') as usize,
+                b'a'..=b'f' => (digit - b'a' + 10) as usize,
+                b'A'..=b'F' => (digit - b'A' + 10) as usize,
+                _ => return None,
+            };
+            value = value.checked_mul(16)?.checked_add(nibble)?;
+        }
+        Some(value)
+    }
+
+    pub fn trim_ascii_whitespace(&self) -> Self {
+        let mut start = 0usize;
+        let mut end = self.len;
+
+        while start < end {
+            let Some(byte) = self.byte_at(start) else {
+                break;
+            };
+            if !byte.is_ascii_whitespace() {
+                break;
+            }
+            start += 1;
+        }
+
+        while end > start {
+            let Some(byte) = self.byte_at(end - 1) else {
+                break;
+            };
+            if !byte.is_ascii_whitespace() {
+                break;
+            }
+            end -= 1;
+        }
+
+        Self {
+            payload: self.payload.clone(),
+            offset: self.offset + start,
+            len: end - start,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PayloadSequence {
+    spans: Vec<PayloadSpan>,
+    total_len: usize,
+}
+
+impl PayloadSequence {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, span: PayloadSpan) {
+        self.total_len = self.total_len.saturating_add(span.total_len());
+        self.spans.push(span);
+    }
+
+    pub fn spans(&self) -> &[PayloadSpan] {
+        &self.spans
+    }
+
+    pub fn total_len(&self) -> usize {
+        self.total_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total_len == 0
+    }
+
+    pub fn into_payload(self) -> Option<PacketPayload> {
+        let mut combined = PacketPayload::default();
+        for span in self.spans {
+            append_payload(&mut combined, span.to_payload()?);
+        }
+        Some(combined)
+    }
+}
+
+pub struct PacketPayloadBuilder {
+    segments: Vec<PacketRef>,
+}
+
+impl PacketPayloadBuilder {
+    pub fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+        }
+    }
+
+    pub fn push_bytes(&mut self, data: &[u8]) -> Option<()> {
+        if data.is_empty() {
+            return Some(());
+        }
+        let mut packet = alloc_packet_for_len(data.len())?;
+        packet.data_mut()[..data.len()].copy_from_slice(data);
+        self.segments.push(packet);
+        Some(())
+    }
+
+    pub fn push_str(&mut self, data: &str) -> Option<()> {
+        self.push_bytes(data.as_bytes())
+    }
+
+    pub fn push_payload(&mut self, payload: PacketPayload) {
+        self.segments.extend(payload.into_segments());
+    }
+
+    pub fn build(self) -> PacketPayload {
+        match self.segments.len() {
+            0 => PacketPayload::default(),
+            1 => PacketPayload::single(self.segments.into_iter().next().expect("single segment")),
+            _ => PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
+                self.segments,
+            )),
+        }
+    }
+}
+
+pub fn append_payload(target: &mut PacketPayload, payload: PacketPayload) {
+    if payload.is_empty() {
+        return;
+    }
+    if target.is_empty() {
+        *target = payload;
+        return;
+    }
+
+    let mut segments = core::mem::take(target).into_segments();
+    segments.extend(payload.into_segments());
+    *target = if segments.len() == 1 {
+        PacketPayload::single(segments.remove(0))
+    } else {
+        PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(segments))
+    };
+}
+
 pub struct PacketPayloadView<'a> {
     payload: &'a PacketPayload,
 }

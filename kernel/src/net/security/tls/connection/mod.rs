@@ -11,7 +11,9 @@ use alloc::vec::Vec;
 use super::crypto::*;
 use super::error::{TlsError, TlsResult};
 use super::types::*;
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
 use crate::net::security::ecdh;
+use kernel_api::resource::net::PacketPayload;
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
 mod incoming;
@@ -181,6 +183,28 @@ pub struct TlsConnection {
 }
 
 impl TlsConnection {
+    fn packet_payload_from_slice(data: &[u8]) -> PacketPayload {
+        let mut builder = PacketPayloadBuilder::new();
+        if builder.push_bytes(data).is_none() {
+            return PacketPayload::default();
+        }
+        builder.build()
+    }
+
+    fn packet_payload_from_vec(data: Vec<u8>) -> PacketPayload {
+        Self::packet_payload_from_slice(&data)
+    }
+
+    pub(crate) fn vec_from_payload(payload: &PacketPayload) -> TlsResult<Vec<u8>> {
+        let view = PacketPayloadView::new(payload);
+        let len = view.total_len();
+        let mut data = vec![0u8; len];
+        if view.copy_all_into(&mut data) != len {
+            return Err(TlsError::DecodeError);
+        }
+        Ok(data)
+    }
+
     /// 新しいTLS接続を作成
     pub fn new(config: TlsConfig) -> Self {
         // RNGのセキュリティ状態をチェック
@@ -398,7 +422,7 @@ impl TlsConnection {
     }
 
     /// ClientHelloを構築
-    pub fn build_client_hello(&mut self) -> Vec<u8> {
+    fn build_client_hello_bytes(&mut self) -> Vec<u8> {
         self.prepare_tls13_ecdh_keypair();
         self.init_transcript_hash();
 
@@ -464,14 +488,18 @@ impl TlsConnection {
         record
     }
 
+    pub fn build_client_hello(&mut self) -> PacketPayload {
+        Self::packet_payload_from_vec(self.build_client_hello_bytes())
+    }
+
     /// 0-RTTアーリーデータを暗号化して送信 (RFC 8446 Section 4.2.10)
     ///
     /// ClientHello送信直後に呼び出す。Early Data鍵が導出済みの場合のみ動作。
-    /// データはバッファリングされ、サーバーが拒否した場合は`get_rejected_early_data()`で取得可能。
+    /// データはバッファリングされ、サーバーが拒否した場合は`get_rejected_early_data_payload()`で取得可能。
     ///
     /// # Returns
     /// 暗号化されたTLSレコード列。鍵未導出時やサイズ超過時は空。
-    pub fn send_early_data(&mut self, data: &[u8]) -> Vec<u8> {
+    fn send_early_data_bytes(&mut self, data: &[u8]) -> Vec<u8> {
         if self.early_write_key.is_empty() || self.early_write_iv.len() < 12 {
             return Vec::new();
         }
@@ -534,15 +562,22 @@ impl TlsConnection {
         record
     }
 
+    pub fn send_early_data_payload(&mut self, payload: &PacketPayload) -> PacketPayload {
+        let Ok(data) = Self::vec_from_payload(payload) else {
+            return PacketPayload::default();
+        };
+        Self::packet_payload_from_vec(self.send_early_data_bytes(&data))
+    }
+
     /// サーバーに拒否されたEarly Dataの平文を取得
     ///
     /// ハンドシェイク完了後、`early_data_accepted`がfalseの場合に呼び出し、
     /// バッファされたデータを通常のアプリケーションデータとして再送する。
-    pub fn get_rejected_early_data(&mut self) -> Vec<u8> {
+    pub fn get_rejected_early_data_payload(&mut self) -> PacketPayload {
         if self.early_data_accepted || !self.early_data_sent {
-            return Vec::new();
+            return PacketPayload::default();
         }
-        core::mem::take(&mut self.early_data_buffer)
+        Self::packet_payload_from_vec(core::mem::take(&mut self.early_data_buffer))
     }
 
     /// 拡張機能を構築

@@ -77,7 +77,7 @@ impl TlsConnection {
     ///
     /// クライアントの一時公開鍵をサーバーに送信する。
     /// `process_server_key_exchange()` の後に呼び出す。
-    pub fn build_client_key_exchange(&mut self) -> Option<Vec<u8>> {
+    pub fn build_client_key_exchange_payload(&mut self) -> Option<kernel_api::resource::net::PacketPayload> {
         let keypair = self.local_ecdh_keypair.as_ref()?;
         let pubkey_bytes = keypair.public_key_bytes();
 
@@ -105,7 +105,7 @@ impl TlsConnection {
         record.push(message.len() as u8);
         record.extend_from_slice(&message);
 
-        Some(record)
+        Some(Self::packet_payload_from_vec(record))
     }
 
     /// ServerHelloDoneを処理
@@ -122,16 +122,16 @@ impl TlsConnection {
     ///
     /// RFC 5246 Section 7.1:
     /// ChangeCipherSpec = { type(20), major, minor, length(1), 1 }
-    pub fn build_change_cipher_spec(&mut self) -> Vec<u8> {
+    pub fn build_change_cipher_spec_payload(&mut self) -> kernel_api::resource::net::PacketPayload {
         self.write_encryption_active = true;
-        vec![
+        Self::packet_payload_from_slice(&[
             ContentType::ChangeCipherSpec as u8,
             0x03,
             0x03, // TLS 1.2
             0x00,
             0x01, // length = 1
             0x01, // change_cipher_spec
-        ]
+        ])
     }
 
     /// Master secretが未導出の場合に導出する（TLS 1.2）
@@ -213,7 +213,7 @@ impl TlsConnection {
     ///                    Hash(handshake_messages))[0..11]
     ///
     /// Finishedメッセージは暗号化して送信する。
-    /// `build_change_cipher_spec()` の後に呼び出し、鍵が有効な状態で使用する。
+    /// `build_change_cipher_spec_payload()` の後に呼び出し、鍵が有効な状態で使用する。
 
     /// Finishedメッセージを暗号スイートに応じて暗号化する (TLS 1.2)
     pub(super) fn encrypt_finished_tls12(&mut self, finished_msg: &[u8]) -> TlsResult<Vec<u8>> {
@@ -229,7 +229,9 @@ impl TlsConnection {
         }
     }
 
-    pub fn build_client_finished_tls12(&mut self) -> TlsResult<Vec<u8>> {
+    pub fn build_client_finished_tls12_payload(
+        &mut self,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         if self.is_tls13 {
             return Err(TlsError::UnexpectedMessage);
         }
@@ -255,6 +257,7 @@ impl TlsConnection {
 
         // Finishedは暗号化して送信
         self.encrypt_finished_tls12(&finished_msg)
+            .map(Self::packet_payload_from_vec)
     }
 
     /// TLS 1.2 鍵ブロック導出
@@ -660,7 +663,9 @@ impl TlsConnection {
     /// 1. 48バイトのPre-Master Secretを生成: client_version(2) || random(46)
     /// 2. サーバーのRSA公開鍵で暗号化
     /// 3. EncryptedPreMasterSecret構造体として送信
-    pub fn build_client_key_exchange_rsa(&mut self) -> Option<Vec<u8>> {
+    pub fn build_client_key_exchange_rsa_payload(
+        &mut self,
+    ) -> Option<kernel_api::resource::net::PacketPayload> {
         // サーバーのRSA公開鍵が必要
         let server_pk = self.server_public_key.as_ref()?;
 
@@ -716,7 +721,7 @@ impl TlsConnection {
         record.push(message.len() as u8);
         record.extend_from_slice(&message);
 
-        Some(record)
+        Some(Self::packet_payload_from_vec(record))
     }
 
     // ========================================================================
@@ -724,21 +729,26 @@ impl TlsConnection {
     // ========================================================================
 
     /// アプリケーションデータを暗号化して送信レコードを構築
-    pub fn encrypt_application_data(&mut self, data: &[u8]) -> TlsResult<Vec<u8>> {
+    pub fn encrypt_application_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let data = Self::vec_from_payload(payload)?;
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         if self.is_tls13 {
-            return self.tls13_encrypt_application_data(data);
+            return self.tls13_encrypt_application_payload(payload);
         }
 
         if cipher.is_cbc() {
-            self.encrypt_cbc_record(ContentType::ApplicationData as u8, data)
+            self.encrypt_cbc_record(ContentType::ApplicationData as u8, &data)
         } else if cipher.is_chacha20_poly1305() {
-            self.encrypt_chacha20_record(ContentType::ApplicationData as u8, data)
+            self.encrypt_chacha20_record(ContentType::ApplicationData as u8, &data)
         } else {
-            self.encrypt_aes_gcm_record(ContentType::ApplicationData as u8, data)
+            self.encrypt_aes_gcm_record(ContentType::ApplicationData as u8, &data)
         }
+        .map(Self::packet_payload_from_vec)
     }
 }

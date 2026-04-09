@@ -1,5 +1,13 @@
 use super::*;
 
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+    let view = crate::net::payload::PacketPayloadView::new(payload);
+    let mut bytes = alloc::vec![0u8; view.total_len()];
+    let copied = view.copy_all_into(&mut bytes);
+    bytes.truncate(copied);
+    bytes
+}
+
 // ---------- Helpers ----------
 
 /// Find a TLS extension (0x00, ext_lo) in a ClientHello record.
@@ -270,7 +278,7 @@ pub(crate) fn test_tls13_full_key_schedule() {
 pub(crate) fn test_tls13_client_hello_key_share() {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
-    let hello = conn.build_client_hello();
+    let hello = payload_bytes(&conn.build_client_hello());
 
     // Should have pre-generated ECDH key pair
     assert!(conn.has_local_ecdh_keypair());
@@ -294,7 +302,7 @@ pub(crate) fn test_tls13_client_hello_key_share() {
 pub(crate) fn test_tls13_client_hello_supported_versions() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
-    let hello = conn.build_client_hello();
+    let hello = payload_bytes(&conn.build_client_hello());
     let payload = &hello[5..];
 
     // Look for supported_versions extension [0x00, 0x2B]
@@ -317,7 +325,7 @@ pub(crate) fn test_tls13_client_hello_supported_versions() {
 pub(crate) fn test_tls13_client_hello_psk_modes() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
-    let hello = conn.build_client_hello();
+    let hello = payload_bytes(&conn.build_client_hello());
 
     assert!(
         find_extension_in_hello(&hello, 0x2D).is_some(),

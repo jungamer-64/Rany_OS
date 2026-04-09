@@ -407,7 +407,9 @@ impl TlsConnection {
     /// TLS 1.3: KeyUpdate応答メッセージを構築
     ///
     /// post-handshakeハンドシェイクメッセージとして暗号化して送信
-    pub fn build_key_update_response(&mut self) -> Option<Vec<u8>> {
+    pub fn build_key_update_response_payload(
+        &mut self,
+    ) -> Option<kernel_api::resource::net::PacketPayload> {
         if !self.pending_key_update_response {
             return None;
         }
@@ -425,7 +427,9 @@ impl TlsConnection {
         inner.extend_from_slice(&key_update_msg);
         inner.push(ContentType::Handshake as u8);
 
-        self.tls13_encrypt_record(&inner, false).ok()
+        self.tls13_encrypt_record(&inner, false)
+            .ok()
+            .map(Self::packet_payload_from_vec)
     }
 
     /// TLS 1.3 モードかどうか
@@ -439,7 +443,7 @@ impl TlsConnection {
     }
 
     /// 接続を閉じる
-    pub fn close(&mut self) -> Vec<u8> {
+    pub fn close_payload(&mut self) -> kernel_api::resource::net::PacketPayload {
         self.state = TlsState::Closing;
 
         if self.is_tls13 && !self.write_key.is_empty() {
@@ -449,12 +453,12 @@ impl TlsConnection {
             inner.push(AlertDescription::CloseNotify as u8);
             inner.push(ContentType::Alert as u8);
             if let Ok(record) = self.tls13_encrypt_record(&inner, false) {
-                return record;
+                return Self::packet_payload_from_vec(record);
             }
         }
 
         // TLS 1.2 or fallback
-        vec![
+        Self::packet_payload_from_slice(&[
             ContentType::Alert as u8,
             0x03,
             0x03,
@@ -462,7 +466,7 @@ impl TlsConnection {
             2,
             AlertLevel::Warning as u8,
             AlertDescription::CloseNotify as u8,
-        ]
+        ])
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]

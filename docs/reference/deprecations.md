@@ -105,6 +105,10 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use the token-aware API: `UdpSocketTable::bind_with_token(port, Some(token))`. For the no-token case use `UdpSocketTable::bind_with_token(port, None)` or the stack helper `bind_udp(port)`/`bind_udp_with_token(port, token)` as appropriate.
   - `UdpEndpoint::bind_registered_with_token_in(runtime, scope, port, token)` ❌ **removed**
     - Migration: Use `UdpEndpoint::bind_in(runtime, scope, port, token)`.
+  - `kernel/src/net/security/tls/connection::TlsConnection` の byte-slice / `Vec<u8>` TLS record APIs (`process_incoming(&[u8])`, `encrypt_application_data(&[u8])`, `send_early_data(&[u8])`, `get_rejected_early_data()`, `build_key_update_response()`, `close()`) ❌ **removed**
+    - Migration: Use the packet-backed APIs `process_incoming_payload(&payload)`, `encrypt_application_payload(&payload)`, `send_early_data_payload(&payload)`, `get_rejected_early_data_payload()`, `build_key_update_response_payload()`, and `close_payload()`.
+  - TLS handshake record builders returning `Vec<u8>` (`build_client_key_exchange()`, `build_client_key_exchange_rsa()`, `build_change_cipher_spec()`, `build_client_finished_tls12()`, `build_client_finished_tls13()`) ❌ **removed**
+    - Migration: Use the payload-native builders `build_client_key_exchange_payload()`, `build_client_key_exchange_rsa_payload()`, `build_change_cipher_spec_payload()`, `build_client_finished_tls12_payload()`, and `build_client_finished_tls13_payload()`.
 
 - `kernel/src/net/services/dhcp`
   - Default-runtime wrappers (`init()`, `init_v6()`, `legacy_v4_client_lock()`, `legacy_v6_client_lock()`) ❌ **removed**
@@ -198,7 +202,11 @@ This document lists deprecated symbols and recent removals that still matter for
 
 - `kernel/src/net/services/dns/mod.rs`
   - `client()` ❌ **removed**
-    - Migration: Use high-level DNS helpers such as `init()`, `set_ipv4_servers()`, `set_ipv6_servers()`, `resolve_ipv4()`, `build_tcp_query()`, and `cleanup_cache()` instead of locking the singleton directly.
+    - Migration: Use high-level DNS helpers such as `init()`, `set_ipv4_servers()`, `set_ipv6_servers()`, `resolve_ipv4()`, `build_tcp_query_payload()`, and `cleanup_cache()` instead of locking the singleton directly.
+  - `DnsRecordData::Raw(Vec<u8>)` ❌ **removed**
+    - Migration: Use `DnsRecordData::Raw(PayloadSpan)` and explicitly materialize bytes only at the call site that actually needs them.
+  - byte-slice DNS response parsers (`parse_response(&[u8], ...)`, `parse_tcp_response(&[u8], ...)`) ❌ **removed**
+    - Migration: Use `parse_response_payload(&payload, ...)` and `parse_tcp_response_payload(&payload, ...)`.
 
 - `kernel/src/io/iommu/runtime/command/queue.rs`
   - `CommandQueue::submit_sync()` ❌ **removed**
