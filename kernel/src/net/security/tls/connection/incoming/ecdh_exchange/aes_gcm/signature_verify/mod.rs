@@ -9,7 +9,9 @@ impl TlsConnection {
         signature: &[u8],
     ) -> TlsResult<()> {
         let pubkey_bytes = match &self.server_public_key {
-            Some(ServerPublicKey::EcdsaP384 { point }) => point.as_slice(),
+            Some(ServerPublicKey::EcdsaP384 { point }) => point
+                .as_contiguous_slice()
+                .ok_or(TlsError::CertificateError)?,
             _ => return Err(TlsError::CertificateError),
         };
 
@@ -131,7 +133,11 @@ impl TlsConnection {
             return Ok(None);
         }
 
-        let ctx = &self.certificate_request_context;
+        let ctx = self
+            .certificate_request_context
+            .as_ref()
+            .and_then(|span| span.as_contiguous_slice())
+            .unwrap_or(&[]);
         let ctx_len = ctx.len();
         let cert_body_len = 1 + ctx_len + 3;
         let mut cert_msg = Vec::with_capacity(4 + cert_body_len);

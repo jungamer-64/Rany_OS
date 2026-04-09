@@ -303,13 +303,13 @@ impl TlsConnection {
         self.session_ticket = Some(SessionTicket {
             lifetime: ticket_lifetime,
             age_add: ticket_age_add,
-            nonce: ticket_nonce.to_vec(),
-            ticket: ticket.to_vec(),
+            nonce: Self::span_from_bytes(ticket_nonce)?,
+            ticket: Self::span_from_bytes(ticket)?,
         });
 
         if let Some(psk) = self.derive_tls13_psk_from_rms(ticket_nonce) {
             self.tls13_psk = Some(psk);
-            self.tls13_psk_identity = Some(ticket.to_vec());
+            self.tls13_psk_identity = Some(Self::span_from_bytes(ticket)?);
             self.tls13_ticket_age_add = ticket_age_add;
             self.tls13_psk_cipher = self.negotiated_cipher;
         }

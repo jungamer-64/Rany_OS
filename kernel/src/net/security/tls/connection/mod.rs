@@ -11,7 +11,9 @@ use alloc::vec::Vec;
 use super::crypto::*;
 use super::error::{TlsError, TlsResult};
 use super::types::*;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
+use crate::net::payload::{
+    append_payload, PacketPayloadBuilder, PacketPayloadView, PayloadSpan,
+};
 use crate::net::security::ecdh;
 use kernel_api::resource::net::PacketPayload;
 
@@ -72,9 +74,7 @@ pub struct TlsConnection {
     /// シーケンス番号（書き込み）
     write_seq: u64,
     /// 受信バッファ
-    recv_buffer: Vec<u8>,
-    /// 送信バッファ
-    send_buffer: Vec<u8>,
+    recv_buffer: PacketPayload,
     /// ハンドシェイクメッセージ（verify用）
     handshake_messages: Vec<u8>,
     /// Pre-master secret (from key exchange, used to derive master secret)
@@ -110,8 +110,6 @@ pub struct TlsConnection {
     hs_write_seq: u64,
     /// TLS 1.3: ハンドシェイクメッセージのトランスクリプトハッシュ状態（SHA-256 or SHA-384）
     transcript_hash: Option<TranscriptHash>,
-    /// TLS 1.3: サーバーFinished受信後に送るべきクライアントFinished（バッファ）
-    pending_client_finished: Vec<u8>,
     /// TLS 1.3: 受信済みセッションチケット
     session_ticket: Option<SessionTicket>,
     /// TLS 1.3: KeyUpdate応答送信が必要か
@@ -146,7 +144,7 @@ pub struct TlsConnection {
     /// TLS 1.3: 導出済みPSK (チケットから導出)
     tls13_psk: Option<Vec<u8>>,
     /// TLS 1.3: PSK identity (セッションチケットそのもの)
-    tls13_psk_identity: Option<Vec<u8>>,
+    tls13_psk_identity: Option<PayloadSpan>,
     /// TLS 1.3: チケットage_add値
     tls13_ticket_age_add: u32,
     /// TLS 1.3: 現在の接続がPSKを使用中か
@@ -157,7 +155,7 @@ pub struct TlsConnection {
     /// サーバーが許可する最大Early Dataサイズ (NewSessionTicketのtype42拡張)
     max_early_data_size: u32,
     /// Early Data送信バッファ（拒否時の再送用）
-    early_data_buffer: Vec<u8>,
+    early_data_buffer: PacketPayload,
     /// Early Data暗号化鍵
     early_write_key: Vec<u8>,
     /// Early Data暗号化IV
@@ -172,7 +170,7 @@ pub struct TlsConnection {
     /// クライアント認証が要求されたか
     client_auth_requested: bool,
     /// CertificateRequestコンテキスト
-    certificate_request_context: Vec<u8>,
+    certificate_request_context: Option<PayloadSpan>,
     /// TLS 1.3: server Finishedまでのハンドシェイクメッセージ長
     /// (アプリケーション鍵導出時のトランスクリプト境界として使用)
     server_finished_offset: usize,
@@ -205,6 +203,10 @@ impl TlsConnection {
         Ok(data)
     }
 
+    pub(crate) fn span_from_bytes(data: &[u8]) -> TlsResult<PayloadSpan> {
+        PayloadSpan::from_bytes(data).ok_or(TlsError::DecodeError)
+    }
+
     /// 新しいTLS接続を作成
     pub fn new(config: TlsConfig) -> Self {
         // RNGのセキュリティ状態をチェック
@@ -232,8 +234,7 @@ impl TlsConnection {
             write_iv: Vec::new(),
             read_seq: 0,
             write_seq: 0,
-            recv_buffer: Vec::new(),
-            send_buffer: Vec::new(),
+            recv_buffer: PacketPayload::default(),
             handshake_messages: Vec::new(),
             pre_master_secret: Vec::new(),
             local_ecdh_keypair: None,
@@ -251,7 +252,6 @@ impl TlsConnection {
             hs_read_seq: 0,
             hs_write_seq: 0,
             transcript_hash: None,
-            pending_client_finished: Vec::new(),
             session_ticket: None,
             pending_key_update_response: false,
             // CBC mode fields
@@ -272,14 +272,14 @@ impl TlsConnection {
             tls13_using_psk: false,
             tls13_psk_cipher: None,
             max_early_data_size: 0,
-            early_data_buffer: Vec::new(),
+            early_data_buffer: PacketPayload::default(),
             early_write_key: Vec::new(),
             early_write_iv: Vec::new(),
             early_write_seq: 0,
             early_data_accepted: false,
             early_data_sent: false,
             client_auth_requested: false,
-            certificate_request_context: Vec::new(),
+            certificate_request_context: None,
             server_finished_offset: 0,
             read_encryption_active: false,
             write_encryption_active: false,
@@ -508,15 +508,6 @@ impl TlsConnection {
             return Vec::new();
         }
 
-        // サイズ制限チェック
-        let total = self.early_data_buffer.len() + data.len();
-        if self.max_early_data_size > 0 && total > self.max_early_data_size as usize {
-            return Vec::new();
-        }
-
-        // バッファリング（拒否時の再送用）
-        self.early_data_buffer.extend_from_slice(data);
-
         let cipher = self
             .tls13_psk_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
@@ -563,6 +554,11 @@ impl TlsConnection {
     }
 
     pub fn send_early_data_payload(&mut self, payload: &PacketPayload) -> PacketPayload {
+        let total = self.early_data_buffer.total_len() + payload.total_len();
+        if self.max_early_data_size > 0 && total > self.max_early_data_size as usize {
+            return PacketPayload::default();
+        }
+        append_payload(&mut self.early_data_buffer, payload.clone());
         let Ok(data) = Self::vec_from_payload(payload) else {
             return PacketPayload::default();
         };
@@ -577,7 +573,7 @@ impl TlsConnection {
         if self.early_data_accepted || !self.early_data_sent {
             return PacketPayload::default();
         }
-        Self::packet_payload_from_vec(core::mem::take(&mut self.early_data_buffer))
+        core::mem::take(&mut self.early_data_buffer)
     }
 
     /// 拡張機能を構築
@@ -642,7 +638,10 @@ impl TlsConnection {
             let use_384 = self.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
             let hash_len = if use_384 { 48 } else { 32 };
             let obfuscated_age: u32 = self.tls13_ticket_age_add;
-            let identity_len = psk_identity.len();
+            let Some(identity_bytes) = psk_identity.as_contiguous_slice() else {
+                return;
+            };
+            let identity_len = identity_bytes.len();
             let identities_len = 2 + identity_len + 4;
             let binders_len = 1 + hash_len;
             let ext_data_len = 2 + identities_len + 2 + binders_len;
@@ -651,7 +650,7 @@ impl TlsConnection {
             extensions.extend_from_slice(&[(ext_data_len >> 8) as u8, ext_data_len as u8]);
             extensions.extend_from_slice(&[(identities_len >> 8) as u8, identities_len as u8]);
             extensions.extend_from_slice(&[(identity_len >> 8) as u8, identity_len as u8]);
-            extensions.extend_from_slice(psk_identity);
+            extensions.extend_from_slice(identity_bytes);
             extensions.extend_from_slice(&obfuscated_age.to_be_bytes());
             extensions.extend_from_slice(&[(binders_len >> 8) as u8, binders_len as u8]);
             extensions.push(hash_len as u8);

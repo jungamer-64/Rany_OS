@@ -11,17 +11,19 @@ impl TlsConnection {
         // Handshake messages can be up to 128KB, so we allow 128KB + overhead.
         const MAX_RECV_BUFFER: usize = 131072 + 2048;
         let view = crate::net::payload::PacketPayloadView::new(payload);
-        if self.recv_buffer.len() + view.total_len() > MAX_RECV_BUFFER {
+        if self.recv_buffer.total_len() + view.total_len() > MAX_RECV_BUFFER {
             return Err(TlsError::DecodeError);
         }
-        view.for_each_chunk(|chunk| self.recv_buffer.extend_from_slice(chunk));
+        crate::net::payload::append_payload(&mut self.recv_buffer, payload.clone());
 
         let mut plaintext = Vec::new();
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while self.recv_buffer.len() >= 5 {
-            let content_type = self.recv_buffer[0];
-            let length = ((self.recv_buffer[3] as usize) << 8) | self.recv_buffer[4] as usize;
+        while self.recv_buffer.total_len() >= 5 {
+            let recv_view = crate::net::payload::PacketPayloadView::new(&self.recv_buffer);
+            let header = recv_view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+            let content_type = header[0];
+            let length = ((header[3] as usize) << 8) | header[4] as usize;
 
             // Security (RFC 5246 Section 6.2.1): Limit record length.
             // Max is 2^14 + 2048 = 18432. We use 20KB as a safe bound.
@@ -29,14 +31,22 @@ impl TlsConnection {
                 return Err(TlsError::DecodeError);
             }
 
-            if self.recv_buffer.len() < 5 + length {
+            if self.recv_buffer.total_len() < 5 + length {
                 break; // もっとデータが必要
             }
 
-            let record = self.recv_buffer.drain(..5 + length).collect::<Vec<_>>();
-            let payload = &record[5..];
-
-            self.process_single_record(content_type, payload, &mut plaintext)?;
+            let record = self
+                .recv_buffer
+                .take_prefix(5 + length)
+                .ok_or(TlsError::DecodeError)?;
+            let record_payload =
+                crate::net::payload::payload_range(&record, 5, length).ok_or(TlsError::DecodeError)?;
+            if let kernel_api::resource::net::PacketPayload::Single(packet) = &record_payload {
+                self.process_single_record(content_type, packet.data(), &mut plaintext)?;
+            } else {
+                let data = Self::vec_from_payload(&record_payload)?;
+                self.process_single_record(content_type, &data, &mut plaintext)?;
+            }
         }
 
         Ok(Self::packet_payload_from_vec(plaintext))
@@ -559,18 +569,18 @@ impl TlsConnection {
         match spki {
             crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
                 self.server_public_key = Some(ServerPublicKey::Rsa {
-                    modulus: modulus.to_vec(),
-                    exponent: exponent.to_vec(),
+                    modulus: Self::span_from_bytes(modulus)?,
+                    exponent: Self::span_from_bytes(exponent)?,
                 });
             }
             crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
                 self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
-                    point: public_key.to_vec(),
+                    point: Self::span_from_bytes(public_key)?,
                 });
             }
             crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
                 self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
-                    point: public_key.to_vec(),
+                    point: Self::span_from_bytes(public_key)?,
                 });
             }
             _ => {
@@ -630,7 +640,7 @@ impl TlsConnection {
                 .config
                 .ca_certs
                 .iter()
-                .map(|c| c.der.as_slice())
+                .filter_map(|c| c.der.as_contiguous_slice())
                 .collect();
             if let Some(spki) = crate::net::security::x509::validate_certificate_chain(
                 &certs,
@@ -665,6 +675,12 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         let pubkey = match &self.server_public_key {
             Some(ServerPublicKey::Rsa { modulus, exponent }) => {
+                let modulus = modulus
+                    .as_contiguous_slice()
+                    .ok_or(TlsError::CertificateError)?;
+                let exponent = exponent
+                    .as_contiguous_slice()
+                    .ok_or(TlsError::CertificateError)?;
                 crate::net::security::rsa::RsaPublicKey { modulus, exponent }
             }
             _ => return Err(TlsError::CertificateError),
@@ -693,7 +709,9 @@ impl TlsConnection {
         signature: &[u8],
     ) -> TlsResult<()> {
         let pubkey_bytes = match &self.server_public_key {
-            Some(ServerPublicKey::EcdsaP256 { point }) => point.as_slice(),
+            Some(ServerPublicKey::EcdsaP256 { point }) => point
+                .as_contiguous_slice()
+                .ok_or(TlsError::CertificateError)?,
             _ => return Err(TlsError::CertificateError),
         };
         let digest = crate::crypto::sha256::compute(signed_data);

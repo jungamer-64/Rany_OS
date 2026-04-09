@@ -671,7 +671,10 @@ impl TlsConnection {
 
         // RSA公開鍵を取得 (ServerPublicKeyからモジュラスと指数を取得)
         let (modulus, exponent) = match server_pk {
-            ServerPublicKey::Rsa { modulus, exponent } => (modulus.as_slice(), exponent.as_slice()),
+            ServerPublicKey::Rsa { modulus, exponent } => (
+                modulus.as_contiguous_slice()?,
+                exponent.as_contiguous_slice()?,
+            ),
             _ => return None, // ECDSA鍵ではRSA鍵転送できない
         };
 

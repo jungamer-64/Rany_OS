@@ -370,7 +370,7 @@ impl TlsConnection {
         if data.len() < off + ctx_len {
             return Err(TlsError::DecodeError);
         }
-        self.certificate_request_context = data[off..off + ctx_len].to_vec();
+        self.certificate_request_context = Some(Self::span_from_bytes(&data[off..off + ctx_len])?);
         off += ctx_len;
 
         // 拡張をパース
@@ -474,18 +474,18 @@ impl TlsConnection {
             match cert.subject_public_key_info {
                 crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
                     self.server_public_key = Some(ServerPublicKey::Rsa {
-                        modulus: modulus.to_vec(),
-                        exponent: exponent.to_vec(),
+                        modulus: Self::span_from_bytes(modulus)?,
+                        exponent: Self::span_from_bytes(exponent)?,
                     });
                 }
                 crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
                     self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
-                        point: public_key.to_vec(),
+                        point: Self::span_from_bytes(public_key)?,
                     });
                 }
                 crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
                     self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
-                        point: public_key.to_vec(),
+                        point: Self::span_from_bytes(public_key)?,
                     });
                 }
                 _ => {
@@ -518,7 +518,7 @@ impl TlsConnection {
                 .config
                 .ca_certs
                 .iter()
-                .map(|c| c.der.as_slice())
+                .filter_map(|c| c.der.as_contiguous_slice())
                 .collect();
             if let Some(spki) = crate::net::security::x509::validate_certificate_chain(
                 &certs,
@@ -632,6 +632,12 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         let pubkey = match &self.server_public_key {
             Some(ServerPublicKey::Rsa { modulus, exponent }) => {
+                let modulus = modulus
+                    .as_contiguous_slice()
+                    .ok_or(TlsError::CertificateError)?;
+                let exponent = exponent
+                    .as_contiguous_slice()
+                    .ok_or(TlsError::CertificateError)?;
                 crate::net::security::rsa::RsaPublicKey { modulus, exponent }
             }
             _ => return Err(TlsError::CertificateError),
@@ -665,7 +671,9 @@ impl TlsConnection {
         signature: &[u8],
     ) -> TlsResult<()> {
         let pubkey_bytes = match &self.server_public_key {
-            Some(ServerPublicKey::EcdsaP256 { point }) => point.as_slice(),
+            Some(ServerPublicKey::EcdsaP256 { point }) => point
+                .as_contiguous_slice()
+                .ok_or(TlsError::CertificateError)?,
             _ => return Err(TlsError::CertificateError),
         };
 

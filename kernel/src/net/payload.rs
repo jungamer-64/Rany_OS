@@ -12,6 +12,10 @@ pub struct PayloadSpan {
 }
 
 impl PayloadSpan {
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+        Some(Self::from_payload(payload_from_bytes(data)?))
+    }
+
     pub fn from_payload(payload: PacketPayload) -> Self {
         let len = payload.total_len();
         Self {
@@ -67,6 +71,16 @@ impl PayloadSpan {
         PacketPayloadView::new(&self.payload)
             .read_array::<1>(self.offset + index)
             .map(|bytes| bytes[0])
+    }
+
+    pub fn as_contiguous_slice(&self) -> Option<&[u8]> {
+        match &self.payload {
+            PacketPayload::Single(packet) => {
+                let end = self.offset.checked_add(self.len)?;
+                packet.data().get(self.offset..end)
+            }
+            PacketPayload::Chain(_) => None,
+        }
     }
 
     pub fn copy_into(&self, dst: &mut [u8]) -> usize {

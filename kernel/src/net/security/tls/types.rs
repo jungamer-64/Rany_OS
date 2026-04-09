@@ -5,6 +5,8 @@
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use crate::net::payload::{PayloadSpan, payload_from_bytes};
+use kernel_api::resource::net::PacketPayload;
 
 // ============================================================================
 // Type-Safe Identifiers
@@ -471,7 +473,9 @@ impl Default for TlsConfig {
     fn default() -> Self {
         let mut ca_certs = Vec::new();
         for &(_label, der) in security::root_certs::ROOT_CERTS {
-            ca_certs.push(Certificate::from_der(der.to_vec()));
+            if let Some(cert) = Certificate::from_der_bytes(der) {
+                ca_certs.push(cert);
+            }
         }
 
         Self {
@@ -545,13 +549,19 @@ impl TlsConfig {
 #[derive(Clone, Debug)]
 pub struct Certificate {
     /// DERエンコードされた証明書
-    pub der: Vec<u8>,
+    pub der: PayloadSpan,
 }
 
 impl Certificate {
+    pub fn from_der_payload(der: PacketPayload) -> Self {
+        Self {
+            der: PayloadSpan::from_payload(der),
+        }
+    }
+
     /// DERデータから作成
-    pub fn from_der(der: Vec<u8>) -> Self {
-        Self { der }
+    pub fn from_der_bytes(der: &[u8]) -> Option<Self> {
+        Some(Self::from_der_payload(payload_from_bytes(der)?))
     }
 
     /// PEMから作成（簡易パース）
@@ -571,7 +581,7 @@ impl Certificate {
         }
 
         // Base64デコード（簡易）
-        base64_decode(&base64_data).map(|der| Self { der })
+        base64_decode(&base64_data).and_then(|der| Self::from_der_bytes(&der))
     }
 }
 
@@ -627,11 +637,14 @@ pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
 #[derive(Clone, Debug)]
 pub enum ServerPublicKey {
     /// RSA公開鍵 (modulus, exponent をビッグエンディアンで保持)
-    Rsa { modulus: Vec<u8>, exponent: Vec<u8> },
+    Rsa {
+        modulus: PayloadSpan,
+        exponent: PayloadSpan,
+    },
     /// ECDSA P-256公開鍵 (非圧縮ポイント 04 || x || y)
-    EcdsaP256 { point: Vec<u8> },
+    EcdsaP256 { point: PayloadSpan },
     /// ECDSA P-384公開鍵 (非圧縮ポイント 04 || x || y)
-    EcdsaP384 { point: Vec<u8> },
+    EcdsaP384 { point: PayloadSpan },
 }
 
 /// TLS 1.3 セッションチケット (RFC 8446 Section 4.6.1)
@@ -641,9 +654,9 @@ pub struct SessionTicket {
     /// チケットエイジ加算値（難読化用）
     pub age_add: u32,
     /// チケットnonce
-    pub nonce: Vec<u8>,
+    pub nonce: PayloadSpan,
     /// チケットデータ
-    pub ticket: Vec<u8>,
+    pub ticket: PayloadSpan,
 }
 
 // ============================================================================
