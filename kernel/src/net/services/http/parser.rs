@@ -25,14 +25,22 @@ pub enum HttpParseError {
     UnsupportedVersion,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseState {
+    SearchingHeaders { search_from: usize },
+    HeaderFound { header_end: usize },
+}
+
 pub struct HttpParser {
     buffer: PacketPayload,
+    state: ParseState,
 }
 
 impl HttpParser {
     pub fn new() -> Self {
         Self {
             buffer: PacketPayload::default(),
+            state: ParseState::SearchingHeaders { search_from: 0 },
         }
     }
 
@@ -107,20 +115,33 @@ impl HttpParser {
         }))
     }
 
-    fn read_message_span(&self) -> Result<Option<(PayloadSpan, usize)>, HttpParseError> {
+    fn read_message_span(&mut self) -> Result<Option<(PayloadSpan, usize)>, HttpParseError> {
         if self.buffer.total_len() > MAX_TOTAL_MESSAGE_SIZE {
             return Err(HttpParseError::InvalidFormat);
         }
 
         let full = PayloadSpan::from_payload(self.buffer.clone());
-        let Some(header_end) = full.find_bytes(b"\r\n\r\n") else {
-            if full.total_len() > MAX_PARTIAL_HEADER_SIZE {
-                return Err(HttpParseError::InvalidFormat);
-            }
-            return Ok(None);
-        };
 
-        Ok(Some((full, header_end)))
+        match self.state {
+            ParseState::HeaderFound { header_end } => Ok(Some((full, header_end))),
+            ParseState::SearchingHeaders { search_from } => {
+                let start = core::cmp::min(search_from, full.total_len());
+                let Some(header_end) = full.find_bytes_from(b"\r\n\r\n", start) else {
+                    if full.total_len() > MAX_PARTIAL_HEADER_SIZE {
+                        return Err(HttpParseError::InvalidFormat);
+                    }
+
+                    let next_search_from = full.total_len().saturating_sub(3);
+                    self.state = ParseState::SearchingHeaders {
+                        search_from: next_search_from,
+                    };
+                    return Ok(None);
+                };
+
+                self.state = ParseState::HeaderFound { header_end };
+                Ok(Some((full, header_end)))
+            }
+        }
     }
 
     fn parse_request_line(
@@ -400,6 +421,7 @@ impl HttpParser {
         } else {
             payload_range(&self.buffer, consumed_len, remaining).unwrap_or_default()
         };
+        self.state = ParseState::SearchingHeaders { search_from: 0 };
     }
 
     fn find_line_end(&self, span: &PayloadSpan, start: usize) -> Option<usize> {
