@@ -388,8 +388,8 @@ jobs:
         cp target/x86_64-exorust/release/exorust_kernel release/ 2>/dev/null || true
         cp target/x86_64-exorust/debug/exorust_kernel release/exorust_kernel-debug 2>/dev/null || true
         cp README.md release/
-        cp docs/API_REFERENCE.md release/
-        cp docs/ARCHITECTURE.md release/
+        cp docs/reference/api-reference.md release/
+        cp docs/architecture.md release/
         tar -czvf exorust-${{ steps.version.outputs.version }}.tar.gz release/
     
     - name: Upload release artifact

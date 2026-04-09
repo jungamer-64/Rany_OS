@@ -34,8 +34,8 @@ check_path_absent() {
 
 ACTIVE_DOCS=(
   README.md
-  docs/ARCHITECTURE.md
-  docs/API_REFERENCE.md
+  docs/architecture.md
+  docs/reference/api-reference.md
 )
 
 ACTIVE_MANIFESTS=(

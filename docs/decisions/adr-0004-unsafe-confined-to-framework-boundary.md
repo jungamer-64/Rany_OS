@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: カーネル実装者、ドライバ実装者、セキュリティレビュー担当
-- Related: [開発ガイドライン](../kernel_development_guidelines.md), [ARCHITECTURE.md](../ARCHITECTURE.md), [Variant A](../design_variants/variant-a-capability-first.md)
+- Related: [開発ガイドライン](../kernel-development-guidelines.md), [architecture.md](../architecture.md), [Variant A](../design_variants/variant-a-capability-first.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-07
@@ -41,5 +41,5 @@ ExoRust は Safe Rust を基盤にするが、低レイヤ（MMIO、割り込み
 
 ## References
 
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)
+- [../architecture.md](../architecture.md)

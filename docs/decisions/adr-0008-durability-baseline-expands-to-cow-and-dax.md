@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: durability 設計者、ストレージ実装者、レビュー担当者
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [../reference/durability.md](../reference/durability.md), [ADR-0007](ADR-0007-variant-a-as-canonical-baseline.md)
+- Related: [../architecture.md](../architecture.md), [../reference/durability.md](../reference/durability.md), [ADR-0007](adr-0007-variant-a-as-canonical-baseline.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-09
@@ -46,4 +46,4 @@ durability baseline を次のように拡張する。
 ## References
 
 - [../reference/durability.md](../reference/durability.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../architecture.md](../architecture.md)

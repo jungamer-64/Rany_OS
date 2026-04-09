@@ -2,7 +2,7 @@
 
 - Status: Canonical architecture overview
 - Audience: 設計判断を行う contributor、レビュー担当者、実装前に前提を確認したい開発者
-- Related: [ドキュメントハブ](README.md), [設計ハブ](design-hub.md), [開発ガイドライン](kernel_development_guidelines.md)
+- Related: [ドキュメントハブ](README.md), [設計比較ガイド](design-overview.md), [開発ガイドライン](kernel-development-guidelines.md)
 
 この文書は、ExoRust の運用基準となるアーキテクチャ概要です。canonical baseline は
 [Variant A: Capability-First Baseline](design_variants/variant-a-capability-first.md) です。
@@ -58,7 +58,7 @@ ExoRust は、次の三原則を採用します。
 - `kernel/src/resource_registry/` は runtime-owned resource state の唯一の所有者とする。
 - `kernel/src/fs/` はカーネル内ファイルシステム実装の正規配置とし、cross-tree path include を使わない。
 - `kernel/src/host_support/` は test/bench 専用の軽量差し替え面として本番経路と分離する。
-- ドライバ責務との切り分けは [kernel_driver_boundary.md](kernel_driver_boundary.md) に従う。
+- ドライバ責務との切り分けは [kernel-driver-boundary.md](kernel-driver-boundary.md) に従う。
 
 ## 3. メモリと DMA
 
@@ -260,7 +260,7 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 
 - 本番の canonical boot path は、署名検証済みの bootloader -> kernel -> cell load chain を前提にする。
 - UEFI Secure Boot、Shim、MOK、db / dbx の詳細は component detail とし、
-  [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)
+  [../bootloader/future-roadmap.md](../bootloader/future-roadmap.md)
   を正規の詳細参照先とする。
 - セル署名の trust chain、key level、revocation は loader policy の一部として扱い、ad hoc なドメインローカルポリシーに分散させない。
 
@@ -269,9 +269,9 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 - ドキュメントハブ:
   [README.md](README.md)
 - 設計比較ハブ:
-  [design-hub.md](design-hub.md)
+  [design-overview.md](design-overview.md)
 - 開発ガイドライン:
-  [kernel_development_guidelines.md](kernel_development_guidelines.md)
+  [kernel-development-guidelines.md](kernel-development-guidelines.md)
 - Capability 設計:
   [capabilities.md](capabilities.md)
 - durability / persistence:
@@ -287,9 +287,9 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 - benchmark / performance targets:
   [reference/performance-targets.md](reference/performance-targets.md)
 - ExoLoader / Secure Boot detail:
-  [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)
+  [../bootloader/future-roadmap.md](../bootloader/future-roadmap.md)
 - 設計サンプル:
-  [exorust_design/README.md](exorust_design/README.md)
+  [design-samples/README.md](design-samples/README.md)
 
 ## 10. 規範文書と語彙の境界
 
@@ -305,15 +305,15 @@ ExoRust では、authority の根は次の組み合わせで定義する。
   履歴資料。現行正本ではない
 
 - 規範（canonical）:
-  - 本書 `ARCHITECTURE.md`
+  - 本書 `architecture.md`
   - Accepted ADR 群
-  - `kernel_development_guidelines.md`
+  - `kernel-development-guidelines.md`
 - 参考（reference / implementation examples）:
   - `docs/reference/` の reference 文書
-  - `docs/exorust_design/` のサンプルコード
+  - `docs/design-samples/` のサンプルコード
   - 研究・比較向け Variant B/C 文書
 - component detail:
-  - `../bootloader/FUTURE_ROADMAP.md` の UEFI / Secure Boot / measured boot detail
+  - `../bootloader/future-roadmap.md` の UEFI / Secure Boot / measured boot detail
 - 履歴（historical archive）:
   - `docs/archive/` 配下の検討記録
 

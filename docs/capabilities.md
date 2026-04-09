@@ -2,7 +2,7 @@
 
 - Status: Canonical capability design
 - Audience: Capability 設計、ExoShell 実装、セキュリティレビューに関わる contributor
-- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](ARCHITECTURE.md), [設計ハブ](design-hub.md)
+- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](architecture.md), [設計比較ガイド](design-overview.md)
 
 ExoRust のケイパビリティモデルは「最小権限（least privilege）」と「言語ベース分離」を実践するための基盤です。ExoShell からは権限の付与・剥奪・委譲・監査を行い、危険 API には必ず Capability チェックを通します。
 
@@ -195,5 +195,5 @@ KAPI 設計時に権限漏れを起こさないよう、危険操作は次の最
 ## 関連文書
 
 - [README.md](README.md)
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [kernel_development_guidelines.md](kernel_development_guidelines.md)
+- [architecture.md](architecture.md)
+- [kernel-development-guidelines.md](kernel-development-guidelines.md)

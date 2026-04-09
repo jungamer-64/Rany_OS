@@ -2,16 +2,16 @@
 
 > Archive note: この文書は履歴資料です。現行仕様の正本ではありません。まず [docs/README](../README.md) と [archive index](README.md) を参照してください。
 
-> **📁 実装サンプルコード**: 本設計書で参照されるコードサンプルは [docs/exorust_design/](docs/exorust_design/) に整理されています。
+> **📁 実装サンプルコード**: 本設計書で参照されるコードサンプルは [../design-samples/](../design-samples/) に整理されています。
 >
 > | カテゴリ | ディレクトリ | 主な内容 |
 > |---------|-------------|----------|
-> | ABI検証 | [`abi/`](docs/exorust_design/abi/) | セルメタデータ、ハッシュ伝播、FFI検証 |
-> | ライブアップデート | [`live_update/`](docs/exorust_design/live_update/) | Epoch管理、Quiescent State |
-> | スケジューラ | [`scheduler/`](docs/exorust_design/scheduler/) | 燃料ベース実行、タイムスライス |
-> | セキュリティ | [`security/`](docs/exorust_design/security/) | MPK/PKU、ドメイン遷移、署名検証 |
-> | デバッグ | [`debug/`](docs/exorust_design/debug/) | バックトレース、プロファイラ、GDBスタブ |
-> | ブートストラップ | [`bootstrap/`](docs/exorust_design/bootstrap/) | 初期ページテーブル、NUMA検出 |
+> | ABI検証 | [`abi/`](../design-samples/abi/) | セルメタデータ、ハッシュ伝播、FFI検証 |
+> | ライブアップデート | [`live_update/`](../design-samples/live_update/) | Epoch管理、Quiescent State |
+> | スケジューラ | [`scheduler/`](../design-samples/scheduler/) | 燃料ベース実行、タイムスライス |
+> | セキュリティ | [`security/`](../design-samples/security/) | MPK/PKU、ドメイン遷移、署名検証 |
+> | デバッグ | [`debug/`](../design-samples/debug/) | バックトレース、プロファイラ、GDBスタブ |
+> | ブートストラップ | [`bootstrap/`](../design-samples/bootstrap/) | 初期ページテーブル、NUMA検出 |
 
 ## **1\. 序論：レガシーからの脱却とRustによるOS設計のパラダイムシフト**
 
@@ -115,7 +115,7 @@ RustはABI（Application Binary Interface）が安定していないため、動
 
 #### **3.4.1 セルメタデータ構造と依存関係グラフ**
 
-> 実装例: [cell_metadata.rs](docs/exorust_design/abi/cell_metadata.rs)
+> 実装例: [cell_metadata.rs](../design-samples/abi/cell_metadata.rs)
 
 `CellMetadata` 構造体と `DependencyEntry` 構造体により、セルのABIメタデータと依存関係を管理します。
 
@@ -128,7 +128,7 @@ RustはABI（Application Binary Interface）が安定していないため、動
    * セルBがセルCの型を使用している場合、セルBのインターフェースハッシュも再計算
    * セルAも同様に伝播
 
-2. **変更検出アルゴリズム:** → 実装例: [hash_propagation.rs](docs/exorust_design/abi/hash_propagation.rs)
+2. **変更検出アルゴリズム:** → 実装例: [hash_propagation.rs](../design-samples/abi/hash_propagation.rs)
 
 3. **キャッシング戦略:**
    * 計算済みハッシュはビルドキャッシュに保存
@@ -138,7 +138,7 @@ RustはABI（Application Binary Interface）が安定していないため、動
 
 `Vec<T>` のようなジェネリック型は、単相化（Monomorphization）後の具体型ごとにハッシュを計算します。
 
-> 実装例: [generic_hash.rs](docs/exorust_design/abi/generic_hash.rs)
+> 実装例: [generic_hash.rs](../design-samples/abi/generic_hash.rs)
 
 **型パラメータの正規化:**
 
@@ -149,7 +149,7 @@ RustはABI（Application Binary Interface）が安定していないため、動
 
 `#[repr(C)]` 属性が付与された型は、C ABIに従った安定したレイアウトを持ちます。
 
-> 実装例: [ffi_validation.rs](docs/exorust_design/abi/ffi_validation.rs)
+> 実装例: [ffi_validation.rs](../design-samples/abi/ffi_validation.rs)
 
 1. **明示的なABI契約:** `FfiPacket` 構造体による明示的なレイアウト定義
 
@@ -184,9 +184,9 @@ RustはABI（Application Binary Interface）が安定していないため、動
 
 > 実装例:
 >
-> * [epoch_management.rs](docs/exorust_design/live_update/epoch_management.rs) - エポック管理
-> * [quiescent_state.rs](docs/exorust_design/live_update/quiescent_state.rs) - Quiescent State Detection
-> * [request_tracker.rs](docs/exorust_design/live_update/request_tracker.rs) - リクエスト追跡
+> * [epoch_management.rs](../design-samples/live_update/epoch_management.rs) - エポック管理
+> * [quiescent_state.rs](../design-samples/live_update/quiescent_state.rs) - Quiescent State Detection
+> * [request_tracker.rs](../design-samples/live_update/request_tracker.rs) - リクエスト追跡
 
 **1. エポック管理:** `GLOBAL_EPOCH` と `PerCoreEpoch` によるグローバル/ローカルエポック管理
 
@@ -276,7 +276,7 @@ ISRから直接 `wake()` を呼び出すと、致命的なデッドロックが�
 
 各タスクに「燃料」を割り当て、計算量に応じて消費させます。燃料が切れたタスクは強制的にyieldされます。
 
-> 実装例: [fuel_counter.rs](docs/exorust_design/scheduler/fuel_counter.rs)
+> 実装例: [fuel_counter.rs](../design-samples/scheduler/fuel_counter.rs)
 
 **燃料消費ポイント（コンパイラが自動挿入）:**
 
@@ -294,7 +294,7 @@ ISRから直接 `wake()` を呼び出すと、致命的なデッドロックが�
 
 コンパイル時にループの終了を証明できる場合、燃料チェックを省略してオーバーヘッドを削減します。
 
-> 実装例: [loop_boundary.rs](docs/exorust_design/scheduler/loop_boundary.rs)
+> 実装例: [loop_boundary.rs](../design-samples/scheduler/loop_boundary.rs)
 
 **ループ境界証明の適用条件:**
 
@@ -311,7 +311,7 @@ ISRから直接 `wake()` を呼び出すと、致命的なデッドロックが�
 
 `unsafe` を含む外部クレートやFFI呼び出しには、コンパイラプラグインを適用できません。
 
-> 実装例: [ffi_wrapper.rs](docs/exorust_design/scheduler/ffi_wrapper.rs)
+> 実装例: [ffi_wrapper.rs](../design-samples/scheduler/ffi_wrapper.rs)
 
 **対策:**
 
@@ -323,7 +323,7 @@ ISRから直接 `wake()` を呼び出すと、致命的なデッドロックが�
 
 上記の対策をすり抜けるケースに対する最終防御として、APICタイマー割り込みを使用します。
 
-> 実装例: [timeslice_handler.rs](docs/exorust_design/scheduler/timeslice_handler.rs)
+> 実装例: [timeslice_handler.rs](../design-samples/scheduler/timeslice_handler.rs)
 
 **タイムスライスの設定:**
 
@@ -573,10 +573,10 @@ x86_64では16個（key 0〜15）のProtection Keyしか利用できないため
 
 > 実装例:
 >
-> * [mpk_protection_key.rs](docs/exorust_design/security/mpk_protection_key.rs) - ProtectionKeyClass enum（信頼レベル0-7、機密性クラス8-15）
-> * [pkru_value.rs](docs/exorust_design/security/pkru_value.rs) - PKRU権限ビットマップ操作
-> * [domain_transition.rs](docs/exorust_design/security/domain_transition.rs) - ドメイン遷移プロローグ/セキュアトランポリン
-> * [domain_permissions.rs](docs/exorust_design/security/domain_permissions.rs) - ドメイン権限プロファイル
+> * [mpk_protection_key.rs](../design-samples/security/mpk_protection_key.rs) - ProtectionKeyClass enum（信頼レベル0-7、機密性クラス8-15）
+> * [pkru_value.rs](../design-samples/security/pkru_value.rs) - PKRU権限ビットマップ操作
+> * [domain_transition.rs](../design-samples/security/domain_transition.rs) - ドメイン遷移プロローグ/セキュアトランポリン
+> * [domain_permissions.rs](../design-samples/security/domain_permissions.rs) - ドメイン権限プロファイル
 
 **WRPKRUによるドメイン遷移プロローグの必須化**
 
@@ -598,7 +598,7 @@ Context Switchが存在しないExoRust環境において、WRPKRU命令によ�
 
 **MPKを第一級防御とすることで、LFENCEの使用は最小限に抑えます。** 以下の条件を満たす箇所にのみLFENCEを挿入します。
 
-> 実装例: [lfence_policy.rs](docs/exorust_design/security/lfence_policy.rs) - LFENCE挿入基準とコンパイラプラグイン判定ロジック
+> 実装例: [lfence_policy.rs](../design-samples/security/lfence_policy.rs) - LFENCE挿入基準とコンパイラプラグイン判定ロジック
 
 **LFENCE挿入基準（厳格に制限）:**
 
@@ -664,7 +664,7 @@ Context Switchが存在しないExoRust環境において、WRPKRU命令によ�
 
 #### **9.4.1 適応的C-state制御**
 
-> 実装例: [power_management.rs](docs/exorust_design/scheduler/power_management.rs) - CPU電力状態の管理とC-state選択
+> 実装例: [power_management.rs](../design-samples/scheduler/power_management.rs) - CPU電力状態の管理とC-state選択
 
 #### **9.4.2 ポーリングモードとの共存**
 
@@ -673,7 +673,7 @@ Context Switchが存在しないExoRust環境において、WRPKRU命令によ�
    * 閾値を下回ったら割り込み駆動モードに移行
    * 閾値を上回ったらポーリングモードに復帰
 
-2. **動的モード切り替え:** → 実装例: [power_management.rs](docs/exorust_design/scheduler/power_management.rs)
+2. **動的モード切り替え:** → 実装例: [power_management.rs](../design-samples/scheduler/power_management.rs)
 
 3. **スリープスケジューラ統合:**
    * アイドルタスクでのHLT/MWAIT使用
@@ -709,7 +709,7 @@ Context Switchが存在しないExoRust環境において、WRPKRU命令によ�
 
 #### **9.5.2 セルの署名チェーン**
 
-> 実装例: [cell_signature.rs](docs/exorust_design/security/cell_signature.rs) - セル署名の検証（Ed25519、信頼チェーン、失効リスト）
+> 実装例: [cell_signature.rs](../design-samples/security/cell_signature.rs) - セル署名の検証（Ed25519、信頼チェーン、失効リスト）
 
 **署名階層:**
 
@@ -757,7 +757,7 @@ ExoRustでは全てのコードがRing 0で動作するため、従来のユー�
 
 `gimli` クレートを使用したDWARFアンワインドにより、パニック時に詳細なバックトレースを出力します。
 
-> 実装例: [backtrace.rs](docs/exorust_design/debug/backtrace.rs) - パニック時のDWARFアンワインドによるバックトレース出力
+> 実装例: [backtrace.rs](../design-samples/debug/backtrace.rs) - パニック時のDWARFアンワインドによるバックトレース出力
 
 **出力例:**
 
@@ -772,7 +772,7 @@ PANIC: index out of bounds: the len is 10 but the index is 15
 
 PMU（Performance Monitoring Unit）カウンタとDWARFデバッグ情報を組み合わせた関数レベルのホットスポット分析。
 
-> 実装例: [profiler.rs](docs/exorust_design/debug/profiler.rs) - シンボリックプロファイラ（PMU/DWARF連携、フレームグラフ生成）
+> 実装例: [profiler.rs](../design-samples/debug/profiler.rs) - シンボリックプロファイラ（PMU/DWARF連携、フレームグラフ生成）
 
 **機能:**
 
@@ -808,7 +808,7 @@ rustflags = ["--remap-path-prefix=/home/user=."]
 
 QEMUモニタに依存しない、カーネル独自のGDBリモートデバッグ機能。
 
-> 実装例: [gdb_stub.rs](docs/exorust_design/debug/gdb_stub.rs) - GDBプロトコルハンドラ（ブレークポイント、メモリ/レジスタ操作）
+> 実装例: [gdb_stub.rs](../design-samples/debug/gdb_stub.rs) - GDBプロトコルハンドラ（ブレークポイント、メモリ/レジスタ操作）
 
 **サポートされるデバッグ操作:**
 
@@ -876,8 +876,8 @@ QEMUモニタに依存しない、カーネル独自のGDBリモートデバッ�
 
 > 実装例:
 >
-> * [early_pagetable.rs](docs/exorust_design/bootstrap/early_pagetable.rs) - 1GB Huge Page設定
-> * [numa_detection.rs](docs/exorust_design/bootstrap/numa_detection.rs) - ヒープなしACPI解析、NUMAトポロジ検出
+> * [early_pagetable.rs](../design-samples/bootstrap/early_pagetable.rs) - 1GB Huge Page設定
+> * [numa_detection.rs](../design-samples/bootstrap/numa_detection.rs) - ヒープなしACPI解析、NUMAトポロジ検出
 
 ### **フェーズ 2: Async Executorと割り込み基盤 (4-6ヶ月)**
 

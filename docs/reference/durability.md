@@ -2,11 +2,11 @@
 
 - Status: Reference
 - Audience: ストレージ、永続性、ブート時リカバリ経路を確認したい contributor
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [resilience-recovery.md](resilience-recovery.md), [api-reference.md](api-reference.md), [lru-block-cache.md](lru-block-cache.md)
+- Related: [../architecture.md](../architecture.md), [resilience-recovery.md](resilience-recovery.md), [api-reference.md](api-reference.md), [lru-block-cache.md](lru-block-cache.md)
 
 この文書は ExoRust における durability / persistence の現行 reference です。競合時は
-[../ARCHITECTURE.md](../ARCHITECTURE.md) と
-[../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+[../architecture.md](../architecture.md) と
+[../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 を優先してください。
 
 ## 位置付け
@@ -98,8 +98,8 @@
 
 ## 関連文書
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 - [resilience-recovery.md](resilience-recovery.md)
 - [api-reference.md](api-reference.md)
 - [lru-block-cache.md](lru-block-cache.md)

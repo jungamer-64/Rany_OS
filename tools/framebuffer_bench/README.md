@@ -1,10 +1,12 @@
 # Framebuffer Bench
 
+- Status: Component detail / benchmark guide
+- Audience: framebuffer 描画パスの性能回帰を確認したい contributor
+- Related: [ドキュメントハブ](../../docs/README.md), [性能目標](../../docs/reference/performance-targets.md), [baseline](bench-baseline.md)
+
 ## 概要
 
-- 対象: framebuffer 描画パスの性能回帰を確認したい contributor
 - 方針: workspace から切り離した専用 bench crate と baseline を使う
-- 関連: [../../docs/README.md](../../docs/README.md), [BENCH_BASELINE.md](BENCH_BASELINE.md)
 
 This small crate provides quick and reproducible micro/criterion benchmarks for the framebuffer draw paths.
 
@@ -35,5 +37,5 @@ When the benchmark workflow runs on a Pull Request, it will automatically post a
 
 ## 関連文書
 
-- [BENCH_BASELINE.md](BENCH_BASELINE.md)
+- [bench-baseline.md](bench-baseline.md)
 - [../../docs/README.md](../../docs/README.md)

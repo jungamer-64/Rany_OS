@@ -2,60 +2,53 @@
 
 - Status: Canonical document index
 - Audience: 設計確認、実装、レビュー、検証のために文書を辿る contributor
-- Related: [README.md](../README.md), [設計ハブ](design-hub.md), [archive index](archive/README.md)
+- Related: [README.md](../README.md), [アーキテクチャ概要](architecture.md), [履歴資料アーカイブ](archive/README.md)
 
-このディレクトリは ExoRust の公開文書ハブです。現行の正規文書と、参照資料、Runbook、提案書、履歴資料を分けて案内します。
+このファイルは ExoRust 公開文書の唯一の総合入口です。canonical 文書、採択済み判断、reference、運用手順、履歴資料、component detail をここから辿れるように整理します。
 
-## Overview
+## 最短ルート
 
-- [ARCHITECTURE.md](ARCHITECTURE.md): 現行アーキテクチャの正本
-- [kernel_development_guidelines.md](kernel_development_guidelines.md): 実装時の開発規約
-- [kernel_boot_sequence.md](kernel_boot_sequence.md): ブート経路と runtime handoff
-- [LINKER_GUIDELINES.md](LINKER_GUIDELINES.md): リンカ設定と CI 安全策
+1. [architecture.md](architecture.md): 現行アーキテクチャの正本
+2. [decisions/README.md](decisions/README.md): 採択済みの設計判断と境界条件
+3. [kernel-development-guidelines.md](kernel-development-guidelines.md): 実装規約
+4. [reference/api-reference.md](reference/api-reference.md): 公開 API と設計意図
+5. [design-overview.md](design-overview.md): Variant 比較と補助的な設計整理
+6. [archive/README.md](archive/README.md): 履歴資料の入口
 
 ## 規範ラベル
 
 - `Canonical requirement`: 現行 baseline で必須の要件
 - `Canonical target`: 採択済みだが段階実装中の目標。未実装部分は `implementation pending` と明記する
 - `Reference`: 実装整理、補助設計、公開面の読み替え
+- `Design comparison`: canonical を補う比較・研究整理
+- `Design sample`: コンパイル対象ではない擬似コード資料
 - `Component detail`: 下位コンポーネントの詳細実装
 - `Historical archive`: 履歴資料。現行正本ではない
 
-## 推奨参照順（最短ルート）
-
-1. [ARCHITECTURE.md](ARCHITECTURE.md)（正本）
-2. [decisions/README.md](decisions/README.md)（採択済み判断）
-3. [kernel_development_guidelines.md](kernel_development_guidelines.md)（実装規約）
-4. [capabilities.md](capabilities.md)（権限モデル）
-5. [reference/api-reference.md](reference/api-reference.md)（API 形状）
-6. [exorust_design/README.md](exorust_design/README.md)（参考実装）
-7. [archive/README.md](archive/README.md)（履歴資料）
-
 補足:
 
-- `archive/` は履歴参照用であり、現行仕様の正本ではありません。
-- 仕様の競合時は `ARCHITECTURE.md` と Accepted ADR を優先してください。
+- 仕様の競合時は `architecture.md` と Accepted ADR を優先してください。
+- `design-overview.md` と `design-samples/` は canonical の補助資料であり、正本そのものではありません。
+- `archive/` は履歴参照用です。設計判断の現行基準としては扱いません。
 
-## Design
+## Canonical
 
-- [design-hub.md](design-hub.md): Variant A / B / C の比較と推奨案
+- [architecture.md](architecture.md): 現行アーキテクチャの正本
+- [kernel-development-guidelines.md](kernel-development-guidelines.md): 実装規約
+- [kernel-boot-sequence.md](kernel-boot-sequence.md): ブート経路と runtime handoff
+- [linker-guidelines.md](linker-guidelines.md): リンカ設定と CI 安全策
 - [capabilities.md](capabilities.md): Capability モデルと API
-- [kernel_driver_boundary.md](kernel_driver_boundary.md): カーネル / ドライバ責務境界
-- [driver_dependency.md](driver_dependency.md): ドライバ依存ルール
-- [design_variants/variant-a-capability-first.md](design_variants/variant-a-capability-first.md): canonical baseline
-- [design_variants/variant-b-hybrid-hardware-accelerated.md](design_variants/variant-b-hybrid-hardware-accelerated.md): 追加防御を伴う研究案
-- [design_variants/variant-c-pks-mandatory.md](design_variants/variant-c-pks-mandatory.md): 高保証 SKU 向け研究案
-- [design_variants/hardware-assisted-security-notes.md](design_variants/hardware-assisted-security-notes.md): ハードウェア支援セキュリティ詳細の研究ノート
-- [exorust_design/README.md](exorust_design/README.md): 設計サンプルコードの位置付け
+- [kernel-driver-boundary.md](kernel-driver-boundary.md): カーネル / ドライバ責務境界
+- [driver-dependency.md](driver-dependency.md): ドライバ依存ルール
 
 ## Decisions
 
 - [decisions/README.md](decisions/README.md): Architecture Decision Record（ADR）索引
-- [decisions/ADR-0007-variant-a-as-canonical-baseline.md](decisions/ADR-0007-variant-a-as-canonical-baseline.md): 既定案（Variant A）採択記録
-- [decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md](decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md): durability baseline 拡張
-- [decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md](decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md): observability baseline 拡張
-- [decisions/ADR-0010-runtime-resilience-baseline.md](decisions/ADR-0010-runtime-resilience-baseline.md): runtime resilience baseline
-- [decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md](decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md): NUMA / power / fault hardening baseline
+- [decisions/adr-0007-variant-a-as-canonical-baseline.md](decisions/adr-0007-variant-a-as-canonical-baseline.md): 既定案（Variant A）採択記録
+- [decisions/adr-0008-durability-baseline-expands-to-cow-and-dax.md](decisions/adr-0008-durability-baseline-expands-to-cow-and-dax.md): durability baseline 拡張
+- [decisions/adr-0009-observability-baseline-includes-tracing-and-reproducibility.md](decisions/adr-0009-observability-baseline-includes-tracing-and-reproducibility.md): observability baseline 拡張
+- [decisions/adr-0010-runtime-resilience-baseline.md](decisions/adr-0010-runtime-resilience-baseline.md): runtime resilience baseline
+- [decisions/adr-0011-locality-power-and-fault-hardening-baseline.md](decisions/adr-0011-locality-power-and-fault-hardening-baseline.md): NUMA / power / fault hardening baseline
 - [decisions/archive/README.md](decisions/archive/README.md): superseded / archived ADR 履歴
 
 ## Reference
@@ -70,6 +63,19 @@
 - [reference/archive-migration-checklist.md](reference/archive-migration-checklist.md): archive 由来の残存細部の移行対応表
 - [reference/deprecations.md](reference/deprecations.md): 廃止済み API と移行ガイド
 - [reference/lru-block-cache.md](reference/lru-block-cache.md): LRU ブロックキャッシュ実装リファレンス
+
+## Design Comparison
+
+- [design-overview.md](design-overview.md): Variant A / B / C の比較と推奨案
+- [design_variants/variant-a-capability-first.md](design_variants/variant-a-capability-first.md): canonical baseline の詳細
+- [design_variants/variant-b-hybrid-hardware-accelerated.md](design_variants/variant-b-hybrid-hardware-accelerated.md): 追加防御を伴う研究案
+- [design_variants/variant-c-pks-mandatory.md](design_variants/variant-c-pks-mandatory.md): 高保証 SKU 向け研究案
+- [design_variants/hardware-assisted-security-notes.md](design_variants/hardware-assisted-security-notes.md): ハードウェア支援セキュリティ詳細の研究ノート
+
+## Design Samples
+
+- [design-samples/README.md](design-samples/README.md): 擬似コード資料の位置付け
+- `design-samples/` 配下の `.rs` は設計意図を示すサンプルであり、ビルド対象ではありません。
 
 archive 由来の残存細部の着地点:
 
@@ -89,21 +95,22 @@ archive 由来の残存細部の着地点:
 
 ## Component Docs
 
-- [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md): ExoLoader のロードマップ、UEFI / Secure Boot / measured boot detail
+- [../bootloader/future-roadmap.md](../bootloader/future-roadmap.md): ExoLoader のロードマップ、UEFI / Secure Boot / measured boot detail
 - [../drivers/README.md](../drivers/README.md): ドライバディレクトリ案内
 - [../drivers/nvme/README.md](../drivers/nvme/README.md): NVMe ドライバ案内
 - [../libs/sync/README.md](../libs/sync/README.md): `libs/sync` の設計意図
 - [../tools/e2e_zero_copy/README.md](../tools/e2e_zero_copy/README.md): E2E zero-copy storage test
 - [../tools/framebuffer_bench/README.md](../tools/framebuffer_bench/README.md): framebuffer bench 案内
-- [../tools/framebuffer_bench/BENCH_BASELINE.md](../tools/framebuffer_bench/BENCH_BASELINE.md): framebuffer bench baseline
+- [../tools/framebuffer_bench/bench-baseline.md](../tools/framebuffer_bench/bench-baseline.md): framebuffer bench baseline
 - [../tools/iommu_bench/README.md](../tools/iommu_bench/README.md): IOMMU bench 案内
 
 ## Archive
 
 - [archive/README.md](archive/README.md): 履歴資料の読み方
+- [archive/rust-kernel-design-proposal.md](archive/rust-kernel-design-proposal.md): 旧設計案の長文アーカイブ
 
 ## 関連文書
 
 - [../README.md](../README.md)
-- [design-hub.md](design-hub.md)
+- [design-overview.md](design-overview.md)
 - [archive/README.md](archive/README.md)

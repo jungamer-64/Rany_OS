@@ -2,10 +2,10 @@
 
 - Status: Reference
 - Audience: ベンチマーク目標、成功基準、測定手段を確認したい contributor
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [observability-debug.md](observability-debug.md), [api-reference.md](api-reference.md)
+- Related: [../architecture.md](../architecture.md), [observability-debug.md](observability-debug.md), [api-reference.md](api-reference.md)
 
 この文書は ExoRust の benchmark / measurement target の reference です。競合時は
-[../ARCHITECTURE.md](../ARCHITECTURE.md) と
+[../architecture.md](../architecture.md) と
 Accepted ADR を優先してください。
 
 ## 位置付け
@@ -75,6 +75,6 @@ Accepted ADR を優先してください。
 
 ## 関連文書
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../architecture.md](../architecture.md)
 - [observability-debug.md](observability-debug.md)
 - [api-reference.md](api-reference.md)

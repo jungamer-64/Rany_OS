@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: 設計判断を行う contributor、運用設計者、レビュー担当者
-- Related: [設計ハブ](../design-hub.md), [Variant A](../design_variants/variant-a-capability-first.md), [ARCHITECTURE.md](../ARCHITECTURE.md)
+- Related: [設計比較ガイド](../design-overview.md), [Variant A](../design_variants/variant-a-capability-first.md), [architecture.md](../architecture.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-07
@@ -47,5 +47,5 @@ ExoRust には Variant A/B/C の比較案がある。
 
 ## References
 
-- [../design-hub.md](../design-hub.md)
+- [../design-overview.md](../design-overview.md)
 - [../design_variants/variant-a-capability-first.md](../design_variants/variant-a-capability-first.md)

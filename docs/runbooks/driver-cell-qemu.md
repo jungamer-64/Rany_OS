@@ -2,7 +2,7 @@
 
 - Status: Active runbook
 - Audience: DriverCell / LiveUpdate の手動検証を行う contributor
-- Related: [ドキュメントハブ](../README.md), [カーネルブートシーケンス](../kernel_boot_sequence.md), [ドライバ依存ガイドライン](../driver_dependency.md)
+- Related: [ドキュメントハブ](../README.md), [カーネルブートシーケンス](../kernel-boot-sequence.md), [ドライバ依存ガイドライン](../driver-dependency.md)
 
 This runbook validates DriverCell-first `cell.*` commands and LiveUpdate behavior on QEMU using the `driver_cell_probe` fixture cells.
 
@@ -199,5 +199,5 @@ Expected:
 ## 関連文書
 
 - [../README.md](../README.md)
-- [../kernel_boot_sequence.md](../kernel_boot_sequence.md)
-- [../driver_dependency.md](../driver_dependency.md)
+- [../kernel-boot-sequence.md](../kernel-boot-sequence.md)
+- [../driver-dependency.md](../driver-dependency.md)

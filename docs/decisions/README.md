@@ -2,7 +2,7 @@
 
 - Status: Canonical decision index
 - Audience: 設計判断の背景と採択履歴を追いたい contributor、レビュー担当者
-- Related: [ドキュメントハブ](../README.md), [設計ハブ](../design-hub.md), [開発ガイドライン](../kernel_development_guidelines.md)
+- Related: [ドキュメントハブ](../README.md), [設計比較ガイド](../design-overview.md), [開発ガイドライン](../kernel-development-guidelines.md)
 
 このディレクトリは ExoRust の Architecture Decision Record（ADR）正本です。
 仕様本文（Architecture / Guidelines）と、採択理由・代替案・影響範囲（ADR）を分離して管理します。
@@ -29,7 +29,7 @@
 ### 採番規則
 
 - 連番方式を採用します（`ADR-0001` から開始）。
-- ファイル名は `ADR-000N-<short-title>.md` 形式を推奨します。
+- 文書 ID は `ADR-000N` を使い、ファイル名は `adr-000N-<short-title>.md` 形式を使います。
 - 同じ番号の再利用は禁止です。
 
 ### 言語方針
@@ -47,21 +47,21 @@
 
 | ID | Title | Status | Date |
 | --- | --- | --- | --- |
-| [ADR-0001](ADR-0001-sas-spl-foundation.md) | SAS/SPL Foundation | Accepted | 2026-04-07 |
-| [ADR-0002](ADR-0002-async-first-execution-model.md) | Async-First Execution Model | Accepted | 2026-04-07 |
-| [ADR-0003](ADR-0003-capability-first-authority-model.md) | Capability-First Authority Model | Accepted | 2026-04-07 |
-| [ADR-0004](ADR-0004-unsafe-confined-to-framework-boundary.md) | Unsafe Confined to Framework Boundary | Accepted | 2026-04-07 |
-| [ADR-0005](ADR-0005-exchange-heap-rref-domain-transfer.md) | Exchange Heap + RRef Domain Transfer | Accepted | 2026-04-07 |
-| [ADR-0006](ADR-0006-iommu-mandatory-for-dma.md) | IOMMU Mandatory for DMA | Accepted | 2026-04-07 |
-| [ADR-0007](ADR-0007-variant-a-as-canonical-baseline.md) | Variant A as Canonical Baseline | Accepted | 2026-04-07 |
-| [ADR-0008](ADR-0008-durability-baseline-expands-to-cow-and-dax.md) | Durability Baseline Expands to CoW Snapshot + DAX | Accepted | 2026-04-09 |
-| [ADR-0009](ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md) | Observability Baseline Includes Tracing + Reproducibility | Accepted | 2026-04-09 |
-| [ADR-0010](ADR-0010-runtime-resilience-baseline.md) | Runtime Resilience Baseline | Accepted | 2026-04-09 |
-| [ADR-0011](ADR-0011-locality-power-and-fault-hardening-baseline.md) | Locality / Power / Fault Hardening Baseline | Accepted | 2026-04-09 |
+| [ADR-0001](adr-0001-sas-spl-foundation.md) | SAS/SPL Foundation | Accepted | 2026-04-07 |
+| [ADR-0002](adr-0002-async-first-execution-model.md) | Async-First Execution Model | Accepted | 2026-04-07 |
+| [ADR-0003](adr-0003-capability-first-authority-model.md) | Capability-First Authority Model | Accepted | 2026-04-07 |
+| [ADR-0004](adr-0004-unsafe-confined-to-framework-boundary.md) | Unsafe Confined to Framework Boundary | Accepted | 2026-04-07 |
+| [ADR-0005](adr-0005-exchange-heap-rref-domain-transfer.md) | Exchange Heap + RRef Domain Transfer | Accepted | 2026-04-07 |
+| [ADR-0006](adr-0006-iommu-mandatory-for-dma.md) | IOMMU Mandatory for DMA | Accepted | 2026-04-07 |
+| [ADR-0007](adr-0007-variant-a-as-canonical-baseline.md) | Variant A as Canonical Baseline | Accepted | 2026-04-07 |
+| [ADR-0008](adr-0008-durability-baseline-expands-to-cow-and-dax.md) | Durability Baseline Expands to CoW Snapshot + DAX | Accepted | 2026-04-09 |
+| [ADR-0009](adr-0009-observability-baseline-includes-tracing-and-reproducibility.md) | Observability Baseline Includes Tracing + Reproducibility | Accepted | 2026-04-09 |
+| [ADR-0010](adr-0010-runtime-resilience-baseline.md) | Runtime Resilience Baseline | Accepted | 2026-04-09 |
+| [ADR-0011](adr-0011-locality-power-and-fault-hardening-baseline.md) | Locality / Power / Fault Hardening Baseline | Accepted | 2026-04-09 |
 
 ## 関連文書
 
 - [../README.md](../README.md)
-- [../design-hub.md](../design-hub.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../design-overview.md](../design-overview.md)
+- [../architecture.md](../architecture.md)
 - [archive/README.md](archive/README.md)

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: メモリ管理、ドメイン間通信、ランタイム境界を実装する contributor
-- Related: [ARCHITECTURE.md](../ARCHITECTURE.md), [Variant A](../design_variants/variant-a-capability-first.md), [開発ガイドライン](../kernel_development_guidelines.md)
+- Related: [architecture.md](../architecture.md), [Variant A](../design_variants/variant-a-capability-first.md), [開発ガイドライン](../kernel-development-guidelines.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-07
@@ -41,5 +41,5 @@ SAS は同一アドレス空間を共有するが、これを「無制限共有�
 
 ## References
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)

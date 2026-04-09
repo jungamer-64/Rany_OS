@@ -1,12 +1,14 @@
 # Drivers ディレクトリガイド
 
+- Status: Component detail / drivers guide
+- Audience: ドライバ作者、`kernel_api` 変更担当、レビュー担当者
+- Related: [ドキュメントハブ](../docs/README.md), [ドライバ依存ルール](../docs/driver-dependency.md), [カーネル / ドライバ責務境界](../docs/kernel-driver-boundary.md)
+
 このディレクトリには ExoRust で利用するハードウェアドライバ実装が入っています。
 
 ## 概要
 
-- 対象: ドライバ作者、`kernel_api` 変更担当、reviewer
 - 方針: ドライバは `kernel` crate に直接依存せず、`kernel_api` と `hal` を通じてカーネル機能へ接続します。
-- 関連: [docs/driver_dependency.md](../docs/driver_dependency.md), [docs/kernel_driver_boundary.md](../docs/kernel_driver_boundary.md)
 
 ## ガイドライン
 
@@ -52,6 +54,6 @@ This directory has a verification script that checks for unauthorized kernel dep
 
 ## 関連文書
 
-- [../docs/driver_dependency.md](../docs/driver_dependency.md)
-- [../docs/kernel_driver_boundary.md](../docs/kernel_driver_boundary.md)
+- [../docs/driver-dependency.md](../docs/driver-dependency.md)
+- [../docs/kernel-driver-boundary.md](../docs/kernel-driver-boundary.md)
 - [nvme/README.md](nvme/README.md)

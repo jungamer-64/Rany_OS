@@ -2,7 +2,7 @@
 
 - Status: Reference
 - Audience: deprecated symbol の移行を進める実装者、レビュー担当者、integrator
-- Related: [ドキュメントハブ](../README.md), [API リファレンス](api-reference.md), [アーキテクチャ概要](../ARCHITECTURE.md)
+- Related: [ドキュメントハブ](../README.md), [API リファレンス](api-reference.md), [アーキテクチャ概要](../architecture.md)
 
 This document lists symbols that have been marked deprecated and recommended migration paths. It is intended to help reviewers and integrators migrate away from legacy APIs gradually.
 
@@ -366,4 +366,4 @@ This document lists symbols that have been marked deprecated and recommended mig
 
 - [../README.md](../README.md)
 - [api-reference.md](api-reference.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../architecture.md](../architecture.md)

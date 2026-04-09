@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: scheduler / mm / power / panic path の設計者、レビュー担当者
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [../kernel_development_guidelines.md](../kernel_development_guidelines.md), [ADR-0007](ADR-0007-variant-a-as-canonical-baseline.md)
+- Related: [../architecture.md](../architecture.md), [../kernel-development-guidelines.md](../kernel-development-guidelines.md), [ADR-0007](adr-0007-variant-a-as-canonical-baseline.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-09
@@ -45,5 +45,5 @@ baseline に次を含める。
 
 ## References
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)

@@ -6,7 +6,7 @@
 
 > **監査日**: 2026年3月2日
 > **対象バージョン**: 現在のmainブランチ
-> **設計書**: `Rustカーネル設計案作成.md` / `docs/ARCHITECTURE.md` / `docs/kernel_development_guidelines.md` / `.github/instructions/exorust.instructions.md`
+> **設計書**: `rust-kernel-design-proposal.md` / `docs/architecture.md` / `docs/kernel-development-guidelines.md` / `.github/instructions/exorust.instructions.md`
 
 ---
 

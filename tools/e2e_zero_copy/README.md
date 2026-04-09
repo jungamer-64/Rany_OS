@@ -1,10 +1,12 @@
 # E2E virtio-blk zero-copy test
 
+- Status: Component detail / local reproduction guide
+- Audience: QEMU 上で zero-copy storage integration test を再現したい contributor
+- Related: [ドキュメントハブ](../../docs/README.md), [カーネルブートシーケンス](../../docs/kernel-boot-sequence.md), [runbook](../../docs/runbooks/driver-cell-qemu.md)
+
 ## 概要
 
-- 対象: QEMU 上で zero-copy storage integration test を再現したい contributor
 - 方針: ローカル再現用スクリプトと CI の前提を短くまとめる
-- 関連: [../../docs/README.md](../../docs/README.md), [../../docs/kernel_boot_sequence.md](../../docs/kernel_boot_sequence.md)
 
 This folder contains helper scripts to reproduce the QEMU-based E2E storage test locally.
 
@@ -26,4 +28,4 @@ Note:
 ## 関連文書
 
 - [../../docs/README.md](../../docs/README.md)
-- [../../docs/kernel_boot_sequence.md](../../docs/kernel_boot_sequence.md)
+- [../../docs/kernel-boot-sequence.md](../../docs/kernel-boot-sequence.md)

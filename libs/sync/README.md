@@ -1,10 +1,12 @@
 # libs/sync — 外部クレート向け同期プリミティブ
 
+- Status: Component detail / sync crate guide
+- Audience: カーネル外部の crate を実装する contributor
+- Related: [ドキュメントハブ](../../docs/README.md), [開発ガイドライン](../../docs/kernel-development-guidelines.md), [アーキテクチャ概要](../../docs/architecture.md)
+
 ## 概要
 
-- 対象: カーネル外部の crate を実装する contributor
 - 方針: `kernel/src/sync/` の依存を持ち込まず、移植しやすい同期プリミティブのサブセットを提供する
-- 関連: [../../docs/kernel_development_guidelines.md](../../docs/kernel_development_guidelines.md), [../../docs/README.md](../../docs/README.md)
 
 このクレートは、カーネル外部のクレート（独立ビルドされる storage / driver / tool 等）から使用可能な
 **スタンドアロン版の同期プリミティブ** を提供します。
@@ -42,4 +44,4 @@ use exo_sync::{PoisonLock, Backoff};
 ## 関連文書
 
 - [../../docs/README.md](../../docs/README.md)
-- [../../docs/kernel_development_guidelines.md](../../docs/kernel_development_guidelines.md)
+- [../../docs/kernel-development-guidelines.md](../../docs/kernel-development-guidelines.md)

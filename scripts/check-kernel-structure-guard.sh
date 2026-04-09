@@ -65,7 +65,7 @@ check_no_match \
 check_no_match \
   "legacy canonical names in architecture docs" \
   'crate::(memory|domain_system)|\bmemory::init\(\)|\bdomain_system::' \
-  docs/ARCHITECTURE.md docs/kernel_boot_sequence.md
+  docs/architecture.md docs/kernel-boot-sequence.md
 
 check_no_match \
   "legacy kapi/resource registry names in source and docs" \

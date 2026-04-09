@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: スケジューラ、I/O、割り込み処理を実装する contributor
-- Related: [ARCHITECTURE.md](../ARCHITECTURE.md), [開発ガイドライン](../kernel_development_guidelines.md), [Variant A](../design_variants/variant-a-capability-first.md)
+- Related: [architecture.md](../architecture.md), [開発ガイドライン](../kernel-development-guidelines.md), [Variant A](../design_variants/variant-a-capability-first.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-07
@@ -37,9 +37,9 @@ ExoRust は高並行I/Oを前提とし、ブロッキング中心の実行モデ
 
 ## Notes
 
-- 実装時の判定基準は `kernel_development_guidelines.md` の Async/Await セクションを参照する。
+- 実装時の判定基準は `kernel-development-guidelines.md` の Async/Await セクションを参照する。
 
 ## References
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)

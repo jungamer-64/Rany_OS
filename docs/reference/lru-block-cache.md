@@ -2,7 +2,7 @@
 
 - Status: Reference
 - Audience: ストレージ実装者、ブロック I/O をレビューする contributor
-- Related: [ドキュメントハブ](../README.md), [API リファレンス](api-reference.md), [アーキテクチャ概要](../ARCHITECTURE.md)
+- Related: [ドキュメントハブ](../README.md), [API リファレンス](api-reference.md), [アーキテクチャ概要](../architecture.md)
 
 ## 概要
 
@@ -384,4 +384,4 @@ TODO: ベンチマーク結果を追加
 
 - [../README.md](../README.md)
 - [api-reference.md](api-reference.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../architecture.md](../architecture.md)

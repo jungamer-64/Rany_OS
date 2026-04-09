@@ -2,7 +2,7 @@
 
 - Status: Canonical baseline
 - Audience: 設計判断を固定したい contributor、実装者、レビュー担当者
-- Related: [ドキュメントハブ](../README.md), [設計ハブ](../design-hub.md), [アーキテクチャ概要](../ARCHITECTURE.md)
+- Related: [ドキュメントハブ](../README.md), [設計比較ガイド](../design-overview.md), [アーキテクチャ概要](../architecture.md)
 
 ExoRust の canonical baseline です。分離の主軸は Capability、型安全な境界、署名済みセル、IOMMU、Framework 境界に置きます。MPK/PKU/PKS 系は使える CPU での追加防御であり、correctness の前提にしません。
 
@@ -91,5 +91,5 @@ ExoRust の canonical baseline です。分離の主軸は Capability、型安�
 ## 関連文書
 
 - [../README.md](../README.md)
-- [../design-hub.md](../design-hub.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../design-overview.md](../design-overview.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)

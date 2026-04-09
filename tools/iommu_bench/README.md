@@ -1,10 +1,12 @@
 # IOMMU Command Queue Bench
 
+- Status: Component detail / benchmark guide
+- Audience: IOMMU command queue / IOVA allocator の性能を追う contributor
+- Related: [ドキュメントハブ](../../docs/README.md), [カーネルブートシーケンス](../../docs/kernel-boot-sequence.md), [性能目標](../../docs/reference/performance-targets.md)
+
 ## 概要
 
-- 対象: IOMMU command queue / IOVA allocator の性能を追う contributor
 - 方針: host 側 microbench と full-boot QEMU 検証の入口をまとめる
-- 関連: [../../docs/README.md](../../docs/README.md), [../../docs/kernel_boot_sequence.md](../../docs/kernel_boot_sequence.md)
 
 Small Criterion-based microbench for `CommandQueue` throughput/latency.
 
@@ -44,4 +46,4 @@ These tests compare:
 ## 関連文書
 
 - [../../docs/README.md](../../docs/README.md)
-- [../../docs/kernel_boot_sequence.md](../../docs/kernel_boot_sequence.md)
+- [../../docs/kernel-boot-sequence.md](../../docs/kernel-boot-sequence.md)

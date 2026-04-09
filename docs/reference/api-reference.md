@@ -2,7 +2,7 @@
 
 - Status: Reference
 - Audience: 公開 API の形と設計意図を確認する実装者、レビュー担当者
-- Related: [ドキュメントハブ](../README.md), [アーキテクチャ概要](../ARCHITECTURE.md), [設計ハブ](../design-hub.md)
+- Related: [ドキュメントハブ](../README.md), [アーキテクチャ概要](../architecture.md), [設計比較ガイド](../design-overview.md)
 
 ExoRust Kernel の公開 API リファレンスドキュメントです。
 
@@ -10,9 +10,9 @@ ExoRust Kernel の公開 API リファレンスドキュメントです。
 
 この文書は API 形状を説明する **Reference** です。規範の優先順位は次の通りです。
 
-1. `ARCHITECTURE.md`（正本）
+1. `architecture.md`（正本）
 2. Accepted ADR
-3. `kernel_development_guidelines.md`
+3. `kernel-development-guidelines.md`
 4. 本書（API リファレンス）
 
 したがって、本書と正本の記述が競合する場合は、正本側を優先します。
@@ -570,12 +570,12 @@ ExoShell の公開 namespace は、呼び出し元ドメインの `CapabilitySet
 - 危険 API（`cell.swap`, `mmio.write`, DMA/IOMMU 制御など）の権限制御は
     `capabilities.md` の Required Capability を優先する。
 - Async 実行の進行保証は `ADR-0002` を優先し、Fuel は最適化として扱う。
-- ドメイン境界 ABI は `ARCHITECTURE.md` の `#[repr(C)]` 制約を優先する。
+- ドメイン境界 ABI は `architecture.md` の `#[repr(C)]` 制約を優先する。
 
 ---
 
 ## 関連文書
 
 - [../README.md](../README.md)
-- [../design-hub.md](../design-hub.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../design-overview.md](../design-overview.md)
+- [../architecture.md](../architecture.md)

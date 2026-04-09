@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: observability / debug 設計者、レビュー担当者、運用担当者
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [../reference/observability-debug.md](../reference/observability-debug.md), [ADR-0007](ADR-0007-variant-a-as-canonical-baseline.md)
+- Related: [../architecture.md](../architecture.md), [../reference/observability-debug.md](../reference/observability-debug.md), [ADR-0007](adr-0007-variant-a-as-canonical-baseline.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-09
@@ -46,4 +46,4 @@ observability baseline を次のように定義する。
 ## References
 
 - [../reference/observability-debug.md](../reference/observability-debug.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../architecture.md](../architecture.md)

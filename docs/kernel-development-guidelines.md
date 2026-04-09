@@ -2,7 +2,7 @@
 
 - Status: Canonical implementation guideline
 - Audience: カーネル実装者、ドライバ統合担当、レビュー担当者
-- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](ARCHITECTURE.md), [Variant A](design_variants/variant-a-capability-first.md), [Execution Fairness Reference](reference/execution-fairness.md)
+- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](architecture.md), [Variant A](design_variants/variant-a-capability-first.md), [Execution Fairness Reference](reference/execution-fairness.md)
 
 ExoRust カーネルの canonical baseline は
 [Variant A: Capability-First Baseline](design_variants/variant-a-capability-first.md)
@@ -11,17 +11,17 @@ ExoRust カーネルの canonical baseline は
 ## 関連 ADR
 
 - [ADR Index](decisions/README.md)
-- [ADR-0001: SAS/SPL Foundation](decisions/ADR-0001-sas-spl-foundation.md)
-- [ADR-0002: Async-First Execution Model](decisions/ADR-0002-async-first-execution-model.md)
-- [ADR-0003: Capability-First Authority Model](decisions/ADR-0003-capability-first-authority-model.md)
-- [ADR-0004: Unsafe Confined to Framework Boundary](decisions/ADR-0004-unsafe-confined-to-framework-boundary.md)
-- [ADR-0005: Exchange Heap + RRef Domain Transfer](decisions/ADR-0005-exchange-heap-rref-domain-transfer.md)
-- [ADR-0006: IOMMU Mandatory for DMA](decisions/ADR-0006-iommu-mandatory-for-dma.md)
-- [ADR-0007: Variant A as Canonical Baseline](decisions/ADR-0007-variant-a-as-canonical-baseline.md)
-- [ADR-0008: Durability Baseline Expands to CoW + DAX](decisions/ADR-0008-durability-baseline-expands-to-cow-and-dax.md)
-- [ADR-0009: Observability Baseline Includes Tracing + Reproducibility](decisions/ADR-0009-observability-baseline-includes-tracing-and-reproducibility.md)
-- [ADR-0010: Runtime Resilience Baseline](decisions/ADR-0010-runtime-resilience-baseline.md)
-- [ADR-0011: Locality / Power / Fault Hardening Baseline](decisions/ADR-0011-locality-power-and-fault-hardening-baseline.md)
+- [ADR-0001: SAS/SPL Foundation](decisions/adr-0001-sas-spl-foundation.md)
+- [ADR-0002: Async-First Execution Model](decisions/adr-0002-async-first-execution-model.md)
+- [ADR-0003: Capability-First Authority Model](decisions/adr-0003-capability-first-authority-model.md)
+- [ADR-0004: Unsafe Confined to Framework Boundary](decisions/adr-0004-unsafe-confined-to-framework-boundary.md)
+- [ADR-0005: Exchange Heap + RRef Domain Transfer](decisions/adr-0005-exchange-heap-rref-domain-transfer.md)
+- [ADR-0006: IOMMU Mandatory for DMA](decisions/adr-0006-iommu-mandatory-for-dma.md)
+- [ADR-0007: Variant A as Canonical Baseline](decisions/adr-0007-variant-a-as-canonical-baseline.md)
+- [ADR-0008: Durability Baseline Expands to CoW + DAX](decisions/adr-0008-durability-baseline-expands-to-cow-and-dax.md)
+- [ADR-0009: Observability Baseline Includes Tracing + Reproducibility](decisions/adr-0009-observability-baseline-includes-tracing-and-reproducibility.md)
+- [ADR-0010: Runtime Resilience Baseline](decisions/adr-0010-runtime-resilience-baseline.md)
+- [ADR-0011: Locality / Power / Fault Hardening Baseline](decisions/adr-0011-locality-power-and-fault-hardening-baseline.md)
 
 ---
 
@@ -232,7 +232,7 @@ fn call_cross_domain<R>(f: impl FnOnce() -> R) -> Result<R, DomainError> {
 
 - DO: 本番 boot path が署名検証済みの loader chain を前提としていることを確認する。
 - DO: UEFI / Shim / MOK / db / dbx の詳細変更は
-  [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)
+  [../bootloader/future-roadmap.md](../bootloader/future-roadmap.md)
   と整合させる。
 - DO: cell signature / revocation の変更時は loader policy と docs を同時に更新する。
 - DON'T: Secure Boot の component detail を kernel 側の各文書へ重複定義しない。
@@ -302,6 +302,6 @@ impl Migratable for DriverStateV2 {
 ## 関連文書
 
 - [README.md](README.md)
-- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [architecture.md](architecture.md)
 - [capabilities.md](capabilities.md)
 - [reference/execution-fairness.md](reference/execution-fairness.md)

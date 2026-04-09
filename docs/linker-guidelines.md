@@ -2,7 +2,7 @@
 
 - Status: Canonical build safety note
 - Audience: ビルド設定、target JSON、CI を触る contributor
-- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](ARCHITECTURE.md), [カーネルブートシーケンス](kernel_boot_sequence.md)
+- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](architecture.md), [カーネルブートシーケンス](kernel-boot-sequence.md)
 
 This document explains the recommended configuration for the kernel linker script and CI checks to avoid file-offset collisions ("section overlaps").
 
@@ -37,5 +37,5 @@ If you find a regression
 ## 関連文書
 
 - [README.md](README.md)
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [kernel_boot_sequence.md](kernel_boot_sequence.md)
+- [architecture.md](architecture.md)
+- [kernel-boot-sequence.md](kernel-boot-sequence.md)

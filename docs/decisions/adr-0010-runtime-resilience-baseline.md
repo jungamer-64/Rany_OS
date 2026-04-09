@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: runtime 設計者、driver-domain 実装者、運用担当者
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [../reference/resilience-recovery.md](../reference/resilience-recovery.md), [ADR-0007](ADR-0007-variant-a-as-canonical-baseline.md)
+- Related: [../architecture.md](../architecture.md), [../reference/resilience-recovery.md](../reference/resilience-recovery.md), [ADR-0007](adr-0007-variant-a-as-canonical-baseline.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-09
@@ -46,4 +46,4 @@ runtime resilience baseline を次のように定義する。
 ## References
 
 - [../reference/resilience-recovery.md](../reference/resilience-recovery.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../architecture.md](../architecture.md)

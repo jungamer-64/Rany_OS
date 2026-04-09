@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: 権限管理、KAPI、ExoShell を実装する contributor
-- Related: [capabilities.md](../capabilities.md), [ARCHITECTURE.md](../ARCHITECTURE.md), [Variant A](../design_variants/variant-a-capability-first.md)
+- Related: [capabilities.md](../capabilities.md), [architecture.md](../architecture.md), [Variant A](../design_variants/variant-a-capability-first.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-07
@@ -42,4 +42,4 @@ SPL 環境では、単なる関数呼び出し到達性を authority 判定に�
 ## References
 
 - [../capabilities.md](../capabilities.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
+- [../architecture.md](../architecture.md)

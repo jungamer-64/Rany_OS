@@ -2,11 +2,11 @@
 
 - Status: Reference
 - Audience: 運用可観測性、panic 診断、profiling、remote debug の現行整理を確認したい contributor
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [../kernel_boot_sequence.md](../kernel_boot_sequence.md), [performance-targets.md](performance-targets.md), [../exorust_design/README.md](../exorust_design/README.md)
+- Related: [../architecture.md](../architecture.md), [../kernel-boot-sequence.md](../kernel-boot-sequence.md), [performance-targets.md](performance-targets.md), [../design-samples/README.md](../design-samples/README.md)
 
 この文書は ExoRust の observability / debug の reference です。競合時は
-[../ARCHITECTURE.md](../ARCHITECTURE.md) と
-[../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+[../architecture.md](../architecture.md) と
+[../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 を優先してください。
 
 ## 位置付け
@@ -125,8 +125,8 @@
 
 ## 関連文書
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
-- [../kernel_boot_sequence.md](../kernel_boot_sequence.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)
+- [../kernel-boot-sequence.md](../kernel-boot-sequence.md)
 - [performance-targets.md](performance-targets.md)
-- [../exorust_design/README.md](../exorust_design/README.md)
+- [../design-samples/README.md](../design-samples/README.md)

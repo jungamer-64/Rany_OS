@@ -2,9 +2,11 @@
 
 - Status: Public landing page
 - Audience: リポジトリを初めて開く開発者、設計方針を確認したい contributor
-- Related: [ドキュメントハブ](docs/README.md), [アーキテクチャ概要](docs/ARCHITECTURE.md), [設計ハブ](docs/design-hub.md)
+- Related: [ドキュメントハブ](docs/README.md), [アーキテクチャ概要](docs/architecture.md), [設計比較ガイド](docs/design-overview.md)
 
 ExoRust は、Linux / POSIX 互換を前提にせず、Rust の所有権モデルと型安全性を中核に据えて設計する x86_64 向けカーネル研究プロジェクトです。
+
+`docs/README.md` を唯一の総合入口として、canonical 文書、ADR、reference、runbook、archive を案内します。
 
 ## プロジェクト概要
 
@@ -13,12 +15,12 @@ ExoRust は、Linux / POSIX 互換を前提にせず、Rust の所有権モデ�
 - Variant B / C は、PKS / MPK 系のハードウェア支援を追加する研究・将来拡張案として扱います。
 - 権限制御の主軸は Capability、署名検証、IOMMU、Framework 境界です。
 
-## まず読む文書
+## 最短ルート
 
-- [docs/README.md](docs/README.md): 公開文書の全体索引
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): 現行アーキテクチャの正本
-- [docs/kernel_development_guidelines.md](docs/kernel_development_guidelines.md): 実装時の開発規約
-- [docs/design-hub.md](docs/design-hub.md): Variant A / B / C の位置付け比較
+1. [docs/README.md](docs/README.md): 公開文書の総合入口
+2. [docs/architecture.md](docs/architecture.md): 現行アーキテクチャの正本
+3. [docs/decisions/README.md](docs/decisions/README.md): 採択済み設計判断
+4. [docs/kernel-development-guidelines.md](docs/kernel-development-guidelines.md): 実装時の開発規約
 
 ## ビルドと検証
 
@@ -36,21 +38,20 @@ cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 make smoke-multicore-vfio
 ```
 
-詳細な boot 手順や検証条件は [docs/kernel_boot_sequence.md](docs/kernel_boot_sequence.md) と
-[bootloader/FUTURE_ROADMAP.md](bootloader/FUTURE_ROADMAP.md) を参照してください。
+詳細な boot 手順や検証条件は [docs/kernel-boot-sequence.md](docs/kernel-boot-sequence.md) と [bootloader/future-roadmap.md](bootloader/future-roadmap.md) を参照してください。
 
-## リポジトリの見取り図
+## 主要ディレクトリ
 
 - `kernel/`: カーネル本体
 - `interfaces/kernel_api/`: ドライバ / セル向けの公開 API
 - `drivers/`: 独立ビルド可能なドライバ群
 - `bootloader/`: ExoLoader
-- `docs/`: 公開設計文書、リファレンス、runbook、履歴資料
+- `docs/`: canonical 文書、ADR、reference、runbook、proposal、archive
 - `tools/`: ベンチ、補助スクリプト、検証用ツール
 
 ## 関連文書
 
 - [docs/README.md](docs/README.md)
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/design-hub.md](docs/design-hub.md)
-- [bootloader/FUTURE_ROADMAP.md](bootloader/FUTURE_ROADMAP.md)
+- [docs/architecture.md](docs/architecture.md)
+- [docs/design-overview.md](docs/design-overview.md)
+- [bootloader/future-roadmap.md](bootloader/future-roadmap.md)

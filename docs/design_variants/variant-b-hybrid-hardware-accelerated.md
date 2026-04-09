@@ -2,7 +2,7 @@
 
 - Status: Research / future extension
 - Audience: ハードウェア支援分離を検討する contributor
-- Related: [ドキュメントハブ](../README.md), [設計ハブ](../design-hub.md), [Variant A](variant-a-capability-first.md), [Hardware-Assisted Security Notes](hardware-assisted-security-notes.md)
+- Related: [ドキュメントハブ](../README.md), [設計比較ガイド](../design-overview.md), [Variant A](variant-a-capability-first.md), [Hardware-Assisted Security Notes](hardware-assisted-security-notes.md)
 
 Variant A を土台にしつつ、対応 CPU では PKS/MPK 系を追加防御として使う案です。未対応 CPU では Variant A と同じ安全モデルで動作できることを必須条件にします。
 
@@ -66,7 +66,7 @@ Variant A を土台にしつつ、対応 CPU では PKS/MPK 系を追加防御�
 - 対応 CPU では PKS/MPK を使って、高価値データや管理構造へのアクセスを絞る。
 - LFENCE、cache partitioning、secret placement は選択的に使う。
 - WRPKRU-LFENCE tradeoff、protection key class strategy、補助 mitigations の詳細は [hardware-assisted-security-notes.md](hardware-assisted-security-notes.md) を参照する。
-- `docs/exorust_design/security/` の擬似コードは主にこの案の説明に対応する。
+- `docs/design-samples/security/` の擬似コードは主にこの案の説明に対応する。
 
 ## 10. 対象ハードウェア
 
@@ -77,6 +77,6 @@ Variant A を土台にしつつ、対応 CPU では PKS/MPK 系を追加防御�
 ## 関連文書
 
 - [../README.md](../README.md)
-- [../design-hub.md](../design-hub.md)
+- [../design-overview.md](../design-overview.md)
 - [variant-a-capability-first.md](variant-a-capability-first.md)
 - [hardware-assisted-security-notes.md](hardware-assisted-security-notes.md)

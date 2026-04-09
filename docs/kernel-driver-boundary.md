@@ -2,7 +2,7 @@
 
 - Status: Canonical layering rule
 - Audience: ドライバ作者、カーネル統合担当、レビュー担当者
-- Related: [ドキュメントハブ](README.md), [driver_dependency.md](driver_dependency.md), [ARCHITECTURE.md](ARCHITECTURE.md)
+- Related: [ドキュメントハブ](README.md), [driver-dependency.md](driver-dependency.md), [architecture.md](architecture.md)
 
 このドキュメントは、ExoRust におけるカーネルとドライバの責務境界を定義します。
 
@@ -59,5 +59,5 @@
 ## 関連文書
 
 - [README.md](README.md)
-- [driver_dependency.md](driver_dependency.md)
+- [driver-dependency.md](driver-dependency.md)
 - [../drivers/README.md](../drivers/README.md)

@@ -2,11 +2,11 @@
 
 - Status: Reference
 - Audience: checkpoint、restart、replication、panic hardening、driver-domain recovery を確認したい contributor
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [runtime-qos.md](runtime-qos.md), [durability.md](durability.md), [observability-debug.md](observability-debug.md)
+- Related: [../architecture.md](../architecture.md), [runtime-qos.md](runtime-qos.md), [durability.md](durability.md), [observability-debug.md](observability-debug.md)
 
 この文書は ExoRust の resilience / recovery の reference です。競合時は
-[../ARCHITECTURE.md](../ARCHITECTURE.md) と
-[../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+[../architecture.md](../architecture.md) と
+[../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 を優先してください。
 
 ## 位置付け
@@ -102,8 +102,8 @@
 
 ## 関連文書
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 - [durability.md](durability.md)
 - [runtime-qos.md](runtime-qos.md)
 - [observability-debug.md](observability-debug.md)

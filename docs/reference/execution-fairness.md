@@ -2,11 +2,11 @@
 
 - Status: Reference
 - Audience: scheduler、公平性、スターベーション対策、FFI 境界レビューを行う contributor
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [../kernel_development_guidelines.md](../kernel_development_guidelines.md), [runtime-qos.md](runtime-qos.md), [../exorust_design/README.md](../exorust_design/README.md)
+- Related: [../architecture.md](../architecture.md), [../kernel-development-guidelines.md](../kernel-development-guidelines.md), [runtime-qos.md](runtime-qos.md), [../design-samples/README.md](../design-samples/README.md)
 
 この文書は ExoRust の execution fairness / starvation control の reference です。競合時は
-[../ARCHITECTURE.md](../ARCHITECTURE.md) と
-[../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+[../architecture.md](../architecture.md) と
+[../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 を優先してください。
 
 ## 位置付け
@@ -26,7 +26,7 @@
 - reference 上の fuel 消費ポイントは、loop backedge、関数呼び出し、長時間計算が予想される操作を基準にする。
 - fuel が尽きた task は reschedule / yield 境界へ送る。
 - 設計サンプル:
-  [../exorust_design/scheduler/fuel_counter.rs](../exorust_design/scheduler/fuel_counter.rs)
+  [../design-samples/scheduler/fuel_counter.rs](../design-samples/scheduler/fuel_counter.rs)
 
 ### 2. Fuel quota / timeslice の reference default
 
@@ -46,7 +46,7 @@
   3. ループ本体に `break` 以外の複雑な制御フロー変更がない。
 - 証明できないループは、signed system cell / framework path では fuel checkpoint を挿入し、untrusted path では warning または reject の対象にできる。
 - 設計サンプル:
-  [../exorust_design/scheduler/loop_boundary.rs](../exorust_design/scheduler/loop_boundary.rs)
+  [../design-samples/scheduler/loop_boundary.rs](../design-samples/scheduler/loop_boundary.rs)
 
 ### 4. FFI / 外部クレート境界
 
@@ -55,7 +55,7 @@
 - `trusted` / `audited` / `untrusted` の分類は reference review rule であり、Capability や署名検証を置き換えるものではない。
 - `eBPF` 風バイトコード instrumentation は、FFI / 外部コードの停止性補助として archive から移した research note であり、現行必須設計ではない。
 - 設計サンプル:
-  [../exorust_design/scheduler/ffi_wrapper.rs](../exorust_design/scheduler/ffi_wrapper.rs)
+  [../design-samples/scheduler/ffi_wrapper.rs](../design-samples/scheduler/ffi_wrapper.rs)
 
 ### 5. APIC timeslice による最終防御
 
@@ -63,7 +63,7 @@
 - fuel や static analysis を無効化した構成でも、APIC タイマーによる強制プリエンプションの下限保証は維持する。
 - APIC timeslice は executor 実装差異に依存させず、一箇所の設定面に集約する。
 - 設計サンプル:
-  [../exorust_design/scheduler/timeslice_handler.rs](../exorust_design/scheduler/timeslice_handler.rs)
+  [../design-samples/scheduler/timeslice_handler.rs](../design-samples/scheduler/timeslice_handler.rs)
 
 ## レビュー観点
 
@@ -84,7 +84,7 @@
 
 ## 関連文書
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 - [runtime-qos.md](runtime-qos.md)
-- [../exorust_design/README.md](../exorust_design/README.md)
+- [../design-samples/README.md](../design-samples/README.md)

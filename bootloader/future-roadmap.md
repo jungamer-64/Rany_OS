@@ -1,8 +1,8 @@
 # ExoLoader 将来機能実装ロードマップ
 
-- Status: Bootloader roadmap
+- Status: Component detail / bootloader roadmap
 - Audience: ExoLoader 実装者、ブート経路を追う contributor
-- Related: [ドキュメントハブ](../docs/README.md), [設計ハブ](../docs/design-hub.md), [カーネルブートシーケンス](../docs/kernel_boot_sequence.md)
+- Related: [ドキュメントハブ](../docs/README.md), [設計比較ガイド](../docs/design-overview.md), [カーネルブートシーケンス](../docs/kernel-boot-sequence.md)
 
 > ExoLoader v0.1.0 - UEFI bootloader for ExoRust
 
@@ -501,7 +501,7 @@ pub struct SmbiosInfo {
 ```
 bootloader/
 ├── Cargo.toml
-├── FUTURE_ROADMAP.md       # このファイル
+├── future-roadmap.md       # このファイル
 ├── src/
 │   ├── main.rs             # エントリポイント
 │   ├── page_table.rs       # ページテーブル操作 (1GB対応) ✅
@@ -525,9 +525,9 @@ bootloader/
 ## 関連文書
 
 - [../docs/README.md](../docs/README.md) - 公開文書の入口
-- [../docs/design-hub.md](../docs/design-hub.md) - アーキテクチャ全体
-- [../docs/kernel_boot_sequence.md](../docs/kernel_boot_sequence.md) - ブート経路と handoff
-- [../docs/exorust_design/bootstrap/](../docs/exorust_design/bootstrap/) - ブートストラップ詳細
+- [../docs/design-overview.md](../docs/design-overview.md) - アーキテクチャ全体
+- [../docs/kernel-boot-sequence.md](../docs/kernel-boot-sequence.md) - ブート経路と handoff
+- [../docs/design-samples/bootstrap/](../docs/design-samples/bootstrap/) - ブートストラップ詳細
   - `early_pagetable.rs` - 1GBページ設計参照
   - `numa_detection.rs` - NUMA検出設計参照
 

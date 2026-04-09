@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: DMA/デバイスドライバ、メモリ保護、プラットフォーム統合を担当する contributor
-- Related: [ARCHITECTURE.md](../ARCHITECTURE.md), [Variant A](../design_variants/variant-a-capability-first.md), [開発ガイドライン](../kernel_development_guidelines.md)
+- Related: [architecture.md](../architecture.md), [Variant A](../design_variants/variant-a-capability-first.md), [開発ガイドライン](../kernel-development-guidelines.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-07
@@ -41,5 +41,5 @@ DMA 制御方針として以下を採択する。
 
 ## References
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)

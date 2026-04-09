@@ -9,7 +9,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-mapfile -t ADR_FILES < <(find docs/decisions -maxdepth 1 -type f -name 'ADR-*.md' | sort)
+mapfile -t ADR_FILES < <(find docs/decisions -maxdepth 1 -type f -name 'adr-[0-9][0-9][0-9][0-9]-*.md' | sort)
 
 if [ "${#ADR_FILES[@]}" -eq 0 ]; then
   echo "ERROR: no ADR files found under docs/decisions"
@@ -59,11 +59,11 @@ from pathlib import Path
 
 root = Path.cwd().resolve()
 decisions_dir = root / "docs" / "decisions"
-adr_files = sorted(decisions_dir.glob("ADR-*.md"))
+adr_files = sorted(decisions_dir.glob("adr-[0-9][0-9][0-9][0-9]-*.md"))
 
 ok = True
 
-number_pattern = re.compile(r"^ADR-(\d{4})-[a-z0-9-]+\.md$")
+number_pattern = re.compile(r"^adr-(\d{4})-[a-z0-9-]+\.md$")
 nums: list[int] = []
 
 for adr in adr_files:
@@ -88,7 +88,7 @@ skip_prefixes = ("http://", "https://", "mailto:", "#")
 
 files_for_link_check = adr_files + [
     decisions_dir / "README.md",
-    decisions_dir / "_template.md",
+    decisions_dir / "adr-template.md",
     decisions_dir / "archive" / "README.md",
 ]
 

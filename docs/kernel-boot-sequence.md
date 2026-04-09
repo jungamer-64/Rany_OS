@@ -2,7 +2,7 @@
 
 - Status: Canonical boot path note
 - Audience: ブート経路、初期化順序、runtime handoff を追う contributor
-- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](ARCHITECTURE.md), [ExoLoader ロードマップ](../bootloader/FUTURE_ROADMAP.md)
+- Related: [ドキュメントハブ](README.md), [アーキテクチャ概要](architecture.md), [ExoLoader ロードマップ](../bootloader/future-roadmap.md)
 
 ExoRust のカーネル初期化は、実装上 6 フェーズに分割されている。大枠の制御遷移は次のとおり。
 
@@ -103,5 +103,5 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 ## 関連文書
 
 - [README.md](README.md)
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [../bootloader/FUTURE_ROADMAP.md](../bootloader/FUTURE_ROADMAP.md)
+- [architecture.md](architecture.md)
+- [../bootloader/future-roadmap.md](../bootloader/future-roadmap.md)

@@ -2,11 +2,11 @@
 
 - Status: Reference
 - Audience: scheduler、公平性、OOM、帯域制御の現行方針を確認したい contributor
-- Related: [../ARCHITECTURE.md](../ARCHITECTURE.md), [resilience-recovery.md](resilience-recovery.md), [api-reference.md](api-reference.md), [deprecations.md](deprecations.md)
+- Related: [../architecture.md](../architecture.md), [resilience-recovery.md](resilience-recovery.md), [api-reference.md](api-reference.md), [deprecations.md](deprecations.md)
 
 この文書は ExoRust の runtime QoS / resource accounting の reference です。競合時は
-[../ARCHITECTURE.md](../ARCHITECTURE.md) と
-[../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+[../architecture.md](../architecture.md) と
+[../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 を優先してください。
 
 ## 位置付け
@@ -78,8 +78,8 @@
 
 ## 関連文書
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../kernel_development_guidelines.md](../kernel_development_guidelines.md)
+- [../architecture.md](../architecture.md)
+- [../kernel-development-guidelines.md](../kernel-development-guidelines.md)
 - [resilience-recovery.md](resilience-recovery.md)
 - [api-reference.md](api-reference.md)
 - [deprecations.md](deprecations.md)

@@ -2,7 +2,7 @@
 
 - Status: Proposed
 - Audience: 影響を受ける実装者、レビュー担当者
-- Related: [関連文書1](../README.md), [関連文書2](../design-hub.md)
+- Related: [関連文書1](../README.md), [関連文書2](../design-overview.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: YYYY-MM-DD
@@ -44,5 +44,5 @@
 
 ## References
 
-- [関連設計文書](../design-hub.md)
-- [関連仕様](../ARCHITECTURE.md)
+- [関連設計文書](../design-overview.md)
+- [関連仕様](../architecture.md)

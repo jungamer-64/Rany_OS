@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Audience: カーネル設計者、レビュー担当者、境界APIを設計する実装者
-- Related: [ARCHITECTURE.md](../ARCHITECTURE.md), [Variant A](../design_variants/variant-a-capability-first.md), [開発ガイドライン](../kernel_development_guidelines.md)
+- Related: [architecture.md](../architecture.md), [Variant A](../design_variants/variant-a-capability-first.md), [開発ガイドライン](../kernel-development-guidelines.md)
 - Supersedes: None
 - Superseded-By: None
 - Date: 2026-04-07
@@ -45,5 +45,5 @@ ExoRust の基盤方針として、次を採択する。
 
 ## References
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../design-hub.md](../design-hub.md)
+- [../architecture.md](../architecture.md)
+- [../design-overview.md](../design-overview.md)

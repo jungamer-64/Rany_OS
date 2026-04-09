@@ -2,7 +2,7 @@
 
 - Status: Canonical driver dependency rule
 - Audience: ドライバ作者、`kernel_api` 変更担当、CI ルール整備担当
-- Related: [ドキュメントハブ](README.md), [kernel_driver_boundary.md](kernel_driver_boundary.md), [../drivers/README.md](../drivers/README.md)
+- Related: [ドキュメントハブ](README.md), [kernel-driver-boundary.md](kernel-driver-boundary.md), [../drivers/README.md](../drivers/README.md)
 
 この文書は、ExoRust リポジトリにおけるドライバ依存ルールをまとめたものです。ドライバはカーネル本体と独立にビルドできることを前提にし、将来のセル化や動的ロードに備えて `kernel` crate への直接依存を禁止します。
 
@@ -55,10 +55,10 @@ If you are unsure whether a symbol belongs to `kernel_api` or `kernel`, prefer a
 
 If you need help migrating an existing driver, ask in a PR and attach a short plan describing the change.
 
-See also: `docs/kernel_driver_boundary.md`
+See also: `docs/kernel-driver-boundary.md`
 
 ## 関連文書
 
 - [README.md](README.md)
-- [kernel_driver_boundary.md](kernel_driver_boundary.md)
+- [kernel-driver-boundary.md](kernel-driver-boundary.md)
 - [../drivers/README.md](../drivers/README.md)

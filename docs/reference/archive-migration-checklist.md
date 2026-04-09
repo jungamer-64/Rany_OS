@@ -2,7 +2,7 @@
 
 - Status: Reference
 - Audience: 旧設計案から新 docs への対応関係を確認したい reviewer、移行漏れを棚卸ししたい contributor
-- Related: [../design-hub.md](../design-hub.md), [execution-fairness.md](execution-fairness.md), [../design_variants/hardware-assisted-security-notes.md](../design_variants/hardware-assisted-security-notes.md), [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md)
+- Related: [../design-overview.md](../design-overview.md), [execution-fairness.md](execution-fairness.md), [../design_variants/hardware-assisted-security-notes.md](../design_variants/hardware-assisted-security-notes.md), [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md)
 
 この checklist は、旧設計案の未移行クラスタ 4.4 / 9.2 / 11 / 13 が、non-archive docs のどこへ再配置されたかを追跡します。
 
@@ -21,7 +21,7 @@
 | 9.2.2 | cache partitioning / secret placement | [../design_variants/hardware-assisted-security-notes.md](../design_variants/hardware-assisted-security-notes.md) | Moved |
 | 9.2.3 | Retpoline / IBRS / STIBP / IBPB | [../design_variants/hardware-assisted-security-notes.md](../design_variants/hardware-assisted-security-notes.md) | Moved |
 | 11 フェーズ 1 | ブートストラップと基本ランタイム | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
-| 11.1.1 | ブートストラップシーケンス詳細 | [../kernel_boot_sequence.md](../kernel_boot_sequence.md) + [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
+| 11.1.1 | ブートストラップシーケンス詳細 | [../kernel-boot-sequence.md](../kernel-boot-sequence.md) + [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
 | 11 フェーズ 2 | Async Executor と割り込み基盤 | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) + [execution-fairness.md](execution-fairness.md) | Moved |
 | 11 フェーズ 3 | セルローダーと分離機構 | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
 | 11 フェーズ 4a | VirtIO-net 基本実装 | [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) | Moved |
@@ -37,7 +37,7 @@
 
 ## 関連文書
 
-- [../design-hub.md](../design-hub.md)
+- [../design-overview.md](../design-overview.md)
 - [execution-fairness.md](execution-fairness.md)
 - [../design_variants/hardware-assisted-security-notes.md](../design_variants/hardware-assisted-security-notes.md)
 - [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md)

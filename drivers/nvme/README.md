@@ -1,12 +1,14 @@
 # NVMe ドライバ開発ガイド
 
+- Status: Component detail / NVMe driver guide
+- Audience: NVMe ドライバ実装者、ストレージ I/O レビュー担当者
+- Related: [ドライバディレクトリ案内](../README.md), [ドライバ依存ルール](../../docs/driver-dependency.md), [カーネル / ドライバ責務境界](../../docs/kernel-driver-boundary.md)
+
 この NVMe ドライバは `drivers/nvme` 配下の独立 crate `nvme_driver` としてビルドされます。
 
 ## 概要
 
-- 対象: NVMe ドライバ実装者、ストレージ I/O reviewer
 - 方針: DMA や syscalls は `kernel_api` 経由で扱い、カーネル内部型に依存しません。
-- 関連: [../README.md](../README.md), [../../docs/driver_dependency.md](../../docs/driver_dependency.md)
 
 ## ガイドライン
 
@@ -41,5 +43,5 @@ This mirrors the `Driver` contract declared in `interfaces/kernel_api` and allow
 ## 関連文書
 
 - [../README.md](../README.md)
-- [../../docs/driver_dependency.md](../../docs/driver_dependency.md)
-- [../../docs/kernel_driver_boundary.md](../../docs/kernel_driver_boundary.md)
+- [../../docs/driver-dependency.md](../../docs/driver-dependency.md)
+- [../../docs/kernel-driver-boundary.md](../../docs/kernel-driver-boundary.md)

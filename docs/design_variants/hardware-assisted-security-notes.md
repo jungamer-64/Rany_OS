@@ -2,10 +2,10 @@
 
 - Status: Research / future extension note
 - Audience: SAS 下の Spectre 緩和、hardware protection、Variant B/C を検討する contributor
-- Related: [variant-b-hybrid-hardware-accelerated.md](variant-b-hybrid-hardware-accelerated.md), [variant-c-pks-mandatory.md](variant-c-pks-mandatory.md), [../ARCHITECTURE.md](../ARCHITECTURE.md), [../exorust_design/README.md](../exorust_design/README.md)
+- Related: [variant-b-hybrid-hardware-accelerated.md](variant-b-hybrid-hardware-accelerated.md), [variant-c-pks-mandatory.md](variant-c-pks-mandatory.md), [../architecture.md](../architecture.md), [../design-samples/README.md](../design-samples/README.md)
 
 この文書は、旧設計案 9.2 のハードウェア支援セキュリティ詳細を archive から再配置した research note です。
-現行 canonical baseline は [../ARCHITECTURE.md](../ARCHITECTURE.md) と
+現行 canonical baseline は [../architecture.md](../architecture.md) と
 [variant-a-capability-first.md](variant-a-capability-first.md)
 を優先し、本書は Variant B/C を補う参考資料として扱います。
 
@@ -35,10 +35,10 @@
 - archive 由来の分割案では、低い key 番号側を trust level、高い key 番号側を data sensitivity class に使う。
 - この方式は有限個の protection key で多くの domain を論理分離するための reference strategy であり、現行の canonical ABI や authority model には影響しない。
 - 設計サンプル:
-  [../exorust_design/security/mpk_protection_key.rs](../exorust_design/security/mpk_protection_key.rs),
-  [../exorust_design/security/pkru_value.rs](../exorust_design/security/pkru_value.rs),
-  [../exorust_design/security/domain_permissions.rs](../exorust_design/security/domain_permissions.rs),
-  [../exorust_design/security/domain_transition.rs](../exorust_design/security/domain_transition.rs)
+  [../design-samples/security/mpk_protection_key.rs](../design-samples/security/mpk_protection_key.rs),
+  [../design-samples/security/pkru_value.rs](../design-samples/security/pkru_value.rs),
+  [../design-samples/security/domain_permissions.rs](../design-samples/security/domain_permissions.rs),
+  [../design-samples/security/domain_transition.rs](../design-samples/security/domain_transition.rs)
 
 ## 補助緩和策
 
@@ -53,7 +53,7 @@
 - domain boundary での speculation barrier は、unchecked な cross-domain path を塞ぐ補助手段として検討する。
 - `LFENCE` の選択基準は、外部入力に基づく分岐直後、hardware protection で覆えない secret access、timing-sensitive cryptographic path を中心にする。
 - 設計サンプル:
-  [../exorust_design/security/lfence_policy.rs](../exorust_design/security/lfence_policy.rs)
+  [../design-samples/security/lfence_policy.rs](../design-samples/security/lfence_policy.rs)
 
 ### 3. Traditional mitigations
 
@@ -81,5 +81,5 @@
 
 - [variant-b-hybrid-hardware-accelerated.md](variant-b-hybrid-hardware-accelerated.md)
 - [variant-c-pks-mandatory.md](variant-c-pks-mandatory.md)
-- [../ARCHITECTURE.md](../ARCHITECTURE.md)
-- [../exorust_design/README.md](../exorust_design/README.md)
+- [../architecture.md](../architecture.md)
+- [../design-samples/README.md](../design-samples/README.md)

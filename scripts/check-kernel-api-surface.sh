@@ -27,7 +27,7 @@ exclude=(
   '-g' '!target'
   '-g' '!scripts/check-kernel-api-surface.sh'
   '-g' '!docs/archive/**'
-  '-g' '!docs/API_REFERENCE.md'
+  '-g' '!docs/reference/api-reference.md'
 )
 
 status=0
