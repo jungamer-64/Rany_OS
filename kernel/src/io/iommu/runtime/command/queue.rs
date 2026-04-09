@@ -1110,7 +1110,6 @@ pub(crate) fn qemu_smoke_metrics_counts() -> bool {
 mod tests {
     use super::*;
     extern crate alloc;
-    use alloc::boxed::Box;
 
     #[cfg(feature = "std")]
     fn poison_receiver_lock(q: &CommandQueue) {

@@ -43,6 +43,9 @@ impl HeapRegistry {
 
     /// Return shard indices whose affinity equals the owner's NUMA node
     pub fn preferred_shards_for_owner(&self, owner: DomainId) -> alloc::vec::Vec<usize> {
+        #[cfg(any(test, feature = "bench"))]
+        let _ = owner;
+
         #[cfg(not(any(test, feature = "bench")))]
         {
             if let Some(node) = crate::domain::get_domain_numa(owner) {

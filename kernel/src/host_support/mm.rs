@@ -520,7 +520,6 @@ pub mod numa {
 
 pub mod meta {
     pub mod memcg {
-        #[allow(wildcard_imports)]
         pub use super::super::memcg::*;
     }
 }

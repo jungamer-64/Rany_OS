@@ -90,7 +90,7 @@ pub(crate) fn test_draw_text_space_24bit_backbuffer() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_32bit_mmio() {
     let info = fb_info(4, 4, PixelFormat::Bgra8888);
-    let (mut fb, mut mem) = make_mmio_fb(&info);
+    let (mut fb, mem) = make_mmio_fb(&info);
 
     let img = Image::filled(info.width, info.height, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
@@ -107,7 +107,7 @@ pub(crate) fn test_draw_image_32bit_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_24bit_mmio() {
     let info = fb_info(3, 2, PixelFormat::Bgr888);
-    let (mut fb, mut mem) = make_mmio_fb(&info);
+    let (mut fb, mem) = make_mmio_fb(&info);
 
     let img = Image::filled(info.width, info.height, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);
@@ -123,7 +123,7 @@ pub(crate) fn test_draw_image_24bit_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_32bit_mmio_rgba() {
     let info = fb_info(4, 4, PixelFormat::Rgba8888);
-    let (mut fb, mut mem) = make_mmio_fb(&info);
+    let (mut fb, mem) = make_mmio_fb(&info);
 
     let img = Image::filled(info.width, info.height, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
@@ -182,7 +182,7 @@ pub(crate) fn test_write_bytes_mmio_alignment() {
 pub(crate) fn test_write_bgr_run_large() {
     // Ensure large runs of a single color are written correctly
     let info = fb_info(1024, 1, PixelFormat::Bgr888);
-    let (mut fb, mut mem) = make_mmio_fb(&info);
+    let (mut fb, mem) = make_mmio_fb(&info);
 
     fb.write_bgr_run(0, info.width as usize, Color::with_alpha(5, 6, 7, 255));
 
@@ -215,7 +215,7 @@ pub(crate) fn test_write_opaque_run_24bit_even_odd_mmio() {
     }
 
     // MMIO path
-    let (mut fb, mut mem) = make_mmio_fb(&info);
+    let (mut fb, mem) = make_mmio_fb(&info);
     fb.draw_image(&img, 0, 0);
 
     for x in 0..(info.width as usize) {

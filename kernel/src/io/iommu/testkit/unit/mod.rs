@@ -6,7 +6,6 @@
 //!
 //! Tests for IOMMU controller functionality, domain management, and invalidation.
 
-use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
@@ -27,16 +26,21 @@ use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 use crate::io::iommu::vendors::intel::controller::ir::InterruptRemapper;
 use crate::io::iommu::vendors::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
-use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
-use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
+use crate::io::iommu::vendors::intel::qi::InvalidationQueue;
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::tables::{
     ContextEntry, PasidTableEntry, RootEntry, ScalableContextEntry,
 };
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+#[cfg(feature = "std")]
+use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
+#[cfg(feature = "qemu-test-export")]
+use crate::io::iommu::vendors::intel::qi::InvalidationQueueEntry;
+#[cfg(feature = "std")]
+use alloc::boxed::Box;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -220,56 +224,60 @@ fn test_invalidation_queue_uses_physical_addresses_for_hw() {
 }
 
 unsafe fn is_4k_mapped(domain: &IommuDomain, iova: u64, format: PteFormat) -> bool {
-    let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
-    let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
-    let pd_idx = ((iova >> 21) & 0x1FF) as usize;
-    let pt_idx = ((iova >> 12) & 0x1FF) as usize;
+    unsafe {
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
 
-    let pml4_entry = domain.page_table.add(pml4_idx);
-    if !(*pml4_entry).is_present() {
-        return false;
+        let pml4_entry = domain.page_table.add(pml4_idx);
+        if !(*pml4_entry).is_present() {
+            return false;
+        }
+        let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+        let pdp_entry = pdp_table.add(pdp_idx);
+        if !(*pdp_entry).is_present() {
+            return false;
+        }
+        if (*pdp_entry).is_super_page(format) {
+            return false;
+        }
+        let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+        let pd_entry = pd_table.add(pd_idx);
+        if !(*pd_entry).is_present() {
+            return false;
+        }
+        if (*pd_entry).is_super_page(format) {
+            return false;
+        }
+        let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+        let pt_entry = pt_table.add(pt_idx);
+        (*pt_entry).is_present()
     }
-    let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
-    let pdp_entry = pdp_table.add(pdp_idx);
-    if !(*pdp_entry).is_present() {
-        return false;
-    }
-    if (*pdp_entry).is_super_page(format) {
-        return false;
-    }
-    let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
-    let pd_entry = pd_table.add(pd_idx);
-    if !(*pd_entry).is_present() {
-        return false;
-    }
-    if (*pd_entry).is_super_page(format) {
-        return false;
-    }
-    let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
-    let pt_entry = pt_table.add(pt_idx);
-    (*pt_entry).is_present()
 }
 
 unsafe fn is_superpage_2mb_mapped(domain: &IommuDomain, iova: u64, format: PteFormat) -> bool {
-    let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
-    let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
-    let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+    unsafe {
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
 
-    let pml4_entry = domain.page_table.add(pml4_idx);
-    if !(*pml4_entry).is_present() {
-        return false;
+        let pml4_entry = domain.page_table.add(pml4_idx);
+        if !(*pml4_entry).is_present() {
+            return false;
+        }
+        let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+        let pdp_entry = pdp_table.add(pdp_idx);
+        if !(*pdp_entry).is_present() {
+            return false;
+        }
+        if (*pdp_entry).is_super_page(format) {
+            return false;
+        }
+        let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+        let pd_entry = pd_table.add(pd_idx);
+        (*pd_entry).is_present() && (*pd_entry).is_super_page(format)
     }
-    let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
-    let pdp_entry = pdp_table.add(pdp_idx);
-    if !(*pdp_entry).is_present() {
-        return false;
-    }
-    if (*pdp_entry).is_super_page(format) {
-        return false;
-    }
-    let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
-    let pd_entry = pd_table.add(pd_idx);
-    (*pd_entry).is_present() && (*pd_entry).is_super_page(format)
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

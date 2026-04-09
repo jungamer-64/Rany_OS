@@ -1,15 +1,10 @@
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use core::sync::atomic::{AtomicU64, Ordering};
-use kernel_api::resource::fs::OpenMode;
 
 use crate::sync::PoisonLock;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FileHandleEntry {
-    pub(crate) path: String,
-    pub(crate) mode: OpenMode,
-    pub(crate) position: u64,
     pub(crate) token: Option<u64>,
     pub(crate) owner: u64,
 }

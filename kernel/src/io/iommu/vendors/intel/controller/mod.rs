@@ -431,8 +431,10 @@ impl IommuController {
 
         self.read_and_log_caps()?;
         let scalable_enabled = self.resolve_scalable_mode(enable_scalable_mode);
-        self.setup_and_program_root_table()?;
-        self.allocate_context_tables(scalable_enabled)?;
+        unsafe {
+            self.setup_and_program_root_table()?;
+            self.allocate_context_tables(scalable_enabled)?;
+        }
 
         Ok(())
     }

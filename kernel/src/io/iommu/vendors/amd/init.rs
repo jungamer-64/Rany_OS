@@ -14,9 +14,7 @@ use hashbrown::HashMap;
 
 use crate::io::acpi::ivrs::IvhdDeviceEntry;
 use crate::io::iommu::common::tables::phys_to_virt_usize;
-use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::runtime::config::IommuConfig;
-use crate::io::iommu::runtime::registry::get_iommu_driver;
 use crate::io::iommu::types::IommuError;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::mm::types::PAGE_SIZE_4K;
@@ -28,6 +26,11 @@ use super::device_table::AmdDeviceTable;
 use super::event_log::AmdEventLog;
 use super::invalidation::AmdCommandState;
 use super::{AmdIommuDriver, AmdIommuUnit, AmdIvmdRange};
+
+#[cfg(not(test))]
+use crate::io::iommu::runtime::backend::IommuBackend;
+#[cfg(not(test))]
+use crate::io::iommu::runtime::registry::get_iommu_driver;
 
 // ---------------------------------------------------------------------------
 // Command queue worker

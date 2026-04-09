@@ -31,18 +31,6 @@ pub fn release_workers() {
     boot::release_workers();
 }
 
-pub(crate) fn provision_runtime(count: usize) {
-    boot::provision_runtime(count);
-}
-
-pub(crate) fn log_online_summary(context: &str) {
-    runtime::log_online_summary(context);
-}
-
 pub(crate) fn set_stage(cpu_id: usize, stage: CpuStage) {
-    runtime::set_stage(cpu_id, stage);
-}
-
-pub(crate) fn mark_runtime_worker_stage(cpu_id: usize, stage: CpuStage) {
     runtime::set_stage(cpu_id, stage);
 }

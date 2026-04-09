@@ -95,7 +95,7 @@ fn test_expire_grants() {
     manager.set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
     // Grant with expiry equal to 0 -- in tests 'now' is defined as 0, so this should expire immediately
-    let token = manager
+    let _token = manager
         .grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false)
         .unwrap();
     // Immediately expire internal list

@@ -255,9 +255,7 @@ impl VirtioInputDevice {
                 desc.next = 0;
             }
 
-            unsafe {
-                queue_guard.submit(desc_idx);
-            }
+            queue_guard.submit(desc_idx);
 
             buffers.insert(desc_idx, dma_buf);
         }
@@ -287,9 +285,7 @@ impl VirtioInputDevice {
             desc.next = 0;
         }
 
-        unsafe {
-            queue_guard.submit(desc_idx);
-        }
+        queue_guard.submit(desc_idx);
 
         buffers.insert(desc_idx, dma_buf);
 
@@ -316,7 +312,7 @@ impl VirtioInputDevice {
         if (len as usize) < event_size {
             return None;
         }
-        let slice = unsafe { dma_buf.as_slice() };
+        let slice = dma_buf.as_slice();
         let event_ptr = slice.as_ptr() as *const VirtioInputEvent;
         Some(unsafe { core::ptr::read_volatile(event_ptr) })
     }

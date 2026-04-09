@@ -198,6 +198,7 @@ impl AsyncBootStageState {
         self.latch.complete();
     }
 
+    #[cfg(test)]
     fn status(&self) -> AsyncBootStageStatus {
         match self.status.load(Ordering::Acquire) {
             x if x == AsyncBootStageStatus::Pending as u8 => AsyncBootStageStatus::Pending,

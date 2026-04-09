@@ -22,9 +22,9 @@ use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::sync::PoisonLock;
 
+use super::map_ivmd_ranges;
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;
 use super::{AmdDomainInfo, AmdIommuDriver, AmdIommuUnit, AmdIvmdRange};
-use crate::io::iommu::common::domain::map_ivmd_ranges;
 
 fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
     let unit = AmdIommuUnit {

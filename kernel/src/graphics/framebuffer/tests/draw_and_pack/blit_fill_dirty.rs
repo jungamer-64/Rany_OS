@@ -75,7 +75,7 @@ pub(crate) fn test_draw_image_bgra_stream_matches_backbuffer() {
     fb_back.swap_buffers();
 
     // MMIO-path framebuffer (no back buffer)
-    let (mut fb_mmio, mut mem_mmio) = make_mmio_fb(&info);
+    let (mut fb_mmio, mem_mmio) = make_mmio_fb(&info);
     fb_mmio.draw_image(&img, 0, 0);
 
     // Compare byte-by-byte
@@ -86,7 +86,7 @@ pub(crate) fn test_draw_image_bgra_stream_matches_backbuffer() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_rect_32bit_mmio() {
     let info = fb_info(8, 8, PixelFormat::Bgra8888);
-    let (mut fb, mut mem) = make_mmio_fb(&info);
+    let (mut fb, mem) = make_mmio_fb(&info);
 
     fb.fill_rect(Rect::new(1, 1, 6, 6), Color::with_alpha(1, 2, 3, 255));
 
@@ -105,7 +105,7 @@ pub(crate) fn test_fill_rect_32bit_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_rect_rgb565_mmio() {
     let info = fb_info(8, 4, PixelFormat::Rgb565);
-    let (mut fb, mut mem) = make_mmio_fb(&info);
+    let (mut fb, mem) = make_mmio_fb(&info);
     fb.fill_rect(Rect::new(1, 1, 6, 2), Color::RED);
 
     // RED in RGB565 little-endian: 0xF800 -> [0x00, 0xF8]
@@ -280,7 +280,7 @@ pub(crate) fn test_draw_image_24bit_rgb888_backbuffer() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_hline_24bit_rgb888_mmio() {
     let info = fb_info(10, 2, PixelFormat::Rgb888);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
 
     // Draw Blue line: Color(0, 0, 255)
     // Rgb888 memory should be [0, 0, 255] repeatedly
@@ -298,7 +298,7 @@ pub(crate) fn test_draw_hline_24bit_rgb888_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_hline_rgb565_mmio() {
     let info = fb_info(8, 1, PixelFormat::Rgb565);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
 
     fb.draw_hline(1, 6, 0, Color::GREEN);
 
@@ -319,7 +319,7 @@ pub(crate) fn test_draw_hline_rgb565_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush() {
     let info = fb_info(4, 1, PixelFormat::Rgb888);
-    let (mut fb, mut vram) = make_flush_fb(&info);
+    let (mut fb, vram) = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);
@@ -344,7 +344,7 @@ pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush_odd_width() {
     let info = fb_info(5, 1, PixelFormat::Rgb888);
-    let (mut fb, mut vram) = make_flush_fb(&info);
+    let (mut fb, vram) = make_flush_fb(&info);
 
     let colors = [
         Color::RED,
@@ -371,7 +371,7 @@ pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush_odd_width() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_bgr888_backbuffer_flush() {
     let info = fb_info(3, 1, PixelFormat::Bgr888);
-    let (mut fb, mut vram) = make_flush_fb(&info);
+    let (mut fb, vram) = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);
@@ -396,7 +396,7 @@ pub(crate) fn test_blit_rect_24bit_bgr888_backbuffer_flush() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush() {
     let info = fb_info(2, 1, PixelFormat::Rgb565);
-    let (mut fb, mut vram) = make_flush_fb(&info);
+    let (mut fb, vram) = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);

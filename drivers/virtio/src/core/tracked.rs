@@ -44,7 +44,7 @@ impl<T> TrackedVirtQueue<T> {
     ) -> Result<u16, &'static str> {
         let idx = self.inner.alloc_desc().ok_or("No free descriptors")?;
 
-        let desc = unsafe { self.inner.get_desc_mut(idx) };
+        let desc = self.inner.get_desc_mut(idx);
         desc.addr = addr;
         desc.len = len;
         desc.flags = if writable {

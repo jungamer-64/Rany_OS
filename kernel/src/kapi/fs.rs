@@ -44,9 +44,6 @@ pub(crate) fn open_with_token(
 
     let handle_id = crate::resource_registry::fs::register_handle(
         crate::resource_registry::fs::FileHandleEntry {
-            path: path_buf,
-            mode,
-            position: 0,
             token,
             owner: caller,
         },

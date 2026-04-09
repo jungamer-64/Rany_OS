@@ -5,15 +5,19 @@
 //! AMD-Vi command state management and invalidation operations.
 
 use alloc::vec::Vec;
-use core::future::poll_fn;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
-use core::task::Poll;
 
 use crate::io::iommu::types::{DeviceId, IommuError};
 
 use super::AmdIommuDriver;
 use super::cmd;
+
+#[cfg(not(test))]
+use core::future::poll_fn;
+#[cfg(not(test))]
+use core::task::Poll;
+#[cfg(not(test))]
 use super::fault::AMD_CMD_WAITERS;
 
 // ---------------------------------------------------------------------------

@@ -15,10 +15,6 @@ pub(crate) fn from_boot_info(boot_info: &ExoBootInfo, bsp_apic_id: u32) -> CpuTo
     CpuTopology::from_boot_info(boot_info, bsp_apic_id)
 }
 
-pub(crate) fn snapshot_topology() -> Option<CpuTopology> {
-    crate::smp::topology::snapshot()
-}
-
 pub fn detected_count() -> usize {
     crate::smp::topology::detected_cpu_count()
 }

@@ -21,13 +21,12 @@
     allow(unsafe_op_in_unsafe_fn)
 )]
 #![cfg_attr(
-    any(not(test), feature = "full_mm_tests"),
+    all(any(not(test), feature = "full_mm_tests"), target_os = "none"),
     feature(alloc_error_handler)
 )]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
+#![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(ptr_metadata))]
 #![feature(format_args_nl)]
-#![feature(ptr_metadata)]
-
 extern crate alloc;
 
 // Interrupt helper macro moved to a shared module so it's visible in both the
@@ -255,7 +254,9 @@ pub fn test_runner(tests: &[&dyn Fn()]) {
 #[cfg(test)]
 pub(crate) mod host_test_support {
     #[cfg(any(feature = "std", target_os = "linux"))]
-    pub struct Guard(std::sync::MutexGuard<'static, ()>);
+    pub struct Guard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     #[cfg(not(any(feature = "std", target_os = "linux")))]
     pub struct Guard;
@@ -266,7 +267,9 @@ pub(crate) mod host_test_support {
 
         static HOST_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let lock = HOST_TEST_LOCK.get_or_init(|| Mutex::new(()));
-        Guard(lock.lock().expect("host test lock poisoned"))
+        Guard {
+            _lock: lock.lock().expect("host test lock poisoned"),
+        }
     }
 
     #[cfg(not(any(feature = "std", target_os = "linux")))]

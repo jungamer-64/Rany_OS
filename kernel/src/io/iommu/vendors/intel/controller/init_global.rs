@@ -244,7 +244,7 @@ unsafe fn init_controller_qi(controller: &mut IommuController) {
     if controller.supports_queued_invalidation() {
         if let Err(e) = controller.init_queued_invalidation(8) {
             log::warn!("Failed to init Queued Invalidation: {:?}", e);
-        } else if let Err(e) = controller.enable_queued_invalidation() {
+        } else if let Err(e) = unsafe { controller.enable_queued_invalidation() } {
             log::warn!("Failed to enable Queued Invalidation: {:?}", e);
         } else {
             log::info!("Queued Invalidation enabled for controller");

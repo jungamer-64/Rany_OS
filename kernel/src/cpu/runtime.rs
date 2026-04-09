@@ -46,10 +46,6 @@ pub(crate) fn mark_boot_prepared(cpu_id: usize) {
     crate::smp::lifecycle::mark_boot_prepared(cpu_id);
 }
 
-pub(crate) fn mark_launching(cpu_id: usize) {
-    crate::smp::lifecycle::mark_launching(cpu_id);
-}
-
 pub(crate) fn reset() {
     crate::smp::lifecycle::reset_state();
 }

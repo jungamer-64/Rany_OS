@@ -21,6 +21,7 @@ pub use self::dma::*;
 pub use self::driver::*;
 pub use self::mgmt::*;
 pub use self::panic_dma::*;
+#[cfg(not(test))]
 pub use self::pci::*;
 pub use self::security::*;
 

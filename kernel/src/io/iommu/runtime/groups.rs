@@ -13,8 +13,8 @@ use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::types::{IommuGroup, IommuGroupId};
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
+#[cfg(not(test))]
 use spin::Once;
-
 // ============================================================================
 // PCI Topology Abstraction
 // ============================================================================

@@ -5,7 +5,7 @@ mod simd_pack_32bit;
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
     let info = fb_info(3, 1, PixelFormat::Rgb565);
-    let (mut fb, mut vram) = make_flush_fb(&info);
+    let (mut fb, vram) = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);
@@ -80,7 +80,7 @@ pub(crate) fn test_copy_rect_backbuffer_vertical_copy() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
     let info = fb_info(8, 1, PixelFormat::Bgra8888);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
 
     for x in 0..info.width as i32 {
         fb.set_pixel(x, 0, Color::with_alpha(x as u8, 0, 0, 255));
@@ -127,7 +127,7 @@ pub(crate) fn test_fill_rect_backbuffer_full_width_span() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
     let info = fb_info(8, 16, PixelFormat::Rgb565);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
     let fg = Color::with_alpha(255, 0, 0, 255); // red
     let bg = Color::with_alpha(0, 0, 0, 255); // black
 
@@ -151,7 +151,7 @@ pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_clear_rgb565_mmio() {
     let info = fb_info(6, 3, PixelFormat::Rgb565);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
 
     fb.clear(Color::BLUE);
 
@@ -169,7 +169,7 @@ pub(crate) fn test_clear_rgb565_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_char_8x16_rgb565_mmio() {
     let info = fb_info(8, 16, PixelFormat::Rgb565);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
 
     let fg = Color::RED;
     let bg = Color::BLACK;
@@ -349,7 +349,7 @@ pub(crate) fn test_draw_line_steep_rgb565_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
     let info = fb_info(16, 16, PixelFormat::Bgra8888);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
     let width = info.width;
 
     // Paint a 4x4 block at (0,0) with known pattern
@@ -388,7 +388,7 @@ pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
     let info = fb_info(8, 16, PixelFormat::Bgr888);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
 
     let fg = Color::with_alpha(255, 0, 0, 255); // red
     let bg = Color::with_alpha(0, 0, 255, 255); // blue
@@ -411,7 +411,7 @@ pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_char_8x16_24bit_mmio() {
     let info = fb_info(8, 16, PixelFormat::Bgr888);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
 
     let fg = Color::GREEN;
     let bg = Color::BLACK;
@@ -433,7 +433,7 @@ pub(crate) fn test_draw_char_8x16_24bit_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_rgb565_mmio() {
     let info = fb_info(4, 2, PixelFormat::Rgb565);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let (mut fb, vram) = make_mmio_fb(&info);
 
     let img = Image::filled(info.width, info.height, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);

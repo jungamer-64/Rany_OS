@@ -1,6 +1,9 @@
+#[cfg(any(test, feature = "qemu-test-export"))]
 const ASYNC_BOOT_STAGE_COUNT: usize = 6;
+#[cfg(any(test, feature = "qemu-test-export"))]
 const ASYNC_BOOT_CPU_UNSET: usize = usize::MAX;
 
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct AsyncBootStageCpuRuntimeSnapshot {
     pub assigned_cpu: Option<usize>,
@@ -8,6 +11,7 @@ pub(crate) struct AsyncBootStageCpuRuntimeSnapshot {
     pub completed_cpu: Option<usize>,
 }
 
+#[cfg(any(test, feature = "qemu-test-export"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct AsyncBootStageRuntimeSnapshot {
     pub platform: AsyncBootStageCpuRuntimeSnapshot,
@@ -64,11 +68,6 @@ pub(crate) fn async_boot_stage_runtime_snapshot() -> AsyncBootStageRuntimeSnapsh
         post_driver: read_async_boot_stage_runtime(4),
         finalizer: read_async_boot_stage_runtime(5),
     }
-}
-
-#[cfg(not(any(test, feature = "qemu-test-export")))]
-pub(crate) fn async_boot_stage_runtime_snapshot() -> AsyncBootStageRuntimeSnapshot {
-    AsyncBootStageRuntimeSnapshot::default()
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]

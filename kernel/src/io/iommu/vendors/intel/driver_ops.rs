@@ -192,15 +192,17 @@ impl IntelIommuDriver {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
                     let iova = allocate_iova_for_device(controller, device, size)?;
-                    return apply_mapping_sync(
-                        controller,
-                        &domain_arc,
-                        iova,
-                        phys_addr.as_u64(),
-                        size,
-                        read,
-                        write,
-                    );
+                    return unsafe {
+                        apply_mapping_sync(
+                            controller,
+                            &domain_arc,
+                            iova,
+                            phys_addr.as_u64(),
+                            size,
+                            read,
+                            write,
+                        )
+                    };
                 }
             }
             return Err(IommuError::DomainNotFound);
@@ -215,15 +217,17 @@ impl IntelIommuDriver {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
                     let iova = allocate_iova_for_device(controller, device, size)?;
-                    return apply_mapping_sync(
-                        controller,
-                        &domain_arc,
-                        iova,
-                        phys_addr.as_u64(),
-                        size,
-                        read,
-                        write,
-                    );
+                    return unsafe {
+                        apply_mapping_sync(
+                            controller,
+                            &domain_arc,
+                            iova,
+                            phys_addr.as_u64(),
+                            size,
+                            read,
+                            write,
+                        )
+                    };
                 }
             }
         }
@@ -248,13 +252,15 @@ impl IntelIommuDriver {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
                     let iova = allocate_iova_for_device(controller, device, size)?;
-                    return apply_mapping_async(
-                        controller,
-                        &domain_arc,
-                        iova,
-                        phys_addr.as_u64(),
-                        size,
-                    )
+                    return unsafe {
+                        apply_mapping_async(
+                            controller,
+                            &domain_arc,
+                            iova,
+                            phys_addr.as_u64(),
+                            size,
+                        )
+                    }
                     .await;
                 }
             }

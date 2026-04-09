@@ -27,9 +27,6 @@ mod mapping;
 mod paging;
 mod unmap_ops;
 
-#[cfg(test)]
-pub(crate) use crate::io::iommu::vendors::amd::map_ivmd_ranges;
-
 // ============================================================================
 // Invalidation Request Pattern
 // ============================================================================

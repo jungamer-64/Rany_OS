@@ -1,7 +1,10 @@
+// ALLOW: host-support heap shims mirror the production heap API for lib-test builds;
+// some hooks are intentionally present only to keep the test-time surface compatible.
+#![allow(dead_code)]
+
 use alloc::vec::Vec;
 use boot_proto::{ExoBootInfoView, NumaInfo};
 use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::PhysAddr;
 
@@ -27,19 +30,21 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         #[cfg(any(feature = "std", all(test, target_os = "linux")))]
         {
-            return std::alloc::System.alloc(layout);
+            return unsafe { std::alloc::System.alloc(layout) };
         }
         #[cfg(not(any(feature = "std", all(test, target_os = "linux"))))]
         {
             let _ = layout;
-            null_mut()
+            core::ptr::null_mut()
         }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         #[cfg(any(feature = "std", all(test, target_os = "linux")))]
         {
-            std::alloc::System.dealloc(ptr, layout);
+            unsafe {
+                std::alloc::System.dealloc(ptr, layout);
+            }
         }
         #[cfg(not(any(feature = "std", all(test, target_os = "linux"))))]
         {

@@ -159,7 +159,7 @@ impl Icmpv6Processor {
                 self.handle_echo_reply_payload(view, src)
             }
             Icmpv6Type::DestinationUnreachable => {
-                self.handle_quoted_error_payload(view, |code, arg, src, dst, packet| {
+                self.handle_quoted_error_payload(view, |code, _arg, src, dst, packet| {
                     Icmpv6Result::DestinationUnreachable {
                         code,
                         quoted_src: src,

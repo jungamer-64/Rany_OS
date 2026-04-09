@@ -10,9 +10,8 @@ pub mod oom;
 mod bootstrap;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub(crate) use bootstrap::{
-    checked_store_usize, checked_volatile_write_usize, get_default_memory_regions,
-    physical_memory_offset, print_memory_stats, reclaim_acpi_reclaimable,
-    set_physical_memory_offset,
+    checked_store_usize, checked_volatile_write_usize, physical_memory_offset,
+    reclaim_acpi_reclaimable, set_physical_memory_offset,
 };
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub use bootstrap::{
