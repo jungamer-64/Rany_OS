@@ -117,6 +117,7 @@ impl ExoShell {
     net.dhcp_discover()   - Send DHCPDISCOVER and return any offer
     net.dhcp_renew()      - Renew DHCP lease
     net.dhcp_release()    - Send DHCPRELEASE and clear lease
+    net.dhcp_inform()     - Send DHCPINFORM and refresh option set
 
   net.* - Connection Tracking
     net.connections()     - Show all TCP/UDP connections (netstat)
@@ -445,6 +446,7 @@ impl ExoShell {
                 "dhcp_renew",
                 "dhcp_discover",
                 "dhcp_release",
+                "dhcp_inform",
                 "dhcp_last_declined",
                 "dhcp_last_released",
                 "open",

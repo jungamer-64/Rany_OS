@@ -128,6 +128,30 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
+            NetworkEvent::DhcpInform { result_slot, waker } => {
+                use crate::net::services::dhcp;
+
+                let now = tcb_table().get_current_tick();
+                let result = if let Some(client) = dhcp::primary_v4_client_in(runtime) {
+                    match client.inform(now) {
+                        Ok(true) => Ok(()),
+                        Ok(false) => {
+                            Err(alloc::string::String::from("failed to enqueue DHCPINFORM"))
+                        }
+                        Err(e) => Err(alloc::string::String::from(e)),
+                    }
+                } else {
+                    Err(alloc::string::String::from(
+                        "DHCPv4 runtime is not initialized",
+                    ))
+                };
+
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(result);
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
             NetworkEvent::DhcpLastDeclined { result_slot, waker } => {
                 use crate::net::services::dhcp;
 

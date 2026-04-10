@@ -351,9 +351,7 @@ impl NetworkEventHandler {
             Err(e) => return EventHandleResult::ProtocolError(e),
         };
 
-        if let Err(e) =
-            self.send_tcp_segment(local_addr, remote, syn_segment)
-        {
+        if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
                 EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -447,9 +445,7 @@ impl NetworkEventHandler {
         };
 
         // パケット送信（IPスタック経由）
-        if let Err(e) =
-            self.send_tcp_segment(local_addr, remote, syn_segment)
-        {
+        if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
                 EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -605,9 +601,7 @@ impl NetworkEventHandler {
                     Err(e) => return EventHandleResult::ProtocolError(e),
                 };
 
-                if let Err(e) =
-                    self.send_tcp_segment(local, remote, fin_segment)
-                {
+                if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN: {:?}", e);
                     return EventHandleResult::ProtocolError(match e {
                         EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -641,9 +635,7 @@ impl NetworkEventHandler {
                     Err(e) => return EventHandleResult::ProtocolError(e),
                 };
 
-                if let Err(e) =
-                    self.send_tcp_segment(local, remote, fin_segment)
-                {
+                if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN (LastAck): {:?}", e);
                 }
             }

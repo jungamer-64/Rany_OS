@@ -264,6 +264,29 @@ impl ExoShell {
                 crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_release().await,
             );
         }
+        if input_bytes.len() == 17
+            && input_bytes[0] == b'n'
+            && input_bytes[1] == b'e'
+            && input_bytes[2] == b't'
+            && input_bytes[3] == b'.'
+            && input_bytes[4] == b'd'
+            && input_bytes[5] == b'h'
+            && input_bytes[6] == b'c'
+            && input_bytes[7] == b'p'
+            && input_bytes[8] == b'_'
+            && input_bytes[9] == b'i'
+            && input_bytes[10] == b'n'
+            && input_bytes[11] == b'f'
+            && input_bytes[12] == b'o'
+            && input_bytes[13] == b'r'
+            && input_bytes[14] == b'm'
+            && input_bytes[15] == b'('
+            && input_bytes[16] == b')'
+        {
+            return Some(
+                crate::shell::exoshell::namespaces::net::NetNamespace::dhcp_inform().await,
+            );
+        }
         if input_bytes.len() == 24
             && input_bytes[0] == b'n'
             && input_bytes[1] == b'e'

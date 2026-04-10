@@ -64,6 +64,7 @@ pub fn dhcp_v4_state_name(state: dhcp::DhcpState) -> &'static str {
         dhcp::DhcpState::Selecting => "Selecting",
         dhcp::DhcpState::Requesting => "Requesting",
         dhcp::DhcpState::Bound => "Bound",
+        dhcp::DhcpState::Informing => "Informing",
         dhcp::DhcpState::Renewing => "Renewing",
         dhcp::DhcpState::Rebinding => "Rebinding",
     }
@@ -551,6 +552,56 @@ impl Future for DhcpDiscoverFuture {
 
 pub fn dhcp_discover_in(runtime: NetRuntimeHandle) -> DhcpDiscoverFuture {
     DhcpDiscoverFuture::new(runtime)
+}
+
+/// 非同期DHCP INFORM Future
+pub struct DhcpInformFuture {
+    runtime: NetRuntimeHandle,
+    result_slot: Arc<PoisonLock<Option<Result<(), String>>>>,
+    waker: Arc<AtomicWaker>,
+    sent: bool,
+}
+
+impl DhcpInformFuture {
+    fn new(runtime: NetRuntimeHandle) -> Self {
+        Self {
+            runtime,
+            result_slot: Arc::new(PoisonLock::new(None)),
+            waker: Arc::new(AtomicWaker::new()),
+            sent: false,
+        }
+    }
+}
+
+impl Future for DhcpInformFuture {
+    type Output = Result<(), String>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        if !this.sent {
+            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+                this.runtime,
+                crate::net::l4::endpoint::event::NetworkEvent::DhcpInform {
+                    result_slot: this.result_slot.clone(),
+                    waker: this.waker.clone(),
+                },
+            );
+            match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
+                Poll::Ready(Ok(())) => this.sent = true,
+                Poll::Ready(Err(_)) => {
+                    return Poll::Ready(Err(String::from("network event dispatch failed")));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+    }
+}
+
+pub fn dhcp_inform_in(runtime: NetRuntimeHandle) -> DhcpInformFuture {
+    DhcpInformFuture::new(runtime)
 }
 
 /// 非同期DHCP最終拒否IP取得Future

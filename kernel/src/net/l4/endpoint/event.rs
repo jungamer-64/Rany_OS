@@ -386,6 +386,11 @@ pub enum NetworkEvent {
             alloc::sync::Arc<PoisonLock<Option<Option<crate::net::api::dhcp::DhcpOfferInfo>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
+    /// 非同期DHCP INFORM
+    DhcpInform {
+        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
+        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    },
     /// 非同期DHCP最終拒否IP取得
     DhcpLastDeclined {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 4]>>>>,

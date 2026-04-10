@@ -269,7 +269,11 @@ impl TcpSegmentBuilder {
 
         match segment_payload {
             TcpSegmentPayload::Empty => {
-                let mut packet = crate::net::payload::alloc_packet_with_headroom(header_len, DEFAULT_PACKET_HEADROOM).ok_or(EndpointError::ResourceExhausted)?;
+                let mut packet = crate::net::payload::alloc_packet_with_headroom(
+                    header_len,
+                    DEFAULT_PACKET_HEADROOM,
+                )
+                .ok_or(EndpointError::ResourceExhausted)?;
                 write_header(packet.data_mut());
                 Ok(PacketPayload::Single(packet))
             }
@@ -286,7 +290,11 @@ impl TcpSegmentBuilder {
                     }
                     Ok(payload)
                 } else {
-                    let mut header_packet = crate::net::payload::alloc_packet_with_headroom(header_len, DEFAULT_PACKET_HEADROOM).ok_or(EndpointError::ResourceExhausted)?;
+                    let mut header_packet = crate::net::payload::alloc_packet_with_headroom(
+                        header_len,
+                        DEFAULT_PACKET_HEADROOM,
+                    )
+                    .ok_or(EndpointError::ResourceExhausted)?;
                     write_header(header_packet.data_mut());
                     Ok(payload.prepend(header_packet))
                 }
@@ -312,7 +320,11 @@ impl TcpSegmentBuilder {
             );
             return Ok(payload);
         }
-        log::warn!("[NET][endpoint] mixed TCP address family rejected: {} -> {}", local, remote);
+        log::warn!(
+            "[NET][endpoint] mixed TCP address family rejected: {} -> {}",
+            local,
+            remote
+        );
         Err(EndpointError::InvalidArgument)
     }
 
@@ -339,10 +351,15 @@ impl TcpSegmentBuilder {
     }
 
     pub fn calculate_checksum(payload: &mut PacketPayload, src_ip: [u8; 4], dst_ip: [u8; 4]) {
-        if payload.total_len() < 20 { return; }
+        if payload.total_len() < 20 {
+            return;
+        }
         if let Some(first) = payload.segments_mut().first_mut() {
             let data = first.data_mut();
-            if data.len() >= 20 { data[16] = 0; data[17] = 0; }
+            if data.len() >= 20 {
+                data[16] = 0;
+                data[17] = 0;
+            }
         }
         use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, pseudo_header_checksum};
         let src = Ipv4Address::new(src_ip);
@@ -353,17 +370,26 @@ impl TcpSegmentBuilder {
         let mut prev_byte = 0u8;
         for chunk in payload.segments() {
             for &b in chunk.data() {
-                if byte_idx % 2 == 0 { prev_byte = b; }
-                else { sum += u16::from_be_bytes([prev_byte, b]) as u32; }
+                if byte_idx % 2 == 0 {
+                    prev_byte = b;
+                } else {
+                    sum += u16::from_be_bytes([prev_byte, b]) as u32;
+                }
                 byte_idx += 1;
             }
         }
-        if byte_idx % 2 != 0 { sum += u16::from_be_bytes([prev_byte, 0]) as u32; }
-        while sum >> 16 != 0 { sum = (sum & 0xFFFF) + (sum >> 16); }
+        if byte_idx % 2 != 0 {
+            sum += u16::from_be_bytes([prev_byte, 0]) as u32;
+        }
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
         let checksum = !(sum as u16);
         if let Some(first) = payload.segments_mut().first_mut() {
             let data = first.data_mut();
-            if data.len() >= 20 { data[16..18].copy_from_slice(&checksum.to_be_bytes()); }
+            if data.len() >= 20 {
+                data[16..18].copy_from_slice(&checksum.to_be_bytes());
+            }
         }
     }
 
@@ -372,37 +398,61 @@ impl TcpSegmentBuilder {
         src_ip: crate::net::l3::ipv6::Ipv6Address,
         dst_ip: crate::net::l3::ipv6::Ipv6Address,
     ) {
-        if payload.total_len() < 20 { return; }
+        if payload.total_len() < 20 {
+            return;
+        }
         if let Some(first) = payload.segments_mut().first_mut() {
             let data = first.data_mut();
-            if data.len() >= 20 { data[16] = 0; data[17] = 0; }
+            if data.len() >= 20 {
+                data[16] = 0;
+                data[17] = 0;
+            }
         }
         use crate::net::l3::ipv4::IpProtocol;
         use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
-        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, payload.total_len() as u32);
+        let pseudo = ipv6_pseudo_header_checksum(
+            &src_ip,
+            &dst_ip,
+            IpProtocol::Tcp,
+            payload.total_len() as u32,
+        );
         let mut sum = pseudo;
         let mut byte_idx = 0;
         let mut prev_byte = 0u8;
         for chunk in payload.segments() {
             for &b in chunk.data() {
-                if byte_idx % 2 == 0 { prev_byte = b; }
-                else { sum += u16::from_be_bytes([prev_byte, b]) as u32; }
+                if byte_idx % 2 == 0 {
+                    prev_byte = b;
+                } else {
+                    sum += u16::from_be_bytes([prev_byte, b]) as u32;
+                }
                 byte_idx += 1;
             }
         }
-        if byte_idx % 2 != 0 { sum += u16::from_be_bytes([prev_byte, 0]) as u32; }
-        while sum >> 16 != 0 { sum = (sum & 0xFFFF) + (sum >> 16); }
+        if byte_idx % 2 != 0 {
+            sum += u16::from_be_bytes([prev_byte, 0]) as u32;
+        }
+        while sum >> 16 != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
         let checksum = !(sum as u16);
         if let Some(first) = payload.segments_mut().first_mut() {
             let data = first.data_mut();
-            if data.len() >= 20 { data[16..18].copy_from_slice(&checksum.to_be_bytes()); }
+            if data.len() >= 20 {
+                data[16..18].copy_from_slice(&checksum.to_be_bytes());
+            }
         }
     }
 
     pub fn calculate_checksum_bytes(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
-        if segment.len() < 20 { return; }
-        segment[16] = 0; segment[17] = 0;
-        use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, pseudo_header_checksum, data_checksum};
+        if segment.len() < 20 {
+            return;
+        }
+        segment[16] = 0;
+        segment[17] = 0;
+        use crate::net::l3::ipv4::{
+            IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum,
+        };
         let src = Ipv4Address::new(src_ip);
         let dst = Ipv4Address::new(dst_ip);
         let pseudo = pseudo_header_checksum(src, dst, IpProtocol::Tcp, segment.len() as u16);
@@ -410,17 +460,24 @@ impl TcpSegmentBuilder {
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
 
-    pub fn calculate_checksum_v6_bytes(segment: &mut [u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) {
-        if segment.len() < 20 { return; }
-        segment[16] = 0; segment[17] = 0;
+    pub fn calculate_checksum_v6_bytes(
+        segment: &mut [u8],
+        src_ip: crate::net::l3::ipv6::Ipv6Address,
+        dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    ) {
+        if segment.len() < 20 {
+            return;
+        }
+        segment[16] = 0;
+        segment[17] = 0;
         use crate::net::l3::ipv4::{IpProtocol, data_checksum};
         use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
-        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
+        let pseudo =
+            ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
         let checksum = data_checksum(segment, pseudo);
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
 }
-
 
 pub fn send_tcp_segment_payload(
     local: EndpointAddr,

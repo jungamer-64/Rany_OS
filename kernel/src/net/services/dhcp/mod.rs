@@ -785,6 +785,8 @@ pub enum DhcpState {
     Requesting,
     /// リース取得済み
     Bound,
+    /// DHCPINFORM送信済み、ACK待ち
+    Informing,
     /// 更新中
     Renewing,
     /// 再バインド中

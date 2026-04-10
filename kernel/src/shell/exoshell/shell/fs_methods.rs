@@ -18,6 +18,7 @@ impl ExoShell {
             "dhcp_renew" => NetNamespace::dhcp_renew().await,
             "dhcp_discover" => NetNamespace::dhcp_discover().await,
             "dhcp_release" => NetNamespace::dhcp_release().await,
+            "dhcp_inform" => NetNamespace::dhcp_inform().await,
             "dhcp_last_declined" => NetNamespace::dhcp_last_declined().await,
             "dhcp_last_released" => NetNamespace::dhcp_last_released().await,
             // TCP/UDP接続管理
@@ -106,7 +107,7 @@ impl ExoShell {
                        firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
                        firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
                        dns/resolve, snapshot, events,\n  \
-                       dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
+                       dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
             ),
         }
     }

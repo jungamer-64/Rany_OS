@@ -100,6 +100,7 @@ impl DhcpClient {
         let header = self.validate_header(data)?;
         let opts = Self::parse_options(data);
         let msg_type = opts.message_type.ok_or("No message type in response")?;
+        let current_state = self.state();
 
         if matches!(msg_type, DhcpMessageType::Offer | DhcpMessageType::Ack) {
             let sid = opts.server_id.ok_or("No server identifier in response")?;
@@ -112,7 +113,7 @@ impl DhcpClient {
                 Ok(self.apply_offer(lease, current_tick))
             }
             DhcpMessageType::Ack => {
-                let lease = Self::build_lease(header, opts, current_tick);
+                let lease = self.build_ack_lease(current_state, header, opts, current_tick)?;
                 Ok(self.apply_ack(lease, current_tick))
             }
             DhcpMessageType::Nak => Ok(self.apply_nak()),
@@ -128,6 +129,7 @@ impl DhcpClient {
         let header = self.validate_header_payload(payload)?;
         let opts = Self::parse_options_payload(payload);
         let msg_type = opts.message_type.ok_or("No message type in response")?;
+        let current_state = self.state();
 
         if matches!(msg_type, DhcpMessageType::Offer | DhcpMessageType::Ack) {
             let sid = opts.server_id.ok_or("No server identifier in response")?;
@@ -140,7 +142,7 @@ impl DhcpClient {
                 Ok(self.apply_offer(lease, current_tick))
             }
             DhcpMessageType::Ack => {
-                let lease = Self::build_lease(&header, opts, current_tick);
+                let lease = self.build_ack_lease(current_state, &header, opts, current_tick)?;
                 Ok(self.apply_ack(lease, current_tick))
             }
             DhcpMessageType::Nak => Ok(self.apply_nak()),
@@ -468,6 +470,61 @@ impl DhcpClient {
         )
     }
 
+    /// Send a DHCPINFORM packet.
+    ///
+    /// RFC 2131: INFORM は既存IPを ciaddr/src_ip に設定し、
+    /// 既知サーバーがあればユニキャスト、なければブロードキャストする。
+    fn send_inform_packet_on(
+        &self,
+        if_id: Option<NetIfId>,
+        current_tick: u64,
+    ) -> Result<bool, &'static str> {
+        let lease = self.get_active_lease()?;
+        let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
+        let len = self.build_inform(&mut buf, current_tick)?;
+
+        let dst = if lease.server_ip == Ipv4Address::new([0, 0, 0, 0]) {
+            Ipv4Address::new([255, 255, 255, 255])
+        } else {
+            lease.server_ip
+        };
+
+        Ok(
+            crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
+                send_dhcpv4_packet_on(
+                    self.runtime,
+                    if_id,
+                    lease.ip_address,
+                    DHCP_CLIENT_PORT,
+                    dst,
+                    DHCP_SERVER_PORT,
+                    payload,
+                    64,
+                )
+            }),
+        )
+    }
+
+    /// DHCPINFORM を開始する（即時送信 + Informing 遷移）
+    pub fn inform(&self, current_tick: u64) -> Result<bool, &'static str> {
+        self.inform_on(None, current_tick)
+    }
+
+    pub fn inform_on(
+        &self,
+        if_id: Option<NetIfId>,
+        current_tick: u64,
+    ) -> Result<bool, &'static str> {
+        // INFORM は既存アドレスを前提にする
+        let _ = self.get_active_lease()?;
+
+        self.transition_state(DhcpState::Informing);
+        self.state_time.store(current_tick, Ordering::SeqCst);
+        self.retry_count.store(0, Ordering::SeqCst);
+
+        self.send_inform_packet_on(if_id, current_tick)
+    }
+
     /// Drive DHCP state machine and emit outbound packets when state changes
     /// or retransmission timers fire.
     pub async fn drive(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
@@ -530,6 +587,10 @@ impl DhcpClient {
                 // Requesting, Renewing, Rebinding retransmits.
                 DhcpState::Requesting | DhcpState::Renewing | DhcpState::Rebinding => {
                     let _ = self.send_request_packet_on(if_id, current_tick).await?;
+                }
+                // Informing retransmit
+                DhcpState::Informing => {
+                    let _ = self.send_inform_packet_on(if_id, current_tick)?;
                 }
                 // Retry budget exhausted and reset to INIT -> restart discovery.
                 DhcpState::Init => {
@@ -828,6 +889,7 @@ impl DhcpClient {
             }
             DhcpState::Requesting => self.check_retry_or_transition(elapsed_secs, DhcpState::Init),
             DhcpState::Bound => self.handle_bound_timeout(current_tick, tick_rate),
+            DhcpState::Informing => self.check_retry_or_transition(elapsed_secs, DhcpState::Bound),
             DhcpState::Renewing => {
                 self.handle_renewing_timeout(current_tick, tick_rate, elapsed_secs)
             }

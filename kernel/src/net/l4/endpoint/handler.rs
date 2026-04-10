@@ -305,6 +305,13 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
+            NetworkEvent::DhcpInform { result_slot, waker } => {
+                if let Ok(mut slot) = result_slot.lock() {
+                    *slot = Some(Err(alloc::string::String::from("Stack unavailable")));
+                }
+                waker.wake();
+                EventHandleResult::Success
+            }
             NetworkEvent::DhcpLastDeclined { result_slot, waker } => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(None);
@@ -589,6 +596,9 @@ impl NetworkEventHandler {
                 self.handle_query_event_with_stack(runtime, query_event)
             }
             query_event @ NetworkEvent::DhcpDiscover { .. } => {
+                self.handle_query_event_with_stack(runtime, query_event)
+            }
+            query_event @ NetworkEvent::DhcpInform { .. } => {
                 self.handle_query_event_with_stack(runtime, query_event)
             }
             query_event @ NetworkEvent::DhcpLastDeclined { .. } => {

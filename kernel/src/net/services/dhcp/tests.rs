@@ -784,3 +784,134 @@ pub fn test_force_renew_or_restart_paths() {
     assert!(client.lease().is_none());
     assert!(client.offered_lease.lock().unwrap().is_none());
 }
+
+#[cfg_attr(test, test_case)]
+pub fn test_build_inform_sets_ciaddr_and_message_type() {
+    use crate::net::l2::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([1, 1, 1, 1, 1, 1]));
+    let lease = DhcpLease {
+        ip_address: Ipv4Address::new([192, 168, 1, 77]),
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+        gateway: Some(Ipv4Address::new([192, 168, 1, 1])),
+        dns_servers: vec![Ipv4Address::new([1, 1, 1, 1])],
+        server_ip: Ipv4Address::new([192, 168, 1, 1]),
+        lease_time: 3600,
+        t1: 1800,
+        t2: 3150,
+        obtained_at: 0,
+        hostname: None,
+        domain_name: None,
+    };
+
+    {
+        let mut l = client.lease.lock().unwrap();
+        *l = Some(lease.clone());
+    }
+
+    let mut buf = vec![0u8; DHCP_MAX_MESSAGE_SIZE];
+    let len = client
+        .build_inform(&mut buf, 123)
+        .expect("build_inform failed");
+
+    assert_eq!(&buf[12..16], lease.ip_address.as_bytes());
+
+    let opts = &buf[DhcpHeader::SIZE..len];
+    assert!(
+        opts.windows(3)
+            .any(|w| w[0] == DhcpOption::MessageType as u8
+                && w[1] == 1
+                && w[2] == DhcpMessageType::Inform as u8)
+    );
+    assert!(!dhcp_options_contain(opts, DhcpOption::RequestedIp));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
+    use crate::net::l2::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([2, 2, 2, 2, 2, 2]));
+    client.xid.store(0x4242_3535, Ordering::SeqCst);
+
+    let lease = DhcpLease {
+        ip_address: Ipv4Address::new([10, 0, 0, 42]),
+        subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
+        gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
+        dns_servers: vec![Ipv4Address::new([8, 8, 8, 8])],
+        server_ip: Ipv4Address::new([10, 0, 0, 1]),
+        lease_time: 7200,
+        t1: 3600,
+        t2: 6300,
+        obtained_at: 10,
+        hostname: None,
+        domain_name: None,
+    };
+
+    {
+        let mut l = client.lease.lock().unwrap();
+        *l = Some(lease.clone());
+    }
+    {
+        let mut s = client.state.lock().unwrap();
+        *s = DhcpState::Informing;
+    }
+
+    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    buf[0] = DhcpOperation::Reply as u8;
+    buf[1] = 1;
+    buf[2] = 6;
+    buf[4..8].copy_from_slice(&0x4242_3535u32.to_be_bytes());
+    // INFORM ACK では yiaddr が 0 の場合がある
+    buf[16..20].copy_from_slice(&[0, 0, 0, 0]);
+    buf[28..34].copy_from_slice(client.mac_address.as_bytes());
+
+    let mut offset = DhcpHeader::SIZE;
+    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    offset += 4;
+
+    // Message Type: ACK
+    buf[offset] = DhcpOption::MessageType as u8;
+    buf[offset + 1] = 1;
+    buf[offset + 2] = DhcpMessageType::Ack as u8;
+    offset += 3;
+
+    // Server Identifier
+    buf[offset] = DhcpOption::ServerIdentifier as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(lease.server_ip.as_bytes());
+    offset += 6;
+
+    // DNS update in INFORM ACK
+    buf[offset] = DhcpOption::DnsServer as u8;
+    buf[offset + 1] = 4;
+    buf[offset + 2..offset + 6].copy_from_slice(&[1, 1, 1, 1]);
+    offset += 6;
+
+    buf[offset] = DhcpOption::End as u8;
+
+    let res = client
+        .process_response(&buf, 999)
+        .expect("INFORM ACK should be accepted");
+    match res {
+        DhcpResponseResult::Ack(updated) => {
+            assert_eq!(updated.ip_address, lease.ip_address);
+            assert_eq!(updated.lease_time, lease.lease_time);
+            assert_eq!(updated.t1, lease.t1);
+            assert_eq!(updated.t2, lease.t2);
+            assert_eq!(updated.server_ip, lease.server_ip);
+            assert_eq!(updated.dns_servers, vec![Ipv4Address::new([1, 1, 1, 1])]);
+        }
+        _ => panic!("expected Ack"),
+    }
+
+    assert_eq!(client.state(), DhcpState::Bound);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_inform_requires_active_lease() {
+    use crate::net::l2::ethernet::MacAddress;
+
+    let client = DhcpClient::new(MacAddress::new([3, 3, 3, 3, 3, 3]));
+    assert!(client.inform(100).is_err());
+    assert_eq!(client.state(), DhcpState::Init);
+}

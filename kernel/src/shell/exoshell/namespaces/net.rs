@@ -335,6 +335,14 @@ impl NetNamespace {
         ExoValue::Bool(released)
     }
 
+    /// DHCP inform — 非同期版（推奨）
+    pub async fn dhcp_inform() -> ExoValue<'static> {
+        match crate::net::api::dhcp::dhcp_inform_in(crate::net::runtime::default_runtime()).await {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(e),
+        }
+    }
+
     /// DHCP last declined — 非同期版（推奨）
     pub async fn dhcp_last_declined() -> ExoValue<'static> {
         match crate::net::api::dhcp::dhcp_last_declined_in(crate::net::runtime::default_runtime())
@@ -1274,6 +1282,7 @@ impl ShellNamespace for NetNamespace {
                 "dhcp_renew" => Self::dhcp_renew().await,
                 "dhcp_discover" => Self::dhcp_discover().await,
                 "dhcp_release" => Self::dhcp_release().await,
+                "dhcp_inform" => Self::dhcp_inform().await,
                 "dhcp_last_declined" => Self::dhcp_last_declined().await,
                 "dhcp_last_released" => Self::dhcp_last_released().await,
                 "open" => Self::handle_open(_args).await,
@@ -1313,7 +1322,7 @@ impl ShellNamespace for NetNamespace {
                      firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
                      firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
                      dns/resolve, snapshot, events,\n  \
-                     dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_last_declined, dhcp_last_released",
+                     dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
                     method
                 )),
             }

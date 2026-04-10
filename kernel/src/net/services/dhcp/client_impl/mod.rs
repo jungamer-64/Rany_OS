@@ -204,6 +204,14 @@ impl DhcpClient {
         }
     }
 
+    /// INFORM / REQUEST 共通で利用する、現在有効なリースを取得する
+    fn get_active_lease(&self) -> Result<DhcpLease, &'static str> {
+        match self.lease.lock() {
+            Ok(g) => g.clone().ok_or("No active lease available"),
+            Err(_) => Err("Lease lock poisoned"),
+        }
+    }
+
     /// **テスト用**: リースを強制的に設定します。
     ///
     /// 通常のランタイムでは使用しませんが、ユニット/スモーク
@@ -497,6 +505,103 @@ impl DhcpClient {
         // 最大メッセージサイズ (Option 57)
         let max_size = (DHCP_MAX_MESSAGE_SIZE as u16).to_be_bytes();
         append_opt(DhcpOption::MaximumMessageSize as u8, &max_size)?;
+
+        if offset >= buffer.len() {
+            return Err("Buffer overflow at End option");
+        }
+        buffer[offset] = DhcpOption::End as u8;
+        offset += 1;
+
+        self.state_time.store(current_tick, Ordering::SeqCst);
+        Ok(offset)
+    }
+
+    /// DHCPINFORM メッセージを構築
+    pub fn build_inform(
+        &self,
+        buffer: &mut [u8],
+        current_tick: u64,
+    ) -> Result<usize, &'static str> {
+        if buffer.len() < DHCP_MAX_MESSAGE_SIZE {
+            return Err("Buffer too small (need DHCP_MAX_MESSAGE_SIZE)");
+        }
+
+        let lease = self.get_active_lease()?;
+
+        // INFORM は既存トランザクションと独立した新規XIDを使用する
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let xid = u32::from_be_bytes([
+            random_bytes[0],
+            random_bytes[1],
+            random_bytes[2],
+            random_bytes[3],
+        ]);
+        self.xid.store(xid, Ordering::SeqCst);
+
+        // ヘッダを構築
+        buffer[0..DhcpHeader::SIZE].fill(0);
+        buffer[0] = DhcpOperation::Request as u8;
+        buffer[1] = 1; // Ethernet
+        buffer[2] = 6; // MAC address length
+        buffer[3] = 0; // hops
+        buffer[4..8].copy_from_slice(&xid.to_be_bytes());
+        buffer[8..10].copy_from_slice(&0u16.to_be_bytes()); // secs
+        buffer[10..12].copy_from_slice(&0x8000u16.to_be_bytes()); // flags: broadcast
+
+        // INFORM では ciaddr に既存クライアントIPを設定する
+        buffer[12..16].copy_from_slice(lease.ip_address.as_bytes());
+        buffer[28..34].copy_from_slice(self.mac_address.as_bytes());
+
+        // オプション書き込み
+        let mut offset = DhcpHeader::SIZE;
+        buffer[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+        offset += 4;
+
+        // Helper to safely append options
+        let mut append_opt = |opt: u8, data: &[u8]| -> Result<(), &'static str> {
+            if data.len() > 255 {
+                return Err("DHCP option length exceeds 255 bytes");
+            }
+            if offset + 2 + data.len() > buffer.len() {
+                return Err("Buffer overflow during option writing");
+            }
+            buffer[offset] = opt;
+            buffer[offset + 1] = data.len() as u8;
+            buffer[offset + 2..offset + 2 + data.len()].copy_from_slice(data);
+            offset += 2 + data.len();
+            Ok(())
+        };
+
+        // メッセージタイプ: INFORM
+        append_opt(
+            DhcpOption::MessageType as u8,
+            &[DhcpMessageType::Inform as u8],
+        )?;
+
+        // パラメータ要求リスト
+        append_opt(
+            DhcpOption::ParameterRequestList as u8,
+            &[
+                DhcpOption::SubnetMask as u8,
+                DhcpOption::Router as u8,
+                DhcpOption::DnsServer as u8,
+                DhcpOption::DomainName as u8,
+                DhcpOption::Hostname as u8,
+            ],
+        )?;
+
+        // クライアント識別子
+        let mut client_id = [0u8; 7];
+        client_id[0] = 1; // Ethernet
+        client_id[1..7].copy_from_slice(self.mac_address.as_bytes());
+        append_opt(DhcpOption::ClientIdentifier as u8, &client_id)?;
+
+        // 最大メッセージサイズ (Option 57)
+        let max_size = (DHCP_MAX_MESSAGE_SIZE as u16).to_be_bytes();
+        append_opt(DhcpOption::MaximumMessageSize as u8, &max_size)?;
+
+        // ホスト名 (Option 12)
+        append_opt(DhcpOption::Hostname as u8, b"ranyos")?;
 
         if offset >= buffer.len() {
             return Err("Buffer overflow at End option");
@@ -814,6 +919,33 @@ impl DhcpClient {
         }
     }
 
+    /// ACK を Informing 状態で検証する
+    pub(super) fn validate_ack_informing(
+        &self,
+        server_id: Ipv4Address,
+        yiaddr: Ipv4Address,
+    ) -> Result<(), &'static str> {
+        let zero = Ipv4Address::new([0, 0, 0, 0]);
+        match self.lease.lock() {
+            Ok(l) => {
+                let lease_guard = l.as_ref().ok_or("No active lease for INFORM ACK")?;
+                if lease_guard.server_ip != zero && lease_guard.server_ip != server_id {
+                    return Err("ACK server identifier does not match bound server");
+                }
+                if yiaddr != zero && yiaddr != lease_guard.ip_address {
+                    return Err("ACK yiaddr does not match bound IP");
+                }
+                Ok(())
+            }
+            Err(_) => {
+                log::error!(
+                    "[NET] DHCP Lease lock poisoned (process_response Inform Ack) - cannot verify ACK"
+                );
+                Err("Lease lock poisoned")
+            }
+        }
+    }
+
     /// OFFER の既存オファーとの整合性を検証する
     pub(super) fn validate_offer_server(&self, server_id: Ipv4Address) -> Result<(), &'static str> {
         match self.offered_lease.lock() {
@@ -846,6 +978,7 @@ impl DhcpClient {
             DhcpState::Renewing | DhcpState::Rebinding => {
                 self.validate_ack_renewing(server_id, yiaddr)
             }
+            DhcpState::Informing => self.validate_ack_informing(server_id, yiaddr),
             _ => Ok(()),
         }
     }
@@ -857,10 +990,6 @@ impl DhcpClient {
         header: &DhcpHeader,
         server_id: Ipv4Address,
     ) -> Result<(), &'static str> {
-        if header.yiaddr() == Ipv4Address::new([0, 0, 0, 0]) {
-            return Err("Missing yiaddr in Offer/Ack");
-        }
-
         let current_state = match self.state.lock() {
             Ok(g) => *g,
             Err(_) => {
@@ -870,6 +999,16 @@ impl DhcpClient {
                 return Err("State lock poisoned");
             }
         };
+
+        if msg_type == DhcpMessageType::Offer && header.yiaddr() == Ipv4Address::new([0, 0, 0, 0]) {
+            return Err("Missing yiaddr in Offer");
+        }
+        if msg_type == DhcpMessageType::Ack
+            && current_state != DhcpState::Informing
+            && header.yiaddr() == Ipv4Address::new([0, 0, 0, 0])
+        {
+            return Err("Missing yiaddr in Ack");
+        }
 
         if msg_type == DhcpMessageType::Offer {
             self.validate_offer_server(server_id)
@@ -905,6 +1044,60 @@ impl DhcpClient {
             hostname: opts.hostname,
             domain_name: opts.domain_name,
         }
+    }
+
+    /// ACK 受信時の状態に応じてリースを構築する
+    pub(super) fn build_ack_lease(
+        &self,
+        current_state: DhcpState,
+        header: &DhcpHeader,
+        opts: ParsedOptions,
+        current_tick: u64,
+    ) -> Result<DhcpLease, &'static str> {
+        if current_state != DhcpState::Informing {
+            return Ok(Self::build_lease(header, opts, current_tick));
+        }
+
+        let prev = self.get_active_lease()?;
+        let zero = Ipv4Address::new([0, 0, 0, 0]);
+
+        let ParsedOptions {
+            subnet_mask,
+            router,
+            dns_servers,
+            server_id,
+            hostname,
+            domain_name,
+            ..
+        } = opts;
+
+        let yiaddr = header.yiaddr();
+        let ip_address = if yiaddr == zero {
+            prev.ip_address
+        } else {
+            yiaddr
+        };
+
+        let dns_servers = if dns_servers.is_empty() {
+            prev.dns_servers.clone()
+        } else {
+            dns_servers
+        };
+
+        Ok(DhcpLease {
+            ip_address,
+            subnet_mask: subnet_mask.unwrap_or(prev.subnet_mask),
+            gateway: router.or(prev.gateway),
+            dns_servers,
+            server_ip: server_id.unwrap_or(prev.server_ip),
+            // INFORM はアドレス割当更新ではないため既存のリースタイマを維持する
+            lease_time: prev.lease_time,
+            t1: prev.t1,
+            t2: prev.t2,
+            obtained_at: prev.obtained_at,
+            hostname: hostname.or(prev.hostname),
+            domain_name: domain_name.or(prev.domain_name),
+        })
     }
 }
 
