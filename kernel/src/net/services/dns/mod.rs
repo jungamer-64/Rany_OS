@@ -26,6 +26,8 @@ pub use tcp_constants::*;
 mod cache_ops;
 mod client_impl;
 mod parser;
+mod parser_rdata_extra;
+mod parser_records;
 mod query_builder;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;

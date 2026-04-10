@@ -1,8 +1,35 @@
 use super::*;
 use crate::net::payload::PayloadSpan;
 
+struct DnsSectionCounts {
+    qcount: usize,
+    acount: usize,
+    nscount: usize,
+    arcount: usize,
+}
+
+pub(crate) struct ParsedDnsName {
+    pub(crate) name: DnsNameView,
+    pub(crate) next_offset: usize,
+}
+
+struct DnsNamePointerInfo {
+    pointer: usize,
+    pointer_end: usize,
+    jump_count: usize,
+}
+
+struct DnsRecordHeader {
+    name: DnsNameView,
+    rtype: u16,
+    rclass: u16,
+    ttl: u32,
+    rdlength: usize,
+    rdata_offset: usize,
+}
+
 impl DnsClient {
-    fn raw_record_span(
+    pub(crate) fn raw_record_span(
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
         offset: usize,
@@ -42,6 +69,7 @@ impl DnsClient {
         if view.total_len() < DnsHeader::SIZE {
             return false;
         }
+
         let Some(flags) = view.read_array::<2>(2) else {
             return false;
         };
@@ -49,14 +77,10 @@ impl DnsClient {
         ((flags >> 9) & 1 == 1) || view.total_len() >= 512
     }
 
-    fn parse_response_payload_chained(
+    fn parse_and_validate_response_header_payload(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        current_tick: u64,
-        expected_name: &str,
-        expected_type: DnsQueryType,
-    ) -> Result<DnsResponseView, DnsResponseCode> {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
+        view: &crate::net::payload::PacketPayloadView<'_>,
+    ) -> Result<u16, DnsResponseCode> {
         if view.total_len() < DnsHeader::SIZE {
             return Err(DnsResponseCode::FormatError);
         }
@@ -69,10 +93,18 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
+        Ok(flags)
+    }
+
+    fn consume_pending_response_id_payload(
+        &self,
+        view: &crate::net::payload::PacketPayloadView<'_>,
+    ) -> Result<(), DnsResponseCode> {
         let response_id = view
             .read_array::<2>(0)
             .map(u16::from_be_bytes)
             .ok_or(DnsResponseCode::FormatError)?;
+
         let id_valid = match self.pending_ids.lock() {
             Ok(mut pending) => pending.remove(&response_id).is_some(),
             Err(_) => {
@@ -80,22 +112,38 @@ impl DnsClient {
                 false
             }
         };
-        if !id_valid {
-            log::warn!(
-                "[NET] DNS: Response with unexpected transaction ID 0x{:04x}, dropping (possible cache poisoning attempt)",
-                response_id
-            );
-            self.stats.errors.fetch_add(1, Ordering::Relaxed);
-            return Err(DnsResponseCode::FormatError);
+        if id_valid {
+            return Ok(());
         }
 
+        log::warn!(
+            "[NET] DNS: Response with unexpected transaction ID 0x{:04x}, dropping (possible cache poisoning attempt)",
+            response_id
+        );
+        self.stats.errors.fetch_add(1, Ordering::Relaxed);
+        Err(DnsResponseCode::FormatError)
+    }
+
+    fn handle_response_code_payload(
+        &self,
+        flags: u16,
+        expected_name: &str,
+        current_tick: u64,
+    ) -> Result<(), DnsResponseCode> {
         let rcode = DnsResponseCode::from_u8((flags & 0x0F) as u8);
-        if rcode as u8 != DnsResponseCode::NoError as u8 {
-            self.stats.errors.fetch_add(1, Ordering::Relaxed);
-            self.cache_negative_response(expected_name, rcode, current_tick);
-            return Err(rcode);
+        if rcode as u8 == DnsResponseCode::NoError as u8 {
+            return Ok(());
         }
 
+        self.stats.errors.fetch_add(1, Ordering::Relaxed);
+        self.cache_negative_response(expected_name, rcode, current_tick);
+        Err(rcode)
+    }
+
+    fn parse_section_counts_payload(
+        &self,
+        view: &crate::net::payload::PacketPayloadView<'_>,
+    ) -> Result<DnsSectionCounts, DnsResponseCode> {
         let qcount = view
             .read_array::<2>(4)
             .map(u16::from_be_bytes)
@@ -124,52 +172,85 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let mut offset = DnsHeader::SIZE;
+        Ok(DnsSectionCounts {
+            qcount,
+            acount,
+            nscount,
+            arcount,
+        })
+    }
+
+    fn validate_question_section_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        view: &crate::net::payload::PacketPayloadView<'_>,
+        offset: &mut usize,
+        qcount: usize,
+        expected_name: &str,
+        expected_type: DnsQueryType,
+    ) -> Result<(), DnsResponseCode> {
         let mut matched_question = false;
         for _ in 0..qcount {
-            let (qname, next_off) = self.parse_name_payload(payload, &view, offset)?;
+            let parsed_name = self.parse_name_payload(payload, view, *offset)?;
             let qtype = view
-                .read_array::<2>(next_off)
+                .read_array::<2>(parsed_name.next_offset)
                 .map(u16::from_be_bytes)
                 .ok_or(DnsResponseCode::FormatError)?;
-            if view.read_array::<2>(next_off + 2).is_none() {
+            if view.read_array::<2>(parsed_name.next_offset + 2).is_none() {
                 return Err(DnsResponseCode::FormatError);
             }
-            if qname.eq_ignore_ascii_case(expected_name) && qtype == expected_type as u16 {
+
+            if parsed_name.name.eq_ignore_ascii_case(expected_name) && qtype == expected_type as u16
+            {
                 matched_question = true;
             }
-            offset = next_off + 4;
+            *offset = parsed_name.next_offset + 4;
         }
 
-        if !matched_question && qcount > 0 {
-            log::warn!(
-                "[NET] DNS: Response Question section does not match query ({:?} vs {}), dropping for security",
-                expected_type,
-                expected_name
-            );
-            return Err(DnsResponseCode::FormatError);
+        if matched_question || qcount == 0 {
+            return Ok(());
         }
 
-        let records = self.parse_answer_section_payload(payload, &view, &mut offset, acount)?;
+        log::warn!(
+            "[NET] DNS: Response Question section does not match query ({:?} vs {}), dropping for security",
+            expected_type,
+            expected_name
+        );
+        Err(DnsResponseCode::FormatError)
+    }
 
+    fn skip_authority_section_payload(
+        &self,
+        view: &crate::net::payload::PacketPayloadView<'_>,
+        offset: &mut usize,
+        nscount: usize,
+    ) -> Result<(), DnsResponseCode> {
         for _ in 0..nscount {
-            if offset >= view.total_len() {
+            if *offset >= view.total_len() {
                 break;
             }
-            offset = self.skip_name_payload(&view, offset)?;
-            if offset + 10 > view.total_len() {
+
+            *offset = self.skip_name_payload(view, *offset)?;
+            if *offset + 10 > view.total_len() {
                 break;
             }
+
             let rdlength = view
-                .read_array::<2>(offset + 8)
+                .read_array::<2>(*offset + 8)
                 .map(u16::from_be_bytes)
                 .ok_or(DnsResponseCode::FormatError)? as usize;
-            offset += 10 + rdlength;
+            *offset += 10 + rdlength;
         }
+        Ok(())
+    }
 
-        let _additional_records =
-            self.parse_answer_section_payload(payload, &view, &mut offset, arcount)?;
-
+    fn finalize_response_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        expected_name: &str,
+        current_tick: u64,
+        records: Vec<DnsRecordMeta>,
+    ) -> DnsResponseView {
         self.stats
             .responses_received
             .fetch_add(1, Ordering::Relaxed);
@@ -183,18 +264,88 @@ impl DnsClient {
                 current_tick,
             );
         }
-        Ok(DnsResponseView {
+
+        DnsResponseView {
             payload: payload.clone(),
             records,
+        }
+    }
+
+    fn parse_response_payload_chained(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        current_tick: u64,
+        expected_name: &str,
+        expected_type: DnsQueryType,
+    ) -> Result<DnsResponseView, DnsResponseCode> {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let flags = self.parse_and_validate_response_header_payload(&view)?;
+        self.consume_pending_response_id_payload(&view)?;
+        self.handle_response_code_payload(flags, expected_name, current_tick)?;
+
+        let counts = self.parse_section_counts_payload(&view)?;
+        let mut offset = DnsHeader::SIZE;
+        self.validate_question_section_payload(
+            payload,
+            &view,
+            &mut offset,
+            counts.qcount,
+            expected_name,
+            expected_type,
+        )?;
+
+        let records =
+            self.parse_answer_section_payload(payload, &view, &mut offset, counts.acount)?;
+        self.skip_authority_section_payload(&view, &mut offset, counts.nscount)?;
+        let _ = self.parse_answer_section_payload(payload, &view, &mut offset, counts.arcount)?;
+
+        Ok(self.finalize_response_payload(payload, expected_name, current_tick, records))
+    }
+
+    fn parse_name_pointer_payload(
+        &self,
+        view: &crate::net::payload::PacketPayloadView<'_>,
+        offset: usize,
+        len: u8,
+        jump_count: usize,
+    ) -> Result<DnsNamePointerInfo, DnsResponseCode> {
+        let second = view
+            .read_array::<1>(offset + 1)
+            .map(|bytes| bytes[0])
+            .ok_or(DnsResponseCode::FormatError)?;
+        let pointer = ((len as usize & 0x3F) << 8) | second as usize;
+        let new_jump_count = jump_count + 1;
+        if new_jump_count > 128 || pointer >= view.total_len() {
+            return Err(DnsResponseCode::FormatError);
+        }
+
+        Ok(DnsNamePointerInfo {
+            pointer,
+            pointer_end: offset + 2,
+            jump_count: new_jump_count,
         })
     }
 
-    fn parse_name_payload(
+    fn parse_name_label_span_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        offset: usize,
+        len: u8,
+    ) -> Result<PayloadSpan, DnsResponseCode> {
+        if len > 63 {
+            return Err(DnsResponseCode::FormatError);
+        }
+
+        PayloadSpan::from_range(payload, offset + 1, len as usize)
+            .ok_or(DnsResponseCode::FormatError)
+    }
+
+    pub(crate) fn parse_name_payload(
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
         view: &crate::net::payload::PacketPayloadView<'_>,
         mut offset: usize,
-    ) -> Result<(DnsNameView, usize), DnsResponseCode> {
+    ) -> Result<ParsedDnsName, DnsResponseCode> {
         let mut labels = Vec::new();
         let mut jumped = false;
         let mut final_offset = offset;
@@ -213,29 +364,17 @@ impl DnsClient {
             }
 
             if len & 0xC0 == 0xC0 {
-                let second = view
-                    .read_array::<1>(offset + 1)
-                    .map(|bytes| bytes[0])
-                    .ok_or(DnsResponseCode::FormatError)?;
+                let pointer = self.parse_name_pointer_payload(view, offset, len, jump_count)?;
                 if !jumped {
-                    final_offset = offset + 2;
+                    final_offset = pointer.pointer_end;
                 }
-                let pointer = ((len as usize & 0x3F) << 8) | second as usize;
-                jump_count += 1;
-                if jump_count > 128 || pointer >= view.total_len() {
-                    return Err(DnsResponseCode::FormatError);
-                }
-                offset = pointer;
+                jump_count = pointer.jump_count;
+                offset = pointer.pointer;
                 jumped = true;
                 continue;
             }
 
-            if len > 63 {
-                return Err(DnsResponseCode::FormatError);
-            }
-
-            let label = PayloadSpan::from_range(payload, offset + 1, len as usize)
-                .ok_or(DnsResponseCode::FormatError)?;
+            let label = self.parse_name_label_span_payload(payload, offset, len)?;
             labels.push(label);
             offset += 1 + len as usize;
             if !jumped {
@@ -243,7 +382,10 @@ impl DnsClient {
             }
         }
 
-        Ok((DnsNameView::from_labels(labels), final_offset))
+        Ok(ParsedDnsName {
+            name: DnsNameView::from_labels(labels),
+            next_offset: final_offset,
+        })
     }
 
     fn skip_name_payload(
@@ -260,12 +402,14 @@ impl DnsClient {
             if len == 0 {
                 return Ok(offset + 1);
             }
+
             if len & 0xC0 == 0xC0 {
                 if view.read_array::<1>(offset + 1).is_none() {
                     return Err(DnsResponseCode::FormatError);
                 }
                 return Ok(offset + 2);
             }
+
             if len > 63 {
                 return Err(DnsResponseCode::FormatError);
             }
@@ -274,6 +418,85 @@ impl DnsClient {
                 return Err(DnsResponseCode::FormatError);
             }
             offset += 1 + len as usize;
+        }
+    }
+
+    fn parse_record_header_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        view: &crate::net::payload::PacketPayloadView<'_>,
+        offset: &mut usize,
+    ) -> Result<Option<DnsRecordHeader>, DnsResponseCode> {
+        if *offset >= view.total_len() {
+            return Ok(None);
+        }
+
+        let parsed_name = self.parse_name_payload(payload, view, *offset)?;
+        *offset = parsed_name.next_offset;
+        if *offset + 10 > view.total_len() {
+            return Ok(None);
+        }
+
+        let rtype = view
+            .read_array::<2>(*offset)
+            .map(u16::from_be_bytes)
+            .ok_or(DnsResponseCode::FormatError)?;
+        let rclass = view
+            .read_array::<2>(*offset + 2)
+            .map(u16::from_be_bytes)
+            .ok_or(DnsResponseCode::FormatError)?;
+        let ttl = view
+            .read_array::<4>(*offset + 4)
+            .map(u32::from_be_bytes)
+            .ok_or(DnsResponseCode::FormatError)?;
+        let rdlength = view
+            .read_array::<2>(*offset + 8)
+            .map(u16::from_be_bytes)
+            .ok_or(DnsResponseCode::FormatError)? as usize;
+
+        *offset += 10;
+        if *offset + rdlength > view.total_len() {
+            return Ok(None);
+        }
+
+        Ok(Some(DnsRecordHeader {
+            name: parsed_name.name,
+            rtype,
+            rclass,
+            ttl,
+            rdlength,
+            rdata_offset: *offset,
+        }))
+    }
+
+    fn record_class_from_u16(&self, rclass: u16) -> DnsQueryClass {
+        if rclass == DnsQueryClass::IN as u16 {
+            DnsQueryClass::IN
+        } else {
+            DnsQueryClass::IN
+        }
+    }
+
+    fn build_record_meta_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        view: &crate::net::payload::PacketPayloadView<'_>,
+        header: DnsRecordHeader,
+    ) -> DnsRecordMeta {
+        let record_data = self.parse_record_data_payload(
+            payload,
+            view,
+            header.rtype,
+            header.rdlength,
+            header.rdata_offset,
+        );
+
+        DnsRecordMeta {
+            name: header.name,
+            rtype: DnsQueryType::from_u16(header.rtype).unwrap_or(DnsQueryType::A),
+            rclass: self.record_class_from_u16(header.rclass),
+            ttl: header.ttl,
+            data: record_data,
         }
     }
 
@@ -286,155 +509,17 @@ impl DnsClient {
     ) -> Result<Vec<DnsRecordMeta>, DnsResponseCode> {
         let mut records = Vec::new();
         for _ in 0..acount {
-            if *offset >= view.total_len() {
+            let Some(header) = self.parse_record_header_payload(payload, view, offset)? else {
                 break;
-            }
+            };
 
-            let (name, new_offset) = self.parse_name_payload(payload, view, *offset)?;
-            *offset = new_offset;
-            if *offset + 10 > view.total_len() {
-                break;
-            }
-
-            let rtype = view
-                .read_array::<2>(*offset)
-                .map(u16::from_be_bytes)
-                .ok_or(DnsResponseCode::FormatError)?;
-            let rclass = view
-                .read_array::<2>(*offset + 2)
-                .map(u16::from_be_bytes)
-                .ok_or(DnsResponseCode::FormatError)?;
-            let ttl = view
-                .read_array::<4>(*offset + 4)
-                .map(u32::from_be_bytes)
-                .ok_or(DnsResponseCode::FormatError)?;
-            let rdlength = view
-                .read_array::<2>(*offset + 8)
-                .map(u16::from_be_bytes)
-                .ok_or(DnsResponseCode::FormatError)? as usize;
-            *offset += 10;
-            if *offset + rdlength > view.total_len() {
-                break;
-            }
-
+            let next_offset = header.rdata_offset + header.rdlength;
             if records.len() < DNS_MAX_ANSWER_COUNT {
-                let record_data =
-                    self.parse_record_data_payload(payload, view, rtype, rdlength, *offset);
-                records.push(DnsRecordMeta {
-                    name,
-                    rtype: DnsQueryType::from_u16(rtype).unwrap_or(DnsQueryType::A),
-                    rclass: if rclass == 1 {
-                        DnsQueryClass::IN
-                    } else {
-                        DnsQueryClass::IN
-                    },
-                    ttl,
-                    data: record_data,
-                });
+                records.push(self.build_record_meta_payload(payload, view, header));
             }
-            *offset += rdlength;
+            *offset = next_offset;
         }
+
         Ok(records)
-    }
-
-    fn parse_record_data_payload(
-        &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-        rtype: u16,
-        rdlength: usize,
-        rdata_offset: usize,
-    ) -> DnsRecordData {
-        let raw_span = || self.raw_record_span(payload, rdata_offset, rdlength);
-
-        match DnsQueryType::from_u16(rtype) {
-            Some(DnsQueryType::A) if rdlength == 4 => view
-                .read_array::<4>(rdata_offset)
-                .map(Ipv4Address::new)
-                .map(DnsRecordData::A)
-                .unwrap_or_else(raw_span),
-            Some(DnsQueryType::AAAA) if rdlength == 16 => view
-                .read_array::<16>(rdata_offset)
-                .map(Ipv6Address::new)
-                .map(DnsRecordData::AAAA)
-                .unwrap_or_else(raw_span),
-            Some(DnsQueryType::CNAME) | Some(DnsQueryType::NS) | Some(DnsQueryType::PTR) => self
-                .parse_name_payload(payload, view, rdata_offset)
-                .map(|(name, _)| DnsRecordData::Name(name))
-                .unwrap_or_else(|_| raw_span()),
-            Some(DnsQueryType::MX) if rdlength >= 3 => {
-                let Some(preference) = view.read_array::<2>(rdata_offset).map(u16::from_be_bytes)
-                else {
-                    return raw_span();
-                };
-                self.parse_name_payload(payload, view, rdata_offset + 2)
-                    .map(|(exchange, _)| DnsRecordData::MX(preference, exchange))
-                    .unwrap_or_else(|_| raw_span())
-            }
-            Some(DnsQueryType::TXT) => {
-                self.parse_txt_record_payload(payload, view, rdata_offset, rdlength)
-            }
-            Some(DnsQueryType::SRV) if rdlength >= 7 => {
-                let Some(priority) = view.read_array::<2>(rdata_offset).map(u16::from_be_bytes)
-                else {
-                    return raw_span();
-                };
-                let Some(weight) = view
-                    .read_array::<2>(rdata_offset + 2)
-                    .map(u16::from_be_bytes)
-                else {
-                    return raw_span();
-                };
-                let Some(port) = view
-                    .read_array::<2>(rdata_offset + 4)
-                    .map(u16::from_be_bytes)
-                else {
-                    return raw_span();
-                };
-                self.parse_name_payload(payload, view, rdata_offset + 6)
-                    .map(|(target, _)| DnsRecordData::SRV {
-                        priority,
-                        weight,
-                        port,
-                        target,
-                    })
-                    .unwrap_or_else(|_| raw_span())
-            }
-            _ => raw_span(),
-        }
-    }
-
-    fn parse_txt_record_payload(
-        &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-        rdata_offset: usize,
-        rdlength: usize,
-    ) -> DnsRecordData {
-        if rdlength == 0 {
-            return DnsRecordData::TXT(DnsTxtView::from_spans(Vec::new()));
-        }
-
-        let mut spans = Vec::new();
-        let mut offset = 0usize;
-        while offset < rdlength {
-            let Some(txt_len) = view
-                .read_array::<1>(rdata_offset + offset)
-                .map(|bytes| bytes[0] as usize)
-            else {
-                return self.raw_record_span(payload, rdata_offset, rdlength);
-            };
-            offset += 1;
-            if offset + txt_len > rdlength {
-                return self.raw_record_span(payload, rdata_offset, rdlength);
-            }
-            let Some(label) = PayloadSpan::from_range(payload, rdata_offset + offset, txt_len)
-            else {
-                return self.raw_record_span(payload, rdata_offset, rdlength);
-            };
-            spans.push(label);
-            offset += txt_len;
-        }
-        DnsRecordData::TXT(DnsTxtView::from_spans(spans))
     }
 }
