@@ -36,7 +36,6 @@ use crate::sync::PoisonLock;
 use crate::task::interrupt_waker::{InterruptSource, wait_for_interrupt};
 use crate::task::{TimeoutResult, with_timeout};
 
-use crate::net::payload::PacketPayloadView;
 use kernel_api::resource::net::{PacketPayload, PacketRef};
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NetDeviceInfo, NetDevicePort,
@@ -813,9 +812,16 @@ fn payload_inline_header_len(payload: &PacketPayload) -> usize {
 }
 
 fn payload_preview_bytes(payload: &PacketPayload, limit: usize) -> String {
-    let mut bytes = alloc::vec![0u8; limit.min(payload.total_len())];
-    let copied = PacketPayloadView::new(payload).copy_all_into(&mut bytes);
-    bytes.truncate(copied);
+    let preview_len = limit.min(payload.total_len());
+    let mut bytes = alloc::vec::Vec::with_capacity(preview_len);
+    for segment in payload.segments() {
+        if bytes.len() == preview_len {
+            break;
+        }
+        let remaining = preview_len - bytes.len();
+        let take = remaining.min(segment.data().len());
+        bytes.extend_from_slice(&segment.data()[..take]);
+    }
     format_head_bytes(&bytes, bytes.len())
 }
 

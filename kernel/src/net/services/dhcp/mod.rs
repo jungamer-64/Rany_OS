@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::payload::PayloadSpan;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::stack::NetworkConfig;
 
@@ -92,6 +93,14 @@ pub(crate) fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static DhcpRunti
 
 pub(crate) fn primary_v6_client_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpV6Client>> {
     primary_interface_runtime_in(runtime).map(|runtime| Arc::clone(&runtime.v6))
+}
+
+pub(super) fn payload_span_to_vec(span: &PayloadSpan) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(span.total_len());
+    bytes.resize(span.total_len(), 0);
+    let copied = span.copy_into(&mut bytes);
+    bytes.truncate(copied);
+    bytes
 }
 
 pub(crate) fn ensure_interface_runtime(
@@ -456,7 +465,11 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                             interface_runtime.mac(),
                             lease.ip_address
                         );
-                        let hostname = lease.hostname.as_ref().cloned().unwrap_or_default();
+                        let hostname = lease
+                            .hostname
+                            .as_ref()
+                            .map(payload_span_to_vec)
+                            .unwrap_or_default();
                         crate::net::l4::endpoint::event::enqueue_event_ignore_in(
                             runtime,
                             crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
@@ -874,9 +887,9 @@ pub struct DhcpLease {
     /// 取得時刻 (tick)
     pub obtained_at: u64,
     /// ホスト名
-    pub hostname: Option<Vec<u8>>,
+    pub hostname: Option<PayloadSpan>,
     /// ドメイン名
-    pub domain_name: Option<Vec<u8>>,
+    pub domain_name: Option<PayloadSpan>,
 }
 
 impl DhcpLease {
@@ -953,6 +966,6 @@ struct ParsedOptions {
     renewal_time: Option<u32>,
     rebinding_time: Option<u32>,
     server_id: Option<Ipv4Address>,
-    hostname: Option<Vec<u8>>,
-    domain_name: Option<Vec<u8>>,
+    hostname: Option<PayloadSpan>,
+    domain_name: Option<PayloadSpan>,
 }

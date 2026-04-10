@@ -64,7 +64,11 @@ impl DhcpClient {
                         Ok(DhcpResponseResult::Ack(lease)) => {
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
-                            let hostname = lease.hostname.as_ref().cloned().unwrap_or_default();
+                            let hostname = lease
+                                .hostname
+                                .as_ref()
+                                .map(payload_span_to_vec)
+                                .unwrap_or_default();
                             crate::net::l4::endpoint::event::enqueue_event_ignore_in(
                                 self.runtime,
                                 crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
@@ -648,6 +652,28 @@ impl DhcpClient {
         }
     }
 
+    pub(super) fn parse_ipv4_option_span(opt_data: &PayloadSpan) -> Option<Ipv4Address> {
+        if opt_data.total_len() != 4 {
+            return None;
+        }
+        let mut bytes = [0u8; 4];
+        if opt_data.copy_into(&mut bytes) != 4 {
+            return None;
+        }
+        Some(Ipv4Address::new(bytes))
+    }
+
+    pub(super) fn parse_u32_option_span(opt_data: &PayloadSpan) -> Option<u32> {
+        if opt_data.total_len() != 4 {
+            return None;
+        }
+        let mut bytes = [0u8; 4];
+        if opt_data.copy_into(&mut bytes) != 4 {
+            return None;
+        }
+        Some(u32::from_be_bytes(bytes))
+    }
+
     /// ヘッダを検証し、参照を返す
     pub(super) fn validate_header<'a>(
         &self,
@@ -765,8 +791,47 @@ impl DhcpClient {
             58 => opts.renewal_time = Self::parse_u32_option(opt_data),
             59 => opts.rebinding_time = Self::parse_u32_option(opt_data),
             54 => opts.server_id = Self::parse_ipv4_option(opt_data),
-            12 => opts.hostname = Some(opt_data.to_vec()),
-            15 => opts.domain_name = Some(opt_data.to_vec()),
+            12 => opts.hostname = PayloadSpan::from_bytes(opt_data),
+            15 => opts.domain_name = PayloadSpan::from_bytes(opt_data),
+            _ => {}
+        }
+    }
+
+    pub(super) fn apply_option_span(opts: &mut ParsedOptions, opt: u8, opt_data: &PayloadSpan) {
+        match opt {
+            53 => {
+                if let Some(value) = opt_data.byte_at(0) {
+                    opts.message_type = DhcpMessageType::from_u8(value);
+                }
+            }
+            1 => opts.subnet_mask = Self::parse_ipv4_option_span(opt_data),
+            3 => opts.router = Self::parse_ipv4_option_span(opt_data),
+            6 => {
+                let server_count = opt_data.total_len() / 4;
+                for index in 0..server_count {
+                    if opts.dns_servers.len() >= 8 {
+                        break;
+                    }
+                    let Some(chunk) = opt_data.slice(index * 4, 4) else {
+                        break;
+                    };
+                    let mut bytes = [0u8; 4];
+                    if chunk.copy_into(&mut bytes) != 4 {
+                        break;
+                    }
+                    opts.dns_servers.push(Ipv4Address::new(bytes));
+                }
+            }
+            51 => {
+                if let Some(value) = Self::parse_u32_option_span(opt_data) {
+                    opts.lease_time = value;
+                }
+            }
+            58 => opts.renewal_time = Self::parse_u32_option_span(opt_data),
+            59 => opts.rebinding_time = Self::parse_u32_option_span(opt_data),
+            54 => opts.server_id = Self::parse_ipv4_option_span(opt_data),
+            12 => opts.hostname = Some(opt_data.clone()),
+            15 => opts.domain_name = Some(opt_data.clone()),
             _ => {}
         }
     }
@@ -872,8 +937,12 @@ impl DhcpClient {
                 break;
             }
 
-            let opt_data = view.read_vec(offset + 2, len);
-            Self::apply_option(&mut opts, opt, &opt_data);
+            let Some(opt_data) =
+                crate::net::payload::PayloadSpan::from_range(payload, offset + 2, len)
+            else {
+                break;
+            };
+            Self::apply_option_span(&mut opts, opt, &opt_data);
             offset += 2 + len;
         }
 

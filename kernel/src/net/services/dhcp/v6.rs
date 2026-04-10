@@ -1,8 +1,9 @@
 use super::*;
 
 use crate::net::l3::ipv6::Ipv6Address;
-use crate::net::payload::PacketPayloadBuilder;
+use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
 use crate::task::{self, TimeoutResult};
+use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -56,13 +57,13 @@ pub enum DhcpV6State {
 pub struct DhcpV6Client {
     runtime: crate::net::runtime::NetRuntimeHandle,
     mac: crate::net::l2::ethernet::MacAddress,
-    duid: Vec<u8>,
+    duid: [u8; 10],
     state: PoisonLock<DhcpV6State>,
     xid: AtomicU32, // 24-bit トランザクションIDを格納
     iaid: u32,
     lease: PoisonLock<Option<DhcpV6Lease>>,
     /// Last-seen server DUID (Server Identifier option)
-    server_duid: PoisonLock<Option<Vec<u8>>>,
+    server_duid: PoisonLock<Option<PayloadSpan>>,
     /// Last-seen server IPv6 source address (used for unicast Renew)
     server_addr: PoisonLock<Option<Ipv6Address>>,
     state_time: AtomicU64,
@@ -156,14 +157,31 @@ impl DhcpV6Client {
     }
 
     /// DUID-LL を生成（type=3, hwtype=1 + MAC）
-    fn make_duid_ll(mac: &crate::net::l2::ethernet::MacAddress) -> Vec<u8> {
-        let mut v = Vec::new();
-        // DUID type (2 bytes) = 3 (DUID-LL)
-        v.extend_from_slice(&(3u16.to_be_bytes()));
-        // hardware type (2 bytes) = 1 (Ethernet)
-        v.extend_from_slice(&(1u16.to_be_bytes()));
-        v.extend_from_slice(mac.as_bytes());
-        v
+    fn make_duid_ll(mac: &crate::net::l2::ethernet::MacAddress) -> [u8; 10] {
+        let mut duid = [0u8; 10];
+        duid[0..2].copy_from_slice(&3u16.to_be_bytes());
+        duid[2..4].copy_from_slice(&1u16.to_be_bytes());
+        duid[4..10].copy_from_slice(mac.as_bytes());
+        duid
+    }
+
+    fn append_option_span(
+        buf: &mut [u8],
+        offset: &mut usize,
+        code: u16,
+        span: &PayloadSpan,
+    ) -> Result<(), &'static str> {
+        if *offset + 4 + span.total_len() > buf.len() {
+            return Err("Buffer overflow during option writing");
+        }
+        buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
+        buf[*offset + 2..*offset + 4].copy_from_slice(&(span.total_len() as u16).to_be_bytes());
+        if span.copy_into(&mut buf[*offset + 4..*offset + 4 + span.total_len()]) != span.total_len()
+        {
+            return Err("Buffer overflow during option writing");
+        }
+        *offset += 4 + span.total_len();
+        Ok(())
     }
 
     pub fn new(mac: crate::net::l2::ethernet::MacAddress) -> Self {
@@ -431,7 +449,7 @@ impl DhcpV6Client {
         // Server Identifier (option 2) if we have a DUID
         if let Ok(g) = self.server_duid.lock() {
             if let Some(ref duid) = *g {
-                append_opt(buf, &mut off, 2, duid)?;
+                Self::append_option_span(buf, &mut off, 2, duid)?;
             }
         }
 
@@ -487,7 +505,7 @@ impl DhcpV6Client {
         // Server Identifier (option 2) — RFC 8415 requires this for Renew
         if let Ok(g) = self.server_duid.lock() {
             if let Some(ref duid) = *g {
-                append_opt(buf, &mut off, 2, duid)?;
+                Self::append_option_span(buf, &mut off, 2, duid)?;
             }
         }
 
@@ -617,7 +635,7 @@ impl DhcpV6Client {
         // Server Identifier (option 2) — RFC 8415 requires this for Release
         if let Ok(g) = self.server_duid.lock() {
             if let Some(ref duid) = *g {
-                append_opt(buf, &mut off, 2, duid)?;
+                Self::append_option_span(buf, &mut off, 2, duid)?;
             }
         }
 
@@ -746,7 +764,7 @@ impl DhcpV6Client {
                     // Server Identifier (DUID) - remember it for future Renew
                     if len > 0 {
                         if let Ok(mut g) = self.server_duid.lock() {
-                            *g = Some(data[off..off + len].to_vec());
+                            *g = PayloadSpan::from_bytes(&data[off..off + len]);
                         }
                     }
                 }
@@ -931,7 +949,7 @@ impl DhcpV6Client {
                 2 => {
                     if len > 0 {
                         if let Ok(mut g) = self.server_duid.lock() {
-                            *g = Some(view.read_vec(off, len));
+                            *g = PayloadSpan::from_range(payload, off, len);
                         }
                     }
                 }
@@ -1003,8 +1021,10 @@ impl DhcpV6Client {
                     }
                 }
                 24 => {
-                    let domain_data = view.read_vec(off, len);
-                    Self::parse_domain_search_list(&domain_data, &mut domain_search);
+                    let Some(domain_data) = PayloadSpan::from_range(payload, off, len) else {
+                        return Err("packet too small");
+                    };
+                    Self::parse_domain_search_list_span(&domain_data, &mut domain_search);
                 }
                 _ => {}
             }
@@ -1118,6 +1138,75 @@ impl DhcpV6Client {
         }
     }
 
+    fn parse_domain_search_list_span(span: &PayloadSpan, out: &mut Vec<alloc::string::String>) {
+        let mut off = 0usize;
+        let mut name_count = 0;
+
+        while off < span.total_len() && name_count < 10 {
+            let mut labels: Vec<alloc::string::String> = Vec::new();
+            let mut total_len = 0usize;
+            let mut label_count = 0;
+
+            loop {
+                if off >= span.total_len() || label_count >= 64 {
+                    break;
+                }
+
+                let Some(first) = span.byte_at(off) else {
+                    return;
+                };
+                if first == 0 {
+                    off += 1;
+                    break;
+                }
+
+                if (first & 0xC0) == 0xC0 {
+                    log::warn!(
+                        "[NET] DHCPv6: DNS compression pointer detected in domain search list - unsupported"
+                    );
+                    return;
+                }
+
+                if (first & 0xC0) != 0 {
+                    log::warn!("[NET] DHCPv6: Invalid label type bits 0x{:02x}", first);
+                    return;
+                }
+
+                let label_len = first as usize;
+                off += 1;
+
+                if label_len > 63 || off + label_len > span.total_len() {
+                    log::warn!("[NET] DHCPv6: Malformed label length {}", label_len);
+                    return;
+                }
+
+                let Some(label_span) = span.slice(off, label_len) else {
+                    return;
+                };
+                let mut bytes = vec![0u8; label_len];
+                if label_span.copy_into(&mut bytes) != label_len {
+                    return;
+                }
+                labels.push(
+                    alloc::string::String::from(core::str::from_utf8(&bytes).unwrap_or("?")),
+                );
+                off += label_len;
+                total_len += label_len + 1;
+                label_count += 1;
+
+                if total_len > 255 {
+                    log::warn!("[NET] DHCPv6: Domain name too long (> 255)");
+                    return;
+                }
+            }
+
+            if !labels.is_empty() {
+                out.push(labels.join("."));
+                name_count += 1;
+            }
+        }
+    }
+
     /// DHCPv6パケットがこのクライアント向けか（DUID一致）を確認
     pub fn matches_response_payload(
         &self,
@@ -1138,8 +1227,10 @@ impl DhcpV6Client {
             if code == 1 {
                 // Client Identifier (Option 1)
                 if off + len <= view.total_len() {
-                    let duid = view.read_vec(off, len);
-                    return duid == self.duid;
+                    let Some(duid) = PayloadSpan::from_range(payload, off, len) else {
+                        return false;
+                    };
+                    return duid.eq_bytes(&self.duid);
                 }
             }
             off += len;

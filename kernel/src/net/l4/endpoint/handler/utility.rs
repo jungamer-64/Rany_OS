@@ -81,7 +81,7 @@ impl NetworkEventHandler {
                     hostname: if hostname.is_empty() {
                         None
                     } else {
-                        Some(hostname)
+                        crate::net::payload::PayloadSpan::from_bytes(&hostname)
                     },
                     domain_name: None,
                     obtained_at: crate::task::current_tick(),

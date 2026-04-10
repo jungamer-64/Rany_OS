@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
-use crate::net::payload::PacketPayloadBuilder;
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::PoisonLock;
 
@@ -357,6 +357,41 @@ impl MdnsService {
         }
     }
 
+    fn process_packet_view(
+        &mut self,
+        view: &PacketPayloadView<'_>,
+        src_ip: Ipv4Address,
+        ttl: u8,
+        current_time: u64,
+    ) -> MdnsResult {
+        if ttl != 255 {
+            return MdnsResult::Ignored;
+        }
+
+        if view.total_len() < DNS_HEADER_SIZE {
+            return MdnsResult::InvalidPacket;
+        }
+
+        let flags = match view.read_array::<2>(2) {
+            Some(bytes) => u16::from_be_bytes(bytes),
+            None => return MdnsResult::InvalidPacket,
+        };
+        let qdcount = match view.read_array::<2>(4) {
+            Some(bytes) => u16::from_be_bytes(bytes),
+            None => return MdnsResult::InvalidPacket,
+        };
+        let ancount = match view.read_array::<2>(6) {
+            Some(bytes) => u16::from_be_bytes(bytes),
+            None => return MdnsResult::InvalidPacket,
+        };
+
+        if (flags & 0x8000) != 0 {
+            self.process_response_view(view, ancount, qdcount, src_ip, current_time)
+        } else {
+            self.process_query_view(view, qdcount, src_ip, current_time)
+        }
+    }
+
     pub fn process_packet_payload(
         &mut self,
         payload: &kernel_api::resource::net::PacketPayload,
@@ -364,24 +399,8 @@ impl MdnsService {
         ttl: u8,
         current_time: u64,
     ) -> MdnsResult {
-        match payload {
-            kernel_api::resource::net::PacketPayload::Single(packet) => {
-                self.process_packet(packet.data(), src_ip, ttl, current_time)
-            }
-            kernel_api::resource::net::PacketPayload::Chain(_) => {
-                let view = crate::net::payload::PacketPayloadView::new(payload);
-                let total_len = view.total_len();
-                let Some(mut packet) =
-                    crate::net::payload::alloc_packet_with_headroom(total_len, 0)
-                else {
-                    return MdnsResult::InvalidPacket;
-                };
-                if view.copy_all_into(&mut packet.data_mut()[..total_len]) != total_len {
-                    return MdnsResult::InvalidPacket;
-                }
-                self.process_packet(packet.data(), src_ip, ttl, current_time)
-            }
-        }
+        let view = PacketPayloadView::new(payload);
+        self.process_packet_view(&view, src_ip, ttl, current_time)
     }
 
     /// mDNSクエリを処理
@@ -454,6 +473,73 @@ impl MdnsService {
         MdnsResult::Ignored
     }
 
+    fn process_query_view(
+        &mut self,
+        view: &PacketPayloadView<'_>,
+        qdcount: u16,
+        _src_ip: Ipv4Address,
+        current_time: u64,
+    ) -> MdnsResult {
+        let mut offset = DNS_HEADER_SIZE;
+        let our_fqdn = self.fqdn();
+
+        for _ in 0..qdcount {
+            let (name, new_offset) = match decode_dns_name_view(view, offset) {
+                Some(result) => result,
+                None => return MdnsResult::InvalidPacket,
+            };
+            offset = new_offset;
+
+            if offset + 4 > view.total_len() {
+                return MdnsResult::InvalidPacket;
+            }
+
+            let qtype = match view.read_array::<2>(offset) {
+                Some(bytes) => u16::from_be_bytes(bytes),
+                None => return MdnsResult::InvalidPacket,
+            };
+            let qclass = match view.read_array::<2>(offset + 2) {
+                Some(bytes) => u16::from_be_bytes(bytes),
+                None => return MdnsResult::InvalidPacket,
+            };
+            offset += 4;
+
+            let qclass_masked = qclass & 0x7FFF;
+            if qtype == DNS_TYPE_A && qclass_masked == DNS_CLASS_IN && names_equal(&name, &our_fqdn)
+            {
+                const MAX_PENDING_REPORTS: usize = 32;
+                if self.pending_reports.len() < MAX_PENDING_REPORTS {
+                    if !self
+                        .pending_reports
+                        .iter()
+                        .any(|r| r.name == our_fqdn && r.is_response)
+                    {
+                        self.pending_reports.push(MdnsReport {
+                            name: our_fqdn.clone(),
+                            ip: Some(self.local_ip),
+                            ttl: MDNS_DEFAULT_TTL,
+                            is_response: true,
+                            timestamp: current_time,
+                        });
+                    }
+                } else {
+                    log::warn!(
+                        "[NET] mDNS: Too many pending reports - dropping response for {}",
+                        our_fqdn
+                    );
+                }
+
+                return MdnsResult::SendResponse {
+                    name: our_fqdn,
+                    ip: self.local_ip,
+                    ttl: MDNS_DEFAULT_TTL,
+                };
+            }
+        }
+
+        MdnsResult::Ignored
+    }
+
     /// 単一のDNS応答レコードを処理し、Aレコードなら解決結果を返す
     fn try_process_dns_answer(
         &mut self,
@@ -471,6 +557,29 @@ impl MdnsService {
         }
         let rdata = &data[record.4..record.4 + record.2];
         let ip = Ipv4Address::new([rdata[0], rdata[1], rdata[2], rdata[3]]);
+        let name_lower = to_lowercase(&record.5);
+        if !self.cache_a_record(&name_lower, ip, record.6, current_time) {
+            return Ok(None);
+        }
+        Ok(Some((name_lower, ip)))
+    }
+
+    fn try_process_dns_answer_view(
+        &mut self,
+        view: &PacketPayloadView<'_>,
+        offset: &mut usize,
+        current_time: u64,
+    ) -> Result<Option<(String, Ipv4Address)>, ()> {
+        let record = match parse_dns_answer_record_view(view, *offset) {
+            Some(r) => r,
+            None => return Err(()),
+        };
+        *offset = record.3;
+        if !is_inet_a_record(record.0, record.1, record.2) {
+            return Ok(None);
+        }
+        let rdata = view.read_array::<4>(record.4).ok_or(())?;
+        let ip = Ipv4Address::new(rdata);
         let name_lower = to_lowercase(&record.5);
         if !self.cache_a_record(&name_lower, ip, record.6, current_time) {
             return Ok(None);
@@ -499,6 +608,44 @@ impl MdnsService {
                 break;
             }
             match self.try_process_dns_answer(data, &mut offset, current_time) {
+                Err(()) => return MdnsResult::InvalidPacket,
+                Ok(Some((name, ip))) => last_resolved = Some((name, ip)),
+                Ok(None) => {}
+            }
+        }
+
+        match last_resolved {
+            Some((name, ip)) => MdnsResult::Resolved { name, ip },
+            None => {
+                if ancount > 0 {
+                    MdnsResult::CacheUpdated
+                } else {
+                    MdnsResult::Ignored
+                }
+            }
+        }
+    }
+
+    fn process_response_view(
+        &mut self,
+        view: &PacketPayloadView<'_>,
+        ancount: u16,
+        qdcount: u16,
+        _src_ip: Ipv4Address,
+        current_time: u64,
+    ) -> MdnsResult {
+        let mut offset = match skip_dns_questions_view(view, DNS_HEADER_SIZE, qdcount) {
+            Some(o) => o,
+            None => return MdnsResult::InvalidPacket,
+        };
+
+        let mut last_resolved: Option<(String, Ipv4Address)> = None;
+
+        for _ in 0..ancount {
+            if offset >= view.total_len() {
+                break;
+            }
+            match self.try_process_dns_answer_view(view, &mut offset, current_time) {
                 Err(()) => return MdnsResult::InvalidPacket,
                 Ok(Some((name, ip))) => last_resolved = Some((name, ip)),
                 Ok(None) => {}
@@ -836,6 +983,32 @@ fn handle_compression_pointer(
     Some(pointer)
 }
 
+#[inline]
+fn handle_compression_pointer_view(
+    view: &PacketPayloadView<'_>,
+    current: usize,
+    final_offset: &mut usize,
+    jumped: &mut bool,
+    jump_count: &mut usize,
+    max_jumps: usize,
+) -> Option<usize> {
+    let first = view.read_array::<1>(current).map(|bytes| bytes[0])?;
+    let second = view.read_array::<1>(current + 1).map(|bytes| bytes[0])?;
+    if !*jumped {
+        *final_offset = current + 2;
+    }
+    let pointer = ((first as usize & 0x3F) << 8) | second as usize;
+    if pointer >= view.total_len() {
+        return None;
+    }
+    *jump_count += 1;
+    if *jump_count > max_jumps {
+        return None;
+    }
+    *jumped = true;
+    Some(pointer)
+}
+
 /// DNS名をデコードする（圧縮ポインタにも対応）
 ///
 /// # Arguments
@@ -913,6 +1086,75 @@ pub fn decode_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
     Some((name, final_offset))
 }
 
+pub fn decode_dns_name_view(
+    view: &PacketPayloadView<'_>,
+    offset: usize,
+) -> Option<(String, usize)> {
+    let mut name = String::new();
+    let mut current = offset;
+    let mut jumped = false;
+    let mut final_offset = offset;
+    let mut jump_count = 0;
+    let max_jumps = 128;
+
+    loop {
+        if current >= view.total_len() {
+            return None;
+        }
+
+        let len_byte = view.read_array::<1>(current).map(|bytes| bytes[0])?;
+
+        if len_byte == 0 {
+            if !jumped {
+                final_offset = current + 1;
+            }
+            break;
+        }
+
+        if len_byte & DNS_COMPRESSION_MASK == DNS_COMPRESSION_MASK {
+            current = handle_compression_pointer_view(
+                view,
+                current,
+                &mut final_offset,
+                &mut jumped,
+                &mut jump_count,
+                max_jumps,
+            )?;
+            continue;
+        }
+
+        let label_len = len_byte as usize;
+        if label_len > DNS_LABEL_MAX_LEN {
+            return None;
+        }
+        current += 1;
+
+        if current + label_len > view.total_len() {
+            return None;
+        }
+
+        if !name.is_empty() {
+            name.push('.');
+        }
+
+        if name.len() + label_len > DNS_NAME_MAX_LEN {
+            return None;
+        }
+
+        let mut label = [0u8; DNS_LABEL_MAX_LEN];
+        if view.copy_range(current, &mut label[..label_len]) != label_len {
+            return None;
+        }
+        for &byte in &label[..label_len] {
+            name.push(byte as char);
+        }
+
+        current += label_len;
+    }
+
+    Some((name, final_offset))
+}
+
 /// mDNSマルチキャストMACアドレスを取得
 ///
 /// mDNSマルチキャストグループ 224.0.0.251 に対応するイーサネット
@@ -951,6 +1193,22 @@ fn skip_dns_questions(data: &[u8], mut offset: usize, qdcount: u16) -> Option<us
     Some(offset)
 }
 
+fn skip_dns_questions_view(
+    view: &PacketPayloadView<'_>,
+    mut offset: usize,
+    qdcount: u16,
+) -> Option<usize> {
+    for _ in 0..qdcount {
+        let (_, new_offset) = decode_dns_name_view(view, offset)?;
+        offset = new_offset;
+        if offset + 4 > view.total_len() {
+            return None;
+        }
+        offset += 4;
+    }
+    Some(offset)
+}
+
 /// DNS応答レコードをパースする
 /// 返り値: (rtype, rclass_masked, rdlength, next_offset, rdata_start, name, ttl)
 fn parse_dns_answer_record(
@@ -976,6 +1234,41 @@ fn parse_dns_answer_record(
     offset += 10;
 
     if offset + rdlength > data.len() {
+        return None;
+    }
+
+    let rdata_start = offset;
+    let rclass_masked = rclass & 0x7FFF;
+
+    Some((
+        rtype,
+        rclass_masked,
+        rdlength,
+        offset + rdlength,
+        rdata_start,
+        name,
+        ttl,
+    ))
+}
+
+fn parse_dns_answer_record_view(
+    view: &PacketPayloadView<'_>,
+    offset: usize,
+) -> Option<(u16, u16, usize, usize, usize, String, u32)> {
+    let (name, new_offset) = decode_dns_name_view(view, offset)?;
+    let mut offset = new_offset;
+
+    if offset + 10 > view.total_len() {
+        return None;
+    }
+
+    let rtype = u16::from_be_bytes(view.read_array::<2>(offset)?);
+    let rclass = u16::from_be_bytes(view.read_array::<2>(offset + 2)?);
+    let ttl = u32::from_be_bytes(view.read_array::<4>(offset + 4)?);
+    let rdlength = u16::from_be_bytes(view.read_array::<2>(offset + 8)?) as usize;
+    offset += 10;
+
+    if offset + rdlength > view.total_len() {
         return None;
     }
 
