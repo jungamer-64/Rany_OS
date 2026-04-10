@@ -340,6 +340,15 @@ pub struct DnsSrvRecord {
     pub target: DnsNameView,
 }
 
+/// MX resolve API の出力型。
+#[derive(Debug, Clone)]
+pub struct DnsMxRecord {
+    /// 優先度（小さいほど優先）
+    pub preference: u16,
+    /// 交換サーバー名
+    pub exchange: DnsNameView,
+}
+
 /// DNS 応答 view。
 #[derive(Debug, Clone)]
 pub struct DnsResponseView {

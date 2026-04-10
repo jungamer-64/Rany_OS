@@ -411,6 +411,15 @@ pub fn test_ptr_ipv4_query_name() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_ptr_ipv6_query_name() {
+    let ip = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    assert_eq!(
+        DnsClient::ptr_ipv6_query_name(ip).as_str(),
+        "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa"
+    );
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_resolve_txt_from_records_filters_name() {
     let client = DnsClient::new(100);
     let records = vec![
@@ -433,6 +442,23 @@ pub fn test_resolve_txt_from_records_filters_name() {
     let txt = client.resolve_txt_from_records(&records, "example.com");
     assert_eq!(txt.len(), 1);
     assert_eq!(txt[0].to_owned_string(), "v=spf1 -all");
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_resolve_mx_from_records_returns_structs() {
+    let client = DnsClient::new(100);
+    let records = vec![DnsRecordMeta {
+        name: dns_name_view("example.com"),
+        rtype: DnsRecordType::Known(DnsQueryType::MX),
+        rclass: DnsQueryClass::IN,
+        ttl: 120,
+        data: DnsRecordData::MX(10, dns_name_view("mail.example.com")),
+    }];
+
+    let mx = client.resolve_mx_from_records(&records, "example.com");
+    assert_eq!(mx.len(), 1);
+    assert_eq!(mx[0].preference, 10);
+    assert_eq!(mx[0].exchange.to_owned_string(), "mail.example.com");
 }
 
 #[cfg_attr(test, test_case)]
@@ -486,5 +512,36 @@ pub fn test_resolve_ptr_from_records_follows_cname_chain() {
     let resolved = client
         .resolve_ptr_from_records(&records, query)
         .expect("ptr should resolve");
+    assert_eq!(resolved.to_owned_string(), host);
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_resolve_ptr_ipv6_from_records_follows_cname_chain() {
+    let client = DnsClient::new(100);
+    let ip = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let query = DnsClient::ptr_ipv6_query_name(ip);
+    let alias = "ptr6-alias.example.com";
+    let host = "host6.example.com";
+
+    let records = vec![
+        DnsRecordMeta {
+            name: dns_name_view(query.as_str()),
+            rtype: DnsRecordType::Known(DnsQueryType::CNAME),
+            rclass: DnsQueryClass::IN,
+            ttl: 60,
+            data: DnsRecordData::Name(dns_name_view(alias)),
+        },
+        DnsRecordMeta {
+            name: dns_name_view(alias),
+            rtype: DnsRecordType::Known(DnsQueryType::PTR),
+            rclass: DnsQueryClass::IN,
+            ttl: 60,
+            data: DnsRecordData::Name(dns_name_view(host)),
+        },
+    ];
+
+    let resolved = client
+        .resolve_ptr_from_records(&records, query.as_str())
+        .expect("ptr6 should resolve");
     assert_eq!(resolved.to_owned_string(), host);
 }

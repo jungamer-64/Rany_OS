@@ -1122,6 +1122,42 @@ impl NetNamespace {
         }
     }
 
+    /// DNS MX レコード解決
+    ///
+    /// usage: net.dns_mx("example.com")
+    pub async fn dns_resolve_mx(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let hostname = match args.first() {
+            Some(ExoValue::String(s)) => s.as_ref(),
+            _ => {
+                return ExoValue::Error(String::from(
+                    "usage: net.dns_mx(hostname)\n例: net.dns_mx(\"example.com\")",
+                ));
+            }
+        };
+
+        match crate::net::services::dns::resolve_mx(hostname).await {
+            Some(records) if !records.is_empty() => {
+                let values: Vec<ExoValue> = records
+                    .into_iter()
+                    .map(|record| {
+                        let mut map = BTreeMap::new();
+                        map.insert(
+                            String::from("preference"),
+                            ExoValue::Int(i64::from(record.preference)),
+                        );
+                        map.insert(
+                            String::from("exchange"),
+                            ExoValue::String(Cow::Owned(record.exchange.to_owned_string())),
+                        );
+                        ExoValue::Map(map)
+                    })
+                    .collect();
+                ExoValue::Array(values)
+            }
+            _ => ExoValue::Error(format!("DNS MX resolution failed for '{}'", hostname)),
+        }
+    }
+
     /// DNS SRV レコード解決
     ///
     /// usage: net.dns_srv("_service._tcp.example.com")
@@ -1187,6 +1223,33 @@ impl NetNamespace {
         match crate::net::services::dns::resolve_ptr_ipv4(ip).await {
             Some(name) => ExoValue::String(Cow::Owned(name.to_owned_string())),
             None => ExoValue::Error(String::from("DNS PTR resolution failed")),
+        }
+    }
+
+    /// DNS PTR 逆引き (IPv6)
+    ///
+    /// usage: net.dns_ptr6("2001:db8::1")
+    pub async fn dns_reverse_ipv6(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let ip = match args.first() {
+            Some(value) => match Self::parse_ipv6_arg(value) {
+                Ok(octets) => crate::net::l3::ipv6::Ipv6Address::new(octets),
+                Err(err) => {
+                    return ExoValue::Error(format!(
+                        "usage: net.dns_ptr6(ipv6)\n例: net.dns_ptr6(\"2001:db8::1\")\nerror: {}",
+                        err
+                    ));
+                }
+            },
+            None => {
+                return ExoValue::Error(String::from(
+                    "usage: net.dns_ptr6(ipv6)\n例: net.dns_ptr6(\"2001:db8::1\")",
+                ));
+            }
+        };
+
+        match crate::net::services::dns::resolve_ptr_ipv6(ip).await {
+            Some(name) => ExoValue::String(Cow::Owned(name.to_owned_string())),
+            None => ExoValue::Error(String::from("DNS PTR6 resolution failed")),
         }
     }
 
@@ -1318,6 +1381,73 @@ impl NetNamespace {
         }
     }
 
+    /// ExoValueからIPv6アドレスをパースするヘルパー
+    fn parse_ipv6_arg(val: &ExoValue<'_>) -> Result<[u8; 16], String> {
+        fn parse_hextets(part: &str, original: &str) -> Result<Vec<u16>, String> {
+            if part.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let mut out = Vec::new();
+            for segment in part.split(':') {
+                if segment.is_empty() || segment.contains('.') || segment.len() > 4 {
+                    return Err(format!("invalid IPv6: '{}'", original));
+                }
+                let word = u16::from_str_radix(segment, 16)
+                    .map_err(|_| format!("invalid IPv6: '{}'", original))?;
+                out.push(word);
+            }
+            Ok(out)
+        }
+
+        let s = match val {
+            ExoValue::String(s) => s.trim(),
+            _ => return Err(String::from("IPv6 address must be a string")),
+        };
+        if s.is_empty() {
+            return Err(String::from("invalid IPv6: empty"));
+        }
+
+        let mut double_colon_split = s.split("::");
+        let left_part = double_colon_split.next().unwrap_or_default();
+        let right_part = double_colon_split.next();
+        if double_colon_split.next().is_some() {
+            return Err(format!("invalid IPv6: '{}'", s));
+        }
+
+        let left = parse_hextets(left_part, s)?;
+        let words: Vec<u16> = if let Some(right_part) = right_part {
+            let right = parse_hextets(right_part, s)?;
+            if left.len() + right.len() >= 8 {
+                return Err(format!("invalid IPv6: '{}'", s));
+            }
+            let mut out = Vec::with_capacity(8);
+            out.extend_from_slice(&left);
+            for _ in 0..(8 - left.len() - right.len()) {
+                out.push(0);
+            }
+            out.extend_from_slice(&right);
+            out
+        } else {
+            if left.len() != 8 {
+                return Err(format!("invalid IPv6: '{}'", s));
+            }
+            left
+        };
+
+        if words.len() != 8 {
+            return Err(format!("invalid IPv6: '{}'", s));
+        }
+
+        let mut octets = [0u8; 16];
+        for (i, word) in words.iter().enumerate() {
+            let bytes = word.to_be_bytes();
+            octets[i * 2] = bytes[0];
+            octets[i * 2 + 1] = bytes[1];
+        }
+        Ok(octets)
+    }
+
     /// 非同期版 handle_open: イベントキュー経由で UDP bind を実行
     async fn handle_open(_args: &[ExoValue<'static>]) -> ExoValue<'static> {
         let port = match _args.get(0) {
@@ -1423,8 +1553,10 @@ impl ShellNamespace for NetNamespace {
                 "dns" | "resolve" | "dns4" => Self::dns_resolve(_args).await,
                 "dns6" => Self::dns_resolve_ipv6(_args).await,
                 "dns_txt" => Self::dns_resolve_txt(_args).await,
+                "dns_mx" => Self::dns_resolve_mx(_args).await,
                 "dns_srv" => Self::dns_resolve_srv(_args).await,
                 "dns_ptr" => Self::dns_reverse_ipv4(_args).await,
+                "dns_ptr6" => Self::dns_reverse_ipv6(_args).await,
                 // 診断
                 "snapshot" => Self::snapshot().await,
                 "events" => Self::events(_args).await,
@@ -1436,7 +1568,7 @@ impl ShellNamespace for NetNamespace {
                      routes, route_add, route_del,\n  \
                      firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
                      firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
-                     dns/dns4/resolve, dns6, dns_txt, dns_srv, dns_ptr,\n  \
+                     dns/dns4/resolve, dns6, dns_txt, dns_mx, dns_srv, dns_ptr, dns_ptr6,\n  \
                      snapshot, events,\n  \
                      dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
                     method

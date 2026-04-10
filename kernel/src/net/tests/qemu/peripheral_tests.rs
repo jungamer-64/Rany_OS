@@ -330,6 +330,10 @@ pub fn dns_build_tcp_query_payload_smoke() -> bool {
     run_case!(dns::tests::test_build_tcp_query_payload)
 }
 
+pub fn dns_build_query_with_edns0_smoke() -> bool {
+    run_case!(dns::tests::test_build_query_with_edns0)
+}
+
 pub fn dns_needs_tcp_fallback_truncated_smoke() -> bool {
     run_case!(dns::tests::test_needs_tcp_fallback_truncated)
 }
@@ -346,6 +350,30 @@ pub fn dns_tcp_message_length_smoke() -> bool {
     run_case!(dns::tests::test_tcp_message_length)
 }
 
+pub fn dns_parse_aaaa_record_smoke() -> bool {
+    run_case!(dns::tests::test_parse_aaaa_record)
+}
+
+pub fn dns_parse_response_rejects_unexpected_transaction_id_smoke() -> bool {
+    run_case!(dns::tests::test_parse_response_rejects_unexpected_transaction_id)
+}
+
+pub fn dns_parse_response_rejects_question_mismatch_smoke() -> bool {
+    run_case!(dns::tests::test_parse_response_rejects_question_mismatch)
+}
+
+pub fn dns_cache_entry_ttl_boundary_smoke() -> bool {
+    run_case!(dns::tests::test_cache_entry_ttl_boundary)
+}
+
+pub fn dns_cname_chain_extracts_final_a_smoke() -> bool {
+    run_case!(dns::tests::test_cname_chain_extracts_final_a)
+}
+
+pub fn dns_cname_chain_extracts_final_aaaa_smoke() -> bool {
+    run_case!(dns::tests::test_cname_chain_extracts_final_aaaa)
+}
+
 pub fn dns_parse_response_preserves_unknown_rtype_smoke() -> bool {
     run_case!(dns::tests::test_parse_response_preserves_unknown_rtype)
 }
@@ -358,8 +386,16 @@ pub fn dns_ptr_ipv4_query_name_smoke() -> bool {
     run_case!(dns::tests::test_ptr_ipv4_query_name)
 }
 
+pub fn dns_ptr_ipv6_query_name_smoke() -> bool {
+    run_case!(dns::tests::test_ptr_ipv6_query_name)
+}
+
 pub fn dns_resolve_txt_from_records_filters_name_smoke() -> bool {
     run_case!(dns::tests::test_resolve_txt_from_records_filters_name)
+}
+
+pub fn dns_resolve_mx_from_records_returns_structs_smoke() -> bool {
+    run_case!(dns::tests::test_resolve_mx_from_records_returns_structs)
 }
 
 pub fn dns_resolve_srv_from_records_returns_structs_smoke() -> bool {
@@ -368,6 +404,10 @@ pub fn dns_resolve_srv_from_records_returns_structs_smoke() -> bool {
 
 pub fn dns_resolve_ptr_from_records_follows_cname_chain_smoke() -> bool {
     run_case!(dns::tests::test_resolve_ptr_from_records_follows_cname_chain)
+}
+
+pub fn dns_resolve_ptr_ipv6_from_records_follows_cname_chain_smoke() -> bool {
+    run_case!(dns::tests::test_resolve_ptr_ipv6_from_records_follows_cname_chain)
 }
 
 pub fn mdns_constants_smoke() -> bool {

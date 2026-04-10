@@ -109,6 +109,10 @@ pub fn net_peripheral_dns_build_tcp_query_payload_smoke() -> bool {
     crate::net::qemu_tests::dns_build_tcp_query_payload_smoke()
 }
 
+pub fn net_peripheral_dns_build_query_with_edns0_smoke() -> bool {
+    crate::net::qemu_tests::dns_build_query_with_edns0_smoke()
+}
+
 pub fn net_peripheral_dns_needs_tcp_fallback_truncated_smoke() -> bool {
     crate::net::qemu_tests::dns_needs_tcp_fallback_truncated_smoke()
 }
@@ -123,6 +127,66 @@ pub fn net_peripheral_dns_needs_tcp_fallback_normal_smoke() -> bool {
 
 pub fn net_peripheral_dns_tcp_message_length_smoke() -> bool {
     crate::net::qemu_tests::dns_tcp_message_length_smoke()
+}
+
+pub fn net_peripheral_dns_parse_aaaa_record_smoke() -> bool {
+    crate::net::qemu_tests::dns_parse_aaaa_record_smoke()
+}
+
+pub fn net_peripheral_dns_parse_response_rejects_unexpected_transaction_id_smoke() -> bool {
+    crate::net::qemu_tests::dns_parse_response_rejects_unexpected_transaction_id_smoke()
+}
+
+pub fn net_peripheral_dns_parse_response_rejects_question_mismatch_smoke() -> bool {
+    crate::net::qemu_tests::dns_parse_response_rejects_question_mismatch_smoke()
+}
+
+pub fn net_peripheral_dns_cache_entry_ttl_boundary_smoke() -> bool {
+    crate::net::qemu_tests::dns_cache_entry_ttl_boundary_smoke()
+}
+
+pub fn net_peripheral_dns_cname_chain_extracts_final_a_smoke() -> bool {
+    crate::net::qemu_tests::dns_cname_chain_extracts_final_a_smoke()
+}
+
+pub fn net_peripheral_dns_cname_chain_extracts_final_aaaa_smoke() -> bool {
+    crate::net::qemu_tests::dns_cname_chain_extracts_final_aaaa_smoke()
+}
+
+pub fn net_peripheral_dns_parse_response_preserves_unknown_rtype_smoke() -> bool {
+    crate::net::qemu_tests::dns_parse_response_preserves_unknown_rtype_smoke()
+}
+
+pub fn net_peripheral_dns_build_prioritized_server_list_ipv4_then_ipv6_smoke() -> bool {
+    crate::net::qemu_tests::dns_build_prioritized_server_list_ipv4_then_ipv6_smoke()
+}
+
+pub fn net_peripheral_dns_ptr_ipv4_query_name_smoke() -> bool {
+    crate::net::qemu_tests::dns_ptr_ipv4_query_name_smoke()
+}
+
+pub fn net_peripheral_dns_ptr_ipv6_query_name_smoke() -> bool {
+    crate::net::qemu_tests::dns_ptr_ipv6_query_name_smoke()
+}
+
+pub fn net_peripheral_dns_resolve_txt_from_records_filters_name_smoke() -> bool {
+    crate::net::qemu_tests::dns_resolve_txt_from_records_filters_name_smoke()
+}
+
+pub fn net_peripheral_dns_resolve_mx_from_records_returns_structs_smoke() -> bool {
+    crate::net::qemu_tests::dns_resolve_mx_from_records_returns_structs_smoke()
+}
+
+pub fn net_peripheral_dns_resolve_srv_from_records_returns_structs_smoke() -> bool {
+    crate::net::qemu_tests::dns_resolve_srv_from_records_returns_structs_smoke()
+}
+
+pub fn net_peripheral_dns_resolve_ptr_from_records_follows_cname_chain_smoke() -> bool {
+    crate::net::qemu_tests::dns_resolve_ptr_from_records_follows_cname_chain_smoke()
+}
+
+pub fn net_peripheral_dns_resolve_ptr_ipv6_from_records_follows_cname_chain_smoke() -> bool {
+    crate::net::qemu_tests::dns_resolve_ptr_ipv6_from_records_follows_cname_chain_smoke()
 }
 
 pub fn net_peripheral_mdns_constants_smoke() -> bool {

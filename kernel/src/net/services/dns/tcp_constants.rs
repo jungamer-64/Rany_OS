@@ -123,6 +123,16 @@ pub async fn resolve_srv(name: &str) -> Option<Vec<DnsSrvRecord>> {
     client.resolve_srv(name).await
 }
 
+/// 非同期でMXレコードを解決 (Global API)
+pub async fn resolve_mx(name: &str) -> Option<Vec<DnsMxRecord>> {
+    let client = match super::shared_client_lock().lock() {
+        Ok(g) => g.as_ref().cloned(),
+        Err(_) => None,
+    }?;
+
+    client.resolve_mx(name).await
+}
+
 /// 非同期でIPv4逆引き（PTR）を解決 (Global API)
 pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<DnsNameView> {
     let client = match super::shared_client_lock().lock() {
@@ -131,6 +141,16 @@ pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<DnsNameView> {
     }?;
 
     client.resolve_ptr_ipv4(ip).await
+}
+
+/// 非同期でIPv6逆引き（PTR）を解決 (Global API)
+pub async fn resolve_ptr_ipv6(ip: Ipv6Address) -> Option<DnsNameView> {
+    let client = match super::shared_client_lock().lock() {
+        Ok(g) => g.as_ref().cloned(),
+        Err(_) => None,
+    }?;
+
+    client.resolve_ptr_ipv6(ip).await
 }
 
 /// Build a DNS query for TCP transport (global API)

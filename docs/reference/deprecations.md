@@ -215,7 +215,7 @@ This document lists deprecated symbols and recent removals that still matter for
 
 - `kernel/src/net/services/dns/mod.rs`
   - `client()` ❌ **removed**
-    - Migration: Use high-level DNS helpers such as `init()`, `set_ipv4_servers()`, `set_ipv6_servers()`, `resolve_ipv4()`, `build_tcp_query_payload()`, and `cleanup_cache()` instead of locking the singleton directly.
+    - Migration: Use high-level DNS helpers such as `init()`, `set_ipv4_servers()`, `set_ipv6_servers()`, `resolve_ipv4()`, `resolve_mx()`, `resolve_ptr_ipv6()`, `build_tcp_query_payload()`, and `cleanup_cache()` instead of locking the singleton directly.
   - `DnsRecordData::Raw(Vec<u8>)` ❌ **removed**
     - Migration: Use `DnsRecordData::Raw(PayloadSpan)` and explicitly materialize bytes only at the call site that actually needs them.
   - byte-slice DNS response parsers (`parse_response(&[u8], ...)`, `parse_tcp_response(&[u8], ...)`) ❌ **removed**

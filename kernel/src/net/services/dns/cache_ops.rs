@@ -144,6 +144,32 @@ impl DnsClient {
         (!records.is_empty()).then_some(records)
     }
 
+    /// 非同期でMXレコードを解決
+    pub async fn resolve_mx(&self, name: &str) -> Option<Vec<DnsMxRecord>> {
+        let tick = crate::task::current_tick();
+        let key = name.to_ascii_lowercase();
+
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(entry) = cache.lookup(&key, tick) {
+                if entry.negative {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+
+                let cached = self.resolve_mx_from_records(&entry.records, name);
+                if !cached.is_empty() {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(cached);
+                }
+            }
+        }
+        self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let response = self.query_internal(name, DnsQueryType::MX).await.ok()?;
+        let records = self.resolve_mx_from_records(&response.records, name);
+        (!records.is_empty()).then_some(records)
+    }
+
     /// 非同期でSRVレコードを解決
     pub async fn resolve_srv(&self, name: &str) -> Option<Vec<DnsSrvRecord>> {
         let tick = crate::task::current_tick();
@@ -173,6 +199,34 @@ impl DnsClient {
     /// 非同期でIPv4アドレスの逆引き（PTR）を解決
     pub async fn resolve_ptr_ipv4(&self, ip: Ipv4Address) -> Option<DnsNameView> {
         let query_name = Self::ptr_ipv4_query_name(ip);
+        let tick = crate::task::current_tick();
+        let key = query_name.to_ascii_lowercase();
+
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(entry) = cache.lookup(&key, tick) {
+                if entry.negative {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+
+                if let Some(cached) = self.resolve_ptr_from_records(&entry.records, &query_name) {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(cached);
+                }
+            }
+        }
+        self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let response = self
+            .query_internal(&query_name, DnsQueryType::PTR)
+            .await
+            .ok()?;
+        self.resolve_ptr_from_records(&response.records, &query_name)
+    }
+
+    /// 非同期でIPv6アドレスの逆引き（PTR）を解決
+    pub async fn resolve_ptr_ipv6(&self, ip: Ipv6Address) -> Option<DnsNameView> {
+        let query_name = Self::ptr_ipv6_query_name(ip);
         let tick = crate::task::current_tick();
         let key = query_name.to_ascii_lowercase();
 
@@ -301,6 +355,29 @@ impl DnsClient {
             .collect()
     }
 
+    fn resolve_mx_from_records(
+        &self,
+        records: &[DnsRecordMeta],
+        query_name: &str,
+    ) -> Vec<DnsMxRecord> {
+        records
+            .iter()
+            .filter(|record| {
+                record.rtype.is(DnsQueryType::MX) && record.name.eq_ignore_ascii_case(query_name)
+            })
+            .filter_map(|record| {
+                if let DnsRecordData::MX(preference, exchange) = &record.data {
+                    Some(DnsMxRecord {
+                        preference: *preference,
+                        exchange: exchange.clone(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     fn resolve_srv_from_records(
         &self,
         records: &[DnsRecordMeta],
@@ -373,6 +450,26 @@ impl DnsClient {
             octets[1],
             octets[0]
         )
+    }
+
+    fn hex_nibble(value: u8) -> char {
+        match value & 0x0f {
+            0..=9 => (b'0' + (value & 0x0f)) as char,
+            _ => (b'a' + ((value & 0x0f) - 10)) as char,
+        }
+    }
+
+    pub(super) fn ptr_ipv6_query_name(ip: Ipv6Address) -> String {
+        let octets = ip.octets();
+        let mut out = String::with_capacity(32 * 2 + "ip6.arpa".len());
+        for byte in octets.iter().rev() {
+            out.push(Self::hex_nibble(*byte));
+            out.push('.');
+            out.push(Self::hex_nibble(*byte >> 4));
+            out.push('.');
+        }
+        out.push_str("ip6.arpa");
+        out
     }
 
     pub(super) fn resolve_ipv4_from_records(

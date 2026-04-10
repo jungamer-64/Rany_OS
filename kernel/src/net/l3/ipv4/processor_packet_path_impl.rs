@@ -42,7 +42,7 @@ impl Ipv4Processor {
                 return Ipv4ProcessResult::Dropped;
             }
 
-            if fragment_offset == 1 {
+            if fragment_offset == 1 && protocol == IpProtocol::Tcp {
                 log::warn!("[NET-IPV4] Dropping suspicious fragment (FO=1) - RFC 1858 violation");
                 self.stats.rx_errors += 1;
                 return Ipv4ProcessResult::Dropped;

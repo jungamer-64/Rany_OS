@@ -156,8 +156,10 @@ impl ExoShell {
         net.resolve("host")   - Alias for dns()
         net.dns6("hostname")  - Resolve hostname to IPv6 (AAAA)
         net.dns_txt("host")   - Resolve TXT records
+        net.dns_mx("host")    - Resolve MX records
         net.dns_srv("name")   - Resolve SRV records
         net.dns_ptr("ipv4")   - Reverse lookup (PTR)
+        net.dns_ptr6("ipv6")  - Reverse lookup (PTR6)
     net.snapshot()        - Full network diagnostic snapshot
     net.events(limit?)    - Recent network events (default: 20)
 
