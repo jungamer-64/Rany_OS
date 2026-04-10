@@ -197,7 +197,7 @@ impl RetransmitQueue {
             seg.is_retransmit = true;
             self.rto_calc.backoff();
 
-            return Some(seg.data.clone());
+            return seg.data.slice(0, seg.data.total_len());
         }
         None
     }

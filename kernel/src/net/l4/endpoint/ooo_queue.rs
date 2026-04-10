@@ -161,7 +161,7 @@ impl ConnectionOooQueue {
     /// rcv_nxtから連続するデータをドレイン
     fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> (u32, bool)
     where
-        F: FnMut(u32, PacketPayload) -> usize,
+        F: FnMut(u32, PacketPayload) -> (usize, Option<PacketPayload>),
     {
         self.prune_outdated(rcv_nxt);
         let mut fin_encountered = false;
@@ -171,25 +171,25 @@ impl ConnectionOooQueue {
             // Find segment starting at rcv_nxt
             let pos = self.segments.iter().position(|(s, _)| *s == rcv_nxt);
             if let Some(i) = pos {
-                let (_, mut payload) = self.segments.remove(i);
+                let (_, payload) = self.segments.remove(i);
                 GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                 let payload_len = payload.total_len();
-                let pushed = f(rcv_nxt, payload.clone()).min(payload_len);
+                let (pushed, remainder) = f(rcv_nxt, payload);
+                let pushed = pushed.min(payload_len);
                 if pushed < payload_len {
                     if pushed > 0 {
-                        if payload.consume_prefix(pushed) != pushed {
-                            break;
-                        }
                         rcv_nxt = rcv_nxt.wrapping_add(pushed as u32);
                     }
 
-                    let pos = self
-                        .segments
-                        .iter()
-                        .position(|(s, _)| seq_before(rcv_nxt, *s))
-                        .unwrap_or(self.segments.len());
-                    self.segments.insert(pos, (rcv_nxt, payload));
-                    GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if let Some(remainder) = remainder {
+                        let pos = self
+                            .segments
+                            .iter()
+                            .position(|(s, _)| seq_before(rcv_nxt, *s))
+                            .unwrap_or(self.segments.len());
+                        self.segments.insert(pos, (rcv_nxt, remainder));
+                        GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
+                    }
                     break;
                 }
                 rcv_nxt = rcv_nxt.wrapping_add(payload_len as u32);
@@ -391,7 +391,7 @@ pub fn drain_ooo_contiguous<F>(
     f: F,
 ) -> (u32, bool)
 where
-    F: FnMut(u32, PacketPayload) -> usize,
+    F: FnMut(u32, PacketPayload) -> (usize, Option<PacketPayload>),
 {
     let idx = ooo_shard_index(&local, &remote);
     let Ok(mut guard) = OOO_SHARDS[idx].lock() else {

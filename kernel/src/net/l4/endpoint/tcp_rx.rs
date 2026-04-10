@@ -989,7 +989,7 @@ fn handle_data_received_with_delayed_ack(
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
         if payload_len > 0 {
-            let pushed = socket.push_payload(data_payload.clone());
+            let (pushed, _remainder) = socket.push_payload_with_remainder(data_payload);
             new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
 
             // RFC 1122: If some data could not be accepted, we MUST NOT advance
@@ -1012,7 +1012,7 @@ fn handle_data_received_with_delayed_ack(
             tcb.local,
             tcb.remote,
             new_rcv_nxt,
-            |_, seg_payload| socket.push_payload(seg_payload),
+            |_, seg_payload| socket.push_payload_with_remainder(seg_payload),
         );
         new_rcv_nxt = drained_nxt;
         if ooo_fin || (payload_len == 0 && fin) {

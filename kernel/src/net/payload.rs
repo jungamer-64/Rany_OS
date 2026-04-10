@@ -25,14 +25,15 @@ impl PayloadSpan {
         }
     }
 
-    pub fn from_range(payload: PacketPayload, offset: usize, len: usize) -> Option<Self> {
+    pub fn from_range(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
         let total_len = payload.total_len();
         if offset > total_len || len > total_len.saturating_sub(offset) {
             return None;
         }
+        let payload = payload_range(payload, offset, len)?;
         Some(Self {
             payload,
-            offset,
+            offset: 0,
             len,
         })
     }
@@ -61,7 +62,7 @@ impl PayloadSpan {
         if offset > self.len || len > self.len.saturating_sub(offset) {
             return None;
         }
-        Self::from_range(self.payload.clone(), self.offset + offset, len)
+        Self::from_range(&self.payload, self.offset + offset, len)
     }
 
     pub fn byte_at(&self, index: usize) -> Option<u8> {
@@ -204,11 +205,8 @@ impl PayloadSpan {
             end -= 1;
         }
 
-        Self {
-            payload: self.payload.clone(),
-            offset: self.offset + start,
-            len: end - start,
-        }
+        Self::from_range(&self.payload, self.offset + start, end - start)
+            .unwrap_or_else(|| Self::from_payload(PacketPayload::default()))
     }
 }
 

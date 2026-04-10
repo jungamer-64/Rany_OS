@@ -40,6 +40,59 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    fn notify_tcb_data_received(
+        local: Option<EndpointAddr>,
+        remote: Option<EndpointAddr>,
+        pushed: usize,
+    ) {
+        if pushed == 0 {
+            return;
+        }
+
+        if let (Some(local), Some(remote)) = (local, remote) {
+            let _ = crate::net::l4::endpoint::tcb::tcb_table().lookup_mut(local, remote, |tcb| {
+                tcb.on_data_received(pushed as u32);
+            });
+        }
+    }
+
+    fn split_and_queue_payload(
+        inner: &mut EndpointInner,
+        payload: PacketPayload,
+    ) -> (usize, Option<PacketPayload>) {
+        let available = inner
+            .recv_buffer_limit
+            .saturating_sub(inner.recv_payload_bytes());
+        if available == 0 {
+            return (0, Some(payload));
+        }
+
+        let payload_len = payload.total_len();
+        let (queued, remainder) = if payload_len > available {
+            let Some(queued) = payload.slice(0, available) else {
+                return (0, Some(payload));
+            };
+            (
+                queued,
+                payload.slice(available, payload_len.saturating_sub(available)),
+            )
+        } else {
+            (payload, None)
+        };
+
+        let pushed = queued.total_len();
+        if pushed > 0 {
+            let tcp = inner.ensure_tcp();
+            tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_add(pushed);
+            tcp.recv_payload_queue.push_back(queued);
+            while matches!(tcp.recv_payload_queue.front(), Some(payload) if payload.is_empty()) {
+                tcp.recv_payload_queue.pop_front();
+            }
+        }
+
+        (pushed, remainder)
+    }
+
     /// 指定ランタイムの新規エンドポイント作成
     pub fn new_in(endpoint_type: EndpointType, runtime: NetRuntimeHandle) -> Self {
         let fd = EndpointFd::from_raw(NEXT_FD.fetch_add(1, Ordering::Relaxed));
@@ -214,20 +267,42 @@ impl Endpoint {
             (pushed, local, remote, inner.recv_waker.take())
         };
 
-        if pushed > 0 {
-            if let (Some(local), Some(remote)) = (local, remote) {
-                let _ =
-                    crate::net::l4::endpoint::tcb::tcb_table().lookup_mut(local, remote, |tcb| {
-                        tcb.on_data_received(pushed as u32);
-                    });
-            }
-        }
+        Self::notify_tcb_data_received(local, remote, pushed);
 
         // ロック外でWakerを起こす（デッドロック回避）
         if let Some(w) = waker {
             w.wake();
         }
         pushed
+    }
+
+    /// 受信バッファへ追加し、未受理データ（あれば）を返す。
+    ///
+    /// OOOドレイン時に `clone()` を避けるため、
+    /// 受理分はキューへ移送し、未受理分のみ `PacketPayload` として返却する。
+    pub fn push_payload_with_remainder(
+        &self,
+        payload: PacketPayload,
+    ) -> (usize, Option<PacketPayload>) {
+        let (pushed, remainder, local, remote, waker) = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let (pushed, remainder) = Self::split_and_queue_payload(&mut inner, payload);
+            (
+                pushed,
+                remainder,
+                inner.local_addr,
+                inner.remote_addr,
+                inner.recv_waker.take(),
+            )
+        };
+
+        Self::notify_tcb_data_received(local, remote, pushed);
+
+        if let Some(w) = waker {
+            w.wake();
+        }
+
+        (pushed, remainder)
     }
 
     /// UDPパケット追加（ゼロコピー内部キュー優先）

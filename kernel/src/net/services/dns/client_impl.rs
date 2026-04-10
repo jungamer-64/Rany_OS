@@ -11,7 +11,7 @@ impl DnsClient {
         len: usize,
     ) -> DnsRecordData {
         DnsRecordData::Raw(
-            PayloadSpan::from_range(payload.clone(), offset, len).unwrap_or_else(|| {
+            PayloadSpan::from_range(payload, offset, len).unwrap_or_else(|| {
                 PayloadSpan::from_payload(kernel_api::resource::net::PacketPayload::default())
             }),
         )
@@ -674,7 +674,7 @@ impl DnsClient {
                 return Err(DnsResponseCode::FormatError);
             }
 
-            let label = PayloadSpan::from_range(payload.clone(), offset + 1, len as usize)
+            let label = PayloadSpan::from_range(payload, offset + 1, len as usize)
                 .ok_or(DnsResponseCode::FormatError)?;
             labels.push(label);
             offset += 1 + len as usize;
@@ -868,8 +868,7 @@ impl DnsClient {
             if offset + txt_len > rdlength {
                 return self.raw_record_span(payload, rdata_offset, rdlength);
             }
-            let Some(label) =
-                PayloadSpan::from_range(payload.clone(), rdata_offset + offset, txt_len)
+            let Some(label) = PayloadSpan::from_range(payload, rdata_offset + offset, txt_len)
             else {
                 return self.raw_record_span(payload, rdata_offset, rdlength);
             };
