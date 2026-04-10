@@ -142,6 +142,7 @@ std = ["hal/std"]
 graphic_types = { path = "../libs/graphic_types", features = ["alloc"] }
 boot_proto = { path = "../libs/boot_proto" }
 spin = "0.10"
+creusot-contracts = "0.8.0"
 
 # ============================================================================
 # ブートイメージ設定
