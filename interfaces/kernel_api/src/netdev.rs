@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-use crate::resource::net::PacketRef;
+use crate::resource::net::{PacketPayload, PacketRef};
 use crate::service::kernel;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -151,7 +151,7 @@ pub trait NetDevicePort: Send + Sync {
         Ok(())
     }
 
-    fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str>;
+    fn submit_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> Result<(), &'static str>;
 
     fn set_interrupts_enabled(&self, _enabled: bool) -> Result<(), &'static str> {
         Ok(())
@@ -228,7 +228,7 @@ mod tests {
             Ok(())
         }
 
-        fn submit_tx(&self, _packet: PacketRef, _meta: NetTxMeta) -> Result<(), &'static str> {
+        fn submit_tx(&self, _payload: PacketPayload, _meta: NetTxMeta) -> Result<(), &'static str> {
             Ok(())
         }
 

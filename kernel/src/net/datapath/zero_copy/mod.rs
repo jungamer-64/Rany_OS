@@ -1066,7 +1066,7 @@ impl ZeroCopyWriter {
     ) -> Result<(), &'static str> {
         if crate::net::runtime::device::transmit_packet(
             None,
-            packet,
+            kernel_api::resource::net::PacketPayload::single(packet),
             kernel_api::service::netdev::NetTxMeta::default(),
         ) {
             Ok(())

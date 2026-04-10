@@ -48,11 +48,11 @@ impl NetworkStack {
         };
 
         if payload.total_len() <= unfragmented_payload_limit {
+            let header_len = EthernetHeader::SIZE + IPV6_HEADER_SIZE;
             let mut packet = self
-                .alloc_ethernet_frame_packet(
-                    EthernetHeader::SIZE + IPV6_HEADER_SIZE + payload.total_len(),
-                )
+                .alloc_ethernet_frame_packet(header_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            packet.set_len(header_len);
             let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             };
@@ -70,24 +70,15 @@ impl NetworkStack {
             ip_packet.set_destination(&dst);
             ip_packet.set_next_header(next_header);
             ip_packet.set_hop_limit(hop_limit);
-
-            let payload_buf = ip_packet.payload_mut();
-            if payload_buf.len() < payload.total_len() {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
-            let payload_len = payload.total_len();
-            if payload.copy_range(0, &mut payload_buf[..payload_len]) != payload_len {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
-            ip_packet.finalize(payload_len);
-
-            let total_len = IPV6_HEADER_SIZE + payload_len;
-            frame.set_payload_len(total_len);
+            ip_packet.finalize(payload.total_len());
+            frame.set_payload_len(IPV6_HEADER_SIZE);
             let frame_len = frame.as_bytes().len();
             drop(frame);
             packet.set_len(frame_len);
 
-            if self.transmit_packet_on(if_id, packet) {
+            let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
+            crate::net::payload::append_payload(&mut frame_payload, payload.payload().clone());
+            if self.transmit_packet_on(if_id, frame_payload) {
                 return Ok(());
             }
             return Err(crate::net::types::NetworkError::TransmitFailed);
@@ -117,11 +108,11 @@ impl NetworkStack {
             }
 
             let fragment_payload_len = 8 + fragment_data_len;
+            let header_len = EthernetHeader::SIZE + IPV6_HEADER_SIZE + 8;
             let mut packet = self
-                .alloc_ethernet_frame_packet(
-                    EthernetHeader::SIZE + IPV6_HEADER_SIZE + fragment_payload_len,
-                )
+                .alloc_ethernet_frame_packet(header_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            packet.set_len(header_len);
             let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             };
@@ -141,7 +132,7 @@ impl NetworkStack {
             ip_packet.set_hop_limit(hop_limit);
 
             let payload_buf = ip_packet.payload_mut();
-            if payload_buf.len() < fragment_payload_len {
+            if payload_buf.len() < 8 {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
 
@@ -152,20 +143,19 @@ impl NetworkStack {
             let offset_and_flags = (fragment_offset_units << 3) | u16::from(more_fragments);
             payload_buf[2..4].copy_from_slice(&offset_and_flags.to_be_bytes());
             payload_buf[4..8].copy_from_slice(&identification.to_be_bytes());
-            if payload.copy_range(offset, &mut payload_buf[8..8 + fragment_data_len])
-                != fragment_data_len
-            {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
             ip_packet.finalize(fragment_payload_len);
 
-            let total_len = IPV6_HEADER_SIZE + fragment_payload_len;
-            frame.set_payload_len(total_len);
+            frame.set_payload_len(IPV6_HEADER_SIZE + 8);
             let frame_len = frame.as_bytes().len();
             drop(frame);
             packet.set_len(frame_len);
 
-            if !self.transmit_packet_on(if_id, packet) {
+            let fragment_payload =
+                crate::net::payload::payload_range(payload.payload(), offset, fragment_data_len)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
+            crate::net::payload::append_payload(&mut frame_payload, fragment_payload);
+            if !self.transmit_packet_on(if_id, frame_payload) {
                 return Err(crate::net::types::NetworkError::TransmitFailed);
             }
 
@@ -420,7 +410,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet_on(None, packet);
+                    self.transmit_packet_on(
+                        None,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -518,7 +511,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    let _ = self.transmit_packet_on(resolved_if, packet);
+                    let _ = self.transmit_packet_on(
+                        resolved_if,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -573,7 +569,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet_on(None, packet);
+                    self.transmit_packet_on(
+                        None,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -624,7 +623,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet_on(Some(if_id), packet);
+                    self.transmit_packet_on(
+                        Some(if_id),
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -1034,7 +1036,10 @@ impl NetworkStack {
                         let frame_len = frame.as_bytes().len();
                         drop(frame);
                         packet.set_len(frame_len);
-                        let _ = self.transmit_packet_on(None, packet);
+                        let _ = self.transmit_packet_on(
+                            None,
+                            kernel_api::resource::net::PacketPayload::single(packet),
+                        );
                     }
                 }
             }
@@ -1113,7 +1118,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    let _ = self.transmit_packet_on(None, packet);
+                    let _ = self.transmit_packet_on(
+                        None,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }

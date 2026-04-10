@@ -309,7 +309,10 @@ impl NetworkStack {
         let frame_len = frame.as_bytes().len();
         drop(frame);
         packet.set_len(frame_len);
-        if self.transmit_packet_on(if_id, packet) {
+        if self.transmit_packet_on(
+            if_id,
+            kernel_api::resource::net::PacketPayload::single(packet),
+        ) {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -445,7 +448,10 @@ impl NetworkStack {
         let frame_len = frame.as_bytes().len();
         drop(frame);
         packet.set_len(frame_len);
-        if self.transmit_packet_on(if_id, packet) {
+        if self.transmit_packet_on(
+            if_id,
+            kernel_api::resource::net::PacketPayload::single(packet),
+        ) {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -583,11 +589,15 @@ impl NetworkStack {
         result
     }
 
-    pub fn transmit_packet_on(&self, if_id: Option<NetIfId>, packet: PacketRef) -> bool {
+    pub fn transmit_packet_on(
+        &self,
+        if_id: Option<NetIfId>,
+        payload: kernel_api::resource::net::PacketPayload,
+    ) -> bool {
         if let Some(f) = self.transmit_fn {
             let meta = self.pending_tx_meta.unwrap_or_default();
-            let packet_len = packet.len();
-            if f(if_id, packet, meta) {
+            let packet_len = kernel_api::resource::net::PacketPayload::total_len(&payload);
+            if f(if_id, payload, meta) {
                 if !self.transmit_awaits_device_completion
                     && meta.completion_policy
                         == kernel_api::service::netdev::NetTxCompletionPolicy::DeviceCompletion
@@ -696,7 +706,10 @@ impl NetworkStack {
             drop(frame);
             packet.set_len(frame_len);
 
-            if self.transmit_packet_on(if_id, packet) {
+            if self.transmit_packet_on(
+                if_id,
+                kernel_api::resource::net::PacketPayload::single(packet),
+            ) {
                 return Ok(());
             }
             return Err(crate::net::types::NetworkError::TransmitFailed);
@@ -771,7 +784,10 @@ impl NetworkStack {
             drop(frame);
             packet.set_len(frame_len);
 
-            if !self.transmit_packet_on(if_id, packet) {
+            if !self.transmit_packet_on(
+                if_id,
+                kernel_api::resource::net::PacketPayload::single(packet),
+            ) {
                 return Err(crate::net::types::NetworkError::TransmitFailed);
             }
 

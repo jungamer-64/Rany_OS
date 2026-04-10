@@ -311,9 +311,10 @@ submit_payload(payload).await?;
 - `RAW endpoint` は packet ownership exchange を直接露出する正規面です。
 - TCP は connection semantics を持ちますが、core の fast path は packet-backed payload queue を中心に整理します。
 - UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先します。
-- DNS は `DnsNameView` / `DnsTxtView` / `PayloadSpan` を使う packet-backed parser と cache を正規面にします。
+- DNS は `DnsResponseView { payload, records }` を基準に、`DnsNameView` / `DnsTxtView` / `PayloadSpan` を使う packet-backed parser と cache を正規面にします。
 - IPv4 / IPv6 の timeout, unknown-protocol, fragment reassembly, quoted packet は packet-backed payload を前提に整理します。
 - IPv6 TX / fragment reassembly / quoted packet は scatter-gather と packet-backed payload を前提に整理します。
+- runtime / device / driver の TX callback も `PacketPayload` を正規送信単位とし、single-packet 専用 surface を正規面にしません。
 
 > [!IMPORTANT]
 > TCP を含む全経路で packet-backed payload を end-to-end に維持することは

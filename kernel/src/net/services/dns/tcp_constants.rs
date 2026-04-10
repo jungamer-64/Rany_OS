@@ -105,7 +105,7 @@ pub fn parse_tcp_response_payload(
     current_tick: u64,
     expected_name: &str,
     expected_type: DnsQueryType,
-) -> Result<Vec<DnsRecord>, DnsResponseCode> {
+) -> Result<DnsResponseView, DnsResponseCode> {
     match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {

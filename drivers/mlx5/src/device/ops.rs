@@ -146,13 +146,12 @@ impl Mlx5Device {
         Ok(())
     }
 
-    /// パケットを送信
-    pub unsafe fn transmit(
+    /// 単一または少数 segment の packet を送信
+    pub unsafe fn transmit_segments(
         &mut self,
         sq_index: usize,
-        data_phys: u64,
-        data_virt: u64,
-        data_len: u32,
+        segments: &[crate::wq::DmaSegment],
+        total_len: u32,
         inline_hdr: &[u8],
         options: crate::wq::TxOptions,
     ) -> Mlx5Result<u16> {
@@ -164,6 +163,26 @@ impl Mlx5Device {
             .get_mut(sq_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
 
+        let inline_len = core::cmp::min(inline_hdr.len(), total_len as usize) as u32;
+        let payload_len = total_len.saturating_sub(inline_len);
+        if payload_len == 0 || segments.is_empty() {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+
+        sq.post_send(segments, inline_hdr, options)
+            .ok_or(Mlx5Error::NoResources)
+    }
+
+    /// パケットを送信
+    pub unsafe fn transmit(
+        &mut self,
+        sq_index: usize,
+        data_phys: u64,
+        data_virt: u64,
+        data_len: u32,
+        inline_hdr: &[u8],
+        options: crate::wq::TxOptions,
+    ) -> Mlx5Result<u16> {
         let inline_len = core::cmp::min(inline_hdr.len(), data_len as usize) as u32;
         let payload_len = data_len.saturating_sub(inline_len);
         if payload_len == 0 {
@@ -175,9 +194,7 @@ impl Mlx5Device {
             virt_addr: data_virt + inline_len as u64,
             len: payload_len,
         }];
-
-        sq.post_send(&segments, inline_hdr, options)
-            .ok_or(Mlx5Error::NoResources)
+        self.transmit_segments(sq_index, &segments, data_len, inline_hdr, options)
     }
 
     /// 受信バッファを投入

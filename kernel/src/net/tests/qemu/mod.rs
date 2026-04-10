@@ -30,14 +30,14 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::v
 
 fn qemu_stack_record_tx_if(
     if_id: Option<crate::net::runtime::manager::NetIfId>,
-    packet: crate::net::datapath::mempool::PacketRef,
+    payload: kernel_api::resource::net::PacketPayload,
     _meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
     let mut guard = QEMU_STACK_LAST_TX_IF
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     *guard = if_id;
-    QEMU_STACK_LAST_TX_LEN.store(packet.len(), Ordering::Release);
+    QEMU_STACK_LAST_TX_LEN.store(payload.total_len(), Ordering::Release);
     true
 }
 

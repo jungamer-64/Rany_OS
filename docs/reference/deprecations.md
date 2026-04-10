@@ -220,6 +220,10 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use `parse_response_payload(&payload, ...)` and `parse_tcp_response_payload(&payload, ...)`.
   - owned-string DNS record variants (`DnsRecord.name: String`, `DnsRecordData::Name(String)`, `DnsRecordData::TXT(String)`, `DnsRecordData::MX(_, String)`, `DnsRecordData::SRV { target: String, .. }`) ❌ **removed**
     - Migration: Use `DnsNameView`, `DnsTxtView`, and `PayloadSpan`-backed record data. Materialize `String` only at the outermost consumer that needs text.
+  - `Vec<DnsRecord>` response/cache ownership (`parse_* -> Vec<DnsRecord>`, `DnsCacheEntry.records-only` cache entries) ❌ **removed**
+    - Migration: Use `DnsResponseView { payload, records }` and cache response payload ownership alongside record metadata.
+  - `PacketRef`-only TX callback / queue / driver submit path (`TransmitFn`, runtime device queue, `NetDevicePort::submit_tx(PacketRef, ...)`) ❌ **removed**
+    - Migration: Use `PacketPayload` as the canonical TX unit. Single-segment frames should pass `PacketPayload::single(packet)`; scatter-gather send paths should forward `PacketPayload::Chain` unchanged.
 
 - `kernel/src/io/iommu/runtime/command/queue.rs`
   - `CommandQueue::submit_sync()` ❌ **removed**

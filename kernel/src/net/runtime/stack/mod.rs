@@ -167,7 +167,7 @@ impl NetworkStats {
 /// The callback should return `true` if the packet was successfully queued
 /// for transmission; `false` indicates failure and will usually result in the
 /// stack dropping the packet and recording an error statistic.
-pub type TransmitFn = fn(Option<NetIfId>, PacketRef, NetTxMeta) -> bool;
+pub type TransmitFn = fn(Option<NetIfId>, PacketPayload, NetTxMeta) -> bool;
 
 // ICMP Redirect Cache Entry (map-backed)
 //

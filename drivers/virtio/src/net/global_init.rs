@@ -10,7 +10,7 @@ use kernel_api::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
     NetPortStats, NetTxMeta,
 };
-use kernel_api::resource::net::PacketRef;
+use kernel_api::resource::net::PacketPayload;
 
 const VIRTIO_PORT_ID_BASE: u64 = 0x0001_0000;
 
@@ -162,7 +162,10 @@ impl NetDevicePort for VirtioNetDriverAdapter {
         }
     }
 
-    fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str> {
+    fn submit_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> Result<(), &'static str> {
+        let PacketPayload::Single(packet) = payload else {
+            return Err("VirtIO-Net TX requires single-segment payload");
+        };
         with_virtio_net_at_index(self.index, |device| {
             device
                 .enqueue_send_zero_copy(packet, meta)

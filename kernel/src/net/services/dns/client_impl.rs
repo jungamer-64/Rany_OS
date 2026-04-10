@@ -130,10 +130,10 @@ impl DnsClient {
         }
 
         // 2. キャッシュになければネットワーククエリを実行
-        let records = self.query_internal(name, DnsQueryType::A).await.ok()?;
+        let response = self.query_internal(name, DnsQueryType::A).await.ok()?;
 
         // Security: 結果を名前でフィルタリング (RFC 5452)
-        for record in records {
+        for record in response.records {
             if record.name.eq_ignore_ascii_case(name) {
                 if let DnsRecordData::A(ip) = record.data {
                     return Some(ip);
@@ -163,10 +163,10 @@ impl DnsClient {
         }
 
         // 2. キャッシュになければネットワーククエリを実行
-        let records = self.query_internal(name, DnsQueryType::AAAA).await.ok()?;
+        let response = self.query_internal(name, DnsQueryType::AAAA).await.ok()?;
 
         // Security: 結果を名前でフィルタリング (RFC 5452)
-        for record in records {
+        for record in response.records {
             if record.name.eq_ignore_ascii_case(name) {
                 if let DnsRecordData::AAAA(ip) = record.data {
                     return Some(ip);
@@ -181,7 +181,7 @@ impl DnsClient {
         &self,
         name: &str,
         qtype: DnsQueryType,
-    ) -> Result<Vec<DnsRecord>, &'static str> {
+    ) -> Result<DnsResponseView, &'static str> {
         let tick = crate::task::current_tick();
         let server = self
             .primary_ipv4_server()
@@ -244,7 +244,7 @@ impl DnsClient {
         server: Ipv4Address,
         name: &str,
         qtype: DnsQueryType,
-    ) -> Result<Vec<DnsRecord>, &'static str> {
+    ) -> Result<DnsResponseView, &'static str> {
         async fn read_exact_payload(
             connection: &mut crate::net::l4::tcp::TcpConnection,
             stash: &mut kernel_api::resource::net::PacketPayload,
@@ -422,30 +422,28 @@ impl DnsClient {
     }
 
     /// DNSレコードをキャッシュに追加する
-    pub(super) fn cache_dns_records(&self, records: &[DnsRecord], current_tick: u64) {
-        if records.is_empty() {
+    pub(super) fn cache_dns_response(
+        &self,
+        name: &str,
+        response: &DnsResponseView,
+        current_tick: u64,
+    ) {
+        if response.records.is_empty() {
             return;
         }
 
         match self.cache.lock() {
             Ok(mut cache) => {
-                // 各レコードを個別にキャッシュに追加する
-                // 同じ名前を持つレコードはグループ化して一つのエントリにする
-                let mut groups: BTreeMap<String, Vec<DnsRecord>> = BTreeMap::new();
-                for record in records {
-                    groups
-                        .entry(record.name.to_lowercase_string())
-                        .or_insert_with(Vec::new)
-                        .push(record.clone());
-                }
-
-                for (name, group_records) in groups {
-                    cache.insert(name, group_records, current_tick);
-                }
+                cache.insert(
+                    name.to_ascii_lowercase(),
+                    response.payload.clone(),
+                    response.records.clone(),
+                    current_tick,
+                );
             }
             Err(_) => {
                 log::error!(
-                    "[NET] DNS Cache lock poisoned (cache_dns_records) - skipping cache insert"
+                    "[NET] DNS Cache lock poisoned (cache_dns_response) - skipping cache insert"
                 )
             }
         }
@@ -457,7 +455,7 @@ impl DnsClient {
         current_tick: u64,
         expected_name: &str,
         expected_type: DnsQueryType,
-    ) -> Option<Result<Vec<DnsRecord>, DnsResponseCode>> {
+    ) -> Option<Result<DnsResponseView, DnsResponseCode>> {
         if self.needs_tcp_fallback_payload(payload) {
             None
         } else {
@@ -491,7 +489,7 @@ impl DnsClient {
         current_tick: u64,
         expected_name: &str,
         expected_type: DnsQueryType,
-    ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
+    ) -> Result<DnsResponseView, DnsResponseCode> {
         let view = crate::net::payload::PacketPayloadView::new(payload);
         if view.total_len() < DnsHeader::SIZE {
             return Err(DnsResponseCode::FormatError);
@@ -616,9 +614,19 @@ impl DnsClient {
             .responses_received
             .fetch_add(1, Ordering::Relaxed);
         if !filter_cache_records.is_empty() {
-            self.cache_dns_records(&filter_cache_records, current_tick);
+            self.cache_dns_response(
+                expected_name,
+                &DnsResponseView {
+                    payload: payload.clone(),
+                    records: filter_cache_records,
+                },
+                current_tick,
+            );
         }
-        Ok(records)
+        Ok(DnsResponseView {
+            payload: payload.clone(),
+            records,
+        })
     }
 
     fn parse_name_payload(
@@ -715,7 +723,7 @@ impl DnsClient {
         view: &crate::net::payload::PacketPayloadView<'_>,
         offset: &mut usize,
         acount: usize,
-    ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
+    ) -> Result<Vec<DnsRecordMeta>, DnsResponseCode> {
         let mut records = Vec::new();
         for _ in 0..acount {
             if *offset >= view.total_len() {
@@ -752,7 +760,7 @@ impl DnsClient {
             if records.len() < DNS_MAX_ANSWER_COUNT {
                 let record_data =
                     self.parse_record_data_payload(payload, view, rtype, rdlength, *offset);
-                records.push(DnsRecord {
+                records.push(DnsRecordMeta {
                     name,
                     rtype: DnsQueryType::from_u16(rtype).unwrap_or(DnsQueryType::A),
                     rclass: if rclass == 1 {
@@ -934,7 +942,7 @@ impl DnsClient {
         current_tick: u64,
         expected_name: &str,
         expected_type: DnsQueryType,
-    ) -> Result<Vec<DnsRecord>, DnsResponseCode> {
+    ) -> Result<DnsResponseView, DnsResponseCode> {
         let view = crate::net::payload::PacketPayloadView::new(payload);
         if view.total_len() < 2 {
             return Err(DnsResponseCode::FormatError);

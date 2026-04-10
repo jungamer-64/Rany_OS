@@ -52,7 +52,7 @@ pub mod tests {
             if let Some(ref mut stack) = *guard {
                 stack.set_transmit_fn(
                     |_if_id,
-                     _packet: crate::net::datapath::mempool::PacketRef,
+                     _payload: kernel_api::resource::net::PacketPayload,
                      _meta: kernel_api::service::netdev::NetTxMeta| true,
                 );
             }

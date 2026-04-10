@@ -93,7 +93,10 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 packet.set_len(frame_len);
-                self.transmit_packet_on(None, packet);
+                self.transmit_packet_on(
+                    None,
+                    kernel_api::resource::net::PacketPayload::single(packet),
+                );
             }
         }
     }
@@ -122,7 +125,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet_on(Some(if_id), packet);
+                    self.transmit_packet_on(
+                        Some(if_id),
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -150,7 +156,10 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 packet.set_len(frame_len);
-                self.transmit_packet_on(None, packet);
+                self.transmit_packet_on(
+                    None,
+                    kernel_api::resource::net::PacketPayload::single(packet),
+                );
             }
         }
     }
@@ -184,7 +193,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet_on(Some(if_id), packet);
+                    self.transmit_packet_on(
+                        Some(if_id),
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -218,7 +230,10 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 packet.set_len(frame_len);
-                if self.transmit_packet_on(None, packet) {
+                if self.transmit_packet_on(
+                    None,
+                    kernel_api::resource::net::PacketPayload::single(packet),
+                ) {
                     // Mark request as sent only when TX succeeded.
                     self.arp.request_sent(target_ip, current_time);
                     log::info!(
@@ -269,7 +284,10 @@ impl NetworkStack {
         };
 
         packet.set_len(packet_len);
-        if self.transmit_packet_on(Some(if_id), packet) {
+        if self.transmit_packet_on(
+            Some(if_id),
+            kernel_api::resource::net::PacketPayload::single(packet),
+        ) {
             self.mark_arp_request_sent_on_interface(if_id, target_ip, current_time);
         }
         Some(())
@@ -340,7 +358,10 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 packet.set_len(frame_len);
-                if self.transmit_packet_on(None, packet) {
+                if self.transmit_packet_on(
+                    None,
+                    kernel_api::resource::net::PacketPayload::single(packet),
+                ) {
                     self.arp.request_sent(target_ip, current_time);
                     log::info!("[NET-ARP] ARP probe sent for {}", target_ip);
                 }

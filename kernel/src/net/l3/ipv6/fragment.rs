@@ -30,7 +30,6 @@ use alloc::vec::Vec;
 use super::Ipv6Address;
 use super::Ipv6ReassemblyError;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::PacketPayloadBuilder;
 use kernel_api::resource::net::{PacketChain, PacketPayload};
 
 // =====================================================
@@ -304,19 +303,10 @@ impl Ipv6FragmentBuffer {
                 );
                 return Err(Ipv6ReassemblyError::IncompleteHeaderChain);
             }
-            let header_packet = if let Some(mut packet) = unfragmentable_packet {
-                packet.set_len(unfragmentable.len());
-                packet
-            } else {
-                let mut builder = PacketPayloadBuilder::new();
-                builder
-                    .push_bytes(unfragmentable)
-                    .ok_or(Ipv6ReassemblyError::InvalidSize)?;
-                match builder.build() {
-                    PacketPayload::Single(packet) => packet,
-                    _ => return Err(Ipv6ReassemblyError::InvalidSize),
-                }
+            let Some(mut header_packet) = unfragmentable_packet else {
+                return Err(Ipv6ReassemblyError::InvalidSize);
             };
+            header_packet.set_len(unfragmentable.len());
             self.unfragmentable_part = Some(header_packet);
 
             // Store the 8-byte fragment header for ICMPv6 error messages (RFC 8200)
@@ -336,15 +326,10 @@ impl Ipv6FragmentBuffer {
         }
 
         if payload_len > 0 {
-            let payload_segment = if let Some(packet) = payload_packet {
-                PacketPayload::single(packet)
-            } else {
-                let mut builder = PacketPayloadBuilder::new();
-                builder
-                    .push_bytes(payload)
-                    .ok_or(Ipv6ReassemblyError::InvalidSize)?;
-                builder.build()
+            let Some(packet) = payload_packet else {
+                return Err(Ipv6ReassemblyError::InvalidSize);
             };
+            let payload_segment = PacketPayload::single(packet);
             self.segments.push(FragmentSegment {
                 offset,
                 payload: payload_segment,

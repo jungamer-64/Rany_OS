@@ -36,7 +36,8 @@ use crate::sync::PoisonLock;
 use crate::task::interrupt_waker::{InterruptSource, wait_for_interrupt};
 use crate::task::{TimeoutResult, with_timeout};
 
-use kernel_api::resource::net::PacketRef;
+use crate::net::payload::PacketPayloadView;
+use kernel_api::resource::net::{PacketPayload, PacketRef};
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NetDeviceInfo, NetDevicePort,
     NetDriverEvent, NetPortKind, NetPortRuntime, NetPortStats, NetTxMeta,
@@ -80,7 +81,7 @@ struct Mlx5BridgeState {
 
 #[derive(Debug)]
 struct TrackedTxPacket {
-    packet: PacketRef,
+    payload: PacketPayload,
     completion_id: Option<u64>,
 }
 
@@ -555,9 +556,9 @@ impl NetDevicePort for Mlx5NetDriverAdapter {
         }
     }
 
-    fn submit_tx(&self, packet: PacketRef, meta: NetTxMeta) -> Result<(), &'static str> {
+    fn submit_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> Result<(), &'static str> {
         let state = mlx5_state(self.index);
-        if submit_mlx5_tx_packet(&state, packet, meta.completion_id, meta.vlan_tag) {
+        if submit_mlx5_tx_packet(&state, payload, meta.completion_id, meta.vlan_tag) {
             Ok(())
         } else {
             Err("mlx5 TX submission failed")
@@ -758,47 +759,89 @@ inline[{}]",
     layout
 }
 
-fn pad_mlx5_tx_packet_if_needed(state: &Mlx5BridgeState, mut pkt: PacketRef) -> Option<PacketRef> {
+fn pad_mlx5_tx_payload_if_needed(
+    state: &Mlx5BridgeState,
+    payload: PacketPayload,
+) -> Option<PacketPayload> {
     const MIN_ETH_FRAME_LEN: usize = 60;
 
-    if pkt.len() >= MIN_ETH_FRAME_LEN {
-        return Some(pkt);
+    if payload.total_len() >= MIN_ETH_FRAME_LEN {
+        return Some(payload);
     }
 
-    let original_len = pkt.len();
-    if pkt.capacity() >= MIN_ETH_FRAME_LEN {
-        pkt.set_len(MIN_ETH_FRAME_LEN);
-        pkt.data_mut()[original_len..MIN_ETH_FRAME_LEN].fill(0);
-        if state.tx_pad_log_budget.fetch_sub(1, Ordering::Relaxed) > 0 {
-            log::info!(
-                target: "mlx5::bridge",
-                "Padding short TX frame in-place from {} to {} bytes",
-                original_len,
-                MIN_ETH_FRAME_LEN
-            );
-        }
-        return Some(pkt);
-    }
-
-    let meta = *pkt.meta();
+    let pad_len = MIN_ETH_FRAME_LEN.saturating_sub(payload.total_len());
     let mut padded = alloc_mlx5_packet(state)?;
-    if padded.capacity() < MIN_ETH_FRAME_LEN {
+    if padded.capacity() < pad_len {
         return None;
     }
+    padded.set_len(pad_len);
+    padded.data_mut()[..pad_len].fill(0);
 
-    padded.set_len(MIN_ETH_FRAME_LEN);
-    padded.data_mut()[..original_len].copy_from_slice(pkt.data());
-    padded.data_mut()[original_len..MIN_ETH_FRAME_LEN].fill(0);
-    padded.set_meta(meta);
     if state.tx_pad_log_budget.fetch_sub(1, Ordering::Relaxed) > 0 {
         log::info!(
             target: "mlx5::bridge",
-            "Padding short TX frame via DMA bounce buffer from {} to {} bytes",
-            original_len,
+            "Padding short TX frame with {} zero bytes to reach {} bytes",
+            pad_len,
             MIN_ETH_FRAME_LEN
         );
     }
-    Some(padded)
+
+    let mut segments = payload.into_segments();
+    segments.push(padded);
+    Some(if segments.len() == 1 {
+        PacketPayload::single(segments.remove(0))
+    } else {
+        PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
+            segments,
+        ))
+    })
+}
+
+fn payload_uses_device_visible_dma(payload: &PacketPayload) -> bool {
+    payload
+        .segments()
+        .iter()
+        .all(packet_uses_device_visible_dma)
+}
+
+fn payload_inline_header_len(payload: &PacketPayload) -> usize {
+    payload
+        .segments()
+        .first()
+        .map(mlx5_l2_inline_header_len)
+        .unwrap_or(0)
+}
+
+fn payload_preview_bytes(payload: &PacketPayload, limit: usize) -> String {
+    let mut bytes = alloc::vec![0u8; limit.min(payload.total_len())];
+    let copied = PacketPayloadView::new(payload).copy_all_into(&mut bytes);
+    bytes.truncate(copied);
+    format_head_bytes(&bytes, bytes.len())
+}
+
+fn payload_dma_segments(
+    payload: &PacketPayload,
+    inline_hdr_len: usize,
+) -> Option<Vec<mlx5_driver::wq::DmaSegment>> {
+    let mut segments = Vec::new();
+    let mut remaining_inline = inline_hdr_len;
+    for packet in payload.segments() {
+        let data = packet.data();
+        if data.is_empty() {
+            continue;
+        }
+        let skip = remaining_inline.min(data.len());
+        remaining_inline = remaining_inline.saturating_sub(skip);
+        if skip == data.len() {
+            continue;
+        }
+        segments.push(mlx5_driver::wq::DmaSegment {
+            device_addr: packet.device_address() + skip as u64,
+            virt_addr: packet.as_ptr() as u64 + skip as u64,
+            len: (data.len() - skip) as u32,
+        });
+    }
+    (!segments.is_empty()).then_some(segments)
 }
 
 fn packet_uses_device_visible_dma(packet: &PacketRef) -> bool {
@@ -833,16 +876,16 @@ fn mlx5_l2_inline_header_len(packet: &PacketRef) -> usize {
     ETHERNET_HEADER_LEN
 }
 
-fn validate_mlx5_tx_packet(
+fn validate_mlx5_tx_payload(
     state: &Mlx5BridgeState,
-    packet: &PacketRef,
+    payload: &PacketPayload,
 ) -> Result<(), &'static str> {
     if state.dma_device_id.load(Ordering::Acquire) == u64::MAX {
         return Err("mlx5 DMA device unavailable");
     }
 
-    if !packet_uses_device_visible_dma(packet) {
-        return Err("mlx5 TX packet is not backed by device-visible DMA");
+    if !payload_uses_device_visible_dma(payload) {
+        return Err("mlx5 TX payload is not backed by device-visible DMA");
     }
 
     Ok(())
@@ -919,7 +962,7 @@ fn poll_mlx5_tx_cqs(
                         .get(sq_index)
                         .and_then(|queue| queue.get(tracked_idx))
                         .and_then(|slot| slot.as_ref())
-                        .map(|tracked| format_head_bytes(tracked.packet.data(), 48))
+                        .map(|tracked| payload_preview_bytes(&tracked.payload, 48))
                         .unwrap_or_else(|| String::from("--"));
                     log::warn!(
                         target: "mlx5::bridge",
@@ -1070,7 +1113,7 @@ fn submit_startup_mlx5_diag_frame(state: &Arc<Mlx5BridgeState>) {
                         state.as_ref(),
                         device,
                         tx_bufs_guard.as_mut_slice(),
-                        diag_pkt,
+                        PacketPayload::single(diag_pkt),
                         None,
                         None,
                         false,
@@ -1140,17 +1183,17 @@ fn submit_mlx5_tx_packet_on_device(
     state: &Mlx5BridgeState,
     device: &mut Mlx5Device,
     tx_bufs_guard: &mut [Vec<Option<TrackedTxPacket>>],
-    pkt: PacketRef,
+    payload: PacketPayload,
     completion_id: Option<u64>,
     vlan_tag: Option<u16>,
     track_stats: bool,
 ) -> bool {
-    let pkt = match pad_mlx5_tx_packet_if_needed(state, pkt) {
-        Some(pkt) => pkt,
+    let payload = match pad_mlx5_tx_payload_if_needed(state, payload) {
+        Some(payload) => payload,
         None => {
             log::warn!(
                 target: "mlx5::bridge",
-                "Failed to provision padded DMA-safe packet for short mlx5 TX frame"
+                "Failed to provision padded DMA-safe payload for short mlx5 TX frame"
             );
             return false;
         }
@@ -1160,29 +1203,23 @@ fn submit_mlx5_tx_packet_on_device(
         return false;
     }
 
-    if let Err(err) = validate_mlx5_tx_packet(state, &pkt) {
+    if let Err(err) = validate_mlx5_tx_payload(state, &payload) {
         if track_stats {
             state.tx_errors.fetch_add(1, Ordering::Relaxed);
             counters::global().record_error();
         }
         log::warn!(
             target: "mlx5::bridge",
-            "Rejecting mlx5 TX packet before SQ submission: idx={} err={} len={} cap={} headroom={} phys={:#x} device={:#x} dma_device_id={:#x}",
+            "Rejecting mlx5 TX payload before SQ submission: idx={} err={} len={} dma_device_id={:#x}",
             state.index,
             err,
-            pkt.len(),
-            pkt.capacity(),
-            pkt.headroom(),
-            pkt.phys_addr().as_u64(),
-            pkt.device_address(),
+            payload.total_len(),
             state.dma_device_id.load(Ordering::Acquire),
         );
         return false;
     }
 
-    let data_virt = pkt.as_ptr() as u64;
-    let data_device = pkt.device_address();
-    let data_len = pkt.len() as u32;
+    let data_len = payload.total_len() as u32;
 
     let min_inline_mode = device
         .port(0)
@@ -1190,7 +1227,7 @@ fn submit_mlx5_tx_packet_on_device(
         .unwrap_or(0);
     let inline_hdr_len = match min_inline_mode {
         0 => 0,
-        1 => core::cmp::min(pkt.len(), mlx5_l2_inline_header_len(&pkt)),
+        1 => core::cmp::min(payload.total_len(), payload_inline_header_len(&payload)),
         unsupported => {
             log::warn!(
                 target: "mlx5::bridge",
@@ -1200,7 +1237,13 @@ fn submit_mlx5_tx_packet_on_device(
             return false;
         }
     };
-    let inline_hdr = &pkt.data()[..inline_hdr_len];
+    let Some(first_segment) = payload.segments().first() else {
+        return false;
+    };
+    let inline_hdr = &first_segment.data()[..inline_hdr_len.min(first_segment.len())];
+    let Some(segments) = payload_dma_segments(&payload, inline_hdr_len) else {
+        return false;
+    };
 
     let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
     let num_sqs = tx_bufs_guard.len();
@@ -1215,21 +1258,13 @@ fn submit_mlx5_tx_packet_on_device(
     tx_options.l3_cs = false;
     tx_options.l4_cs = false;
 
-    match unsafe {
-        device.transmit(
-            sq_index,
-            data_device,
-            data_virt,
-            data_len,
-            inline_hdr,
-            tx_options,
-        )
-    } {
+    match unsafe { device.transmit_segments(sq_index, &segments, data_len, inline_hdr, tx_options) }
+    {
         Ok(wqe_idx) => {
             let bb_idx = (wqe_idx as u32 % mlx5_driver::defs::MLX5_WQ_DEPTH) as usize * 4;
             if let Some(queue_bufs) = tx_bufs_guard.get_mut(sq_index) {
                 queue_bufs[bb_idx] = Some(TrackedTxPacket {
-                    packet: pkt,
+                    payload,
                     completion_id,
                 });
             }
@@ -1267,7 +1302,7 @@ fn submit_mlx5_tx_packet_on_device(
 
 fn submit_mlx5_tx_packet(
     state: &Arc<Mlx5BridgeState>,
-    pkt: PacketRef,
+    payload: PacketPayload,
     completion_id: Option<u64>,
     vlan_tag: Option<u16>,
 ) -> bool {
@@ -1307,7 +1342,7 @@ fn submit_mlx5_tx_packet(
                         state.as_ref(),
                         device,
                         tx_bufs_guard.as_mut_slice(),
-                        diag_pkt,
+                        PacketPayload::single(diag_pkt),
                         None,
                         None,
                         false,
@@ -1327,7 +1362,7 @@ fn submit_mlx5_tx_packet(
             state.as_ref(),
             device,
             tx_bufs_guard.as_mut_slice(),
-            pkt,
+            payload,
             completion_id,
             vlan_tag,
             true,

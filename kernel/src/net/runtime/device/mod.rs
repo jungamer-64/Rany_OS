@@ -22,7 +22,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use core::task::{Context, Poll};
-use kernel_api::resource::net::PacketRef;
+use kernel_api::resource::net::{PacketPayload, PacketRef};
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
@@ -127,7 +127,7 @@ pub struct NetDeviceBinding {
 
 #[derive(Debug)]
 struct TxRequest {
-    packet: PacketRef,
+    payload: PacketPayload,
     meta: NetTxMeta,
 }
 
@@ -146,8 +146,8 @@ impl NetTxQueue {
         }
     }
 
-    pub fn push(&self, packet: PacketRef, meta: NetTxMeta) -> bool {
-        match self.queue.push(TxRequest { packet, meta }) {
+    pub fn push(&self, payload: PacketPayload, meta: NetTxMeta) -> bool {
+        match self.queue.push(TxRequest { payload, meta }) {
             Ok(()) => {
                 self.waker.wake();
                 true
@@ -492,8 +492,8 @@ impl NetDeviceHandle {
         info
     }
 
-    pub fn enqueue_tx(&self, packet: PacketRef, meta: NetTxMeta) -> bool {
-        self.tx_queue.push(packet, meta)
+    pub fn enqueue_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> bool {
+        self.tx_queue.push(payload, meta)
     }
 
     pub fn enqueue_event(&self, event: NetDriverEvent) -> bool {
@@ -554,7 +554,7 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
 
             let completion_id = request.meta.completion_id;
             let completion_policy = request.meta.completion_policy;
-            if let Err(err) = handle.driver.submit_tx(request.packet, request.meta) {
+            if let Err(err) = handle.driver.submit_tx(request.payload, request.meta) {
                 if let Some(completion_id) = completion_id {
                     let _ = complete_tx_request_in(default_runtime(), completion_id, Err(err));
                 }
@@ -1180,7 +1180,7 @@ pub(crate) fn claim_bound_primary_interface_with_stack_state_in(
     }
 }
 
-pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMeta) -> bool {
+pub fn transmit_packet(if_id: Option<NetIfId>, payload: PacketPayload, meta: NetTxMeta) -> bool {
     let resolved_if = if_id.or_else(|| primary_if_in(default_runtime()));
     let Some(handle) =
         resolved_if.and_then(|resolved_if| lookup_port_in(default_runtime(), resolved_if))
@@ -1194,7 +1194,7 @@ pub fn transmit_packet(if_id: Option<NetIfId>, packet: PacketRef, meta: NetTxMet
         }
         return false;
     };
-    if handle.enqueue_tx(packet, meta) {
+    if handle.enqueue_tx(payload, meta) {
         true
     } else {
         if let Some(completion_id) = meta.completion_id {
@@ -1258,7 +1258,7 @@ pub(crate) fn transmit_bytes_with_meta_internal(
 
     packet.set_len(data.len());
     packet.data_mut()[..data.len()].copy_from_slice(data);
-    if handle.enqueue_tx(packet, meta) {
+    if handle.enqueue_tx(PacketPayload::single(packet), meta) {
         true
     } else {
         if let Some(completion_id) = meta.completion_id {
@@ -1355,7 +1355,7 @@ mod tests {
             Ok(())
         }
 
-        fn submit_tx(&self, _packet: PacketRef, _meta: NetTxMeta) -> Result<(), &'static str> {
+        fn submit_tx(&self, _payload: PacketPayload, _meta: NetTxMeta) -> Result<(), &'static str> {
             Ok(())
         }
 

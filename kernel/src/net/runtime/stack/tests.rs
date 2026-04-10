@@ -97,7 +97,7 @@ async fn send_tcp_for_test(
 
 fn record_test_tx_if(
     if_id: Option<NetIfId>,
-    _packet: crate::net::datapath::mempool::PacketRef,
+    _payload: PacketPayload,
     _meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
     let mut guard = TEST_LAST_TX_IF.lock().unwrap_or_else(|e| e.into_inner());
@@ -107,14 +107,14 @@ fn record_test_tx_if(
 
 fn record_test_tx_frame(
     if_id: Option<NetIfId>,
-    packet: crate::net::datapath::mempool::PacketRef,
+    payload: PacketPayload,
     _meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
     if let Ok(mut guard) = TEST_LAST_TX_IF.lock() {
         *guard = if_id;
     }
     if let Ok(mut frames) = TEST_TX_FRAMES.lock() {
-        frames.push(packet.data().to_vec());
+        frames.push(payload_bytes(&payload));
     }
     true
 }

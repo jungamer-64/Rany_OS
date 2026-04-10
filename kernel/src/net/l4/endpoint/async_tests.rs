@@ -79,7 +79,7 @@ pub fn test_send_payload_future_wakes_on_send() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if: Option<crate::net::runtime::manager::NetIfId>,
-                 _packet: crate::net::datapath::mempool::PacketRef,
+                 _payload: kernel_api::resource::net::PacketPayload,
                  _meta: kernel_api::service::netdev::NetTxMeta| {
                     assert!(_if.is_none());
                     true
@@ -159,7 +159,7 @@ pub fn test_send_payload_future_wakes_on_send_v6() {
         if let Some(ref mut s) = *guard {
             s.set_transmit_fn(
                 |_if: Option<crate::net::runtime::manager::NetIfId>,
-                 _packet: crate::net::datapath::mempool::PacketRef,
+                 _payload: kernel_api::resource::net::PacketPayload,
                  _meta: kernel_api::service::netdev::NetTxMeta| {
                     assert!(_if.is_none());
                     true

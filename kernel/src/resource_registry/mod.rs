@@ -554,9 +554,12 @@ impl NetDevicePort for NetdevPortAdapter {
 
     fn submit_tx(
         &self,
-        packet: kernel_api::resource::net::PacketRef,
+        payload: kernel_api::resource::net::PacketPayload,
         meta: NetTxMeta,
     ) -> Result<(), &'static str> {
+        let kernel_api::resource::net::PacketPayload::Single(packet) = payload else {
+            return Err("standalone netdev ABI only supports single-segment TX payloads");
+        };
         let mut packet = AbiPacketRefRaw::from_packet(packet);
         let abi_meta = AbiNetTxMeta {
             queue_index: meta.queue_index.unwrap_or(0),

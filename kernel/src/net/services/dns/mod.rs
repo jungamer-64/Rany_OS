@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
+use kernel_api::resource::net::PacketPayload;
 
 /// DNSポート
 mod tcp_constants;
@@ -265,9 +266,9 @@ impl DnsTxtView {
     }
 }
 
-/// DNSリソースレコード (解析済み)
+/// DNSリソースレコード metadata。
 #[derive(Debug, Clone)]
-pub struct DnsRecord {
+pub struct DnsRecordMeta {
     /// レコード名
     pub name: DnsNameView,
     /// レコードタイプ
@@ -278,6 +279,15 @@ pub struct DnsRecord {
     pub ttl: u32,
     /// レコードデータ
     pub data: DnsRecordData,
+}
+
+/// DNS 応答 view。
+#[derive(Debug, Clone)]
+pub struct DnsResponseView {
+    /// 応答 payload ownership
+    pub payload: PacketPayload,
+    /// packet-backed レコード metadata
+    pub records: Vec<DnsRecordMeta>,
 }
 
 /// DNSレコードデータ
@@ -307,8 +317,10 @@ pub enum DnsRecordData {
 /// DNSキャッシュエントリ
 #[derive(Debug, Clone)]
 pub struct DnsCacheEntry {
-    /// レコード
-    pub records: Vec<DnsRecord>,
+    /// 応答 payload ownership
+    pub response: PacketPayload,
+    /// packet-backed レコード metadata
+    pub records: Vec<DnsRecordMeta>,
     /// キャッシュ時刻 (tick)
     pub cached_at: u64,
     /// 最小TTL
@@ -354,7 +366,13 @@ impl DnsCache {
     }
 
     /// キャッシュにエントリを追加
-    pub fn insert(&mut self, name: String, records: Vec<DnsRecord>, current_tick: u64) {
+    pub fn insert(
+        &mut self,
+        name: String,
+        response: PacketPayload,
+        records: Vec<DnsRecordMeta>,
+        current_tick: u64,
+    ) {
         // 最小TTLを計算
         let min_ttl = records.iter().map(|r| r.ttl).min().unwrap_or(300); // デフォルト5分
 
@@ -378,6 +396,7 @@ impl DnsCache {
         self.entries.insert(
             name,
             DnsCacheEntry {
+                response,
                 records,
                 cached_at: current_tick,
                 min_ttl,

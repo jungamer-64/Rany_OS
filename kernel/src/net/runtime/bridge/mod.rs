@@ -235,12 +235,12 @@ pub fn register_stack_glue_interface_in(
 
 pub fn transmit_from_stack(
     if_id: Option<NetIfId>,
-    packet: crate::net::datapath::mempool::PacketRef,
+    payload: kernel_api::resource::net::PacketPayload,
     meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
     let resolved_if = if_id.or_else(|| primary_stack_glue_if_in(default_runtime()));
-    let packet_len = packet.len();
-    let sent = device::transmit_packet(if_id, packet, meta);
+    let packet_len = payload.total_len();
+    let sent = device::transmit_packet(if_id, payload, meta);
 
     if sent {
         if let Some(if_id) = resolved_if {
@@ -267,7 +267,7 @@ pub fn send_packet_on_interface(
 ) -> bool {
     transmit_from_stack(
         Some(if_id),
-        packet,
+        kernel_api::resource::net::PacketPayload::single(packet),
         kernel_api::service::netdev::NetTxMeta::default(),
     )
 }

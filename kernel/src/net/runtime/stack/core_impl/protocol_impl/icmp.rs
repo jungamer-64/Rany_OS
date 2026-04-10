@@ -98,7 +98,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    let _ = self.transmit_packet_on(None, packet);
+                    let _ = self.transmit_packet_on(
+                        None,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -260,7 +263,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet_on(None, packet);
+                    self.transmit_packet_on(
+                        None,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -336,7 +342,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    self.transmit_packet_on(None, packet);
+                    self.transmit_packet_on(
+                        None,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -429,7 +438,10 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     packet.set_len(frame_len);
-                    return self.transmit_packet_on(None, packet);
+                    return self.transmit_packet_on(
+                        None,
+                        kernel_api::resource::net::PacketPayload::single(packet),
+                    );
                 }
             }
         }
@@ -821,7 +833,10 @@ impl NetworkStack {
 
         let send_time = self.current_time();
 
-        if self.transmit_packet_on(None, packet) {
+        if self.transmit_packet_on(
+            None,
+            kernel_api::resource::net::PacketPayload::single(packet),
+        ) {
             log::info!("[NET-PING] Sent ICMP echo to {} seq={}", target, sequence);
             Ok(send_time)
         } else {
