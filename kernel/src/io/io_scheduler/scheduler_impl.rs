@@ -283,7 +283,7 @@ impl IoScheduler {
                     IoResult::Error(_) => IoState::Failed,
                 };
                 request.completed_at = Some(current_tick());
-                request.result = Some(result.clone());
+                request.result = Some(result);
 
                 self.report_completion_stats(request, &result);
 
@@ -323,7 +323,7 @@ impl IoScheduler {
             if let Some(request) = requests.get_mut(&id) {
                 if request.state == IoState::Pending {
                     request.state = IoState::Cancelled;
-                    request.result = Some(result.clone());
+                    request.result = Some(result);
                     self.stats
                         .current_queue_depth
                         .fetch_sub(1, Ordering::Relaxed);
@@ -438,7 +438,7 @@ impl IoScheduler {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
-            .and_then(|r| r.result.clone())
+            .and_then(|r| r.result)
     }
 
     /// 完了済みリクエストの結果を取り出して削除
@@ -454,7 +454,7 @@ impl IoScheduler {
             })
             .unwrap_or(false);
         if should_remove {
-            let result = requests.get(&id).and_then(|r| r.result.clone());
+            let result = requests.get(&id).and_then(|r| r.result);
             requests.remove(&id);
             return result;
         }

@@ -373,12 +373,11 @@ impl NetworkStack {
 
         let dst_mac = MacAddress::new(dst_mac);
 
-        let mut packet = match self.alloc_ethernet_frame_packet(
-            EthernetHeader::SIZE + IPV6_HEADER_SIZE + icmpv6_data.total_len(),
-        ) {
-            Some(packet) => packet,
-            None => return,
-        };
+        let mut packet =
+            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE) {
+                Some(packet) => packet,
+                None => return,
+            };
 
         // Build Ethernet frame
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
@@ -397,24 +396,20 @@ impl NetworkStack {
                 ip_packet.set_next_header(IpProtocol::Icmpv6);
                 ip_packet.set_hop_limit(255); // NDP/ICMPv6 uses 255
 
-                // Copy ICMPv6 payload
-                let payload = ip_packet.payload_mut();
                 let payload_len = icmpv6_data.total_len();
-                if payload_len <= payload.len()
-                    && icmpv6_data.copy_range(0, &mut payload[..payload_len]) == payload_len
-                {
-                    ip_packet.finalize(payload_len);
+                ip_packet.finalize(payload_len);
 
-                    let total_len = IPV6_HEADER_SIZE + payload_len;
-                    frame.set_payload_len(total_len);
-                    let frame_len = frame.as_bytes().len();
-                    drop(frame);
-                    packet.set_len(frame_len);
-                    self.transmit_packet_on(
-                        None,
-                        kernel_api::resource::net::PacketPayload::single(packet),
-                    );
-                }
+                frame.set_payload_len(IPV6_HEADER_SIZE);
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+
+                let payload = if payload_len == 0 {
+                    kernel_api::resource::net::PacketPayload::single(packet)
+                } else {
+                    icmpv6_data.payload().clone().prepend(packet)
+                };
+                self.transmit_packet_on(None, payload);
             }
         }
     }
@@ -479,12 +474,11 @@ impl NetworkStack {
             }
         };
 
-        let mut packet = match self.alloc_ethernet_frame_packet(
-            EthernetHeader::SIZE + IPV6_HEADER_SIZE + icmpv6_data.total_len(),
-        ) {
-            Some(packet) => packet,
-            None => return,
-        };
+        let mut packet =
+            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE) {
+                Some(packet) => packet,
+                None => return,
+            };
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
@@ -498,24 +492,20 @@ impl NetworkStack {
                 ip_packet.set_destination(dst);
                 ip_packet.set_next_header(IpProtocol::Icmpv6);
                 ip_packet.set_hop_limit(255);
-
-                let payload = ip_packet.payload_mut();
                 let payload_len = icmpv6_data.total_len();
-                if payload_len <= payload.len()
-                    && icmpv6_data.copy_range(0, &mut payload[..payload_len]) == payload_len
-                {
-                    ip_packet.finalize(payload_len);
+                ip_packet.finalize(payload_len);
 
-                    let total_len = IPV6_HEADER_SIZE + payload_len;
-                    frame.set_payload_len(total_len);
-                    let frame_len = frame.as_bytes().len();
-                    drop(frame);
-                    packet.set_len(frame_len);
-                    let _ = self.transmit_packet_on(
-                        resolved_if,
-                        kernel_api::resource::net::PacketPayload::single(packet),
-                    );
-                }
+                frame.set_payload_len(IPV6_HEADER_SIZE);
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+
+                let payload = if payload_len == 0 {
+                    kernel_api::resource::net::PacketPayload::single(packet)
+                } else {
+                    icmpv6_data.payload().clone().prepend(packet)
+                };
+                let _ = self.transmit_packet_on(resolved_if, payload);
             }
         }
     }
@@ -535,12 +525,11 @@ impl NetworkStack {
         // Multicast MAC resolution (no NDP needed)
         let dst_mac = MacAddress::new(dst.multicast_mac());
 
-        let mut packet = match self.alloc_ethernet_frame_packet(
-            EthernetHeader::SIZE + IPV6_HEADER_SIZE + icmpv6_data.total_len(),
-        ) {
-            Some(packet) => packet,
-            None => return,
-        };
+        let mut packet =
+            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE) {
+                Some(packet) => packet,
+                None => return,
+            };
 
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
@@ -557,23 +546,20 @@ impl NetworkStack {
                 ip_packet.set_next_header(IpProtocol::Icmpv6);
                 ip_packet.set_hop_limit(255);
 
-                let payload = ip_packet.payload_mut();
                 let payload_len = icmpv6_data.total_len();
-                if payload_len <= payload.len()
-                    && icmpv6_data.copy_range(0, &mut payload[..payload_len]) == payload_len
-                {
-                    ip_packet.finalize(payload_len);
+                ip_packet.finalize(payload_len);
 
-                    let total_len = IPV6_HEADER_SIZE + payload_len;
-                    frame.set_payload_len(total_len);
-                    let frame_len = frame.as_bytes().len();
-                    drop(frame);
-                    packet.set_len(frame_len);
-                    self.transmit_packet_on(
-                        None,
-                        kernel_api::resource::net::PacketPayload::single(packet),
-                    );
-                }
+                frame.set_payload_len(IPV6_HEADER_SIZE);
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+
+                let payload = if payload_len == 0 {
+                    kernel_api::resource::net::PacketPayload::single(packet)
+                } else {
+                    icmpv6_data.payload().clone().prepend(packet)
+                };
+                self.transmit_packet_on(None, payload);
             }
         }
     }
@@ -589,12 +575,11 @@ impl NetworkStack {
             .interface_config_or_runtime(if_id)
             .unwrap_or_else(|| self.config());
         let dst_mac = MacAddress::new(dst.multicast_mac());
-        let mut packet = match self.alloc_ethernet_frame_packet(
-            EthernetHeader::SIZE + IPV6_HEADER_SIZE + icmpv6_data.total_len(),
-        ) {
-            Some(packet) => packet,
-            None => return,
-        };
+        let mut packet =
+            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE) {
+                Some(packet) => packet,
+                None => return,
+            };
 
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
@@ -611,23 +596,20 @@ impl NetworkStack {
                 ip_packet.set_next_header(IpProtocol::Icmpv6);
                 ip_packet.set_hop_limit(255);
 
-                let payload = ip_packet.payload_mut();
                 let payload_len = icmpv6_data.total_len();
-                if payload_len <= payload.len()
-                    && icmpv6_data.copy_range(0, &mut payload[..payload_len]) == payload_len
-                {
-                    ip_packet.finalize(payload_len);
+                ip_packet.finalize(payload_len);
 
-                    let total_len = IPV6_HEADER_SIZE + payload_len;
-                    frame.set_payload_len(total_len);
-                    let frame_len = frame.as_bytes().len();
-                    drop(frame);
-                    packet.set_len(frame_len);
-                    self.transmit_packet_on(
-                        Some(if_id),
-                        kernel_api::resource::net::PacketPayload::single(packet),
-                    );
-                }
+                frame.set_payload_len(IPV6_HEADER_SIZE);
+                let frame_len = frame.as_bytes().len();
+                drop(frame);
+                packet.set_len(frame_len);
+
+                let payload = if payload_len == 0 {
+                    kernel_api::resource::net::PacketPayload::single(packet)
+                } else {
+                    icmpv6_data.payload().clone().prepend(packet)
+                };
+                self.transmit_packet_on(Some(if_id), payload);
             }
         }
     }

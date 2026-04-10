@@ -487,16 +487,19 @@ impl NetworkEventHandler {
         let result = stack
             .ipv4
             .process_with_time_and_packet(data, ip_packet.clone(), current_time);
+        let deliver_raw_if_registered = || {
+            ip_packet.as_ref().is_some_and(|packet| {
+                deliver_raw_payload_if_registered(
+                    ingress_if_id,
+                    PacketPayload::single(packet.clone()),
+                )
+            })
+        };
 
         match result {
             crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
-                if let Some(packet) = ip_packet.clone() {
-                    if deliver_raw_payload_if_registered(
-                        ingress_if_id,
-                        PacketPayload::single(packet),
-                    ) {
-                        return EventHandleResult::Success;
-                    }
+                if deliver_raw_if_registered() {
+                    return EventHandleResult::Success;
                 }
                 let Some(payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
@@ -506,13 +509,8 @@ impl NetworkEventHandler {
                 stack.process_icmp_payload(&payload, src_ip, dst_ip, ttl, current_time);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
-                if let Some(packet) = ip_packet.clone() {
-                    if deliver_raw_payload_if_registered(
-                        ingress_if_id,
-                        PacketPayload::single(packet),
-                    ) {
-                        return EventHandleResult::Success;
-                    }
+                if deliver_raw_if_registered() {
+                    return EventHandleResult::Success;
                 }
                 let Some(payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
@@ -522,19 +520,14 @@ impl NetworkEventHandler {
                 stack.process_igmp_payload(&payload, src_ip, ttl);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip, orig) => {
-                if let Some(packet) = ip_packet.clone() {
-                    if deliver_raw_payload_if_registered(
-                        ingress_if_id,
-                        PacketPayload::single(packet),
-                    ) {
-                        return EventHandleResult::Success;
-                    }
+                if deliver_raw_if_registered() {
+                    return EventHandleResult::Success;
                 }
                 let udp_segment_payload = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
                 });
-                let original_packet = if let Some(packet) = ip_packet.clone() {
-                    PacketPayload::single(packet)
+                let original_packet = if let Some(packet) = ip_packet.as_ref() {
+                    PacketPayload::single(packet.clone())
                 } else {
                     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
                     let Some(()) = builder.push_bytes(orig) else {
@@ -556,13 +549,8 @@ impl NetworkEventHandler {
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip, _orig) => {
-                if let Some(packet) = ip_packet.clone() {
-                    if deliver_raw_payload_if_registered(
-                        ingress_if_id,
-                        PacketPayload::single(packet),
-                    ) {
-                        return EventHandleResult::Success;
-                    }
+                if deliver_raw_if_registered() {
+                    return EventHandleResult::Success;
                 }
                 let Some(tcp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)

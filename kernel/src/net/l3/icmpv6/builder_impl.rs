@@ -52,8 +52,8 @@ impl Icmpv6Builder {
     ) -> Option<PacketPayload> {
         let payload_len = payload.total_len();
         let total_len = ICMPV6_ECHO_HEADER_SIZE + payload_len;
-        let mut packet = alloc_packet_with_headroom(total_len, 0)?;
-        let message = &mut packet.data_mut()[..total_len];
+        let mut packet = alloc_packet_with_headroom(ICMPV6_ECHO_HEADER_SIZE, 0)?;
+        let message = &mut packet.data_mut()[..ICMPV6_ECHO_HEADER_SIZE];
 
         message[0] = u8::from(msg_type);
         message[1] = 0;
@@ -61,17 +61,22 @@ impl Icmpv6Builder {
         message[3] = 0;
         message[4..6].copy_from_slice(&identifier.to_be_bytes());
         message[6..8].copy_from_slice(&sequence.to_be_bytes());
-        if payload_len > 0
-            && payload.copy_all_into(&mut message[ICMPV6_ECHO_HEADER_SIZE..]) != payload_len
-        {
-            return None;
+        packet.set_len(ICMPV6_ECHO_HEADER_SIZE);
+
+        let mut message_payload = PacketPayload::single(packet);
+        if payload_len > 0 {
+            let payload_span =
+                crate::net::payload::payload_range(payload.payload(), 0, payload_len)?;
+            crate::net::payload::append_payload(&mut message_payload, payload_span);
         }
 
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
-        let cksum = data_checksum(message, pseudo);
-        message[2..4].copy_from_slice(&cksum.to_be_bytes());
+        let cksum = payload_checksum(&PacketPayloadView::new(&message_payload), pseudo);
+        if let Some(first) = message_payload.segments_mut().first_mut() {
+            first.data_mut()[2..4].copy_from_slice(&cksum.to_be_bytes());
+        }
 
-        Some(PacketPayload::single(packet))
+        Some(message_payload)
     }
 
     /// Build a Packet Too Big message (RFC 4443 Section 3.2)
@@ -142,8 +147,8 @@ impl Icmpv6Builder {
         // stay under minimum MTU of 1280 (RFC 4443)
         let max_trigger = 1232.min(trigger_packet.total_len());
         let total_len = 8 + max_trigger;
-        let mut packet = alloc_packet_with_headroom(total_len, 0)?;
-        let message = &mut packet.data_mut()[..total_len];
+        let mut packet = alloc_packet_with_headroom(8, 0)?;
+        let message = &mut packet.data_mut()[..8];
 
         message[0] = u8::from(msg_type);
         message[1] = code;
@@ -152,20 +157,24 @@ impl Icmpv6Builder {
         let arg_bytes = arg.to_be_bytes();
         message[4..8].copy_from_slice(&arg_bytes);
 
-        // Trigger packet
-        if max_trigger > 0
-            && trigger_packet.copy_all_into(&mut message[8..8 + max_trigger]) != max_trigger
-        {
-            return None;
+        packet.set_len(8);
+
+        let mut message_payload = PacketPayload::single(packet);
+        if max_trigger > 0 {
+            let quoted =
+                crate::net::payload::payload_range(trigger_packet.payload(), 0, max_trigger)?;
+            crate::net::payload::append_payload(&mut message_payload, quoted);
         }
 
         // Compute checksum
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
-        let cksum = data_checksum(message, pseudo);
-        let cksum_bytes = cksum.to_be_bytes();
-        message[2] = cksum_bytes[0];
-        message[3] = cksum_bytes[1];
+        let cksum = payload_checksum(&PacketPayloadView::new(&message_payload), pseudo);
+        if let Some(first) = message_payload.segments_mut().first_mut() {
+            let cksum_bytes = cksum.to_be_bytes();
+            first.data_mut()[2] = cksum_bytes[0];
+            first.data_mut()[3] = cksum_bytes[1];
+        }
 
-        Some(PacketPayload::single(packet))
+        Some(message_payload)
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::payload::PacketPayloadBuilder;
 use crate::net::runtime::manager::NetIfId;
 
 fn send_dhcpv4_packet_on(
@@ -28,16 +29,15 @@ fn send_dhcpv4_packet_on(
     }
 }
 
+fn build_stack_payload(data: &[u8]) -> Option<kernel_api::resource::net::PacketPayload> {
+    let mut builder = PacketPayloadBuilder::new();
+    builder.push_bytes(data)?;
+    Some(builder.build())
+}
+
 impl DhcpClient {
     /// OFFER 受信時の副作用を適用する
     pub(super) fn apply_offer(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
-        match self.offered_lease.lock() {
-            Ok(mut g) => *g = Some(lease.clone()),
-            Err(_) => log::error!(
-                "[NET] DHCP Offer lock poisoned (process_response Offer) - skipping storing offer"
-            ),
-        }
-
         // Best-effort: ARP probe をイベントキュー経由で送信（デッドロック回避）
         crate::net::l4::endpoint::event::enqueue_event_ignore_in(
             self.runtime,
@@ -47,17 +47,18 @@ impl DhcpClient {
         );
         self.offered_probe_at.store(current_tick, Ordering::SeqCst);
 
+        match self.offered_lease.lock() {
+            Ok(mut g) => *g = Some(lease.clone()),
+            Err(_) => log::error!(
+                "[NET] DHCP Offer lock poisoned (process_response Offer) - skipping storing offer"
+            ),
+        }
+
         DhcpResponseResult::Offer(lease)
     }
 
     /// ACK 受信時の副作用を適用する
     pub(super) fn apply_ack(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
-        match self.lease.lock() {
-            Ok(mut g) => *g = Some(lease.clone()),
-            Err(_) => log::error!(
-                "[NET] DHCP Lease lock poisoned (process_response Ack) - skipping storing lease"
-            ),
-        }
         // Clear any offer probe state
         self.offered_probe_at.store(0, Ordering::SeqCst);
         match self.state.lock() {
@@ -68,6 +69,13 @@ impl DhcpClient {
         }
         self.state_time.store(current_tick, Ordering::SeqCst);
         self.retry_count.store(0, Ordering::SeqCst);
+
+        match self.lease.lock() {
+            Ok(mut g) => *g = Some(lease.clone()),
+            Err(_) => log::error!(
+                "[NET] DHCP Lease lock poisoned (process_response Ack) - skipping storing lease"
+            ),
+        }
 
         DhcpResponseResult::Ack(lease)
     }
@@ -233,7 +241,7 @@ impl DhcpClient {
                     .store(declined_ip.to_u32(), Ordering::SeqCst);
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
-                crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
+                build_stack_payload(&buf[..len]).is_some_and(|payload| {
                     send_dhcpv4_packet_on(
                         self.runtime,
                         if_id,
@@ -335,20 +343,18 @@ impl DhcpClient {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_release(&mut buf, 0) {
             // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
-            Ok(len) => {
-                crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
-                    send_dhcpv4_packet_on(
-                        self.runtime,
-                        if_id,
-                        lease.ip_address,
-                        DHCP_CLIENT_PORT,
-                        lease.server_ip,
-                        DHCP_SERVER_PORT,
-                        payload,
-                        64,
-                    )
-                })
-            }
+            Ok(len) => build_stack_payload(&buf[..len]).is_some_and(|payload| {
+                send_dhcpv4_packet_on(
+                    self.runtime,
+                    if_id,
+                    lease.ip_address,
+                    DHCP_CLIENT_PORT,
+                    lease.server_ip,
+                    DHCP_SERVER_PORT,
+                    payload,
+                    64,
+                )
+            }),
             Err(_) => false,
         }
     }
@@ -393,20 +399,18 @@ impl DhcpClient {
     ) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
-        Ok(
-            crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
-                send_dhcpv4_packet_on(
-                    self.runtime,
-                    if_id,
-                    Ipv4Address::new([0, 0, 0, 0]),
-                    DHCP_CLIENT_PORT,
-                    Ipv4Address::new([255, 255, 255, 255]),
-                    DHCP_SERVER_PORT,
-                    payload,
-                    64,
-                )
-            }),
-        )
+        Ok(build_stack_payload(&buf[..len]).is_some_and(|payload| {
+            send_dhcpv4_packet_on(
+                self.runtime,
+                if_id,
+                Ipv4Address::new([0, 0, 0, 0]),
+                DHCP_CLIENT_PORT,
+                Ipv4Address::new([255, 255, 255, 255]),
+                DHCP_SERVER_PORT,
+                payload,
+                64,
+            )
+        }))
     }
 
     /// Resolve DHCPREQUEST destination address from current state.
@@ -454,20 +458,18 @@ impl DhcpClient {
             // Requesting/Rebinding: src_ip = 0.0.0.0
             Ipv4Address::new([0, 0, 0, 0])
         };
-        Ok(
-            crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
-                send_dhcpv4_packet_on(
-                    self.runtime,
-                    if_id,
-                    src_ip,
-                    DHCP_CLIENT_PORT,
-                    dst,
-                    DHCP_SERVER_PORT,
-                    payload,
-                    64,
-                )
-            }),
-        )
+        Ok(build_stack_payload(&buf[..len]).is_some_and(|payload| {
+            send_dhcpv4_packet_on(
+                self.runtime,
+                if_id,
+                src_ip,
+                DHCP_CLIENT_PORT,
+                dst,
+                DHCP_SERVER_PORT,
+                payload,
+                64,
+            )
+        }))
     }
 
     /// Send a DHCPINFORM packet.
@@ -489,20 +491,18 @@ impl DhcpClient {
             lease.server_ip
         };
 
-        Ok(
-            crate::net::payload::payload_from_bytes(&buf[..len]).is_some_and(|payload| {
-                send_dhcpv4_packet_on(
-                    self.runtime,
-                    if_id,
-                    lease.ip_address,
-                    DHCP_CLIENT_PORT,
-                    dst,
-                    DHCP_SERVER_PORT,
-                    payload,
-                    64,
-                )
-            }),
-        )
+        Ok(build_stack_payload(&buf[..len]).is_some_and(|payload| {
+            send_dhcpv4_packet_on(
+                self.runtime,
+                if_id,
+                lease.ip_address,
+                DHCP_CLIENT_PORT,
+                dst,
+                DHCP_SERVER_PORT,
+                payload,
+                64,
+            )
+        }))
     }
 
     /// DHCPINFORM を開始する（即時送信 + Informing 遷移）

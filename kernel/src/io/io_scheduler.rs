@@ -232,7 +232,7 @@ pub struct IoRequest {
 }
 
 /// I/O結果
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoResult {
     /// 成功（転送バイト数）
     Success(usize),

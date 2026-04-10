@@ -5,8 +5,6 @@
 //!
 //! TcpSegmentBuilder - パケット構築
 
-use alloc::vec::Vec;
-
 use super::tcb::tcp_flags;
 use super::types::{EndpointAddr, EndpointError};
 use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
@@ -32,7 +30,8 @@ pub struct TcpSegmentBuilder {
     window: u16,
     data: TcpSegmentPayload,
     /// TCPオプション
-    options: Vec<u8>,
+    options: [u8; 40],
+    options_len: usize,
     /// Urgent pointer
     urgent_ptr: u16,
 }
@@ -73,7 +72,8 @@ impl TcpSegmentBuilder {
             flags: 0,
             window: 65535,
             data: TcpSegmentPayload::Empty,
-            options: Vec::new(),
+            options: [0; 40],
+            options_len: 0,
             urgent_ptr: 0,
         }
     }
@@ -149,10 +149,12 @@ impl TcpSegmentBuilder {
 
     /// TCPオプション追加 (MSS等)
     pub fn option(mut self, kind: u8, data: &[u8]) -> Self {
-        if self.options.len() + 2 + data.len() <= 40 {
-            self.options.push(kind);
-            self.options.push((2 + data.len()) as u8);
-            self.options.extend_from_slice(data);
+        let option_len = 2 + data.len();
+        if self.options_len + option_len <= self.options.len() {
+            self.options[self.options_len] = kind;
+            self.options[self.options_len + 1] = option_len as u8;
+            self.options[self.options_len + 2..self.options_len + option_len].copy_from_slice(data);
+            self.options_len += option_len;
         }
         self
     }
@@ -177,8 +179,9 @@ impl TcpSegmentBuilder {
     }
 
     pub fn nop(mut self) -> Self {
-        if self.options.len() < 40 {
-            self.options.push(1);
+        if self.options_len < self.options.len() {
+            self.options[self.options_len] = 1;
+            self.options_len += 1;
         }
         self
     }
@@ -205,23 +208,23 @@ impl TcpSegmentBuilder {
     }
 
     fn pad_options(&mut self) {
-        let options_len = self.options.len();
-        let remainder = options_len % 4;
+        let remainder = self.options_len % 4;
         if remainder != 0 {
             let padding = 4 - remainder;
             for _ in 0..padding {
-                self.options.push(0);
+                if self.options_len >= self.options.len() {
+                    break;
+                }
+                self.options[self.options_len] = 0;
+                self.options_len += 1;
             }
         }
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]
-    pub fn build(mut self) -> Vec<u8> {
+    pub fn build(mut self) -> alloc::vec::Vec<u8> {
         self.pad_options();
-        if self.options.len() > 40 {
-            self.options.truncate(40);
-        }
-        let options_len = self.options.len();
+        let options_len = self.options_len.min(self.options.len());
         let header_len = 20 + options_len;
         let data_offset = (header_len / 4) as u8;
         let total_len = header_len + self.data.len();
@@ -235,11 +238,7 @@ impl TcpSegmentBuilder {
 
     pub fn build_packet(mut self) -> Result<PacketPayload, EndpointError> {
         self.pad_options();
-        if self.options.len() > 40 {
-            self.options.truncate(40);
-        }
-
-        let options_len = self.options.len();
+        let options_len = self.options_len.min(self.options.len());
         let header_len = 20 + options_len;
         let data_offset = (header_len / 4) as u8;
 
@@ -250,7 +249,7 @@ impl TcpSegmentBuilder {
         let flags = self.flags;
         let window = self.window;
         let urgent_ptr = self.urgent_ptr;
-        let options = core::mem::take(&mut self.options);
+        let options = self.options;
         let segment_payload = core::mem::replace(&mut self.data, TcpSegmentPayload::Empty);
 
         let write_header = |segment: &mut [u8]| {
@@ -264,8 +263,8 @@ impl TcpSegmentBuilder {
             segment[14..16].copy_from_slice(&window.to_be_bytes());
             segment[16..18].copy_from_slice(&0u16.to_be_bytes());
             segment[18..20].copy_from_slice(&urgent_ptr.to_be_bytes());
-            if !options.is_empty() {
-                segment[20..20 + options_len].copy_from_slice(&options);
+            if options_len != 0 {
+                segment[20..20 + options_len].copy_from_slice(&options[..options_len]);
             }
         };
 
@@ -347,8 +346,8 @@ impl TcpSegmentBuilder {
         segment[14..16].copy_from_slice(&self.window.to_be_bytes());
         segment[16..18].copy_from_slice(&0u16.to_be_bytes());
         segment[18..20].copy_from_slice(&self.urgent_ptr.to_be_bytes());
-        if !self.options.is_empty() {
-            segment[20..20 + options_len].copy_from_slice(&self.options);
+        if self.options_len != 0 {
+            segment[20..20 + options_len].copy_from_slice(&self.options[..options_len]);
         }
     }
 

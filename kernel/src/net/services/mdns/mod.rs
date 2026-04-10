@@ -22,6 +22,7 @@ use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
+use crate::net::payload::PacketPayloadBuilder;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::PoisonLock;
 
@@ -69,6 +70,12 @@ const DNS_COMPRESSION_MASK: u8 = 0xC0;
 
 /// mDNS最大キャッシュエントリ数
 const MDNS_MAX_CACHE_ENTRIES: usize = 64;
+
+fn build_stack_payload(data: &[u8]) -> Option<kernel_api::resource::net::PacketPayload> {
+    let mut builder = PacketPayloadBuilder::new();
+    builder.push_bytes(data)?;
+    Some(builder.build())
+}
 
 // ============================================================================
 // Types and Enums
@@ -232,9 +239,7 @@ impl MdnsService {
                         let mut buffer = [0u8; 512];
                         if let Some(len) = Self::build_response(&mut buffer, &name, ip, ttl) {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            if let Some(payload) =
-                                crate::net::payload::payload_from_bytes(&buffer[..len])
-                            {
+                            if let Some(payload) = build_stack_payload(&buffer[..len]) {
                                 let _ = socket.send(payload, dst).await;
                             }
                         }
@@ -252,9 +257,7 @@ impl MdnsService {
                                 Self::build_response(&mut buffer, &report.name, ip, report.ttl)
                             {
                                 let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                                if let Some(payload) =
-                                    crate::net::payload::payload_from_bytes(&buffer[..len])
-                                {
+                                if let Some(payload) = build_stack_payload(&buffer[..len]) {
                                     let _ = socket.send(payload, dst).await;
                                 }
                             }
@@ -262,9 +265,7 @@ impl MdnsService {
                     } else {
                         if let Some(len) = Self::build_query(&mut buffer, &report.name) {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            if let Some(payload) =
-                                crate::net::payload::payload_from_bytes(&buffer[..len])
-                            {
+                            if let Some(payload) = build_stack_payload(&buffer[..len]) {
                                 let _ = socket.send(payload, dst).await;
                             }
                         }
@@ -732,27 +733,18 @@ impl MdnsService {
     /// # Arguments
     /// - `current_time` - 現在時刻 (秒単位)
     pub fn cleanup_expired(&mut self, current_time: u64) {
-        let expired_keys: Vec<String> = self
-            .cache
-            .iter()
-            .filter(|(_, entry)| current_time >= entry.expiry_time)
-            .map(|(key, _)| key.clone())
-            .collect();
-
-        for key in expired_keys {
-            self.cache.remove(&key);
-        }
+        self.cache
+            .retain(|_, entry| current_time < entry.expiry_time);
     }
 
     /// 最も古いキャッシュエントリを削除 (キャッシュが一杯の場合)
     fn evict_oldest(&mut self) {
-        let oldest_key = self
+        if let Some(key) = self
             .cache
             .iter()
             .min_by_key(|(_, entry)| entry.expiry_time)
-            .map(|(key, _)| key.clone());
-
-        if let Some(key) = oldest_key {
+            .map(|(key, _)| key.clone())
+        {
             self.cache.remove(&key);
         }
     }

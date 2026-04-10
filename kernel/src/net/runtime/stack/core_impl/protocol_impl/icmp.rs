@@ -38,7 +38,7 @@ impl NetworkStack {
         }
 
         // Resolve next-hop gateway (considering redirects)
-        let _next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
         // Resolve MAC address
         let dst_mac = match self.arp.resolve(next_hop, current_time) {
@@ -220,12 +220,7 @@ impl NetworkStack {
         let current_time = self.current_time();
         let our_ip = self.config.ipv4.address;
         let dst_mac = match self.resolve_arp_for_send(None, dst_ip, current_time, |pending| {
-            pending.enqueue_icmp(
-                our_ip,
-                dst_ip,
-                original_packet.clone(),
-                current_time,
-            );
+            pending.enqueue_icmp(our_ip, dst_ip, original_packet.clone(), current_time);
         }) {
             Some(mac) => mac,
             None => return,
@@ -301,12 +296,7 @@ impl NetworkStack {
         let current_time = self.current_time();
         let our_ip = self.config.ipv4.address;
         let dst_mac = match self.resolve_arp_for_send(None, dst_ip, current_time, |pending| {
-            pending.enqueue_icmp(
-                our_ip,
-                dst_ip,
-                echo_data.clone(),
-                current_time,
-            );
+            pending.enqueue_icmp(our_ip, dst_ip, echo_data.clone(), current_time);
         }) {
             Some(mac) => mac,
             None => return,
@@ -400,7 +390,7 @@ impl NetworkStack {
         }
 
         // Resolve next-hop gateway (considering redirects)
-        let _next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
         // Resolve MAC address
         let dst_mac = match self.arp.resolve(next_hop, current_time) {

@@ -277,24 +277,29 @@ impl NetworkStack {
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
                 let ingress_if_id = self.resolve_ingress_if(if_id);
-                if let Some(packet) = ip_packet.clone() {
+                let raw_delivered = {
                     let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
                         .read()
                         .unwrap_or_else(|e| e.into_inner());
-                    let delivered = guard
+                    guard
                         .as_ref()
                         .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-                        .is_some_and(|endpoint| {
-                            endpoint
-                                .deliver_raw_payload(
-                                    ingress_if_id,
-                                    kernel_api::resource::net::PacketPayload::single(packet),
-                                )
-                                .is_ok()
-                        });
-                    if delivered {
-                        return;
-                    }
+                        .and_then(|endpoint| {
+                            ip_packet.as_ref().map(|packet| {
+                                endpoint
+                                    .deliver_raw_payload(
+                                        ingress_if_id,
+                                        kernel_api::resource::net::PacketPayload::single(
+                                            packet.clone(),
+                                        ),
+                                    )
+                                    .is_ok()
+                            })
+                        })
+                        .unwrap_or(false)
+                };
+                if raw_delivered {
+                    return;
                 }
                 let Some(icmpv6_payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
@@ -314,24 +319,29 @@ impl NetworkStack {
             }
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
                 let ingress_if_id = self.resolve_ingress_if(if_id);
-                if let Some(packet) = ip_packet.clone() {
+                let raw_delivered = {
                     let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
                         .read()
                         .unwrap_or_else(|e| e.into_inner());
-                    let delivered = guard
+                    guard
                         .as_ref()
                         .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-                        .is_some_and(|endpoint| {
-                            endpoint
-                                .deliver_raw_payload(
-                                    ingress_if_id,
-                                    kernel_api::resource::net::PacketPayload::single(packet),
-                                )
-                                .is_ok()
-                        });
-                    if delivered {
-                        return;
-                    }
+                        .and_then(|endpoint| {
+                            ip_packet.as_ref().map(|packet| {
+                                endpoint
+                                    .deliver_raw_payload(
+                                        ingress_if_id,
+                                        kernel_api::resource::net::PacketPayload::single(
+                                            packet.clone(),
+                                        ),
+                                    )
+                                    .is_ok()
+                            })
+                        })
+                        .unwrap_or(false)
+                };
+                if raw_delivered {
+                    return;
                 }
                 let Some(tcp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
@@ -348,24 +358,29 @@ impl NetworkStack {
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
                 let ingress_if_id = self.resolve_ingress_if(if_id);
-                if let Some(packet) = ip_packet.clone() {
+                let raw_delivered = {
                     let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
                         .read()
                         .unwrap_or_else(|e| e.into_inner());
-                    let delivered = guard
+                    guard
                         .as_ref()
                         .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-                        .is_some_and(|endpoint| {
-                            endpoint
-                                .deliver_raw_payload(
-                                    ingress_if_id,
-                                    kernel_api::resource::net::PacketPayload::single(packet),
-                                )
-                                .is_ok()
-                        });
-                    if delivered {
-                        return;
-                    }
+                        .and_then(|endpoint| {
+                            ip_packet.as_ref().map(|packet| {
+                                endpoint
+                                    .deliver_raw_payload(
+                                        ingress_if_id,
+                                        kernel_api::resource::net::PacketPayload::single(
+                                            packet.clone(),
+                                        ),
+                                    )
+                                    .is_ok()
+                            })
+                        })
+                        .unwrap_or(false)
+                };
+                if raw_delivered {
+                    return;
                 }
                 let Some(udp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)

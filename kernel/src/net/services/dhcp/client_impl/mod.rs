@@ -64,7 +64,7 @@ impl DhcpClient {
                         Ok(DhcpResponseResult::Ack(lease)) => {
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
-                            let hostname_bytes = lease.hostname.clone().unwrap_or_default();
+                            let hostname = lease.hostname.as_ref().cloned().unwrap_or_default();
                             crate::net::l4::endpoint::event::enqueue_event_ignore_in(
                                 self.runtime,
                                 crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
@@ -80,7 +80,7 @@ impl DhcpClient {
                                         .iter()
                                         .map(|a| *a.as_bytes())
                                         .collect(),
-                                    hostname: hostname_bytes,
+                                    hostname,
                                 },
                             );
                             // mDNS のローカル IP を更新
@@ -142,6 +142,16 @@ impl DhcpClient {
         }
     }
 
+    pub fn with_offered_lease<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(Option<&DhcpLease>) -> R,
+    {
+        match self.offered_lease.lock() {
+            Ok(g) => f(g.as_ref()),
+            Err(_) => f(None),
+        }
+    }
+
     /// 現在のリースを取得
     pub fn lease(&self) -> Option<DhcpLease> {
         match self.lease.lock() {
@@ -150,6 +160,16 @@ impl DhcpClient {
                 log::error!("[NET] DHCP Lease lock poisoned (lease) - returning None");
                 None
             }
+        }
+    }
+
+    pub fn with_lease<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(Option<&DhcpLease>) -> R,
+    {
+        match self.lease.lock() {
+            Ok(g) => f(g.as_ref()),
+            Err(_) => f(None),
         }
     }
 
@@ -179,37 +199,30 @@ impl DhcpClient {
             || current_state == DhcpState::Bound
             || current_state == DhcpState::Rebinding
         {
-            let lease_opt = match self.lease.lock() {
-                Ok(g) => g.clone(),
-                Err(_) => return Err("Lease lock poisoned"),
-            };
-            if let Some(l) = lease_opt {
-                let is_renew_or_rebind =
-                    current_state == DhcpState::Renewing || current_state == DhcpState::Rebinding;
-                Ok((l, is_renew_or_rebind))
-            } else {
-                Err("No active lease available")
-            }
+            self.with_lease(|lease_opt| {
+                if let Some(l) = lease_opt {
+                    let is_renew_or_rebind = current_state == DhcpState::Renewing
+                        || current_state == DhcpState::Rebinding;
+                    Ok((l.clone(), is_renew_or_rebind))
+                } else {
+                    Err("No active lease available")
+                }
+            })
         } else {
             // not bound yet; use offered_lease
-            let offer_opt = match self.offered_lease.lock() {
-                Ok(g) => g.clone(),
-                Err(_) => return Err("Offer lock poisoned"),
-            };
-            if let Some(l) = offer_opt {
-                Ok((l, false))
-            } else {
-                Err("No offered lease available")
-            }
+            self.with_offered_lease(|offer_opt| {
+                if let Some(l) = offer_opt {
+                    Ok((l.clone(), false))
+                } else {
+                    Err("No offered lease available")
+                }
+            })
         }
     }
 
     /// INFORM / REQUEST 共通で利用する、現在有効なリースを取得する
     fn get_active_lease(&self) -> Result<DhcpLease, &'static str> {
-        match self.lease.lock() {
-            Ok(g) => g.clone().ok_or("No active lease available"),
-            Err(_) => Err("Lease lock poisoned"),
-        }
+        self.with_lease(|g| g.cloned().ok_or("No active lease available"))
     }
 
     /// **テスト用**: リースを強制的に設定します。

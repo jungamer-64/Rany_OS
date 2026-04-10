@@ -252,6 +252,16 @@ impl DhcpV6Client {
         }
     }
 
+    pub fn with_lease<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(Option<&DhcpV6Lease>) -> R,
+    {
+        match self.lease.lock() {
+            Ok(g) => f(g.as_ref()),
+            Err(_) => f(None),
+        }
+    }
+
     pub fn update_mac(&mut self, mac_address: MacAddress) {
         self.mac = mac_address;
         self.duid = Self::make_duid_ll(&mac_address);
@@ -637,37 +647,31 @@ impl DhcpV6Client {
 
     /// DHCPv6 RELEASE を送信してリースをクリアする
     pub fn release(&self) {
-        let lease = match self.lease.lock() {
-            Ok(g) => g.clone(),
-            Err(_) => {
-                log::error!("[NET] DHCPv6: lease lock poisoned (release)");
-                return;
-            }
-        };
+        self.with_lease(|lease| {
+            if let Some(lease) = lease {
+                // Generate new XID for the Release transaction
+                self.generate_secure_xid();
 
-        if let Some(lease) = lease {
-            // Generate new XID for the Release transaction
-            self.generate_secure_xid();
-
-            let mut buf = [0u8; 512];
-            match self.build_release(&mut buf, &lease) {
-                Ok(len) => {
-                    if let Some(src) = self.get_link_local() {
-                        // Send to server address if known, otherwise multicast
-                        let all_dhcp_servers = Self::all_dhcp_servers_multicast();
-                        let dst = match self.server_addr.lock() {
-                            Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
-                            Err(_) => all_dhcp_servers,
-                        };
-                        self.enqueue_v6_send_bytes(None, src, dst, &buf[..len]);
-                        log::info!("[NET] DHCPv6: RELEASE sent for {}", lease.addr);
+                let mut buf = [0u8; 512];
+                match self.build_release(&mut buf, lease) {
+                    Ok(len) => {
+                        if let Some(src) = self.get_link_local() {
+                            // Send to server address if known, otherwise multicast
+                            let all_dhcp_servers = Self::all_dhcp_servers_multicast();
+                            let dst = match self.server_addr.lock() {
+                                Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
+                                Err(_) => all_dhcp_servers,
+                            };
+                            self.enqueue_v6_send_bytes(None, src, dst, &buf[..len]);
+                            log::info!("[NET] DHCPv6: RELEASE sent for {}", lease.addr);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("[NET] DHCPv6: Failed to build RELEASE: {}", e);
                     }
                 }
-                Err(e) => {
-                    log::error!("[NET] DHCPv6: Failed to build RELEASE: {}", e);
-                }
             }
-        }
+        });
 
         // Clear lease and reset state
         if let Ok(mut lg) = self.lease.lock() {
@@ -1189,11 +1193,6 @@ impl DhcpV6Client {
 
         match self.parse_reply(data, now) {
             Ok(Some(lease)) => {
-                // Accept lease: configure IPv6 address + NDP
-                if let Ok(mut g) = self.lease.lock() {
-                    *g = Some(lease.clone());
-                }
-
                 // Remember the server IPv6 address (useful for unicast Renew)
                 if let Ok(mut sd) = self.server_addr.lock() {
                     *sd = Some(src);
@@ -1209,6 +1208,11 @@ impl DhcpV6Client {
                         domain_search: lease.domain_search.clone(),
                     },
                 );
+
+                // Accept lease: configure IPv6 address + NDP
+                if let Ok(mut g) = self.lease.lock() {
+                    *g = Some(lease);
+                }
 
                 if let Ok(mut st) = self.state.lock() {
                     *st = DhcpV6State::Bound;
@@ -1263,10 +1267,6 @@ impl DhcpV6Client {
         }
 
         if let Ok(Some(lease)) = self.parse_reply_payload(payload, now) {
-            if let Ok(mut g) = self.lease.lock() {
-                *g = Some(lease.clone());
-            }
-
             if let Ok(mut sd) = self.server_addr.lock() {
                 *sd = Some(src);
             }
@@ -1280,6 +1280,10 @@ impl DhcpV6Client {
                     domain_search: lease.domain_search.clone(),
                 },
             );
+
+            if let Ok(mut g) = self.lease.lock() {
+                *g = Some(lease);
+            }
 
             if let Ok(mut st) = self.state.lock() {
                 *st = DhcpV6State::Bound;
@@ -1395,31 +1399,33 @@ impl DhcpV6Client {
                 }
                 DhcpV6State::Bound => {
                     // Check lease lifetimes and transition to Renewing if needed
-                    if let Some(lease) = self.lease() {
-                        let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
-                        if elapsed_ms >= (lease.t1 as u64 * 1000) {
-                            // start renewal: Generate secure XID for Renew transaction
-                            self.generate_secure_xid();
+                    self.with_lease(|lease| {
+                        if let Some(lease) = lease {
+                            let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
+                            if elapsed_ms >= (lease.t1 as u64 * 1000) {
+                                // start renewal: Generate secure XID for Renew transaction
+                                self.generate_secure_xid();
 
-                            *s = DhcpV6State::Renewing;
-                            self.state_time.store(current_tick, Ordering::SeqCst);
-                            self.retry_count.store(0, Ordering::SeqCst);
+                                *s = DhcpV6State::Renewing;
+                                self.state_time.store(current_tick, Ordering::SeqCst);
+                                self.retry_count.store(0, Ordering::SeqCst);
 
-                            // Send first RENEW immediately
-                            let mut buf = [0u8; 512];
-                            if let Ok(len) = self.build_renew(&mut buf, &lease) {
-                                if let Some(src) = self.get_link_local() {
-                                    let dst = match self.server_addr.lock() {
-                                        Ok(ref a) => {
-                                            a.as_ref().copied().unwrap_or(all_dhcp_servers)
-                                        }
-                                        Err(_) => all_dhcp_servers,
-                                    };
-                                    self.enqueue_v6_send_bytes(if_id, src, dst, &buf[..len]);
+                                // Send first RENEW immediately
+                                let mut buf = [0u8; 512];
+                                if let Ok(len) = self.build_renew(&mut buf, lease) {
+                                    if let Some(src) = self.get_link_local() {
+                                        let dst = match self.server_addr.lock() {
+                                            Ok(ref a) => {
+                                                a.as_ref().copied().unwrap_or(all_dhcp_servers)
+                                            }
+                                            Err(_) => all_dhcp_servers,
+                                        };
+                                        self.enqueue_v6_send_bytes(if_id, src, dst, &buf[..len]);
+                                    }
                                 }
                             }
                         }
-                    }
+                    });
                 }
                 DhcpV6State::Renewing => {
                     // Attempt to renew (RFC 8415 Section 18.2.3: IRT = 10s, MRT = 600s)
@@ -1433,46 +1439,55 @@ impl DhcpV6Client {
                     let interval_ms = (base_ms + jitter_ms).max(100) as u64;
                     let interval_ticks = interval_ms;
 
-                    if let Some(lease) = self.lease() {
-                        let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
-                        if elapsed_ms >= (lease.t2 as u64 * 1000) {
-                            // Escalate to rebinding (multicast) if T2 expires
-                            *s = DhcpV6State::Rebinding;
-                            self.retry_count.store(0, Ordering::SeqCst);
-                            self.state_time.store(current_tick, Ordering::SeqCst);
+                    let mut renewed = false;
+                    self.with_lease(|lease| {
+                        if let Some(lease) = lease {
+                            renewed = true;
+                            let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
+                            if elapsed_ms >= (lease.t2 as u64 * 1000) {
+                                // Escalate to rebinding (multicast) if T2 expires
+                                *s = DhcpV6State::Rebinding;
+                                self.retry_count.store(0, Ordering::SeqCst);
+                                self.state_time.store(current_tick, Ordering::SeqCst);
 
-                            // Send first REBIND immediately
-                            let mut buf = [0u8; 512];
-                            if let Ok(len) = self.build_rebind(&mut buf, &lease) {
-                                if let Some(src) = self.get_link_local() {
-                                    self.enqueue_v6_send_bytes(
-                                        if_id,
-                                        src,
-                                        all_dhcp_servers,
-                                        &buf[..len],
-                                    );
+                                // Send first REBIND immediately
+                                let mut buf = [0u8; 512];
+                                if let Ok(len) = self.build_rebind(&mut buf, lease) {
+                                    if let Some(src) = self.get_link_local() {
+                                        self.enqueue_v6_send_bytes(
+                                            if_id,
+                                            src,
+                                            all_dhcp_servers,
+                                            &buf[..len],
+                                        );
+                                    }
                                 }
+                                return;
                             }
-                            return Ok(());
-                        }
 
-                        let elapsed_state_ms =
-                            current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
-                        if elapsed_state_ms >= interval_ticks {
-                            self.retry_count.fetch_add(1, Ordering::SeqCst);
-                            // Send RENEW (msg type 5) to the original server using SAME XID
-                            let mut buf = [0u8; 512];
-                            let len = self.build_renew(&mut buf, &lease)?;
-                            if let Some(src) = self.get_link_local() {
-                                let dst = match self.server_addr.lock() {
-                                    Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
-                                    Err(_) => all_dhcp_servers,
-                                };
-                                self.enqueue_v6_send_bytes(if_id, src, dst, &buf[..len]);
+                            let elapsed_state_ms =
+                                current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                            if elapsed_state_ms >= interval_ticks {
+                                self.retry_count.fetch_add(1, Ordering::SeqCst);
+                                // Send RENEW (msg type 5) to the original server using SAME XID
+                                let mut buf = [0u8; 512];
+                                if let Ok(len) = self.build_renew(&mut buf, lease) {
+                                    if let Some(src) = self.get_link_local() {
+                                        let dst = match self.server_addr.lock() {
+                                            Ok(ref a) => {
+                                                a.as_ref().copied().unwrap_or(all_dhcp_servers)
+                                            }
+                                            Err(_) => all_dhcp_servers,
+                                        };
+                                        self.enqueue_v6_send_bytes(if_id, src, dst, &buf[..len]);
+                                    }
+                                }
+                                self.state_time.store(current_tick, Ordering::SeqCst);
                             }
-                            self.state_time.store(current_tick, Ordering::SeqCst);
                         }
-                    } else {
+                    });
+
+                    if !renewed {
                         // No lease known — reset to Init
                         *s = DhcpV6State::Init;
                     }
@@ -1489,35 +1504,46 @@ impl DhcpV6Client {
                     let interval_ms = (base_ms + jitter_ms).max(100) as u64;
                     let interval_ticks = interval_ms;
 
-                    if let Some(lease) = self.lease() {
-                        let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
-                        if elapsed_ms >= (lease.valid_lifetime as u64 * 1000) {
-                            // Give up and return to Init (clear lease)
-                            *s = DhcpV6State::Init;
-                            if let Ok(mut lg) = self.lease.lock() {
-                                *lg = None;
-                            }
-                            return Ok(());
-                        }
+                    let mut rebind_active = false;
+                    let mut expired = false;
 
-                        let elapsed_state_ms =
-                            current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
-                        if elapsed_state_ms >= interval_ticks {
-                            self.retry_count.fetch_add(1, Ordering::SeqCst);
-                            // Send REBIND (msg type 6) to multicast using SAME XID
-                            let mut buf = [0u8; 512];
-                            let len = self.build_rebind(&mut buf, &lease)?;
-                            if let Some(src) = self.get_link_local() {
-                                self.enqueue_v6_send_bytes(
-                                    if_id,
-                                    src,
-                                    all_dhcp_servers,
-                                    &buf[..len],
-                                );
+                    self.with_lease(|lease| {
+                        if let Some(lease) = lease {
+                            rebind_active = true;
+                            let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
+                            if elapsed_ms >= (lease.valid_lifetime as u64 * 1000) {
+                                expired = true;
+                                return;
                             }
-                            self.state_time.store(current_tick, Ordering::SeqCst);
+
+                            let elapsed_state_ms =
+                                current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
+                            if elapsed_state_ms >= interval_ticks {
+                                self.retry_count.fetch_add(1, Ordering::SeqCst);
+                                // Send REBIND (msg type 6) to multicast using SAME XID
+                                let mut buf = [0u8; 512];
+                                if let Ok(len) = self.build_rebind(&mut buf, lease) {
+                                    if let Some(src) = self.get_link_local() {
+                                        self.enqueue_v6_send_bytes(
+                                            if_id,
+                                            src,
+                                            all_dhcp_servers,
+                                            &buf[..len],
+                                        );
+                                    }
+                                }
+                                self.state_time.store(current_tick, Ordering::SeqCst);
+                            }
                         }
-                    } else {
+                    });
+
+                    if expired {
+                        // Give up and return to Init (clear lease)
+                        *s = DhcpV6State::Init;
+                        if let Ok(mut lg) = self.lease.lock() {
+                            *lg = None;
+                        }
+                    } else if !rebind_active {
                         *s = DhcpV6State::Init;
                     }
                 }

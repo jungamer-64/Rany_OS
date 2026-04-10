@@ -456,10 +456,16 @@ impl NetworkStack {
                         );
                     }
                 }
-                crate::net::runtime::stack::PendingIpv4Payload::Raw { protocol, ttl, payload } => {
+                crate::net::runtime::stack::PendingIpv4Payload::Raw {
+                    protocol,
+                    ttl,
+                    payload,
+                } => {
                     let payload_view = crate::net::payload::PacketPayloadView::new(&payload);
                     let src_mac = if let Some(if_id) = if_id {
-                        self.interface_config_or_runtime(if_id).map(|c| c.mac).unwrap_or(self.mac_address())
+                        self.interface_config_or_runtime(if_id)
+                            .map(|c| c.mac)
+                            .unwrap_or(self.mac_address())
                     } else {
                         self.mac_address()
                     };

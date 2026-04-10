@@ -488,18 +488,17 @@ impl NdpPendingQueue {
 
     /// 指定アドレス宛のパケットを取り出す
     fn drain_for(&mut self, dst: &Ipv6Address) -> Vec<PendingIpv6Packet> {
-        // use retain to avoid expensive rotations; this also keeps order for
-        // packets not matching the destination.
         let mut matched = Vec::new();
-        self.packets.retain(|pkt| {
-            if pkt.dst == *dst {
-                // clone is cheap (~3 words) and PendingIpv6Packet derives Clone
-                matched.push(pkt.clone());
-                false
+        let mut i = 0;
+        while i < self.packets.len() {
+            if self.packets[i].dst == *dst {
+                if let Some(pkt) = self.packets.remove(i) {
+                    matched.push(pkt);
+                }
             } else {
-                true
+                i += 1;
             }
-        });
+        }
         matched
     }
 
@@ -657,14 +656,16 @@ impl ArpPendingQueue {
     /// 指定アドレス宛のパケットを取り出す
     pub(crate) fn drain_for(&mut self, dst: &Ipv4Address) -> Vec<PendingIpv4Packet> {
         let mut matched = Vec::new();
-        self.packets.retain(|pkt| {
-            if pkt.dst == *dst {
-                matched.push(pkt.clone());
-                false
+        let mut i = 0;
+        while i < self.packets.len() {
+            if self.packets[i].dst == *dst {
+                if let Some(pkt) = self.packets.remove(i) {
+                    matched.push(pkt);
+                }
             } else {
-                true
+                i += 1;
             }
-        });
+        }
         matched
     }
 

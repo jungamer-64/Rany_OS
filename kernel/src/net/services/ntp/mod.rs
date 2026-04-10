@@ -6,6 +6,7 @@
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::EndpointError;
 use crate::net::l4::udp::UdpAddr;
+use crate::net::payload::PacketPayloadBuilder;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -154,12 +155,13 @@ impl NtpClient {
         req.transmit_timestamp.fraction = fraction.to_be_bytes();
         let sent_ts = req.transmit_timestamp;
 
+        let mut builder = PacketPayloadBuilder::new();
+        builder
+            .push_bytes(req.as_bytes())
+            .ok_or(EndpointError::Internal)?;
+
         socket
-            .send(
-                crate::net::payload::payload_from_bytes(req.as_bytes())
-                    .ok_or(EndpointError::Internal)?,
-                remote,
-            )
+            .send(builder.build(), remote)
             .await
             .map_err(|_| EndpointError::Internal)?;
 

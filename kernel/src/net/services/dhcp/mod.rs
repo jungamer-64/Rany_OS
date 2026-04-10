@@ -250,7 +250,7 @@ fn primary_interface_runtime() -> Option<Arc<DhcpInterfaceRuntime>> {
         .find(|runtime| {
             runtime.active.load(Ordering::Acquire) && !runtime.suspended.load(Ordering::Acquire)
         })
-        .cloned()
+        .map(Arc::clone)
 }
 
 fn primary_interface_runtime_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpInterfaceRuntime>> {
@@ -267,7 +267,7 @@ fn primary_interface_runtime_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpInt
         .find(|runtime| {
             runtime.active.load(Ordering::Acquire) && !runtime.suspended.load(Ordering::Acquire)
         })
-        .cloned()
+        .map(Arc::clone)
 }
 
 pub(crate) fn primary_v4_client_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpClient>> {
@@ -456,7 +456,7 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                             interface_runtime.mac(),
                             lease.ip_address
                         );
-                        let hostname_bytes = lease.hostname.clone().unwrap_or_default();
+                        let hostname = lease.hostname.as_ref().cloned().unwrap_or_default();
                         crate::net::l4::endpoint::event::enqueue_event_ignore_in(
                             runtime,
                             crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
@@ -472,7 +472,7 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                                     .iter()
                                     .map(|a| *a.as_bytes())
                                     .collect(),
-                                hostname: hostname_bytes,
+                                hostname,
                             },
                         );
                     }
