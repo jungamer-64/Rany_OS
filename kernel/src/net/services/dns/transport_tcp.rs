@@ -8,7 +8,7 @@ impl DnsClient {
         socket: &crate::net::l4::udp::UdpEndpoint,
         query_payload: kernel_api::resource::net::PacketPayload,
         server: DnsServerAddr,
-        name: &str,
+        name: DnsNameOwned,
         qtype: DnsQueryType,
         tick: u64,
     ) -> Result<DnsResponseView, &'static str> {
@@ -22,7 +22,12 @@ impl DnsClient {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
                 TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
                     if Self::source_matches_server(src, server) && src.port() == DNS_PORT {
-                        let parsed = self.parse_response_payload(&packet, tick, name, qtype);
+                        let parsed = self.parse_response_payload_for_name(
+                            &packet,
+                            tick,
+                            &name.as_view(),
+                            qtype,
+                        );
                         if let Some(parsed) = parsed {
                             return parsed.map_err(|_| "Parse error");
                         }
@@ -51,7 +56,7 @@ impl DnsClient {
     async fn query_tcp(
         &self,
         server: DnsServerAddr,
-        name: &str,
+        name: DnsNameOwned,
         qtype: DnsQueryType,
     ) -> Result<DnsResponseView, &'static str> {
         async fn read_exact_payload(
@@ -86,7 +91,7 @@ impl DnsClient {
         .await
         .map_err(|_| "TCP connection failed")?;
 
-        let payload = self.build_tcp_query_payload(name, qtype)?;
+        let payload = self.build_tcp_query_payload_for_name(&name.as_view(), qtype)?;
         connection
             .send_payload(payload)
             .await
@@ -119,7 +124,7 @@ impl DnsClient {
             .ok_or("TCP read incomplete message")?;
 
         let tick = crate::task::current_tick();
-        self.parse_response_payload(&msg_data, tick, name, qtype)
+        self.parse_response_payload_for_name(&msg_data, tick, &name.as_view(), qtype)
             .ok_or("TCP fallback requested unexpectedly")?
             .map_err(|_| "Parse error")
     }

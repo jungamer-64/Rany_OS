@@ -17,6 +17,10 @@ impl DnsClient {
         DnsNameOwned::from_ascii_name(name)
     }
 
+    fn cache_key_for_view(name: &DnsNameView) -> DnsNameOwned {
+        DnsNameOwned::from_view(name)
+    }
+
     /// DNSクライアントのメインループ（非同期）
     ///
     /// キャッシュの定期的なクリーンアップなどを行います。
@@ -204,7 +208,7 @@ impl DnsClient {
     pub async fn resolve_ptr_ipv4(&self, ip: Ipv4Address) -> Option<DnsNameView> {
         let query_name = Self::ptr_ipv4_query_name(ip);
         let tick = crate::task::current_tick();
-        let key = Self::cache_key_for_name(&query_name)?;
+        let key = Self::cache_key_for_view(&query_name.as_view());
 
         if let Ok(cache) = self.cache.lock() {
             if let Some(entry) = cache.lookup(&key, tick) {
@@ -222,7 +226,7 @@ impl DnsClient {
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         let response = self
-            .query_internal(&query_name, DnsQueryType::PTR)
+            .query_internal_name(query_name.clone(), DnsQueryType::PTR)
             .await
             .ok()?;
         self.resolve_ptr_from_records(&response.records, &query_name)
@@ -232,7 +236,7 @@ impl DnsClient {
     pub async fn resolve_ptr_ipv6(&self, ip: Ipv6Address) -> Option<DnsNameView> {
         let query_name = Self::ptr_ipv6_query_name(ip);
         let tick = crate::task::current_tick();
-        let key = Self::cache_key_for_name(&query_name)?;
+        let key = Self::cache_key_for_view(&query_name.as_view());
 
         if let Ok(cache) = self.cache.lock() {
             if let Some(entry) = cache.lookup(&key, tick) {
@@ -250,7 +254,7 @@ impl DnsClient {
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         let response = self
-            .query_internal(&query_name, DnsQueryType::PTR)
+            .query_internal_name(query_name.clone(), DnsQueryType::PTR)
             .await
             .ok()?;
         self.resolve_ptr_from_records(&response.records, &query_name)
@@ -339,7 +343,8 @@ impl DnsClient {
     ) -> Option<DnsNameOwned> {
         records.iter().find_map(|record| {
             if record.rtype.is(DnsQueryType::CNAME)
-                && compare_dns_name_labels(record.name.labels(), name.labels()) == core::cmp::Ordering::Equal
+                && compare_dns_name_labels(record.name.labels(), name.labels())
+                    == core::cmp::Ordering::Equal
             {
                 if let DnsRecordData::Name(alias) = &record.data {
                     return Some(DnsNameOwned::from_view(alias));
@@ -426,9 +431,9 @@ impl DnsClient {
     fn resolve_ptr_from_records(
         &self,
         records: &[DnsRecordMeta],
-        query_name: &str,
+        query_name: &DnsNameOwned,
     ) -> Option<DnsNameView> {
-        let mut current = Self::cache_key_for_name(query_name)?;
+        let mut current = query_name.clone();
 
         for _ in 0..DNS_MAX_CNAME_DEPTH {
             if let Some(hostname) = records.iter().find_map(|record| {
@@ -457,15 +462,16 @@ impl DnsClient {
         None
     }
 
-    pub(super) fn ptr_ipv4_query_name(ip: Ipv4Address) -> String {
+    pub(super) fn ptr_ipv4_query_name(ip: Ipv4Address) -> DnsNameOwned {
         let octets = ip.octets();
-        alloc::format!(
+        DnsNameOwned::from_ascii_name(&alloc::format!(
             "{}.{}.{}.{}.in-addr.arpa",
             octets[3],
             octets[2],
             octets[1],
             octets[0]
-        )
+        ))
+        .expect("PTR IPv4 query name must be valid")
     }
 
     fn hex_nibble(value: u8) -> char {
@@ -475,7 +481,7 @@ impl DnsClient {
         }
     }
 
-    pub(super) fn ptr_ipv6_query_name(ip: Ipv6Address) -> String {
+    pub(super) fn ptr_ipv6_query_name(ip: Ipv6Address) -> DnsNameOwned {
         let octets = ip.octets();
         let mut out = String::with_capacity(32 * 2 + "ip6.arpa".len());
         for byte in octets.iter().rev() {
@@ -485,7 +491,7 @@ impl DnsClient {
             out.push('.');
         }
         out.push_str("ip6.arpa");
-        out
+        DnsNameOwned::from_ascii_name(&out).expect("PTR IPv6 query name must be valid")
     }
 
     pub(super) fn resolve_ipv4_from_records(
@@ -593,15 +599,33 @@ impl DnsClient {
         response: &DnsResponseView,
         current_tick: u64,
     ) {
+        let Some(key) = Self::cache_key_for_name(name) else {
+            return;
+        };
+        self.cache_dns_response_for_key(key, response, current_tick);
+    }
+
+    pub(super) fn cache_dns_response_for_name(
+        &self,
+        name: &DnsNameView,
+        response: &DnsResponseView,
+        current_tick: u64,
+    ) {
+        self.cache_dns_response_for_key(Self::cache_key_for_view(name), response, current_tick);
+    }
+
+    fn cache_dns_response_for_key(
+        &self,
+        key: DnsNameOwned,
+        response: &DnsResponseView,
+        current_tick: u64,
+    ) {
         if response.records.is_empty() {
             return;
         }
 
         match self.cache.lock() {
             Ok(mut cache) => {
-                let Some(key) = Self::cache_key_for_name(name) else {
-                    return;
-                };
                 cache.insert(
                     key,
                     response.payload.clone(),
@@ -623,21 +647,34 @@ impl DnsClient {
         rcode: DnsResponseCode,
         current_tick: u64,
     ) {
+        let Some(key) = Self::cache_key_for_name(name) else {
+            return;
+        };
+        self.cache_negative_response_for_key(key, rcode, current_tick);
+    }
+
+    pub(super) fn cache_negative_response_for_name(
+        &self,
+        name: &DnsNameView,
+        rcode: DnsResponseCode,
+        current_tick: u64,
+    ) {
+        self.cache_negative_response_for_key(Self::cache_key_for_view(name), rcode, current_tick);
+    }
+
+    fn cache_negative_response_for_key(
+        &self,
+        key: DnsNameOwned,
+        rcode: DnsResponseCode,
+        current_tick: u64,
+    ) {
         if rcode != DnsResponseCode::NameError {
             return;
         }
 
         match self.cache.lock() {
             Ok(mut cache) => {
-                let Some(key) = Self::cache_key_for_name(name) else {
-                    return;
-                };
-                cache.insert_negative(
-                    key,
-                    rcode,
-                    current_tick,
-                    DNS_NEGATIVE_CACHE_TTL_SECS,
-                );
+                cache.insert_negative(key, rcode, current_tick, DNS_NEGATIVE_CACHE_TTL_SECS);
             }
             Err(_) => {
                 log::error!(

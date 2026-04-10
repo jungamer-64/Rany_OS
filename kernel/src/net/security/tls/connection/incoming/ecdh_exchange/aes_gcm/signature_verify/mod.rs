@@ -124,11 +124,15 @@ impl TlsConnection {
         ];
 
         self.early_write_seq += 1;
-        Ok(Some(Self::packet_payload_from_parts(&[
-            &record_header,
-            &ciphertext,
-            &auth_tag,
-        ])))
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder
+            .push_bytes(&record_header)
+            .ok_or(TlsError::DecodeError)?;
+        builder
+            .push_bytes(&ciphertext)
+            .ok_or(TlsError::DecodeError)?;
+        builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
+        Ok(Some(builder.build()))
     }
 
     /// 空のCertificateメッセージレコードを構築する (RFC 8446 Section 4.4.2)
@@ -346,11 +350,19 @@ impl TlsConnection {
             let mut key_arr = [0u8; 32];
             key_arr.copy_from_slice(&key[..32]);
             chacha20_poly1305_decrypt(&key_arr, nonce, aad, ciphertext, tag)
-                .map(|plaintext| Self::packet_payload_from_slice(&plaintext))
+                .and_then(|plaintext| {
+                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                    builder.push_bytes(&plaintext)?;
+                    Some(builder.build())
+                })
                 .ok_or(TlsError::DecryptError)
         } else {
             aes_gcm_decrypt(key, nonce, aad, ciphertext, tag)
-                .map(|plaintext| Self::packet_payload_from_slice(&plaintext))
+                .and_then(|plaintext| {
+                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                    builder.push_bytes(&plaintext)?;
+                    Some(builder.build())
+                })
                 .ok_or(TlsError::DecryptError)
         }
     }
@@ -381,7 +393,11 @@ impl TlsConnection {
             return Err(TlsError::DecryptError);
         }
 
-        let data_bytes = Self::vec_from_payload(data)?;
+        let data_view = crate::net::payload::PacketPayloadView::new(data);
+        let data_bytes = data_view.read_vec(0, data_view.total_len());
+        if data_bytes.len() != data_view.total_len() {
+            return Err(TlsError::DecodeError);
+        }
         let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv.as_slice(), seq, data_bytes.len());
 
         if data_bytes.len() < 16 {
@@ -468,11 +484,15 @@ impl TlsConnection {
             self.write_seq += 1;
         }
 
-        Ok(Self::packet_payload_from_parts(&[
-            &record_header,
-            &ciphertext,
-            &auth_tag,
-        ]))
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder
+            .push_bytes(&record_header)
+            .ok_or(TlsError::DecodeError)?;
+        builder
+            .push_bytes(&ciphertext)
+            .ok_or(TlsError::DecodeError)?;
+        builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
+        Ok(builder.build())
     }
 
     /// TLS 1.3 アプリケーションデータ暗号化
@@ -480,7 +500,11 @@ impl TlsConnection {
         &mut self,
         payload: &kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let data = Self::vec_from_payload(payload)?;
+        let payload_view = crate::net::payload::PacketPayloadView::new(payload);
+        let data = payload_view.read_vec(0, payload_view.total_len());
+        if data.len() != payload_view.total_len() {
+            return Err(TlsError::DecodeError);
+        }
         // inner plaintext = data + content_type
         let mut inner = Vec::with_capacity(data.len() + 1);
         inner.extend_from_slice(&data);
@@ -552,7 +576,11 @@ impl TlsConnection {
         data: &kernel_api::resource::net::PacketPayload,
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let data_bytes = Self::vec_from_payload(data)?;
+        let data_view = crate::net::payload::PacketPayloadView::new(data);
+        let data_bytes = data_view.read_vec(0, data_view.total_len());
+        if data_bytes.len() != data_view.total_len() {
+            return Err(TlsError::DecodeError);
+        }
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
@@ -616,7 +644,11 @@ impl TlsConnection {
         match aes_gcm_decrypt(self.read_key.as_slice(), &nonce, &aad, ciphertext, &tag) {
             Some(plaintext) => {
                 self.read_seq += 1;
-                Ok(Self::packet_payload_from_slice(&plaintext))
+                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                builder
+                    .push_bytes(&plaintext)
+                    .ok_or(TlsError::DecodeError)?;
+                Ok(builder.build())
             }
             None => Err(TlsError::DecryptError),
         }
@@ -674,7 +706,11 @@ impl TlsConnection {
         match chacha20_poly1305_decrypt(&key, &nonce, &aad, ciphertext, &tag) {
             Some(plaintext) => {
                 self.read_seq += 1;
-                Ok(Self::packet_payload_from_slice(&plaintext))
+                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                builder
+                    .push_bytes(&plaintext)
+                    .ok_or(TlsError::DecodeError)?;
+                Ok(builder.build())
             }
             None => Err(TlsError::DecryptError),
         }

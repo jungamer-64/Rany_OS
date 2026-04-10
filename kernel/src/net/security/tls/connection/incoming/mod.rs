@@ -78,7 +78,11 @@ impl TlsConnection {
         };
         match ct {
             ContentType::Handshake => {
-                let data = Self::vec_from_payload(final_payload)?;
+                let view = crate::net::payload::PacketPayloadView::new(final_payload);
+                let data = view.read_vec(0, view.total_len());
+                if data.len() != view.total_len() {
+                    return Err(TlsError::DecodeError);
+                }
                 self.process_handshake(&data)?;
             }
             ContentType::ChangeCipherSpec => {
@@ -93,7 +97,11 @@ impl TlsConnection {
                 // TLS 1.3では無視
             }
             ContentType::Alert => {
-                let data = Self::vec_from_payload(final_payload)?;
+                let view = crate::net::payload::PacketPayloadView::new(final_payload);
+                let data = view.read_vec(0, view.total_len());
+                if data.len() != view.total_len() {
+                    return Err(TlsError::DecodeError);
+                }
                 self.handle_alert(&data)?;
             }
             ContentType::ApplicationData => {
@@ -147,7 +155,11 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         if self.is_tls13 && self.state != TlsState::Established {
             // TLS 1.3: 暗号化ハンドシェイクメッセージ
-            let data = Self::vec_from_payload(payload)?;
+            let view = crate::net::payload::PacketPayloadView::new(payload);
+            let data = view.read_vec(0, view.total_len());
+            if data.len() != view.total_len() {
+                return Err(TlsError::DecodeError);
+            }
             let app_data = self.tls13_process_encrypted_handshake(&data)?;
             if !app_data.is_empty() {
                 crate::net::payload::append_payload(plaintext, app_data);
@@ -166,14 +178,19 @@ impl TlsConnection {
         decrypted: &kernel_api::resource::net::PacketPayload,
         plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
-        let decrypted_bytes = Self::vec_from_payload(decrypted)?;
+        let view = crate::net::payload::PacketPayloadView::new(decrypted);
+        let decrypted_bytes = view.read_vec(0, view.total_len());
+        if decrypted_bytes.len() != view.total_len() {
+            return Err(TlsError::DecodeError);
+        }
         if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type(&decrypted_bytes) {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
-                    crate::net::payload::append_payload(
-                        plaintext,
-                        Self::packet_payload_from_slice(inner_data),
-                    );
+                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                    builder
+                        .push_bytes(inner_data)
+                        .ok_or(TlsError::DecodeError)?;
+                    crate::net::payload::append_payload(plaintext, builder.build());
                 }
                 Some(ContentType::Handshake) => {
                     // Post-handshake: NewSessionTicket, KeyUpdate
@@ -417,7 +434,8 @@ impl TlsConnection {
                 if ext_len >= 4 + key_len {
                     *server_key_share = Some((
                         group,
-                        Self::span_from_bytes(&data[eoff + 4..eoff + 4 + key_len])?,
+                        PayloadSpan::from_bytes(&data[eoff + 4..eoff + 4 + key_len])
+                            .ok_or(TlsError::DecodeError)?,
                     ));
                 }
             }
@@ -558,18 +576,18 @@ impl TlsConnection {
         match spki {
             crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
                 self.server_public_key = Some(ServerPublicKey::Rsa {
-                    modulus: Self::span_from_bytes(modulus)?,
-                    exponent: Self::span_from_bytes(exponent)?,
+                    modulus: PayloadSpan::from_bytes(modulus).ok_or(TlsError::DecodeError)?,
+                    exponent: PayloadSpan::from_bytes(exponent).ok_or(TlsError::DecodeError)?,
                 });
             }
             crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
                 self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
-                    point: Self::span_from_bytes(public_key)?,
+                    point: PayloadSpan::from_bytes(public_key).ok_or(TlsError::DecodeError)?,
                 });
             }
             crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
                 self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
-                    point: Self::span_from_bytes(public_key)?,
+                    point: PayloadSpan::from_bytes(public_key).ok_or(TlsError::DecodeError)?,
                 });
             }
             _ => {

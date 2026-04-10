@@ -1,10 +1,9 @@
 use super::*;
 
 impl DnsClient {
-    /// Internal DNS query logic with UDP-to-TCP fallback (RFC 7766)
-    pub(super) async fn query_internal(
+    pub(super) async fn query_internal_name(
         &self,
-        name: &str,
+        name: DnsNameOwned,
         qtype: DnsQueryType,
     ) -> Result<DnsResponseView, &'static str> {
         let tick = crate::task::current_tick();
@@ -16,13 +15,13 @@ impl DnsClient {
         }
 
         let socket = self.bind_udp_socket()?;
-        let query_payload = self.build_query_payload(name, qtype)?;
+        let query_payload = self.build_query_payload_for_name(&name.as_view(), qtype)?;
         let result = self
             .query_servers_with_failover(
                 &socket,
                 query_payload.clone(),
                 &servers,
-                name,
+                name.clone(),
                 qtype,
                 tick,
             )
@@ -31,6 +30,16 @@ impl DnsClient {
             self.retire_pending_query_id(&query_payload);
         }
         result
+    }
+
+    /// Internal DNS query logic with UDP-to-TCP fallback (RFC 7766)
+    pub(super) async fn query_internal(
+        &self,
+        name: &str,
+        qtype: DnsQueryType,
+    ) -> Result<DnsResponseView, &'static str> {
+        let owned = DnsNameOwned::from_ascii_name(name).ok_or("Invalid DNS name")?;
+        self.query_internal_name(owned, qtype).await
     }
 
     pub(super) fn build_prioritized_server_list(
@@ -58,7 +67,7 @@ impl DnsClient {
         socket: &crate::net::l4::udp::UdpEndpoint,
         query_payload: kernel_api::resource::net::PacketPayload,
         servers: &[DnsServerAddr],
-        name: &str,
+        name: DnsNameOwned,
         qtype: DnsQueryType,
         tick: u64,
     ) -> Result<DnsResponseView, &'static str> {
@@ -66,7 +75,14 @@ impl DnsClient {
 
         for server in servers {
             match self
-                .query_single_server(socket, query_payload.clone(), *server, name, qtype, tick)
+                .query_single_server(
+                    socket,
+                    query_payload.clone(),
+                    *server,
+                    name.clone(),
+                    qtype,
+                    tick,
+                )
                 .await
             {
                 Ok(response) => return Ok(response),

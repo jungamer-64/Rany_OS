@@ -197,8 +197,7 @@ pub fn test_cleanup_expired() {
         },
     );
     service.cache.insert(
-        crate::net::services::dns::DnsNameOwned::from_ascii_name("valid.local")
-            .expect("dns name"),
+        crate::net::services::dns::DnsNameOwned::from_ascii_name("valid.local").expect("dns name"),
         MdnsCacheEntry {
             ip: Ipv4Address::new([10, 0, 0, 88]),
             expiry_time: 500,
@@ -318,13 +317,9 @@ pub fn test_roundtrip_query_response() {
         MdnsResult::SendResponse { name, ip, ttl } => {
             // Server builds the response
             let mut resp_buf = [0u8; 512];
-            let resp_len = MdnsService::build_response(
-                &mut resp_buf,
-                &name.to_owned_string(),
-                ip,
-                ttl,
-            )
-            .expect("build_response");
+            let resp_len =
+                MdnsService::build_response(&mut resp_buf, &name.to_owned_string(), ip, ttl)
+                    .expect("build_response");
 
             // Client processes the response
             let client_result = client.process_packet(

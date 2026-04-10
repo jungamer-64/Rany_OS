@@ -110,6 +110,8 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use the packet-backed APIs `process_incoming_payload(&payload)`, `encrypt_application_payload(&payload)`, `send_early_data_payload(&payload)`, `get_rejected_early_data_payload()`, `build_key_update_response_payload()`, and `close_payload()`.
   - TLS handshake record builders returning `Vec<u8>` (`build_client_key_exchange()`, `build_client_key_exchange_rsa()`, `build_change_cipher_spec()`, `build_client_finished_tls12()`, `build_client_finished_tls13()`) ❌ **removed**
     - Migration: Use the payload-native builders `build_client_key_exchange_payload()`, `build_client_key_exchange_rsa_payload()`, `build_change_cipher_spec_payload()`, `build_client_finished_tls12_payload()`, and `build_client_finished_tls13_payload()`.
+  - TLS copy helpers (`vec_from_payload()`, `packet_payload_from_slice()`, `packet_payload_from_parts()`, `span_from_bytes()`) ❌ **removed**
+    - Migration: Operate on `PacketPayloadView`, `PayloadSpan`, and `PacketPayloadBuilder` directly at each call site. Do not reintroduce TLS-local payload flatten/build helpers.
   - Legacy payload builder name `build_client_hello()` ❌ **removed**
     - Migration: Use `build_client_hello_payload()`.
   - TLS helper accessors exposing raw transcript bytes (`handshake_messages_ref()`) ❌ **removed**
@@ -132,6 +134,18 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use `primary_v6_client_lock_in(runtime)`.
   - `payload_span_to_vec()` と `NetworkEvent::DhcpApplyLease { hostname: Vec<u8> }` / `NetworkEvent::DhcpV6ApplyLease { domain_search: Vec<String> }` ❌ **removed**
     - Migration: Keep lease metadata packet-backed. Use `Option<PayloadSpan>` for DHCPv4 hostname/domain and `Vec<DnsNameOwned>` for DHCPv6 domain-search payloads.
+  - DHCP send helpers that rebuilt payloads from raw byte slices (`build_stack_payload()`, `enqueue_v6_send_bytes()`) ❌ **removed**
+    - Migration: For app-originated outbound packets, write directly into the final `PacketPayloadBuilder` and pass the built payload to the runtime send path.
+
+- `kernel/src/net/services/{dns,mdns}`
+  - PTR query helper return types `ptr_ipv4_query_name() -> String` / `ptr_ipv6_query_name() -> String` ❌ **removed**
+    - Migration: Use packet-backed `DnsNameOwned` values and pass `DnsNameView`/`DnsNameOwned` through cache lookup and transport paths instead of stringifying reverse-query names.
+  - mDNS send helper `build_stack_payload()` and payload-path string decode/encode round-trips ❌ **removed**
+    - Migration: Build outbound queries/responses directly from `DnsNameOwned` label spans and keep payload-path question/answer names packet-backed.
+
+- `kernel/src/net/runtime/bridge/mlx5_bridge.rs`
+  - TX diagnostic preview helper `payload_preview_bytes()` ❌ **removed**
+    - Migration: Log segment layout metadata instead of linearizing packet bytes on the TX path.
 
 - `kernel/src/{net/drivers/virtio,integration/virtio_blk,console/virtio_console,console/virtio_input,mm/virtio_balloon}`
   - Zero-index compatibility wrappers (`init_virtio_*()`, `init_virtio_*_for_device()`, `init_virtio_*_with_transport()`, `get_virtio_*_device()`, `handle_virtio_*_interrupt()`, `with_virtio_net()`) ❌ **removed**

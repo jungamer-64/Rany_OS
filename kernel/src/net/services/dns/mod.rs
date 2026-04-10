@@ -606,11 +606,15 @@ pub(crate) fn compare_dns_name_labels(lhs: &[PayloadSpan], rhs: &[PayloadSpan]) 
         let right = &rhs[index];
         let shared = left.total_len().min(right.total_len());
         for byte_index in 0..shared {
-            let Some(left_byte) = left.byte_at(byte_index).map(|byte| byte.to_ascii_lowercase())
+            let Some(left_byte) = left
+                .byte_at(byte_index)
+                .map(|byte| byte.to_ascii_lowercase())
             else {
                 return CmpOrdering::Less;
             };
-            let Some(right_byte) = right.byte_at(byte_index).map(|byte| byte.to_ascii_lowercase())
+            let Some(right_byte) = right
+                .byte_at(byte_index)
+                .map(|byte| byte.to_ascii_lowercase())
             else {
                 return CmpOrdering::Greater;
             };

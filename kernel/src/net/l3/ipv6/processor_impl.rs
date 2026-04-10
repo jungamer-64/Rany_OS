@@ -1,6 +1,7 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
+use alloc::vec;
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv6Processor {
@@ -173,22 +174,25 @@ impl Ipv6Processor {
                         }
                     }
                     Err(e) => {
-                        // RFC 8200 Error handling
-                        // Include the fragment header in the quoted packet so ICMP error can point to it
-                        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                        if builder.push_bytes(unfragmentable).is_none() {
+                        let Some(ip_packet) = packet_ref.as_ref() else {
                             return Ipv6ProcessResult::Error;
-                        }
-                        let frag_header_offset = unfragmentable.len();
-                        if data.len() >= frag_header_offset + 8 {
-                            if builder
-                                .push_bytes(&data[frag_header_offset..frag_header_offset + 8])
-                                .is_none()
-                            {
-                                return Ipv6ProcessResult::Error;
-                            }
-                        }
-                        Ipv6ProcessResult::ReassemblyError(e, src, dst, builder.build())
+                        };
+                        let mut unfragmentable_packet = ip_packet.clone();
+                        unfragmentable_packet.set_len(unfragmentable.len());
+                        let mut fragment_header_packet = ip_packet.clone();
+                        fragment_header_packet.advance(unfragmentable.len());
+                        fragment_header_packet.set_len(8);
+                        Ipv6ProcessResult::ReassemblyError(
+                            e,
+                            src,
+                            dst,
+                            kernel_api::resource::net::PacketPayload::chain(
+                                kernel_api::resource::net::PacketChain::from_segments(vec![
+                                    unfragmentable_packet,
+                                    fragment_header_packet,
+                                ]),
+                            ),
+                        )
                     }
                 }
             }

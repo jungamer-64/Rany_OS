@@ -1,10 +1,34 @@
 use super::*;
 
 impl DnsClient {
+    fn push_dns_name_payload(
+        builder: &mut crate::net::payload::PacketPayloadBuilder,
+        name: &DnsNameView,
+    ) -> Result<(), &'static str> {
+        for label in name.labels() {
+            let len = label.total_len();
+            if len > 63 {
+                return Err("Label too long");
+            }
+            builder
+                .push_bytes(&[len as u8])
+                .ok_or("Failed to allocate DNS label")?;
+            builder.push_payload(
+                label
+                    .to_payload()
+                    .ok_or("Failed to allocate DNS label payload")?,
+            );
+        }
+        builder
+            .push_bytes(&[0])
+            .ok_or("Failed to allocate DNS terminator")?;
+        Ok(())
+    }
+
     /// DNSクエリパケットを packet-backed payload として構築
-    pub fn build_query_payload(
+    pub fn build_query_payload_for_name(
         &self,
-        name: &str,
+        name: &DnsNameView,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
         // トランザクションIDを生成 (RFC 5452: 予測困難なIDを使用)
@@ -31,25 +55,7 @@ impl DnsClient {
             .push_bytes(&1u16.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
 
-        for label in name.split('.') {
-            if label.is_empty() {
-                continue;
-            }
-            let len = label.len();
-            if len > 63 {
-                return Err("Label too long");
-            }
-            builder
-                .push_bytes(&[len as u8])
-                .ok_or("Failed to allocate DNS label")?;
-            builder
-                .push_bytes(label.as_bytes())
-                .ok_or("Failed to allocate DNS label")?;
-        }
-
-        builder
-            .push_bytes(&[0])
-            .ok_or("Failed to allocate DNS terminator")?;
+        Self::push_dns_name_payload(&mut builder, name)?;
         builder
             .push_bytes(&(qtype as u16).to_be_bytes())
             .ok_or("Failed to allocate DNS qtype")?;
@@ -74,7 +80,6 @@ impl DnsClient {
 
         self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
 
-        // Security: トランザクションIDを保留中クエリに登録 (RFC 5452 キャッシュポイズニング防止)
         self.cleanup_stale_pending_ids(crate::task::current_tick());
         if let Ok(mut pending) = self.pending_ids.lock() {
             while pending.len() >= 256 {
@@ -94,19 +99,39 @@ impl DnsClient {
         Ok(builder.build())
     }
 
-    /// Build a DNS query for TCP transport as a packet-backed payload.
-    pub fn build_tcp_query_payload(
+    /// DNSクエリパケットを packet-backed payload として構築
+    pub fn build_query_payload(
         &self,
         name: &str,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let message = self.build_query_payload(name, qtype)?;
+        let owned = DnsNameOwned::from_ascii_name(name).ok_or("Invalid DNS name")?;
+        self.build_query_payload_for_name(&owned.as_view(), qtype)
+    }
+
+    /// Build a DNS query for TCP transport as a packet-backed payload.
+    pub fn build_tcp_query_payload_for_name(
+        &self,
+        name: &DnsNameView,
+        qtype: DnsQueryType,
+    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
+        let message = self.build_query_payload_for_name(name, qtype)?;
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder
             .push_bytes(&(message.total_len() as u16).to_be_bytes())
             .ok_or("Buffer too small for TCP length prefix")?;
         builder.push_payload(message);
         Ok(builder.build())
+    }
+
+    /// Build a DNS query for TCP transport as a packet-backed payload.
+    pub fn build_tcp_query_payload(
+        &self,
+        name: &str,
+        qtype: DnsQueryType,
+    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
+        let owned = DnsNameOwned::from_ascii_name(name).ok_or("Invalid DNS name")?;
+        self.build_tcp_query_payload_for_name(&owned.as_view(), qtype)
     }
 
     /// Check if a DNS query should be retried based on attempt count and elapsed time

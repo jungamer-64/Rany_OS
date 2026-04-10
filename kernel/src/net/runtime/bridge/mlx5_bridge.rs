@@ -811,18 +811,19 @@ fn payload_inline_header_len(payload: &PacketPayload) -> usize {
         .unwrap_or(0)
 }
 
-fn payload_preview_bytes(payload: &PacketPayload, limit: usize) -> String {
-    let preview_len = limit.min(payload.total_len());
-    let mut bytes = alloc::vec::Vec::with_capacity(preview_len);
-    for segment in payload.segments() {
-        if bytes.len() == preview_len {
-            break;
+fn payload_segment_layout(payload: &PacketPayload) -> String {
+    let mut out = String::new();
+    for (index, segment) in payload.segments().iter().enumerate() {
+        if index > 0 {
+            out.push(',');
         }
-        let remaining = preview_len - bytes.len();
-        let take = remaining.min(segment.data().len());
-        bytes.extend_from_slice(&segment.data()[..take]);
+        let _ = write!(&mut out, "{}", segment.data().len());
     }
-    format_head_bytes(&bytes, bytes.len())
+    if out.is_empty() {
+        String::from("--")
+    } else {
+        out
+    }
 }
 
 fn payload_dma_segments(
@@ -968,11 +969,11 @@ fn poll_mlx5_tx_cqs(
                         .get(sq_index)
                         .and_then(|queue| queue.get(tracked_idx))
                         .and_then(|slot| slot.as_ref())
-                        .map(|tracked| payload_preview_bytes(&tracked.payload, 48))
+                        .map(|tracked| payload_segment_layout(&tracked.payload))
                         .unwrap_or_else(|| String::from("--"));
                     log::warn!(
                         target: "mlx5::bridge",
-                        "TX error context: idx={} sq={} sqn={:#x} tisn={:#x} wqe_counter={} dbg_counter={} dbg_exact={} inl={} opmod_idx={:#x} qpn_ds={:#x} general_id={:#x} bc={} lkey={:#x} data_addr={:#x} layout=\"{}\" wqe=[{}] pkt_head=[{}]",
+                        "TX error context: idx={} sq={} sqn={:#x} tisn={:#x} wqe_counter={} dbg_counter={} dbg_exact={} inl={} opmod_idx={:#x} qpn_ds={:#x} general_id={:#x} bc={} lkey={:#x} data_addr={:#x} layout=\"{}\" wqe=[{}] pkt_segments=[{}]",
                         state.index,
                         sq_index,
                         sq_state.sqn,

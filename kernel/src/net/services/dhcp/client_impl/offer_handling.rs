@@ -29,12 +29,6 @@ fn send_dhcpv4_packet_on(
     }
 }
 
-fn build_stack_payload(data: &[u8]) -> Option<kernel_api::resource::net::PacketPayload> {
-    let mut builder = PacketPayloadBuilder::new();
-    builder.push_bytes(data)?;
-    Some(builder.build())
-}
-
 impl DhcpClient {
     /// OFFER 受信時の副作用を適用する
     pub(super) fn apply_offer(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
@@ -241,7 +235,8 @@ impl DhcpClient {
                     .store(declined_ip.to_u32(), Ordering::SeqCst);
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
-                build_stack_payload(&buf[..len]).is_some_and(|payload| {
+                let mut builder = PacketPayloadBuilder::new();
+                builder.push_bytes(&buf[..len]).is_some_and(|()| {
                     send_dhcpv4_packet_on(
                         self.runtime,
                         if_id,
@@ -249,7 +244,7 @@ impl DhcpClient {
                         DHCP_CLIENT_PORT,
                         dst,
                         DHCP_SERVER_PORT,
-                        payload,
+                        builder.build(),
                         64,
                     )
                 })
@@ -343,18 +338,21 @@ impl DhcpClient {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         match self.build_release(&mut buf, 0) {
             // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
-            Ok(len) => build_stack_payload(&buf[..len]).is_some_and(|payload| {
-                send_dhcpv4_packet_on(
-                    self.runtime,
-                    if_id,
-                    lease.ip_address,
-                    DHCP_CLIENT_PORT,
-                    lease.server_ip,
-                    DHCP_SERVER_PORT,
-                    payload,
-                    64,
-                )
-            }),
+            Ok(len) => {
+                let mut builder = PacketPayloadBuilder::new();
+                builder.push_bytes(&buf[..len]).is_some_and(|()| {
+                    send_dhcpv4_packet_on(
+                        self.runtime,
+                        if_id,
+                        lease.ip_address,
+                        DHCP_CLIENT_PORT,
+                        lease.server_ip,
+                        DHCP_SERVER_PORT,
+                        builder.build(),
+                        64,
+                    )
+                })
+            }
             Err(_) => false,
         }
     }
@@ -399,7 +397,8 @@ impl DhcpClient {
     ) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
-        Ok(build_stack_payload(&buf[..len]).is_some_and(|payload| {
+        let mut builder = PacketPayloadBuilder::new();
+        Ok(builder.push_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,
@@ -407,7 +406,7 @@ impl DhcpClient {
                 DHCP_CLIENT_PORT,
                 Ipv4Address::new([255, 255, 255, 255]),
                 DHCP_SERVER_PORT,
-                payload,
+                builder.build(),
                 64,
             )
         }))
@@ -458,7 +457,8 @@ impl DhcpClient {
             // Requesting/Rebinding: src_ip = 0.0.0.0
             Ipv4Address::new([0, 0, 0, 0])
         };
-        Ok(build_stack_payload(&buf[..len]).is_some_and(|payload| {
+        let mut builder = PacketPayloadBuilder::new();
+        Ok(builder.push_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,
@@ -466,7 +466,7 @@ impl DhcpClient {
                 DHCP_CLIENT_PORT,
                 dst,
                 DHCP_SERVER_PORT,
-                payload,
+                builder.build(),
                 64,
             )
         }))
@@ -491,7 +491,8 @@ impl DhcpClient {
             lease.server_ip
         };
 
-        Ok(build_stack_payload(&buf[..len]).is_some_and(|payload| {
+        let mut builder = PacketPayloadBuilder::new();
+        Ok(builder.push_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,
@@ -499,7 +500,7 @@ impl DhcpClient {
                 DHCP_CLIENT_PORT,
                 dst,
                 DHCP_SERVER_PORT,
-                payload,
+                builder.build(),
                 64,
             )
         }))

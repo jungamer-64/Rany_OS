@@ -145,10 +145,9 @@ impl NetworkStack {
             None => return false,
         };
         header_packet.set_len(crate::net::l4::udp::UdpHeader::SIZE);
-        let Some(header) = crate::util::get_mut_ref::<crate::net::l4::udp::UdpHeader>(
-            header_packet.data_mut(),
-            0,
-        ) else {
+        let Some(header) =
+            crate::util::get_mut_ref::<crate::net::l4::udp::UdpHeader>(header_packet.data_mut(), 0)
+        else {
             return false;
         };
         header.set_src_port(src_port);

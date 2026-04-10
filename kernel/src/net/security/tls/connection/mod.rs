@@ -256,24 +256,6 @@ impl TlsConnection {
         slot.set(data).ok_or(TlsError::DecodeError)
     }
 
-    fn packet_payload_from_slice(data: &[u8]) -> PacketPayload {
-        let mut builder = PacketPayloadBuilder::new();
-        if builder.push_bytes(data).is_none() {
-            return PacketPayload::default();
-        }
-        builder.build()
-    }
-
-    fn packet_payload_from_parts(parts: &[&[u8]]) -> PacketPayload {
-        let mut builder = PacketPayloadBuilder::new();
-        for part in parts {
-            if !part.is_empty() && builder.push_bytes(part).is_none() {
-                return PacketPayload::default();
-            }
-        }
-        builder.build()
-    }
-
     fn tls12_aad(seq: u64, content_type: u8, len: usize) -> [u8; 13] {
         let seq_bytes = seq.to_be_bytes();
         let len_bytes = (len as u16).to_be_bytes();
@@ -303,20 +285,6 @@ impl TlsConnection {
             len_bytes[0],
             len_bytes[1],
         ]
-    }
-
-    pub(crate) fn vec_from_payload(payload: &PacketPayload) -> TlsResult<Vec<u8>> {
-        let view = PacketPayloadView::new(payload);
-        let len = view.total_len();
-        let mut data = vec![0u8; len];
-        if view.copy_range(0, &mut data) != len {
-            return Err(TlsError::DecodeError);
-        }
-        Ok(data)
-    }
-
-    pub(crate) fn span_from_bytes(data: &[u8]) -> TlsResult<PayloadSpan> {
-        PayloadSpan::from_bytes(data).ok_or(TlsError::DecodeError)
     }
 
     fn transcript_len(&self) -> usize {
@@ -616,7 +584,14 @@ impl TlsConnection {
         ];
 
         self.state = TlsState::ClientHelloSent;
-        Self::packet_payload_from_parts(&[&record_header, &message])
+        let mut builder = PacketPayloadBuilder::new();
+        if builder.push_bytes(&record_header).is_none() {
+            return PacketPayload::default();
+        }
+        if builder.push_bytes(&message).is_none() {
+            return PacketPayload::default();
+        }
+        builder.build()
     }
 
     /// 0-RTTアーリーデータを暗号化して送信 (RFC 8446 Section 4.2.10)
@@ -681,7 +656,17 @@ impl TlsConnection {
 
         self.early_write_seq += 1;
         self.early_data_sent = true;
-        Self::packet_payload_from_parts(&[&record_header, &ciphertext, &auth_tag])
+        let mut builder = PacketPayloadBuilder::new();
+        if builder.push_bytes(&record_header).is_none() {
+            return PacketPayload::default();
+        }
+        if builder.push_bytes(&ciphertext).is_none() {
+            return PacketPayload::default();
+        }
+        if builder.push_bytes(&auth_tag).is_none() {
+            return PacketPayload::default();
+        }
+        builder.build()
     }
 
     pub fn send_early_data_payload(&mut self, payload: &PacketPayload) -> PacketPayload {
@@ -690,9 +675,11 @@ impl TlsConnection {
             return PacketPayload::default();
         }
         append_payload(&mut self.early_data_buffer, payload.clone());
-        let Ok(data) = Self::vec_from_payload(payload) else {
+        let view = PacketPayloadView::new(payload);
+        let data = view.read_vec(0, view.total_len());
+        if data.len() != view.total_len() {
             return PacketPayload::default();
-        };
+        }
         self.send_early_data_record_payload(&data)
     }
 

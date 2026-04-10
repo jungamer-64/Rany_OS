@@ -34,12 +34,18 @@ impl TlsConnection {
         ];
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_parts(&[
-            &record_header,
-            &explicit_nonce,
-            &ciphertext,
-            &auth_tag,
-        ]))
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder
+            .push_bytes(&record_header)
+            .ok_or(TlsError::DecodeError)?;
+        builder
+            .push_bytes(&explicit_nonce)
+            .ok_or(TlsError::DecodeError)?;
+        builder
+            .push_bytes(&ciphertext)
+            .ok_or(TlsError::DecodeError)?;
+        builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
+        Ok(builder.build())
     }
 
     /// ChaCha20-Poly1305 レコード暗号化 (TLS 1.2)
@@ -76,11 +82,15 @@ impl TlsConnection {
         ];
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_parts(&[
-            &record_header,
-            &ciphertext,
-            &auth_tag,
-        ]))
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder
+            .push_bytes(&record_header)
+            .ok_or(TlsError::DecodeError)?;
+        builder
+            .push_bytes(&ciphertext)
+            .ok_or(TlsError::DecodeError)?;
+        builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
+        Ok(builder.build())
     }
 
     // ========================================================================
@@ -178,7 +188,11 @@ impl TlsConnection {
         data: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // ハンドシェイクトラフィック鍵で復号
-        let decrypted = self.tls13_decrypt_record(&Self::packet_payload_from_slice(data), true)?;
+        let mut encrypted_builder = crate::net::payload::PacketPayloadBuilder::new();
+        encrypted_builder
+            .push_bytes(data)
+            .ok_or(TlsError::DecodeError)?;
+        let decrypted = self.tls13_decrypt_record(&encrypted_builder.build(), true)?;
 
         if decrypted.is_empty() {
             return Err(TlsError::DecodeError);
@@ -186,7 +200,11 @@ impl TlsConnection {
 
         // 内部コンテントタイプ = 最後の非ゼロバイト
         // TLS 1.3 record format: plaintext || content_type || zeros
-        let decrypted_bytes = Self::vec_from_payload(&decrypted)?;
+        let decrypted_view = crate::net::payload::PacketPayloadView::new(&decrypted);
+        let decrypted_bytes = decrypted_view.read_vec(0, decrypted_view.total_len());
+        if decrypted_bytes.len() != decrypted_view.total_len() {
+            return Err(TlsError::DecodeError);
+        }
         let mut inner_content_type = 0u8;
         let mut plaintext_len = decrypted_bytes.len();
         for i in (0..decrypted_bytes.len()).rev() {
@@ -218,7 +236,11 @@ impl TlsConnection {
             }
             Some(ContentType::ApplicationData) => {
                 // ハンドシェイク完了後のアプリデータ
-                Ok(Self::packet_payload_from_slice(inner_data))
+                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                builder
+                    .push_bytes(inner_data)
+                    .ok_or(TlsError::DecodeError)?;
+                Ok(builder.build())
             }
             _ => Err(TlsError::UnexpectedMessage),
         }
@@ -351,7 +373,8 @@ impl TlsConnection {
         if data.len() < off + ctx_len {
             return Err(TlsError::DecodeError);
         }
-        self.certificate_request_context = Some(Self::span_from_bytes(&data[off..off + ctx_len])?);
+        self.certificate_request_context =
+            Some(PayloadSpan::from_bytes(&data[off..off + ctx_len]).ok_or(TlsError::DecodeError)?);
         off += ctx_len;
 
         // 拡張をパース
@@ -455,18 +478,18 @@ impl TlsConnection {
             match cert.subject_public_key_info {
                 crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
                     self.server_public_key = Some(ServerPublicKey::Rsa {
-                        modulus: Self::span_from_bytes(modulus)?,
-                        exponent: Self::span_from_bytes(exponent)?,
+                        modulus: PayloadSpan::from_bytes(modulus).ok_or(TlsError::DecodeError)?,
+                        exponent: PayloadSpan::from_bytes(exponent).ok_or(TlsError::DecodeError)?,
                     });
                 }
                 crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
                     self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
-                        point: Self::span_from_bytes(public_key)?,
+                        point: PayloadSpan::from_bytes(public_key).ok_or(TlsError::DecodeError)?,
                     });
                 }
                 crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
                     self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
-                        point: Self::span_from_bytes(public_key)?,
+                        point: PayloadSpan::from_bytes(public_key).ok_or(TlsError::DecodeError)?,
                     });
                 }
                 _ => {

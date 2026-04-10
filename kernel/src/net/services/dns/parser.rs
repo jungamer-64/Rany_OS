@@ -49,6 +49,22 @@ impl DnsClient {
         expected_name: &str,
         expected_type: DnsQueryType,
     ) -> Option<Result<DnsResponseView, DnsResponseCode>> {
+        let expected_name = DnsNameOwned::from_ascii_name(expected_name)?;
+        self.parse_response_payload_for_name(
+            payload,
+            current_tick,
+            &expected_name.as_view(),
+            expected_type,
+        )
+    }
+
+    pub fn parse_response_payload_for_name(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        current_tick: u64,
+        expected_name: &DnsNameView,
+        expected_type: DnsQueryType,
+    ) -> Option<Result<DnsResponseView, DnsResponseCode>> {
         if self.needs_tcp_fallback_payload(payload) {
             None
         } else {
@@ -127,7 +143,7 @@ impl DnsClient {
     fn handle_response_code_payload(
         &self,
         flags: u16,
-        expected_name: &str,
+        expected_name: &DnsNameView,
         current_tick: u64,
     ) -> Result<(), DnsResponseCode> {
         let rcode = DnsResponseCode::from_u8((flags & 0x0F) as u8);
@@ -136,7 +152,7 @@ impl DnsClient {
         }
 
         self.stats.errors.fetch_add(1, Ordering::Relaxed);
-        self.cache_negative_response(expected_name, rcode, current_tick);
+        self.cache_negative_response_for_name(expected_name, rcode, current_tick);
         Err(rcode)
     }
 
@@ -186,7 +202,7 @@ impl DnsClient {
         view: &crate::net::payload::PacketPayloadView<'_>,
         offset: &mut usize,
         qcount: usize,
-        expected_name: &str,
+        expected_name: &DnsNameView,
         expected_type: DnsQueryType,
     ) -> Result<(), DnsResponseCode> {
         let mut matched_question = false;
@@ -200,7 +216,9 @@ impl DnsClient {
                 return Err(DnsResponseCode::FormatError);
             }
 
-            if parsed_name.name.eq_ignore_ascii_case(expected_name) && qtype == expected_type as u16
+            if compare_dns_name_labels(parsed_name.name.labels(), expected_name.labels())
+                == core::cmp::Ordering::Equal
+                && qtype == expected_type as u16
             {
                 matched_question = true;
             }
@@ -212,9 +230,8 @@ impl DnsClient {
         }
 
         log::warn!(
-            "[NET] DNS: Response Question section does not match query ({:?} vs {}), dropping for security",
-            expected_type,
-            expected_name
+            "[NET] DNS: Response Question section does not match query ({:?}), dropping for security",
+            expected_type
         );
         Err(DnsResponseCode::FormatError)
     }
@@ -247,7 +264,7 @@ impl DnsClient {
     fn finalize_response_payload(
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
-        expected_name: &str,
+        expected_name: &DnsNameView,
         current_tick: u64,
         records: Vec<DnsRecordMeta>,
     ) -> DnsResponseView {
@@ -255,7 +272,7 @@ impl DnsClient {
             .responses_received
             .fetch_add(1, Ordering::Relaxed);
         if !records.is_empty() {
-            self.cache_dns_response(
+            self.cache_dns_response_for_name(
                 expected_name,
                 &DnsResponseView {
                     payload: payload.clone(),
@@ -275,7 +292,7 @@ impl DnsClient {
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
         current_tick: u64,
-        expected_name: &str,
+        expected_name: &DnsNameView,
         expected_type: DnsQueryType,
     ) -> Result<DnsResponseView, DnsResponseCode> {
         let view = crate::net::payload::PacketPayloadView::new(payload);

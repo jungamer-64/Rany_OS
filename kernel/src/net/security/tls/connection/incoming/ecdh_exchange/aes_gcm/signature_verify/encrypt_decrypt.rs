@@ -77,12 +77,18 @@ impl TlsConnection {
         ];
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_parts(&[
-            &record_header,
-            &explicit_nonce,
-            &ciphertext,
-            &auth_tag,
-        ]))
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder
+            .push_bytes(&record_header)
+            .ok_or(TlsError::DecodeError)?;
+        builder
+            .push_bytes(&explicit_nonce)
+            .ok_or(TlsError::DecodeError)?;
+        builder
+            .push_bytes(&ciphertext)
+            .ok_or(TlsError::DecodeError)?;
+        builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
+        Ok(builder.build())
     }
 
     /// ChaCha20-Poly1305 record encryption (RFC 7905 for TLS 1.2)
@@ -132,11 +138,15 @@ impl TlsConnection {
         ];
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_parts(&[
-            &record_header,
-            &ciphertext,
-            &auth_tag,
-        ]))
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder
+            .push_bytes(&record_header)
+            .ok_or(TlsError::DecodeError)?;
+        builder
+            .push_bytes(&ciphertext)
+            .ok_or(TlsError::DecodeError)?;
+        builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
+        Ok(builder.build())
     }
 
     /// TLS 1.3: 復号されたレコードから内部コンテントタイプを除去し平文を返す
@@ -315,13 +325,14 @@ impl TlsConnection {
         self.session_ticket = Some(SessionTicket {
             lifetime: ticket_lifetime,
             age_add: ticket_age_add,
-            nonce: Self::span_from_bytes(ticket_nonce)?,
-            ticket: Self::span_from_bytes(ticket)?,
+            nonce: PayloadSpan::from_bytes(ticket_nonce).ok_or(TlsError::DecodeError)?,
+            ticket: PayloadSpan::from_bytes(ticket).ok_or(TlsError::DecodeError)?,
         });
 
         if let Some(psk) = self.derive_tls13_psk_from_rms(ticket_nonce) {
             self.tls13_psk = Some(psk);
-            self.tls13_psk_identity = Some(Self::span_from_bytes(ticket)?);
+            self.tls13_psk_identity =
+                Some(PayloadSpan::from_bytes(ticket).ok_or(TlsError::DecodeError)?);
             self.tls13_ticket_age_add = ticket_age_add;
             self.tls13_psk_cipher = self.negotiated_cipher;
         }
@@ -467,15 +478,22 @@ impl TlsConnection {
         }
 
         // TLS 1.2 or fallback
-        Self::packet_payload_from_slice(&[
-            ContentType::Alert as u8,
-            0x03,
-            0x03,
-            0,
-            2,
-            AlertLevel::Warning as u8,
-            AlertDescription::CloseNotify as u8,
-        ])
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        if builder
+            .push_bytes(&[
+                ContentType::Alert as u8,
+                0x03,
+                0x03,
+                0,
+                2,
+                AlertLevel::Warning as u8,
+                AlertDescription::CloseNotify as u8,
+            ])
+            .is_none()
+        {
+            return kernel_api::resource::net::PacketPayload::default();
+        }
+        builder.build()
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]

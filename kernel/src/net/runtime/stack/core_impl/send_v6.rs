@@ -785,10 +785,9 @@ impl NetworkStack {
         )
         .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         header_packet.set_len(crate::net::l4::udp::UdpHeader::SIZE);
-        let Some(header) = crate::util::get_mut_ref::<crate::net::l4::udp::UdpHeader>(
-            header_packet.data_mut(),
-            0,
-        ) else {
+        let Some(header) =
+            crate::util::get_mut_ref::<crate::net::l4::udp::UdpHeader>(header_packet.data_mut(), 0)
+        else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
         header.set_src_port(src_port);
@@ -804,7 +803,10 @@ impl NetworkStack {
             IpProtocol::Udp,
             total_len as u32,
         );
-        let checksum = payload_checksum(&crate::net::payload::PacketPayloadView::new(&udp_payload), pseudo);
+        let checksum = payload_checksum(
+            &crate::net::payload::PacketPayloadView::new(&udp_payload),
+            pseudo,
+        );
         let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
         if let Some(first) = udp_payload.segments_mut().first_mut() {
             first.data_mut()[6..8].copy_from_slice(&final_checksum.to_be_bytes());

@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpan};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::services::dns::DnsNameOwned;
 use crate::sync::PoisonLock;
@@ -71,12 +71,6 @@ const DNS_COMPRESSION_MASK: u8 = 0xC0;
 
 /// mDNS最大キャッシュエントリ数
 const MDNS_MAX_CACHE_ENTRIES: usize = 64;
-
-fn build_stack_payload(data: &[u8]) -> Option<kernel_api::resource::net::PacketPayload> {
-    let mut builder = PacketPayloadBuilder::new();
-    builder.push_bytes(data)?;
-    Some(builder.build())
-}
 
 // ============================================================================
 // Types and Enums
@@ -237,14 +231,9 @@ impl MdnsService {
 
                 match result {
                     MdnsResult::SendResponse { name, ip, ttl } => {
-                        let mut buffer = [0u8; 512];
-                        if let Some(len) =
-                            Self::build_response(&mut buffer, &name.to_owned_string(), ip, ttl)
-                        {
+                        if let Some(payload) = Self::build_response_payload(&name, ip, ttl) {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            if let Some(payload) = build_stack_payload(&buffer[..len]) {
-                                let _ = socket.send(payload, dst).await;
-                            }
+                            let _ = socket.send(payload, dst).await;
                         }
                     }
                     _ => {}
@@ -253,31 +242,19 @@ impl MdnsService {
                 // 保留中のレポート（クエリなど）があれば送信
                 let reports = self.take_pending_reports();
                 for report in reports {
-                    let mut buffer = [0u8; 512];
                     if report.is_response {
                         if let Some(ip) = report.ip {
-                            if let Some(len) =
-                                Self::build_response(
-                                    &mut buffer,
-                                    &report.name.to_owned_string(),
-                                    ip,
-                                    report.ttl,
-                                )
+                            if let Some(payload) =
+                                Self::build_response_payload(&report.name, ip, report.ttl)
                             {
                                 let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                                if let Some(payload) = build_stack_payload(&buffer[..len]) {
-                                    let _ = socket.send(payload, dst).await;
-                                }
+                                let _ = socket.send(payload, dst).await;
                             }
                         }
                     } else {
-                        if let Some(len) =
-                            Self::build_query(&mut buffer, &report.name.to_owned_string())
-                        {
+                        if let Some(payload) = Self::build_query_payload(&report.name) {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            if let Some(payload) = build_stack_payload(&buffer[..len]) {
-                                let _ = socket.send(payload, dst).await;
-                            }
+                            let _ = socket.send(payload, dst).await;
                         }
                     }
                 }
@@ -426,7 +403,6 @@ impl MdnsService {
         current_time: u64,
     ) -> MdnsResult {
         let mut offset = DNS_HEADER_SIZE;
-        let our_fqdn = self.fqdn();
         let our_fqdn_owned = self.fqdn_owned();
 
         for _ in 0..qdcount {
@@ -451,7 +427,7 @@ impl MdnsService {
 
             // Check if this is an A record query for our hostname
             if qtype == DNS_TYPE_A && qclass_masked == DNS_CLASS_IN {
-                if names_equal(&name, &our_fqdn) {
+                if names_equal(&name, &self.fqdn()) {
                     // Security: Limit pending reports to prevent memory DoS.
                     const MAX_PENDING_REPORTS: usize = 32;
                     if self.pending_reports.len() < MAX_PENDING_REPORTS {
@@ -472,7 +448,7 @@ impl MdnsService {
                     } else {
                         log::warn!(
                             "[NET] mDNS: Too many pending reports - dropping response for {}",
-                            our_fqdn
+                            self.fqdn()
                         );
                     }
 
@@ -496,11 +472,10 @@ impl MdnsService {
         current_time: u64,
     ) -> MdnsResult {
         let mut offset = DNS_HEADER_SIZE;
-        let our_fqdn = self.fqdn();
         let our_fqdn_owned = self.fqdn_owned();
 
         for _ in 0..qdcount {
-            let (name, new_offset) = match decode_dns_name_view(view, offset) {
+            let (name, new_offset) = match decode_dns_name_owned_view(view, offset) {
                 Some(result) => result,
                 None => return MdnsResult::InvalidPacket,
             };
@@ -521,8 +496,7 @@ impl MdnsService {
             offset += 4;
 
             let qclass_masked = qclass & 0x7FFF;
-            if qtype == DNS_TYPE_A && qclass_masked == DNS_CLASS_IN && names_equal(&name, &our_fqdn)
-            {
+            if qtype == DNS_TYPE_A && qclass_masked == DNS_CLASS_IN && name == our_fqdn_owned {
                 const MAX_PENDING_REPORTS: usize = 32;
                 if self.pending_reports.len() < MAX_PENDING_REPORTS {
                     if !self
@@ -541,7 +515,7 @@ impl MdnsService {
                 } else {
                     log::warn!(
                         "[NET] mDNS: Too many pending reports - dropping response for {}",
-                        our_fqdn
+                        self.fqdn()
                     );
                 }
 
@@ -598,9 +572,7 @@ impl MdnsService {
         }
         let rdata = view.read_array::<4>(record.4).ok_or(())?;
         let ip = Ipv4Address::new(rdata);
-        let Some(name) = DnsNameOwned::from_ascii_name(&record.5) else {
-            return Ok(None);
-        };
+        let name = record.5;
         if !self.cache_a_record(&name, ip, record.6, current_time) {
             return Ok(None);
         }
@@ -697,10 +669,7 @@ impl MdnsService {
             return false;
         };
         if !last_label.eq_ignore_ascii_case(b"local") {
-            log::warn!(
-                "[NET] mDNS: Ignoring non-local name: {}",
-                name.to_owned_string()
-            );
+            log::warn!("[NET] mDNS: Ignoring non-local name");
             return false;
         }
 
@@ -805,6 +774,22 @@ impl MdnsService {
         Some(offset)
     }
 
+    pub fn build_query_payload(
+        name: &DnsNameOwned,
+    ) -> Option<kernel_api::resource::net::PacketPayload> {
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_bytes(&0u16.to_be_bytes())?;
+        builder.push_bytes(&MDNS_QUERY_FLAGS.to_be_bytes())?;
+        builder.push_bytes(&1u16.to_be_bytes())?;
+        builder.push_bytes(&0u16.to_be_bytes())?;
+        builder.push_bytes(&0u16.to_be_bytes())?;
+        builder.push_bytes(&0u16.to_be_bytes())?;
+        push_dns_name_payload(&mut builder, name)?;
+        builder.push_bytes(&DNS_TYPE_A.to_be_bytes())?;
+        builder.push_bytes(&DNS_CLASS_IN.to_be_bytes())?;
+        Some(builder.build())
+    }
+
     /// mDNS応答パケットを構築
     ///
     /// 指定されたホスト名とIPアドレスに対するAレコード応答を
@@ -900,6 +885,27 @@ impl MdnsService {
         Some(offset)
     }
 
+    pub fn build_response_payload(
+        name: &DnsNameOwned,
+        ip: Ipv4Address,
+        ttl: u32,
+    ) -> Option<kernel_api::resource::net::PacketPayload> {
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_bytes(&0u16.to_be_bytes())?;
+        builder.push_bytes(&MDNS_RESPONSE_FLAGS.to_be_bytes())?;
+        builder.push_bytes(&0u16.to_be_bytes())?;
+        builder.push_bytes(&1u16.to_be_bytes())?;
+        builder.push_bytes(&0u16.to_be_bytes())?;
+        builder.push_bytes(&0u16.to_be_bytes())?;
+        push_dns_name_payload(&mut builder, name)?;
+        builder.push_bytes(&DNS_TYPE_A.to_be_bytes())?;
+        builder.push_bytes(&(DNS_CLASS_IN | MDNS_CACHE_FLUSH_BIT).to_be_bytes())?;
+        builder.push_bytes(&ttl.to_be_bytes())?;
+        builder.push_bytes(&4u16.to_be_bytes())?;
+        builder.push_bytes(ip.as_bytes())?;
+        Some(builder.build())
+    }
+
     /// 期限切れキャッシュエントリを削除
     ///
     /// # Arguments
@@ -971,6 +977,18 @@ pub fn encode_dns_name(buffer: &mut [u8], mut offset: usize, name: &str) -> Opti
     offset += 1;
 
     Some(offset)
+}
+
+fn push_dns_name_payload(builder: &mut PacketPayloadBuilder, name: &DnsNameOwned) -> Option<()> {
+    for label in name.labels() {
+        let len = label.total_len();
+        if len > DNS_LABEL_MAX_LEN {
+            return None;
+        }
+        builder.push_bytes(&[len as u8])?;
+        builder.push_payload(label.to_payload()?);
+    }
+    builder.push_bytes(&[0])
 }
 
 /// DNS名をデコード (ラベル圧縮対応)
@@ -1180,6 +1198,60 @@ pub fn decode_dns_name_view(
     Some((name, final_offset))
 }
 
+pub fn decode_dns_name_owned_view(
+    view: &PacketPayloadView<'_>,
+    offset: usize,
+) -> Option<(DnsNameOwned, usize)> {
+    let mut labels = Vec::new();
+    let mut current = offset;
+    let mut jumped = false;
+    let mut final_offset = offset;
+    let mut jump_count = 0;
+    let max_jumps = 128;
+
+    loop {
+        if current >= view.total_len() {
+            return None;
+        }
+
+        let len_byte = view.read_array::<1>(current).map(|bytes| bytes[0])?;
+
+        if len_byte == 0 {
+            if !jumped {
+                final_offset = current + 1;
+            }
+            break;
+        }
+
+        if len_byte & DNS_COMPRESSION_MASK == DNS_COMPRESSION_MASK {
+            current = handle_compression_pointer_view(
+                view,
+                current,
+                &mut final_offset,
+                &mut jumped,
+                &mut jump_count,
+                max_jumps,
+            )?;
+            continue;
+        }
+
+        let label_len = len_byte as usize;
+        if label_len > DNS_LABEL_MAX_LEN {
+            return None;
+        }
+        current += 1;
+
+        if current + label_len > view.total_len() {
+            return None;
+        }
+
+        labels.push(PayloadSpan::from_range(view.payload(), current, label_len)?);
+        current += label_len;
+    }
+
+    Some((DnsNameOwned::from_labels(labels), final_offset))
+}
+
 /// mDNSマルチキャストMACアドレスを取得
 ///
 /// mDNSマルチキャストグループ 224.0.0.251 に対応するイーサネット
@@ -1224,7 +1296,7 @@ fn skip_dns_questions_view(
     qdcount: u16,
 ) -> Option<usize> {
     for _ in 0..qdcount {
-        let (_, new_offset) = decode_dns_name_view(view, offset)?;
+        let (_, new_offset) = decode_dns_name_owned_view(view, offset)?;
         offset = new_offset;
         if offset + 4 > view.total_len() {
             return None;
@@ -1279,8 +1351,8 @@ fn parse_dns_answer_record(
 fn parse_dns_answer_record_view(
     view: &PacketPayloadView<'_>,
     offset: usize,
-) -> Option<(u16, u16, usize, usize, usize, String, u32)> {
-    let (name, new_offset) = decode_dns_name_view(view, offset)?;
+) -> Option<(u16, u16, usize, usize, usize, DnsNameOwned, u32)> {
+    let (name, new_offset) = decode_dns_name_owned_view(view, offset)?;
     let mut offset = new_offset;
 
     if offset + 10 > view.total_len() {
@@ -1314,19 +1386,6 @@ fn parse_dns_answer_record_view(
 /// Aレコード（INクラス、4バイト）かどうか判定
 fn is_inet_a_record(rtype: u16, rclass_masked: u16, rdlength: usize) -> bool {
     rtype == DNS_TYPE_A && rclass_masked == DNS_CLASS_IN && rdlength == 4
-}
-
-/// 文字列をASCII小文字に変換
-fn to_lowercase(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    for c in s.chars() {
-        if c.is_ascii_uppercase() {
-            result.push((c as u8 + 32) as char);
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 pub(crate) struct MdnsRuntimeState {
