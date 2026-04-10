@@ -1079,6 +1079,117 @@ impl NetNamespace {
         }
     }
 
+    /// DNS名前解決 IPv6 (AAAA)
+    ///
+    /// usage: net.dns6("example.com")
+    pub async fn dns_resolve_ipv6(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let hostname = match args.first() {
+            Some(ExoValue::String(s)) => s.as_ref(),
+            _ => {
+                return ExoValue::Error(String::from(
+                    "usage: net.dns6(hostname)\n例: net.dns6(\"example.com\")",
+                ));
+            }
+        };
+
+        match crate::net::services::dns::resolve_ipv6(hostname).await {
+            Some(addr) => ExoValue::String(Cow::Owned(format!("{}", addr))),
+            None => ExoValue::Error(format!("DNS AAAA resolution failed for '{}'", hostname)),
+        }
+    }
+
+    /// DNS TXT レコード解決
+    ///
+    /// usage: net.dns_txt("example.com")
+    pub async fn dns_resolve_txt(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let hostname = match args.first() {
+            Some(ExoValue::String(s)) => s.as_ref(),
+            _ => {
+                return ExoValue::Error(String::from(
+                    "usage: net.dns_txt(hostname)\n例: net.dns_txt(\"example.com\")",
+                ));
+            }
+        };
+
+        match crate::net::services::dns::resolve_txt(hostname).await {
+            Some(records) if !records.is_empty() => ExoValue::Array(
+                records
+                    .into_iter()
+                    .map(|txt| ExoValue::String(Cow::Owned(txt.to_owned_string())))
+                    .collect(),
+            ),
+            _ => ExoValue::Error(format!("DNS TXT resolution failed for '{}'", hostname)),
+        }
+    }
+
+    /// DNS SRV レコード解決
+    ///
+    /// usage: net.dns_srv("_service._tcp.example.com")
+    pub async fn dns_resolve_srv(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let hostname = match args.first() {
+            Some(ExoValue::String(s)) => s.as_ref(),
+            _ => {
+                return ExoValue::Error(String::from(
+                    "usage: net.dns_srv(name)\n例: net.dns_srv(\"_sip._tcp.example.com\")",
+                ));
+            }
+        };
+
+        match crate::net::services::dns::resolve_srv(hostname).await {
+            Some(records) if !records.is_empty() => {
+                let values: Vec<ExoValue> = records
+                    .into_iter()
+                    .map(|record| {
+                        let mut map = BTreeMap::new();
+                        map.insert(
+                            String::from("priority"),
+                            ExoValue::Int(i64::from(record.priority)),
+                        );
+                        map.insert(
+                            String::from("weight"),
+                            ExoValue::Int(i64::from(record.weight)),
+                        );
+                        map.insert(String::from("port"), ExoValue::Int(i64::from(record.port)));
+                        map.insert(
+                            String::from("target"),
+                            ExoValue::String(Cow::Owned(record.target.to_owned_string())),
+                        );
+                        ExoValue::Map(map)
+                    })
+                    .collect();
+                ExoValue::Array(values)
+            }
+            _ => ExoValue::Error(format!("DNS SRV resolution failed for '{}'", hostname)),
+        }
+    }
+
+    /// DNS PTR 逆引き (IPv4)
+    ///
+    /// usage: net.dns_ptr("1.2.3.4")
+    pub async fn dns_reverse_ipv4(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let ip = match args.first() {
+            Some(value) => match Self::parse_ipv4_arg(value) {
+                Ok(octets) => crate::net::l3::ipv4::Ipv4Address::new(octets),
+                Err(err) => {
+                    return ExoValue::Error(format!(
+                        "usage: net.dns_ptr(ipv4)\n例: net.dns_ptr(\"1.2.3.4\")\nerror: {}",
+                        err
+                    ));
+                }
+            },
+            None => {
+                return ExoValue::Error(String::from(
+                    "usage: net.dns_ptr(ipv4)\n例: net.dns_ptr(\"1.2.3.4\")",
+                ));
+            }
+        };
+
+        match crate::net::services::dns::resolve_ptr_ipv4(ip).await {
+            Some(name) => ExoValue::String(Cow::Owned(name.to_owned_string())),
+            None => ExoValue::Error(String::from("DNS PTR resolution failed")),
+        }
+    }
+
     // ================================================================
     // ネットワーク診断・スナップショット
     // ================================================================
@@ -1309,7 +1420,11 @@ impl ShellNamespace for NetNamespace {
                 "firewall_clear" => Self::firewall_clear().await,
                 "firewall_policy" => Self::firewall_policy(_args).await,
                 // DNS
-                "dns" | "resolve" => Self::dns_resolve(_args).await,
+                "dns" | "resolve" | "dns4" => Self::dns_resolve(_args).await,
+                "dns6" => Self::dns_resolve_ipv6(_args).await,
+                "dns_txt" => Self::dns_resolve_txt(_args).await,
+                "dns_srv" => Self::dns_resolve_srv(_args).await,
+                "dns_ptr" => Self::dns_reverse_ipv4(_args).await,
                 // 診断
                 "snapshot" => Self::snapshot().await,
                 "events" => Self::events(_args).await,
@@ -1321,7 +1436,8 @@ impl ShellNamespace for NetNamespace {
                      routes, route_add, route_del,\n  \
                      firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
                      firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
-                     dns/resolve, snapshot, events,\n  \
+                     dns/dns4/resolve, dns6, dns_txt, dns_srv, dns_ptr,\n  \
+                     snapshot, events,\n  \
                      dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
                     method
                 )),

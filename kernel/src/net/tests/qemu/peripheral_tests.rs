@@ -346,6 +346,30 @@ pub fn dns_tcp_message_length_smoke() -> bool {
     run_case!(dns::tests::test_tcp_message_length)
 }
 
+pub fn dns_parse_response_preserves_unknown_rtype_smoke() -> bool {
+    run_case!(dns::tests::test_parse_response_preserves_unknown_rtype)
+}
+
+pub fn dns_build_prioritized_server_list_ipv4_then_ipv6_smoke() -> bool {
+    run_case!(dns::tests::test_build_prioritized_server_list_ipv4_then_ipv6)
+}
+
+pub fn dns_ptr_ipv4_query_name_smoke() -> bool {
+    run_case!(dns::tests::test_ptr_ipv4_query_name)
+}
+
+pub fn dns_resolve_txt_from_records_filters_name_smoke() -> bool {
+    run_case!(dns::tests::test_resolve_txt_from_records_filters_name)
+}
+
+pub fn dns_resolve_srv_from_records_returns_structs_smoke() -> bool {
+    run_case!(dns::tests::test_resolve_srv_from_records_returns_structs)
+}
+
+pub fn dns_resolve_ptr_from_records_follows_cname_chain_smoke() -> bool {
+    run_case!(dns::tests::test_resolve_ptr_from_records_follows_cname_chain)
+}
+
 pub fn mdns_constants_smoke() -> bool {
     run_case!(mdns::tests::test_constants)
 }

@@ -151,8 +151,13 @@ impl ExoShell {
     net.firewall_policy(dir, action) - Set default policy (CAP_NET_ADMIN)
 
   net.* - DNS & Diagnostics
-    net.dns("hostname")   - Resolve hostname to IPv4
-    net.resolve("host")   - Alias for dns()
+        net.dns("hostname")   - Resolve hostname to IPv4
+        net.dns4("hostname")  - Alias for dns()
+        net.resolve("host")   - Alias for dns()
+        net.dns6("hostname")  - Resolve hostname to IPv6 (AAAA)
+        net.dns_txt("host")   - Resolve TXT records
+        net.dns_srv("name")   - Resolve SRV records
+        net.dns_ptr("ipv4")   - Reverse lookup (PTR)
     net.snapshot()        - Full network diagnostic snapshot
     net.events(limit?)    - Recent network events (default: 20)
 
@@ -471,7 +476,12 @@ impl ExoShell {
                 "firewall_clear",
                 "firewall_policy",
                 "dns",
+                "dns4",
                 "resolve",
+                "dns6",
+                "dns_txt",
+                "dns_srv",
+                "dns_ptr",
                 "snapshot",
                 "events",
             ],

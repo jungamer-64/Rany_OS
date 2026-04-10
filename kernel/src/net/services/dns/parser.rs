@@ -493,7 +493,7 @@ impl DnsClient {
 
         DnsRecordMeta {
             name: header.name,
-            rtype: DnsQueryType::from_u16(header.rtype).unwrap_or(DnsQueryType::A),
+            rtype: DnsRecordType::from_u16(header.rtype),
             rclass: self.record_class_from_u16(header.rclass),
             ttl: header.ttl,
             data: record_data,

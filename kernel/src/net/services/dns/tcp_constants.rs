@@ -103,6 +103,36 @@ pub async fn resolve_ipv6(name: &str) -> Option<Ipv6Address> {
     client.resolve_ipv6(name).await
 }
 
+/// 非同期でTXTレコードを解決 (Global API)
+pub async fn resolve_txt(name: &str) -> Option<Vec<DnsTxtView>> {
+    let client = match super::shared_client_lock().lock() {
+        Ok(g) => g.as_ref().cloned(),
+        Err(_) => None,
+    }?;
+
+    client.resolve_txt(name).await
+}
+
+/// 非同期でSRVレコードを解決 (Global API)
+pub async fn resolve_srv(name: &str) -> Option<Vec<DnsSrvRecord>> {
+    let client = match super::shared_client_lock().lock() {
+        Ok(g) => g.as_ref().cloned(),
+        Err(_) => None,
+    }?;
+
+    client.resolve_srv(name).await
+}
+
+/// 非同期でIPv4逆引き（PTR）を解決 (Global API)
+pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<DnsNameView> {
+    let client = match super::shared_client_lock().lock() {
+        Ok(g) => g.as_ref().cloned(),
+        Err(_) => None,
+    }?;
+
+    client.resolve_ptr_ipv4(ip).await
+}
+
 /// Build a DNS query for TCP transport (global API)
 pub fn build_tcp_query_payload(
     name: &str,

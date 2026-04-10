@@ -83,6 +83,45 @@ impl DnsQueryType {
     }
 }
 
+/// DNSレコードタイプ（未知タイプを保持）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsRecordType {
+    /// 既知の DNS クエリタイプ
+    Known(DnsQueryType),
+    /// 未知/未対応のレコードタイプ（生の `u16`）
+    Unknown(u16),
+}
+
+impl DnsRecordType {
+    /// `u16` からレコードタイプを構築
+    pub fn from_u16(value: u16) -> Self {
+        DnsQueryType::from_u16(value)
+            .map(Self::Known)
+            .unwrap_or(Self::Unknown(value))
+    }
+
+    /// 生の type 値を取得
+    pub fn as_u16(self) -> u16 {
+        match self {
+            Self::Known(kind) => kind as u16,
+            Self::Unknown(value) => value,
+        }
+    }
+
+    /// 既知タイプかつ指定 `DnsQueryType` と一致するか
+    pub fn is(self, expected: DnsQueryType) -> bool {
+        matches!(self, Self::Known(kind) if kind == expected)
+    }
+
+    /// 既知タイプなら `DnsQueryType` を返す
+    pub fn as_known(self) -> Option<DnsQueryType> {
+        match self {
+            Self::Known(kind) => Some(kind),
+            Self::Unknown(_) => None,
+        }
+    }
+}
+
 /// DNSクエリクラス
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
@@ -279,13 +318,26 @@ pub struct DnsRecordMeta {
     /// レコード名
     pub name: DnsNameView,
     /// レコードタイプ
-    pub rtype: DnsQueryType,
+    pub rtype: DnsRecordType,
     /// レコードクラス
     pub rclass: DnsQueryClass,
     /// TTL (秒)
     pub ttl: u32,
     /// レコードデータ
     pub data: DnsRecordData,
+}
+
+/// SRV resolve API の出力型。
+#[derive(Debug, Clone)]
+pub struct DnsSrvRecord {
+    /// 優先度
+    pub priority: u16,
+    /// ウェイト
+    pub weight: u16,
+    /// ポート
+    pub port: u16,
+    /// ターゲット
+    pub target: DnsNameView,
 }
 
 /// DNS 応答 view。
@@ -467,6 +519,15 @@ pub struct DnsClient {
     stats: DnsStats,
     /// 保留中クエリのトランザクションIDセット (Security: RFC 5452 - キャッシュポイズニング防止)
     pending_ids: PoisonLock<BTreeMap<u16, u64>>,
+}
+
+/// DNSサーバーアドレス（IPv4 / IPv6）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsServerAddr {
+    /// IPv4 DNS サーバー
+    V4(Ipv4Address),
+    /// IPv6 DNS サーバー
+    V6(Ipv6Address),
 }
 
 /// DNS応答あたりの最大回答数 (DoS防止)

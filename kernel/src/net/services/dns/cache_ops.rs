@@ -118,6 +118,86 @@ impl DnsClient {
         self.resolve_ipv6_from_records(&response.records, name)
     }
 
+    /// 非同期でTXTレコードを解決
+    pub async fn resolve_txt(&self, name: &str) -> Option<Vec<DnsTxtView>> {
+        let tick = crate::task::current_tick();
+        let key = name.to_ascii_lowercase();
+
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(entry) = cache.lookup(&key, tick) {
+                if entry.negative {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+
+                let cached = self.resolve_txt_from_records(&entry.records, name);
+                if !cached.is_empty() {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(cached);
+                }
+            }
+        }
+        self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let response = self.query_internal(name, DnsQueryType::TXT).await.ok()?;
+        let records = self.resolve_txt_from_records(&response.records, name);
+        (!records.is_empty()).then_some(records)
+    }
+
+    /// 非同期でSRVレコードを解決
+    pub async fn resolve_srv(&self, name: &str) -> Option<Vec<DnsSrvRecord>> {
+        let tick = crate::task::current_tick();
+        let key = name.to_ascii_lowercase();
+
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(entry) = cache.lookup(&key, tick) {
+                if entry.negative {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+
+                let cached = self.resolve_srv_from_records(&entry.records, name);
+                if !cached.is_empty() {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(cached);
+                }
+            }
+        }
+        self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let response = self.query_internal(name, DnsQueryType::SRV).await.ok()?;
+        let records = self.resolve_srv_from_records(&response.records, name);
+        (!records.is_empty()).then_some(records)
+    }
+
+    /// 非同期でIPv4アドレスの逆引き（PTR）を解決
+    pub async fn resolve_ptr_ipv4(&self, ip: Ipv4Address) -> Option<DnsNameView> {
+        let query_name = Self::ptr_ipv4_query_name(ip);
+        let tick = crate::task::current_tick();
+        let key = query_name.to_ascii_lowercase();
+
+        if let Ok(cache) = self.cache.lock() {
+            if let Some(entry) = cache.lookup(&key, tick) {
+                if entry.negative {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+
+                if let Some(cached) = self.resolve_ptr_from_records(&entry.records, &query_name) {
+                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(cached);
+                }
+            }
+        }
+        self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
+
+        let response = self
+            .query_internal(&query_name, DnsQueryType::PTR)
+            .await
+            .ok()?;
+        self.resolve_ptr_from_records(&response.records, &query_name)
+    }
+
     fn lookup_ipv4_cache(&self, name: &str, current_tick: u64) -> Ipv4CacheLookup {
         let key = name.to_ascii_lowercase();
         let result = match self.cache.lock() {
@@ -192,13 +272,107 @@ impl DnsClient {
 
     fn cname_target_for_name(&self, records: &[DnsRecordMeta], name: &str) -> Option<String> {
         records.iter().find_map(|record| {
-            if record.rtype == DnsQueryType::CNAME && record.name.eq_ignore_ascii_case(name) {
+            if record.rtype.is(DnsQueryType::CNAME) && record.name.eq_ignore_ascii_case(name) {
                 if let DnsRecordData::Name(alias) = &record.data {
                     return Some(alias.to_lowercase_string());
                 }
             }
             None
         })
+    }
+
+    fn resolve_txt_from_records(
+        &self,
+        records: &[DnsRecordMeta],
+        query_name: &str,
+    ) -> Vec<DnsTxtView> {
+        records
+            .iter()
+            .filter(|record| {
+                record.rtype.is(DnsQueryType::TXT) && record.name.eq_ignore_ascii_case(query_name)
+            })
+            .filter_map(|record| {
+                if let DnsRecordData::TXT(txt) = &record.data {
+                    Some(txt.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn resolve_srv_from_records(
+        &self,
+        records: &[DnsRecordMeta],
+        query_name: &str,
+    ) -> Vec<DnsSrvRecord> {
+        records
+            .iter()
+            .filter(|record| {
+                record.rtype.is(DnsQueryType::SRV) && record.name.eq_ignore_ascii_case(query_name)
+            })
+            .filter_map(|record| {
+                if let DnsRecordData::SRV {
+                    priority,
+                    weight,
+                    port,
+                    target,
+                } = &record.data
+                {
+                    Some(DnsSrvRecord {
+                        priority: *priority,
+                        weight: *weight,
+                        port: *port,
+                        target: target.clone(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn resolve_ptr_from_records(
+        &self,
+        records: &[DnsRecordMeta],
+        query_name: &str,
+    ) -> Option<DnsNameView> {
+        let mut current = query_name.to_ascii_lowercase();
+
+        for _ in 0..DNS_MAX_CNAME_DEPTH {
+            if let Some(hostname) = records.iter().find_map(|record| {
+                if record.name.eq_ignore_ascii_case(&current) && record.rtype.is(DnsQueryType::PTR)
+                {
+                    if let DnsRecordData::Name(hostname) = &record.data {
+                        return Some(hostname.clone());
+                    }
+                }
+                None
+            }) {
+                return Some(hostname);
+            }
+
+            let Some(next) = self.cname_target_for_name(records, &current) else {
+                return None;
+            };
+            if next == current {
+                return None;
+            }
+            current = next;
+        }
+
+        None
+    }
+
+    pub(super) fn ptr_ipv4_query_name(ip: Ipv4Address) -> String {
+        let octets = ip.octets();
+        alloc::format!(
+            "{}.{}.{}.{}.in-addr.arpa",
+            octets[3],
+            octets[2],
+            octets[1],
+            octets[0]
+        )
     }
 
     pub(super) fn resolve_ipv4_from_records(
@@ -210,7 +384,7 @@ impl DnsClient {
 
         for _ in 0..DNS_MAX_CNAME_DEPTH {
             if let Some(ip) = records.iter().find_map(|record| {
-                if record.name.eq_ignore_ascii_case(&current) {
+                if record.name.eq_ignore_ascii_case(&current) && record.rtype.is(DnsQueryType::A) {
                     if let DnsRecordData::A(ip) = &record.data {
                         return Some(*ip);
                     }
@@ -241,7 +415,8 @@ impl DnsClient {
 
         for _ in 0..DNS_MAX_CNAME_DEPTH {
             if let Some(ip) = records.iter().find_map(|record| {
-                if record.name.eq_ignore_ascii_case(&current) {
+                if record.name.eq_ignore_ascii_case(&current) && record.rtype.is(DnsQueryType::AAAA)
+                {
                     if let DnsRecordData::AAAA(ip) = &record.data {
                         return Some(*ip);
                     }
@@ -268,6 +443,16 @@ impl DnsClient {
             Ok(servers) => servers.iter().take(DNS_MAX_SERVERS).copied().collect(),
             Err(_) => {
                 log::error!("[NET] DNS IPv4 Servers lock poisoned - no servers available");
+                Vec::new()
+            }
+        }
+    }
+
+    pub(super) fn ipv6_servers_snapshot(&self) -> Vec<Ipv6Address> {
+        match self.ipv6_servers.lock() {
+            Ok(servers) => servers.iter().take(DNS_MAX_SERVERS).copied().collect(),
+            Err(_) => {
+                log::error!("[NET] DNS IPv6 Servers lock poisoned - no servers available");
                 Vec::new()
             }
         }

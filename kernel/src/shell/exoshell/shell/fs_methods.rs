@@ -44,7 +44,11 @@ impl ExoShell {
             "firewall_clear" => NetNamespace::firewall_clear().await,
             "firewall_policy" => NetNamespace::firewall_policy(&args).await,
             // DNS
-            "dns" | "resolve" => NetNamespace::dns_resolve(&args).await,
+            "dns" | "resolve" | "dns4" => NetNamespace::dns_resolve(&args).await,
+            "dns6" => NetNamespace::dns_resolve_ipv6(&args).await,
+            "dns_txt" => NetNamespace::dns_resolve_txt(&args).await,
+            "dns_srv" => NetNamespace::dns_resolve_srv(&args).await,
+            "dns_ptr" => NetNamespace::dns_reverse_ipv4(&args).await,
             // 診断
             "snapshot" => NetNamespace::snapshot().await,
             "events" => NetNamespace::events(&args).await,
@@ -106,7 +110,7 @@ impl ExoShell {
                        interfaces/ifaces, if_up, if_down, routes, route_add, route_del,\n  \
                        firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
                        firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
-                       dns/resolve, snapshot, events,\n  \
+                       dns/dns4/resolve, dns6, dns_txt, dns_srv, dns_ptr, snapshot, events,\n  \
                        dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
             ),
         }

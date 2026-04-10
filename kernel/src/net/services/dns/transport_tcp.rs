@@ -7,12 +7,12 @@ impl DnsClient {
         &self,
         socket: &crate::net::l4::udp::UdpEndpoint,
         query_payload: kernel_api::resource::net::PacketPayload,
-        server: Ipv4Address,
+        server: DnsServerAddr,
         name: &str,
         qtype: DnsQueryType,
         tick: u64,
     ) -> Result<DnsResponseView, &'static str> {
-        let dest = UdpAddr::new(server, DNS_PORT);
+        let dest = Self::udp_addr_for_server(server);
         if socket.send(query_payload.clone(), dest).await.is_err() {
             return Err("UDP send failed");
         }
@@ -21,7 +21,7 @@ impl DnsClient {
         while attempt < DNS_MAX_RETRIES {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
                 TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
-                    if src.ip_v4() == Some(server) && src.port() == DNS_PORT {
+                    if Self::source_matches_server(src, server) && src.port() == DNS_PORT {
                         let parsed = self.parse_response_payload(&packet, tick, name, qtype);
                         if let Some(parsed) = parsed {
                             return parsed.map_err(|_| "Parse error");
@@ -50,7 +50,7 @@ impl DnsClient {
     /// DNS query over TCP (RFC 7766)
     async fn query_tcp(
         &self,
-        server: Ipv4Address,
+        server: DnsServerAddr,
         name: &str,
         qtype: DnsQueryType,
     ) -> Result<DnsResponseView, &'static str> {
@@ -77,8 +77,7 @@ impl DnsClient {
                 .map(Some)
         }
 
-        use crate::net::l4::endpoint::types::EndpointAddr;
-        let dest = EndpointAddr::new(server.octets(), DNS_PORT);
+        let dest = Self::endpoint_addr_for_server(server);
 
         let mut connection = crate::net::l4::tcp::TcpConnection::dial_in(
             crate::net::runtime::default_runtime(),
@@ -123,6 +122,31 @@ impl DnsClient {
         self.parse_response_payload(&msg_data, tick, name, qtype)
             .ok_or("TCP fallback requested unexpectedly")?
             .map_err(|_| "Parse error")
+    }
+
+    fn udp_addr_for_server(server: DnsServerAddr) -> UdpAddr {
+        match server {
+            DnsServerAddr::V4(ip) => UdpAddr::new(ip, DNS_PORT),
+            DnsServerAddr::V6(ip) => UdpAddr::new_v6(ip, DNS_PORT),
+        }
+    }
+
+    fn source_matches_server(src: UdpAddr, server: DnsServerAddr) -> bool {
+        match server {
+            DnsServerAddr::V4(ip) => src.ip_v4() == Some(ip),
+            DnsServerAddr::V6(ip) => src.ip_v6() == Some(ip),
+        }
+    }
+
+    fn endpoint_addr_for_server(
+        server: DnsServerAddr,
+    ) -> crate::net::l4::endpoint::types::EndpointAddr {
+        use crate::net::l4::endpoint::types::EndpointAddr;
+
+        match server {
+            DnsServerAddr::V4(ip) => EndpointAddr::new(ip.octets(), DNS_PORT),
+            DnsServerAddr::V6(ip) => EndpointAddr::new_v6(ip.octets(), DNS_PORT),
+        }
     }
 
     /// Parse a DNS response received over TCP

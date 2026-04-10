@@ -8,7 +8,9 @@ impl DnsClient {
         qtype: DnsQueryType,
     ) -> Result<DnsResponseView, &'static str> {
         let tick = crate::task::current_tick();
-        let servers = self.ipv4_servers_snapshot();
+        let ipv4_servers = self.ipv4_servers_snapshot();
+        let ipv6_servers = self.ipv6_servers_snapshot();
+        let servers = Self::build_prioritized_server_list(&ipv4_servers, &ipv6_servers);
         if servers.is_empty() {
             return Err("No DNS server configured");
         }
@@ -31,6 +33,16 @@ impl DnsClient {
         result
     }
 
+    pub(super) fn build_prioritized_server_list(
+        ipv4_servers: &[Ipv4Address],
+        ipv6_servers: &[Ipv6Address],
+    ) -> Vec<DnsServerAddr> {
+        let mut servers = Vec::with_capacity(ipv4_servers.len() + ipv6_servers.len());
+        servers.extend(ipv4_servers.iter().copied().map(DnsServerAddr::V4));
+        servers.extend(ipv6_servers.iter().copied().map(DnsServerAddr::V6));
+        servers
+    }
+
     fn bind_udp_socket(&self) -> Result<crate::net::l4::udp::UdpEndpoint, &'static str> {
         crate::net::l4::udp::UdpEndpoint::bind_in(
             crate::net::runtime::default_runtime(),
@@ -45,7 +57,7 @@ impl DnsClient {
         &self,
         socket: &crate::net::l4::udp::UdpEndpoint,
         query_payload: kernel_api::resource::net::PacketPayload,
-        servers: &[Ipv4Address],
+        servers: &[DnsServerAddr],
         name: &str,
         qtype: DnsQueryType,
         tick: u64,
