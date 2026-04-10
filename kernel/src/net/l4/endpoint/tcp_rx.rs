@@ -21,7 +21,7 @@ use super::ooo_queue;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
-use super::segment::{TcpSegmentBuilder, send_tcp_segment_packet};
+use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 use super::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
@@ -241,14 +241,14 @@ fn send_challenge_ack(tcb: &TcpControlBlockEntry) {
     let Ok(ack) = builder.build_checked_packet(tcb.local, tcb.remote) else {
         return;
     };
-    send_tcp_segment_packet(tcb.local, tcb.remote, ack);
+    send_tcp_segment_payload(tcb.local, tcb.remote, ack);
 }
 
 fn send_control_segment(local: EndpointAddr, remote: EndpointAddr, builder: TcpSegmentBuilder) {
     let Ok(segment) = builder.build_checked_packet(local, remote) else {
         return;
     };
-    send_tcp_segment_packet(local, remote, segment);
+    send_tcp_segment_payload(local, remote, segment);
 }
 
 /// TCPチェックサム検証（IPv4疑似ヘッダ込み）

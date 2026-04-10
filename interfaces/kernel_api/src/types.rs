@@ -529,6 +529,10 @@ impl PacketChain {
         &self.segments
     }
 
+    pub fn segments_mut(&mut self) -> &mut [PacketRef] {
+        &mut self.segments
+    }
+
     pub fn into_segments(self) -> Vec<PacketRef> {
         self.segments
     }
@@ -570,6 +574,22 @@ impl PacketChain {
 pub enum PacketPayload {
     Single(PacketRef),
     Chain(PacketChain),
+}
+
+impl PacketPayload {
+    pub fn segments(&self) -> &[PacketRef] {
+        match self {
+            Self::Single(packet) => core::slice::from_ref(packet),
+            Self::Chain(chain) => chain.segments(),
+        }
+    }
+
+    pub fn segments_mut(&mut self) -> &mut [PacketRef] {
+        match self {
+            Self::Single(packet) => core::slice::from_mut(packet),
+            Self::Chain(chain) => chain.segments_mut(),
+        }
+    }
 }
 
 impl Default for PacketPayload {

@@ -139,11 +139,11 @@ pub(super) fn apply_tcp_checksum_for_addrs(
     remote: EndpointAddr,
 ) -> EndpointResult<()> {
     if let Some((lv4, rv4)) = endpoint_ipv4_pair(local, remote) {
-        crate::net::l4::endpoint::segment::TcpSegmentBuilder::calculate_checksum(segment, lv4, rv4);
+        crate::net::l4::endpoint::segment::TcpSegmentBuilder::calculate_checksum_bytes(segment, lv4, rv4);
         return Ok(());
     }
     if endpoint_is_native_v6_pair(local, remote) {
-        crate::net::l4::endpoint::segment::TcpSegmentBuilder::calculate_checksum_v6(
+        crate::net::l4::endpoint::segment::TcpSegmentBuilder::calculate_checksum_v6_bytes(
             segment,
             crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
             crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),

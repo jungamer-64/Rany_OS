@@ -126,115 +126,63 @@ impl TcpSegmentBuilder {
         self
     }
 
-    /// URGフラグ追加
-    pub fn urg(mut self) -> Self {
-        self.flags |= tcp_flags::URG;
-        self
-    }
-
-    /// ECN-Echo flag (RFC 3168)
-    pub fn ece(mut self) -> Self {
-        self.flags |= tcp_flags::ECE;
-        self
-    }
-
-    /// Congestion Window Reduced flag (RFC 3168)
-    pub fn cwr(mut self) -> Self {
-        self.flags |= tcp_flags::CWR;
-        self
-    }
-
-    /// Urgent pointer設定
-    /// Note: URGフラグも自動的に設定される
-    pub fn urgent_pointer(mut self, ptr: u16) -> Self {
-        if ptr > 0 {
-            self.flags |= tcp_flags::URG;
-        }
-        self.urgent_ptr = ptr;
-        self
-    }
-
-    /// ウィンドウサイズ設定
+    /// Window設定
     pub fn window(mut self, window: u16) -> Self {
         self.window = window;
         self
     }
 
-    /// ペイロード設定（packet-backed payload から）
+    /// データ設定
+    pub fn payload(mut self, data: &[u8]) -> Self {
+        if let Some(payload) = crate::net::payload::payload_from_bytes(data) {
+            self.data = TcpSegmentPayload::Packet(payload);
+        }
+        self
+    }
+
+    /// パケットデータ設定（zero-copy）
     pub fn payload_packet(mut self, payload: PacketPayload) -> Self {
-        self.data = if payload.total_len() == 0 {
-            TcpSegmentPayload::Empty
-        } else {
-            TcpSegmentPayload::Packet(payload)
-        };
+        self.data = TcpSegmentPayload::Packet(payload);
         self
     }
 
-    // ====================
-    // TCPオプション追加メソッド
-    // ====================
-
-    /// MSS (Maximum Segment Size) オプション追加
-    /// Kind=2, Length=4, MSS=value
-    pub fn mss(mut self, mss: u16) -> Self {
-        self.options.push(2); // Kind
-        self.options.push(4); // Length
-        self.options.extend_from_slice(&mss.to_be_bytes());
-        self
-    }
-
-    /// Window Scale オプション追加
-    /// Kind=3, Length=3, Shift=value
-    pub fn window_scale(mut self, scale: u8) -> Self {
-        self.options.push(3); // Kind
-        self.options.push(3); // Length
-        self.options.push(scale);
-        self
-    }
-
-    /// SACK Permitted オプション追加
-    /// Kind=4, Length=2
-    pub fn sack_permitted(mut self) -> Self {
-        self.options.push(4); // Kind
-        self.options.push(2); // Length
-        self
-    }
-
-    /// SACK ブロックオプション追加 (RFC 2018)
-    /// Kind=5, Length=2+8*N, N個の (left_edge, right_edge) ペア
-    pub fn sack_blocks(mut self, blocks: &[(u32, u32)]) -> Self {
-        if blocks.is_empty() {
-            return self;
-        }
-        let num = blocks.len().min(4); // 最大4ブロック
-        let opt_len = 2 + num * 8; // Kind(1) + Length(1) + N*8
-        self.options.push(5); // Kind = SACK
-        self.options.push(opt_len as u8);
-        for (left, right) in blocks.iter().take(num) {
-            self.options.extend_from_slice(&left.to_be_bytes());
-            self.options.extend_from_slice(&right.to_be_bytes());
+    /// TCPオプション追加 (MSS等)
+    pub fn option(mut self, kind: u8, data: &[u8]) -> Self {
+        if self.options.len() + 2 + data.len() <= 40 {
+            self.options.push(kind);
+            self.options.push((2 + data.len()) as u8);
+            self.options.extend_from_slice(data);
         }
         self
     }
 
-    /// Timestamp オプション追加
-    /// Kind=8, Length=10, TSval=ts_val, TSecr=ts_ecr
-    pub fn timestamp(mut self, ts_val: u32, ts_ecr: u32) -> Self {
-        self.options.push(8); // Kind
-        self.options.push(10); // Length
-        self.options.extend_from_slice(&ts_val.to_be_bytes());
-        self.options.extend_from_slice(&ts_ecr.to_be_bytes());
-        self
+    pub fn mss(self, mss: u16) -> Self {
+        self.option(2, &mss.to_be_bytes())
     }
 
-    /// NOP (No Operation) オプション追加 - パディング用
+    pub fn window_scale(self, scale: u8) -> Self {
+        self.option(3, &[scale])
+    }
+
+    pub fn sack_permitted(self) -> Self {
+        self.option(4, &[])
+    }
+
+    pub fn timestamp(self, ts_val: u32, ts_ecr: u32) -> Self {
+        let mut data = [0u8; 8];
+        data[0..4].copy_from_slice(&ts_val.to_be_bytes());
+        data[4..8].copy_from_slice(&ts_ecr.to_be_bytes());
+        self.option(8, &data)
+    }
+
     pub fn nop(mut self) -> Self {
-        self.options.push(1); // Kind=1 (NOP)
+        if self.options.len() < 40 {
+            self.options.push(1);
+        }
         self
     }
 
-    /// SYN/SYN-ACK用の標準オプションセットを追加
-    /// MSS + Window Scale (optional) + SACK Permitted (optional) + Timestamp (optional)
+    /// SYN用の標準オプションを構築
     pub fn syn_options(
         self,
         mss: u16,
@@ -243,57 +191,48 @@ impl TcpSegmentBuilder {
         ts_val: Option<u32>,
     ) -> Self {
         let mut builder = self.mss(mss);
-
-        if let Some(ws) = window_scale {
-            builder = builder.window_scale(ws);
+        if let Some(scale) = window_scale {
+            builder = builder.window_scale(scale);
         }
-
         if sack_permitted {
             builder = builder.sack_permitted();
         }
-
         if let Some(val) = ts_val {
             builder = builder.timestamp(val, 0);
         }
-
         builder
     }
-    /// オプション長をパディングして4バイト境界に揃える
+
     fn pad_options(&mut self) {
-        // 20バイト + オプション長が4の倍数になるようパディング
         let options_len = self.options.len();
         let remainder = options_len % 4;
         if remainder != 0 {
             let padding = 4 - remainder;
             for _ in 0..padding {
-                self.options.push(0); // End of Options (Kind=0) または NOP
+                self.options.push(0);
             }
         }
     }
 
-    /// TCPセグメントをバイト列に構築
     pub fn build(mut self) -> Vec<u8> {
-        // オプションをパディング
         self.pad_options();
-
-        // RFC 793: Maximum TCP header length is 60 bytes (20 bytes fixed + 40 bytes options)
         if self.options.len() > 40 {
             self.options.truncate(40);
         }
-
         let options_len = self.options.len();
         let header_len = 20 + options_len;
-        let data_offset = (header_len / 4) as u8; // 4バイト単位
+        let data_offset = (header_len / 4) as u8;
         let total_len = header_len + self.data.len();
-
         let mut segment = alloc::vec![0u8; total_len];
-        self.write_segment_bytes(&mut segment, header_len, data_offset, options_len);
+        self.write_header_bytes(&mut segment, header_len, data_offset, options_len);
+        if self.data.len() > 0 {
+            self.data.copy_into(&mut segment[header_len..]);
+        }
         segment
     }
 
-    pub fn build_packet(mut self) -> Result<PacketRef, EndpointError> {
+    pub fn build_packet(mut self) -> Result<PacketPayload, EndpointError> {
         self.pad_options();
-
         if self.options.len() > 40 {
             self.options.truncate(40);
         }
@@ -301,137 +240,188 @@ impl TcpSegmentBuilder {
         let options_len = self.options.len();
         let header_len = 20 + options_len;
         let data_offset = (header_len / 4) as u8;
-        let total_len = header_len + self.data.len();
-        let mut packet =
-            crate::net::payload::alloc_packet_with_headroom(total_len, DEFAULT_PACKET_HEADROOM)
-                .ok_or(EndpointError::ResourceExhausted)?;
-        self.write_segment_bytes(packet.data_mut(), header_len, data_offset, options_len);
-        Ok(packet)
+
+        let src_port = self.src_port;
+        let dst_port = self.dst_port;
+        let seq_num = self.seq_num;
+        let ack_num = self.ack_num;
+        let flags = self.flags;
+        let window = self.window;
+        let urgent_ptr = self.urgent_ptr;
+        let options = core::mem::take(&mut self.options);
+        let segment_payload = core::mem::replace(&mut self.data, TcpSegmentPayload::Empty);
+
+        let write_header = |segment: &mut [u8]| {
+            debug_assert!(segment.len() >= header_len);
+            segment[0..2].copy_from_slice(&src_port.to_be_bytes());
+            segment[2..4].copy_from_slice(&dst_port.to_be_bytes());
+            segment[4..8].copy_from_slice(&seq_num.to_be_bytes());
+            segment[8..12].copy_from_slice(&ack_num.to_be_bytes());
+            let data_off_flags = ((data_offset as u16) << 12) | (flags as u16);
+            segment[12..14].copy_from_slice(&data_off_flags.to_be_bytes());
+            segment[14..16].copy_from_slice(&window.to_be_bytes());
+            segment[16..18].copy_from_slice(&0u16.to_be_bytes());
+            segment[18..20].copy_from_slice(&urgent_ptr.to_be_bytes());
+            if !options.is_empty() {
+                segment[20..20 + options_len].copy_from_slice(&options);
+            }
+        };
+
+        match segment_payload {
+            TcpSegmentPayload::Empty => {
+                let mut packet = crate::net::payload::alloc_packet_with_headroom(header_len, DEFAULT_PACKET_HEADROOM).ok_or(EndpointError::ResourceExhausted)?;
+                write_header(packet.data_mut());
+                Ok(PacketPayload::Single(packet))
+            }
+            TcpSegmentPayload::Packet(mut payload) => {
+                let can_retreat = if let PacketPayload::Single(ref mut packet) = payload {
+                    packet.retreat(header_len)
+                } else {
+                    false
+                };
+
+                if can_retreat {
+                    if let PacketPayload::Single(ref mut packet) = payload {
+                        write_header(packet.data_mut());
+                    }
+                    Ok(payload)
+                } else {
+                    let mut header_packet = crate::net::payload::alloc_packet_with_headroom(header_len, DEFAULT_PACKET_HEADROOM).ok_or(EndpointError::ResourceExhausted)?;
+                    write_header(header_packet.data_mut());
+                    Ok(payload.prepend(header_packet))
+                }
+            }
+        }
     }
 
     pub fn build_checked_packet(
         self,
         local: EndpointAddr,
         remote: EndpointAddr,
-    ) -> Result<PacketRef, EndpointError> {
-        let mut packet = self.build_packet()?;
+    ) -> Result<PacketPayload, EndpointError> {
+        let mut payload = self.build_packet()?;
         if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
-            Self::calculate_checksum(packet.data_mut(), src_v4, dst_v4);
-            return Ok(packet);
+            Self::calculate_checksum(&mut payload, src_v4, dst_v4);
+            return Ok(payload);
         }
         if endpoint_is_native_v6_pair(local, remote) {
             Self::calculate_checksum_v6(
-                packet.data_mut(),
+                &mut payload,
                 crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
                 crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
             );
-            return Ok(packet);
+            return Ok(payload);
         }
-
-        log::warn!(
-            "[NET][endpoint] mixed TCP address family rejected: {} -> {}",
-            local,
-            remote
-        );
+        log::warn!("[NET][endpoint] mixed TCP address family rejected: {} -> {}", local, remote);
         Err(EndpointError::InvalidArgument)
     }
 
-    fn write_segment_bytes(
+    fn write_header_bytes(
         &self,
         segment: &mut [u8],
         header_len: usize,
         data_offset: u8,
         options_len: usize,
     ) {
-        debug_assert_eq!(segment.len(), header_len + self.data.len());
-
-        // Source port (2 bytes)
+        debug_assert!(segment.len() >= header_len);
         segment[0..2].copy_from_slice(&self.src_port.to_be_bytes());
-        // Destination port (2 bytes)
         segment[2..4].copy_from_slice(&self.dst_port.to_be_bytes());
-        // Sequence number (4 bytes)
         segment[4..8].copy_from_slice(&self.seq_num.to_be_bytes());
-        // ACK number (4 bytes)
         segment[8..12].copy_from_slice(&self.ack_num.to_be_bytes());
-        // Data offset (4 bits) + Reserved (4 bits) + Flags (8 bits)
         let data_off_flags = ((data_offset as u16) << 12) | (self.flags as u16);
         segment[12..14].copy_from_slice(&data_off_flags.to_be_bytes());
-        // Window (2 bytes)
         segment[14..16].copy_from_slice(&self.window.to_be_bytes());
-        // Checksum (2 bytes) - will be calculated later
         segment[16..18].copy_from_slice(&0u16.to_be_bytes());
-        // Urgent pointer (2 bytes)
         segment[18..20].copy_from_slice(&self.urgent_ptr.to_be_bytes());
-
-        // Options
         if !self.options.is_empty() {
             segment[20..20 + options_len].copy_from_slice(&self.options);
         }
+    }
 
-        // Data
-        if self.data.len() > 0 {
-            self.data.copy_into(&mut segment[header_len..]);
+    pub fn calculate_checksum(payload: &mut PacketPayload, src_ip: [u8; 4], dst_ip: [u8; 4]) {
+        if payload.total_len() < 20 { return; }
+        if let Some(first) = payload.segments_mut().first_mut() {
+            let data = first.data_mut();
+            if data.len() >= 20 { data[16] = 0; data[17] = 0; }
+        }
+        use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, pseudo_header_checksum};
+        let src = Ipv4Address::new(src_ip);
+        let dst = Ipv4Address::new(dst_ip);
+        let pseudo = pseudo_header_checksum(src, dst, IpProtocol::Tcp, payload.total_len() as u16);
+        let mut sum = pseudo;
+        let mut byte_idx = 0;
+        let mut prev_byte = 0u8;
+        for chunk in payload.segments() {
+            for &b in chunk.data() {
+                if byte_idx % 2 == 0 { prev_byte = b; }
+                else { sum += u16::from_be_bytes([prev_byte, b]) as u32; }
+                byte_idx += 1;
+            }
+        }
+        if byte_idx % 2 != 0 { sum += u16::from_be_bytes([prev_byte, 0]) as u32; }
+        while sum >> 16 != 0 { sum = (sum & 0xFFFF) + (sum >> 16); }
+        let checksum = !(sum as u16);
+        if let Some(first) = payload.segments_mut().first_mut() {
+            let data = first.data_mut();
+            if data.len() >= 20 { data[16..18].copy_from_slice(&checksum.to_be_bytes()); }
         }
     }
 
-    /// チェックサム計算（疑似ヘッダ込み） — IPv4 用
-    pub fn calculate_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
-        if segment.len() < 20 {
-            return;
+    pub fn calculate_checksum_v6(
+        payload: &mut PacketPayload,
+        src_ip: crate::net::l3::ipv6::Ipv6Address,
+        dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    ) {
+        if payload.total_len() < 20 { return; }
+        if let Some(first) = payload.segments_mut().first_mut() {
+            let data = first.data_mut();
+            if data.len() >= 20 { data[16] = 0; data[17] = 0; }
         }
+        use crate::net::l3::ipv4::IpProtocol;
+        use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
+        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, payload.total_len() as u32);
+        let mut sum = pseudo;
+        let mut byte_idx = 0;
+        let mut prev_byte = 0u8;
+        for chunk in payload.segments() {
+            for &b in chunk.data() {
+                if byte_idx % 2 == 0 { prev_byte = b; }
+                else { sum += u16::from_be_bytes([prev_byte, b]) as u32; }
+                byte_idx += 1;
+            }
+        }
+        if byte_idx % 2 != 0 { sum += u16::from_be_bytes([prev_byte, 0]) as u32; }
+        while sum >> 16 != 0 { sum = (sum & 0xFFFF) + (sum >> 16); }
+        let checksum = !(sum as u16);
+        if let Some(first) = payload.segments_mut().first_mut() {
+            let data = first.data_mut();
+            if data.len() >= 20 { data[16..18].copy_from_slice(&checksum.to_be_bytes()); }
+        }
+    }
 
-        // チェックサムフィールドをゼロに
-        segment[16] = 0;
-        segment[17] = 0;
-
-        use crate::net::l3::ipv4::{
-            IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum,
-        };
+    pub fn calculate_checksum_bytes(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
+        if segment.len() < 20 { return; }
+        segment[16] = 0; segment[17] = 0;
+        use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, pseudo_header_checksum, data_checksum};
         let src = Ipv4Address::new(src_ip);
         let dst = Ipv4Address::new(dst_ip);
         let pseudo = pseudo_header_checksum(src, dst, IpProtocol::Tcp, segment.len() as u16);
         let checksum = data_checksum(segment, pseudo);
-
-        // TCP checksums are allowed to be 0 (0xFFFF one's complement).
-        // Only UDP requires replacing 0 with 0xFFFF.
-
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
 
-    /// TCPチェックサム計算（IPv6擬似ヘッダ）
-    pub fn calculate_checksum_v6(
-        segment: &mut [u8],
-        src_ip: crate::net::l3::ipv6::Ipv6Address,
-        dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    ) {
-        if segment.len() < 20 {
-            return;
-        }
-
-        // Ensure checksum field is zeroed
-        segment[16] = 0;
-        segment[17] = 0;
-
-        use crate::net::l3::ipv4::IpProtocol;
-        use crate::net::l3::ipv4::data_checksum;
+    pub fn calculate_checksum_v6_bytes(segment: &mut [u8], src_ip: crate::net::l3::ipv6::Ipv6Address, dst_ip: crate::net::l3::ipv6::Ipv6Address) {
+        if segment.len() < 20 { return; }
+        segment[16] = 0; segment[17] = 0;
+        use crate::net::l3::ipv4::{IpProtocol, data_checksum};
         use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
-
-        let pseudo =
-            ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
+        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
         let checksum = data_checksum(segment, pseudo);
-
-        // TCP checksums are allowed to be 0 (0xFFFF one's complement).
-        // Only UDP requires replacing 0 with 0xFFFF.
-
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
 }
 
-/// TCPセグメント送信（IP層に渡す） — IPv4/IPv6 デュアルスタック対応
-///
-/// 非同期イベントキュー経由で送信。スタックロックを直接取得せず、
-/// `network_event_task` が一括処理するため、async コンテキストからの
-/// 呼び出しでデッドロックを回避する。
+
 pub fn send_tcp_segment_payload(
     local: EndpointAddr,
     remote: EndpointAddr,

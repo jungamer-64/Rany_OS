@@ -486,7 +486,7 @@ impl TcbTable {
     fn check_zero_window_probes(&self, current_tick: u64) {
         use super::manager::ENDPOINT_MANAGER;
         use super::retransmit::retransmit_queue_push;
-        use super::segment::{TcpSegmentBuilder, send_tcp_segment_packet};
+        use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
         for shard in &self.shards {
             let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
             for (key, entry) in entries.iter_mut() {
@@ -528,11 +528,8 @@ impl TcbTable {
                                     else {
                                         continue;
                                     };
-                                    let retransmit_segment =
-                                        kernel_api::resource::net::PacketPayload::single(
-                                            segment.clone(),
-                                        );
-                                    if send_tcp_segment_packet(key.0, key.1, segment) {
+                                    let retransmit_segment = segment.clone();
+                                    if send_tcp_segment_payload(key.0, key.1, segment) {
                                         retransmit_queue_push(
                                             key.0,
                                             key.1,

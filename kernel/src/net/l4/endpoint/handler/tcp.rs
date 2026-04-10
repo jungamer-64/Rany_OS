@@ -118,7 +118,7 @@ impl NetworkEventHandler {
                 Ok(segment) => segment,
                 Err(e) => return EventHandleResult::ProtocolError(e),
             };
-            let segment_payload = PacketPayload::single(segment);
+            let segment_payload = segment;
             let retransmit_segment = segment_payload.clone();
 
             // パケット送信を試みる
@@ -352,7 +352,7 @@ impl NetworkEventHandler {
         };
 
         if let Err(e) =
-            self.send_tcp_segment(local_addr, remote, PacketPayload::single(syn_segment))
+            self.send_tcp_segment(local_addr, remote, syn_segment)
         {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
@@ -448,7 +448,7 @@ impl NetworkEventHandler {
 
         // パケット送信（IPスタック経由）
         if let Err(e) =
-            self.send_tcp_segment(local_addr, remote, PacketPayload::single(syn_segment))
+            self.send_tcp_segment(local_addr, remote, syn_segment)
         {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
@@ -606,7 +606,7 @@ impl NetworkEventHandler {
                 };
 
                 if let Err(e) =
-                    self.send_tcp_segment(local, remote, PacketPayload::single(fin_segment))
+                    self.send_tcp_segment(local, remote, fin_segment)
                 {
                     log::info!("TCP: Failed to send FIN: {:?}", e);
                     return EventHandleResult::ProtocolError(match e {
@@ -642,7 +642,7 @@ impl NetworkEventHandler {
                 };
 
                 if let Err(e) =
-                    self.send_tcp_segment(local, remote, PacketPayload::single(fin_segment))
+                    self.send_tcp_segment(local, remote, fin_segment)
                 {
                     log::info!("TCP: Failed to send FIN (LastAck): {:?}", e);
                 }
