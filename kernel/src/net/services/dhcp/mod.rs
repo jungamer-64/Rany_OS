@@ -95,14 +95,6 @@ pub(crate) fn primary_v6_client_in(runtime: NetRuntimeHandle) -> Option<Arc<Dhcp
     primary_interface_runtime_in(runtime).map(|runtime| Arc::clone(&runtime.v6))
 }
 
-pub(super) fn payload_span_to_vec(span: &PayloadSpan) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(span.total_len());
-    bytes.resize(span.total_len(), 0);
-    let copied = span.copy_into(&mut bytes);
-    bytes.truncate(copied);
-    bytes
-}
-
 pub(crate) fn ensure_interface_runtime(
     if_id: NetIfId,
     config: NetworkConfig,
@@ -465,11 +457,6 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                             interface_runtime.mac(),
                             lease.ip_address
                         );
-                        let hostname = lease
-                            .hostname
-                            .as_ref()
-                            .map(payload_span_to_vec)
-                            .unwrap_or_default();
                         crate::net::l4::endpoint::event::enqueue_event_ignore_in(
                             runtime,
                             crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
@@ -485,7 +472,8 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                                     .iter()
                                     .map(|a| *a.as_bytes())
                                     .collect(),
-                                hostname,
+                                hostname: lease.hostname.clone(),
+                                domain_name: lease.domain_name.clone(),
                             },
                         );
                     }

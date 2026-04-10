@@ -2043,14 +2043,12 @@ mod tests {
     use kernel_api::resource::net::PacketRef;
 
     unsafe fn borrowed_test_packet(storage: &'static mut [u8], len: usize) -> PacketRef {
-        let bytes = storage[..len].to_vec();
         let mut packet = crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
             storage.as_mut_ptr(),
             storage.len(),
         )
         .expect("create borrowed test packet");
         packet.set_len(len);
-        packet.data_mut()[..len].copy_from_slice(&bytes);
         packet
     }
 

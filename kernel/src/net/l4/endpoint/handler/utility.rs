@@ -65,6 +65,7 @@ impl NetworkEventHandler {
                 gateway,
                 dns_servers,
                 hostname,
+                domain_name,
             } => {
                 let lease = crate::net::services::dhcp::DhcpLease {
                     ip_address: crate::net::l3::ipv4::Ipv4Address::new(ip),
@@ -78,12 +79,8 @@ impl NetworkEventHandler {
                     lease_time: 0,
                     t1: 0,
                     t2: 0,
-                    hostname: if hostname.is_empty() {
-                        None
-                    } else {
-                        crate::net::payload::PayloadSpan::from_bytes(&hostname)
-                    },
-                    domain_name: None,
+                    hostname,
+                    domain_name,
                     obtained_at: crate::task::current_tick(),
                 };
                 let target_if = if_id.map(NetIfId);

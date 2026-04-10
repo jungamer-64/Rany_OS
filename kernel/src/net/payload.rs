@@ -74,6 +74,30 @@ impl PayloadSpan {
             .map(|bytes| bytes[0])
     }
 
+    pub fn read_array<const N: usize>(&self, index: usize) -> Option<[u8; N]> {
+        if index.checked_add(N)? > self.len {
+            return None;
+        }
+        PacketPayloadView::new(&self.payload).read_array(self.offset + index)
+    }
+
+    pub fn read_u8(&self, index: usize) -> Option<u8> {
+        self.read_array::<1>(index).map(|bytes| bytes[0])
+    }
+
+    pub fn read_u16_be(&self, index: usize) -> Option<u16> {
+        self.read_array::<2>(index).map(u16::from_be_bytes)
+    }
+
+    pub fn read_u24_be(&self, index: usize) -> Option<u32> {
+        self.read_array::<3>(index)
+            .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
+    }
+
+    pub fn read_u32_be(&self, index: usize) -> Option<u32> {
+        self.read_array::<4>(index).map(u32::from_be_bytes)
+    }
+
     pub fn as_contiguous_slice(&self) -> Option<&[u8]> {
         match &self.payload {
             PacketPayload::Single(packet) => {
@@ -207,6 +231,31 @@ impl PayloadSpan {
 
         Self::from_range(&self.payload, self.offset + start, end - start)
             .unwrap_or_else(|| Self::from_payload(PacketPayload::default()))
+    }
+
+    pub fn starts_with(&self, prefix: &[u8]) -> bool {
+        prefix
+            .iter()
+            .enumerate()
+            .all(|(index, expected)| self.byte_at(index) == Some(*expected))
+    }
+
+    pub fn ends_with(&self, suffix: &[u8]) -> bool {
+        let Some(start) = self.len.checked_sub(suffix.len()) else {
+            return false;
+        };
+        suffix
+            .iter()
+            .enumerate()
+            .all(|(index, expected)| self.byte_at(start + index) == Some(*expected))
+    }
+
+    pub fn cursor(&self) -> PacketPayloadCursor<'_> {
+        PacketPayloadCursor {
+            view: PacketPayloadView::new(&self.payload),
+            offset: self.offset,
+            end: self.offset.saturating_add(self.len),
+        }
     }
 }
 
@@ -423,6 +472,23 @@ impl<'a> PacketPayloadView<'a> {
         (self.copy_range(offset, &mut out) == N).then_some(out)
     }
 
+    pub fn read_u8(&self, offset: usize) -> Option<u8> {
+        self.read_array::<1>(offset).map(|bytes| bytes[0])
+    }
+
+    pub fn read_u16_be(&self, offset: usize) -> Option<u16> {
+        self.read_array::<2>(offset).map(u16::from_be_bytes)
+    }
+
+    pub fn read_u24_be(&self, offset: usize) -> Option<u32> {
+        self.read_array::<3>(offset)
+            .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
+    }
+
+    pub fn read_u32_be(&self, offset: usize) -> Option<u32> {
+        self.read_array::<4>(offset).map(u32::from_be_bytes)
+    }
+
     pub fn copy_all_into(&self, dst: &mut [u8]) -> usize {
         self.copy_range(0, dst)
     }
@@ -431,6 +497,7 @@ impl<'a> PacketPayloadView<'a> {
         PacketPayloadCursor {
             view: PacketPayloadView::new(self.payload),
             offset: 0,
+            end: self.total_len(),
         }
     }
 }
@@ -438,6 +505,7 @@ impl<'a> PacketPayloadView<'a> {
 pub struct PacketPayloadCursor<'a> {
     view: PacketPayloadView<'a>,
     offset: usize,
+    end: usize,
 }
 
 impl<'a> PacketPayloadCursor<'a> {
@@ -446,7 +514,7 @@ impl<'a> PacketPayloadCursor<'a> {
     }
 
     pub fn remaining(&self) -> usize {
-        self.view.total_len().saturating_sub(self.offset)
+        self.end.saturating_sub(self.offset)
     }
 
     pub fn skip(&mut self, len: usize) -> bool {
@@ -475,6 +543,11 @@ impl<'a> PacketPayloadCursor<'a> {
         self.read_array::<4>().map(u32::from_be_bytes)
     }
 
+    pub fn read_u24_be(&mut self) -> Option<u32> {
+        self.read_array::<3>()
+            .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
+    }
+
     pub fn read_vec(&mut self, len: usize) -> Vec<u8> {
         let bytes = self.view.read_vec(self.offset, len);
         self.offset = self.offset.saturating_add(bytes.len());
@@ -485,6 +558,19 @@ impl<'a> PacketPayloadCursor<'a> {
         let copied = self.view.copy_range(self.offset, dst);
         self.offset = self.offset.saturating_add(copied);
         copied
+    }
+
+    pub fn take_span(&mut self, len: usize) -> Option<PayloadSpan> {
+        if len > self.remaining() {
+            return None;
+        }
+        let span = PayloadSpan::from_range(self.view.payload(), self.offset, len)?;
+        self.offset += len;
+        Some(span)
+    }
+
+    pub fn remaining_span(&self) -> Option<PayloadSpan> {
+        PayloadSpan::from_range(self.view.payload(), self.offset, self.remaining())
     }
 }
 

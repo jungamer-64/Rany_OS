@@ -130,6 +130,8 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Seed DHCP state through the per-interface runtime registry with `ensure_interface_runtime(if_id, config)` and read state via `primary_v4_client_in(runtime)` / `interface_v4_client_in(runtime, if_id)`.
   - DHCPv6 accessor `legacy_v6_client_lock_in(runtime)` ❌ **renamed**
     - Migration: Use `primary_v6_client_lock_in(runtime)`.
+  - `payload_span_to_vec()` と `NetworkEvent::DhcpApplyLease { hostname: Vec<u8> }` / `NetworkEvent::DhcpV6ApplyLease { domain_search: Vec<String> }` ❌ **removed**
+    - Migration: Keep lease metadata packet-backed. Use `Option<PayloadSpan>` for DHCPv4 hostname/domain and `Vec<DnsNameOwned>` for DHCPv6 domain-search payloads.
 
 - `kernel/src/{net/drivers/virtio,integration/virtio_blk,console/virtio_console,console/virtio_input,mm/virtio_balloon}`
   - Zero-index compatibility wrappers (`init_virtio_*()`, `init_virtio_*_for_device()`, `init_virtio_*_with_transport()`, `get_virtio_*_device()`, `handle_virtio_*_interrupt()`, `with_virtio_net()`) ❌ **removed**
@@ -222,6 +224,8 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use `parse_response_payload(&payload, ...)` and `parse_tcp_response_payload(&payload, ...)`.
   - owned-string DNS record variants (`DnsRecord.name: String`, `DnsRecordData::Name(String)`, `DnsRecordData::TXT(String)`, `DnsRecordData::MX(_, String)`, `DnsRecordData::SRV { target: String, .. }`) ❌ **removed**
     - Migration: Use `DnsNameView`, `DnsTxtView`, and `PayloadSpan`-backed record data. Materialize `String` only at the outermost consumer that needs text.
+  - `DnsCache` / mDNS cache の raw `String` key ownership ❌ **removed**
+    - Migration: Use `DnsNameOwned` as the canonical owned cache key for packet-backed DNS/mDNS names. Convert to text only for shell / diagnostics / tests.
   - `Vec<DnsRecord>` response/cache ownership (`parse_* -> Vec<DnsRecord>`, `DnsCacheEntry.records-only` cache entries) ❌ **removed**
     - Migration: Use `DnsResponseView { payload, records }` and cache response payload ownership alongside record metadata.
   - `PacketRef`-only TX callback / queue / driver submit path (`TransmitFn`, runtime device queue, `NetDevicePort::submit_tx(PacketRef, ...)`) ❌ **removed**

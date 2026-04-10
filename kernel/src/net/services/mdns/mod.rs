@@ -24,6 +24,7 @@ use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
 use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::services::dns::DnsNameOwned;
 use crate::sync::PoisonLock;
 
 extern crate alloc;
@@ -87,12 +88,12 @@ pub enum MdnsResult {
     /// クエリ送信が必要
     SendQuery {
         /// 解決対象のホスト名
-        target_name: String,
+        target_name: DnsNameOwned,
     },
     /// 応答送信が必要
     SendResponse {
         /// 応答するホスト名
-        name: String,
+        name: DnsNameOwned,
         /// ホストのIPアドレス
         ip: Ipv4Address,
         /// TTL (秒)
@@ -101,7 +102,7 @@ pub enum MdnsResult {
     /// 名前解決に成功
     Resolved {
         /// 解決されたホスト名
-        name: String,
+        name: DnsNameOwned,
         /// 解決されたIPアドレス
         ip: Ipv4Address,
     },
@@ -117,7 +118,7 @@ pub enum MdnsResult {
 #[derive(Debug, Clone)]
 pub struct MdnsReport {
     /// 送信先ホスト名
-    pub name: String,
+    pub name: DnsNameOwned,
     /// IPアドレス (応答の場合)
     pub ip: Option<Ipv4Address>,
     /// TTL (応答の場合)
@@ -151,7 +152,7 @@ pub struct MdnsService {
     /// 自ホストのIPアドレス
     local_ip: Ipv4Address,
     /// 名前解決キャッシュ (ホスト名 → キャッシュエントリ)
-    cache: BTreeMap<String, MdnsCacheEntry>,
+    cache: BTreeMap<DnsNameOwned, MdnsCacheEntry>,
     /// 送信待ちレポート
     pending_reports: Vec<MdnsReport>,
 }
@@ -237,7 +238,9 @@ impl MdnsService {
                 match result {
                     MdnsResult::SendResponse { name, ip, ttl } => {
                         let mut buffer = [0u8; 512];
-                        if let Some(len) = Self::build_response(&mut buffer, &name, ip, ttl) {
+                        if let Some(len) =
+                            Self::build_response(&mut buffer, &name.to_owned_string(), ip, ttl)
+                        {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
                             if let Some(payload) = build_stack_payload(&buffer[..len]) {
                                 let _ = socket.send(payload, dst).await;
@@ -254,7 +257,12 @@ impl MdnsService {
                     if report.is_response {
                         if let Some(ip) = report.ip {
                             if let Some(len) =
-                                Self::build_response(&mut buffer, &report.name, ip, report.ttl)
+                                Self::build_response(
+                                    &mut buffer,
+                                    &report.name.to_owned_string(),
+                                    ip,
+                                    report.ttl,
+                                )
                             {
                                 let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
                                 if let Some(payload) = build_stack_payload(&buffer[..len]) {
@@ -263,7 +271,9 @@ impl MdnsService {
                             }
                         }
                     } else {
-                        if let Some(len) = Self::build_query(&mut buffer, &report.name) {
+                        if let Some(len) =
+                            Self::build_query(&mut buffer, &report.name.to_owned_string())
+                        {
                             let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
                             if let Some(payload) = build_stack_payload(&buffer[..len]) {
                                 let _ = socket.send(payload, dst).await;
@@ -284,6 +294,10 @@ impl MdnsService {
         let mut name = self.hostname.clone();
         name.push_str(".local");
         name
+    }
+
+    fn fqdn_owned(&self) -> DnsNameOwned {
+        DnsNameOwned::from_ascii_name(&self.fqdn()).expect("valid mDNS hostname")
     }
 
     /// ホスト名を取得
@@ -413,6 +427,7 @@ impl MdnsService {
     ) -> MdnsResult {
         let mut offset = DNS_HEADER_SIZE;
         let our_fqdn = self.fqdn();
+        let our_fqdn_owned = self.fqdn_owned();
 
         for _ in 0..qdcount {
             // Decode the question name
@@ -444,10 +459,10 @@ impl MdnsService {
                         if !self
                             .pending_reports
                             .iter()
-                            .any(|r| r.name == our_fqdn && r.is_response)
+                            .any(|r| r.name == our_fqdn_owned && r.is_response)
                         {
                             self.pending_reports.push(MdnsReport {
-                                name: our_fqdn.clone(),
+                                name: our_fqdn_owned.clone(),
                                 ip: Some(self.local_ip),
                                 ttl: MDNS_DEFAULT_TTL,
                                 is_response: true,
@@ -462,7 +477,7 @@ impl MdnsService {
                     }
 
                     return MdnsResult::SendResponse {
-                        name: our_fqdn,
+                        name: our_fqdn_owned,
                         ip: self.local_ip,
                         ttl: MDNS_DEFAULT_TTL,
                     };
@@ -482,6 +497,7 @@ impl MdnsService {
     ) -> MdnsResult {
         let mut offset = DNS_HEADER_SIZE;
         let our_fqdn = self.fqdn();
+        let our_fqdn_owned = self.fqdn_owned();
 
         for _ in 0..qdcount {
             let (name, new_offset) = match decode_dns_name_view(view, offset) {
@@ -512,10 +528,10 @@ impl MdnsService {
                     if !self
                         .pending_reports
                         .iter()
-                        .any(|r| r.name == our_fqdn && r.is_response)
+                        .any(|r| r.name == our_fqdn_owned && r.is_response)
                     {
                         self.pending_reports.push(MdnsReport {
-                            name: our_fqdn.clone(),
+                            name: our_fqdn_owned.clone(),
                             ip: Some(self.local_ip),
                             ttl: MDNS_DEFAULT_TTL,
                             is_response: true,
@@ -530,7 +546,7 @@ impl MdnsService {
                 }
 
                 return MdnsResult::SendResponse {
-                    name: our_fqdn,
+                    name: our_fqdn_owned,
                     ip: self.local_ip,
                     ttl: MDNS_DEFAULT_TTL,
                 };
@@ -546,7 +562,7 @@ impl MdnsService {
         data: &[u8],
         offset: &mut usize,
         current_time: u64,
-    ) -> Result<Option<(String, Ipv4Address)>, ()> {
+    ) -> Result<Option<(DnsNameOwned, Ipv4Address)>, ()> {
         let record = match parse_dns_answer_record(data, *offset) {
             Some(r) => r,
             None => return Err(()),
@@ -557,11 +573,13 @@ impl MdnsService {
         }
         let rdata = &data[record.4..record.4 + record.2];
         let ip = Ipv4Address::new([rdata[0], rdata[1], rdata[2], rdata[3]]);
-        let name_lower = to_lowercase(&record.5);
-        if !self.cache_a_record(&name_lower, ip, record.6, current_time) {
+        let Some(name) = DnsNameOwned::from_ascii_name(&record.5) else {
+            return Ok(None);
+        };
+        if !self.cache_a_record(&name, ip, record.6, current_time) {
             return Ok(None);
         }
-        Ok(Some((name_lower, ip)))
+        Ok(Some((name, ip)))
     }
 
     fn try_process_dns_answer_view(
@@ -569,7 +587,7 @@ impl MdnsService {
         view: &PacketPayloadView<'_>,
         offset: &mut usize,
         current_time: u64,
-    ) -> Result<Option<(String, Ipv4Address)>, ()> {
+    ) -> Result<Option<(DnsNameOwned, Ipv4Address)>, ()> {
         let record = match parse_dns_answer_record_view(view, *offset) {
             Some(r) => r,
             None => return Err(()),
@@ -580,11 +598,13 @@ impl MdnsService {
         }
         let rdata = view.read_array::<4>(record.4).ok_or(())?;
         let ip = Ipv4Address::new(rdata);
-        let name_lower = to_lowercase(&record.5);
-        if !self.cache_a_record(&name_lower, ip, record.6, current_time) {
+        let Some(name) = DnsNameOwned::from_ascii_name(&record.5) else {
+            return Ok(None);
+        };
+        if !self.cache_a_record(&name, ip, record.6, current_time) {
             return Ok(None);
         }
-        Ok(Some((name_lower, ip)))
+        Ok(Some((name, ip)))
     }
 
     /// mDNS応答を処理
@@ -601,7 +621,7 @@ impl MdnsService {
             None => return MdnsResult::InvalidPacket,
         };
 
-        let mut last_resolved: Option<(String, Ipv4Address)> = None;
+        let mut last_resolved: Option<(DnsNameOwned, Ipv4Address)> = None;
 
         for _ in 0..ancount {
             if offset >= data.len() {
@@ -639,7 +659,7 @@ impl MdnsService {
             None => return MdnsResult::InvalidPacket,
         };
 
-        let mut last_resolved: Option<(String, Ipv4Address)> = None;
+        let mut last_resolved: Option<(DnsNameOwned, Ipv4Address)> = None;
 
         for _ in 0..ancount {
             if offset >= view.total_len() {
@@ -668,30 +688,35 @@ impl MdnsService {
     /// 正常にキャッシュ更新された場合trueを返す。
     fn cache_a_record(
         &mut self,
-        name_lower: &str,
+        name: &DnsNameOwned,
         ip: Ipv4Address,
         ttl: u32,
         current_time: u64,
     ) -> bool {
-        // Security: mDNS is only for names ending in ".local" (RFC 6762)
-        if !name_lower.ends_with(".local") {
-            log::warn!("[NET] mDNS: Ignoring non-local name: {}", name_lower);
+        let Some(last_label) = name.labels().last() else {
+            return false;
+        };
+        if !last_label.eq_ignore_ascii_case(b"local") {
+            log::warn!(
+                "[NET] mDNS: Ignoring non-local name: {}",
+                name.to_owned_string()
+            );
             return false;
         }
 
         if ttl == 0 {
-            self.cache.remove(name_lower);
+            self.cache.remove(name);
             return false;
         }
 
         let expiry = current_time + ttl as u64;
 
-        if !self.cache.contains_key(name_lower) && self.cache.len() >= MDNS_MAX_CACHE_ENTRIES {
+        if !self.cache.contains_key(name) && self.cache.len() >= MDNS_MAX_CACHE_ENTRIES {
             self.evict_oldest();
         }
 
         self.cache.insert(
-            String::from(name_lower),
+            name.clone(),
             MdnsCacheEntry {
                 ip,
                 expiry_time: expiry,
@@ -709,8 +734,8 @@ impl MdnsService {
     /// # Returns
     /// キャッシュにエントリが存在し有効期限内であればIPアドレスを返す
     pub fn resolve(&self, name: &str, current_time: u64) -> Option<Ipv4Address> {
-        let name_lower = to_lowercase(name);
-        if let Some(entry) = self.cache.get(&name_lower) {
+        let name_key = DnsNameOwned::from_ascii_name(name)?;
+        if let Some(entry) = self.cache.get(&name_key) {
             if current_time < entry.expiry_time {
                 return Some(entry.ip);
             }

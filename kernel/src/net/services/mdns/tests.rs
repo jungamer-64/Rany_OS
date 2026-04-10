@@ -103,7 +103,7 @@ pub fn test_process_query_for_our_hostname() {
 
     match result {
         MdnsResult::SendResponse { name, ip, ttl } => {
-            assert_eq!(name, "myhost.local");
+            assert_eq!(name.to_owned_string(), "myhost.local");
             assert_eq!(ip, Ipv4Address::new([10, 0, 0, 5]));
             assert_eq!(ttl, MDNS_DEFAULT_TTL);
         }
@@ -164,7 +164,7 @@ pub fn test_process_response_updates_cache() {
 
     match result {
         MdnsResult::Resolved { name, ip } => {
-            assert_eq!(name, "other.local");
+            assert_eq!(name.to_owned_string(), "other.local");
             assert_eq!(ip, Ipv4Address::new([10, 0, 0, 42]));
         }
         _ => panic!("Expected Resolved"),
@@ -189,14 +189,16 @@ pub fn test_cleanup_expired() {
 
     // Manually insert a cache entry that will expire
     service.cache.insert(
-        String::from("expired.local"),
+        crate::net::services::dns::DnsNameOwned::from_ascii_name("expired.local")
+            .expect("dns name"),
         MdnsCacheEntry {
             ip: Ipv4Address::new([10, 0, 0, 99]),
             expiry_time: 100,
         },
     );
     service.cache.insert(
-        String::from("valid.local"),
+        crate::net::services::dns::DnsNameOwned::from_ascii_name("valid.local")
+            .expect("dns name"),
         MdnsCacheEntry {
             ip: Ipv4Address::new([10, 0, 0, 88]),
             expiry_time: 500,
@@ -316,8 +318,13 @@ pub fn test_roundtrip_query_response() {
         MdnsResult::SendResponse { name, ip, ttl } => {
             // Server builds the response
             let mut resp_buf = [0u8; 512];
-            let resp_len =
-                MdnsService::build_response(&mut resp_buf, &name, ip, ttl).expect("build_response");
+            let resp_len = MdnsService::build_response(
+                &mut resp_buf,
+                &name.to_owned_string(),
+                ip,
+                ttl,
+            )
+            .expect("build_response");
 
             // Client processes the response
             let client_result = client.process_packet(
@@ -329,7 +336,7 @@ pub fn test_roundtrip_query_response() {
 
             match client_result {
                 MdnsResult::Resolved { name, ip } => {
-                    assert_eq!(name, "server.local");
+                    assert_eq!(name.to_owned_string(), "server.local");
                     assert_eq!(ip, Ipv4Address::new([192, 168, 1, 10]));
                 }
                 _ => panic!("Expected Resolved"),

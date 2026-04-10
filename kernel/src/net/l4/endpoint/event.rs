@@ -15,6 +15,7 @@ use core::task::{Context, Poll};
 
 use super::types::{EndpointAddr, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::payload::PayloadSpan;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
@@ -256,14 +257,15 @@ pub enum NetworkEvent {
         subnet: [u8; 4],
         gateway: [u8; 4],
         dns_servers: Vec<[u8; 4]>,
-        hostname: Vec<u8>,
+        hostname: Option<PayloadSpan>,
+        domain_name: Option<PayloadSpan>,
     },
     /// 非同期DHCPv6リース適用
     DhcpV6ApplyLease {
         if_id: Option<u16>,
         addr: [u8; 16],
         dns_servers: Vec<[u8; 16]>,
-        domain_search: Vec<alloc::string::String>,
+        domain_search: Vec<crate::net::services::dns::DnsNameOwned>,
     },
     /// 非同期リンクローカルIPv6アドレス取得
     GetLinkLocal {

@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
+use core::cmp::Ordering as CmpOrdering;
 use kernel_api::resource::net::PacketPayload;
 
 /// DNSポート
@@ -261,6 +262,10 @@ impl DnsNameView {
         parts.next().is_none()
     }
 
+    pub fn labels(&self) -> &[PayloadSpan] {
+        &self.labels
+    }
+
     pub fn to_owned_string(&self) -> String {
         let mut out = String::with_capacity(self.text_len);
         for (index, label) in self.labels.iter().enumerate() {
@@ -281,6 +286,84 @@ impl DnsNameView {
 
     pub fn to_lowercase_string(&self) -> String {
         self.to_owned_string().to_ascii_lowercase()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DnsNameOwned {
+    labels: Vec<PayloadSpan>,
+    text_len: usize,
+}
+
+impl DnsNameOwned {
+    pub fn from_view(view: &DnsNameView) -> Self {
+        Self {
+            labels: view.labels.clone(),
+            text_len: view.text_len,
+        }
+    }
+
+    pub fn from_labels(labels: Vec<PayloadSpan>) -> Self {
+        let text_len = labels
+            .iter()
+            .map(PayloadSpan::total_len)
+            .sum::<usize>()
+            .saturating_add(labels.len().saturating_sub(1));
+        Self { labels, text_len }
+    }
+
+    pub fn from_ascii_name(name: &str) -> Option<Self> {
+        let mut labels = Vec::new();
+        for label in name.split('.') {
+            if label.is_empty() {
+                continue;
+            }
+            labels.push(PayloadSpan::from_bytes(label.as_bytes())?);
+        }
+        Some(Self::from_labels(labels))
+    }
+
+    pub fn as_view(&self) -> DnsNameView {
+        DnsNameView {
+            labels: self.labels.clone(),
+            text_len: self.text_len,
+        }
+    }
+
+    pub fn eq_ignore_ascii_case(&self, name: &str) -> bool {
+        self.as_view().eq_ignore_ascii_case(name)
+    }
+
+    pub fn to_owned_string(&self) -> String {
+        self.as_view().to_owned_string()
+    }
+
+    pub fn to_lowercase_string(&self) -> String {
+        self.as_view().to_lowercase_string()
+    }
+
+    pub fn labels(&self) -> &[PayloadSpan] {
+        &self.labels
+    }
+}
+
+impl PartialEq for DnsNameOwned {
+    fn eq(&self, other: &Self) -> bool {
+        compare_dns_name_labels(&self.labels, &other.labels) == CmpOrdering::Equal
+    }
+}
+
+impl Eq for DnsNameOwned {}
+
+impl PartialOrd for DnsNameOwned {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DnsNameOwned {
+    fn cmp(&self, other: &Self) -> CmpOrdering {
+        compare_dns_name_labels(&self.labels, &other.labels)
     }
 }
 
@@ -410,7 +493,7 @@ impl DnsCacheEntry {
 /// DNSキャッシュ
 pub struct DnsCache {
     /// キャッシュエントリ (ドメイン名 → エントリ)
-    entries: BTreeMap<String, DnsCacheEntry>,
+    entries: BTreeMap<DnsNameOwned, DnsCacheEntry>,
     /// 最大エントリ数
     max_entries: usize,
     /// ティックレート
@@ -431,7 +514,7 @@ impl DnsCache {
     }
 
     /// キャッシュを検索
-    pub fn lookup(&self, name: &str, current_tick: u64) -> Option<&DnsCacheEntry> {
+    pub fn lookup(&self, name: &DnsNameOwned, current_tick: u64) -> Option<&DnsCacheEntry> {
         self.entries
             .get(name)
             .filter(|entry| !entry.is_expired(current_tick, self.tick_rate))
@@ -440,7 +523,7 @@ impl DnsCache {
     /// キャッシュにエントリを追加
     pub fn insert(
         &mut self,
-        name: String,
+        name: DnsNameOwned,
         response: PacketPayload,
         records: Vec<DnsRecordMeta>,
         current_tick: u64,
@@ -481,7 +564,7 @@ impl DnsCache {
     /// ネガティブキャッシュを追加
     pub fn insert_negative(
         &mut self,
-        name: String,
+        name: DnsNameOwned,
         rcode: DnsResponseCode,
         current_tick: u64,
         ttl_secs: u32,
@@ -506,7 +589,7 @@ impl DnsCache {
     }
 
     /// エントリを削除
-    pub fn remove(&mut self, name: &str) {
+    pub fn remove(&mut self, name: &DnsNameOwned) {
         self.entries.remove(name);
     }
 
@@ -514,6 +597,35 @@ impl DnsCache {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+}
+
+pub(crate) fn compare_dns_name_labels(lhs: &[PayloadSpan], rhs: &[PayloadSpan]) -> CmpOrdering {
+    let mut index = 0usize;
+    while index < lhs.len() && index < rhs.len() {
+        let left = &lhs[index];
+        let right = &rhs[index];
+        let shared = left.total_len().min(right.total_len());
+        for byte_index in 0..shared {
+            let Some(left_byte) = left.byte_at(byte_index).map(|byte| byte.to_ascii_lowercase())
+            else {
+                return CmpOrdering::Less;
+            };
+            let Some(right_byte) = right.byte_at(byte_index).map(|byte| byte.to_ascii_lowercase())
+            else {
+                return CmpOrdering::Greater;
+            };
+            match left_byte.cmp(&right_byte) {
+                CmpOrdering::Equal => {}
+                ordering => return ordering,
+            }
+        }
+        match left.total_len().cmp(&right.total_len()) {
+            CmpOrdering::Equal => {}
+            ordering => return ordering,
+        }
+        index += 1;
+    }
+    lhs.len().cmp(&rhs.len())
 }
 
 /// DNSクライアント

@@ -64,11 +64,6 @@ impl DhcpClient {
                         Ok(DhcpResponseResult::Ack(lease)) => {
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
-                            let hostname = lease
-                                .hostname
-                                .as_ref()
-                                .map(payload_span_to_vec)
-                                .unwrap_or_default();
                             crate::net::l4::endpoint::event::enqueue_event_ignore_in(
                                 self.runtime,
                                 crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
@@ -84,7 +79,8 @@ impl DhcpClient {
                                         .iter()
                                         .map(|a| *a.as_bytes())
                                         .collect(),
-                                    hostname,
+                                    hostname: lease.hostname.clone(),
+                                    domain_name: lease.domain_name.clone(),
                                 },
                             );
                             // mDNS のローカル IP を更新

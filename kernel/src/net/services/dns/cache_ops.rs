@@ -13,6 +13,10 @@ enum Ipv6CacheLookup {
 }
 
 impl DnsClient {
+    fn cache_key_for_name(name: &str) -> Option<DnsNameOwned> {
+        DnsNameOwned::from_ascii_name(name)
+    }
+
     /// DNSクライアントのメインループ（非同期）
     ///
     /// キャッシュの定期的なクリーンアップなどを行います。
@@ -121,7 +125,7 @@ impl DnsClient {
     /// 非同期でTXTレコードを解決
     pub async fn resolve_txt(&self, name: &str) -> Option<Vec<DnsTxtView>> {
         let tick = crate::task::current_tick();
-        let key = name.to_ascii_lowercase();
+        let key = Self::cache_key_for_name(name)?;
 
         if let Ok(cache) = self.cache.lock() {
             if let Some(entry) = cache.lookup(&key, tick) {
@@ -147,7 +151,7 @@ impl DnsClient {
     /// 非同期でMXレコードを解決
     pub async fn resolve_mx(&self, name: &str) -> Option<Vec<DnsMxRecord>> {
         let tick = crate::task::current_tick();
-        let key = name.to_ascii_lowercase();
+        let key = Self::cache_key_for_name(name)?;
 
         if let Ok(cache) = self.cache.lock() {
             if let Some(entry) = cache.lookup(&key, tick) {
@@ -173,7 +177,7 @@ impl DnsClient {
     /// 非同期でSRVレコードを解決
     pub async fn resolve_srv(&self, name: &str) -> Option<Vec<DnsSrvRecord>> {
         let tick = crate::task::current_tick();
-        let key = name.to_ascii_lowercase();
+        let key = Self::cache_key_for_name(name)?;
 
         if let Ok(cache) = self.cache.lock() {
             if let Some(entry) = cache.lookup(&key, tick) {
@@ -200,7 +204,7 @@ impl DnsClient {
     pub async fn resolve_ptr_ipv4(&self, ip: Ipv4Address) -> Option<DnsNameView> {
         let query_name = Self::ptr_ipv4_query_name(ip);
         let tick = crate::task::current_tick();
-        let key = query_name.to_ascii_lowercase();
+        let key = Self::cache_key_for_name(&query_name)?;
 
         if let Ok(cache) = self.cache.lock() {
             if let Some(entry) = cache.lookup(&key, tick) {
@@ -228,7 +232,7 @@ impl DnsClient {
     pub async fn resolve_ptr_ipv6(&self, ip: Ipv6Address) -> Option<DnsNameView> {
         let query_name = Self::ptr_ipv6_query_name(ip);
         let tick = crate::task::current_tick();
-        let key = query_name.to_ascii_lowercase();
+        let key = Self::cache_key_for_name(&query_name)?;
 
         if let Ok(cache) = self.cache.lock() {
             if let Some(entry) = cache.lookup(&key, tick) {
@@ -253,7 +257,9 @@ impl DnsClient {
     }
 
     fn lookup_ipv4_cache(&self, name: &str, current_tick: u64) -> Ipv4CacheLookup {
-        let key = name.to_ascii_lowercase();
+        let Some(key) = Self::cache_key_for_name(name) else {
+            return Ipv4CacheLookup::Miss;
+        };
         let result = match self.cache.lock() {
             Ok(cache) => {
                 if let Some(entry) = cache.lookup(&key, current_tick) {
@@ -289,7 +295,9 @@ impl DnsClient {
     }
 
     fn lookup_ipv6_cache(&self, name: &str, current_tick: u64) -> Ipv6CacheLookup {
-        let key = name.to_ascii_lowercase();
+        let Some(key) = Self::cache_key_for_name(name) else {
+            return Ipv6CacheLookup::Miss;
+        };
         let result = match self.cache.lock() {
             Ok(cache) => {
                 if let Some(entry) = cache.lookup(&key, current_tick) {
@@ -324,11 +332,17 @@ impl DnsClient {
         result
     }
 
-    fn cname_target_for_name(&self, records: &[DnsRecordMeta], name: &str) -> Option<String> {
+    fn cname_target_for_name(
+        &self,
+        records: &[DnsRecordMeta],
+        name: &DnsNameOwned,
+    ) -> Option<DnsNameOwned> {
         records.iter().find_map(|record| {
-            if record.rtype.is(DnsQueryType::CNAME) && record.name.eq_ignore_ascii_case(name) {
+            if record.rtype.is(DnsQueryType::CNAME)
+                && compare_dns_name_labels(record.name.labels(), name.labels()) == core::cmp::Ordering::Equal
+            {
                 if let DnsRecordData::Name(alias) = &record.data {
-                    return Some(alias.to_lowercase_string());
+                    return Some(DnsNameOwned::from_view(alias));
                 }
             }
             None
@@ -414,11 +428,13 @@ impl DnsClient {
         records: &[DnsRecordMeta],
         query_name: &str,
     ) -> Option<DnsNameView> {
-        let mut current = query_name.to_ascii_lowercase();
+        let mut current = Self::cache_key_for_name(query_name)?;
 
         for _ in 0..DNS_MAX_CNAME_DEPTH {
             if let Some(hostname) = records.iter().find_map(|record| {
-                if record.name.eq_ignore_ascii_case(&current) && record.rtype.is(DnsQueryType::PTR)
+                if compare_dns_name_labels(record.name.labels(), current.labels())
+                    == core::cmp::Ordering::Equal
+                    && record.rtype.is(DnsQueryType::PTR)
                 {
                     if let DnsRecordData::Name(hostname) = &record.data {
                         return Some(hostname.clone());
@@ -477,11 +493,14 @@ impl DnsClient {
         records: &[DnsRecordMeta],
         query_name: &str,
     ) -> Option<Ipv4Address> {
-        let mut current = query_name.to_ascii_lowercase();
+        let mut current = Self::cache_key_for_name(query_name)?;
 
         for _ in 0..DNS_MAX_CNAME_DEPTH {
             if let Some(ip) = records.iter().find_map(|record| {
-                if record.name.eq_ignore_ascii_case(&current) && record.rtype.is(DnsQueryType::A) {
+                if compare_dns_name_labels(record.name.labels(), current.labels())
+                    == core::cmp::Ordering::Equal
+                    && record.rtype.is(DnsQueryType::A)
+                {
                     if let DnsRecordData::A(ip) = &record.data {
                         return Some(*ip);
                     }
@@ -508,11 +527,13 @@ impl DnsClient {
         records: &[DnsRecordMeta],
         query_name: &str,
     ) -> Option<Ipv6Address> {
-        let mut current = query_name.to_ascii_lowercase();
+        let mut current = Self::cache_key_for_name(query_name)?;
 
         for _ in 0..DNS_MAX_CNAME_DEPTH {
             if let Some(ip) = records.iter().find_map(|record| {
-                if record.name.eq_ignore_ascii_case(&current) && record.rtype.is(DnsQueryType::AAAA)
+                if compare_dns_name_labels(record.name.labels(), current.labels())
+                    == core::cmp::Ordering::Equal
+                    && record.rtype.is(DnsQueryType::AAAA)
                 {
                     if let DnsRecordData::AAAA(ip) = &record.data {
                         return Some(*ip);
@@ -578,8 +599,11 @@ impl DnsClient {
 
         match self.cache.lock() {
             Ok(mut cache) => {
+                let Some(key) = Self::cache_key_for_name(name) else {
+                    return;
+                };
                 cache.insert(
-                    name.to_ascii_lowercase(),
+                    key,
                     response.payload.clone(),
                     response.records.clone(),
                     current_tick,
@@ -605,8 +629,11 @@ impl DnsClient {
 
         match self.cache.lock() {
             Ok(mut cache) => {
+                let Some(key) = Self::cache_key_for_name(name) else {
+                    return;
+                };
                 cache.insert_negative(
-                    name.to_ascii_lowercase(),
+                    key,
                     rcode,
                     current_tick,
                     DNS_NEGATIVE_CACHE_TTL_SECS,

@@ -3,7 +3,6 @@ use super::*;
 use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
 use crate::task::{self, TimeoutResult};
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -39,7 +38,7 @@ pub struct DhcpV6Lease {
     /// DHCPv6 Option 23 (DNS Recursive Name Server) から取得した DNS サーバー
     pub dns_servers: Vec<Ipv6Address>,
     /// DHCPv6 Option 24 (Domain Search List) から取得したドメイン名
-    pub domain_search: Vec<alloc::string::String>,
+    pub domain_search: Vec<crate::net::services::dns::DnsNameOwned>,
 }
 
 /// DHCPv6 クライアント状態（簡易）
@@ -747,7 +746,7 @@ impl DhcpV6Client {
         let mut found_t1: u32 = 0;
         let mut found_t2: u32 = 0;
         let mut dns_servers: Vec<Ipv6Address> = Vec::new();
-        let mut domain_search: Vec<alloc::string::String> = Vec::new();
+        let mut domain_search: Vec<crate::net::services::dns::DnsNameOwned> = Vec::new();
         let mut status_code: Option<u16> = None;
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
@@ -933,7 +932,7 @@ impl DhcpV6Client {
         let mut found_t1: u32 = 0;
         let mut found_t2: u32 = 0;
         let mut dns_servers: Vec<Ipv6Address> = Vec::new();
-        let mut domain_search: Vec<alloc::string::String> = Vec::new();
+        let mut domain_search: Vec<crate::net::services::dns::DnsNameOwned> = Vec::new();
         let mut status_code: Option<u16> = None;
 
         while off + 4 <= view.total_len() {
@@ -1068,13 +1067,16 @@ impl DhcpV6Client {
 
     /// DNS エンコードされたドメインサーチリストをパースする (RFC 1035 Section 4.1.4 形式)
     /// Security: 圧縮ポインタの検出、ラベル長・合計長のバリデーション、無限ループ防止を追加。
-    fn parse_domain_search_list(data: &[u8], out: &mut Vec<alloc::string::String>) {
+    fn parse_domain_search_list(
+        data: &[u8],
+        out: &mut Vec<crate::net::services::dns::DnsNameOwned>,
+    ) {
         let mut off = 0usize;
         let mut name_count = 0;
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and name_count limit.;
         while off < data.len() && name_count < 10 {
-            let mut labels: Vec<&[u8]> = Vec::new();
+            let mut labels: Vec<PayloadSpan> = Vec::new();
             let mut total_len = 0usize;
             let mut label_count = 0;
 
@@ -1114,7 +1116,10 @@ impl DhcpV6Client {
                     return;
                 }
 
-                labels.push(&data[off..off + label_len]);
+                let Some(label) = PayloadSpan::from_bytes(&data[off..off + label_len]) else {
+                    return;
+                };
+                labels.push(label);
                 off += label_len;
                 total_len += label_len + 1; // +1 for the dot/length byte
                 label_count += 1;
@@ -1127,23 +1132,21 @@ impl DhcpV6Client {
             }
 
             if !labels.is_empty() {
-                let domain: alloc::string::String = labels
-                    .iter()
-                    .map(|l| core::str::from_utf8(l).unwrap_or("?"))
-                    .collect::<Vec<_>>()
-                    .join(".");
-                out.push(domain);
+                out.push(crate::net::services::dns::DnsNameOwned::from_labels(labels));
                 name_count += 1;
             }
         }
     }
 
-    fn parse_domain_search_list_span(span: &PayloadSpan, out: &mut Vec<alloc::string::String>) {
+    fn parse_domain_search_list_span(
+        span: &PayloadSpan,
+        out: &mut Vec<crate::net::services::dns::DnsNameOwned>,
+    ) {
         let mut off = 0usize;
         let mut name_count = 0;
 
         while off < span.total_len() && name_count < 10 {
-            let mut labels: Vec<alloc::string::String> = Vec::new();
+            let mut labels: Vec<PayloadSpan> = Vec::new();
             let mut total_len = 0usize;
             let mut label_count = 0;
 
@@ -1183,13 +1186,7 @@ impl DhcpV6Client {
                 let Some(label_span) = span.slice(off, label_len) else {
                     return;
                 };
-                let mut bytes = vec![0u8; label_len];
-                if label_span.copy_into(&mut bytes) != label_len {
-                    return;
-                }
-                labels.push(
-                    alloc::string::String::from(core::str::from_utf8(&bytes).unwrap_or("?")),
-                );
+                labels.push(label_span);
                 off += label_len;
                 total_len += label_len + 1;
                 label_count += 1;
@@ -1201,7 +1198,7 @@ impl DhcpV6Client {
             }
 
             if !labels.is_empty() {
-                out.push(labels.join("."));
+                out.push(crate::net::services::dns::DnsNameOwned::from_labels(labels));
                 name_count += 1;
             }
         }
@@ -2273,7 +2270,7 @@ pub(crate) mod tests {
         let mut out = Vec::new();
         DhcpV6Client::parse_domain_search_list(&data, &mut out);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0], "example.com");
-        assert_eq!(out[1], "test.net");
+        assert_eq!(out[0].to_owned_string(), "example.com");
+        assert_eq!(out[1].to_owned_string(), "test.net");
     }
 }
