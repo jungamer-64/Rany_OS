@@ -54,6 +54,20 @@ pub fn add_ipv6_server(server: Ipv6Address) {
     }
 }
 
+/// IPv4 DNSサーバーを追加
+pub fn add_ipv4_server(server: Ipv4Address) {
+    match super::shared_client_lock().lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.add_ipv4_server(server);
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (add_ipv4_server) - operation skipped")
+        }
+    }
+}
+
 /// キャッシュからIPアドレスを解決
 pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
     match super::shared_client_lock().lock() {
@@ -77,6 +91,16 @@ pub async fn resolve_ipv4(name: &str) -> Option<Ipv4Address> {
 
     // 2. 非同期解決を実行
     client.resolve_ipv4(name).await
+}
+
+/// 非同期でIPv6アドレスを解決 (Global API)
+pub async fn resolve_ipv6(name: &str) -> Option<Ipv6Address> {
+    let client = match super::shared_client_lock().lock() {
+        Ok(g) => g.as_ref().cloned(),
+        Err(_) => None,
+    }?;
+
+    client.resolve_ipv6(name).await
 }
 
 /// Build a DNS query for TCP transport (global API)

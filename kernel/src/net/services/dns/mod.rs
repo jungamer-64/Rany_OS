@@ -23,9 +23,14 @@ use kernel_api::resource::net::PacketPayload;
 /// DNSポート
 mod tcp_constants;
 pub use tcp_constants::*;
+mod cache_ops;
 mod client_impl;
+mod parser;
+mod query_builder;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
+mod transport;
+mod transport_tcp;
 pub const DNS_PORT: u16 = 53;
 
 /// DNSクエリタイプ
@@ -325,13 +330,17 @@ pub struct DnsCacheEntry {
     pub cached_at: u64,
     /// 最小TTL
     pub min_ttl: u32,
+    /// ネガティブキャッシュか
+    pub negative: bool,
+    /// ネガティブ時の応答コード
+    pub rcode: Option<DnsResponseCode>,
 }
 
 impl DnsCacheEntry {
     /// 期限切れか判定
     pub fn is_expired(&self, current_tick: u64, tick_rate: u64) -> bool {
         let elapsed_secs = (current_tick.saturating_sub(self.cached_at)) / tick_rate;
-        elapsed_secs > self.min_ttl as u64
+        elapsed_secs >= self.min_ttl as u64
     }
 }
 
@@ -400,6 +409,29 @@ impl DnsCache {
                 records,
                 cached_at: current_tick,
                 min_ttl,
+                negative: false,
+                rcode: None,
+            },
+        );
+    }
+
+    /// ネガティブキャッシュを追加
+    pub fn insert_negative(
+        &mut self,
+        name: String,
+        rcode: DnsResponseCode,
+        current_tick: u64,
+        ttl_secs: u32,
+    ) {
+        self.entries.insert(
+            name,
+            DnsCacheEntry {
+                response: PacketPayload::default(),
+                records: Vec::new(),
+                cached_at: current_tick,
+                min_ttl: ttl_secs,
+                negative: true,
+                rcode: Some(rcode),
             },
         );
     }
@@ -437,6 +469,14 @@ pub struct DnsClient {
 
 /// DNS応答あたりの最大回答数 (DoS防止)
 const DNS_MAX_ANSWER_COUNT: usize = 256;
+/// サーバー設定の最大件数
+pub const DNS_MAX_SERVERS: usize = 3;
+/// CNAME チェーン追跡の上限
+pub const DNS_MAX_CNAME_DEPTH: usize = 8;
+/// ネガティブキャッシュTTL（秒）
+pub const DNS_NEGATIVE_CACHE_TTL_SECS: u32 = 30;
+/// pending transaction ID の寿命（tick）
+pub const DNS_PENDING_ID_TTL_TICKS: u64 = 30_000;
 
 /// DNS retry configuration
 pub const DNS_MAX_RETRIES: u8 = 3;
@@ -495,23 +535,4 @@ pub(crate) fn cloned_client() -> Option<Arc<DnsClient>> {
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().cloned())
-}
-
-/// DNSクライアントを初期化
-pub fn init(tick_rate: u64) {
-    let client = Arc::new(DnsClient::new(tick_rate));
-    if let Ok(mut guard) = shared_client_lock().lock() {
-        *guard = Some(client);
-    }
-}
-
-/// DNSキャッシュをクリーンアップ (periodic maintenance)
-pub fn cleanup_cache(current_tick: u64) {
-    if let Ok(guard) = shared_client_lock().lock() {
-        if let Some(ref client) = *guard {
-            if let Ok(mut cache) = client.cache.lock() {
-                cache.cleanup(current_tick);
-            }
-        }
-    }
 }

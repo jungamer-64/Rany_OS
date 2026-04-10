@@ -1,6 +1,29 @@
 use super::*;
 use crate::sync::set_panicking;
 use alloc::vec;
+use alloc::vec::Vec;
+
+fn encode_dns_name(name: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for label in name.split('.') {
+        out.push(label.len() as u8);
+        out.extend_from_slice(label.as_bytes());
+    }
+    out.push(0);
+    out
+}
+
+fn dns_name_view(name: &str) -> DnsNameView {
+    let mut labels = Vec::new();
+    for label in name.split('.') {
+        let payload = crate::net::payload::payload_from_bytes(label.as_bytes())
+            .expect("dns label payload must be created");
+        let span = PayloadSpan::from_range(&payload, 0, label.len())
+            .expect("dns label span must be created");
+        labels.push(span);
+    }
+    DnsNameView::from_labels(labels)
+}
 
 #[cfg_attr(test, test_case)]
 pub fn test_primary_server_poisoned_returns_none() {
@@ -179,17 +202,134 @@ pub fn test_parse_aaaa_record() {
     }
 
     let payload = crate::net::payload::payload_from_bytes(&data).expect("dns test packet");
-    let records = client
+    let response = client
         .parse_response_payload(&payload, 1000, "example.com", DnsQueryType::AAAA)
         .expect("dns payload parse result")
         .unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].name.to_owned_string(), "example.com");
-    assert_eq!(records[0].rtype, DnsQueryType::AAAA);
+    assert_eq!(response.records.len(), 1);
+    assert_eq!(response.records[0].name.to_owned_string(), "example.com");
+    assert_eq!(response.records[0].rtype, DnsQueryType::AAAA);
 
-    if let DnsRecordData::AAAA(addr) = &records[0].data {
+    if let DnsRecordData::AAAA(addr) = &response.records[0].data {
         assert_eq!(addr.as_bytes(), &ipv6_addr);
     } else {
         panic!("Expected AAAA record data");
     }
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_parse_response_rejects_unexpected_transaction_id() {
+    let client = DnsClient::new(100);
+    let mut data = vec![0u8; 12];
+    data[0..2].copy_from_slice(&0x2222u16.to_be_bytes());
+    data[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+    data[4..6].copy_from_slice(&1u16.to_be_bytes());
+
+    let qname = encode_dns_name("example.com");
+    data.extend_from_slice(&qname);
+    data.extend_from_slice(&(DnsQueryType::A as u16).to_be_bytes().as_slice());
+    data.extend_from_slice(&1u16.to_be_bytes());
+
+    let payload = crate::net::payload::payload_from_bytes(&data).expect("dns test packet");
+    let parsed = client
+        .parse_response_payload(&payload, 1000, "example.com", DnsQueryType::A)
+        .expect("must not require tcp fallback");
+    assert!(matches!(parsed, Err(DnsResponseCode::FormatError)));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_parse_response_rejects_question_mismatch() {
+    let client = DnsClient::new(100);
+    if let Ok(mut pending) = client.pending_ids.lock() {
+        pending.insert(0x1234, 1000);
+    }
+
+    let mut data = vec![0u8; 12];
+    data[0..2].copy_from_slice(&0x1234u16.to_be_bytes());
+    data[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+    data[4..6].copy_from_slice(&1u16.to_be_bytes());
+
+    let qname = encode_dns_name("evil.com");
+    data.extend_from_slice(&qname);
+    data.extend_from_slice(&(DnsQueryType::A as u16).to_be_bytes().as_slice());
+    data.extend_from_slice(&1u16.to_be_bytes());
+
+    let payload = crate::net::payload::payload_from_bytes(&data).expect("dns test packet");
+    let parsed = client
+        .parse_response_payload(&payload, 1000, "example.com", DnsQueryType::A)
+        .expect("must not require tcp fallback");
+    assert!(matches!(parsed, Err(DnsResponseCode::FormatError)));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_cache_entry_ttl_boundary() {
+    let entry = DnsCacheEntry {
+        response: kernel_api::resource::net::PacketPayload::default(),
+        records: Vec::new(),
+        cached_at: 1_000,
+        min_ttl: 2,
+        negative: false,
+        rcode: None,
+    };
+
+    assert!(!entry.is_expired(2_999, 1_000));
+    assert!(entry.is_expired(3_000, 1_000));
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_cname_chain_extracts_final_a() {
+    let client = DnsClient::new(100);
+    let ip = Ipv4Address::from_octets(203, 0, 113, 10);
+
+    let records = vec![
+        DnsRecordMeta {
+            name: dns_name_view("example.com"),
+            rtype: DnsQueryType::CNAME,
+            rclass: DnsQueryClass::IN,
+            ttl: 60,
+            data: DnsRecordData::Name(dns_name_view("alias.example.com")),
+        },
+        DnsRecordMeta {
+            name: dns_name_view("alias.example.com"),
+            rtype: DnsQueryType::A,
+            rclass: DnsQueryClass::IN,
+            ttl: 60,
+            data: DnsRecordData::A(ip),
+        },
+    ];
+
+    assert_eq!(
+        client.resolve_ipv4_from_records(&records, "example.com"),
+        Some(ip)
+    );
+}
+
+#[cfg_attr(test, test_case)]
+pub fn test_cname_chain_extracts_final_aaaa() {
+    let client = DnsClient::new(100);
+    let ip = Ipv6Address::new([
+        0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x42,
+    ]);
+
+    let records = vec![
+        DnsRecordMeta {
+            name: dns_name_view("example.com"),
+            rtype: DnsQueryType::CNAME,
+            rclass: DnsQueryClass::IN,
+            ttl: 60,
+            data: DnsRecordData::Name(dns_name_view("alias6.example.com")),
+        },
+        DnsRecordMeta {
+            name: dns_name_view("alias6.example.com"),
+            rtype: DnsQueryType::AAAA,
+            rclass: DnsQueryClass::IN,
+            ttl: 60,
+            data: DnsRecordData::AAAA(ip),
+        },
+    ];
+
+    assert_eq!(
+        client.resolve_ipv6_from_records(&records, "example.com"),
+        Some(ip)
+    );
 }

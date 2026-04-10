@@ -644,10 +644,12 @@ impl<'a> VlanEthernetFrameMut<'a> {
         let min_size = 64; // 802.1Q minimum frame size
         let current_len = self.total_len();
         if current_len < min_size {
-            for byte in &mut self.data[current_len..min_size] {
+            // Security: Ensure we don't write past the end of our actual buffer
+            let pad_end = min_size.min(self.data.len());
+            for byte in &mut self.data[current_len..pad_end] {
                 *byte = 0;
             }
-            self.payload_len = min_size - Self::HEADER_SIZE;
+            self.payload_len = pad_end - Self::HEADER_SIZE;
         }
     }
 }
