@@ -75,11 +75,11 @@ impl DhcpClient {
                                         .gateway
                                         .map(|a| *a.as_bytes())
                                         .unwrap_or([0, 0, 0, 0]),
-                                    dns: lease
+                                    dns_servers: lease
                                         .dns_servers
-                                        .first()
+                                        .iter()
                                         .map(|a| *a.as_bytes())
-                                        .unwrap_or([0, 0, 0, 0]),
+                                        .collect(),
                                     hostname: hostname_bytes,
                                 },
                             );

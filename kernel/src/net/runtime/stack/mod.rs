@@ -350,6 +350,7 @@ impl InterfaceStackState {
         self.ethernet.set_local_mac(config.mac);
         self.ipv4.set_config(config.ipv4);
         self.arp.set_local(config.mac, config.ipv4.address);
+        self.igmp.set_local_ip(config.ipv4.address);
         if let Some(ref ipv6_config) = config.ipv6 {
             if self.ipv6.is_none() {
                 self.ipv6 = Some(Ipv6Processor::new(*ipv6_config));

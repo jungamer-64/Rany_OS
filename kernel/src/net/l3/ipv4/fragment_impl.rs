@@ -1,6 +1,6 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::packet_from_bytes;
+use crate::net::payload::alloc_packet_with_headroom;
 use kernel_api::resource::net::{PacketChain, PacketPayload};
 
 // ============================================================================
@@ -69,6 +69,16 @@ pub struct FragmentBuffer {
 }
 
 impl FragmentBuffer {
+    fn packet_from_slice(data: &[u8]) -> Option<PacketRef> {
+        if data.is_empty() {
+            return None;
+        }
+        let mut packet = alloc_packet_with_headroom(data.len(), 0)?;
+        packet.data_mut()[..data.len()].copy_from_slice(data);
+        packet.set_len(data.len());
+        Some(packet)
+    }
+
     /// Maximum reassembled packet size (64KB - IP header)
     /// RFC 791 defines the maximum IP packet size as 65535 bytes.
     /// Since the header is at least 20 bytes, the max payload is 65515.
@@ -238,7 +248,7 @@ impl FragmentBuffer {
         // Copy fragment data
         self.data[fragment_offset as usize..fragment_end as usize].copy_from_slice(payload);
         if fragment_len > 0 && self.segments_complete {
-            let Some(packet) = payload_packet.or_else(|| packet_from_bytes(payload)) else {
+            let Some(packet) = payload_packet.or_else(|| Self::packet_from_slice(payload)) else {
                 self.segments_complete = false;
                 self.segments.clear();
                 log::warn!(
@@ -366,14 +376,14 @@ impl FragmentBuffer {
         packet[10] = (checksum >> 8) as u8;
         packet[11] = (checksum & 0xff) as u8;
 
-        let mut header_packet = packet_from_bytes(&packet[..header_len])?;
+        let mut header_packet = Self::packet_from_slice(&packet[..header_len])?;
         header_packet.set_len(header_len);
 
         let mut chain = PacketChain::new();
         chain.push(header_packet);
         if !self.segments_complete || self.segments.is_empty() {
             if packet.len() > header_len {
-                chain.push(packet_from_bytes(&packet[header_len..])?);
+                chain.push(Self::packet_from_slice(&packet[header_len..])?);
             }
         } else {
             let mut segments = self.segments;

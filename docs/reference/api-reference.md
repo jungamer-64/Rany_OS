@@ -311,6 +311,9 @@ submit_payload(payload).await?;
 - `RAW endpoint` は packet ownership exchange を直接露出する正規面です。
 - TCP は connection semantics を持ちますが、core の fast path は packet-backed payload queue を中心に整理します。
 - UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先します。
+- DNS は `DnsNameView` / `DnsTxtView` / `PayloadSpan` を使う packet-backed parser と cache を正規面にします。
+- IPv4 / IPv6 の timeout, unknown-protocol, fragment reassembly, quoted packet は packet-backed payload を前提に整理します。
+- IPv6 TX / fragment reassembly / quoted packet は scatter-gather と packet-backed payload を前提に整理します。
 
 > [!IMPORTANT]
 > TCP を含む全経路で packet-backed payload を end-to-end に維持することは
@@ -329,6 +332,7 @@ tcp_connection_send_payload(&connection, payload).await?;
 #### batch / scatter-gather / polling
 
 - adaptive polling、batch processing、scatter-gather、offload は network runtime / datapath の baseline として扱います。
+- IPv6 の unfragmented / fragmented TX は header 前置 + payload chain を基準にし、flatten / scratch copy を正規面にしません。
 - 実装順序や workstream の詳細は [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) を参照してください。
 - benchmark target と測定 gate は [performance-targets.md](performance-targets.md) を参照してください。
 

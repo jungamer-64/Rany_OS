@@ -137,12 +137,6 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
-    /// 非同期IPv6グローバルアドレス適用
-    ApplyIpv6Address {
-        addr: [u8; 16],
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
-    },
     /// 非同期タイムアウト処理リクエスト
     ProcessTimeouts,
     /// インターフェース指定UDP送信（非同期版）
@@ -267,14 +261,21 @@ pub enum NetworkEvent {
         result_slot: alloc::sync::Arc<PoisonLock<Option<Option<bool>>>>,
         waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
-    /// 非同期DHCPリース適用
+    /// 非同期DHCPv4リース適用
     DhcpApplyLease {
         if_id: Option<u16>,
         ip: [u8; 4],
         subnet: [u8; 4],
         gateway: [u8; 4],
-        dns: [u8; 4],
+        dns_servers: Vec<[u8; 4]>,
         hostname: Vec<u8>,
+    },
+    /// 非同期DHCPv6リース適用
+    DhcpV6ApplyLease {
+        if_id: Option<u16>,
+        addr: [u8; 16],
+        dns_servers: Vec<[u8; 16]>,
+        domain_search: Vec<alloc::string::String>,
     },
     /// 非同期リンクローカルIPv6アドレス取得
     GetLinkLocal {

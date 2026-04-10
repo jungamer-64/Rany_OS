@@ -723,7 +723,7 @@ fn test_process_handshake_multiple_messages() {
     let result = conn.process_handshake(&data);
     assert!(result.is_ok());
     assert_eq!(conn.state(), TlsState::Established);
-    assert_eq!(conn.handshake_messages_ref(), data.as_slice());
+    assert_eq!(conn.handshake_transcript_len(), data.len());
 }
 
 /// Finished(len=0) is invalid for TLS 1.2 and must be rejected.

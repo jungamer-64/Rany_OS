@@ -641,13 +641,14 @@ impl NetworkStack {
         dst_ip: Ipv4Address,
         protocol: IpProtocol,
         ttl: u8,
-        payload: &[u8],
+        payload: &PacketPayloadView<'_>,
         path_mtu: usize,
     ) -> Result<(), crate::net::types::NetworkError> {
         const IPV4_HEADER_LEN: usize = crate::net::l3::ipv4::Ipv4Header::MIN_SIZE;
         const MAX_IPV4_PAYLOAD_LEN: usize = (u16::MAX as usize) - IPV4_HEADER_LEN;
+        let payload_len = payload.total_len();
 
-        if payload.len() > MAX_IPV4_PAYLOAD_LEN {
+        if payload_len > MAX_IPV4_PAYLOAD_LEN {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
@@ -656,9 +657,9 @@ impl NetworkStack {
         };
         let identification = self.ipv4.next_id(dst_ip);
 
-        if payload.len() <= unfragmented_payload_limit {
+        if payload_len <= unfragmented_payload_limit {
             let mut packet = self
-                .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV4_HEADER_LEN + payload.len())
+                .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV4_HEADER_LEN + payload_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
             let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
@@ -681,11 +682,13 @@ impl NetworkStack {
                 .set_ttl(ttl);
 
             let payload_buf = ip_packet.payload_mut();
-            if payload_buf.len() < payload.len() {
+            if payload_buf.len() < payload_len {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
-            payload_buf[..payload.len()].copy_from_slice(payload);
-            ip_packet.finalize(payload.len());
+            if payload.copy_range(0, &mut payload_buf[..payload_len]) != payload_len {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
+            ip_packet.finalize(payload_len);
 
             let total_len = ip_packet.total_len();
             frame.set_payload_len(total_len);
@@ -705,8 +708,8 @@ impl NetworkStack {
         }
 
         let mut offset = 0usize;
-        while offset < payload.len() {
-            let remaining = payload.len() - offset;
+        while offset < payload_len {
+            let remaining = payload_len - offset;
             let fragment_data_len = if remaining > unfragmented_payload_limit {
                 non_last_fragment_len.min(remaining)
             } else {
@@ -715,7 +718,7 @@ impl NetworkStack {
             if fragment_data_len == 0 {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
-            let more_fragments = offset + fragment_data_len < payload.len();
+            let more_fragments = offset + fragment_data_len < payload_len;
             if more_fragments && (fragment_data_len % 8 != 0) {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
@@ -755,8 +758,11 @@ impl NetworkStack {
             if payload_buf.len() < fragment_data_len {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
-            payload_buf[..fragment_data_len]
-                .copy_from_slice(&payload[offset..offset + fragment_data_len]);
+            if payload.copy_range(offset, &mut payload_buf[..fragment_data_len])
+                != fragment_data_len
+            {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
             ip_packet.finalize(fragment_data_len);
 
             let total_len = ip_packet.total_len();
@@ -819,11 +825,6 @@ impl NetworkStack {
             }
         };
 
-        let segment_len = tcp_segment.total_len();
-        let mut tcp_bytes = alloc::vec![0u8; segment_len];
-        if tcp_segment.copy_all_into(&mut tcp_bytes) != segment_len {
-            return false;
-        }
         let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
         self.send_ipv4_l4_payload_with_pmtu(
             if_id,
@@ -833,7 +834,7 @@ impl NetworkStack {
             dst_ip,
             IpProtocol::Tcp,
             ttl,
-            &tcp_bytes,
+            tcp_segment,
             path_mtu,
         )
         .is_ok()
@@ -964,6 +965,7 @@ impl NetworkStack {
         self.ethernet.set_local_mac(config.mac);
         self.ipv4.set_config(config.ipv4.clone());
         self.arp.set_local(config.mac, config.ipv4.address);
+        self.igmp.set_local_ip(new_ip);
 
         self.config = config;
 

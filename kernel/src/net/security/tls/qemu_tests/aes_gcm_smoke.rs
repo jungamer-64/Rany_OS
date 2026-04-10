@@ -397,7 +397,7 @@ pub fn wave8_tls_process_handshake_multiple_messages_smoke() -> bool {
     let data = tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished();
     conn.process_handshake(&data).is_ok()
         && conn.state() == TlsState::Established
-        && conn.handshake_messages_ref() == data.as_slice()
+        && conn.handshake_transcript_len() == data.len()
 }
 
 pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {

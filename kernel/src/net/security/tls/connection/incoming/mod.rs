@@ -509,12 +509,11 @@ impl TlsConnection {
         // RFC 8446 Section 4.4.1: synthetic message_hash に置き換え
         // MessageHash = Handshake(254, Hash(messages_so_far))
         let use_384 = cipher.uses_sha384();
-        let current_hash = if use_384 {
-            self.transcript_hash_sha384().to_vec()
+        let hash_len = if use_384 {
+            SHA384_OUTPUT_SIZE
         } else {
-            self.transcript_hash_sha256().to_vec()
+            SHA256_OUTPUT_SIZE
         };
-        let hash_len = current_hash.len();
 
         // synthetic message_hash 構築
         let mut synthetic = Vec::with_capacity(4 + hash_len);
@@ -522,7 +521,11 @@ impl TlsConnection {
         synthetic.push(0);
         synthetic.push(0);
         synthetic.push(hash_len as u8); // hash length (32 or 48)
-        synthetic.extend_from_slice(&current_hash);
+        if use_384 {
+            synthetic.extend_from_slice(&self.transcript_hash_sha384());
+        } else {
+            synthetic.extend_from_slice(&self.transcript_hash_sha256());
+        }
 
         // ハンドシェイクメッセージをsynthetic message_hashに置き換え
         self.replace_transcript_bytes(&synthetic)?;
@@ -775,11 +778,13 @@ impl TlsConnection {
 
         // 署名対象: client_random || server_random || ecdhe_params
         let ecdhe_params = &data[..ecdhe_params_end];
-        let mut signed_data = Vec::with_capacity(32 + 32 + ecdhe_params.len());
-        signed_data.extend_from_slice(&self.client_random);
-        signed_data.extend_from_slice(&self.server_random);
-        signed_data.extend_from_slice(ecdhe_params);
+        let mut signed_data = [0u8; 64];
+        signed_data[..32].copy_from_slice(&self.client_random);
+        signed_data[32..64].copy_from_slice(&self.server_random);
+        let mut combined = Vec::with_capacity(signed_data.len() + ecdhe_params.len());
+        combined.extend_from_slice(&signed_data);
+        combined.extend_from_slice(ecdhe_params);
 
-        self.verify_ske_sig_dispatch(&signed_data, sig_algorithm, signature)
+        self.verify_ske_sig_dispatch(&combined, sig_algorithm, signature)
     }
 }

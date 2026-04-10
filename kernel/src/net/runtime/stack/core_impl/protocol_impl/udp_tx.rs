@@ -5,6 +5,7 @@
 //! zero-copy UDP send, and UdpAddr-based send.
 
 use super::*;
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
 
 impl NetworkStack {
     pub(crate) fn resolve_ipv4_next_hop_on(
@@ -96,6 +97,13 @@ impl NetworkStack {
         let udp_len = udp_packet.finalize(src_ip, dst_ip);
         udp_datagram.truncate(udp_len);
 
+        let mut builder = PacketPayloadBuilder::new();
+        let Some(()) = builder.push_bytes(&udp_datagram) else {
+            return false;
+        };
+        let udp_payload = builder.build();
+        let udp_payload = PacketPayloadView::new(&udp_payload);
+
         self.send_ipv4_l4_payload_with_pmtu(
             if_id,
             config.mac,
@@ -104,7 +112,7 @@ impl NetworkStack {
             dst_ip,
             IpProtocol::Udp,
             ttl,
-            &udp_datagram,
+            &udp_payload,
             path_mtu,
         )
         .is_ok()
@@ -313,12 +321,12 @@ impl NetworkStack {
                     }
                 }
 
-                let Some(payload) = crate::net::payload::packet_from_bytes(data)
-                    .map(kernel_api::resource::net::PacketPayload::single)
-                else {
+                let mut builder = PacketPayloadBuilder::new();
+                let Some(()) = builder.push_bytes(data) else {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
-                let payload = crate::net::payload::PacketPayloadView::new(&payload);
+                let payload = builder.build();
+                let payload = PacketPayloadView::new(&payload);
 
                 if self.send_udp_raw_with_config_and_if_ttl_payload(
                     if_id, &config, src_ip, s_port, d_ip, d_port, &payload, 64,
@@ -338,12 +346,12 @@ impl NetworkStack {
                     port: d_port,
                 },
             ) => {
-                let Some(payload) = crate::net::payload::packet_from_bytes(data)
-                    .map(kernel_api::resource::net::PacketPayload::single)
-                else {
+                let mut builder = PacketPayloadBuilder::new();
+                let Some(()) = builder.push_bytes(data) else {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
-                let payload = crate::net::payload::PacketPayloadView::new(&payload);
+                let payload = builder.build();
+                let payload = PacketPayloadView::new(&payload);
                 self.send_udp_v6_payload_scoped_with_ttl(
                     crate::net::types::InterfaceScope::Any,
                     s_port,

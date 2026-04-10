@@ -184,7 +184,7 @@ pub fn test_parse_aaaa_record() {
         .expect("dns payload parse result")
         .unwrap();
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0].name, "example.com");
+    assert_eq!(records[0].name.to_owned_string(), "example.com");
     assert_eq!(records[0].rtype, DnsQueryType::AAAA);
 
     if let DnsRecordData::AAAA(addr) = &records[0].data {

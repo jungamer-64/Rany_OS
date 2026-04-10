@@ -1,7 +1,19 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::payload::{PacketPayloadBuilder, payload_from_packet_range};
+use kernel_api::resource::net::PacketPayload;
 
 impl Ipv4Processor {
+    fn owned_packet_payload(packet_ref: Option<&PacketRef>, data: &[u8]) -> Option<PacketPayload> {
+        if let Some(packet_ref) = packet_ref {
+            return payload_from_packet_range(packet_ref, 0, data.len());
+        }
+
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_bytes(data)?;
+        Some(builder.build())
+    }
+
     pub(super) fn process_fragment_packet<'a>(
         &mut self,
         packet: &Ipv4Packet<'a>,
@@ -60,7 +72,12 @@ impl Ipv4Processor {
             Ipv4ProcessResult::Reassembled(data)
         } else if let Some((src, header_data)) = expired.into_iter().next() {
             // Return the first expired buffer for ICMP processing
-            Ipv4ProcessResult::ReassemblyTimeout(src, header_data)
+            let mut builder = PacketPayloadBuilder::new();
+            let Some(quoted_header) = builder.push_bytes(&header_data).map(|()| builder.build())
+            else {
+                return Ipv4ProcessResult::Error;
+            };
+            Ipv4ProcessResult::ReassemblyTimeout(src, quoted_header)
         } else {
             // Still waiting for more fragments
             Ipv4ProcessResult::FragmentPending
@@ -73,16 +90,21 @@ impl Ipv4Processor {
         data: &'a [u8],
         src: Ipv4Address,
         dst: Ipv4Address,
+        packet_ref: Option<&PacketRef>,
     ) -> Ipv4ProcessResult<'a> {
         // Non-fragmented packet - process normally
         let payload = packet.payload();
+        let original_packet = match Self::owned_packet_payload(packet_ref, data) {
+            Some(payload) => payload,
+            None => return Ipv4ProcessResult::Error,
+        };
 
         match packet.protocol() {
             IpProtocol::Icmp => Ipv4ProcessResult::Icmp(payload, src, dst, packet.ttl(), data),
             IpProtocol::Igmp => Ipv4ProcessResult::Igmp(payload, src, packet.ttl(), data),
             IpProtocol::Tcp => Ipv4ProcessResult::Tcp(payload, src, dst, data),
             IpProtocol::Udp => Ipv4ProcessResult::Udp(payload, src, dst, data),
-            p => Ipv4ProcessResult::UnknownProtocol(p.into(), src, dst, data),
+            p => Ipv4ProcessResult::UnknownProtocol(p.into(), src, dst, original_packet),
         }
     }
 }

@@ -1,8 +1,22 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
+use kernel_api::resource::net::PacketPayload;
 
 impl Ipv6Processor {
+    fn packet_payload_from_frame(
+        data: &[u8],
+        packet_ref: Option<&PacketRef>,
+    ) -> Option<PacketPayload> {
+        if let Some(packet_ref) = packet_ref {
+            return Some(PacketPayload::single(packet_ref.clone()));
+        }
+
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder.push_bytes(data)?;
+        Some(builder.build())
+    }
+
     /// Create a new IPv6 processor
     pub fn new(config: Ipv6Config) -> Self {
         Ipv6Processor {
@@ -75,7 +89,12 @@ impl Ipv6Processor {
         // Check hop limit
         if packet.hop_limit() == 0 {
             self.stats.record_hop_limit_exceeded();
-            return Ipv6ProcessResult::HopLimitExceeded(src, dst, data);
+            let Some(orig_packet) = Self::packet_payload_from_frame(data, packet_ref.as_ref())
+            else {
+                self.stats.record_header_error();
+                return Ipv6ProcessResult::Error;
+            };
+            return Ipv6ProcessResult::HopLimitExceeded(src, dst, orig_packet);
         }
 
         // Walk extension headers with fragment awareness
@@ -95,12 +114,18 @@ impl Ipv6Processor {
                     p => {
                         // RFC 4443 Section 3.4: Parameter Problem Code 1 for unrecognized Next Header
                         // The pointer indicates the octet of the unrecognized Next Header type
+                        let Some(orig_packet) =
+                            Self::packet_payload_from_frame(data, packet_ref.as_ref())
+                        else {
+                            self.stats.record_header_error();
+                            return Ipv6ProcessResult::Error;
+                        };
                         Ipv6ProcessResult::UnknownNextHeader(
                             p.into(),
                             next_header_ptr,
                             src,
                             dst,
-                            data,
+                            orig_packet,
                         )
                     }
                 }
@@ -114,6 +139,11 @@ impl Ipv6Processor {
                     src,
                     dst,
                     unfragmentable,
+                    packet_ref.as_ref().map(|ip_packet| {
+                        let mut header_packet = ip_packet.clone();
+                        header_packet.set_len(unfragmentable.len());
+                        header_packet
+                    }),
                     &frag_header,
                     frag_payload,
                     packet_ref.as_ref().and_then(|ip_packet| {

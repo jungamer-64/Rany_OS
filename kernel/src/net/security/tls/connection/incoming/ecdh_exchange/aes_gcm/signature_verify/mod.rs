@@ -114,15 +114,21 @@ impl TlsConnection {
             aes_gcm_encrypt(&self.early_write_key, &nonce, &aad, &inner)
         };
 
-        let mut eoed_record = Vec::with_capacity(5 + encrypted_len);
-        eoed_record.push(ContentType::ApplicationData as u8);
-        eoed_record.extend_from_slice(&[0x03, 0x03]);
-        eoed_record.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
-        eoed_record.extend_from_slice(&ciphertext);
-        eoed_record.extend_from_slice(&auth_tag);
+        let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
+        let record_header = [
+            ContentType::ApplicationData as u8,
+            0x03,
+            0x03,
+            encrypted_len_bytes[0],
+            encrypted_len_bytes[1],
+        ];
 
         self.early_write_seq += 1;
-        Ok(Some(Self::packet_payload_from_vec(eoed_record)))
+        Ok(Some(Self::packet_payload_from_parts(&[
+            &record_header,
+            &ciphertext,
+            &auth_tag,
+        ])))
     }
 
     /// 空のCertificateメッセージレコードを構築する (RFC 8446 Section 4.4.2)
@@ -358,11 +364,11 @@ impl TlsConnection {
             let mut key_arr = [0u8; 32];
             key_arr.copy_from_slice(&key[..32]);
             chacha20_poly1305_decrypt(&key_arr, nonce, aad, ciphertext, tag)
-                .map(Self::packet_payload_from_vec)
+                .map(|plaintext| Self::packet_payload_from_slice(&plaintext))
                 .ok_or(TlsError::DecryptError)
         } else {
             aes_gcm_decrypt(key, nonce, aad, ciphertext, tag)
-                .map(Self::packet_payload_from_vec)
+                .map(|plaintext| Self::packet_payload_from_slice(&plaintext))
                 .ok_or(TlsError::DecryptError)
         }
     }
@@ -467,12 +473,14 @@ impl TlsConnection {
         };
 
         // TLS record
-        let mut record = Vec::with_capacity(5 + encrypted_len);
-        record.push(ContentType::ApplicationData as u8);
-        record.extend_from_slice(&[0x03, 0x03]);
-        record.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
-        record.extend_from_slice(&ciphertext);
-        record.extend_from_slice(&auth_tag);
+        let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
+        let record_header = [
+            ContentType::ApplicationData as u8,
+            0x03,
+            0x03,
+            encrypted_len_bytes[0],
+            encrypted_len_bytes[1],
+        ];
 
         // シーケンス番号をインクリメント
         if is_handshake {
@@ -481,7 +489,11 @@ impl TlsConnection {
             self.write_seq += 1;
         }
 
-        Ok(Self::packet_payload_from_vec(record))
+        Ok(Self::packet_payload_from_parts(&[
+            &record_header,
+            &ciphertext,
+            &auth_tag,
+        ]))
     }
 
     /// TLS 1.3 アプリケーションデータ暗号化
@@ -629,7 +641,7 @@ impl TlsConnection {
         match aes_gcm_decrypt(&self.read_key, &nonce, &aad, ciphertext, &tag) {
             Some(plaintext) => {
                 self.read_seq += 1;
-                Ok(Self::packet_payload_from_vec(plaintext))
+                Ok(Self::packet_payload_from_slice(&plaintext))
             }
             None => Err(TlsError::DecryptError),
         }
@@ -691,7 +703,7 @@ impl TlsConnection {
         match chacha20_poly1305_decrypt(&key, &nonce, &aad, ciphertext, &tag) {
             Some(plaintext) => {
                 self.read_seq += 1;
-                Ok(Self::packet_payload_from_vec(plaintext))
+                Ok(Self::packet_payload_from_slice(&plaintext))
             }
             None => Err(TlsError::DecryptError),
         }

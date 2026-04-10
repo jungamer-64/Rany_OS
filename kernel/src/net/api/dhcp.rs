@@ -105,7 +105,6 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         })
         .ok_or_else(|| String::from("Network stack is not initialized"))?;
 
-    let mac = bootstrap_config.mac;
     let ipv6_enabled = bootstrap_config.ipv6.is_some();
 
     for iface in interfaces {
@@ -122,7 +121,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     }
 
     if ipv6_enabled {
-        dhcp::init_v6_in(runtime, mac);
+        log::info!("[NET] DHCPv6 enabled via multi-interface system");
     } else {
         log::info!("[NET] DHCPv6 runtime disabled: IPv6 is not configured");
     }
@@ -154,10 +153,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
 
 pub(crate) fn start_background_service_tasks() {
     let runtime = default_runtime();
-    let has_dhcpv6 = dhcp::primary_v6_client_lock_in(runtime)
-        .lock()
-        .ok()
-        .is_some_and(|guard| guard.is_some());
+    let has_dhcpv6 = dhcp::primary_v6_client_in(runtime).is_some();
     let has_mdns = crate::net::services::mdns::service_in(runtime)
         .lock()
         .ok()
@@ -174,28 +170,10 @@ pub(crate) fn start_background_service_tasks() {
         return;
     }
 
+    // DHCPv6 tasks are now spawned in dhcp::ensure_interface_runtime()
+    // which is called from init_dhcp_runtime().
     if has_dhcpv6 {
-        log::info!("[NET][boot] scheduling DHCPv6 client task on bootstrap CPU0");
-        crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
-            log::info!(
-                "[NET][boot] DHCPv6 client task running on CPU {}",
-                crate::cpu::try_current_id().unwrap_or(0)
-            );
-            let client_ref: Option<&'static dhcp::DhcpV6Client> = {
-                let guard = match dhcp::primary_v6_client_lock_in(runtime).lock() {
-                    Ok(g) => g,
-                    Err(_) => return,
-                };
-                guard
-                    .as_ref()
-                    .map(|c| unsafe { &*(c as *const dhcp::DhcpV6Client) })
-            };
-            if let Some(client6) = client_ref {
-                if let Err(e) = client6.run().await {
-                    log::error!("[NET] DHCPv6 client task failed: {}", e);
-                }
-            }
-        });
+        log::info!("[NET][boot] DHCPv6 multi-interface tasks already scheduled");
     }
 
     if has_mdns {
@@ -266,28 +244,23 @@ fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpR
     }
 
     if crate::net::runtime::device::primary_if_in(runtime) == Some(if_id) {
-        match dhcp::primary_v6_client_lock_in(runtime).lock() {
-            Ok(guard6) => {
-                if let Some(ref client6) = *guard6 {
-                    out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
-                    if let Some(lease6) = client6.lease() {
-                        out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
-                        out.v6_preferred_remaining = Some(lease_remaining_secs(
-                            lease6.preferred_lifetime,
-                            lease6.obtained_at,
-                            now,
-                            tick_rate,
-                        ));
-                        out.v6_valid_remaining = Some(lease_remaining_secs(
-                            lease6.valid_lifetime,
-                            lease6.obtained_at,
-                            now,
-                            tick_rate,
-                        ));
-                    }
-                }
+        if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
+            out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
+            if let Some(lease6) = client6.lease() {
+                out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
+                out.v6_preferred_remaining = Some(lease_remaining_secs(
+                    lease6.preferred_lifetime,
+                    lease6.obtained_at,
+                    now,
+                    tick_rate,
+                ));
+                out.v6_valid_remaining = Some(lease_remaining_secs(
+                    lease6.valid_lifetime,
+                    lease6.obtained_at,
+                    now,
+                    tick_rate,
+                ));
             }
-            Err(_) => out.v6_state = String::from("Poisoned"),
         }
     }
 
@@ -345,28 +318,23 @@ pub(crate) fn dhcp_state_snapshot_in(runtime: NetRuntimeHandle) -> DhcpRuntimeSt
         out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
     }
 
-    match dhcp::primary_v6_client_lock_in(runtime).lock() {
-        Ok(guard6) => {
-            if let Some(ref client6) = *guard6 {
-                out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
-                if let Some(lease6) = client6.lease() {
-                    out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
-                    out.v6_preferred_remaining = Some(lease_remaining_secs(
-                        lease6.preferred_lifetime,
-                        lease6.obtained_at,
-                        now,
-                        tick_rate,
-                    ));
-                    out.v6_valid_remaining = Some(lease_remaining_secs(
-                        lease6.valid_lifetime,
-                        lease6.obtained_at,
-                        now,
-                        tick_rate,
-                    ));
-                }
-            }
+    if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
+        out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
+        if let Some(lease6) = client6.lease() {
+            out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
+            out.v6_preferred_remaining = Some(lease_remaining_secs(
+                lease6.preferred_lifetime,
+                lease6.obtained_at,
+                now,
+                tick_rate,
+            ));
+            out.v6_valid_remaining = Some(lease_remaining_secs(
+                lease6.valid_lifetime,
+                lease6.obtained_at,
+                now,
+                tick_rate,
+            ));
         }
-        Err(_) => out.v6_state = String::from("Poisoned"),
     }
 
     out

@@ -49,20 +49,11 @@ impl NetworkEventHandler {
                 }
 
                 if err_msg.is_none() {
-                    match dhcp::primary_v6_client_lock_in(runtime).lock() {
-                        Ok(guard6) => {
-                            if let Some(ref client6) = *guard6 {
-                                if let Err(e) = client6.force_renew_or_restart(now) {
-                                    err_msg = Some(alloc::string::String::from(e));
-                                } else {
-                                    touched = true;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            err_msg = Some(alloc::string::String::from(
-                                "DHCPv6 global client lock poisoned",
-                            ))
+                    if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
+                        if let Err(e) = client6.force_renew_or_restart(now) {
+                            err_msg = Some(alloc::string::String::from(e));
+                        } else {
+                            touched = true;
                         }
                     }
                 }
@@ -93,11 +84,9 @@ impl NetworkEventHandler {
                     released = true;
                 }
                 // DHCPv6 Release (RFC 8415 Section 18.2.6)
-                if let Ok(guard) = dhcp::primary_v6_client_lock_in(runtime).lock() {
-                    if let Some(ref client) = *guard {
-                        client.release();
-                        released = true;
-                    }
+                if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
+                    client6.release();
+                    released = true;
                 }
 
                 if let Ok(mut slot) = result_slot.lock() {

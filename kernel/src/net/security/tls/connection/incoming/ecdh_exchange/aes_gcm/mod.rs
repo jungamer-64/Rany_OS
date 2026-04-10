@@ -27,19 +27,21 @@ impl TlsConnection {
         let (ciphertext, auth_tag) = aes_gcm_encrypt(&self.write_key, &nonce, &aad, data);
 
         let record_len = 8 + ciphertext.len() + 16;
-        let mut record = vec![
+        let record_header = [
             content_type,
             0x03,
             0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
-        record.extend_from_slice(&explicit_nonce);
-        record.extend_from_slice(&ciphertext);
-        record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_vec(record))
+        Ok(Self::packet_payload_from_parts(&[
+            &record_header,
+            &explicit_nonce,
+            &ciphertext,
+            &auth_tag,
+        ]))
     }
 
     /// ChaCha20-Poly1305 レコード暗号化 (TLS 1.2)
@@ -71,18 +73,20 @@ impl TlsConnection {
         let (ciphertext, auth_tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, data);
 
         let record_len = ciphertext.len() + 16;
-        let mut record = vec![
+        let record_header = [
             content_type,
             0x03,
             0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
-        record.extend_from_slice(&ciphertext);
-        record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_vec(record))
+        Ok(Self::packet_payload_from_parts(&[
+            &record_header,
+            &ciphertext,
+            &auth_tag,
+        ]))
     }
 
     // ========================================================================

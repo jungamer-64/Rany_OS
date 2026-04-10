@@ -89,6 +89,9 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 - TCP は connection semantics を持つが、core では packet-backed payload queue と endpoint-owned state を中心に扱う。
 - UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先する。
+- DNS は parser / cache / record data まで packet-backed view を正規面とし、`String` / raw byte ownership への早期 materialize を baseline にしない。
+- IPv4 は timeout / unknown-protocol / reassembled packet を含めて packet-backed quoted/original payload で扱う。
+- IPv6 は quoted packet、fragment reassembly、TX を含めて scatter-gather / packet-backed ownership で扱う。
 - core canonical docs は packet / endpoint / ownership vocabulary を前提に語彙を組み立てる。
 
 ### 4.3 implementation pending

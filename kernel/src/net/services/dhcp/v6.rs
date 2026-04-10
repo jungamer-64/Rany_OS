@@ -121,13 +121,17 @@ impl DhcpV6Client {
     /// 非同期イベントキュー経由でUDPv6パケットを送信（ロック競合回避）
     fn enqueue_v6_send(
         &self,
+        if_id: Option<NetIfId>,
         src: Ipv6Address,
         dst: Ipv6Address,
         payload: kernel_api::resource::net::PacketPayload,
     ) -> bool {
+        let scope = if_id
+            .map(crate::net::types::InterfaceScope::Pinned)
+            .unwrap_or(crate::net::types::InterfaceScope::Any);
         crate::net::runtime::stack::enqueue_udp_v6_send_scoped_in(
             self.runtime,
-            crate::net::types::InterfaceScope::Any,
+            scope,
             DHCPV6_CLIENT_PORT,
             src,
             dst,
@@ -137,9 +141,15 @@ impl DhcpV6Client {
         )
     }
 
-    fn enqueue_v6_send_bytes(&self, src: Ipv6Address, dst: Ipv6Address, payload: &[u8]) -> bool {
+    fn enqueue_v6_send_bytes(
+        &self,
+        if_id: Option<NetIfId>,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        payload: &[u8],
+    ) -> bool {
         crate::net::payload::payload_from_bytes(payload)
-            .is_some_and(|payload| self.enqueue_v6_send(src, dst, payload))
+            .is_some_and(|payload| self.enqueue_v6_send(if_id, src, dst, payload))
     }
 
     /// DUID-LL を生成（type=3, hwtype=1 + MAC）
@@ -197,7 +207,7 @@ impl DhcpV6Client {
             let now = crate::task::current_tick();
 
             // タイムアウトチェックと必要に応じた SOLICIT/REQUEST 送信
-            self.check_timeout(now, 1000)?;
+            self.check_timeout(None, now, 1000)?;
 
             // 応答待機
             match task::with_timeout(socket.recv(), 1000).await {
@@ -211,7 +221,7 @@ impl DhcpV6Client {
                         }
                     };
 
-                    let handled = self.handle_packet_payload(&packet, src_v6);
+                    let handled = self.handle_packet_payload(None, &packet, src_v6);
                     if handled {
                         log::info!("[NET] DHCPv6 packet handled from {}", src_v6);
                     }
@@ -239,6 +249,14 @@ impl DhcpV6Client {
         match self.lease.lock() {
             Ok(g) => g.clone(),
             Err(_) => None,
+        }
+    }
+
+    pub fn update_mac(&mut self, mac_address: MacAddress) {
+        self.mac = mac_address;
+        self.duid = Self::make_duid_ll(&mac_address);
+        if let Ok(mut cache) = self.cached_link_local.lock() {
+            *cache = None;
         }
     }
 
@@ -641,7 +659,7 @@ impl DhcpV6Client {
                             Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
                             Err(_) => all_dhcp_servers,
                         };
-                        self.enqueue_v6_send_bytes(src, dst, &buf[..len]);
+                        self.enqueue_v6_send_bytes(None, src, dst, &buf[..len]);
                         log::info!("[NET] DHCPv6: RELEASE sent for {}", lease.addr);
                     }
                 }
@@ -1093,10 +1111,39 @@ impl DhcpV6Client {
         }
     }
 
+    /// DHCPv6パケットがこのクライアント向けか（DUID一致）を確認
+    pub fn matches_response_payload(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+    ) -> bool {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        if view.total_len() < 4 {
+            return false;
+        }
+
+        // DUID一致を確認するためオプションを走査
+        let mut off = 4usize;
+        while off + 4 <= view.total_len() {
+            let code = u16::from_be_bytes(view.read_array::<2>(off).unwrap_or([0, 0]));
+            let len = u16::from_be_bytes(view.read_array::<2>(off + 2).unwrap_or([0, 0])) as usize;
+            off += 4;
+
+            if code == 1 {
+                // Client Identifier (Option 1)
+                if off + len <= view.total_len() {
+                    let duid = view.read_vec(off, len);
+                    return duid == self.duid;
+                }
+            }
+            off += len;
+        }
+        false
+    }
+
     /// Handle an incoming DHCPv6 packet (called by network receive path)
     /// `src` is the IPv6 source address the packet was received from.
     /// Returns true if handled
-    pub fn handle_packet(&self, data: &[u8], src: Ipv6Address) -> bool {
+    pub fn handle_packet(&self, if_id: Option<NetIfId>, data: &[u8], src: Ipv6Address) -> bool {
         let now = crate::net::l4::endpoint::tcb_table().get_current_tick();
 
         // Inspect message type first so we can react to ADVERTISE even when no IAADDR is present
@@ -1124,7 +1171,7 @@ impl DhcpV6Client {
                     let mut buf = [0u8; 256];
                     if let Ok(len) = self.build_request_from_advertise(&mut buf) {
                         if let Some(src_ip) = self.get_link_local() {
-                            self.enqueue_v6_send_bytes(src_ip, src, &buf[..len]);
+                            self.enqueue_v6_send_bytes(if_id, src_ip, src, &buf[..len]);
                         }
                     }
                     return true;
@@ -1152,13 +1199,14 @@ impl DhcpV6Client {
                     *sd = Some(src);
                 }
 
-                // Apply IPv6 address to the running NetworkStack (fire-and-forget via event queue)
+                // Apply IPv6 lease info to the running NetworkStack (fire-and-forget via event queue)
                 crate::net::l4::endpoint::event::enqueue_event_ignore_in(
                     self.runtime,
-                    crate::net::l4::endpoint::event::NetworkEvent::ApplyIpv6Address {
+                    crate::net::l4::endpoint::event::NetworkEvent::DhcpV6ApplyLease {
+                        if_id: if_id.map(|id| id.0),
                         addr: lease.addr.octets(),
-                        result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
-                        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+                        dns_servers: lease.dns_servers.iter().map(|a| a.octets()).collect(),
+                        domain_search: lease.domain_search.clone(),
                     },
                 );
 
@@ -1174,6 +1222,7 @@ impl DhcpV6Client {
 
     pub fn handle_packet_payload(
         &self,
+        if_id: Option<NetIfId>,
         payload: &kernel_api::resource::net::PacketPayload,
         src: Ipv6Address,
     ) -> bool {
@@ -1200,7 +1249,7 @@ impl DhcpV6Client {
                     let mut buf = [0u8; 256];
                     if let Ok(len) = self.build_request_from_advertise(&mut buf) {
                         if let Some(src_ip) = self.get_link_local() {
-                            self.enqueue_v6_send_bytes(src_ip, src, &buf[..len]);
+                            self.enqueue_v6_send_bytes(if_id, src_ip, src, &buf[..len]);
                         }
                     }
                     return true;
@@ -1213,32 +1262,31 @@ impl DhcpV6Client {
             return false;
         }
 
-        match self.parse_reply_payload(payload, now) {
-            Ok(Some(lease)) => {
-                if let Ok(mut g) = self.lease.lock() {
-                    *g = Some(lease.clone());
-                }
-
-                if let Ok(mut sd) = self.server_addr.lock() {
-                    *sd = Some(src);
-                }
-
-                crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-                    self.runtime,
-                    crate::net::l4::endpoint::event::NetworkEvent::ApplyIpv6Address {
-                        addr: lease.addr.octets(),
-                        result_slot: alloc::sync::Arc::new(crate::sync::PoisonLock::new(None)),
-                        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-                    },
-                );
-
-                if let Ok(mut st) = self.state.lock() {
-                    *st = DhcpV6State::Bound;
-                }
-                true
+        if let Ok(Some(lease)) = self.parse_reply_payload(payload, now) {
+            if let Ok(mut g) = self.lease.lock() {
+                *g = Some(lease.clone());
             }
-            Ok(None) => false,
-            Err(_) => false,
+
+            if let Ok(mut sd) = self.server_addr.lock() {
+                *sd = Some(src);
+            }
+
+            crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                self.runtime,
+                crate::net::l4::endpoint::event::NetworkEvent::DhcpV6ApplyLease {
+                    if_id: None,
+                    addr: lease.addr.octets(),
+                    dns_servers: lease.dns_servers.iter().map(|a| a.octets()).collect(),
+                    domain_search: lease.domain_search.clone(),
+                },
+            );
+
+            if let Ok(mut st) = self.state.lock() {
+                *st = DhcpV6State::Bound;
+            }
+            true
+        } else {
+            false
         }
     }
 
@@ -1247,7 +1295,12 @@ impl DhcpV6Client {
     ///
     /// 非同期イベントキュー経由で送信（ロック競合回避）:
     /// `get_link_local()` で短時間ロックのみ取得し、送信は `enqueue_v6_send()` を使用する。
-    pub fn check_timeout(&self, current_tick: u64, _tick_rate: u64) -> Result<(), &'static str> {
+    pub fn check_timeout(
+        &self,
+        if_id: Option<NetIfId>,
+        current_tick: u64,
+        _tick_rate: u64,
+    ) -> Result<(), &'static str> {
         let all_dhcp_servers = Self::all_dhcp_servers_multicast();
 
         match self.state.lock() {
@@ -1262,7 +1315,7 @@ impl DhcpV6Client {
 
                     // Use link-local as source for SOLICIT (async event queue)
                     if let Some(src) = self.get_link_local() {
-                        if self.enqueue_v6_send_bytes(src, all_dhcp_servers, &buf[..len]) {
+                        if self.enqueue_v6_send_bytes(if_id, src, all_dhcp_servers, &buf[..len]) {
                             *s = DhcpV6State::SolicitSent;
                             self.state_time.store(current_tick, Ordering::SeqCst);
                             self.retry_count.store(0, Ordering::SeqCst);
@@ -1295,7 +1348,12 @@ impl DhcpV6Client {
                             let mut buf = [0u8; 256];
                             let len = self.build_solicit(&mut buf)?;
                             if let Some(src) = self.get_link_local() {
-                                self.enqueue_v6_send_bytes(src, all_dhcp_servers, &buf[..len]);
+                                self.enqueue_v6_send_bytes(
+                                    if_id,
+                                    src,
+                                    all_dhcp_servers,
+                                    &buf[..len],
+                                );
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1329,7 +1387,7 @@ impl DhcpV6Client {
                                     Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
                                     Err(_) => all_dhcp_servers,
                                 };
-                                self.enqueue_v6_send_bytes(src, dst, &buf[..len]);
+                                self.enqueue_v6_send_bytes(if_id, src, dst, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1357,7 +1415,7 @@ impl DhcpV6Client {
                                         }
                                         Err(_) => all_dhcp_servers,
                                     };
-                                    self.enqueue_v6_send_bytes(src, dst, &buf[..len]);
+                                    self.enqueue_v6_send_bytes(if_id, src, dst, &buf[..len]);
                                 }
                             }
                         }
@@ -1387,7 +1445,12 @@ impl DhcpV6Client {
                             let mut buf = [0u8; 512];
                             if let Ok(len) = self.build_rebind(&mut buf, &lease) {
                                 if let Some(src) = self.get_link_local() {
-                                    self.enqueue_v6_send_bytes(src, all_dhcp_servers, &buf[..len]);
+                                    self.enqueue_v6_send_bytes(
+                                        if_id,
+                                        src,
+                                        all_dhcp_servers,
+                                        &buf[..len],
+                                    );
                                 }
                             }
                             return Ok(());
@@ -1405,7 +1468,7 @@ impl DhcpV6Client {
                                     Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
                                     Err(_) => all_dhcp_servers,
                                 };
-                                self.enqueue_v6_send_bytes(src, dst, &buf[..len]);
+                                self.enqueue_v6_send_bytes(if_id, src, dst, &buf[..len]);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1445,7 +1508,12 @@ impl DhcpV6Client {
                             let mut buf = [0u8; 512];
                             let len = self.build_rebind(&mut buf, &lease)?;
                             if let Some(src) = self.get_link_local() {
-                                self.enqueue_v6_send_bytes(src, all_dhcp_servers, &buf[..len]);
+                                self.enqueue_v6_send_bytes(
+                                    if_id,
+                                    src,
+                                    all_dhcp_servers,
+                                    &buf[..len],
+                                );
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1496,31 +1564,6 @@ impl DhcpV6Client {
     }
 }
 
-pub fn init_v6_in(
-    runtime: crate::net::runtime::NetRuntimeHandle,
-    mac_address: crate::net::l2::ethernet::MacAddress,
-) {
-    let client = DhcpV6Client::new_in(runtime, mac_address);
-    match super::primary_v6_client_lock_in(runtime).lock() {
-        Ok(mut g) => *g = Some(client),
-        Err(_) => log::error!("[NET] DHCPv6 Global lock poisoned (init) - initialization skipped"),
-    }
-}
-
-pub(crate) fn update_client_v6_mac(mac_address: crate::net::l2::ethernet::MacAddress) {
-    match super::primary_v6_client_lock_in(crate::net::runtime::default_runtime()).lock() {
-        Ok(mut guard) => {
-            if let Some(client) = guard.as_mut() {
-                client.mac = mac_address;
-                client.duid = DhcpV6Client::make_duid_ll(&mac_address);
-                if let Ok(mut cache) = client.cached_link_local.lock() {
-                    *cache = None;
-                }
-            }
-        }
-        Err(_) => log::error!("[NET] DHCPv6 Global lock poisoned (update_client_v6_mac)"),
-    }
-}
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) mod tests {
     use super::*;
@@ -1642,17 +1685,17 @@ pub(crate) mod tests {
         // tick_rate = 1000 (ms per sec), current_tick beyond T1
         let tick_rate = 1000u64;
         let now = (lease.obtained_at as u64) + lease.t1 as u64 * tick_rate + 10;
-        client.check_timeout(now, tick_rate).unwrap();
+        client.check_timeout(None, now, tick_rate).unwrap();
         assert_eq!(client.state(), DhcpV6State::Renewing);
 
         // move time beyond T2
         let now_t2 = (lease.obtained_at as u64) + lease.t2 as u64 * tick_rate + 10;
-        client.check_timeout(now_t2, tick_rate).unwrap();
+        client.check_timeout(None, now_t2, tick_rate).unwrap();
         assert_eq!(client.state(), DhcpV6State::Rebinding);
 
         // move time beyond valid_lifetime
         let now_valid = (lease.obtained_at as u64) + lease.valid_lifetime as u64 * tick_rate + 10;
-        client.check_timeout(now_valid, tick_rate).unwrap();
+        client.check_timeout(None, now_valid, tick_rate).unwrap();
         assert_eq!(client.state(), DhcpV6State::Init);
         assert!(client.lease().is_none());
     }
@@ -1697,7 +1740,7 @@ pub(crate) mod tests {
         pkt[off..off + 4].copy_from_slice(&7200u32.to_be_bytes());
 
         let src_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let handled = client.handle_packet(&pkt, src_ip);
+        let handled = client.handle_packet(None, &pkt, src_ip);
         assert!(handled);
         // lease stored
         let l = client.lease();
@@ -1738,7 +1781,7 @@ pub(crate) mod tests {
         pkt[off..off + server_duid.len()].copy_from_slice(&server_duid);
 
         let src_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
-        let handled = client.handle_packet(&pkt, src_ip);
+        let handled = client.handle_packet(None, &pkt, src_ip);
         assert!(handled);
         assert_eq!(client.state(), DhcpV6State::Requesting);
         // server_addr and server_duid should be set
@@ -1763,7 +1806,7 @@ pub(crate) mod tests {
             .store(DhcpV6Client::MAX_RETRIES, Ordering::SeqCst);
         let tick_rate = 1000u64;
         let now = DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate + 10;
-        client.check_timeout(now, tick_rate).unwrap();
+        client.check_timeout(None, now, tick_rate).unwrap();
         assert_eq!(client.state(), DhcpV6State::Init);
     }
 
@@ -1822,7 +1865,7 @@ pub(crate) mod tests {
         adv[off..off + server_duid.len()].copy_from_slice(&server_duid);
 
         let server_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]);
-        assert!(client.handle_packet(&adv, server_ip));
+        assert!(client.handle_packet(None, &adv, server_ip));
         assert_eq!(client.state(), DhcpV6State::Requesting);
 
         // Now build a REPLY that contains IAADDR for the requested IA
@@ -1848,7 +1891,7 @@ pub(crate) mod tests {
         roff += 4;
         reply[roff..roff + 4].copy_from_slice(&7200u32.to_be_bytes());
 
-        assert!(client.handle_packet(&reply, server_ip));
+        assert!(client.handle_packet(None, &reply, server_ip));
         assert_eq!(client.state(), DhcpV6State::Bound);
         let l = client.lease();
         assert!(l.is_some());
@@ -1888,7 +1931,7 @@ pub(crate) mod tests {
         let tick_rate = 1000u64;
         // force a retransmit interval to elapse
         let now = DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate + 10;
-        client.check_timeout(now, tick_rate).unwrap();
+        client.check_timeout(None, now, tick_rate).unwrap();
         // should still be Renewing (not immediately escalate to Rebinding)
         assert_eq!(client.state(), DhcpV6State::Renewing);
     }

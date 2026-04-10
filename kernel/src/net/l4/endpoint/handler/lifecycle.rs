@@ -114,19 +114,6 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::ApplyIpv6Address {
-                addr,
-                result_slot,
-                waker,
-            } => {
-                let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(addr);
-                stack.enqueue_apply_ipv6_global_address(ipv6);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(true);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::ProcessTimeouts => {
                 // NetworkStack内部タイマーの基準時刻を同期する。
                 // IGMP/ARP/NDP等が `NetworkStack::current_time()` を参照するため、

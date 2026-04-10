@@ -1130,9 +1130,19 @@ pub enum Ipv6ProcessResult<'a> {
         kernel_api::resource::net::PacketPayload,
     ),
     /// Unknown Next Header encountered (RFC 4443 Parameter Problem Code 1)
-    UnknownNextHeader(u8, u32, Ipv6Address, Ipv6Address, &'a [u8]),
+    UnknownNextHeader(
+        u8,
+        u32,
+        Ipv6Address,
+        Ipv6Address,
+        kernel_api::resource::net::PacketPayload,
+    ),
     /// Hop Limit exceeded (RFC 4443 Time Exceeded Code 0)
-    HopLimitExceeded(Ipv6Address, Ipv6Address, &'a [u8]),
+    HopLimitExceeded(
+        Ipv6Address,
+        Ipv6Address,
+        kernel_api::resource::net::PacketPayload,
+    ),
     /// Packet dropped (not for us, malformed, etc.)
     Dropped,
     /// Processing error

@@ -110,6 +110,14 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use the packet-backed APIs `process_incoming_payload(&payload)`, `encrypt_application_payload(&payload)`, `send_early_data_payload(&payload)`, `get_rejected_early_data_payload()`, `build_key_update_response_payload()`, and `close_payload()`.
   - TLS handshake record builders returning `Vec<u8>` (`build_client_key_exchange()`, `build_client_key_exchange_rsa()`, `build_change_cipher_spec()`, `build_client_finished_tls12()`, `build_client_finished_tls13()`) ❌ **removed**
     - Migration: Use the payload-native builders `build_client_key_exchange_payload()`, `build_client_key_exchange_rsa_payload()`, `build_change_cipher_spec_payload()`, `build_client_finished_tls12_payload()`, and `build_client_finished_tls13_payload()`.
+  - TLS helper accessors exposing raw transcript bytes (`handshake_messages_ref()`) ❌ **removed**
+    - Migration: Verify transcript progress through state, emitted payload records, or transcript-hash-based helpers instead of byte accumulation snapshots.
+  - IPv6 copy-based quoted-packet / timeout paths (`packet_from_bytes` / `payload_from_bytes` rebuild in the IPv6 receive path) ❌ **removed**
+    - Migration: Keep quoted packets packet-backed and pass `PacketPayload` directly into ICMPv6 builders and reassembly results.
+  - IPv4 copy-based quoted/original-packet rebuild paths (`packet_from_bytes` rebuild in the IPv4 receive / ingress path) ❌ **removed**
+    - Migration: `Ipv4ProcessResult::ReassemblyTimeout` / `UnknownProtocol` now carry `PacketPayload` directly. Keep quoted/original packets packet-backed through ICMP error generation.
+  - Stale endpoint event branch `NetworkEvent::ApplyIpv6Address` in handler-side fallback dispatch ❌ **removed**
+    - Migration: `endpoint/event.rs` is the source of truth. Use the active DHCPv6 lease application event `DhcpV6ApplyLease` instead of reviving removed handler-only variants.
 
 - `kernel/src/net/services/dhcp`
   - Default-runtime wrappers (`init()`, `init_v6()`, `legacy_v4_client_lock()`, `legacy_v6_client_lock()`) ❌ **removed**
@@ -208,6 +216,8 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use `DnsRecordData::Raw(PayloadSpan)` and explicitly materialize bytes only at the call site that actually needs them.
   - byte-slice DNS response parsers (`parse_response(&[u8], ...)`, `parse_tcp_response(&[u8], ...)`) ❌ **removed**
     - Migration: Use `parse_response_payload(&payload, ...)` and `parse_tcp_response_payload(&payload, ...)`.
+  - owned-string DNS record variants (`DnsRecord.name: String`, `DnsRecordData::Name(String)`, `DnsRecordData::TXT(String)`, `DnsRecordData::MX(_, String)`, `DnsRecordData::SRV { target: String, .. }`) ❌ **removed**
+    - Migration: Use `DnsNameView`, `DnsTxtView`, and `PayloadSpan`-backed record data. Materialize `String` only at the outermost consumer that needs text.
 
 - `kernel/src/io/iommu/runtime/command/queue.rs`
   - `CommandQueue::submit_sync()` ❌ **removed**

@@ -138,15 +138,6 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::ApplyIpv6Address {
-                result_slot, waker, ..
-            } => {
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(false);
-                }
-                waker.wake();
-                EventHandleResult::Success
-            }
             NetworkEvent::IcmpEcho {
                 result_slot, waker, ..
             } => {
@@ -468,7 +459,6 @@ impl NetworkEventHandler {
             | lifecycle_event @ NetworkEvent::MulticastJoin { .. }
             | lifecycle_event @ NetworkEvent::MulticastLeave { .. }
             | lifecycle_event @ NetworkEvent::TcpBindAcceptor { .. }
-            | lifecycle_event @ NetworkEvent::ApplyIpv6Address { .. }
             | lifecycle_event @ NetworkEvent::ProcessTimeouts => {
                 self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack)
             }
@@ -514,6 +504,9 @@ impl NetworkEventHandler {
                 self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
             utility_event @ NetworkEvent::DhcpApplyLease { .. } => {
+                self.handle_utility_event_with_stack(runtime, utility_event, stack)
+            }
+            utility_event @ NetworkEvent::DhcpV6ApplyLease { .. } => {
                 self.handle_utility_event_with_stack(runtime, utility_event, stack)
             }
             utility_event @ NetworkEvent::GetLinkLocal { .. } => {

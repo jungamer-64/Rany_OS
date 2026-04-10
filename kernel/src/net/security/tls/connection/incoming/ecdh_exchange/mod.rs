@@ -101,14 +101,15 @@ impl TlsConnection {
             .expect("tls12 client key exchange transcript append");
 
         // TLSレコードヘッダ
-        let mut record = Vec::with_capacity(5 + message.len());
-        record.push(ContentType::Handshake as u8);
-        record.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-        record.push((message.len() >> 8) as u8);
-        record.push(message.len() as u8);
-        record.extend_from_slice(&message);
+        let record_header = [
+            ContentType::Handshake as u8,
+            0x03,
+            0x03,
+            (message.len() >> 8) as u8,
+            message.len() as u8,
+        ];
 
-        Some(Self::packet_payload_from_vec(record))
+        Some(Self::packet_payload_from_parts(&[&record_header, &message]))
     }
 
     /// ServerHelloDoneを処理
@@ -179,17 +180,23 @@ impl TlsConnection {
 
         let mut verify_data = [0u8; 12];
         if version <= TlsVersion::TLS_1_1 {
-            let handshake_hash = if cipher.uses_sha384() {
-                self.transcript_hash_sha384().to_vec()
+            if cipher.uses_sha384() {
+                let handshake_hash = self.transcript_hash_sha384();
+                tls10_prf(
+                    &self.master_secret,
+                    label,
+                    &handshake_hash,
+                    &mut verify_data,
+                );
             } else {
-                self.transcript_hash_sha256().to_vec()
-            };
-            tls10_prf(
-                &self.master_secret,
-                label,
-                &handshake_hash,
-                &mut verify_data,
-            );
+                let handshake_hash = self.transcript_hash_sha256();
+                tls10_prf(
+                    &self.master_secret,
+                    label,
+                    &handshake_hash,
+                    &mut verify_data,
+                );
+            }
         } else if cipher.uses_sha384() {
             let handshake_hash = self.transcript_hash_sha384();
             tls12_prf_sha384(
@@ -379,19 +386,21 @@ impl TlsConnection {
         let (ciphertext, auth_tag) = aes_gcm_encrypt(&self.write_key, &nonce, &aad, data);
 
         let record_len = 8 + ciphertext.len() + 16;
-        let mut record = vec![
+        let record_header = [
             ContentType::Handshake as u8,
             0x03,
             0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
-        record.extend_from_slice(&explicit_nonce);
-        record.extend_from_slice(&ciphertext);
-        record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_vec(record))
+        Ok(Self::packet_payload_from_parts(&[
+            &record_header,
+            &explicit_nonce,
+            &ciphertext,
+            &auth_tag,
+        ]))
     }
 
     /// ChaCha20-Poly1305 ハンドシェイクメッセージ暗号化（TLS 1.2 Finished用）
@@ -422,18 +431,20 @@ impl TlsConnection {
         let (ciphertext, auth_tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, data);
 
         let record_len = ciphertext.len() + 16;
-        let mut record = vec![
+        let record_header = [
             ContentType::Handshake as u8,
             0x03,
             0x03,
             (record_len >> 8) as u8,
             record_len as u8,
         ];
-        record.extend_from_slice(&ciphertext);
-        record.extend_from_slice(&auth_tag);
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_vec(record))
+        Ok(Self::packet_payload_from_parts(&[
+            &record_header,
+            &ciphertext,
+            &auth_tag,
+        ]))
     }
 
     // ========================================================================
@@ -523,16 +534,16 @@ impl TlsConnection {
             ciphertext
         };
 
-        let mut record = Vec::with_capacity(5 + payload.len());
-        record.push(content_type);
-        record.push(version_bytes[0]);
-        record.push(version_bytes[1]);
-        record.push((payload.len() >> 8) as u8);
-        record.push(payload.len() as u8);
-        record.extend_from_slice(&payload);
+        let record_header = [
+            content_type,
+            version_bytes[0],
+            version_bytes[1],
+            (payload.len() >> 8) as u8,
+            payload.len() as u8,
+        ];
 
         self.write_seq += 1;
-        Ok(Self::packet_payload_from_vec(record))
+        Ok(Self::packet_payload_from_parts(&[&record_header, &payload]))
     }
 
     /// CBC復号用: IVと暗号文を分離し、TLS 1.0の暗黙IVも処理
@@ -730,15 +741,15 @@ impl TlsConnection {
         // TLSレコードヘッダ
         let version_rec = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
         let vb = version_rec.to_bytes();
-        let mut record = Vec::with_capacity(5 + message.len());
-        record.push(ContentType::Handshake as u8);
-        record.push(vb[0]);
-        record.push(vb[1]);
-        record.push((message.len() >> 8) as u8);
-        record.push(message.len() as u8);
-        record.extend_from_slice(&message);
+        let record_header = [
+            ContentType::Handshake as u8,
+            vb[0],
+            vb[1],
+            (message.len() >> 8) as u8,
+            message.len() as u8,
+        ];
 
-        Some(Self::packet_payload_from_vec(record))
+        Some(Self::packet_payload_from_parts(&[&record_header, &message]))
     }
 
     // ========================================================================

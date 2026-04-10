@@ -51,7 +51,7 @@ impl Ipv4Processor {
             return self.process_fragment_packet(&packet, data, packet_ref, current_time);
         }
 
-        self.process_non_fragment_packet(&packet, data, src, dst)
+        self.process_non_fragment_packet(&packet, data, src, dst, packet_ref.as_ref())
     }
 
     #[inline]

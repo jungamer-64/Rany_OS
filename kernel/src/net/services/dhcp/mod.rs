@@ -38,9 +38,11 @@ struct DhcpInterfaceRuntime {
     if_id: NetIfId,
     config: NetworkConfig,
     v4: Arc<DhcpClient>,
+    v6: Arc<DhcpV6Client>,
     active: AtomicBool,
     suspended: AtomicBool,
     drive_started: AtomicBool,
+    v6_drive_started: AtomicBool,
 }
 
 impl DhcpInterfaceRuntime {
@@ -49,9 +51,11 @@ impl DhcpInterfaceRuntime {
             if_id,
             config,
             v4: Arc::new(DhcpClient::new(config.mac)),
+            v6: Arc::new(DhcpV6Client::new(config.mac)),
             active: AtomicBool::new(true),
             suspended: AtomicBool::new(false),
             drive_started: AtomicBool::new(false),
+            v6_drive_started: AtomicBool::new(false),
         })
     }
 
@@ -63,8 +67,8 @@ impl DhcpInterfaceRuntime {
 pub(crate) struct DhcpRuntimeState {
     interface_runtimes: PoisonLock<BTreeMap<NetIfId, Arc<DhcpInterfaceRuntime>>>,
     v4_dispatcher_started: AtomicBool,
+    v6_dispatcher_started: AtomicBool,
     primary_if_id: AtomicU16,
-    primary_v6_client: PoisonLock<Option<DhcpV6Client>>,
 }
 
 impl DhcpRuntimeState {
@@ -72,8 +76,8 @@ impl DhcpRuntimeState {
         Self {
             interface_runtimes: PoisonLock::new(BTreeMap::new()),
             v4_dispatcher_started: AtomicBool::new(false),
+            v6_dispatcher_started: AtomicBool::new(false),
             primary_if_id: AtomicU16::new(INVALID_IF_ID),
-            primary_v6_client: PoisonLock::new(None),
         }
     }
 }
@@ -86,10 +90,8 @@ pub(crate) fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static DhcpRunti
     &runtime.context().dhcp
 }
 
-pub(crate) fn primary_v6_client_lock_in(
-    runtime: NetRuntimeHandle,
-) -> &'static PoisonLock<Option<DhcpV6Client>> {
-    &runtime_state_for(runtime).primary_v6_client
+pub(crate) fn primary_v6_client_in(runtime: NetRuntimeHandle) -> Option<Arc<DhcpV6Client>> {
+    primary_interface_runtime_in(runtime).map(|runtime| Arc::clone(&runtime.v6))
 }
 
 pub(crate) fn ensure_interface_runtime(
@@ -97,6 +99,7 @@ pub(crate) fn ensure_interface_runtime(
     config: NetworkConfig,
 ) -> Result<(), &'static str> {
     ensure_v4_dispatcher_task();
+    ensure_v6_dispatcher_task();
 
     let runtime = {
         let mut guard = runtime_state()
@@ -116,6 +119,12 @@ pub(crate) fn ensure_interface_runtime(
 
     if !runtime.drive_started.swap(true, Ordering::AcqRel) {
         crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(Arc::clone(
+            &runtime,
+        ))));
+    }
+
+    if !runtime.v6_drive_started.swap(true, Ordering::AcqRel) {
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v6_drive_task(Arc::clone(
             &runtime,
         ))));
     }
@@ -305,6 +314,22 @@ fn find_runtime_for_v4_payload_in(
     None
 }
 
+fn find_runtime_for_v6_payload_in(
+    runtime: NetRuntimeHandle,
+    packet: &kernel_api::resource::net::PacketPayload,
+) -> Option<Arc<DhcpInterfaceRuntime>> {
+    let guard = runtime_state_for(runtime).interface_runtimes.lock().ok()?;
+    for runtime in guard.values() {
+        if runtime.active.load(Ordering::Acquire)
+            && !runtime.suspended.load(Ordering::Acquire)
+            && runtime.v6.matches_response_payload(packet)
+        {
+            return Some(Arc::clone(runtime));
+        }
+    }
+    None
+}
+
 fn ensure_v4_dispatcher_task() {
     ensure_v4_dispatcher_task_in(crate::net::runtime::default_runtime());
 }
@@ -316,6 +341,20 @@ fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) {
         .is_ok()
     {
         crate::task::spawn_task(crate::task::Task::new(dhcp_v4_dispatcher_task(runtime)));
+    }
+}
+
+fn ensure_v6_dispatcher_task() {
+    ensure_v6_dispatcher_task_in(crate::net::runtime::default_runtime());
+}
+
+fn ensure_v6_dispatcher_task_in(runtime: NetRuntimeHandle) {
+    if runtime_state_for(runtime)
+        .v6_dispatcher_started
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v6_dispatcher_task(runtime)));
     }
 }
 
@@ -348,6 +387,33 @@ async fn dhcp_v4_drive_task(runtime: Arc<DhcpInterfaceRuntime>) {
     }
 
     runtime.drive_started.store(false, Ordering::Release);
+}
+
+async fn dhcp_v6_drive_task(runtime: Arc<DhcpInterfaceRuntime>) {
+    log::info!(
+        "[NET] DHCPv6 interface task started: if{} mac={}",
+        runtime.if_id.0,
+        runtime.mac()
+    );
+
+    while runtime.active.load(Ordering::Acquire) {
+        if runtime.suspended.load(Ordering::Acquire) {
+            crate::task::sleep_ms(200).await;
+            continue;
+        }
+
+        let now = crate::task::current_tick();
+        if let Err(err) = runtime.v6.check_timeout(Some(runtime.if_id), now, 1000) {
+            log::warn!(
+                "[NET] DHCPv6 interface check failed: if{} err={}",
+                runtime.if_id.0,
+                err
+            );
+        }
+        crate::task::sleep_ms(1000).await;
+    }
+
+    runtime.v6_drive_started.store(false, Ordering::Release);
 }
 
 async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
@@ -401,11 +467,11 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                                     .gateway
                                     .map(|a| *a.as_bytes())
                                     .unwrap_or([0, 0, 0, 0]),
-                                dns: lease
+                                dns_servers: lease
                                     .dns_servers
-                                    .first()
+                                    .iter()
                                     .map(|a| *a.as_bytes())
-                                    .unwrap_or([0, 0, 0, 0]),
+                                    .collect(),
                                 hostname: hostname_bytes,
                             },
                         );
@@ -447,8 +513,67 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
     }
 }
 
-pub fn update_runtime_mac(mac_address: MacAddress) {
-    v6::update_client_v6_mac(mac_address);
+async fn dhcp_v6_dispatcher_task(runtime: NetRuntimeHandle) {
+    let socket = match crate::net::l4::udp::UdpEndpoint::bind_in(
+        runtime,
+        crate::net::types::InterfaceScope::Any,
+        DHCPV6_CLIENT_PORT,
+        None,
+    ) {
+        Ok(socket) => socket,
+        Err(_) => {
+            log::error!("[NET] DHCPv6 dispatcher failed to bind UDP port 546");
+            runtime_state_for(runtime)
+                .v6_dispatcher_started
+                .store(false, Ordering::Release);
+            return;
+        }
+    };
+
+    log::info!("[NET] DHCPv6 dispatcher task started");
+
+    loop {
+        match socket.recv().await {
+            Some((_if_id, src, _ttl, packet)) => {
+                let src_v6 = match src {
+                    crate::net::l4::udp::UdpAddr::V6 { ip, .. } => ip,
+                    _ => continue, // Ignore V4 if received
+                };
+
+                let process =
+                    find_runtime_for_v6_payload_in(runtime, &packet).map(|interface_runtime| {
+                        let handled = interface_runtime.v6.handle_packet_payload(
+                            Some(interface_runtime.if_id),
+                            &packet,
+                            src_v6,
+                        );
+                        (interface_runtime, handled)
+                    });
+                let Some((interface_runtime, handled)) = process else {
+                    continue;
+                };
+
+                if handled {
+                    log::info!(
+                        "[NET] DHCPv6 packet handled: if{} mac={}",
+                        interface_runtime.if_id.0,
+                        interface_runtime.mac()
+                    );
+                }
+            }
+            None => {
+                log::warn!("[NET] DHCPv6 dispatcher socket closed unexpectedly");
+                runtime_state_for(runtime)
+                    .v6_dispatcher_started
+                    .store(false, Ordering::Release);
+                break;
+            }
+        }
+    }
+}
+
+pub fn update_runtime_mac(_mac_address: MacAddress) {
+    // TODO: Support dynamic MAC address update for all interface clients
 }
 
 /// DHCPサーバーポート

@@ -63,14 +63,17 @@ impl NetworkEventHandler {
                 ip,
                 subnet,
                 gateway,
-                dns,
+                dns_servers,
                 hostname,
             } => {
                 let lease = crate::net::services::dhcp::DhcpLease {
                     ip_address: crate::net::l3::ipv4::Ipv4Address::new(ip),
                     subnet_mask: crate::net::l3::ipv4::Ipv4Address::new(subnet),
                     gateway: Some(crate::net::l3::ipv4::Ipv4Address::new(gateway)),
-                    dns_servers: alloc::vec![crate::net::l3::ipv4::Ipv4Address::new(dns)],
+                    dns_servers: dns_servers
+                        .iter()
+                        .map(|a| crate::net::l3::ipv4::Ipv4Address::new(*a))
+                        .collect(),
                     server_ip: crate::net::l3::ipv4::Ipv4Address::ANY,
                     lease_time: 0,
                     t1: 0,
@@ -98,6 +101,20 @@ impl NetworkEventHandler {
                         || crate::net::runtime::device::primary_if_in(runtime) == Some(if_id);
                     if is_primary {
                         crate::net::services::dhcp::mark_primary_interface(if_id);
+
+                        // DNSサーバーを更新
+                        if !lease.dns_servers.is_empty() {
+                            crate::net::services::dns::set_ipv4_servers(lease.dns_servers.clone());
+                        }
+
+                        // mDNS のローカル IP を更新
+                        if let Ok(mut guard) =
+                            crate::net::services::mdns::service_in(runtime).lock()
+                        {
+                            if let Some(ref mut mdns) = *guard {
+                                mdns.set_local_ip(lease.ip_address);
+                            }
+                        }
                     }
                     stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, is_primary);
                     log::info!(
@@ -109,6 +126,39 @@ impl NetworkEventHandler {
                 } else {
                     stack.apply_dhcp_v4_lease(&lease);
                 }
+                EventHandleResult::Success
+            }
+            NetworkEvent::DhcpV6ApplyLease {
+                if_id,
+                addr,
+                dns_servers,
+                domain_search: _,
+            } => {
+                let ipv6_addr = crate::net::l3::ipv6::Ipv6Address::new(addr);
+                stack.enqueue_apply_ipv6_global_address(ipv6_addr);
+
+                let is_primary = if_id
+                    .map(|id| {
+                        crate::net::runtime::device::primary_if_in(runtime) == Some(NetIfId(id))
+                    })
+                    .unwrap_or(true);
+
+                if is_primary {
+                    // DNSサーバーを更新
+                    if !dns_servers.is_empty() {
+                        let v6_servers = dns_servers
+                            .iter()
+                            .map(|a| crate::net::l3::ipv6::Ipv6Address::new(*a))
+                            .collect();
+                        crate::net::services::dns::set_ipv6_servers(v6_servers);
+                    }
+                }
+
+                log::info!(
+                    "[NET] DHCPv6 lease applied: if{:?} addr={}",
+                    if_id,
+                    ipv6_addr
+                );
                 EventHandleResult::Success
             }
             NetworkEvent::GetLinkLocal { result_slot, waker } => {

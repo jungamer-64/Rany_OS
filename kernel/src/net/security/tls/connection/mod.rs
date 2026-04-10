@@ -187,8 +187,14 @@ impl TlsConnection {
         builder.build()
     }
 
-    fn packet_payload_from_vec(data: Vec<u8>) -> PacketPayload {
-        Self::packet_payload_from_slice(&data)
+    fn packet_payload_from_parts(parts: &[&[u8]]) -> PacketPayload {
+        let mut builder = PacketPayloadBuilder::new();
+        for part in parts {
+            if !part.is_empty() && builder.push_bytes(part).is_none() {
+                return PacketPayload::default();
+            }
+        }
+        builder.build()
     }
 
     pub(crate) fn vec_from_payload(payload: &PacketPayload) -> TlsResult<Vec<u8>> {
@@ -498,7 +504,8 @@ impl TlsConnection {
         hello.extend_from_slice(&[0x01, 0x00]);
 
         // 拡張機能
-        let extensions = self.build_extensions();
+        let mut extensions = Vec::new();
+        self.append_extensions(&mut extensions);
         hello.extend_from_slice(&[(extensions.len() >> 8) as u8, extensions.len() as u8]);
         hello.extend_from_slice(&extensions);
 
@@ -523,17 +530,16 @@ impl TlsConnection {
         self.derive_early_data_keys_if_needed();
 
         // レコードヘッダを追加
-        let mut record = vec![
+        let record_header = [
             ContentType::Handshake as u8,
             0x03,
             0x01, // TLS 1.0（互換性のため）
             (message.len() >> 8) as u8,
             message.len() as u8,
         ];
-        record.extend_from_slice(&message);
 
         self.state = TlsState::ClientHelloSent;
-        Self::packet_payload_from_vec(record)
+        Self::packet_payload_from_parts(&[&record_header, &message])
     }
 
     pub fn build_client_hello(&mut self) -> PacketPayload {
@@ -589,16 +595,18 @@ impl TlsConnection {
             aes_gcm_encrypt(&self.early_write_key, &nonce, &aad, &inner_plaintext)
         };
 
-        let mut record = Vec::with_capacity(5 + encrypted_len);
-        record.push(ContentType::ApplicationData as u8);
-        record.extend_from_slice(&[0x03, 0x03]);
-        record.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
-        record.extend_from_slice(&ciphertext);
-        record.extend_from_slice(&auth_tag);
+        let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
+        let record_header = [
+            ContentType::ApplicationData as u8,
+            0x03,
+            0x03,
+            encrypted_len_bytes[0],
+            encrypted_len_bytes[1],
+        ];
 
         self.early_write_seq += 1;
         self.early_data_sent = true;
-        Self::packet_payload_from_vec(record)
+        Self::packet_payload_from_parts(&[&record_header, &ciphertext, &auth_tag])
     }
 
     pub fn send_early_data_payload(&mut self, payload: &PacketPayload) -> PacketPayload {
@@ -626,25 +634,22 @@ impl TlsConnection {
 
     /// 拡張機能を構築
     /// Supported Versions拡張を構築 (RFC 8446 Section 4.2.1)
-    fn build_supported_versions_ext(&self) -> Vec<u8> {
-        let mut versions = Vec::new();
+    fn append_supported_versions_ext(&self, ext: &mut Vec<u8>) {
         if self.config.max_version >= TlsVersion::TLS_1_3 {
-            versions.extend_from_slice(&[0x03, 0x04]); // TLS 1.3
+            ext.extend_from_slice(&[0x03, 0x04]); // TLS 1.3
         }
         if self.config.min_version <= TlsVersion::TLS_1_2 {
-            versions.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+            ext.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
         }
         if self.config.min_version <= TlsVersion::TLS_1_1
             && self.config.max_version >= TlsVersion::TLS_1_1
         {
-            versions.extend_from_slice(&[0x03, 0x02]); // TLS 1.1
+            ext.extend_from_slice(&[0x03, 0x02]); // TLS 1.1
         }
         if self.config.min_version <= TlsVersion::TLS_1_0 {
-            versions.extend_from_slice(&[0x03, 0x01]); // TLS 1.0
+            ext.extend_from_slice(&[0x03, 0x01]); // TLS 1.0
         }
-        let mut ext = vec![versions.len() as u8];
-        ext.extend_from_slice(&versions);
-        ext
+        ext.insert(0, ext.len() as u8);
     }
 
     /// TLS 1.3固有の拡張を追加（PSK modes, Key Share, Early Data, Pre-Shared Key）
@@ -707,9 +712,7 @@ impl TlsConnection {
     }
 
     /// 拡張機能を構築
-    fn build_extensions(&self) -> Vec<u8> {
-        let mut extensions = Vec::new();
-
+    fn append_extensions(&self, extensions: &mut Vec<u8>) {
         // Server Name Indication
         if let Some(ref name) = self.config.server_name {
             let name_bytes = name.as_bytes();
@@ -759,15 +762,19 @@ impl TlsConnection {
 
         // Supported Versions
         {
-            let ext = self.build_supported_versions_ext();
+            let start = extensions.len();
             extensions.extend_from_slice(&[0, 43]); // type = supported_versions
-            extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
-            extensions.extend_from_slice(&ext);
+            extensions.extend_from_slice(&[0, 0]);
+            let ext_start = extensions.len();
+            self.append_supported_versions_ext(extensions);
+            let ext_len = extensions.len() - ext_start;
+            extensions[start + 2] = (ext_len >> 8) as u8;
+            extensions[start + 3] = (ext_len & 0xFF) as u8;
         }
 
         // TLS 1.3固有の拡張
         if self.config.max_version >= TlsVersion::TLS_1_3 {
-            self.append_tls13_extensions(&mut extensions);
+            self.append_tls13_extensions(extensions);
         }
 
         // ALPN
@@ -783,7 +790,5 @@ impl TlsConnection {
             extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
             extensions.extend_from_slice(&ext);
         }
-
-        extensions
     }
 }
