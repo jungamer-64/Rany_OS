@@ -1,19 +1,27 @@
-use alloc::string::{String, ToString};
-use alloc::{format, vec};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::future::Future;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::task::{Context, Poll};
 
-use crate::net::l4::tcp::{EndpointAddr, TcpAcceptor, TcpConnection, TcpError};
-use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
+use crate::net::l4::tcp::{EndpointAddr, TcpAcceptor, TcpError};
+use crate::sync::atomic_waker::AtomicWaker;
 use crate::task::{self, Task, TimeoutResult};
-use kernel_api::resource::net::PacketPayload;
+use kernel_api::service::netdev::NetDriverEvent;
+
+mod connection;
+mod index_html;
+mod router;
 
 static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
+static HTTP_POLLER_SIGNAL_WAKER: AtomicWaker = AtomicWaker::new();
+static HTTP_POLLER_SIGNAL_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// アクティブな同時接続数を追跡
-static ACTIVE_CONNECTIONS: AtomicU32 = AtomicU32::new(0);
-static TOTAL_REQUESTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static BYTES_RX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static BYTES_TX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(super) static ACTIVE_CONNECTIONS: AtomicU32 = AtomicU32::new(0);
+pub(super) static TOTAL_REQUESTS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+pub(super) static BYTES_RX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(super) static BYTES_TX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// 同時接続数の上限
 const MAX_CONCURRENT_CONNECTIONS: u32 = 16;
@@ -22,9 +30,11 @@ const HOST_HTTP_RETRY_BASE_MS: u64 = 100;
 const HOST_HTTP_RETRY_MAX_MS: u64 = 5_000;
 // 100ms << 6 = 6400ms となり、HOST_HTTP_RETRY_MAX_MS(5000ms) にクランプされる。
 const HOST_HTTP_BACKOFF_CAP_SHIFT: u32 = 6;
-const HOST_HTTP_CONNECTION_TIMEOUT_MS: u64 = 10_000;
-const HOST_HTTP_READ_TRIES: usize = 20;
-const HOST_HTTP_READ_TIMEOUT_MS: u64 = 100;
+const HOST_HTTP_IDLE_WAIT_BASE_MS: u32 = 5;
+const HOST_HTTP_IDLE_WAIT_MAX_MS: u32 = 50;
+pub(super) const HOST_HTTP_CONNECTION_TIMEOUT_MS: u64 = 10_000;
+pub(super) const HOST_HTTP_READ_TRIES: usize = 20;
+pub(super) const HOST_HTTP_READ_TIMEOUT_MS: u64 = 100;
 const HOST_HTTP_MAX_READ_WAIT_MS: u64 = HOST_HTTP_READ_TRIES as u64 * HOST_HTTP_READ_TIMEOUT_MS;
 // Invariant: リクエスト読み取りの最大待機時間は接続寿命を超えないこと。
 const _HOST_HTTP_READ_BUDGET_GUARD: [(); 1] =
@@ -32,7 +42,79 @@ const _HOST_HTTP_READ_BUDGET_GUARD: [(); 1] =
 // deadline 判定コストを抑えるため、読み取り試行ごとではなく N 回ごとにチェックする。
 // READ_TIMEOUT_MS(100ms) * STRIDE(2) = 最長 200ms の判定遅延を許容する代わりに、
 // 高頻度 current_tick() 呼び出しを抑制する。
-const HOST_HTTP_READ_DEADLINE_CHECK_STRIDE: usize = 2;
+pub(super) const HOST_HTTP_READ_DEADLINE_CHECK_STRIDE: usize = 2;
+
+struct HttpPollerSignalFuture {
+    observed_seq: u64,
+}
+
+impl Future for HttpPollerSignalFuture {
+    type Output = u64;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let current = HTTP_POLLER_SIGNAL_SEQ.load(Ordering::Acquire);
+        if current != self.observed_seq {
+            return Poll::Ready(current);
+        }
+
+        HTTP_POLLER_SIGNAL_WAKER.register(cx.waker());
+
+        let current = HTTP_POLLER_SIGNAL_SEQ.load(Ordering::Acquire);
+        if current != self.observed_seq {
+            Poll::Ready(current)
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+fn current_http_poller_signal_seq() -> u64 {
+    HTTP_POLLER_SIGNAL_SEQ.load(Ordering::Acquire)
+}
+
+fn notify_http_poller_signal() {
+    HTTP_POLLER_SIGNAL_SEQ.fetch_add(1, Ordering::AcqRel);
+    HTTP_POLLER_SIGNAL_WAKER.wake();
+}
+
+const fn host_http_idle_wait_ms(consecutive_idle: u32) -> u64 {
+    let expanded = HOST_HTTP_IDLE_WAIT_BASE_MS.saturating_add(consecutive_idle);
+    if expanded > HOST_HTTP_IDLE_WAIT_MAX_MS {
+        HOST_HTTP_IDLE_WAIT_MAX_MS as u64
+    } else {
+        expanded as u64
+    }
+}
+
+fn enqueue_runtime_poll_events() -> usize {
+    let runtime = crate::net::runtime::default_runtime();
+    let mut queued = 0usize;
+
+    for key in crate::net::runtime::device::list_port_keys_in(runtime, None) {
+        if crate::net::runtime::device::enqueue_event(key, NetDriverEvent::Poll) {
+            queued = queued.saturating_add(1);
+        }
+    }
+
+    queued
+}
+
+async fn wait_http_poller_signal_or_timeout(observed_seq: &mut u64, timeout_ms: u64) -> bool {
+    match task::with_timeout(
+        HttpPollerSignalFuture {
+            observed_seq: *observed_seq,
+        },
+        timeout_ms,
+    )
+    .await
+    {
+        TimeoutResult::Completed(next_seq) => {
+            *observed_seq = next_seq;
+            true
+        }
+        TimeoutResult::TimedOut => false,
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum ServiceRestartCause {
@@ -77,24 +159,32 @@ pub fn start_once() {
 /// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
 async fn run_net_poller() {
     let mut consecutive_idle: u32 = 0;
-    // TODO(net/http, issue: runtime-poller-hook):
-    // runtime device poll hook が入ったらここで実ポーリングを統合する。
+    let mut observed_signal_seq = current_http_poller_signal_seq();
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
-        // ISR + network_event_taskが非同期にパケット処理を行うため
-        // 直接ドライバポーリング helper を呼ばず yield で Executor に委ねる
+        // ISR + network_event_task が非同期にパケット処理を行うため、
+        // ここでは Executor へ制御を返しつつ、HTTP接続イベント通知を待機する。
+        // Poll event は non-ISR の文脈で device event queue に投入する。
         task::yield_now().await;
 
         let active = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
-        if active > 0 {
-            // アクティブ接続あり: 高頻度ポーリング
+        let wait_ms = if active > 0 {
             consecutive_idle = 0;
-            task::sleep_ms(1).await;
+            1
         } else {
             consecutive_idle = consecutive_idle.saturating_add(1);
-            // アイドル回数に応じてポーリング間隔を拡大（最大50ms）
-            let sleep_ms = core::cmp::min(5 + consecutive_idle, 50) as u64;
-            task::sleep_ms(sleep_ms).await;
+            // アイドル回数に応じて待機間隔を拡大（最大50ms）。
+            host_http_idle_wait_ms(consecutive_idle)
+        };
+
+        if wait_http_poller_signal_or_timeout(&mut observed_signal_seq, wait_ms).await {
+            consecutive_idle = 0;
+        }
+
+        // active 接続時は高頻度で、idle 時も最大待機に達したサイクルで Poll を投入する。
+        // Queue が埋まっている場合 enqueue_event は false を返すため、ここでは best-effort とする。
+        if active > 0 || wait_ms >= HOST_HTTP_IDLE_WAIT_MAX_MS as u64 {
+            let _ = enqueue_runtime_poll_events();
         }
     }
 }
@@ -258,9 +348,12 @@ async fn run_service(acceptor: TcpAcceptor) -> Result<(), TcpError> {
 
                 // 【設計書準拠】各接続を独立タスクとしてspawn（並行処理）
                 crate::task::spawn_task(Task::new(async move {
-                    handle_client(client).await;
+                    connection::handle_client(client).await;
                     ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::AcqRel);
+                    notify_http_poller_signal();
                 }));
+
+                notify_http_poller_signal();
             }
             TimeoutResult::Completed(Err(err)) => {
                 return Err(err);
@@ -286,255 +379,6 @@ fn try_acquire_connection_slot() -> Option<u32> {
 
         core::hint::spin_loop();
     }
-}
-
-fn keep_alive_for_request(request: &super::types::HttpInboundRequest) -> bool {
-    let default_keep_alive = request.version == super::types::HttpVersion::Http1_1;
-
-    match request.connection_directive() {
-        Some(super::types::ConnectionDirective::Close) => false,
-        Some(super::types::ConnectionDirective::KeepAlive) => true,
-        None => default_keep_alive,
-    }
-}
-
-fn build_service_unavailable_response_or_log() -> Option<PacketPayload> {
-    build_json_response_or_log(
-        "503 Service Unavailable",
-        "{\"status\":\"service_unavailable\"}",
-        false,
-        "service_unavailable",
-    )
-}
-
-fn build_bad_request_response_or_log() -> Option<PacketPayload> {
-    build_json_response_or_log(
-        "400 Bad Request",
-        "{\"status\":\"bad_request\"}",
-        false,
-        "bad_request",
-    )
-}
-
-fn build_timeout_response_or_log() -> Option<PacketPayload> {
-    build_json_response_or_log(
-        "408 Request Timeout",
-        "{\"status\":\"timeout\"}",
-        false,
-        "timeout",
-    )
-}
-
-const fn connection_deadline_tick(start_tick_ms: u64) -> u64 {
-    // current_tick() はミリ秒単位の単調増加 tick を返す想定。
-    // saturating_add を使い、理論上のオーバーフロー時も安全側（期限到達扱い）に倒す。
-    start_tick_ms.saturating_add(HOST_HTTP_CONNECTION_TIMEOUT_MS)
-}
-
-const fn connection_deadline_reached_at(now_tick_ms: u64, deadline_tick_ms: u64) -> bool {
-    // tick は単調増加前提のため単純比較で判定する。
-    now_tick_ms >= deadline_tick_ms
-}
-
-enum RequestResponse {
-    Respond {
-        payload: PacketPayload,
-        keep_alive: bool,
-    },
-    // 通常レスポンスと 503 fallback の両方の構築に失敗したため、
-    // 書き込みを行わず接続を終了すべき状態。
-    Close,
-}
-
-fn build_request_response_or_fallback(
-    request: &super::types::HttpInboundRequest,
-) -> RequestResponse {
-    let keep_alive = keep_alive_for_request(request);
-
-    match build_response_for_request(request, keep_alive) {
-        Ok(payload) => RequestResponse::Respond {
-            payload,
-            keep_alive,
-        },
-        Err(err) => {
-            log::error!("[HOST-HTTP] response build failed: {:?}", err);
-            match build_service_unavailable_response_or_log() {
-                Some(payload) => RequestResponse::Respond {
-                    payload,
-                    keep_alive: false,
-                },
-                None => {
-                    log::error!(
-                        "[HOST-HTTP] failed to build 503 fallback response; closing connection"
-                    );
-                    RequestResponse::Close
-                }
-            }
-        }
-    }
-}
-
-async fn handle_client(mut client: TcpConnection) {
-    let mut parser = super::parser::HttpParser::new();
-    let connection_started_tick_ms = crate::task::current_tick();
-    let connection_deadline_tick_ms = connection_deadline_tick(connection_started_tick_ms);
-
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-    loop {
-        let mut response_payload: Option<PacketPayload> = None;
-        let mut keep_alive = false;
-
-        // ループ先頭の判定は「読み取りに入る前」の早期打ち切り用。
-        // これにより、既に接続寿命を超えたソケットへ追加処理を行わない。
-        let now_tick_ms = crate::task::current_tick();
-        if connection_deadline_reached_at(now_tick_ms, connection_deadline_tick_ms) {
-            log::warn!(
-                "[HOST-HTTP] connection lifetime exceeded {}ms, closing",
-                HOST_HTTP_CONNECTION_TIMEOUT_MS
-            );
-            keep_alive = false;
-            response_payload = build_timeout_response_or_log();
-            if response_payload.is_none() {
-                break;
-            }
-        }
-
-        // まずバッファ内のデータだけでパースできるか試す（パイプライン処理対応）
-        if response_payload.is_none() {
-            match parser.try_parse_request() {
-                Ok(Some(request)) => {
-                    let response = build_request_response_or_fallback(&request);
-                    match response {
-                        RequestResponse::Respond {
-                            payload,
-                            keep_alive: next_keep_alive,
-                        } => {
-                            keep_alive = next_keep_alive;
-                            response_payload = Some(payload);
-                        }
-                        RequestResponse::Close => {
-                            break;
-                        }
-                    }
-                }
-                Ok(None) => {} // データ不足
-                Err(err) => {
-                    log::warn!("[HOST-HTTP] parse error: {:?}", err);
-                    response_payload = build_bad_request_response_or_log();
-                    if response_payload.is_none() {
-                        break;
-                    }
-                }
-            }
-        }
-
-        // バッファ内のデータだけでリクエストが完成しなかった場合のみ、ソケットから読み込みを行う
-        if response_payload.is_none() {
-            let mut read_success = false;
-            let mut abort_connection = false;
-
-            for attempt in 0..HOST_HTTP_READ_TRIES {
-                // こちらは「読み取り待機中」に寿命超過を検出するための判定。
-                // ループ先頭判定だけだと、recv 待ちが続く間に期限超過を見逃すため、
-                // stride 間隔で再確認する。
-                if attempt % HOST_HTTP_READ_DEADLINE_CHECK_STRIDE == 0 {
-                    let read_now_tick_ms = crate::task::current_tick();
-                    if connection_deadline_reached_at(read_now_tick_ms, connection_deadline_tick_ms)
-                    {
-                        log::warn!(
-                            "[HOST-HTTP] request read deadline exceeded {}ms, closing",
-                            HOST_HTTP_CONNECTION_TIMEOUT_MS
-                        );
-                        keep_alive = false;
-                        response_payload = build_timeout_response_or_log();
-                        if response_payload.is_none() {
-                            abort_connection = true;
-                        }
-                        break;
-                    }
-                }
-
-                match task::with_timeout(client.recv_payload(), HOST_HTTP_READ_TIMEOUT_MS).await {
-                    TimeoutResult::TimedOut => {
-                        task::yield_now().await;
-                    }
-                    TimeoutResult::Completed(None) => {
-                        break;
-                    }
-                    TimeoutResult::Completed(Some(payload)) => {
-                        let len = payload.total_len();
-                        if len == 0 {
-                            break;
-                        }
-                        read_success = true;
-                        BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
-                        parser.push_payload(payload);
-                        match parser.try_parse_request() {
-                            Ok(Some(request)) => {
-                                let response = build_request_response_or_fallback(&request);
-                                match response {
-                                    RequestResponse::Respond {
-                                        payload,
-                                        keep_alive: next_keep_alive,
-                                    } => {
-                                        keep_alive = next_keep_alive;
-                                        response_payload = Some(payload);
-                                    }
-                                    RequestResponse::Close => {
-                                        abort_connection = true;
-                                    }
-                                }
-                                break;
-                            }
-                            Ok(None) => {
-                                // Continue reading
-                            }
-                            Err(err) => {
-                                log::warn!("[HOST-HTTP] parse error: {:?}", err);
-                                response_payload = build_bad_request_response_or_log();
-                                if response_payload.is_none() {
-                                    abort_connection = true;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if abort_connection {
-                break;
-            }
-
-            if !read_success && response_payload.is_none() {
-                // クライアントが正常に接続を閉じた場合
-                break;
-            }
-        }
-
-        let Some(response) = response_payload.or_else(|| {
-            log::warn!("[HOST-HTTP] request read timeout or client closed connection early");
-            build_timeout_response_or_log()
-        }) else {
-            break;
-        };
-
-        log::info!(
-            "[HOST-HTTP] preparing response: {} bytes",
-            response.total_len()
-        );
-
-        if let Err(err) = write_response(&mut client, response).await {
-            log::warn!("[HOST-HTTP] send error: {}", err);
-            break;
-        }
-
-        if !keep_alive {
-            break;
-        }
-    }
-
-    let _ = client.close();
 }
 
 #[cfg(test)]
@@ -587,496 +431,21 @@ mod tests {
         assert!(!http_config_usable(&unusable));
         assert!(http_config_usable(&usable));
     }
-}
 
-async fn write_response(
-    client: &mut TcpConnection,
-    response: PacketPayload,
-) -> Result<(), &'static str> {
-    let total_len = response.total_len();
-    client
-        .send_payload(response)
-        .await
-        .map_err(|_| "socket write error")?;
-    client.drain_tx().await.map_err(|_| "socket drain error")?;
-    BYTES_TX.fetch_add(total_len as u64, Ordering::Relaxed);
-    Ok(())
-}
-
-fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
-    let keys = crate::net::runtime::device::list_port_keys_in(
-        crate::net::runtime::default_runtime(),
-        None,
-    );
-    let mut rx_packets = 0u64;
-    let mut tx_packets = 0u64;
-    let mut tx_errors = 0u64;
-    let mut rx_errors = 0u64;
-
-    for key in &keys {
-        if let Some(stats) = crate::net::runtime::device::port_stats(*key) {
-            rx_packets = rx_packets.saturating_add(stats.rx_packets);
-            tx_packets = tx_packets.saturating_add(stats.tx_packets);
-            tx_errors = tx_errors.saturating_add(stats.tx_errors);
-            rx_errors = rx_errors.saturating_add(stats.rx_errors);
-        }
+    #[test]
+    fn http_poller_signal_sequence_advances_on_notify() {
+        let before = current_http_poller_signal_seq();
+        notify_http_poller_signal();
+        let after = current_http_poller_signal_seq();
+        assert!(after > before);
     }
 
-    (keys.len(), rx_packets, tx_packets, tx_errors, rx_errors)
-}
-
-fn build_health_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let (ports, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
-    let body = format!(
-        "{{\"status\":\"ok\",\"port_runtime\":{},\"ports\":{},\"rx\":{},\"tx\":{},\"tx_errors\":{},\"rx_errors\":{}}}",
-        if crate::net::runtime::device::is_initialized() {
-            "true"
-        } else {
-            "false"
-        },
-        ports,
-        rx_packets,
-        tx_packets,
-        tx_errors,
-        rx_errors
-    );
-    build_json_response("200 OK", &body, keep_alive)
-}
-
-fn build_response_for_request(
-    request: &super::types::HttpInboundRequest,
-    keep_alive: bool,
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
-
-    if request.method == super::types::HttpMethod::Get {
-        return build_get_response(request, keep_alive);
+    #[test]
+    fn http_idle_wait_scales_and_is_capped() {
+        assert_eq!(host_http_idle_wait_ms(0), 5);
+        assert_eq!(host_http_idle_wait_ms(1), 6);
+        assert_eq!(host_http_idle_wait_ms(10), 15);
+        assert_eq!(host_http_idle_wait_ms(45), 50);
+        assert_eq!(host_http_idle_wait_ms(10_000), 50);
     }
-
-    if request.method == super::types::HttpMethod::Post && request.uri_eq("/echo") {
-        return build_echo_response(request, keep_alive);
-    }
-
-    build_json_response("404 Not Found", "{\"status\":\"not_found\"}", keep_alive)
-}
-
-fn build_get_response(
-    request: &super::types::HttpInboundRequest,
-    keep_alive: bool,
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    if request.uri_eq("/") {
-        return build_index_response(keep_alive);
-    }
-    if request.uri_eq("/health") {
-        return build_health_response(keep_alive);
-    }
-    if request.uri_eq("/stats") {
-        return build_stats_response(keep_alive);
-    }
-    if request.uri_eq("/info") {
-        return build_info_response(keep_alive);
-    }
-    if request.uri_eq("/logs") {
-        return build_log_response(keep_alive);
-    }
-    if request.uri_eq("/executors") {
-        return build_executor_stats_response(keep_alive);
-    }
-    if request.uri_eq("/memory") {
-        return build_memory_info_response(keep_alive);
-    }
-
-    build_json_response("404 Not Found", "{\"status\":\"not_found\"}", keep_alive)
-}
-
-fn build_echo_response(
-    request: &super::types::HttpInboundRequest,
-    keep_alive: bool,
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    if let Some(body) = request.body_payload() {
-        build_payload_response(
-            "200 OK",
-            HeaderValue::PayloadOrDefault(request.content_type()),
-            body,
-            keep_alive,
-            &[],
-        )
-    } else {
-        build_json_response(
-            "400 Bad Request",
-            "{\"status\":\"missing_body\"}",
-            keep_alive,
-        )
-    }
-}
-
-fn build_index_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let html = r#"<!DOCTYPE html>
-<html>
-<head>
-    <title>ExoRust Kernel</title>
-    <style>
-        body { font-family: sans-serif; margin: 40px; background: #1a1a2e; color: #eee; }
-        h1 { color: #e94560; }
-        .stats { background: #16213e; padding: 20px; border-radius: 8px; }
-        .stat { margin: 10px 0; }
-        a { color: #0f4c75; }
-    </style>
-</head>
-<body>
-    <h1>🦀 ExoRust Kernel HTTP Server</h1>
-    <p>Welcome to the ExoRust zero-copy HTTP server!</p>
-    
-    <h2>Architecture Highlights</h2>
-    <ul>
-        <li><strong>Single Address Space (SAS)</strong> - No TLB flushes</li>
-        <li><strong>Single Privilege Level (SPL)</strong> - Syscalls are function calls</li>
-        <li><strong>Zero-Copy I/O</strong> - Data flows without copying</li>
-        <li><strong>Async-First Design</strong> - Cooperative multitasking</li>
-    </ul>
-    
-    <h2>Endpoints</h2>
-    <ul>
-        <li><a href="/">/</a> - This page</li>
-        <li><a href="/stats">/stats</a> - Server statistics</li>
-        <li><a href="/info">/info</a> - System information</li>
-        <li><a href="/health">/health</a> - Health check</li>
-        <li><a href="/memory">/memory</a> - Detailed memory information</li>
-        <li><a href="/executors">/executors</a> - Per-core scheduler statistics</li>
-        <li><a href="/logs">/logs</a> - Kernel log viewer</li>
-        <li><a href="/echo">/echo</a> - POST Echo API</li>
-    </ul>
-    
-    <p><em>Running on ExoRust v0.3.0</em></p>
-</body>
-</html>"#;
-    build_html_response("200 OK", html, keep_alive)
-}
-
-fn build_log_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let len = crate::io::log::get_log_len();
-    // 16KB までのログを返却
-    let max_len = core::cmp::min(len, 16 * 1024);
-    let is_truncated = len > max_len;
-    let mut buf = vec![0u8; max_len];
-    let actual = crate::io::log::peek_global_log(&mut buf);
-
-    // Valid UTF-8 な部分のみを返却
-    let logs = match core::str::from_utf8(&buf[..actual]) {
-        Ok(s) => s,
-        Err(e) => {
-            let valid_len = e.valid_up_to();
-            core::str::from_utf8(&buf[..valid_len]).unwrap_or("[INVALID LOG DATA]")
-        }
-    };
-
-    let truncation_header = if is_truncated {
-        [("X-Log-Truncated", "true")]
-    } else {
-        [("X-Log-Truncated", "false")]
-    };
-
-    build_custom_response_with_headers(
-        "200 OK",
-        "text/plain; charset=utf-8",
-        logs,
-        keep_alive,
-        &truncation_header,
-    )
-}
-
-fn build_executor_stats_response(
-    keep_alive: bool,
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    let manager = crate::task::executor_manager();
-    let all_stats = manager.all_stats();
-
-    let mut json = alloc::string::String::from("[\n");
-    for (i, stats) in all_stats.iter().enumerate() {
-        if i > 0 {
-            json.push_str(",\n");
-        }
-        json.push_str(&format!(
-            r#"  {{
-    "core_id": {},
-    "tasks_executed": {},
-    "tasks_stolen": {},
-    "tasks_stolen_from": {},
-    "queue_length": {},
-    "running_count": {}
-  }}"#,
-            stats.core_id,
-            stats.tasks_executed,
-            stats.tasks_stolen,
-            stats.tasks_stolen_from,
-            stats.queue_length,
-            stats.running_count
-        ));
-    }
-    json.push_str("\n]");
-
-    build_json_response("200 OK", &json, keep_alive)
-}
-
-fn build_memory_info_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
-    let total_kb = (stats.total_frames as u64) * 4;
-    let free_kb = (stats.free_frames as u64) * 4;
-    let used_kb = total_kb.saturating_sub(free_kb);
-
-    let (heap_used, heap_free) = crate::heap::heap_stats();
-
-    let mut json = format!(
-        r#"{{
-    "physical_memory": {{
-        "total_kb": {},
-        "free_kb": {},
-        "used_kb": {},
-        "split_count": {},
-        "coalesce_count": {}
-    }},
-    "heap": {{
-        "used_bytes": {},
-        "free_bytes": {}
-    }},
-    "order_stats": ["#,
-        total_kb, free_kb, used_kb, stats.split_count, stats.coalesce_count, heap_used, heap_free
-    );
-
-    for (i, (blocks, frames)) in stats.order_stats.iter().enumerate() {
-        if i > 0 {
-            json.push_str(", ");
-        }
-        json.push_str(&format!(
-            r#"{{"order": {}, "blocks": {}, "frames": {}}}"#,
-            i, blocks, frames
-        ));
-    }
-    json.push_str("]}\n");
-
-    build_json_response("200 OK", &json, keep_alive)
-}
-
-fn build_stats_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let requests = TOTAL_REQUESTS.load(Ordering::Relaxed);
-    let bytes_rx = BYTES_RX.load(Ordering::Relaxed);
-    let bytes_tx = BYTES_TX.load(Ordering::Relaxed);
-    let connections = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
-
-    let (heap_used, heap_free) = crate::heap::heap_stats();
-    let timer_ticks = crate::interrupts::get_timer_ticks();
-
-    let json = format!(
-        r#"{{
-    "server": "ExoRust HTTP",
-    "version": "0.3.0",
-    "stats": {{
-        "requests": {},
-        "bytes_received": {},
-        "bytes_sent": {},
-        "active_connections": {}
-    }},
-    "system": {{
-        "heap_used": {},
-        "heap_free": {},
-        "timer_ticks": {}
-    }}
-}}"#,
-        requests, bytes_rx, bytes_tx, connections, heap_used, heap_free, timer_ticks
-    );
-
-    build_json_response("200 OK", &json, keep_alive)
-}
-
-fn build_info_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let domain_stats = crate::domain::get_domain_stats();
-    let sas_stats = crate::sas::stats();
-    let spectre = crate::security::spectre::status_summary();
-
-    let json = format!(
-        r#"{{
-    "kernel": {{
-        "name": "ExoRust",
-        "version": "0.3.0",
-        "architecture": "x86_64",
-        "design": "Single Address Space + Single Privilege Level"
-    }},
-    "domains": {{
-        "total": {},
-        "running": {},
-        "stopped": {}
-    }},
-    "sas": {{
-        "regions": {},
-        "objects": {},
-        "domains": {}
-    }},
-    "security": {{
-        "ibrs": {},
-        "stibp": {},
-        "ssbd": {},
-        "retpoline": {}
-    }}
-}}"#,
-        domain_stats.total,
-        domain_stats.running,
-        domain_stats.stopped,
-        sas_stats.total_regions,
-        sas_stats.total_objects,
-        sas_stats.domains,
-        spectre.ibrs_enabled,
-        spectre.stibp_enabled,
-        spectre.ssbd_enabled,
-        spectre.using_retpoline
-    );
-
-    build_json_response("200 OK", &json, keep_alive)
-}
-
-fn build_json_response(
-    status: &str,
-    body: &str,
-    keep_alive: bool,
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    build_custom_response(status, "application/json", body, keep_alive)
-}
-
-fn build_html_response(
-    status: &str,
-    body: &str,
-    keep_alive: bool,
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    build_custom_response(status, "text/html; charset=utf-8", body, keep_alive)
-}
-
-enum HeaderValue {
-    Text(String),
-    PayloadOrDefault(Option<PayloadSpan>),
-}
-
-#[derive(Debug, Clone, Copy)]
-enum HttpResponseBuildError {
-    AllocationFailed,
-    InvalidPayloadSpan,
-}
-
-fn push_builder_str(
-    builder: &mut PacketPayloadBuilder,
-    value: &str,
-) -> Result<(), HttpResponseBuildError> {
-    builder
-        .push_str(value)
-        .ok_or(HttpResponseBuildError::AllocationFailed)
-}
-
-fn build_json_response_or_log(
-    status: &str,
-    body: &str,
-    keep_alive: bool,
-    context: &str,
-) -> Option<PacketPayload> {
-    match build_json_response(status, body, keep_alive) {
-        Ok(payload) => Some(payload),
-        Err(err) => {
-            log::error!(
-                "[HOST-HTTP] failed to build {} fallback response: {:?}",
-                context,
-                err
-            );
-            None
-        }
-    }
-}
-
-fn body_payload_from_bytes(body: &[u8]) -> Result<PacketPayload, HttpResponseBuildError> {
-    let mut builder = PacketPayloadBuilder::new();
-    builder
-        .push_bytes(body)
-        .ok_or(HttpResponseBuildError::AllocationFailed)?;
-    Ok(builder.build())
-}
-
-fn write_content_type_header(
-    builder: &mut PacketPayloadBuilder,
-    content_type: HeaderValue,
-) -> Result<(), HttpResponseBuildError> {
-    push_builder_str(builder, "Content-Type: ")?;
-    match content_type {
-        HeaderValue::Text(value) => {
-            push_builder_str(builder, &value)?;
-        }
-        HeaderValue::PayloadOrDefault(Some(value)) => {
-            let payload = value
-                .to_payload()
-                .ok_or(HttpResponseBuildError::InvalidPayloadSpan)?;
-            builder.push_payload(payload);
-        }
-        HeaderValue::PayloadOrDefault(None) => {
-            push_builder_str(builder, "application/octet-stream")?;
-        }
-    }
-    Ok(())
-}
-
-fn write_additional_headers(
-    builder: &mut PacketPayloadBuilder,
-    additional_headers: &[(&str, &str)],
-) -> Result<(), HttpResponseBuildError> {
-    for (name, value) in additional_headers {
-        push_builder_str(builder, name)?;
-        push_builder_str(builder, ": ")?;
-        push_builder_str(builder, value)?;
-        push_builder_str(builder, "\r\n")?;
-    }
-    Ok(())
-}
-
-fn build_payload_response(
-    status: &str,
-    content_type: HeaderValue,
-    body: PacketPayload,
-    keep_alive: bool,
-    additional_headers: &[(&str, &str)],
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    let connection_header = if keep_alive { "keep-alive" } else { "close" };
-    let mut builder = PacketPayloadBuilder::new();
-    push_builder_str(&mut builder, "HTTP/1.1 ")?;
-    push_builder_str(&mut builder, status)?;
-    push_builder_str(&mut builder, "\r\n")?;
-    write_content_type_header(&mut builder, content_type)?;
-    push_builder_str(&mut builder, "\r\n")?;
-    write_additional_headers(&mut builder, additional_headers)?;
-    push_builder_str(&mut builder, "Connection: ")?;
-    push_builder_str(&mut builder, connection_header)?;
-    push_builder_str(&mut builder, "\r\n")?;
-    push_builder_str(&mut builder, "Content-Length: ")?;
-    push_builder_str(&mut builder, &format!("{}", body.total_len()))?;
-    push_builder_str(&mut builder, "\r\n\r\n")?;
-    builder.push_payload(body);
-    Ok(builder.build())
-}
-
-fn build_custom_response(
-    status: &str,
-    content_type: &str,
-    body: &str,
-    keep_alive: bool,
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    build_custom_response_with_headers(status, content_type, body, keep_alive, &[])
-}
-
-fn build_custom_response_with_headers(
-    status: &str,
-    content_type: &str,
-    body: &str,
-    keep_alive: bool,
-    additional_headers: &[(&str, &str)],
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    build_payload_response(
-        status,
-        HeaderValue::Text(content_type.to_string()),
-        body_payload_from_bytes(body.as_bytes())?,
-        keep_alive,
-        additional_headers,
-    )
 }

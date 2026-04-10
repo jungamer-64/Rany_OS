@@ -55,6 +55,7 @@
 ## Reference
 
 - [reference/network-core.md](reference/network-core.md): ネットワークの core 語彙、ownership-based datapath、polling / batch / scatter-gather の整理
+- [reference/http-service.md](reference/http-service.md): HTTP サービス層（types/parser/client/server）の責務分割と移行指針
 - [reference/api-reference.md](reference/api-reference.md): 公開 API と設計意図
 - [reference/durability.md](reference/durability.md): durability / persistence の現行整理
 - [reference/execution-fairness.md](reference/execution-fairness.md): fuel / loop-bound / APIC fairness の現行整理
