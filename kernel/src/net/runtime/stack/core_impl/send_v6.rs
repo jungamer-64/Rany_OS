@@ -9,6 +9,44 @@
 use super::*;
 use core::sync::atomic::AtomicU32;
 
+fn payload_checksum(view: &crate::net::payload::PacketPayloadView<'_>, initial: u32) -> u16 {
+    let mut sum = initial;
+    let mut trailing = None;
+
+    view.for_each_chunk(|chunk| {
+        let mut index = 0usize;
+        if let Some(prev) = trailing.take() {
+            if let Some((&first, rest)) = chunk.split_first() {
+                sum = sum.saturating_add(u16::from_be_bytes([prev, first]) as u32);
+                index = 1;
+                if rest.is_empty() {
+                    return;
+                }
+            } else {
+                trailing = Some(prev);
+                return;
+            }
+        }
+
+        while index + 1 < chunk.len() {
+            sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
+            index += 2;
+        }
+        if index < chunk.len() {
+            trailing = Some(chunk[index]);
+        }
+    });
+
+    if let Some(last) = trailing {
+        sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
+    }
+
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
 impl NetworkStack {
     fn next_ipv6_fragment_identification() -> u32 {
         static IPV6_FRAGMENT_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
@@ -735,22 +773,42 @@ impl NetworkStack {
             }
         };
 
-        let mut udp_datagram = alloc::vec![0u8; 8 + data.total_len()];
-        let Some(mut udp_packet) = crate::net::l4::udp::UdpPacketMut::new(&mut udp_datagram) else {
+        let Some(total_len) = 8usize.checked_add(data.total_len()) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
-        udp_packet
-            .set_src_port(src_port)
-            .set_dst_port(dst_port)
-            .write_payload_view(data);
-        let udp_len = udp_packet.finalize_v6(resolved_src, dst);
-        udp_datagram.truncate(udp_len);
+        let Ok(total_len_u16) = u16::try_from(total_len) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        let mut header_packet = crate::net::payload::alloc_packet_with_headroom(
+            crate::net::l4::udp::UdpHeader::SIZE,
+            kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
+        )
+        .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        header_packet.set_len(crate::net::l4::udp::UdpHeader::SIZE);
+        let Some(header) = crate::util::get_mut_ref::<crate::net::l4::udp::UdpHeader>(
+            header_packet.data_mut(),
+            0,
+        ) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        header.set_src_port(src_port);
+        header.set_dst_port(dst_port);
+        header.set_length(total_len_u16);
+        header.set_checksum(0);
 
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder
-            .push_bytes(&udp_datagram)
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        let udp_payload = builder.build();
+        let mut udp_payload = kernel_api::resource::net::PacketPayload::single(header_packet);
+        crate::net::payload::append_payload(&mut udp_payload, data.payload().clone());
+        let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(
+            &resolved_src,
+            &dst,
+            IpProtocol::Udp,
+            total_len as u32,
+        );
+        let checksum = payload_checksum(&crate::net::payload::PacketPayloadView::new(&udp_payload), pseudo);
+        let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+        if let Some(first) = udp_payload.segments_mut().first_mut() {
+            first.data_mut()[6..8].copy_from_slice(&final_checksum.to_be_bytes());
+        }
         let udp_view = crate::net::payload::PacketPayloadView::new(&udp_payload);
 
         let path_mtu = self.effective_ipv6_pmtu(if_id, &dst, current_time);

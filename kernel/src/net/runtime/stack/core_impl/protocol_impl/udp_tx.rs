@@ -7,6 +7,44 @@
 use super::*;
 use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
 
+fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
+    let mut sum = initial;
+    let mut trailing = None;
+
+    view.for_each_chunk(|chunk| {
+        let mut index = 0usize;
+        if let Some(prev) = trailing.take() {
+            if let Some((&first, rest)) = chunk.split_first() {
+                sum = sum.saturating_add(u16::from_be_bytes([prev, first]) as u32);
+                index = 1;
+                if rest.is_empty() {
+                    return;
+                }
+            } else {
+                trailing = Some(prev);
+                return;
+            }
+        }
+
+        while index + 1 < chunk.len() {
+            sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
+            index += 2;
+        }
+        if index < chunk.len() {
+            trailing = Some(chunk[index]);
+        }
+    });
+
+    if let Some(last) = trailing {
+        sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
+    }
+
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
 impl NetworkStack {
     pub(crate) fn resolve_ipv4_next_hop_on(
         &mut self,
@@ -93,25 +131,44 @@ impl NetworkStack {
             }
         };
         let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
-        let Some(udp_buffer_len) = 8usize.checked_add(payload.total_len()) else {
+        let Some(total_len) = 8usize.checked_add(payload.total_len()) else {
             return false;
         };
-        let mut udp_datagram = alloc::vec![0u8; udp_buffer_len];
-        let Some(mut udp_packet) = crate::net::l4::udp::UdpPacketMut::new(&mut udp_datagram) else {
+        let Ok(total_len_u16) = u16::try_from(total_len) else {
             return false;
         };
-        udp_packet
-            .set_src_port(src_port)
-            .set_dst_port(dst_port)
-            .write_payload_view(payload);
-        let udp_len = udp_packet.finalize(src_ip, dst_ip);
-        udp_datagram.truncate(udp_len);
+        let mut header_packet = match crate::net::payload::alloc_packet_with_headroom(
+            crate::net::l4::udp::UdpHeader::SIZE,
+            kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
+        ) {
+            Some(packet) => packet,
+            None => return false,
+        };
+        header_packet.set_len(crate::net::l4::udp::UdpHeader::SIZE);
+        let Some(header) = crate::util::get_mut_ref::<crate::net::l4::udp::UdpHeader>(
+            header_packet.data_mut(),
+            0,
+        ) else {
+            return false;
+        };
+        header.set_src_port(src_port);
+        header.set_dst_port(dst_port);
+        header.set_length(total_len_u16);
+        header.set_checksum(0);
 
-        let mut builder = PacketPayloadBuilder::new();
-        let Some(()) = builder.push_bytes(&udp_datagram) else {
-            return false;
-        };
-        let udp_payload = builder.build();
+        let mut udp_payload = kernel_api::resource::net::PacketPayload::single(header_packet);
+        crate::net::payload::append_payload(&mut udp_payload, payload.payload().clone());
+        let pseudo = crate::net::l3::ipv4::pseudo_header_checksum(
+            src_ip,
+            dst_ip,
+            IpProtocol::Udp,
+            total_len_u16,
+        );
+        let checksum = payload_checksum(&PacketPayloadView::new(&udp_payload), pseudo);
+        let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
+        if let Some(first) = udp_payload.segments_mut().first_mut() {
+            first.data_mut()[6..8].copy_from_slice(&final_checksum.to_be_bytes());
+        }
         let udp_payload = PacketPayloadView::new(&udp_payload);
 
         self.send_ipv4_l4_payload_with_pmtu(

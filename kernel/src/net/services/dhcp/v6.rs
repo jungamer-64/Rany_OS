@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::net::l3::ipv6::Ipv6Address;
+use crate::net::payload::PacketPayloadBuilder;
 use crate::task::{self, TimeoutResult};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -148,8 +149,10 @@ impl DhcpV6Client {
         dst: Ipv6Address,
         payload: &[u8],
     ) -> bool {
-        crate::net::payload::payload_from_bytes(payload)
-            .is_some_and(|payload| self.enqueue_v6_send(if_id, src, dst, payload))
+        let mut builder = PacketPayloadBuilder::new();
+        builder
+            .push_bytes(payload)
+            .is_some_and(|()| self.enqueue_v6_send(if_id, src, dst, builder.build()))
     }
 
     /// DUID-LL を生成（type=3, hwtype=1 + MAC）
