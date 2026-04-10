@@ -17,18 +17,96 @@ use kernel_api::resource::net::PacketPayload;
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
 mod incoming;
-enum TranscriptHash {
-    Sha256(crate::crypto::sha256::Sha256),
-    Sha384(crate::crypto::sha384::Sha384),
+
+#[derive(Clone)]
+struct TranscriptState {
+    sha256: crate::crypto::sha256::Sha256,
+    sha384: crate::crypto::sha384::Sha384,
+    len: usize,
+    initialized: bool,
+    server_finished_sha256: Option<[u8; SHA256_OUTPUT_SIZE]>,
+    server_finished_sha384: Option<[u8; SHA384_OUTPUT_SIZE]>,
 }
 
-impl TranscriptHash {
-    /// ハッシュデータを更新
-    fn update(&mut self, data: &[u8]) {
-        match self {
-            TranscriptHash::Sha256(h) => h.update(data),
-            TranscriptHash::Sha384(h) => h.update(data),
+impl Default for TranscriptState {
+    fn default() -> Self {
+        Self {
+            sha256: crate::crypto::sha256::Sha256::new(),
+            sha384: crate::crypto::sha384::Sha384::new(),
+            len: 0,
+            initialized: false,
+            server_finished_sha256: None,
+            server_finished_sha384: None,
         }
+    }
+}
+
+impl TranscriptState {
+    fn initialize(&mut self) {
+        self.sha256.reset();
+        self.sha384.reset();
+        self.len = 0;
+        self.initialized = true;
+        self.server_finished_sha256 = None;
+        self.server_finished_sha384 = None;
+    }
+
+    fn set_bytes(&mut self, data: &[u8]) {
+        self.initialize();
+        self.update(data);
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.sha256.update(data);
+        self.sha384.update(data);
+        self.len = self.len.saturating_add(data.len());
+        self.initialized = true;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    fn current_sha256(&self) -> [u8; SHA256_OUTPUT_SIZE] {
+        self.sha256.clone().finalize()
+    }
+
+    fn current_sha384(&self) -> [u8; SHA384_OUTPUT_SIZE] {
+        self.sha384.clone().finalize()
+    }
+
+    fn replace_with_message_hash(&mut self, use_384: bool) {
+        let digest_len = if use_384 {
+            SHA384_OUTPUT_SIZE
+        } else {
+            SHA256_OUTPUT_SIZE
+        };
+        let mut synthetic = [0u8; 4 + SHA384_OUTPUT_SIZE];
+        synthetic[0] = HandshakeType::MessageHash as u8;
+        synthetic[3] = digest_len as u8;
+        if use_384 {
+            synthetic[4..4 + SHA384_OUTPUT_SIZE].copy_from_slice(&self.current_sha384());
+        } else {
+            synthetic[4..4 + SHA256_OUTPUT_SIZE].copy_from_slice(&self.current_sha256());
+        }
+        self.set_bytes(&synthetic[..4 + digest_len]);
+    }
+
+    fn snapshot_server_finished(&mut self) {
+        self.server_finished_sha256 = Some(self.current_sha256());
+        self.server_finished_sha384 = Some(self.current_sha384());
+    }
+
+    fn server_finished_sha256(&self) -> Option<[u8; SHA256_OUTPUT_SIZE]> {
+        self.server_finished_sha256
+    }
+
+    fn server_finished_sha384(&self) -> Option<[u8; SHA384_OUTPUT_SIZE]> {
+        self.server_finished_sha384
     }
 }
 
@@ -60,23 +138,21 @@ pub struct TlsConnection {
     /// マスターシークレット
     master_secret: [u8; 48],
     /// 読み取りキー
-    read_key: Vec<u8>,
+    read_key: TlsBytes<32>,
     /// 書き込みキー
-    write_key: Vec<u8>,
+    write_key: TlsBytes<32>,
     /// 読み取りIV
-    read_iv: Vec<u8>,
+    read_iv: TlsBytes<16>,
     /// 書き込みIV
-    write_iv: Vec<u8>,
+    write_iv: TlsBytes<16>,
     /// シーケンス番号（読み取り）
     read_seq: u64,
     /// シーケンス番号（書き込み）
     write_seq: u64,
     /// 受信バッファ
     recv_buffer: PacketPayload,
-    /// ハンドシェイクトランスクリプト（verify用）
-    handshake_transcript: PacketPayload,
     /// Pre-master secret (from key exchange, used to derive master secret)
-    pre_master_secret: Vec<u8>,
+    pre_master_secret: TlsBytes<64>,
     /// ECDH一時鍵ペア（ClientKeyExchange送信用）
     local_ecdh_keypair: Option<ecdh::EcdhKeyPair>,
     /// サーバー証明書の公開鍵情報 (X.509から抽出)
@@ -95,19 +171,19 @@ pub struct TlsConnection {
     /// TLS 1.3: アプリケーショントラフィック秘密（クライアント側）
     client_app_traffic_secret: [u8; 48],
     /// TLS 1.3: ハンドシェイク読み取り鍵
-    hs_read_key: Vec<u8>,
+    hs_read_key: TlsBytes<32>,
     /// TLS 1.3: ハンドシェイク読み取りIV
-    hs_read_iv: Vec<u8>,
+    hs_read_iv: TlsBytes<16>,
     /// TLS 1.3: ハンドシェイク書き込み鍵
-    hs_write_key: Vec<u8>,
+    hs_write_key: TlsBytes<32>,
     /// TLS 1.3: ハンドシェイク書き込みIV
-    hs_write_iv: Vec<u8>,
+    hs_write_iv: TlsBytes<16>,
     /// TLS 1.3: ハンドシェイク読み取りシーケンス番号
     hs_read_seq: u64,
     /// TLS 1.3: ハンドシェイク書き込みシーケンス番号
     hs_write_seq: u64,
-    /// TLS 1.3: ハンドシェイクメッセージのトランスクリプトハッシュ状態（SHA-256 or SHA-384）
-    transcript_hash: Option<TranscriptHash>,
+    /// TLS ハンドシェイクトランスクリプト状態
+    transcript_state: TranscriptState,
     /// TLS 1.3: 受信済みセッションチケット
     session_ticket: Option<SessionTicket>,
     /// TLS 1.3: KeyUpdate応答送信が必要か
@@ -116,9 +192,9 @@ pub struct TlsConnection {
     // CBC mode fields (TLS 1.0/1.1/1.2 CBC cipher suites)
     // ========================================================================
     /// 読み取りMAC鍵 (HMAC-SHA1 or HMAC-SHA256)
-    read_mac_key: Vec<u8>,
+    read_mac_key: TlsBytes<32>,
     /// 書き込みMAC鍵
-    write_mac_key: Vec<u8>,
+    write_mac_key: TlsBytes<32>,
     /// CBC読み取りIV (TLS 1.0は前レコード最終ブロック / TLS 1.1+は明示的IV)
     read_cbc_iv: [u8; 16],
     /// CBC書き込みIV
@@ -138,9 +214,9 @@ pub struct TlsConnection {
     // TLS 1.3 PSK session resumption
     // ========================================================================
     /// TLS 1.3: resumption_master_secret (接続完了後に導出)
-    resumption_master_secret: Vec<u8>,
+    resumption_master_secret: TlsBytes<48>,
     /// TLS 1.3: 導出済みPSK (チケットから導出)
-    tls13_psk: Option<Vec<u8>>,
+    tls13_psk: Option<TlsBytes<48>>,
     /// TLS 1.3: PSK identity (セッションチケットそのもの)
     tls13_psk_identity: Option<PayloadSpan>,
     /// TLS 1.3: チケットage_add値
@@ -155,9 +231,9 @@ pub struct TlsConnection {
     /// Early Data送信バッファ（拒否時の再送用）
     early_data_buffer: PacketPayload,
     /// Early Data暗号化鍵
-    early_write_key: Vec<u8>,
+    early_write_key: TlsBytes<32>,
     /// Early Data暗号化IV
-    early_write_iv: Vec<u8>,
+    early_write_iv: TlsBytes<16>,
     /// Early Dataシーケンス番号
     early_write_seq: u64,
     /// サーバーがEarly Dataを受理したか
@@ -169,9 +245,6 @@ pub struct TlsConnection {
     client_auth_requested: bool,
     /// CertificateRequestコンテキスト
     certificate_request_context: Option<PayloadSpan>,
-    /// TLS 1.3: server Finishedまでのハンドシェイクメッセージ長
-    /// (アプリケーション鍵導出時のトランスクリプト境界として使用)
-    server_finished_offset: usize,
     /// TLS 1.2: 読み取り暗号化が有効か (ChangeCipherSpec受信後)
     read_encryption_active: bool,
     /// TLS 1.2: 書き込み暗号化が有効か (ChangeCipherSpec送信後)
@@ -179,6 +252,10 @@ pub struct TlsConnection {
 }
 
 impl TlsConnection {
+    fn set_tls_bytes<const N: usize>(slot: &mut TlsBytes<N>, data: &[u8]) -> TlsResult<()> {
+        slot.set(data).ok_or(TlsError::DecodeError)
+    }
+
     fn packet_payload_from_slice(data: &[u8]) -> PacketPayload {
         let mut builder = PacketPayloadBuilder::new();
         if builder.push_bytes(data).is_none() {
@@ -197,6 +274,37 @@ impl TlsConnection {
         builder.build()
     }
 
+    fn tls12_aad(seq: u64, content_type: u8, len: usize) -> [u8; 13] {
+        let seq_bytes = seq.to_be_bytes();
+        let len_bytes = (len as u16).to_be_bytes();
+        [
+            seq_bytes[0],
+            seq_bytes[1],
+            seq_bytes[2],
+            seq_bytes[3],
+            seq_bytes[4],
+            seq_bytes[5],
+            seq_bytes[6],
+            seq_bytes[7],
+            content_type,
+            0x03,
+            0x03,
+            len_bytes[0],
+            len_bytes[1],
+        ]
+    }
+
+    fn tls13_record_aad(len: usize) -> [u8; 5] {
+        let len_bytes = (len as u16).to_be_bytes();
+        [
+            ContentType::ApplicationData as u8,
+            0x03,
+            0x03,
+            len_bytes[0],
+            len_bytes[1],
+        ]
+    }
+
     pub(crate) fn vec_from_payload(payload: &PacketPayload) -> TlsResult<Vec<u8>> {
         let view = PacketPayloadView::new(payload);
         let len = view.total_len();
@@ -211,58 +319,35 @@ impl TlsConnection {
         PayloadSpan::from_bytes(data).ok_or(TlsError::DecodeError)
     }
 
-    fn payload_hash_sha256(payload: &PacketPayload) -> [u8; SHA256_OUTPUT_SIZE] {
-        let mut hasher = crate::crypto::sha256::Sha256::new();
-        PacketPayloadView::new(payload).for_each_chunk(|chunk| hasher.update(chunk));
-        hasher.finalize()
-    }
-
-    fn payload_hash_sha384(payload: &PacketPayload) -> [u8; SHA384_OUTPUT_SIZE] {
-        let mut hasher = crate::crypto::sha384::Sha384::new();
-        PacketPayloadView::new(payload).for_each_chunk(|chunk| hasher.update(chunk));
-        hasher.finalize()
-    }
-
     fn transcript_len(&self) -> usize {
-        self.handshake_transcript.total_len()
+        self.transcript_state.len()
     }
 
     fn append_transcript_bytes(&mut self, data: &[u8]) -> TlsResult<()> {
-        let payload = Self::packet_payload_from_slice(data);
-        if !data.is_empty() && payload.is_empty() {
-            return Err(TlsError::DecodeError);
+        self.transcript_state.update(data);
+        Ok(())
+    }
+
+    fn append_transcript_parts(&mut self, parts: &[&[u8]]) -> TlsResult<()> {
+        for part in parts {
+            if !part.is_empty() {
+                self.transcript_state.update(part);
+            }
         }
-        append_payload(&mut self.handshake_transcript, payload);
         Ok(())
     }
 
     fn replace_transcript_bytes(&mut self, data: &[u8]) -> TlsResult<()> {
-        let payload = Self::packet_payload_from_slice(data);
-        if !data.is_empty() && payload.is_empty() {
-            return Err(TlsError::DecodeError);
-        }
-        self.handshake_transcript = payload;
+        self.transcript_state.set_bytes(data);
         Ok(())
     }
 
     fn transcript_hash_sha256(&self) -> [u8; SHA256_OUTPUT_SIZE] {
-        Self::payload_hash_sha256(&self.handshake_transcript)
+        self.transcript_state.current_sha256()
     }
 
     fn transcript_hash_sha384(&self) -> [u8; SHA384_OUTPUT_SIZE] {
-        Self::payload_hash_sha384(&self.handshake_transcript)
-    }
-
-    fn transcript_prefix_hash_sha256(&self, len: usize) -> TlsResult<[u8; SHA256_OUTPUT_SIZE]> {
-        let prefix = crate::net::payload::payload_range(&self.handshake_transcript, 0, len)
-            .ok_or(TlsError::DecodeError)?;
-        Ok(Self::payload_hash_sha256(&prefix))
-    }
-
-    fn transcript_prefix_hash_sha384(&self, len: usize) -> TlsResult<[u8; SHA384_OUTPUT_SIZE]> {
-        let prefix = crate::net::payload::payload_range(&self.handshake_transcript, 0, len)
-            .ok_or(TlsError::DecodeError)?;
-        Ok(Self::payload_hash_sha384(&prefix))
+        self.transcript_state.current_sha384()
     }
 
     /// 新しいTLS接続を作成
@@ -286,15 +371,14 @@ impl TlsConnection {
             client_random,
             server_random: [0; 32],
             master_secret: [0; 48],
-            read_key: Vec::new(),
-            write_key: Vec::new(),
-            read_iv: Vec::new(),
-            write_iv: Vec::new(),
+            read_key: TlsBytes::new(),
+            write_key: TlsBytes::new(),
+            read_iv: TlsBytes::new(),
+            write_iv: TlsBytes::new(),
             read_seq: 0,
             write_seq: 0,
             recv_buffer: PacketPayload::default(),
-            handshake_transcript: PacketPayload::default(),
-            pre_master_secret: Vec::new(),
+            pre_master_secret: TlsBytes::new(),
             local_ecdh_keypair: None,
             server_public_key: None,
             // TLS 1.3 fields
@@ -303,18 +387,18 @@ impl TlsConnection {
             client_hs_traffic_secret: [0; 48],
             server_app_traffic_secret: [0; 48],
             client_app_traffic_secret: [0; 48],
-            hs_read_key: Vec::new(),
-            hs_read_iv: Vec::new(),
-            hs_write_key: Vec::new(),
-            hs_write_iv: Vec::new(),
+            hs_read_key: TlsBytes::new(),
+            hs_read_iv: TlsBytes::new(),
+            hs_write_key: TlsBytes::new(),
+            hs_write_iv: TlsBytes::new(),
             hs_read_seq: 0,
             hs_write_seq: 0,
-            transcript_hash: None,
+            transcript_state: TranscriptState::default(),
             session_ticket: None,
             pending_key_update_response: false,
             // CBC mode fields
-            read_mac_key: Vec::new(),
-            write_mac_key: Vec::new(),
+            read_mac_key: TlsBytes::new(),
+            write_mac_key: TlsBytes::new(),
             read_cbc_iv: [0; 16],
             write_cbc_iv: [0; 16],
             last_read_ciphertext_block: None,
@@ -323,7 +407,7 @@ impl TlsConnection {
             session_cache: None,
             resuming_session: false,
             // TLS 1.3 PSK session resumption
-            resumption_master_secret: Vec::new(),
+            resumption_master_secret: TlsBytes::new(),
             tls13_psk: None,
             tls13_psk_identity: None,
             tls13_ticket_age_add: 0,
@@ -331,14 +415,13 @@ impl TlsConnection {
             tls13_psk_cipher: None,
             max_early_data_size: 0,
             early_data_buffer: PacketPayload::default(),
-            early_write_key: Vec::new(),
-            early_write_iv: Vec::new(),
+            early_write_key: TlsBytes::new(),
+            early_write_iv: TlsBytes::new(),
             early_write_seq: 0,
             early_data_accepted: false,
             early_data_sent: false,
             client_auth_requested: false,
             certificate_request_context: None,
-            server_finished_offset: 0,
             read_encryption_active: false,
             write_encryption_active: false,
         }
@@ -376,10 +459,7 @@ impl TlsConnection {
 
     /// トランスクリプトハッシュを初期化する（HRR後の再送にも対応）
     fn init_transcript_hash(&mut self) {
-        let mut hasher = crate::crypto::sha256::Sha256::new();
-        PacketPayloadView::new(&self.handshake_transcript)
-            .for_each_chunk(|chunk| hasher.update(chunk));
-        self.transcript_hash = Some(TranscriptHash::Sha256(hasher));
+        self.transcript_state.initialize();
     }
 
     /// セッションキャッシュからセッションIDを探してhelloに追加する
@@ -419,7 +499,7 @@ impl TlsConnection {
         let psk = self.tls13_psk.as_ref().unwrap();
 
         if use_384 {
-            let early_secret = tls13_early_secret_sha384(Some(psk));
+            let early_secret = tls13_early_secret_sha384(Some(psk.as_slice()));
             let empty_hash = crate::crypto::sha384::compute(&[]);
             let binder_key = tls13_derive_secret_sha384(&early_secret, b"res binder", &empty_hash);
             let transcript_hash = crate::crypto::sha384::compute(&message[..truncated_len]);
@@ -427,7 +507,7 @@ impl TlsConnection {
             let binder_start = message.len() - hash_len;
             message[binder_start..].copy_from_slice(&binder[..hash_len]);
         } else {
-            let early_secret = tls13_early_secret(Some(psk));
+            let early_secret = tls13_early_secret(Some(psk.as_slice()));
             let empty_hash = {
                 let h = crate::crypto::sha256::Sha256::new();
                 h.finalize()
@@ -457,25 +537,27 @@ impl TlsConnection {
         let key_len = cipher.key_len();
 
         if use_384 {
-            let early_secret = tls13_early_secret_sha384(Some(psk));
+            let early_secret = tls13_early_secret_sha384(Some(psk.as_slice()));
             let ch_hash = self.transcript_hash_sha384();
             let cets = tls13_derive_secret_sha384(&early_secret, b"c e traffic", &ch_hash);
             let (ew_key, ew_iv) = tls13_derive_traffic_keys_sha384(&cets, key_len);
-            self.early_write_key = ew_key;
-            self.early_write_iv = ew_iv;
+            Self::set_tls_bytes(&mut self.early_write_key, &ew_key)
+                .expect("early write key length");
+            Self::set_tls_bytes(&mut self.early_write_iv, &ew_iv).expect("early write iv length");
         } else {
-            let early_secret = tls13_early_secret(Some(psk));
+            let early_secret = tls13_early_secret(Some(psk.as_slice()));
             let ch_hash = self.transcript_hash_sha256();
             let cets = tls13_derive_secret(&early_secret, b"c e traffic", &ch_hash);
             let (ew_key, ew_iv) = tls13_derive_traffic_keys(&cets, key_len);
-            self.early_write_key = ew_key;
-            self.early_write_iv = ew_iv;
+            Self::set_tls_bytes(&mut self.early_write_key, &ew_key)
+                .expect("early write key length");
+            Self::set_tls_bytes(&mut self.early_write_iv, &ew_iv).expect("early write iv length");
         }
         self.early_write_seq = 0;
     }
 
     /// ClientHelloを構築
-    fn build_client_hello_payload(&mut self) -> PacketPayload {
+    pub fn build_client_hello_payload(&mut self) -> PacketPayload {
         self.prepare_tls13_ecdh_keypair();
         self.init_transcript_hash();
 
@@ -521,11 +603,6 @@ impl TlsConnection {
         self.append_transcript_bytes(&message)
             .expect("client hello transcript append");
 
-        // トランスクリプトハッシュにClientHelloを追加
-        if let Some(ref mut hasher) = self.transcript_hash {
-            hasher.update(&message);
-        }
-
         // Early Data鍵導出
         self.derive_early_data_keys_if_needed();
 
@@ -540,10 +617,6 @@ impl TlsConnection {
 
         self.state = TlsState::ClientHelloSent;
         Self::packet_payload_from_parts(&[&record_header, &message])
-    }
-
-    pub fn build_client_hello(&mut self) -> PacketPayload {
-        self.build_client_hello_payload()
     }
 
     /// 0-RTTアーリーデータを暗号化して送信 (RFC 8446 Section 4.2.10)
@@ -573,7 +646,7 @@ impl TlsConnection {
 
         // Nonce: IV XOR (zero-padded sequence number)
         let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&self.early_write_iv[..12]);
+        nonce.copy_from_slice(&self.early_write_iv.as_slice()[..12]);
         let seq_bytes = self.early_write_seq.to_be_bytes();
         for i in 0..8 {
             nonce[4 + i] ^= seq_bytes[i];
@@ -582,17 +655,19 @@ impl TlsConnection {
         let encrypted_len = inner_plaintext.len() + 16;
 
         // AAD: TLS record header
-        let mut aad = Vec::with_capacity(5);
-        aad.push(ContentType::ApplicationData as u8);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
+        let aad = Self::tls13_record_aad(encrypted_len);
 
         let (ciphertext, auth_tag) = if cipher.is_chacha20_poly1305() {
             let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&self.early_write_key[..32]);
+            key_arr.copy_from_slice(&self.early_write_key.as_slice()[..32]);
             chacha20_poly1305_encrypt(&key_arr, &nonce, &aad, &inner_plaintext)
         } else {
-            aes_gcm_encrypt(&self.early_write_key, &nonce, &aad, &inner_plaintext)
+            aes_gcm_encrypt(
+                self.early_write_key.as_slice(),
+                &nonce,
+                &aad,
+                &inner_plaintext,
+            )
         };
 
         let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
@@ -707,7 +782,8 @@ impl TlsConnection {
             extensions.extend_from_slice(&obfuscated_age.to_be_bytes());
             extensions.extend_from_slice(&[(binders_len >> 8) as u8, binders_len as u8]);
             extensions.push(hash_len as u8);
-            extensions.extend_from_slice(&alloc::vec![0u8; hash_len]); // binder placeholder
+            let new_len = extensions.len() + hash_len;
+            extensions.resize(new_len, 0); // binder placeholder
         }
     }
 

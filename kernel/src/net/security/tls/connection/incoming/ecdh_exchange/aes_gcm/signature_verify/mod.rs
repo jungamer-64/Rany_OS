@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use super::*;
 
 mod encrypt_decrypt;
@@ -76,9 +78,6 @@ impl TlsConnection {
 
         let eoed_msg: [u8; 4] = [5, 0, 0, 0];
 
-        if let Some(ref mut hasher) = self.transcript_hash {
-            hasher.update(&eoed_msg);
-        }
         self.append_transcript_bytes(&eoed_msg)?;
 
         if self.early_write_key.is_empty() || self.early_write_iv.len() < 12 {
@@ -89,29 +88,30 @@ impl TlsConnection {
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
 
-        let mut inner = Vec::with_capacity(5);
-        inner.extend_from_slice(&eoed_msg);
-        inner.push(ContentType::Handshake as u8);
+        let inner = [
+            eoed_msg[0],
+            eoed_msg[1],
+            eoed_msg[2],
+            eoed_msg[3],
+            ContentType::Handshake as u8,
+        ];
 
         let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&self.early_write_iv[..12]);
+        nonce.copy_from_slice(&self.early_write_iv.as_slice()[..12]);
         let seq_bytes = self.early_write_seq.to_be_bytes();
         for i in 0..8 {
             nonce[4 + i] ^= seq_bytes[i];
         }
 
         let encrypted_len = inner.len() + 16;
-        let mut aad = Vec::with_capacity(5);
-        aad.push(ContentType::ApplicationData as u8);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
+        let aad = Self::tls13_record_aad(encrypted_len);
 
         let (ciphertext, auth_tag) = if cipher.is_chacha20_poly1305() {
             let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&self.early_write_key[..32]);
+            key_arr.copy_from_slice(&self.early_write_key.as_slice()[..32]);
             chacha20_poly1305_encrypt(&key_arr, &nonce, &aad, &inner)
         } else {
-            aes_gcm_encrypt(&self.early_write_key, &nonce, &aad, &inner)
+            aes_gcm_encrypt(self.early_write_key.as_slice(), &nonce, &aad, &inner)
         };
 
         let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
@@ -155,9 +155,6 @@ impl TlsConnection {
         cert_msg.extend_from_slice(ctx);
         cert_msg.extend_from_slice(&[0, 0, 0]); // empty certificate_list
 
-        if let Some(ref mut hasher) = self.transcript_hash {
-            hasher.update(&cert_msg);
-        }
         self.append_transcript_bytes(&cert_msg)?;
 
         let mut inner_cert = cert_msg;
@@ -221,24 +218,21 @@ impl TlsConnection {
         let hash_len = self.hash_len();
 
         // Finished ハンドシェイクメッセージ
-        let mut finished_msg = Vec::with_capacity(4 + hash_len);
-        finished_msg.push(20); // Finished type
-        finished_msg.push(0);
-        finished_msg.push(0);
-        finished_msg.push(hash_len as u8);
-        finished_msg.extend_from_slice(&verify_data[..verify_len]);
+        let mut finished_msg = [0u8; 4 + SHA384_OUTPUT_SIZE];
+        finished_msg[0] = 20; // Finished type
+        finished_msg[3] = hash_len as u8;
+        finished_msg[4..4 + verify_len].copy_from_slice(&verify_data[..verify_len]);
+        let finished_msg = &finished_msg[..4 + verify_len];
 
         // トランスクリプトハッシュを更新（クライアントFinished含む）
-        if let Some(ref mut hasher) = self.transcript_hash {
-            hasher.update(&finished_msg);
-        }
-        self.append_transcript_bytes(&finished_msg)?;
+        self.append_transcript_bytes(finished_msg)?;
 
         // TLS 1.3レコードとして暗号化
-        let mut inner = finished_msg;
-        inner.push(ContentType::Handshake as u8);
+        let mut inner = [0u8; 5 + SHA384_OUTPUT_SIZE];
+        inner[..4 + verify_len].copy_from_slice(finished_msg);
+        inner[4 + verify_len] = ContentType::Handshake as u8;
 
-        let encrypted = self.tls13_encrypt_record(&inner, true)?;
+        let encrypted = self.tls13_encrypt_record(&inner[..5 + verify_len], true)?;
 
         // アプリケーション鍵の導出
         self.tls13_derive_application_keys()?;
@@ -257,22 +251,11 @@ impl TlsConnection {
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
         let use_384 = cipher.uses_sha384();
-        let hash_len = self.hash_len();
-
-        // トランスクリプトハッシュ (ClientHello...server Finished)
-        // server_finished_offset を使用して正確な境界を取得
-        // (EndOfEarlyData, Certificate等がClientFinished前に追加されうるため、
-        //  単純な client_finished_len 差し引きでは不正確)
-        let sf_offset = if self.server_finished_offset > 0 {
-            self.server_finished_offset
-        } else {
-            // フォールバック: 以前の挙動
-            let client_finished_len = 4 + hash_len;
-            self.transcript_len().saturating_sub(client_finished_len)
-        };
-
         if use_384 {
-            let transcript_sf = self.transcript_prefix_hash_sha384(sf_offset)?;
+            let transcript_sf = self
+                .transcript_state
+                .server_finished_sha384()
+                .unwrap_or_else(|| self.transcript_hash_sha384());
             let mut master_secret = [0u8; 48];
             master_secret.copy_from_slice(&self.master_secret[..48]);
 
@@ -284,12 +267,15 @@ impl TlsConnection {
             let (server_key, server_iv) = tls13_derive_traffic_keys_sha384(&sas, key_len);
             let (client_key, client_iv) = tls13_derive_traffic_keys_sha384(&cas, key_len);
 
-            self.read_key = server_key;
-            self.read_iv = server_iv;
-            self.write_key = client_key;
-            self.write_iv = client_iv;
+            Self::set_tls_bytes(&mut self.read_key, &server_key)?;
+            Self::set_tls_bytes(&mut self.read_iv, &server_iv)?;
+            Self::set_tls_bytes(&mut self.write_key, &client_key)?;
+            Self::set_tls_bytes(&mut self.write_iv, &client_iv)?;
         } else {
-            let transcript_sf = self.transcript_prefix_hash_sha256(sf_offset)?;
+            let transcript_sf = self
+                .transcript_state
+                .server_finished_sha256()
+                .unwrap_or_else(|| self.transcript_hash_sha256());
             let mut master_secret = [0u8; 32];
             master_secret.copy_from_slice(&self.master_secret[..32]);
 
@@ -301,10 +287,10 @@ impl TlsConnection {
             let (server_key, server_iv) = tls13_derive_traffic_keys(&sas, key_len);
             let (client_key, client_iv) = tls13_derive_traffic_keys(&cas, key_len);
 
-            self.read_key = server_key;
-            self.read_iv = server_iv;
-            self.write_key = client_key;
-            self.write_iv = client_iv;
+            Self::set_tls_bytes(&mut self.read_key, &server_key)?;
+            Self::set_tls_bytes(&mut self.read_iv, &server_iv)?;
+            Self::set_tls_bytes(&mut self.write_key, &client_key)?;
+            Self::set_tls_bytes(&mut self.write_iv, &client_iv)?;
         }
 
         // resumption_master_secret を導出 (RFC 8446 Section 7.1)
@@ -315,13 +301,13 @@ impl TlsConnection {
             let mut ms48 = [0u8; 48];
             ms48.copy_from_slice(&self.master_secret[..48]);
             let rms = tls13_derive_secret_sha384(&ms48, b"res master", &transcript_cf);
-            self.resumption_master_secret = rms.to_vec();
+            Self::set_tls_bytes(&mut self.resumption_master_secret, &rms)?;
         } else {
             let transcript_cf = self.transcript_hash_sha256();
             let mut ms32 = [0u8; 32];
             ms32.copy_from_slice(&self.master_secret[..32]);
             let rms = tls13_derive_secret(&ms32, b"res master", &transcript_cf);
-            self.resumption_master_secret = rms.to_vec();
+            Self::set_tls_bytes(&mut self.resumption_master_secret, &rms)?;
         }
 
         self.read_seq = 0;
@@ -338,18 +324,14 @@ impl TlsConnection {
         iv: &[u8],
         seq: u64,
         data_len: usize,
-    ) -> ([u8; 12], Vec<u8>) {
+    ) -> ([u8; 12], [u8; 5]) {
         let mut nonce = [0u8; 12];
         nonce.copy_from_slice(&iv[..12]);
         let seq_bytes = seq.to_be_bytes();
         for i in 0..8 {
             nonce[4 + i] ^= seq_bytes[i];
         }
-        let mut aad = Vec::with_capacity(5);
-        aad.push(ContentType::ApplicationData as u8);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(data_len as u16).to_be_bytes());
-        (nonce, aad)
+        (nonce, Self::tls13_record_aad(data_len))
     }
 
     pub(super) fn decrypt_aead(
@@ -400,7 +382,7 @@ impl TlsConnection {
         }
 
         let data_bytes = Self::vec_from_payload(data)?;
-        let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv, seq, data_bytes.len());
+        let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv.as_slice(), seq, data_bytes.len());
 
         if data_bytes.len() < 16 {
             return Err(TlsError::DecryptError);
@@ -411,7 +393,7 @@ impl TlsConnection {
         let mut tag = [0u8; 16];
         tag.copy_from_slice(&data_bytes[ciphertext_len..]);
 
-        let plaintext = Self::decrypt_aead(cipher, key, &nonce, &aad, ciphertext, &tag)?;
+        let plaintext = Self::decrypt_aead(cipher, key.as_slice(), &nonce, &aad, ciphertext, &tag)?;
 
         // シーケンス番号をインクリメント
         if is_handshake {
@@ -449,7 +431,7 @@ impl TlsConnection {
 
         // TLS 1.3 nonce
         let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&iv[..12]);
+        nonce.copy_from_slice(&iv.as_slice()[..12]);
         let seq_bytes = seq.to_be_bytes();
         for i in 0..8 {
             nonce[4 + i] ^= seq_bytes[i];
@@ -459,17 +441,14 @@ impl TlsConnection {
         let encrypted_len = inner_plaintext.len() + 16;
 
         // AAD: TLS record header
-        let mut aad = Vec::with_capacity(5);
-        aad.push(ContentType::ApplicationData as u8);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(encrypted_len as u16).to_be_bytes());
+        let aad = Self::tls13_record_aad(encrypted_len);
 
         let (ciphertext, auth_tag) = if cipher.is_chacha20_poly1305() {
             let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&key[..32]);
+            key_arr.copy_from_slice(&key.as_slice()[..32]);
             chacha20_poly1305_encrypt(&key_arr, &nonce, &aad, inner_plaintext)
         } else {
-            aes_gcm_encrypt(key, &nonce, &aad, inner_plaintext)
+            aes_gcm_encrypt(key.as_slice(), &nonce, &aad, inner_plaintext)
         };
 
         // TLS record
@@ -623,22 +602,18 @@ impl TlsConnection {
 
         // 12バイトのnonceを構築: implicit_iv(4) || explicit_nonce(8)
         let mut nonce = [0u8; 12];
-        nonce[0..4].copy_from_slice(&self.read_iv[0..4]);
+        nonce[0..4].copy_from_slice(&self.read_iv.as_slice()[0..4]);
         nonce[4..12].copy_from_slice(explicit_nonce);
 
         // AAD: seq_num(8) || type(1) || version(2) || length(2)
-        let mut aad = Vec::with_capacity(13);
-        aad.extend_from_slice(&self.read_seq.to_be_bytes());
-        aad.push(content_type);
-        aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-        aad.extend_from_slice(&(ciphertext_len as u16).to_be_bytes());
+        let aad = Self::tls12_aad(self.read_seq, content_type, ciphertext_len);
 
         // 認証タグを配列に変換
         let mut tag = [0u8; 16];
         tag.copy_from_slice(auth_tag);
 
         // AES-GCM復号
-        match aes_gcm_decrypt(&self.read_key, &nonce, &aad, ciphertext, &tag) {
+        match aes_gcm_decrypt(self.read_key.as_slice(), &nonce, &aad, ciphertext, &tag) {
             Some(plaintext) => {
                 self.read_seq += 1;
                 Ok(Self::packet_payload_from_slice(&plaintext))
@@ -679,7 +654,7 @@ impl TlsConnection {
         // Construct 12-byte nonce: IV XOR (zero-padded sequence number)
         // RFC 7905: nonce = iv XOR pad64(seq_num)
         let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&self.read_iv[0..12]);
+        nonce.copy_from_slice(&self.read_iv.as_slice()[0..12]);
         let seq_bytes = self.read_seq.to_be_bytes(); // 8 bytes
         // XOR seq_num into the last 8 bytes of the nonce
         for i in 0..8 {
@@ -687,15 +662,11 @@ impl TlsConnection {
         }
 
         // AAD: seq_num(8) || type(1) || version(2) || length(2)
-        let mut aad = Vec::with_capacity(13);
-        aad.extend_from_slice(&self.read_seq.to_be_bytes());
-        aad.push(content_type);
-        aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-        aad.extend_from_slice(&(ciphertext_len as u16).to_be_bytes());
+        let aad = Self::tls12_aad(self.read_seq, content_type, ciphertext_len);
 
         // Convert key and tag to fixed-size arrays
         let mut key = [0u8; 32];
-        key.copy_from_slice(&self.read_key[0..32]);
+        key.copy_from_slice(&self.read_key.as_slice()[0..32]);
 
         let mut tag = [0u8; 16];
         tag.copy_from_slice(auth_tag);

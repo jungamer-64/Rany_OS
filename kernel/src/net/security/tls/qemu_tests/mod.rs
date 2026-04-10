@@ -397,7 +397,7 @@ pub fn wave8_tls_tls13_initial_state_smoke() -> bool {
 pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello());
+    let hello = payload_bytes(&conn.build_client_hello_payload());
 
     if !conn.has_local_ecdh_keypair() || !conn.has_transcript_hash() {
         return false;
@@ -422,7 +422,7 @@ pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
 pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello());
+    let hello = payload_bytes(&conn.build_client_hello_payload());
     let Some(hello_payload) = hello.get(5..) else {
         return false;
     };
@@ -444,7 +444,7 @@ pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
 pub fn wave8_tls_tls13_client_hello_psk_modes_smoke() -> bool {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello());
+    let hello = payload_bytes(&conn.build_client_hello_payload());
     let Some(hello_payload) = hello.get(5..) else {
         return false;
     };

@@ -110,6 +110,8 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use the packet-backed APIs `process_incoming_payload(&payload)`, `encrypt_application_payload(&payload)`, `send_early_data_payload(&payload)`, `get_rejected_early_data_payload()`, `build_key_update_response_payload()`, and `close_payload()`.
   - TLS handshake record builders returning `Vec<u8>` (`build_client_key_exchange()`, `build_client_key_exchange_rsa()`, `build_change_cipher_spec()`, `build_client_finished_tls12()`, `build_client_finished_tls13()`) ❌ **removed**
     - Migration: Use the payload-native builders `build_client_key_exchange_payload()`, `build_client_key_exchange_rsa_payload()`, `build_change_cipher_spec_payload()`, `build_client_finished_tls12_payload()`, and `build_client_finished_tls13_payload()`.
+  - Legacy payload builder name `build_client_hello()` ❌ **removed**
+    - Migration: Use `build_client_hello_payload()`.
   - TLS helper accessors exposing raw transcript bytes (`handshake_messages_ref()`) ❌ **removed**
     - Migration: Verify transcript progress through state, emitted payload records, or transcript-hash-based helpers instead of byte accumulation snapshots.
   - IPv6 copy-based quoted-packet / timeout paths (`packet_from_bytes` / `payload_from_bytes` rebuild in the IPv6 receive path) ❌ **removed**

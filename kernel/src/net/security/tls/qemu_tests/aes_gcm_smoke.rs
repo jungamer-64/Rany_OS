@@ -212,10 +212,15 @@ pub fn wave8_tls_cipher_suite_helpers_smoke() -> bool {
 }
 
 pub fn wave8_tls_base64_decode_smoke() -> bool {
-    let result = base64_decode("SGVsbG8=");
-    let empty = base64_decode("");
-    matches!(result, Some(ref v) if v.as_slice() == b"Hello")
-        && matches!(empty, Some(ref v) if v.is_empty())
+    let result = base64_decode_payload("SGVsbG8=");
+    let empty = base64_decode_payload("");
+    let hello_ok = if let Some(span) = result {
+        let mut bytes = [0u8; 5];
+        span.copy_into(&mut bytes) == 5 && &bytes == b"Hello"
+    } else {
+        false
+    };
+    hello_ok && matches!(empty, Some(ref v) if v.is_empty())
 }
 
 pub fn wave8_tls_tls_version_smoke() -> bool {
@@ -377,7 +382,7 @@ pub fn wave8_tls_tls_connection_initial_state_smoke() -> bool {
 pub fn wave8_tls_tls_connection_client_hello_smoke() -> bool {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello());
+    let hello = payload_bytes(&conn.build_client_hello_payload());
     hello.len() >= 3
         && hello[0] == ContentType::Handshake as u8
         && hello[1] == 0x03

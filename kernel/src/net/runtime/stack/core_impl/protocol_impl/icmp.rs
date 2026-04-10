@@ -37,10 +37,8 @@ impl NetworkStack {
             return;
         }
 
-        let config = self.config.clone();
-
         // Resolve next-hop gateway (considering redirects)
-        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+        let _next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
         // Resolve MAC address
         let dst_mac = match self.arp.resolve(next_hop, current_time) {
@@ -60,7 +58,7 @@ impl NetworkStack {
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
-                .set_source(config.mac)
+                .set_source(self.config.mac)
                 .set_ether_type(EtherType::Ipv4);
 
             let eth_payload = frame.payload_mut();
@@ -69,7 +67,7 @@ impl NetworkStack {
             if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
                 ip_packet
                     .init_header()
-                    .set_source(config.ipv4.address)
+                    .set_source(self.config.ipv4.address)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Icmp)
                     .set_ttl(64);
@@ -219,14 +217,18 @@ impl NetworkStack {
             return;
         }
 
-        let config = self.config.clone();
-        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
-        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+        let current_time = self.current_time();
+        let our_ip = self.config.ipv4.address;
+        let dst_mac = match self.resolve_arp_for_send(None, dst_ip, current_time, |pending| {
+            pending.enqueue_icmp(
+                our_ip,
+                dst_ip,
+                original_packet.clone(),
+                current_time,
+            );
+        }) {
             Some(mac) => mac,
-            None => {
-                self.send_arp_request(next_hop);
-                return;
-            }
+            None => return,
         };
 
         let mut packet =
@@ -238,14 +240,14 @@ impl NetworkStack {
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
-                .set_source(config.mac)
+                .set_source(self.config.mac)
                 .set_ether_type(EtherType::Ipv4);
 
             let eth_payload = frame.payload_mut();
             if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
                 ip_packet
                     .init_header()
-                    .set_source(config.ipv4.address)
+                    .set_source(self.config.ipv4.address)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Icmp)
                     .set_ttl(64);
@@ -296,14 +298,18 @@ impl NetworkStack {
             return;
         }
 
-        let config = self.config.clone();
-        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
-        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+        let current_time = self.current_time();
+        let our_ip = self.config.ipv4.address;
+        let dst_mac = match self.resolve_arp_for_send(None, dst_ip, current_time, |pending| {
+            pending.enqueue_icmp(
+                our_ip,
+                dst_ip,
+                echo_data.clone(),
+                current_time,
+            );
+        }) {
             Some(mac) => mac,
-            None => {
-                self.send_arp_request(next_hop);
-                return;
-            }
+            None => return,
         };
 
         let echo_view = crate::net::payload::PacketPayloadView::new(echo_data);
@@ -317,14 +323,14 @@ impl NetworkStack {
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
-                .set_source(config.mac)
+                .set_source(self.config.mac)
                 .set_ether_type(EtherType::Ipv4);
 
             let eth_payload = frame.payload_mut();
             if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
                 ip_packet
                     .init_header()
-                    .set_source(config.ipv4.address)
+                    .set_source(self.config.ipv4.address)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Icmp)
                     .set_ttl(64);
@@ -393,10 +399,8 @@ impl NetworkStack {
             return false;
         }
 
-        let config = self.config.clone();
-
         // Resolve next-hop gateway (considering redirects)
-        let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
+        let _next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
         // Resolve MAC address
         let dst_mac = match self.arp.resolve(next_hop, current_time) {
@@ -415,13 +419,13 @@ impl NetworkStack {
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
-                .set_source(config.mac)
+                .set_source(self.config.mac)
                 .set_ether_type(EtherType::Ipv4);
 
             if let Some(mut ip_packet) = Ipv4PacketMut::new(frame.payload_mut()) {
                 ip_packet
                     .init_header()
-                    .set_source(config.ipv4.address)
+                    .set_source(self.config.ipv4.address)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Icmp)
                     .set_ttl(64);

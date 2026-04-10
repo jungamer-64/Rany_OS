@@ -1,3 +1,6 @@
+use alloc::vec;
+use alloc::vec::Vec;
+
 use super::*;
 
 mod aes_gcm;
@@ -17,13 +20,14 @@ impl TlsConnection {
     pub(super) fn perform_ecdh_exchange(
         named_curve: u16,
         server_pubkey: &[u8],
-    ) -> TlsResult<(ecdh::EcdhKeyPair, Vec<u8>)> {
+    ) -> TlsResult<(ecdh::EcdhKeyPair, TlsBytes<64>)> {
         let group = Self::named_curve_to_ecdh_group(named_curve)?;
         let local_keypair =
             ecdh::EcdhKeyPair::generate(group).map_err(|_| TlsError::CryptoError)?;
         let shared_secret = local_keypair
             .shared_secret(server_pubkey)
             .map_err(|_| TlsError::CryptoError)?;
+        let shared_secret = TlsBytes::from_slice(&shared_secret).ok_or(TlsError::CryptoError)?;
         Ok((local_keypair, shared_secret))
     }
 
@@ -65,7 +69,7 @@ impl TlsConnection {
 
         // Master secret導出（RFC 5246 Section 8.1）
         self.master_secret = derive_master_secret(
-            &self.pre_master_secret,
+            self.pre_master_secret.as_slice(),
             &self.client_random,
             &self.server_random,
         );
@@ -152,19 +156,19 @@ impl TlsConnection {
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         self.master_secret = if version <= TlsVersion::TLS_1_1 {
             derive_master_secret_tls10(
-                &self.pre_master_secret,
+                self.pre_master_secret.as_slice(),
                 &self.client_random,
                 &self.server_random,
             )
         } else if cipher.uses_sha384() {
             derive_master_secret_sha384(
-                &self.pre_master_secret,
+                self.pre_master_secret.as_slice(),
                 &self.client_random,
                 &self.server_random,
             )
         } else {
             derive_master_secret(
-                &self.pre_master_secret,
+                self.pre_master_secret.as_slice(),
                 &self.client_random,
                 &self.server_random,
             )
@@ -254,12 +258,10 @@ impl TlsConnection {
         let verify_data = self.compute_tls12_verify_data(b"client finished");
 
         // Finishedハンドシェイクメッセージ
-        let mut finished_msg = Vec::with_capacity(4 + 12);
-        finished_msg.push(HandshakeType::Finished as u8); // type = 20
-        finished_msg.push(0);
-        finished_msg.push(0);
-        finished_msg.push(12); // length = 12
-        finished_msg.extend_from_slice(&verify_data);
+        let mut finished_msg = [0u8; 16];
+        finished_msg[0] = HandshakeType::Finished as u8; // type = 20
+        finished_msg[3] = 12; // length = 12
+        finished_msg[4..16].copy_from_slice(&verify_data);
 
         // ハンドシェイクメッセージを記録
         self.append_transcript_bytes(&finished_msg)
@@ -332,15 +334,21 @@ impl TlsConnection {
 
         // CBC cipher suites have MAC keys first
         if cipher.is_cbc() {
-            self.write_mac_key = key_block[offset..offset + mac_key_len].to_vec();
+            Self::set_tls_bytes(
+                &mut self.write_mac_key,
+                &key_block[offset..offset + mac_key_len],
+            )?;
             offset += mac_key_len;
-            self.read_mac_key = key_block[offset..offset + mac_key_len].to_vec();
+            Self::set_tls_bytes(
+                &mut self.read_mac_key,
+                &key_block[offset..offset + mac_key_len],
+            )?;
             offset += mac_key_len;
         }
 
-        self.write_key = key_block[offset..offset + key_len].to_vec();
+        Self::set_tls_bytes(&mut self.write_key, &key_block[offset..offset + key_len])?;
         offset += key_len;
-        self.read_key = key_block[offset..offset + key_len].to_vec();
+        Self::set_tls_bytes(&mut self.read_key, &key_block[offset..offset + key_len])?;
         offset += key_len;
 
         if cipher.is_cbc() && iv_len == 16 {
@@ -350,9 +358,9 @@ impl TlsConnection {
             self.read_cbc_iv
                 .copy_from_slice(&key_block[offset..offset + 16]);
         } else {
-            self.write_iv = key_block[offset..offset + iv_len].to_vec();
+            Self::set_tls_bytes(&mut self.write_iv, &key_block[offset..offset + iv_len])?;
             offset += iv_len;
-            self.read_iv = key_block[offset..offset + iv_len].to_vec();
+            Self::set_tls_bytes(&mut self.read_iv, &key_block[offset..offset + iv_len])?;
         }
         let _ = offset;
 
@@ -374,16 +382,12 @@ impl TlsConnection {
         }
 
         let mut nonce = [0u8; 12];
-        nonce[0..4].copy_from_slice(&self.write_iv[0..4]);
+        nonce[0..4].copy_from_slice(&self.write_iv.as_slice()[0..4]);
         nonce[4..12].copy_from_slice(&explicit_nonce);
 
-        let mut aad = Vec::with_capacity(13);
-        aad.extend_from_slice(&self.write_seq.to_be_bytes());
-        aad.push(ContentType::Handshake as u8);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        let aad = Self::tls12_aad(self.write_seq, ContentType::Handshake as u8, data.len());
 
-        let (ciphertext, auth_tag) = aes_gcm_encrypt(&self.write_key, &nonce, &aad, data);
+        let (ciphertext, auth_tag) = aes_gcm_encrypt(self.write_key.as_slice(), &nonce, &aad, data);
 
         let record_len = 8 + ciphertext.len() + 16;
         let record_header = [
@@ -413,20 +417,16 @@ impl TlsConnection {
         }
 
         let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&self.write_iv[0..12]);
+        nonce.copy_from_slice(&self.write_iv.as_slice()[0..12]);
         let seq_bytes = self.write_seq.to_be_bytes();
         for i in 0..8 {
             nonce[4 + i] ^= seq_bytes[i];
         }
 
-        let mut aad = Vec::with_capacity(13);
-        aad.extend_from_slice(&self.write_seq.to_be_bytes());
-        aad.push(ContentType::Handshake as u8);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        let aad = Self::tls12_aad(self.write_seq, ContentType::Handshake as u8, data.len());
 
         let mut key = [0u8; 32];
-        key.copy_from_slice(&self.write_key[0..32]);
+        key.copy_from_slice(&self.write_key.as_slice()[0..32]);
 
         let (ciphertext, auth_tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, data);
 
@@ -482,7 +482,7 @@ impl TlsConnection {
 
         // Step 1: MAC計算
         let mac = compute_tls_mac(
-            &self.write_mac_key,
+            self.write_mac_key.as_slice(),
             self.write_seq,
             content_type,
             version,
@@ -512,7 +512,7 @@ impl TlsConnection {
         };
 
         // Step 5: CBC暗号化
-        let ciphertext = aes_cbc_encrypt(&self.write_key, &iv, &padded);
+        let ciphertext = aes_cbc_encrypt(self.write_key.as_slice(), &iv, &padded);
 
         // TLS 1.0: 最終暗号文ブロックを記憶（次レコードのIVに使用）
         if version == TlsVersion::TLS_1_0 && ciphertext.len() >= 16 {
@@ -600,7 +600,7 @@ impl TlsConnection {
         };
 
         let expected_mac = compute_tls_mac(
-            &self.read_mac_key,
+            self.read_mac_key.as_slice(),
             self.read_seq,
             content_type,
             version,
@@ -667,8 +667,8 @@ impl TlsConnection {
 
         self.store_last_ciphertext_block_if_tls10(version, ciphertext);
 
-        let decrypted =
-            aes_cbc_decrypt(&self.read_key, &iv, ciphertext).ok_or(TlsError::DecryptError)?;
+        let decrypted = aes_cbc_decrypt(self.read_key.as_slice(), &iv, ciphertext)
+            .ok_or(TlsError::DecryptError)?;
 
         let fragment_len =
             self.verify_cbc_padding_and_mac(&decrypted, content_type, version, use_sha1, mac_len)?;
@@ -714,7 +714,7 @@ impl TlsConnection {
         pms[34..48].copy_from_slice(&random_bytes2[..14]);
 
         // PMSを保存
-        self.pre_master_secret = pms.to_vec();
+        Self::set_tls_bytes(&mut self.pre_master_secret, &pms).ok()?;
 
         // RSA暗号化
         let rsa_key = crate::net::security::rsa::RsaPublicKey { modulus, exponent };

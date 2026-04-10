@@ -281,11 +281,23 @@ impl NetworkStack {
         }
 
         let (if_id, config, _) = self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)?;
+        let current_time = self.current_time();
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
-            self.resolve_mac(if_id, dst_ip, &config, self.current_time())
-                .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?
+            match self.resolve_arp_for_send(if_id, dst_ip, current_time, |pending| {
+                pending.enqueue_raw(
+                    src_ip,
+                    dst_ip,
+                    IpProtocol::from(protocol),
+                    header[8], // TTL from original header
+                    payload.payload().clone(),
+                    current_time,
+                );
+            }) {
+                Some(mac) => mac,
+                None => return Err(crate::net::types::NetworkError::ArpResolutionPending),
+            }
         };
 
         let mut packet = self
@@ -502,6 +514,7 @@ impl NetworkStack {
             pending_tx_meta: None,
             current_time: AtomicU64::new(0),
             redirect_cache: RedirectCache::new(),
+            arp_pending_queue: ArpPendingQueue::new(),
             ndp_pending_queue: NdpPendingQueue::new(),
             ipv6_fragment_reassembler: Ipv6FragmentReassembler::new(
                 Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS,
@@ -835,7 +848,15 @@ impl NetworkStack {
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
-            match self.resolve_mac(if_id, dst_ip, &config, current_time) {
+            match self.resolve_arp_for_send(if_id, dst_ip, current_time, |pending| {
+                pending.enqueue_tcp(
+                    resolved_src,
+                    dst_ip,
+                    ttl,
+                    tcp_segment.payload().clone(),
+                    current_time,
+                );
+            }) {
                 Some(mac) => mac,
                 None => return false,
             }
@@ -935,6 +956,10 @@ impl NetworkStack {
         // これにより受信イベントが無い期間でもMembership Report/Leaveを排出できる。
         self.igmp.update_time(now);
         self.send_pending_igmp_reports();
+
+        // Expire timed-out pending packets
+        self.expire_arp_pending();
+        self.expire_ndp_pending();
 
         // Endpoint-owned TCP timers/retransmits are driven from the endpoint event
         // task via `tcb_table().tick()`. The integrated stack keeps only generic
@@ -1039,5 +1064,14 @@ impl NetworkStack {
     pub fn expire_ndp_pending(&mut self) {
         let current_time = self.current_time.load(Ordering::Relaxed);
         self.ndp_pending_queue.expire(current_time);
+    }
+
+    /// Expire timed-out ARP pending packets
+    pub fn expire_arp_pending(&mut self) {
+        let current_time = self.current_time.load(Ordering::Relaxed);
+        self.arp_pending_queue.expire(current_time);
+        for state in self.interfaces.values_mut() {
+            state.arp_pending_queue.expire(current_time);
+        }
     }
 }

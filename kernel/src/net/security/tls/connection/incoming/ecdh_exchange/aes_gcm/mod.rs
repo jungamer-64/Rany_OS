@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use super::*;
 
 mod signature_verify;
@@ -15,16 +17,12 @@ impl TlsConnection {
         }
 
         let mut nonce = [0u8; 12];
-        nonce[0..4].copy_from_slice(&self.write_iv[0..4]);
+        nonce[0..4].copy_from_slice(&self.write_iv.as_slice()[0..4]);
         nonce[4..12].copy_from_slice(&explicit_nonce);
 
-        let mut aad = Vec::with_capacity(13);
-        aad.extend_from_slice(&self.write_seq.to_be_bytes());
-        aad.push(content_type);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
-        let (ciphertext, auth_tag) = aes_gcm_encrypt(&self.write_key, &nonce, &aad, data);
+        let (ciphertext, auth_tag) = aes_gcm_encrypt(self.write_key.as_slice(), &nonce, &aad, data);
 
         let record_len = 8 + ciphertext.len() + 16;
         let record_header = [
@@ -55,20 +53,16 @@ impl TlsConnection {
         }
 
         let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&self.write_iv[0..12]);
+        nonce.copy_from_slice(&self.write_iv.as_slice()[0..12]);
         let seq_bytes = self.write_seq.to_be_bytes();
         for i in 0..8 {
             nonce[4 + i] ^= seq_bytes[i];
         }
 
-        let mut aad = Vec::with_capacity(13);
-        aad.extend_from_slice(&self.write_seq.to_be_bytes());
-        aad.push(content_type);
-        aad.extend_from_slice(&[0x03, 0x03]);
-        aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
         let mut key = [0u8; 32];
-        key.copy_from_slice(&self.write_key[0..32]);
+        key.copy_from_slice(&self.write_key.as_slice()[0..32]);
 
         let (ciphertext, auth_tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, data);
 
@@ -112,13 +106,13 @@ impl TlsConnection {
             let transcript_ch_sh = self.transcript_hash_sha384();
 
             let psk_ref = if self.tls13_using_psk {
-                self.tls13_psk.as_deref()
+                self.tls13_psk.as_ref().map(TlsBytes::as_slice)
             } else {
                 None
             };
             let early_secret = tls13_early_secret_sha384(psk_ref);
             let handshake_secret =
-                tls13_handshake_secret_sha384(&early_secret, &self.pre_master_secret);
+                tls13_handshake_secret_sha384(&early_secret, self.pre_master_secret.as_slice());
 
             let chs =
                 tls13_derive_secret_sha384(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
@@ -130,38 +124,26 @@ impl TlsConnection {
             let (server_key, server_iv) = tls13_derive_traffic_keys_sha384(&shs, key_len);
             let (client_key, client_iv) = tls13_derive_traffic_keys_sha384(&chs, key_len);
 
-            self.hs_read_key = server_key;
-            self.hs_read_iv = server_iv;
-            self.hs_write_key = client_key;
-            self.hs_write_iv = client_iv;
+            Self::set_tls_bytes(&mut self.hs_read_key, &server_key)?;
+            Self::set_tls_bytes(&mut self.hs_read_iv, &server_iv)?;
+            Self::set_tls_bytes(&mut self.hs_write_key, &client_key)?;
+            Self::set_tls_bytes(&mut self.hs_write_iv, &client_iv)?;
             self.hs_read_seq = 0;
             self.hs_write_seq = 0;
 
             let ms = tls13_master_secret_sha384(&handshake_secret);
             self.master_secret[..48].copy_from_slice(&ms);
-
-            let mut hasher = crate::crypto::sha384::Sha384::new();
-            PacketPayloadView::new(&self.handshake_transcript)
-                .for_each_chunk(|chunk| hasher.update(chunk));
-            self.transcript_hash = Some(TranscriptHash::Sha384(hasher));
         } else {
-            // SHA-256ベース鍵スケジュール
-            use crate::crypto::sha256;
-
-            let transcript_ch_sh = {
-                let mut hasher = sha256::Sha256::new();
-                PacketPayloadView::new(&self.handshake_transcript)
-                    .for_each_chunk(|chunk| hasher.update(chunk));
-                hasher.finalize()
-            };
+            let transcript_ch_sh = self.transcript_hash_sha256();
 
             let psk_ref_256 = if self.tls13_using_psk {
-                self.tls13_psk.as_deref()
+                self.tls13_psk.as_ref().map(TlsBytes::as_slice)
             } else {
                 None
             };
             let early_secret = tls13_early_secret(psk_ref_256);
-            let handshake_secret = tls13_handshake_secret(&early_secret, &self.pre_master_secret);
+            let handshake_secret =
+                tls13_handshake_secret(&early_secret, self.pre_master_secret.as_slice());
 
             let chs = tls13_derive_secret(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
             let shs = tls13_derive_secret(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
@@ -171,20 +153,15 @@ impl TlsConnection {
             let (server_key, server_iv) = tls13_derive_traffic_keys(&shs, key_len);
             let (client_key, client_iv) = tls13_derive_traffic_keys(&chs, key_len);
 
-            self.hs_read_key = server_key;
-            self.hs_read_iv = server_iv;
-            self.hs_write_key = client_key;
-            self.hs_write_iv = client_iv;
+            Self::set_tls_bytes(&mut self.hs_read_key, &server_key)?;
+            Self::set_tls_bytes(&mut self.hs_read_iv, &server_iv)?;
+            Self::set_tls_bytes(&mut self.hs_write_key, &client_key)?;
+            Self::set_tls_bytes(&mut self.hs_write_iv, &client_iv)?;
             self.hs_read_seq = 0;
             self.hs_write_seq = 0;
 
             let master_secret_bytes = tls13_master_secret(&handshake_secret);
             self.master_secret[..32].copy_from_slice(&master_secret_bytes);
-
-            let mut new_hasher = sha256::Sha256::new();
-            PacketPayloadView::new(&self.handshake_transcript)
-                .for_each_chunk(|chunk| new_hasher.update(chunk));
-            self.transcript_hash = Some(TranscriptHash::Sha256(new_hasher));
         }
 
         self.state = TlsState::Tls13WaitEncryptedExtensions;
@@ -271,17 +248,10 @@ impl TlsConnection {
 
             self.tls13_dispatch_handshake_msg(msg_type, payload)?;
 
-            // トランスクリプトハッシュを更新
-            // (Finishedメッセージ自体もトランスクリプトに含める)
-            if let Some(ref mut hasher) = self.transcript_hash {
-                hasher.update(full_msg);
-            }
             self.append_transcript_bytes(full_msg)?;
 
-            // server Finished追加後のオフセットを記録
-            // (アプリケーション鍵導出で「server Finishedまで」のトランスクリプトとして使用)
             if msg_type == 20 {
-                self.server_finished_offset = self.transcript_len();
+                self.transcript_state.snapshot_server_finished();
             }
 
             offset = body_end;

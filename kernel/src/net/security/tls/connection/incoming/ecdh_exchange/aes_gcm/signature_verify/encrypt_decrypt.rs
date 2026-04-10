@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 // Building block: TLS encrypt/decrypt
 
 use super::*;
@@ -54,17 +56,13 @@ impl TlsConnection {
         } else {
             // 12-byte nonce: implicit_iv(4) || explicit_nonce(8)
             let mut nonce = [0u8; 12];
-            nonce[0..4].copy_from_slice(&self.write_iv[0..4]);
+            nonce[0..4].copy_from_slice(&self.write_iv.as_slice()[0..4]);
             nonce[4..12].copy_from_slice(&explicit_nonce);
 
             // AAD: seq_num(8) || type(1) || version(2) || length(2)
-            let mut aad = Vec::with_capacity(13);
-            aad.extend_from_slice(&self.write_seq.to_be_bytes());
-            aad.push(content_type);
-            aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-            aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
-            aes_gcm_encrypt(&self.write_key, &nonce, &aad, data)
+            aes_gcm_encrypt(self.write_key.as_slice(), &nonce, &aad, data)
         };
 
         // Record length: nonce(8) + ciphertext + tag(16)
@@ -107,21 +105,17 @@ impl TlsConnection {
             } else {
                 // Construct 12-byte nonce: IV XOR (zero-padded sequence number)
                 let mut nonce = [0u8; 12];
-                nonce.copy_from_slice(&self.write_iv[0..12]);
+                nonce.copy_from_slice(&self.write_iv.as_slice()[0..12]);
                 let seq_bytes = self.write_seq.to_be_bytes();
                 for i in 0..8 {
                     nonce[4 + i] ^= seq_bytes[i];
                 }
 
                 // AAD: seq_num(8) || type(1) || version(2) || length(2)
-                let mut aad = Vec::with_capacity(13);
-                aad.extend_from_slice(&self.write_seq.to_be_bytes());
-                aad.push(content_type);
-                aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
-                aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
+                let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
                 let mut key = [0u8; 32];
-                key.copy_from_slice(&self.write_key[0..32]);
+                key.copy_from_slice(&self.write_key.as_slice()[0..32]);
 
                 chacha20_poly1305_encrypt(&key, &nonce, &aad, data)
             };
@@ -257,7 +251,7 @@ impl TlsConnection {
     }
 
     /// Resumption Master SecretからPSKを導出
-    pub(super) fn derive_tls13_psk_from_rms(&self, ticket_nonce: &[u8]) -> Option<Vec<u8>> {
+    pub(super) fn derive_tls13_psk_from_rms(&self, ticket_nonce: &[u8]) -> Option<TlsBytes<48>> {
         if self.resumption_master_secret.is_empty() {
             return None;
         }
@@ -267,13 +261,23 @@ impl TlsConnection {
         let psk = if use_384 {
             let mut rms = [0u8; 48];
             let copy_len = self.resumption_master_secret.len().min(48);
-            rms[..copy_len].copy_from_slice(&self.resumption_master_secret[..copy_len]);
-            hkdf_expand_label_sha384(&rms, b"resumption", ticket_nonce, hash_len).to_vec()
+            rms[..copy_len].copy_from_slice(&self.resumption_master_secret.as_slice()[..copy_len]);
+            TlsBytes::from_slice(&hkdf_expand_label_sha384(
+                &rms,
+                b"resumption",
+                ticket_nonce,
+                hash_len,
+            ))?
         } else {
             let mut rms = [0u8; 32];
             let copy_len = self.resumption_master_secret.len().min(32);
-            rms[..copy_len].copy_from_slice(&self.resumption_master_secret[..copy_len]);
-            hkdf_expand_label(&rms, b"resumption", ticket_nonce, hash_len).to_vec()
+            rms[..copy_len].copy_from_slice(&self.resumption_master_secret.as_slice()[..copy_len]);
+            TlsBytes::from_slice(&hkdf_expand_label(
+                &rms,
+                b"resumption",
+                ticket_nonce,
+                hash_len,
+            ))?
         };
         Some(psk)
     }
@@ -374,8 +378,8 @@ impl TlsConnection {
             secret32.copy_from_slice(&self.server_app_traffic_secret[..32]);
             tls13_derive_traffic_keys(&secret32, key_len)
         };
-        self.read_key = new_read_key;
-        self.read_iv = new_read_iv;
+        Self::set_tls_bytes(&mut self.read_key, &new_read_key)?;
+        Self::set_tls_bytes(&mut self.read_iv, &new_read_iv)?;
         self.read_seq = 0;
 
         // update_requested (1) の場合、クライアント側鍵も更新して KeyUpdate を返信
@@ -401,8 +405,8 @@ impl TlsConnection {
                 secret32.copy_from_slice(&self.client_app_traffic_secret[..32]);
                 tls13_derive_traffic_keys(&secret32, key_len)
             };
-            self.write_key = new_write_key;
-            self.write_iv = new_write_iv;
+            Self::set_tls_bytes(&mut self.write_key, &new_write_key)?;
+            Self::set_tls_bytes(&mut self.write_iv, &new_write_iv)?;
             self.write_seq = 0;
 
             // KeyUpdate応答を送信キューに追加
@@ -424,16 +428,14 @@ impl TlsConnection {
         self.pending_key_update_response = false;
 
         // KeyUpdate { update_not_requested(0) }
-        let key_update_msg = vec![
+        let inner = [
             24, // msg_type = KeyUpdate
-            0, 0, 1, // length = 1
+            0,
+            0,
+            1, // length = 1
             0, // update_not_requested
+            ContentType::Handshake as u8,
         ];
-
-        // Handshake content type を付加して暗号化
-        let mut inner = Vec::with_capacity(key_update_msg.len() + 1);
-        inner.extend_from_slice(&key_update_msg);
-        inner.push(ContentType::Handshake as u8);
 
         self.tls13_encrypt_record(&inner, false).ok()
     }
@@ -454,10 +456,11 @@ impl TlsConnection {
 
         if self.is_tls13 && !self.write_key.is_empty() {
             // TLS 1.3: close_notify を暗号化して送信
-            let mut inner = Vec::with_capacity(3);
-            inner.push(AlertLevel::Warning as u8);
-            inner.push(AlertDescription::CloseNotify as u8);
-            inner.push(ContentType::Alert as u8);
+            let inner = [
+                AlertLevel::Warning as u8,
+                AlertDescription::CloseNotify as u8,
+                ContentType::Alert as u8,
+            ];
             if let Ok(record) = self.tls13_encrypt_record(&inner, false) {
                 return record;
             }
@@ -477,7 +480,7 @@ impl TlsConnection {
 
     #[cfg(any(test, feature = "qemu-test-export"))]
     pub fn handshake_transcript_len(&self) -> usize {
-        self.handshake_transcript.total_len()
+        self.transcript_len()
     }
 
     #[cfg(any(test, feature = "qemu-test-export"))]
@@ -487,6 +490,6 @@ impl TlsConnection {
 
     #[cfg(any(test, feature = "qemu-test-export"))]
     pub fn has_transcript_hash(&self) -> bool {
-        self.transcript_hash.is_some()
+        self.transcript_state.is_initialized()
     }
 }

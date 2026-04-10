@@ -76,12 +76,15 @@ pub(crate) fn test_cipher_suite_helpers() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_base64_decode() {
     // "Hello" in Base64 = "SGVsbG8="
-    let result = base64_decode("SGVsbG8=");
+    let result = base64_decode_payload("SGVsbG8=");
     assert!(result.is_some());
-    assert_eq!(result.unwrap(), b"Hello");
+    let result = result.unwrap();
+    let mut bytes = [0u8; 5];
+    assert_eq!(result.copy_into(&mut bytes), 5);
+    assert_eq!(&bytes, b"Hello");
 
     // Empty string
-    let empty = base64_decode("");
+    let empty = base64_decode_payload("");
     assert!(empty.is_some());
     assert!(empty.unwrap().is_empty());
 }
@@ -278,7 +281,7 @@ pub(crate) fn test_tls13_full_key_schedule() {
 pub(crate) fn test_tls13_client_hello_key_share() {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello());
+    let hello = payload_bytes(&conn.build_client_hello_payload());
 
     // Should have pre-generated ECDH key pair
     assert!(conn.has_local_ecdh_keypair());
@@ -302,7 +305,7 @@ pub(crate) fn test_tls13_client_hello_key_share() {
 pub(crate) fn test_tls13_client_hello_supported_versions() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello());
+    let hello = payload_bytes(&conn.build_client_hello_payload());
     let payload = &hello[5..];
 
     // Look for supported_versions extension [0x00, 0x2B]
@@ -325,7 +328,7 @@ pub(crate) fn test_tls13_client_hello_supported_versions() {
 pub(crate) fn test_tls13_client_hello_psk_modes() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello());
+    let hello = payload_bytes(&conn.build_client_hello_payload());
 
     assert!(
         find_extension_in_hello(&hello, 0x2D).is_some(),

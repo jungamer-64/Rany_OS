@@ -690,7 +690,7 @@ fn test_tls_connection_client_hello() {
     let config = TlsConfig::new().with_server_name("example.com");
     let mut conn = TlsConnection::new(config);
 
-    let hello = payload_bytes(&conn.build_client_hello());
+    let hello = payload_bytes(&conn.build_client_hello_payload());
 
     // Should start with TLS record header
     assert_eq!(hello[0], ContentType::Handshake as u8);

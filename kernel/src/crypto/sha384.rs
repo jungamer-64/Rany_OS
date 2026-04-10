@@ -37,6 +37,7 @@ pub fn compute(data: &[u8]) -> [u8; 48] {
 /// SHA-384 hasher構造体
 ///
 /// ストリーミングハッシュ計算用のラッパー
+#[derive(Clone)]
 pub struct Sha384 {
     inner: Sha384Impl,
 }

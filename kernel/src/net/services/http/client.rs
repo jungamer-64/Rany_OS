@@ -175,7 +175,7 @@ async fn send_over_tls_transport(
     let tls_config = TlsConfig::default().with_server_name(host);
     let mut tls = Box::new(TlsConnection::new(tls_config));
 
-    let client_hello = tls.build_client_hello();
+    let client_hello = tls.build_client_hello_payload();
     send_payload(connection, client_hello).await?;
     complete_tls_handshake(&mut tls, connection).await?;
 

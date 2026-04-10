@@ -36,6 +36,7 @@ impl NetworkStack {
                             *resolved_ip.as_bytes(),
                             *resolved_mac.as_bytes(),
                         );
+                        self.drain_arp_pending_on(Some(if_id), &resolved_ip);
                     }
                     ArpResult::SendGratuitous => {
                         self.send_gratuitous_arp_on(if_id);
@@ -64,6 +65,7 @@ impl NetworkStack {
                     *resolved_ip.as_bytes(),
                     *resolved_mac.as_bytes(),
                 );
+                self.drain_arp_pending(&resolved_ip);
             }
             ArpResult::SendGratuitous => {
                 self.send_gratuitous_arp();
@@ -388,5 +390,121 @@ impl NetworkStack {
             .filter(|e| e.state == crate::net::l2::arp::ArpEntryState::Resolved)
             .map(|e| (e.ip, e.mac))
             .collect()
+    }
+
+    /// Drain pending IPv4 packets for a resolved IP
+    fn drain_arp_pending_queue(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        resolved_ip: &Ipv4Address,
+        pending: Vec<crate::net::runtime::stack::PendingIpv4Packet>,
+    ) {
+        if pending.is_empty() {
+            return;
+        }
+
+        log::debug!(
+            "ARP: Draining {} pending packets for {} on {:?}",
+            pending.len(),
+            resolved_ip,
+            if_id
+        );
+
+        for pkt in pending {
+            match pkt.payload {
+                crate::net::runtime::stack::PendingIpv4Payload::Icmpv4(data) => {
+                    // For now we don't have a generic ICMP sender that takes PacketPayload
+                    // and doesn't re-resolve. We might add this if needed.
+                    let _ = data;
+                }
+                crate::net::runtime::stack::PendingIpv4Payload::Udp {
+                    src_port,
+                    dst_port,
+                    ttl,
+                    data,
+                } => {
+                    let data_view = crate::net::payload::PacketPayloadView::new(&data);
+                    let config = if let Some(if_id) = if_id {
+                        self.interface_config_or_runtime(if_id)
+                    } else {
+                        Some(self.config())
+                    };
+
+                    if let Some(config) = config {
+                        let _ = self.send_udp_raw_with_config_and_if_ttl_payload(
+                            if_id, &config, pkt.src, src_port, pkt.dst, dst_port, &data_view, ttl,
+                        );
+                    }
+                }
+                crate::net::runtime::stack::PendingIpv4Payload::Tcp { ttl, segment } => {
+                    let segment_view = crate::net::payload::PacketPayloadView::new(&segment);
+                    if let Some(if_id) = if_id {
+                        let _ = self.send_tcp_raw_scoped_with_ttl_payload(
+                            crate::net::types::InterfaceScope::Pinned(if_id),
+                            pkt.src,
+                            pkt.dst,
+                            &segment_view,
+                            ttl,
+                        );
+                    } else {
+                        let _ = self.send_tcp_raw_scoped_with_ttl_payload(
+                            crate::net::types::InterfaceScope::Any,
+                            pkt.src,
+                            pkt.dst,
+                            &segment_view,
+                            ttl,
+                        );
+                    }
+                }
+                crate::net::runtime::stack::PendingIpv4Payload::Raw { protocol, ttl, payload } => {
+                    let payload_view = crate::net::payload::PacketPayloadView::new(&payload);
+                    let src_mac = if let Some(if_id) = if_id {
+                        self.interface_config_or_runtime(if_id).map(|c| c.mac).unwrap_or(self.mac_address())
+                    } else {
+                        self.mac_address()
+                    };
+                    let _ = self.send_ipv4_l4_payload_with_pmtu(
+                        if_id,
+                        src_mac,
+                        MacAddress::ZERO, // Will be resolved by send_ipv4_l4_payload_with_pmtu
+                        pkt.src,
+                        pkt.dst,
+                        protocol,
+                        ttl,
+                        &payload_view,
+                        1500, // Default MTU
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) fn drain_arp_pending(&mut self, resolved_ip: &Ipv4Address) {
+        let pending = self.arp_pending_queue.drain_for(resolved_ip);
+        self.drain_arp_pending_queue(None, resolved_ip, pending);
+    }
+
+    pub(crate) fn drain_arp_pending_on(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        resolved_ip: &Ipv4Address,
+    ) {
+        let Some(if_id) = if_id else {
+            self.drain_arp_pending(resolved_ip);
+            return;
+        };
+
+        let pending = if let Some(state) = self.interfaces.get_mut(&if_id) {
+            state.arp_pending_queue.drain_for(resolved_ip)
+        } else {
+            Vec::new()
+        };
+
+        if pending.is_empty() {
+            self.drain_arp_pending(resolved_ip);
+            return;
+        }
+
+        self.drain_arp_pending_queue(Some(if_id), resolved_ip, pending);
     }
 }

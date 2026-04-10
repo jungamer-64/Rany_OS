@@ -49,6 +49,72 @@ impl SessionId {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TlsBytes<const N: usize> {
+    len: usize,
+    bytes: [u8; N],
+}
+
+impl<const N: usize> Default for TlsBytes<N> {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            bytes: [0; N],
+        }
+    }
+}
+
+impl<const N: usize> TlsBytes<N> {
+    pub const fn new() -> Self {
+        Self {
+            len: 0,
+            bytes: [0; N],
+        }
+    }
+
+    pub fn from_slice(data: &[u8]) -> Option<Self> {
+        let mut output = Self::new();
+        output.set(data)?;
+        Some(output)
+    }
+
+    pub fn set(&mut self, data: &[u8]) -> Option<()> {
+        if data.len() > N {
+            return None;
+        }
+        self.bytes.fill(0);
+        self.bytes[..data.len()].copy_from_slice(data);
+        self.len = data.len();
+        Some(())
+    }
+
+    pub fn clear(&mut self) {
+        self.bytes.fill(0);
+        self.len = 0;
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    pub fn copy_into_array<const M: usize>(&self) -> Option<[u8; M]> {
+        if self.len != M {
+            return None;
+        }
+        let mut out = [0u8; M];
+        out.copy_from_slice(self.as_slice());
+        Some(out)
+    }
+}
+
 // ============================================================================
 // Cipher Suites
 // ============================================================================
@@ -583,7 +649,7 @@ impl Certificate {
         }
 
         // Base64デコード（簡易）
-        base64_decode(&base64_data).and_then(|der| Self::from_der_bytes(&der))
+        base64_decode_payload(&base64_data).map(|der| Self { der })
     }
 }
 
@@ -591,7 +657,7 @@ impl Certificate {
 #[derive(Clone)]
 pub struct PrivateKey {
     /// DERエンコードされた秘密鍵
-    pub der: Vec<u8>,
+    pub der: PayloadSpan,
     /// 鍵タイプ
     pub key_type: KeyType,
 }
@@ -605,10 +671,12 @@ pub enum KeyType {
 }
 
 /// 簡易Base64デコード
-pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
+pub(crate) fn base64_decode_payload(input: &str) -> Option<PayloadSpan> {
     const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-    let mut output = Vec::new();
+    let mut builder = PacketPayloadBuilder::new();
+    let mut chunk = [0u8; 3];
+    let mut chunk_len = 0usize;
     let mut buf = 0u32;
     let mut bits = 0;
 
@@ -623,12 +691,21 @@ pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
 
         if bits >= 8 {
             bits -= 8;
-            output.push((buf >> bits) as u8);
+            chunk[chunk_len] = (buf >> bits) as u8;
+            chunk_len += 1;
             buf &= (1 << bits) - 1;
+            if chunk_len == chunk.len() {
+                builder.push_bytes(&chunk)?;
+                chunk_len = 0;
+            }
         }
     }
 
-    Some(output)
+    if chunk_len > 0 {
+        builder.push_bytes(&chunk[..chunk_len])?;
+    }
+
+    Some(PayloadSpan::from_payload(builder.build()))
 }
 
 // ============================================================================

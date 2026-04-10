@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use super::*;
 
 mod ecdh_exchange;
@@ -216,9 +218,6 @@ impl TlsConnection {
         }
 
         self.append_transcript_bytes(msg_data)?;
-        if let Some(ref mut hasher) = self.transcript_hash {
-            hasher.update(msg_data);
-        }
         // TLS 1.3: ServerHello受信後にハンドシェイク鍵を導出
         if msg_type == 2 && self.is_tls13 {
             self.tls13_derive_handshake_keys()?;
@@ -466,7 +465,7 @@ impl TlsConnection {
             .shared_secret(&server_pubkey)
             .map_err(|_| TlsError::CryptoError)?;
 
-        self.pre_master_secret = shared_secret;
+        Self::set_tls_bytes(&mut self.pre_master_secret, &shared_secret)?;
         self.state = TlsState::ServerHelloReceived;
         Ok(())
     }
@@ -508,27 +507,8 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         // RFC 8446 Section 4.4.1: synthetic message_hash に置き換え
         // MessageHash = Handshake(254, Hash(messages_so_far))
-        let use_384 = cipher.uses_sha384();
-        let hash_len = if use_384 {
-            SHA384_OUTPUT_SIZE
-        } else {
-            SHA256_OUTPUT_SIZE
-        };
-
-        // synthetic message_hash 構築
-        let mut synthetic = Vec::with_capacity(4 + hash_len);
-        synthetic.push(254); // message_hash type
-        synthetic.push(0);
-        synthetic.push(0);
-        synthetic.push(hash_len as u8); // hash length (32 or 48)
-        if use_384 {
-            synthetic.extend_from_slice(&self.transcript_hash_sha384());
-        } else {
-            synthetic.extend_from_slice(&self.transcript_hash_sha256());
-        }
-
-        // ハンドシェイクメッセージをsynthetic message_hashに置き換え
-        self.replace_transcript_bytes(&synthetic)?;
+        self.transcript_state
+            .replace_with_message_hash(cipher.uses_sha384());
 
         // サーバーが要求するグループで新しい鍵ペアを生成
         // HRR の key_share 拡張はグループIDのみ含む（公開鍵なし）
@@ -564,7 +544,7 @@ impl TlsConnection {
 
         // 通常のClientHelloと同じ構築
         self.state = TlsState::ClientHelloSent;
-        Some(self.build_client_hello())
+        Some(self.build_client_hello_payload())
     }
 
     /// Certificateを処理
@@ -676,9 +656,9 @@ impl TlsConnection {
     }
 
     /// RSA署名でServerKeyExchangeを検証
-    pub(super) fn verify_rsa_ske_signature(
+    pub(super) fn verify_rsa_ske_signature_parts(
         &self,
-        signed_data: &[u8],
+        ecdhe_params: &[u8],
         signature: &[u8],
         alg_selector: u8,
     ) -> TlsResult<()> {
@@ -697,7 +677,11 @@ impl TlsConnection {
 
         match alg_selector {
             2 => {
-                let digest = crate::crypto::sha256::compute(signed_data);
+                let mut hasher = crate::crypto::sha256::Sha256::new();
+                hasher.update(&self.client_random);
+                hasher.update(&self.server_random);
+                hasher.update(ecdhe_params);
+                let digest = hasher.finalize();
                 crate::net::security::rsa::rsa_pkcs1_verify(
                     &pubkey,
                     crate::net::security::rsa::HashAlgorithm::Sha256,
@@ -707,7 +691,11 @@ impl TlsConnection {
                 .map_err(|_| TlsError::CryptoError)
             }
             3 => {
-                let digest = crate::crypto::sha384::compute(signed_data);
+                let mut hasher = crate::crypto::sha384::Sha384::new();
+                hasher.update(&self.client_random);
+                hasher.update(&self.server_random);
+                hasher.update(ecdhe_params);
+                let digest = hasher.finalize();
                 crate::net::security::rsa::rsa_pkcs1_verify(
                     &pubkey,
                     crate::net::security::rsa::HashAlgorithm::Sha384,
@@ -721,9 +709,9 @@ impl TlsConnection {
     }
 
     /// ECDSA P-256署名でServerKeyExchangeを検証
-    pub(super) fn verify_ecdsa_ske_signature(
+    pub(super) fn verify_ecdsa_ske_signature_parts(
         &self,
-        signed_data: &[u8],
+        ecdhe_params: &[u8],
         signature: &[u8],
     ) -> TlsResult<()> {
         let pubkey_bytes = match &self.server_public_key {
@@ -732,7 +720,11 @@ impl TlsConnection {
                 .ok_or(TlsError::CertificateError)?,
             _ => return Err(TlsError::CertificateError),
         };
-        let digest = crate::crypto::sha256::compute(signed_data);
+        let mut hasher = crate::crypto::sha256::Sha256::new();
+        hasher.update(&self.client_random);
+        hasher.update(&self.server_random);
+        hasher.update(ecdhe_params);
+        let digest = hasher.finalize();
         ecdh::p256::ecdsa_p256_verify(pubkey_bytes, &digest, signature)
             .map_err(|_| TlsError::CryptoError)
     }
@@ -740,17 +732,17 @@ impl TlsConnection {
     /// 署名アルゴリズムに応じたSKE署名検証ディスパッチ
     pub(super) fn verify_ske_sig_dispatch(
         &self,
-        signed_data: &[u8],
+        ecdhe_params: &[u8],
         sig_algorithm: u16,
         signature: &[u8],
     ) -> TlsResult<()> {
         match sig_algorithm {
             // RSA-PKCS1-SHA256 (0x0401)
-            0x0401 => self.verify_rsa_ske_signature(signed_data, signature, 2), // 2 = SHA256
+            0x0401 => self.verify_rsa_ske_signature_parts(ecdhe_params, signature, 2), // 2 = SHA256
             // RSA-PKCS1-SHA384 (0x0501)
-            0x0501 => self.verify_rsa_ske_signature(signed_data, signature, 3), // 3 = SHA384
+            0x0501 => self.verify_rsa_ske_signature_parts(ecdhe_params, signature, 3), // 3 = SHA384
             // ECDSA-SECP256R1-SHA256 (0x0403)
-            0x0403 => self.verify_ecdsa_ske_signature(signed_data, signature),
+            0x0403 => self.verify_ecdsa_ske_signature_parts(ecdhe_params, signature),
             // Security: SHA-1 (0x0201) is deprecated and removed for security reasons.
             _ => Err(TlsError::UnsupportedCipherSuite),
         }
@@ -778,13 +770,6 @@ impl TlsConnection {
 
         // 署名対象: client_random || server_random || ecdhe_params
         let ecdhe_params = &data[..ecdhe_params_end];
-        let mut signed_data = [0u8; 64];
-        signed_data[..32].copy_from_slice(&self.client_random);
-        signed_data[32..64].copy_from_slice(&self.server_random);
-        let mut combined = Vec::with_capacity(signed_data.len() + ecdhe_params.len());
-        combined.extend_from_slice(&signed_data);
-        combined.extend_from_slice(ecdhe_params);
-
-        self.verify_ske_sig_dispatch(&combined, sig_algorithm, signature)
+        self.verify_ske_sig_dispatch(ecdhe_params, sig_algorithm, signature)
     }
 }

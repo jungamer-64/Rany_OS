@@ -77,7 +77,17 @@ impl NetworkStack {
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
-            match self.resolve_mac(if_id, dst_ip, config, current_time) {
+            match self.resolve_arp_for_send(if_id, dst_ip, current_time, |pending| {
+                pending.enqueue_udp(
+                    src_ip,
+                    dst_ip,
+                    src_port,
+                    dst_port,
+                    ttl,
+                    payload.payload().clone(),
+                    current_time,
+                );
+            }) {
                 Some(mac) => mac,
                 None => return false,
             }
@@ -172,9 +182,23 @@ impl NetworkStack {
         &mut self,
         if_id: Option<super::NetIfId>,
         dst_ip: Ipv4Address,
-        config: &NetworkConfig,
+        _config: &NetworkConfig,
         current_time: u64,
     ) -> Option<MacAddress> {
+        self.resolve_arp_for_send(if_id, dst_ip, current_time, |_| {})
+    }
+
+    /// Resolve IP to MAC address with pending queue support
+    pub(crate) fn resolve_arp_for_send<F>(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        dst_ip: Ipv4Address,
+        current_time: u64,
+        queue_pending: F,
+    ) -> Option<MacAddress>
+    where
+        F: FnOnce(&mut crate::net::runtime::stack::ArpPendingQueue),
+    {
         // RFC 1122: Loopback address MUST NOT be sent to a physical interface.
         if dst_ip.is_loopback() {
             return None;
@@ -190,8 +214,10 @@ impl NetworkStack {
             return Some(multicast_ip_to_mac(dst_ip));
         }
 
+        let config = self.config.clone(); // Clone to avoid borrow issues
+
         // Determine next hop, considering ICMP Redirect cache
-        let next_hop = self.resolve_ipv4_next_hop_on(if_id, dst_ip, config, current_time)?;
+        let next_hop = self.resolve_ipv4_next_hop_on(if_id, dst_ip, &config, current_time)?;
 
         // Look up in ARP cache
         if let Some(if_id) = if_id {
@@ -199,6 +225,7 @@ impl NetworkStack {
                 return match state.arp.resolve(next_hop, current_time) {
                     Some(mac) => Some(mac),
                     None => {
+                        queue_pending(&mut state.arp_pending_queue);
                         self.send_arp_request_on(if_id, next_hop);
                         None
                     }
@@ -209,6 +236,7 @@ impl NetworkStack {
         match self.arp.resolve(next_hop, current_time) {
             Some(mac) => Some(mac),
             None => {
+                queue_pending(&mut self.arp_pending_queue);
                 self.send_arp_request(next_hop);
                 None
             }

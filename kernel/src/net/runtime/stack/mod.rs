@@ -285,6 +285,8 @@ pub struct NetworkStack {
     pub current_time: AtomicU64,
     /// ICMP Redirect cache
     pub redirect_cache: RedirectCache,
+    /// Pending IPv4 packets awaiting ARP resolution
+    pub arp_pending_queue: ArpPendingQueue,
     /// Pending IPv6 packets awaiting NDP resolution
     pub ndp_pending_queue: NdpPendingQueue,
     /// IPv6 fragment reassembler
@@ -306,6 +308,7 @@ pub struct InterfaceStackState {
     pub ndp: Option<NdpProcessor>,
     pub stats: NetworkStats,
     pub redirect_cache: RedirectCache,
+    pub arp_pending_queue: ArpPendingQueue,
     pub ndp_pending_queue: NdpPendingQueue,
     pub ipv6_fragment_reassembler: Ipv6FragmentReassembler,
     pub ipv6_pmtu_cache: Ipv6PmtuCache,
@@ -338,6 +341,7 @@ impl InterfaceStackState {
             stats: NetworkStats::default(),
             config,
             redirect_cache: RedirectCache::new(),
+            arp_pending_queue: ArpPendingQueue::new(),
             ndp_pending_queue: NdpPendingQueue::new(),
             ipv6_fragment_reassembler: Ipv6FragmentReassembler::new(
                 Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS,
@@ -503,5 +507,170 @@ impl NdpPendingQueue {
     fn expire(&mut self, current_time: u64) {
         self.packets
             .retain(|pkt| current_time.saturating_sub(pkt.queued_at) < NDP_PENDING_TIMEOUT_MS);
+    }
+}
+
+/// ARP解決待ちパケットキュー
+///
+/// IPv4パケット送信時にARP解決が未完了の場合、パケットをキューに
+/// 保管し、ARP Reply受信時に自動的に送信を再試行する。
+const ARP_PENDING_QUEUE_SIZE: usize = 16;
+const ARP_PENDING_TIMEOUT_MS: u64 = 3000; // 3秒タイムアウト
+
+/// ARP解決待ちペイロード
+#[derive(Clone)]
+pub(crate) enum PendingIpv4Payload {
+    Icmpv4(PacketPayload),
+    Udp {
+        src_port: u16,
+        dst_port: u16,
+        ttl: u8,
+        data: PacketPayload,
+    },
+    Tcp {
+        ttl: u8,
+        segment: PacketPayload,
+    },
+    Raw {
+        protocol: IpProtocol,
+        ttl: u8,
+        payload: PacketPayload,
+    },
+}
+
+/// ARP解決待ちパケット
+#[derive(Clone)]
+pub(crate) struct PendingIpv4Packet {
+    /// 送信先IPv4アドレス
+    dst: Ipv4Address,
+    /// 送信元IPv4アドレス
+    src: Ipv4Address,
+    /// 保留中の上位レイヤーペイロード
+    payload: PendingIpv4Payload,
+    /// キューイング時刻
+    queued_at: u64,
+}
+
+/// ARP解決待ちキュー
+pub struct ArpPendingQueue {
+    packets: VecDeque<PendingIpv4Packet>,
+}
+
+impl ArpPendingQueue {
+    fn new() -> Self {
+        Self {
+            packets: VecDeque::new(),
+        }
+    }
+
+    /// パケットをキューに追加 (ICMP)
+    pub(crate) fn enqueue_icmp(
+        &mut self,
+        src: Ipv4Address,
+        dst: Ipv4Address,
+        data: PacketPayload,
+        current_time: u64,
+    ) {
+        if self.packets.len() >= ARP_PENDING_QUEUE_SIZE {
+            self.packets.pop_front();
+        }
+        self.packets.push_back(PendingIpv4Packet {
+            dst,
+            src,
+            payload: PendingIpv4Payload::Icmpv4(data),
+            queued_at: current_time,
+        });
+    }
+
+    /// パケットをキューに追加 (UDP)
+    pub(crate) fn enqueue_udp(
+        &mut self,
+        src: Ipv4Address,
+        dst: Ipv4Address,
+        src_port: u16,
+        dst_port: u16,
+        ttl: u8,
+        data: PacketPayload,
+        current_time: u64,
+    ) {
+        if self.packets.len() >= ARP_PENDING_QUEUE_SIZE {
+            self.packets.pop_front();
+        }
+        self.packets.push_back(PendingIpv4Packet {
+            dst,
+            src,
+            payload: PendingIpv4Payload::Udp {
+                src_port,
+                dst_port,
+                ttl,
+                data,
+            },
+            queued_at: current_time,
+        });
+    }
+
+    /// パケットをキューに追加 (TCP)
+    pub(crate) fn enqueue_tcp(
+        &mut self,
+        src: Ipv4Address,
+        dst: Ipv4Address,
+        ttl: u8,
+        segment: PacketPayload,
+        current_time: u64,
+    ) {
+        if self.packets.len() >= ARP_PENDING_QUEUE_SIZE {
+            self.packets.pop_front();
+        }
+        self.packets.push_back(PendingIpv4Packet {
+            dst,
+            src,
+            payload: PendingIpv4Payload::Tcp { ttl, segment },
+            queued_at: current_time,
+        });
+    }
+
+    /// パケットをキューに追加 (Raw)
+    pub(crate) fn enqueue_raw(
+        &mut self,
+        src: Ipv4Address,
+        dst: Ipv4Address,
+        protocol: IpProtocol,
+        ttl: u8,
+        payload: PacketPayload,
+        current_time: u64,
+    ) {
+        if self.packets.len() >= ARP_PENDING_QUEUE_SIZE {
+            self.packets.pop_front();
+        }
+        self.packets.push_back(PendingIpv4Packet {
+            dst,
+            src,
+            payload: PendingIpv4Payload::Raw {
+                protocol,
+                ttl,
+                payload,
+            },
+            queued_at: current_time,
+        });
+    }
+
+    /// 指定アドレス宛のパケットを取り出す
+    pub(crate) fn drain_for(&mut self, dst: &Ipv4Address) -> Vec<PendingIpv4Packet> {
+        let mut matched = Vec::new();
+        self.packets.retain(|pkt| {
+            if pkt.dst == *dst {
+                matched.push(pkt.clone());
+                false
+            } else {
+                true
+            }
+        });
+        matched
+    }
+
+    /// タイムアウトしたパケットを削除
+    pub(crate) fn expire(&mut self, current_time: u64) {
+        self.packets
+            .retain(|pkt| current_time.saturating_sub(pkt.queued_at) < ARP_PENDING_TIMEOUT_MS);
     }
 }
