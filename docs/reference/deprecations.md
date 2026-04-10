@@ -118,6 +118,8 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: `Ipv4ProcessResult::ReassemblyTimeout` / `UnknownProtocol` now carry `PacketPayload` directly. Keep quoted/original packets packet-backed through ICMP error generation.
   - Stale endpoint event branch `NetworkEvent::ApplyIpv6Address` in handler-side fallback dispatch ❌ **removed**
     - Migration: `endpoint/event.rs` is the source of truth. Use the active DHCPv6 lease application event `DhcpV6ApplyLease` instead of reviving removed handler-only variants.
+  - Dead NAT ICMP bridge events (`NatIcmpTimeExceeded`, `NatIcmpDestUnreachable`) ❌ **removed**
+    - Migration: Emit packet-backed ICMP errors directly from the active runtime path instead of queueing byte-owned NAT compatibility events.
 
 - `kernel/src/net/services/dhcp`
   - Default-runtime wrappers (`init()`, `init_v6()`, `legacy_v4_client_lock()`, `legacy_v6_client_lock()`) ❌ **removed**

@@ -201,7 +201,7 @@ impl TlsConnection {
         let view = PacketPayloadView::new(payload);
         let len = view.total_len();
         let mut data = vec![0u8; len];
-        if view.copy_all_into(&mut data) != len {
+        if view.copy_range(0, &mut data) != len {
             return Err(TlsError::DecodeError);
         }
         Ok(data)

@@ -1,6 +1,6 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::alloc_packet_with_headroom;
+use crate::net::payload::{PacketPayloadBuilder, alloc_packet_with_headroom};
 use kernel_api::resource::net::{PacketChain, PacketPayload};
 
 // ============================================================================
@@ -54,8 +54,10 @@ pub struct FragmentBuffer {
     holes: Vec<FragmentHole>,
     /// Total datagram length (known when last fragment received)
     total_len: Option<u16>,
-    /// First fragment's full header (including options, up to 60 bytes)
-    first_header: Option<Vec<u8>>,
+    /// First fragment's full header bytes (including options, up to 60 bytes)
+    first_header: Option<[u8; 60]>,
+    /// Length of the stored first header
+    first_header_len: usize,
     /// First fragment's payload prefix (first 8 bytes for RFC 792 ICMP error)
     first_payload_prefix: Option<[u8; 8]>,
     /// Creation timestamp (for timeout)
@@ -100,6 +102,7 @@ impl FragmentBuffer {
             }],
             total_len: None,
             first_header: None,
+            first_header_len: 0,
             first_payload_prefix: None,
             created_at: timestamp,
             last_update: timestamp,
@@ -288,7 +291,13 @@ impl FragmentBuffer {
         fragment_offset: u16,
     ) {
         if fragment_offset == 0 && self.first_header.is_none() {
-            self.first_header = Some(header_data.to_vec());
+            if header_data.len() > 60 {
+                return;
+            }
+            let mut stored = [0u8; 60];
+            stored[..header_data.len()].copy_from_slice(header_data);
+            self.first_header = Some(stored);
+            self.first_header_len = header_data.len();
         }
     }
 
@@ -343,8 +352,9 @@ impl FragmentBuffer {
         }
 
         let total_len = self.total_len? as usize;
-        let header_data = self.first_header.as_ref()?;
-        let header_len = header_data.len();
+        let header_storage = self.first_header.as_ref()?;
+        let header_len = self.first_header_len;
+        let header_data = &header_storage[..header_len];
 
         // Check if reassembled length fits in IPv4 Total Length field (16 bits)
         if header_len + total_len > 65535 {
@@ -453,7 +463,7 @@ impl FragmentReassembler {
         payload: &[u8],
         payload_packet: Option<PacketRef>,
         current_time: u64,
-    ) -> (Option<PacketPayload>, Vec<(Ipv4Address, Vec<u8>)>) {
+    ) -> (Option<PacketPayload>, Vec<(Ipv4Address, PacketPayload)>) {
         self.stats.fragments_received += 1;
 
         let key = FragmentKey::from_header(header);
@@ -531,7 +541,7 @@ impl FragmentReassembler {
 
     /// Evict expired reassembly buffers
     /// Returns a list of (src, full_header_plus_payload_prefix) for buffers that had the first fragment
-    pub(super) fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv4Address, Vec<u8>)> {
+    pub(super) fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv4Address, PacketPayload)> {
         let mut expired_with_first = Vec::new();
         let mut expired_keys = Vec::new();
 
@@ -539,11 +549,21 @@ impl FragmentReassembler {
             if buf.is_expired(current_time) {
                 if let Some(ref header) = buf.first_header {
                     // RFC 792: Include IP header + first 64 bits of data
-                    let mut quoted = header.clone();
-                    if let Some(prefix) = buf.first_payload_prefix {
-                        quoted.extend_from_slice(&prefix);
+                    let mut builder = PacketPayloadBuilder::new();
+                    if builder
+                        .push_bytes(&header[..buf.first_header_len])
+                        .is_none()
+                    {
+                        expired_keys.push(*key);
+                        continue;
                     }
-                    expired_with_first.push((key.src, quoted));
+                    if let Some(prefix) = buf.first_payload_prefix {
+                        if builder.push_bytes(&prefix).is_none() {
+                            expired_keys.push(*key);
+                            continue;
+                        }
+                    }
+                    expired_with_first.push((key.src, builder.build()));
                 }
                 expired_keys.push(*key);
             }

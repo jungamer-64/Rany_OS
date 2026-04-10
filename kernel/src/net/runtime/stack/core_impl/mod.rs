@@ -302,7 +302,7 @@ impl NetworkStack {
         if frame_payload.len() < total_len {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
-        if payload.copy_all_into(&mut frame_payload[..total_len]) != total_len {
+        if payload.copy_range(0, &mut frame_payload[..total_len]) != total_len {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
         frame.set_payload_len(total_len);
@@ -438,7 +438,7 @@ impl NetworkStack {
         if frame_payload.len() < total_len {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
-        if payload.copy_all_into(&mut frame_payload[..total_len]) != total_len {
+        if payload.copy_range(0, &mut frame_payload[..total_len]) != total_len {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
         frame.set_payload_len(total_len);

@@ -533,6 +533,15 @@ impl NetworkEventHandler {
                 let udp_segment_payload = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
                 });
+                let original_packet = if let Some(packet) = ip_packet.clone() {
+                    PacketPayload::single(packet)
+                } else {
+                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                    let Some(()) = builder.push_bytes(orig) else {
+                        return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                    };
+                    builder.build()
+                };
                 self.handle_udp_ingress_with_stack(
                     runtime,
                     if_id,
@@ -542,7 +551,7 @@ impl NetworkEventHandler {
                     udp_segment_payload,
                     data.get(8).copied().unwrap_or(64),
                     stack,
-                    orig,
+                    original_packet,
                     current_time,
                 );
             }

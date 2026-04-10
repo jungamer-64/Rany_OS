@@ -72,12 +72,7 @@ impl Ipv4Processor {
             Ipv4ProcessResult::Reassembled(data)
         } else if let Some((src, header_data)) = expired.into_iter().next() {
             // Return the first expired buffer for ICMP processing
-            let mut builder = PacketPayloadBuilder::new();
-            let Some(quoted_header) = builder.push_bytes(&header_data).map(|()| builder.build())
-            else {
-                return Ipv4ProcessResult::Error;
-            };
-            Ipv4ProcessResult::ReassemblyTimeout(src, quoted_header)
+            Ipv4ProcessResult::ReassemblyTimeout(src, header_data)
         } else {
             // Still waiting for more fragments
             Ipv4ProcessResult::FragmentPending

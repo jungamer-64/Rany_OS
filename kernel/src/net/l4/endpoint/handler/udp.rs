@@ -23,7 +23,7 @@ impl NetworkEventHandler {
         udp_segment_payload: Option<PacketPayload>,
         ttl: u8,
         stack: &mut crate::net::runtime::stack::NetworkStack,
-        original_packet: &[u8],
+        original_packet: PacketPayload,
         current_time: u64,
     ) -> EventHandleResult {
         if payload.len() < 8 {
@@ -74,20 +74,13 @@ impl NetworkEventHandler {
 
             // Only send if it wasn't broadcast/multicast (RFC 1122)
             if !dst_v4.is_broadcast() && !dst_v4.is_multicast() {
-                if let Some(original_packet) =
-                    crate::net::payload::packet_from_bytes(original_packet)
-                        .map(kernel_api::resource::net::PacketPayload::single)
-                {
-                    stack.send_icmp_error_payload(
-                        src_v4,
-                        DestUnreachCode::PortUnreachable,
-                        None,
-                        &original_packet,
-                        current_time,
-                    );
-                } else {
-                    stack.stats.record_rx_error();
-                }
+                stack.send_icmp_error_payload(
+                    src_v4,
+                    DestUnreachCode::PortUnreachable,
+                    None,
+                    &original_packet,
+                    current_time,
+                );
             }
         }
 

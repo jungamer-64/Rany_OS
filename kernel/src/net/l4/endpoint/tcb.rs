@@ -506,11 +506,12 @@ impl TcbTable {
                                     drop(manager);
                                     let payload = alloc::vec![probe_byte];
                                     let seq = entry.snd_nxt;
-                                    let Some(payload_packet) =
-                                        crate::net::payload::payload_from_bytes(&payload)
-                                    else {
+                                    let mut builder =
+                                        crate::net::payload::PacketPayloadBuilder::new();
+                                    let Some(()) = builder.push_bytes(&payload) else {
                                         continue;
                                     };
+                                    let payload_packet = builder.build();
                                     let mut builder =
                                         TcpSegmentBuilder::new(key.0.port(), key.1.port())
                                             .seq(seq)
@@ -543,10 +544,10 @@ impl TcbTable {
                                             .inner()
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(payload) =
-                                            crate::net::payload::payload_from_bytes(&[probe_byte])
-                                        {
-                                            inner.push_send_payload_front(payload);
+                                        let mut builder =
+                                            crate::net::payload::PacketPayloadBuilder::new();
+                                        if builder.push_bytes(&[probe_byte]).is_some() {
+                                            inner.push_send_payload_front(builder.build());
                                         }
                                     }
                                 }

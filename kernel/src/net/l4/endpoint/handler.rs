@@ -478,12 +478,6 @@ impl NetworkEventHandler {
             // ================================================================
             // NAT forwarding events (with stack)
             // ================================================================
-            nat_event @ NetworkEvent::NatIcmpTimeExceeded { .. } => {
-                self.handle_nat_event_with_stack(nat_event, stack)
-            }
-            nat_event @ NetworkEvent::NatIcmpDestUnreachable { .. } => {
-                self.handle_nat_event_with_stack(nat_event, stack)
-            }
             nat_event @ NetworkEvent::NatForwardUdp { .. } => {
                 self.handle_nat_event_with_stack(nat_event, stack)
             }

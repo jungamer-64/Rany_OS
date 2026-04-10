@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use super::tcb::tcp_flags;
 use super::types::{EndpointAddr, EndpointError};
-use crate::net::payload::PacketPayloadView;
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload, PacketRef};
 
 #[inline]
@@ -55,7 +55,7 @@ impl TcpSegmentPayload {
             Self::Empty => {}
             Self::Packet(payload) => {
                 let view = PacketPayloadView::new(payload);
-                let copied = view.copy_all_into(dst);
+                let copied = view.copy_range(0, dst);
                 debug_assert_eq!(copied, view.total_len());
             }
         }
@@ -134,8 +134,9 @@ impl TcpSegmentBuilder {
 
     /// データ設定
     pub fn payload(mut self, data: &[u8]) -> Self {
-        if let Some(payload) = crate::net::payload::payload_from_bytes(data) {
-            self.data = TcpSegmentPayload::Packet(payload);
+        let mut builder = PacketPayloadBuilder::new();
+        if builder.push_bytes(data).is_some() {
+            self.data = TcpSegmentPayload::Packet(builder.build());
         }
         self
     }
@@ -214,6 +215,7 @@ impl TcpSegmentBuilder {
         }
     }
 
+    #[cfg(any(test, feature = "qemu-test-export"))]
     pub fn build(mut self) -> Vec<u8> {
         self.pad_options();
         if self.options.len() > 40 {

@@ -2,7 +2,7 @@
 // tls/types.rs - TLS Type Definitions
 // ============================================================================
 
-use crate::net::payload::{PayloadSpan, payload_from_bytes};
+use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -561,7 +561,9 @@ impl Certificate {
 
     /// DERデータから作成
     pub fn from_der_bytes(der: &[u8]) -> Option<Self> {
-        Some(Self::from_der_payload(payload_from_bytes(der)?))
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_bytes(der)?;
+        Some(Self::from_der_payload(builder.build()))
     }
 
     /// PEMから作成（簡易パース）
