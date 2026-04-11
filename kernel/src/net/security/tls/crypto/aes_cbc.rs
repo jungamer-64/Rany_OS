@@ -7,7 +7,6 @@ use super::aes_core::{
     AesRoundKeySchedule, aes_add_round_key, aes_encrypt_block_with_schedule,
     aes_expand_key_schedule, gf_mul,
 };
-use alloc::vec::Vec;
 
 /// AES Inverse S-box (復号用)
 const AES_INV_SBOX: [u8; 256] = [
@@ -100,17 +99,16 @@ fn aes_decrypt_block_with_schedule(block: &[u8; 16], schedule: &AesRoundKeySched
 ///
 /// 入力はパディング済み（16バイトの倍数）であること。
 /// C[i] = AES_Encrypt(P[i] XOR C[i-1]), C[-1] = IV
-pub(crate) fn aes_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
-    let Some(schedule) = aes_expand_key_schedule(key) else {
-        return Vec::new();
-    };
-
-    let mut ciphertext = Vec::with_capacity(plaintext.len());
+pub(crate) fn aes_cbc_encrypt_in_place(key: &[u8], iv: &[u8; 16], data: &mut [u8]) -> Option<()> {
+    if data.is_empty() || data.len() % 16 != 0 {
+        return None;
+    }
+    let schedule = aes_expand_key_schedule(key)?;
     let mut prev_block = *iv;
 
-    for chunk in plaintext.chunks(16) {
+    for chunk in data.chunks_mut(16) {
         let mut block = [0u8; 16];
-        block[..chunk.len()].copy_from_slice(chunk);
+        block.copy_from_slice(chunk);
 
         // XOR with previous ciphertext block
         for j in 0..16 {
@@ -118,28 +116,26 @@ pub(crate) fn aes_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Ve
         }
 
         let encrypted = aes_encrypt_block_with_schedule(&block, &schedule);
-        ciphertext.extend_from_slice(&encrypted);
+        chunk.copy_from_slice(&encrypted);
         prev_block = encrypted;
     }
 
-    ciphertext
+    Some(())
 }
 
 /// AES-CBC復号
 ///
 /// P[i] = AES_Decrypt(C[i]) XOR C[i-1], C[-1] = IV
 /// パディングは呼び出し側で検証・除去する。
-pub(crate) fn aes_cbc_decrypt(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> Option<Vec<u8>> {
-    if ciphertext.len() % 16 != 0 || ciphertext.is_empty() {
+pub(crate) fn aes_cbc_decrypt_in_place(key: &[u8], iv: &[u8; 16], data: &mut [u8]) -> Option<()> {
+    if data.len() % 16 != 0 || data.is_empty() {
         return None;
     }
 
     let schedule = aes_expand_key_schedule(key)?;
-
-    let mut plaintext = Vec::with_capacity(ciphertext.len());
     let mut prev_block = *iv;
 
-    for chunk in ciphertext.chunks(16) {
+    for chunk in data.chunks_mut(16) {
         let mut ct_block = [0u8; 16];
         ct_block.copy_from_slice(chunk);
 
@@ -150,11 +146,11 @@ pub(crate) fn aes_cbc_decrypt(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> O
             decrypted[j] ^= prev_block[j];
         }
 
-        plaintext.extend_from_slice(&decrypted);
+        chunk.copy_from_slice(&decrypted);
         prev_block = ct_block;
     }
 
-    Some(plaintext)
+    Some(())
 }
 
 /// TLSパディング追加 (RFC 5246 Section 6.2.3.2)
@@ -162,15 +158,22 @@ pub(crate) fn aes_cbc_decrypt(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> O
 /// padding_length = block_size - ((data_len) % block_size) - 1 の場合もあるが、
 /// TLSでは: padding = [pad_val; pad_val + 1] where pad_val = block_size - 1 - (data_len % block_size)
 /// 各パディングバイトの値 = パディング長 - 1
-pub(crate) fn tls_add_padding(data: &[u8], block_size: usize) -> Vec<u8> {
-    let pad_len = block_size - (data.len() % block_size);
-    let pad_byte = (pad_len - 1) as u8;
-    let mut result = Vec::with_capacity(data.len() + pad_len);
-    result.extend_from_slice(data);
-    for _ in 0..pad_len {
-        result.push(pad_byte);
+pub(crate) fn tls_add_padding_in_place(
+    buffer: &mut [u8],
+    data_len: usize,
+    block_size: usize,
+) -> Option<usize> {
+    if block_size == 0 || data_len > buffer.len() {
+        return None;
     }
-    result
+    let pad_len = block_size - (data_len % block_size);
+    let total_len = data_len.checked_add(pad_len)?;
+    if total_len > buffer.len() {
+        return None;
+    }
+    let pad_byte = (pad_len - 1) as u8;
+    buffer[data_len..total_len].fill(pad_byte);
+    Some(total_len)
 }
 
 /// TLSパディング検証 (定時間)

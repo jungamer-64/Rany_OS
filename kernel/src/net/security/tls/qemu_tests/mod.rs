@@ -3,11 +3,18 @@
 // ============================================================================
 use super::*;
 
-fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+fn payload_bytes(
+    payload: &kernel_api::resource::net::PacketPayload,
+) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
-    let mut bytes = alloc::vec![0u8; view.total_len()];
-    let copied = view.copy_all_into(&mut bytes);
-    bytes.truncate(copied);
+    let mut bytes = TlsBytes::<16384>::new();
+    bytes
+        .set_filled_len(view.total_len())
+        .expect("qemu TLS payload fits fixed test buffer");
+    let copied = view.copy_all_into(bytes.as_mut_slice());
+    bytes
+        .set_filled_len(copied)
+        .expect("copied qemu TLS payload length stays in bounds");
     bytes
 }
 use crate::net::security::tls::connection::TlsConnection;
@@ -395,7 +402,10 @@ pub fn wave8_tls_tls13_initial_state_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
-    let config = TlsConfig::new().with_server_name("example.com");
+    let config = match TlsConfig::new().with_server_name("example.com") {
+        Ok(config) => config,
+        Err(_) => return false,
+    };
     let mut conn = TlsConnection::new(config);
     let hello = payload_bytes(&conn.build_client_hello_payload());
 

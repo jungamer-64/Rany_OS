@@ -1,7 +1,9 @@
 // tls/crypto/hkdf.rs - HKDF and TLS 1.3 Key Schedule (RFC 5869 / RFC 8446)
 
-use super::hmac::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, hmac_sha256, hmac_sha384};
-use alloc::vec::Vec;
+use super::hmac::{
+    SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, hmac_sha256, hmac_sha256_parts, hmac_sha384,
+    hmac_sha384_parts,
+};
 
 // ============================================================================
 // HKDF-SHA256 (RFC 5869)
@@ -29,31 +31,29 @@ pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; SHA256_OUTPUT_SIZE] {
 ///
 /// # Panics
 /// Panics if length > 255 * HashLen (8160 bytes for SHA-256)
-pub fn hkdf_expand(prk: &[u8; SHA256_OUTPUT_SIZE], info: &[u8], length: usize) -> Vec<u8> {
+pub fn hkdf_expand(prk: &[u8; SHA256_OUTPUT_SIZE], info: &[u8], output: &mut [u8]) {
     assert!(
-        length <= 255 * SHA256_OUTPUT_SIZE,
+        output.len() <= 255 * SHA256_OUTPUT_SIZE,
         "HKDF-Expand: requested length too large"
     );
 
-    let n = (length + SHA256_OUTPUT_SIZE - 1) / SHA256_OUTPUT_SIZE;
-    let mut okm = Vec::with_capacity(length);
-    let mut t_prev: Vec<u8> = Vec::new(); // T(0) = empty
+    let n = output.len().div_ceil(SHA256_OUTPUT_SIZE);
+    let mut offset = 0usize;
+    let mut t_prev = [0u8; SHA256_OUTPUT_SIZE];
 
     for i in 1..=n {
-        let mut input = Vec::with_capacity(t_prev.len() + info.len() + 1);
-        input.extend_from_slice(&t_prev);
-        input.extend_from_slice(info);
-        input.push(i as u8);
+        let counter = [i as u8];
+        let t_i = if offset == 0 {
+            hmac_sha256_parts(prk, &[info, &counter])
+        } else {
+            hmac_sha256_parts(prk, &[&t_prev, info, &counter])
+        };
 
-        let t_i = hmac_sha256(prk, &input);
-
-        let copy_len = (length - okm.len()).min(SHA256_OUTPUT_SIZE);
-        okm.extend_from_slice(&t_i[..copy_len]);
-
-        t_prev = t_i.to_vec();
+        let copy_len = (output.len() - offset).min(SHA256_OUTPUT_SIZE);
+        output[offset..offset + copy_len].copy_from_slice(&t_i[..copy_len]);
+        offset += copy_len;
+        t_prev = t_i;
     }
-
-    okm
 }
 
 /// HKDF-Expand-Label for TLS 1.3 (RFC 8446 Section 7.1)
@@ -70,28 +70,30 @@ pub fn hkdf_expand_label(
     secret: &[u8; SHA256_OUTPUT_SIZE],
     label: &[u8],
     context: &[u8],
-    length: usize,
-) -> Vec<u8> {
-    // Construct HkdfLabel
+    output: &mut [u8],
+) {
     let tls_label_prefix = b"tls13 ";
     let full_label_len = tls_label_prefix.len() + label.len();
+    assert!(output.len() <= u16::MAX as usize, "HKDF label length too large");
+    assert!(full_label_len <= u8::MAX as usize, "HKDF label label too large");
+    assert!(context.len() <= u8::MAX as usize, "HKDF label context too large");
 
-    let mut hkdf_label = Vec::with_capacity(2 + 1 + full_label_len + 1 + context.len());
+    let mut hkdf_label = [0u8; 514];
+    let mut offset = 0usize;
+    hkdf_label[offset..offset + 2].copy_from_slice(&(output.len() as u16).to_be_bytes());
+    offset += 2;
+    hkdf_label[offset] = full_label_len as u8;
+    offset += 1;
+    hkdf_label[offset..offset + tls_label_prefix.len()].copy_from_slice(tls_label_prefix);
+    offset += tls_label_prefix.len();
+    hkdf_label[offset..offset + label.len()].copy_from_slice(label);
+    offset += label.len();
+    hkdf_label[offset] = context.len() as u8;
+    offset += 1;
+    hkdf_label[offset..offset + context.len()].copy_from_slice(context);
+    offset += context.len();
 
-    // uint16 length
-    hkdf_label.push((length >> 8) as u8);
-    hkdf_label.push(length as u8);
-
-    // opaque label<7..255>
-    hkdf_label.push(full_label_len as u8);
-    hkdf_label.extend_from_slice(tls_label_prefix);
-    hkdf_label.extend_from_slice(label);
-
-    // opaque context<0..255>
-    hkdf_label.push(context.len() as u8);
-    hkdf_label.extend_from_slice(context);
-
-    hkdf_expand(secret, &hkdf_label, length)
+    hkdf_expand(secret, &hkdf_label[..offset], output)
 }
 
 // ============================================================================
@@ -109,9 +111,8 @@ pub fn tls13_derive_secret(
     label: &[u8],
     transcript_hash: &[u8; SHA256_OUTPUT_SIZE],
 ) -> [u8; SHA256_OUTPUT_SIZE] {
-    let result = hkdf_expand_label(secret, label, transcript_hash, SHA256_OUTPUT_SIZE);
     let mut output = [0u8; SHA256_OUTPUT_SIZE];
-    output.copy_from_slice(&result);
+    hkdf_expand_label(secret, label, transcript_hash, &mut output);
     output
 }
 
@@ -165,20 +166,19 @@ pub fn tls13_master_secret(
 /// traffic_iv  = HKDF-Expand-Label(Secret, "iv", "", iv_length=12)
 pub fn tls13_derive_traffic_keys(
     secret: &[u8; SHA256_OUTPUT_SIZE],
-    key_len: usize,
-) -> (Vec<u8>, Vec<u8>) {
-    let key = hkdf_expand_label(secret, b"key", b"", key_len);
-    let iv = hkdf_expand_label(secret, b"iv", b"", 12);
-    (key, iv)
+    key_out: &mut [u8],
+    iv_out: &mut [u8; 12],
+) {
+    hkdf_expand_label(secret, b"key", b"", key_out);
+    hkdf_expand_label(secret, b"iv", b"", iv_out);
 }
 
 /// TLS 1.3: Finished鍵を導出
 ///
 /// finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
 pub fn tls13_finished_key(base_key: &[u8; SHA256_OUTPUT_SIZE]) -> [u8; SHA256_OUTPUT_SIZE] {
-    let result = hkdf_expand_label(base_key, b"finished", b"", SHA256_OUTPUT_SIZE);
     let mut output = [0u8; SHA256_OUTPUT_SIZE];
-    output.copy_from_slice(&result);
+    hkdf_expand_label(base_key, b"finished", b"", &mut output);
     output
 }
 
@@ -207,31 +207,29 @@ pub fn hkdf_extract_sha384(salt: &[u8], ikm: &[u8]) -> [u8; SHA384_OUTPUT_SIZE] 
 }
 
 /// HKDF-Expand using SHA-384  (RFC 5869 Section 2.3)
-pub fn hkdf_expand_sha384(prk: &[u8; SHA384_OUTPUT_SIZE], info: &[u8], length: usize) -> Vec<u8> {
+pub fn hkdf_expand_sha384(prk: &[u8; SHA384_OUTPUT_SIZE], info: &[u8], output: &mut [u8]) {
     assert!(
-        length <= 255 * SHA384_OUTPUT_SIZE,
+        output.len() <= 255 * SHA384_OUTPUT_SIZE,
         "HKDF-Expand-SHA384: requested length too large"
     );
 
-    let n = (length + SHA384_OUTPUT_SIZE - 1) / SHA384_OUTPUT_SIZE;
-    let mut okm = Vec::with_capacity(length);
-    let mut t_prev: Vec<u8> = Vec::new();
+    let n = output.len().div_ceil(SHA384_OUTPUT_SIZE);
+    let mut offset = 0usize;
+    let mut t_prev = [0u8; SHA384_OUTPUT_SIZE];
 
     for i in 1..=n {
-        let mut input = Vec::with_capacity(t_prev.len() + info.len() + 1);
-        input.extend_from_slice(&t_prev);
-        input.extend_from_slice(info);
-        input.push(i as u8);
+        let counter = [i as u8];
+        let t_i = if offset == 0 {
+            hmac_sha384_parts(prk, &[info, &counter])
+        } else {
+            hmac_sha384_parts(prk, &[&t_prev, info, &counter])
+        };
 
-        let t_i = hmac_sha384(prk, &input);
-
-        let copy_len = (length - okm.len()).min(SHA384_OUTPUT_SIZE);
-        okm.extend_from_slice(&t_i[..copy_len]);
-
-        t_prev = t_i.to_vec();
+        let copy_len = (output.len() - offset).min(SHA384_OUTPUT_SIZE);
+        output[offset..offset + copy_len].copy_from_slice(&t_i[..copy_len]);
+        offset += copy_len;
+        t_prev = t_i;
     }
-
-    okm
 }
 
 /// HKDF-Expand-Label for TLS 1.3 using SHA-384 (RFC 8446 Section 7.1)
@@ -239,27 +237,30 @@ pub fn hkdf_expand_label_sha384(
     secret: &[u8; SHA384_OUTPUT_SIZE],
     label: &[u8],
     context: &[u8],
-    length: usize,
-) -> Vec<u8> {
+    output: &mut [u8],
+) {
     let tls_label_prefix = b"tls13 ";
     let full_label_len = tls_label_prefix.len() + label.len();
+    assert!(output.len() <= u16::MAX as usize, "HKDF label length too large");
+    assert!(full_label_len <= u8::MAX as usize, "HKDF label label too large");
+    assert!(context.len() <= u8::MAX as usize, "HKDF label context too large");
 
-    let mut hkdf_label = Vec::with_capacity(2 + 1 + full_label_len + 1 + context.len());
+    let mut hkdf_label = [0u8; 514];
+    let mut offset = 0usize;
+    hkdf_label[offset..offset + 2].copy_from_slice(&(output.len() as u16).to_be_bytes());
+    offset += 2;
+    hkdf_label[offset] = full_label_len as u8;
+    offset += 1;
+    hkdf_label[offset..offset + tls_label_prefix.len()].copy_from_slice(tls_label_prefix);
+    offset += tls_label_prefix.len();
+    hkdf_label[offset..offset + label.len()].copy_from_slice(label);
+    offset += label.len();
+    hkdf_label[offset] = context.len() as u8;
+    offset += 1;
+    hkdf_label[offset..offset + context.len()].copy_from_slice(context);
+    offset += context.len();
 
-    // uint16 length
-    hkdf_label.push((length >> 8) as u8);
-    hkdf_label.push(length as u8);
-
-    // opaque label<7..255>
-    hkdf_label.push(full_label_len as u8);
-    hkdf_label.extend_from_slice(tls_label_prefix);
-    hkdf_label.extend_from_slice(label);
-
-    // opaque context<0..255>
-    hkdf_label.push(context.len() as u8);
-    hkdf_label.extend_from_slice(context);
-
-    hkdf_expand_sha384(secret, &hkdf_label, length)
+    hkdf_expand_sha384(secret, &hkdf_label[..offset], output)
 }
 
 /// Derive-Secret using SHA-384 for TLS 1.3
@@ -268,9 +269,8 @@ pub fn tls13_derive_secret_sha384(
     label: &[u8],
     transcript_hash: &[u8; SHA384_OUTPUT_SIZE],
 ) -> [u8; SHA384_OUTPUT_SIZE] {
-    let result = hkdf_expand_label_sha384(secret, label, transcript_hash, SHA384_OUTPUT_SIZE);
     let mut output = [0u8; SHA384_OUTPUT_SIZE];
-    output.copy_from_slice(&result);
+    hkdf_expand_label_sha384(secret, label, transcript_hash, &mut output);
     output
 }
 
@@ -304,18 +304,17 @@ pub fn tls13_master_secret_sha384(
 /// TLS 1.3 トラフィック鍵導出 using SHA-384
 pub fn tls13_derive_traffic_keys_sha384(
     secret: &[u8; SHA384_OUTPUT_SIZE],
-    key_len: usize,
-) -> (Vec<u8>, Vec<u8>) {
-    let key = hkdf_expand_label_sha384(secret, b"key", b"", key_len);
-    let iv = hkdf_expand_label_sha384(secret, b"iv", b"", 12);
-    (key, iv)
+    key_out: &mut [u8],
+    iv_out: &mut [u8; 12],
+) {
+    hkdf_expand_label_sha384(secret, b"key", b"", key_out);
+    hkdf_expand_label_sha384(secret, b"iv", b"", iv_out);
 }
 
 /// TLS 1.3 Finished鍵導出 using SHA-384
 pub fn tls13_finished_key_sha384(base_key: &[u8; SHA384_OUTPUT_SIZE]) -> [u8; SHA384_OUTPUT_SIZE] {
-    let result = hkdf_expand_label_sha384(base_key, b"finished", b"", SHA384_OUTPUT_SIZE);
     let mut output = [0u8; SHA384_OUTPUT_SIZE];
-    output.copy_from_slice(&result);
+    hkdf_expand_label_sha384(base_key, b"finished", b"", &mut output);
     output
 }
 

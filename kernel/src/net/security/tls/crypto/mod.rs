@@ -33,16 +33,19 @@ pub use prf::{
 // ── AES Core ─────────────────────────────────────────────────────────────────
 
 // ── AES-GCM ──────────────────────────────────────────────────────────────────
-pub(crate) use aes_gcm::{aes_gcm_decrypt, aes_gcm_encrypt};
+pub(crate) use aes_gcm::{aes_gcm_decrypt_into, aes_gcm_encrypt_into};
 
 // ── AES-CBC ──────────────────────────────────────────────────────────────────
-pub(crate) use aes_cbc::{aes_cbc_decrypt, aes_cbc_encrypt, tls_add_padding, tls_verify_padding};
+pub(crate) use aes_cbc::{
+    aes_cbc_decrypt_in_place, aes_cbc_encrypt_in_place, tls_add_padding_in_place,
+    tls_verify_padding,
+};
 
 // ── ChaCha20-Poly1305 ────────────────────────────────────────────────────────
-pub use chacha20::{chacha20_poly1305_decrypt, chacha20_poly1305_encrypt};
+pub use chacha20::{chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place};
 
 // ── Legacy (MD5, SHA-1, TLS 1.0) ────────────────────────────────────────────
-pub(crate) use legacy::compute_tls_mac;
+pub(crate) use legacy::compute_tls_mac_into;
 pub use legacy::tls10_prf;
 
 // ── Random ───────────────────────────────────────────────────────────────────

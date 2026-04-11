@@ -21,8 +21,6 @@
 // Building block: RSA implementation
 #![allow(dead_code)]
 
-use alloc::vec;
-use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 // ============================================================================
@@ -36,6 +34,7 @@ use core::cmp::Ordering;
 mod pss_verify;
 pub use pss_verify::*;
 const MAX_LIMBS: usize = 128;
+pub const RSA_MAX_BYTES: usize = MAX_LIMBS * 8;
 
 /// 多倍長符号なし整数（リトルエンディアン u64 リム表現）
 #[derive(Clone, Copy)]
@@ -90,34 +89,40 @@ impl BigUint {
         }
     }
 
-    /// ビッグエンディアンバイト列へ変換
-    pub fn to_be_bytes(&self) -> Vec<u8> {
+    pub fn encoded_len(&self) -> usize {
         if self.is_zero() {
-            return vec![0u8];
+            1
+        } else {
+            self.bit_len().div_ceil(8)
         }
+    }
 
-        let bits = self.bit_len();
-        let byte_count = (bits + 7) / 8;
-        let mut result = vec![0u8; byte_count];
-
+    /// ビッグエンディアンバイト列を caller-owned buffer に書き込む
+    pub fn write_be_bytes(&self, out: &mut [u8]) -> Option<usize> {
+        let byte_count = self.encoded_len();
+        if out.len() < byte_count {
+            return None;
+        }
+        out[..byte_count].fill(0);
         for i in 0..byte_count {
             let limb_idx = i / 8;
             let byte_pos = i % 8;
-            result[byte_count - 1 - i] = (self.limbs[limb_idx] >> (byte_pos * 8)) as u8;
+            out[byte_count - 1 - i] = (self.limbs[limb_idx] >> (byte_pos * 8)) as u8;
         }
-
-        result
+        Some(byte_count)
     }
 
-    /// 指定バイト長にゼロパディングしたビッグエンディアンバイト列を返す
-    pub fn to_be_bytes_padded(&self, target_len: usize) -> Vec<u8> {
-        let raw = self.to_be_bytes();
-        if raw.len() >= target_len {
-            return raw[raw.len() - target_len..].to_vec();
+    /// 指定バイト長にゼロパディングしたビッグエンディアン表現を書き込む
+    pub fn write_be_bytes_padded(&self, out: &mut [u8]) {
+        out.fill(0);
+        for i in 0..out.len() {
+            let limb_idx = i / 8;
+            let byte_pos = i % 8;
+            if limb_idx >= self.len {
+                break;
+            }
+            out[out.len() - 1 - i] = (self.limbs[limb_idx] >> (byte_pos * 8)) as u8;
         }
-        let mut padded = vec![0u8; target_len - raw.len()];
-        padded.extend_from_slice(&raw);
-        padded
     }
 
     /// ゼロ判定
@@ -500,15 +505,22 @@ pub fn rsa_pkcs1_verify(
         return Err(RsaError::InvalidSignatureValue);
     }
     let m = s.mod_exp(&e, &n);
-    let em = m.to_be_bytes_padded(k);
+    let mut em = [0u8; RSA_MAX_BYTES];
+    let em = &mut em[..k];
+    m.write_be_bytes_padded(em);
+    let em = &em[..];
     let sep = find_pkcs1_separator(&em)?;
     verify_digest_info(&em[sep + 1..], prefix, digest, t_len)
 }
 
-pub fn rsa_pkcs1_encrypt(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, RsaError> {
+pub fn rsa_pkcs1_encrypt_into(
+    key: &RsaPublicKey,
+    message: &[u8],
+    ciphertext_out: &mut [u8],
+) -> Result<usize, RsaError> {
     let k = key.modulus.len();
     // Security: Limit modulus size to prevent DoS via large allocations.
-    if k > 1024 {
+    if k > RSA_MAX_BYTES || ciphertext_out.len() < k {
         return Err(RsaError::ModulusTooSmall);
     }
 
@@ -516,16 +528,19 @@ pub fn rsa_pkcs1_encrypt(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, 
         return Err(RsaError::ModulusTooSmall);
     }
     let ps_len = k - 3 - message.len();
-    let mut em = Vec::with_capacity(k);
-    em.push(0x00);
-    em.push(0x02);
+    let mut em = [0u8; RSA_MAX_BYTES];
+    let em = &mut em[..k];
+    em[0] = 0x00;
+    em[1] = 0x02;
+    let mut offset = 2usize;
     let mut ps_remaining = ps_len;
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while ps_remaining > 0 {
         let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         for &b in &random_bytes {
             if b != 0 {
-                em.push(b);
+                em[offset] = b;
+                offset += 1;
                 ps_remaining -= 1;
                 if ps_remaining == 0 {
                     break;
@@ -533,16 +548,18 @@ pub fn rsa_pkcs1_encrypt(key: &RsaPublicKey, message: &[u8]) -> Result<Vec<u8>, 
             }
         }
     }
-    em.push(0x00);
-    em.extend_from_slice(message);
+    em[offset] = 0x00;
+    offset += 1;
+    em[offset..offset + message.len()].copy_from_slice(message);
     let n = BigUint::from_be_bytes(key.modulus);
     let e = BigUint::from_be_bytes(key.exponent);
-    let m = BigUint::from_be_bytes(&em);
+    let m = BigUint::from_be_bytes(em);
     if m >= n {
         return Err(RsaError::InvalidSignatureValue);
     }
     let c = m.mod_exp(&e, &n);
-    Ok(c.to_be_bytes_padded(k))
+    c.write_be_bytes_padded(&mut ciphertext_out[..k]);
+    Ok(k)
 }
 
 fn find_pss_padding_separator(db: &[u8]) -> Result<usize, RsaError> {
@@ -564,14 +581,15 @@ fn unmask_db(
     hash_alg: HashAlgorithm,
     em_len: usize,
     k: usize,
-) -> Vec<u8> {
-    let db_mask = mgf1(h, db_len, hash_alg);
-    let mut db = Vec::with_capacity(db_len);
+) -> [u8; RSA_MAX_BYTES] {
+    let mut db_mask = [0u8; RSA_MAX_BYTES];
+    mgf1_into(h, &mut db_mask[..db_len], hash_alg);
+    let mut db = [0u8; RSA_MAX_BYTES];
     for i in 0..db_len {
-        db.push(masked_db[i] ^ db_mask[i]);
+        db[i] = masked_db[i] ^ db_mask[i];
     }
     let top_bits = 8 * em_len - (k * 8 - 1).min(8 * em_len);
-    if top_bits < 8 && !db.is_empty() {
+    if top_bits < 8 && db_len != 0 {
         db[0] &= 0xFF >> top_bits;
     }
     db

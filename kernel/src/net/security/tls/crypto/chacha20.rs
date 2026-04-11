@@ -1,7 +1,5 @@
 // tls/crypto/chacha20.rs - ChaCha20-Poly1305 AEAD (RFC 8439)
 
-use alloc::vec::Vec;
-
 /// Security: Constant-time 16-byte tag comparison.
 /// Uses read_volatile and #[inline(never)] to prevent compiler optimizations
 /// that could introduce timing side-channels.
@@ -118,19 +116,16 @@ pub(crate) fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> 
 ///
 /// XOR data with ChaCha20 keystream. Works for both encryption and decryption
 /// since ChaCha20 is a stream cipher.
-pub fn chacha20_encrypt(key: &[u8; 32], nonce: &[u8; 12], counter: u32, data: &[u8]) -> Vec<u8> {
-    let mut result = Vec::with_capacity(data.len());
+pub fn chacha20_xor_in_place(key: &[u8; 32], nonce: &[u8; 12], counter: u32, data: &mut [u8]) {
     let mut block_counter = counter;
 
-    for chunk in data.chunks(64) {
+    for chunk in data.chunks_mut(64) {
         let keystream = chacha20_block(key, block_counter, nonce);
-        for (i, &byte) in chunk.iter().enumerate() {
-            result.push(byte ^ keystream[i]);
+        for (i, byte) in chunk.iter_mut().enumerate() {
+            *byte ^= keystream[i];
         }
         block_counter = block_counter.wrapping_add(1);
     }
-
-    result
 }
 
 /// Clamp r from key and return 26-bit limbs (r0..r4) and precomputed r*5 values.
@@ -348,48 +343,123 @@ fn poly1305_block_to_limbs(block: &[u8; 17]) -> [u64; 5] {
 /// The MAC input for AEAD is:
 ///   AAD || pad16(AAD) || ciphertext || pad16(ciphertext) ||
 ///   le64(aad_len) || le64(ciphertext_len)
-fn poly1305_aead_construct(aad: &[u8], ciphertext: &[u8]) -> Vec<u8> {
-    let aad_pad = (16 - (aad.len() % 16)) % 16;
-    let ct_pad = (16 - (ciphertext.len() % 16)) % 16;
+struct Poly1305State {
+    h: [u64; 5],
+    r: [u64; 5],
+    r5: [u64; 4],
+    key: [u8; 32],
+    block: [u8; 16],
+    block_len: usize,
+}
 
-    let total = aad.len() + aad_pad + ciphertext.len() + ct_pad + 16;
-    let mut mac_data = Vec::with_capacity(total);
+impl Poly1305State {
+    fn new(key: &[u8; 32]) -> Self {
+        let (r, r5) = poly1305_clamp_r(key);
+        Self {
+            h: [0u64; 5],
+            r,
+            r5,
+            key: *key,
+            block: [0u8; 16],
+            block_len: 0,
+        }
+    }
 
-    mac_data.extend_from_slice(aad);
-    mac_data.resize(mac_data.len() + aad_pad, 0);
+    fn process_full_block(&mut self, block: &[u8; 16]) {
+        let mut padded = [0u8; 17];
+        padded[..16].copy_from_slice(block);
+        padded[16] = 1;
+        let m = poly1305_block_to_limbs(&padded);
+        for (dst, src) in self.h.iter_mut().zip(m.iter()) {
+            *dst += *src;
+        }
+        poly1305_multiply_reduce(&mut self.h, &self.r, &self.r5);
+    }
 
-    mac_data.extend_from_slice(ciphertext);
-    mac_data.resize(mac_data.len() + ct_pad, 0);
+    fn update(&mut self, data: &[u8]) {
+        let mut offset = 0usize;
+        if self.block_len > 0 {
+            let take = (16 - self.block_len).min(data.len());
+            self.block[self.block_len..self.block_len + take].copy_from_slice(&data[..take]);
+            self.block_len += take;
+            offset += take;
+            if self.block_len == 16 {
+                let block = self.block;
+                self.process_full_block(&block);
+                self.block_len = 0;
+            }
+        }
 
-    mac_data.extend_from_slice(&(aad.len() as u64).to_le_bytes());
-    mac_data.extend_from_slice(&(ciphertext.len() as u64).to_le_bytes());
+        while offset + 16 <= data.len() {
+            let mut block = [0u8; 16];
+            block.copy_from_slice(&data[offset..offset + 16]);
+            self.process_full_block(&block);
+            offset += 16;
+        }
 
-    mac_data
+        if offset < data.len() {
+            let tail = &data[offset..];
+            self.block[..tail.len()].copy_from_slice(tail);
+            self.block_len = tail.len();
+        }
+    }
+
+    fn update_zero_padding(&mut self, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let zeros = [0u8; 16];
+        self.update(&zeros[..len]);
+    }
+
+    fn finalize(mut self) -> [u8; 16] {
+        if self.block_len > 0 {
+            let mut padded = [0u8; 17];
+            padded[..self.block_len].copy_from_slice(&self.block[..self.block_len]);
+            padded[self.block_len] = 1;
+            let m = poly1305_block_to_limbs(&padded);
+            for (dst, src) in self.h.iter_mut().zip(m.iter()) {
+                *dst += *src;
+            }
+            poly1305_multiply_reduce(&mut self.h, &self.r, &self.r5);
+        }
+        poly1305_final_reduce(&mut self.h);
+        poly1305_finalize(self.h, &self.key)
+    }
+}
+
+fn poly1305_aead_tag(poly_key: &[u8; 32], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
+    let mut state = Poly1305State::new(poly_key);
+    state.update(aad);
+    state.update_zero_padding((16 - (aad.len() % 16)) % 16);
+    state.update(ciphertext);
+    state.update_zero_padding((16 - (ciphertext.len() % 16)) % 16);
+    let mut lengths = [0u8; 16];
+    lengths[..8].copy_from_slice(&(aad.len() as u64).to_le_bytes());
+    lengths[8..].copy_from_slice(&(ciphertext.len() as u64).to_le_bytes());
+    state.update(&lengths);
+    state.finalize()
 }
 
 /// ChaCha20-Poly1305 AEAD encryption (RFC 8439 Section 2.8)
 ///
 /// # Returns
 /// (ciphertext, 16-byte authentication tag)
-pub fn chacha20_poly1305_encrypt(
+pub fn chacha20_poly1305_encrypt_in_place(
     key: &[u8; 32],
     nonce: &[u8; 12],
     aad: &[u8],
-    plaintext: &[u8],
-) -> (Vec<u8>, [u8; 16]) {
+    data: &mut [u8],
+    tag_out: &mut [u8; 16],
+) {
     // Generate Poly1305 one-time key from first ChaCha20 block (counter=0)
     let poly_key_block = chacha20_block(key, 0, nonce);
     let mut poly_key = [0u8; 32];
     poly_key.copy_from_slice(&poly_key_block[..32]);
 
     // Encrypt payload starting from counter=1
-    let ciphertext = chacha20_encrypt(key, nonce, 1, plaintext);
-
-    // Compute authentication tag
-    let mac_input = poly1305_aead_construct(aad, &ciphertext);
-    let tag = poly1305_mac(&poly_key, &mac_input);
-
-    (ciphertext, tag)
+    chacha20_xor_in_place(key, nonce, 1, data);
+    *tag_out = poly1305_aead_tag(&poly_key, aad, data);
 }
 
 /// ChaCha20-Poly1305 AEAD decryption (RFC 8439 Section 2.8)
@@ -397,29 +467,28 @@ pub fn chacha20_poly1305_encrypt(
 /// # Returns
 /// `Some(plaintext)` if authentication succeeds, `None` otherwise.
 /// Uses constant-time tag comparison to prevent timing attacks.
-pub fn chacha20_poly1305_decrypt(
+pub fn chacha20_poly1305_decrypt_in_place(
     key: &[u8; 32],
     nonce: &[u8; 12],
     aad: &[u8],
-    ciphertext: &[u8],
+    data: &mut [u8],
     tag: &[u8; 16],
-) -> Option<Vec<u8>> {
+) -> Result<(), ()> {
     // Generate Poly1305 one-time key from first ChaCha20 block (counter=0)
     let poly_key_block = chacha20_block(key, 0, nonce);
     let mut poly_key = [0u8; 32];
     poly_key.copy_from_slice(&poly_key_block[..32]);
 
     // Compute expected authentication tag
-    let mac_input = poly1305_aead_construct(aad, ciphertext);
-    let expected_tag = poly1305_mac(&poly_key, &mac_input);
+    let expected_tag = poly1305_aead_tag(&poly_key, aad, data);
 
     // Security: Constant-time tag comparison using read_volatile to prevent
     // compiler optimizations that could introduce timing side-channels.
     if !ct_eq_tag(tag, &expected_tag) {
-        return None; // Authentication failed
+        return Err(()); // Authentication failed
     }
 
     // Decrypt payload starting from counter=1
-    let plaintext = chacha20_encrypt(key, nonce, 1, ciphertext);
-    Some(plaintext)
+    chacha20_xor_in_place(key, nonce, 1, data);
+    Ok(())
 }

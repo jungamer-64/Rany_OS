@@ -320,19 +320,10 @@ pub mod p384 {
         let p_big = crate::net::security::rsa::BigUint::from_be_bytes(&p_bytes);
 
         let result = prod_big.rem(&p_big);
-        let result_bytes = result.to_be_bytes_padded(48);
+        let mut result_bytes = [0u8; 48];
+        result.write_be_bytes_padded(&mut result_bytes);
 
-        P384FieldElement::from_be_bytes(&{
-            let mut arr = [0u8; 48];
-            let len = result_bytes.len();
-            if len >= 48 {
-                arr.copy_from_slice(&result_bytes[len - 48..]);
-            } else {
-                arr[48 - len..].copy_from_slice(&result_bytes);
-            }
-            arr
-        })
-        .unwrap_or_else(|| P384FieldElement::from_limbs([0; 6]))
+        P384FieldElement::from_be_bytes(&result_bytes).unwrap_or_else(|| P384FieldElement::from_limbs([0; 6]))
     }
 
     // ========================================================================
@@ -628,16 +619,8 @@ pub mod p384 {
         let n_bytes = n_fe.to_be_bytes();
         let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
 
-        let rem = product.rem(&n_big);
-        let rem_bytes = rem.to_be_bytes_padded(48);
-
         let mut out = [0u8; 48];
-        let len = rem_bytes.len();
-        if len >= 48 {
-            out.copy_from_slice(&rem_bytes[len - 48..]);
-        } else {
-            out[48 - len..].copy_from_slice(&rem_bytes);
-        }
+        product.rem(&n_big).write_be_bytes_padded(&mut out);
         out
     }
 
@@ -649,14 +632,8 @@ pub mod p384 {
         let n_bytes = n_fe.to_be_bytes();
         let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
         let two_big = crate::net::security::rsa::BigUint::from_be_bytes(&[2]);
-        let nm2 = n_big.sub(&two_big);
-        let nm2_bytes = nm2.to_be_bytes();
-
         let mut exp = [0u8; 48];
-        if nm2_bytes.len() <= 48 {
-            let start = 48 - nm2_bytes.len();
-            exp[start..].copy_from_slice(&nm2_bytes);
-        }
+        n_big.sub(&two_big).write_be_bytes_padded(&mut exp);
 
         // a^(n-2) mod n をバイナリ法で計算
         scalar_pow_mod_n_384(a, &exp)
@@ -840,8 +817,8 @@ pub mod p384 {
         let n_bytes = n_fe.to_be_bytes();
         let rx_big = crate::net::security::rsa::BigUint::from_be_bytes(&rx_bytes);
         let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
-        let rx_mod_n = rx_big.rem(&n_big);
-        let rx_mod_n_bytes = rx_mod_n.to_be_bytes_padded(48);
+        let mut rx_mod_n_bytes = [0u8; 48];
+        rx_big.rem(&n_big).write_be_bytes_padded(&mut rx_mod_n_bytes);
 
         // r == r' ?
         if !constant_time_eq_48(&r_bytes, &rx_mod_n_bytes) {

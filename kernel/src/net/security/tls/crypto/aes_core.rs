@@ -4,8 +4,6 @@
 // AES暗号プリミティブ。全関数が直接呼び出されるわけではないが、
 // AES-CBC/AES-GCM等のモード実装で必要となるビルディングブロック。
 
-use alloc::vec::Vec;
-
 /// AES-128 Sbox
 pub(crate) const AES_SBOX: [u8; 256] = [
     0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
@@ -264,17 +262,19 @@ pub(crate) fn aes_encrypt_block_with_schedule(
 }
 
 /// AES-CTR with pre-expanded schedule.
-pub(crate) fn aes_ctr_with_schedule(
+pub(crate) fn aes_ctr_with_schedule_into(
     schedule: &AesRoundKeySchedule,
     nonce: &[u8],
     data: &[u8],
     initial_counter: u32,
-) -> Vec<u8> {
-    if nonce.len() != 12 {
-        return Vec::new();
+) -> Option<crate::net::security::tls::types::TlsBytes<20480>> {
+    if nonce.len() != 12 || data.len() > 20480 {
+        return None;
     }
 
-    let mut result = Vec::with_capacity(data.len());
+    let mut result = crate::net::security::tls::types::TlsBytes::<20480>::new();
+    result.append_zeroes(data.len())?;
+    let dst = &mut result.as_mut_storage()[..data.len()];
     let mut counter_block = [0u8; 16];
     counter_block[0..12].copy_from_slice(nonce);
 
@@ -287,11 +287,11 @@ pub(crate) fn aes_ctr_with_schedule(
         let keystream = aes_encrypt_block_with_schedule(&counter_block, schedule);
 
         for (i, &byte) in chunk.iter().enumerate() {
-            result.push(byte ^ keystream[i]);
+            dst[chunk_idx * 16 + i] = byte ^ keystream[i];
         }
     }
 
-    result
+    Some(result)
 }
 
 /// AES-CTR with pre-expanded schedule (In-place, no allocation).
@@ -323,9 +323,11 @@ pub(crate) fn aes_ctr_with_schedule_in_place(
 }
 
 /// AES-CTR モードでの暗号化/復号
-pub(crate) fn aes_ctr(key: &[u8], nonce: &[u8], data: &[u8]) -> Vec<u8> {
-    let Some(schedule) = aes_expand_key_schedule(key) else {
-        return Vec::new();
-    };
-    aes_ctr_with_schedule(&schedule, nonce, data, 1)
+pub(crate) fn aes_ctr_into(
+    key: &[u8],
+    nonce: &[u8],
+    data: &[u8],
+) -> Option<crate::net::security::tls::types::TlsBytes<20480>> {
+    let schedule = aes_expand_key_schedule(key)?;
+    aes_ctr_with_schedule_into(&schedule, nonce, data, 1)
 }

@@ -172,7 +172,9 @@ async fn send_over_tls_transport(
     request_payload: PacketPayload,
     parser: &mut HttpParser,
 ) -> Result<Option<HttpInboundResponse>, HttpClientError> {
-    let tls_config = TlsConfig::default().with_server_name(host);
+    let tls_config = TlsConfig::default()
+        .with_server_name(host)
+        .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
     let mut tls = Box::new(TlsConnection::new(tls_config));
 
     let client_hello = tls.build_client_hello_payload();

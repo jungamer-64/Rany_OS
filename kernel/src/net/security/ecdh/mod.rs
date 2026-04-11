@@ -16,7 +16,6 @@
 //! - 弱い鍵の自動検出・拒否
 //! - 秘密データの自動ワイプ（`DHOutput::Drop`）
 
-use alloc::vec::Vec;
 use ed25519_compact::x25519::{PublicKey as X25519PublicKey, SecretKey as X25519SecretKey};
 
 // ============================================================================

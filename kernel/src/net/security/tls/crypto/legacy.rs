@@ -1,9 +1,7 @@
 // tls/crypto/legacy.rs - Legacy Hash (MD5, SHA-1), HMAC, and TLS 1.0 PRF
 
-use super::hmac::hmac_sha256;
+use super::hmac::hmac_sha256_parts;
 use crate::net::security::tls::TlsVersion;
-use alloc::vec;
-use alloc::vec::Vec;
 
 // ============================================================================
 // MD5 Implementation (RFC 1321)
@@ -329,6 +327,10 @@ pub fn sha1_compute(data: &[u8]) -> [u8; 20] {
 
 /// HMAC-MD5 (RFC 2104)
 pub fn hmac_md5(key: &[u8], data: &[u8]) -> [u8; MD5_OUTPUT_SIZE] {
+    hmac_md5_parts(key, &[data])
+}
+
+fn hmac_md5_parts(key: &[u8], parts: &[&[u8]]) -> [u8; MD5_OUTPUT_SIZE] {
     let hashed_key;
     let key_bytes: &[u8] = if key.len() > MD5_BLOCK_SIZE {
         hashed_key = md5_compute(key);
@@ -347,7 +349,9 @@ pub fn hmac_md5(key: &[u8], data: &[u8]) -> [u8; MD5_OUTPUT_SIZE] {
 
     let mut inner = Md5::new();
     inner.update(&ipad);
-    inner.update(data);
+    for part in parts {
+        inner.update(part);
+    }
     let inner_hash = inner.finalize();
 
     let mut outer = Md5::new();
@@ -358,6 +362,10 @@ pub fn hmac_md5(key: &[u8], data: &[u8]) -> [u8; MD5_OUTPUT_SIZE] {
 
 /// HMAC-SHA1 (RFC 2104)
 pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; SHA1_OUTPUT_SIZE] {
+    hmac_sha1_parts(key, &[data])
+}
+
+fn hmac_sha1_parts(key: &[u8], parts: &[&[u8]]) -> [u8; SHA1_OUTPUT_SIZE] {
     let hashed_key;
     let key_bytes: &[u8] = if key.len() > SHA1_BLOCK_SIZE {
         hashed_key = sha1_compute(key);
@@ -376,7 +384,9 @@ pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; SHA1_OUTPUT_SIZE] {
 
     let mut inner = Sha1::new();
     inner.update(&ipad);
-    inner.update(data);
+    for part in parts {
+        inner.update(part);
+    }
     let inner_hash = inner.finalize();
 
     let mut outer = Sha1::new();
@@ -397,11 +407,7 @@ fn p_md5(secret: &[u8], seed: &[u8], output: &mut [u8]) {
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < output.len() {
-        let mut a_seed = Vec::with_capacity(a.len() + seed.len());
-        a_seed.extend_from_slice(&a);
-        a_seed.extend_from_slice(seed);
-
-        let block = hmac_md5(secret, &a_seed);
+        let block = hmac_md5_parts(secret, &[&a, seed]);
         let copy_len = (output.len() - offset).min(MD5_OUTPUT_SIZE);
         output[offset..offset + copy_len].copy_from_slice(&block[..copy_len]);
         offset += copy_len;
@@ -417,11 +423,7 @@ fn p_sha1(secret: &[u8], seed: &[u8], output: &mut [u8]) {
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while offset < output.len() {
-        let mut a_seed = Vec::with_capacity(a.len() + seed.len());
-        a_seed.extend_from_slice(&a);
-        a_seed.extend_from_slice(seed);
-
-        let block = hmac_sha1(secret, &a_seed);
+        let block = hmac_sha1_parts(secret, &[&a, seed]);
         let copy_len = (output.len() - offset).min(SHA1_OUTPUT_SIZE);
         output[offset..offset + copy_len].copy_from_slice(&block[..copy_len]);
         offset += copy_len;
@@ -436,24 +438,34 @@ fn p_sha1(secret: &[u8], seed: &[u8], output: &mut [u8]) {
 /// S1 = secret[..L_S], S2 = secret[L_S..]
 /// L_S = ceil(secret.len() / 2)
 pub fn tls10_prf(secret: &[u8], label: &[u8], seed: &[u8], output: &mut [u8]) {
-    let mut combined_seed = Vec::with_capacity(label.len() + seed.len());
-    combined_seed.extend_from_slice(label);
-    combined_seed.extend_from_slice(seed);
+    const MAX_TLS10_PRF_OUTPUT: usize = 512;
+    const MAX_TLS10_COMBINED_SEED: usize = 256;
+    assert!(
+        output.len() <= MAX_TLS10_PRF_OUTPUT,
+        "TLS 1.0 PRF output too large"
+    );
+    assert!(
+        label.len() + seed.len() <= MAX_TLS10_COMBINED_SEED,
+        "TLS 1.0 PRF seed too large"
+    );
 
     // secret を前半・後半に分割 (奇数長は中央バイト共有)
     let half = (secret.len() + 1) / 2;
     let s1 = &secret[..half];
     let s2 = &secret[secret.len() - half..];
 
-    let mut md5_output = vec![0u8; output.len()];
-    let mut sha1_output = vec![0u8; output.len()];
+    let mut combined_seed = [0u8; MAX_TLS10_COMBINED_SEED];
+    combined_seed[..label.len()].copy_from_slice(label);
+    combined_seed[label.len()..label.len() + seed.len()].copy_from_slice(seed);
+    let combined_seed = &combined_seed[..label.len() + seed.len()];
 
-    p_md5(s1, &combined_seed, &mut md5_output);
-    p_sha1(s2, &combined_seed, &mut sha1_output);
+    let mut md5_output = [0u8; MAX_TLS10_PRF_OUTPUT];
+    let mut sha1_output = [0u8; MAX_TLS10_PRF_OUTPUT];
+    p_md5(s1, combined_seed, &mut md5_output[..output.len()]);
+    p_sha1(s2, combined_seed, &mut sha1_output[..output.len()]);
 
-    // XOR して最終結果
-    for i in 0..output.len() {
-        output[i] = md5_output[i] ^ sha1_output[i];
+    for index in 0..output.len() {
+        output[index] = md5_output[index] ^ sha1_output[index];
     }
 }
 
@@ -465,26 +477,28 @@ pub fn tls10_prf(secret: &[u8], label: &[u8], seed: &[u8], output: &mut [u8]) {
 /// TLS MAC計算
 ///
 /// MAC = HMAC(mac_key, seq_num(8) || type(1) || version(2) || length(2) || fragment)
-pub(crate) fn compute_tls_mac(
+pub(crate) fn compute_tls_mac_into(
     mac_key: &[u8],
     seq_num: u64,
     content_type: u8,
     version: TlsVersion,
     fragment: &[u8],
     use_sha1: bool,
-) -> Vec<u8> {
-    let mut mac_input = Vec::with_capacity(13 + fragment.len());
-    mac_input.extend_from_slice(&seq_num.to_be_bytes());
-    mac_input.push(content_type);
+) -> ([u8; 32], usize) {
+    let seq_bytes = seq_num.to_be_bytes();
+    let content = [content_type];
     let ver_bytes = version.to_bytes();
-    mac_input.push(ver_bytes[0]);
-    mac_input.push(ver_bytes[1]);
-    mac_input.extend_from_slice(&(fragment.len() as u16).to_be_bytes());
-    mac_input.extend_from_slice(fragment);
+    let len_bytes = (fragment.len() as u16).to_be_bytes();
 
     if use_sha1 {
-        hmac_sha1(mac_key, &mac_input).to_vec()
+        let mac = hmac_sha1_parts(mac_key, &[&seq_bytes, &content, &ver_bytes, &len_bytes, fragment]);
+        let mut output = [0u8; 32];
+        output[..SHA1_OUTPUT_SIZE].copy_from_slice(&mac);
+        (output, SHA1_OUTPUT_SIZE)
     } else {
-        hmac_sha256(mac_key, &mac_input).to_vec()
+        let mac = hmac_sha256_parts(mac_key, &[&seq_bytes, &content, &ver_bytes, &len_bytes, fragment]);
+        let mut output = [0u8; 32];
+        output[..32].copy_from_slice(&mac);
+        (output, 32)
     }
 }

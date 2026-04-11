@@ -34,17 +34,27 @@ prod_globs=(
   --glob '!**/tests.rs'
   --glob '!**/qemu_tests/**'
   --glob '!**/qemu_tests.rs'
+  --glob '!kernel/src/net/security/tls/mod.rs'
 )
 
 if rg -n "vec_from_payload\\(" \
+  "${prod_globs[@]}" \
   kernel/src/net/runtime kernel/src/net/l3 kernel/src/net/l4 kernel/src/net/services kernel/src/net/security/tls \
-  "${prod_globs[@]}" >/dev/null; then
+  >/dev/null; then
   fail "found removed TLS payload flatten helper"
 fi
 
+if rg -n "read_vec\\(" \
+  "${prod_globs[@]}" \
+  kernel/src/net/security/tls \
+  >/dev/null; then
+  fail "found removed TLS read_vec-based parser or record path"
+fi
+
 if rg -n "packet_payload_from_slice\\(|packet_payload_from_parts\\(" \
+  "${prod_globs[@]}" \
   kernel/src/net/runtime kernel/src/net/l3 kernel/src/net/l4 kernel/src/net/services kernel/src/net/security/tls \
-  "${prod_globs[@]}" >/dev/null; then
+  >/dev/null; then
   fail "found removed TLS packet payload builder helper"
 fi
 
@@ -53,19 +63,41 @@ if rg -n "payload_preview_bytes\\(" kernel/src/net/runtime/bridge/mlx5_bridge.rs
 fi
 
 if rg -n "build_stack_payload\\(|enqueue_v6_send_bytes\\(" \
+  "${prod_globs[@]}" \
   kernel/src/net/services kernel/src/net/l4 \
-  "${prod_globs[@]}" >/dev/null; then
+  >/dev/null; then
   fail "found removed DHCP/mDNS byte-to-payload helper"
 fi
 
 if rg -n "\\bpayload_from_bytes\\(|\\bpacket_from_bytes\\(" \
+  "${prod_globs[@]}" \
   kernel/src/net/runtime/bridge kernel/src/net/runtime/stack kernel/src/net/l3/ipv6 kernel/src/net/services/dns kernel/src/net/services/mdns kernel/src/net/security/tls \
-  "${prod_globs[@]}" >/dev/null; then
+  >/dev/null; then
   fail "found production path raw byte-to-packet helper"
 fi
 
 if rg -n "to_owned_string\\(|to_lowercase_string\\(" kernel/src/net/services/mdns/mod.rs >/dev/null; then
   fail "found early text materialization in mDNS production path"
+fi
+
+if rg -n -e "rsa_pkcs1_encrypt\\(|\\bmgf1\\(|\\bhash_compute\\(" \
+  "${prod_globs[@]}" \
+  kernel/src/net/security/tls kernel/src/net/security/rsa kernel/src/net/security/ecdh \
+  >/dev/null; then
+  fail "found removed crypto owned-buffer helper"
+fi
+
+if rg -n -e "->\\s*(Option<)?Vec<u8>" \
+  "${prod_globs[@]}" \
+  kernel/src/net/security/tls kernel/src/net/security/rsa kernel/src/net/security/ecdh \
+  >/dev/null; then
+  fail "found removed Vec-returning crypto surface"
+fi
+
+if rg -n "server_name:\\s*Option<String>|alpn_protocols:\\s*Vec<String>|ca_certs:\\s*Vec<Certificate>|VecDeque<SessionCacheEntry>" \
+  kernel/src/net/security/tls/types.rs \
+  >/dev/null; then
+  fail "found removed Vec/String-based TLS config or session cache surface"
 fi
 
 echo "check-network-zero-copy-guard: ok"

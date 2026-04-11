@@ -20,6 +20,10 @@ pub const SHA256_OUTPUT_SIZE: usize = 32;
 /// # Returns
 /// 32-byte MAC value
 pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; SHA256_OUTPUT_SIZE] {
+    hmac_sha256_parts(key, &[data])
+}
+
+pub(crate) fn hmac_sha256_parts(key: &[u8], parts: &[&[u8]]) -> [u8; SHA256_OUTPUT_SIZE] {
     use crate::crypto::sha256;
 
     // Step 1: If key > block size, hash it to get a shorter key
@@ -43,7 +47,9 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; SHA256_OUTPUT_SIZE] {
     // Step 3: Inner hash = SHA-256(ipad || data)
     let mut inner_hasher = sha256::Sha256::new();
     inner_hasher.update(&ipad);
-    inner_hasher.update(data);
+    for part in parts {
+        inner_hasher.update(part);
+    }
     let inner_hash = inner_hasher.finalize();
 
     // Step 4: Outer hash = SHA-256(opad || inner_hash)
@@ -71,6 +77,10 @@ pub const SHA384_OUTPUT_SIZE: usize = 48;
 /// # Returns
 /// 48-byte MAC value
 pub fn hmac_sha384(key: &[u8], data: &[u8]) -> [u8; SHA384_OUTPUT_SIZE] {
+    hmac_sha384_parts(key, &[data])
+}
+
+pub(crate) fn hmac_sha384_parts(key: &[u8], parts: &[&[u8]]) -> [u8; SHA384_OUTPUT_SIZE] {
     use crate::crypto::sha384;
 
     // Step 1: If key > block size, hash it to get a shorter key
@@ -94,7 +104,9 @@ pub fn hmac_sha384(key: &[u8], data: &[u8]) -> [u8; SHA384_OUTPUT_SIZE] {
     // Step 3: Inner hash = SHA-384(ipad || data)
     let mut inner_hasher = sha384::Sha384::new();
     inner_hasher.update(&ipad);
-    inner_hasher.update(data);
+    for part in parts {
+        inner_hasher.update(part);
+    }
     let inner_hash = inner_hasher.finalize();
 
     // Step 4: Outer hash = SHA-384(opad || inner_hash)

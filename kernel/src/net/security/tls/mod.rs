@@ -83,7 +83,7 @@ pub use crypto::{qemu_test_clear_random_override, qemu_test_set_random_override_
 ///
 /// Used by both unit tests and QEMU integration tests.
 #[cfg(any(test, feature = "qemu-test-export"))]
-fn tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished() -> Vec<u8> {
+fn tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished() -> TlsBytes<20> {
     // Handshake #1: ServerHelloDone (len=0)
     let server_hello_done = [14u8, 0, 0, 0];
 
@@ -100,9 +100,12 @@ fn tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished() -> Vec<
     );
 
     // Handshake #2: Finished (len=12) + verify_data
-    let mut data = Vec::with_capacity(server_hello_done.len() + 4 + verify_data.len());
-    data.extend_from_slice(&server_hello_done);
-    data.extend_from_slice(&[20u8, 0, 0, 12]);
-    data.extend_from_slice(&verify_data);
+    let mut data = TlsBytes::<20>::new();
+    data.append_slice(&server_hello_done)
+        .expect("fixture fits fixed TLS test buffer");
+    data.append_slice(&[20u8, 0, 0, 12])
+        .expect("fixture fits fixed TLS test buffer");
+    data.append_slice(&verify_data)
+        .expect("fixture fits fixed TLS test buffer");
     data
 }

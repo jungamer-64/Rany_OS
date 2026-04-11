@@ -3,10 +3,17 @@
 // ============================================================================
 
 use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
-use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
+use arrayvec::{ArrayString, ArrayVec};
 use kernel_api::resource::net::PacketPayload;
+
+pub const TLS_CIPHER_SUITES_CAPACITY: usize = 16;
+pub const TLS_SIGNATURE_SCHEMES_CAPACITY: usize = 16;
+pub const TLS_NAMED_GROUPS_CAPACITY: usize = 8;
+pub const TLS_ALPN_PROTOCOLS_CAPACITY: usize = 8;
+pub const TLS_SERVER_NAME_CAPACITY: usize = 253;
+pub const TLS_CA_CERTS_CAPACITY: usize = 192;
+pub const TLS_CERT_CHAIN_CAPACITY: usize = 16;
+pub const TLS_SESSION_CACHE_CAPACITY: usize = 8;
 
 // ============================================================================
 // Type-Safe Identifiers
@@ -93,6 +100,10 @@ impl<const N: usize> TlsBytes<N> {
         self.len = 0;
     }
 
+    pub const fn capacity(&self) -> usize {
+        N
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -105,6 +116,75 @@ impl<const N: usize> TlsBytes<N> {
         &self.bytes[..self.len]
     }
 
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.bytes[..self.len]
+    }
+
+    pub fn as_mut_storage(&mut self) -> &mut [u8; N] {
+        &mut self.bytes
+    }
+
+    pub fn push_byte(&mut self, byte: u8) -> Option<()> {
+        if self.len >= N {
+            return None;
+        }
+        self.bytes[self.len] = byte;
+        self.len += 1;
+        Some(())
+    }
+
+    pub fn append_slice(&mut self, data: &[u8]) -> Option<()> {
+        let new_len = self.len.checked_add(data.len())?;
+        if new_len > N {
+            return None;
+        }
+        self.bytes[self.len..new_len].copy_from_slice(data);
+        self.len = new_len;
+        Some(())
+    }
+
+    pub fn append_be_u16(&mut self, value: u16) -> Option<()> {
+        self.append_slice(&value.to_be_bytes())
+    }
+
+    pub fn append_be_u24(&mut self, value: usize) -> Option<()> {
+        if value > 0x00FF_FFFF {
+            return None;
+        }
+        self.append_slice(&[
+            ((value >> 16) & 0xFF) as u8,
+            ((value >> 8) & 0xFF) as u8,
+            (value & 0xFF) as u8,
+        ])
+    }
+
+    pub fn append_zeroes(&mut self, count: usize) -> Option<()> {
+        let new_len = self.len.checked_add(count)?;
+        if new_len > N {
+            return None;
+        }
+        self.bytes[self.len..new_len].fill(0);
+        self.len = new_len;
+        Some(())
+    }
+
+    pub fn write_slice(&mut self, offset: usize, data: &[u8]) -> Option<()> {
+        let end = offset.checked_add(data.len())?;
+        if end > self.len {
+            return None;
+        }
+        self.bytes[offset..end].copy_from_slice(data);
+        Some(())
+    }
+
+    pub fn set_filled_len(&mut self, len: usize) -> Option<()> {
+        if len > N {
+            return None;
+        }
+        self.len = len;
+        Some(())
+    }
+
     pub fn copy_into_array<const M: usize>(&self) -> Option<[u8; M]> {
         if self.len != M {
             return None;
@@ -112,6 +192,20 @@ impl<const N: usize> TlsBytes<N> {
         let mut out = [0u8; M];
         out.copy_from_slice(self.as_slice());
         Some(out)
+    }
+}
+
+impl<const N: usize> AsRef<[u8]> for TlsBytes<N> {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl<const N: usize> core::ops::Deref for TlsBytes<N> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
     }
 }
 
@@ -201,25 +295,16 @@ impl CipherSuite {
     ///
     /// Security: 前方秘匿性(Forward Secrecy)を持たないRSA鍵転送スイートと
     /// SHA-1ベースのCBCスイートはデフォルトから除外済み。
-    pub fn defaults() -> Vec<Self> {
-        vec![
-            // TLS 1.3 AEAD (最優先)
-            Self::TLS_AES_128_GCM_SHA256,
-            Self::TLS_AES_256_GCM_SHA384,
-            Self::TLS_CHACHA20_POLY1305_SHA256,
-            // TLS 1.2 ECDHE + AEAD (前方秘匿性あり)
-            Self::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-            Self::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-            Self::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-            Self::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-            // TLS 1.2 ECDHE + CBC-SHA256 (前方秘匿性あり、SHA-256 MAC)
-            // Security: CBC suites are removed from defaults due to Lucky 13 vulnerability.
-            // AEAD suites (GCM/ChaCha20) are preferred and used by default.
-            // Self::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
-            // Security: 以下はデフォルトから除外:
-            // - TLS_ECDHE_RSA_WITH_AES_*_CBC_SHA (非SHA-1 MAC)
-            // - TLS_RSA_WITH_* (前方秘匿性なし)
-        ]
+    pub fn defaults() -> ArrayVec<Self, TLS_CIPHER_SUITES_CAPACITY> {
+        let mut defaults = ArrayVec::new();
+        defaults.push(Self::TLS_AES_128_GCM_SHA256);
+        defaults.push(Self::TLS_AES_256_GCM_SHA384);
+        defaults.push(Self::TLS_CHACHA20_POLY1305_SHA256);
+        defaults.push(Self::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256);
+        defaults.push(Self::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384);
+        defaults.push(Self::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256);
+        defaults.push(Self::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384);
+        defaults
     }
 
     /// CBC暗号スイートかどうか
@@ -486,19 +571,27 @@ impl ExtensionType {
 /// Server Name Indication
 #[derive(Clone, Debug)]
 pub struct ServerNameList {
-    pub names: Vec<ServerName>,
+    pub names: ArrayVec<ServerName, TLS_ALPN_PROTOCOLS_CAPACITY>,
 }
 
 /// サーバー名
 #[derive(Clone, Debug)]
 pub struct ServerName {
     pub name_type: u8, // 0 = hostname
-    pub name: String,
+    pub name: ArrayString<TLS_SERVER_NAME_CAPACITY>,
 }
 
 // ============================================================================
 // TLS Configuration
 // ============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsConfigError {
+    NameTooLong,
+    TooManyAlpnProtocols,
+    AlpnProtocolTooLong,
+    TooManyCaCerts,
+}
 
 /// TLS設定
 #[derive(Clone)]
@@ -508,15 +601,15 @@ pub struct TlsConfig {
     /// 最大バージョン
     pub max_version: TlsVersion,
     /// 暗号スイート
-    pub cipher_suites: Vec<CipherSuite>,
+    pub cipher_suites: ArrayVec<CipherSuite, TLS_CIPHER_SUITES_CAPACITY>,
     /// 署名アルゴリズム
-    pub signature_schemes: Vec<SignatureScheme>,
+    pub signature_schemes: ArrayVec<SignatureScheme, TLS_SIGNATURE_SCHEMES_CAPACITY>,
     /// 名前付きグループ
-    pub named_groups: Vec<NamedGroup>,
+    pub named_groups: ArrayVec<NamedGroup, TLS_NAMED_GROUPS_CAPACITY>,
     /// ALPN
-    pub alpn_protocols: Vec<String>,
+    pub alpn_protocols: ArrayVec<ArrayString<255>, TLS_ALPN_PROTOCOLS_CAPACITY>,
     /// SNI
-    pub server_name: Option<String>,
+    pub server_name: Option<ArrayString<TLS_SERVER_NAME_CAPACITY>>,
     /// セッション再開を許可
     pub enable_session_resumption: bool,
     /// クライアント証明書
@@ -524,7 +617,7 @@ pub struct TlsConfig {
     /// クライアント秘密鍵
     pub client_key: Option<PrivateKey>,
     /// CA証明書
-    pub ca_certs: Vec<Certificate>,
+    pub ca_certs: ArrayVec<Certificate, TLS_CA_CERTS_CAPACITY>,
     /// 証明書検証を無効化（デバッグ/テスト用）
     ///
     /// # WARNING
@@ -537,12 +630,25 @@ pub struct TlsConfig {
 
 impl Default for TlsConfig {
     fn default() -> Self {
-        let mut ca_certs = Vec::new();
+        let mut ca_certs = ArrayVec::new();
         for &(_label, der) in security::root_certs::ROOT_CERTS {
             if let Some(cert) = Certificate::from_der_bytes(der) {
-                ca_certs.push(cert);
+                if ca_certs.try_push(cert).is_err() {
+                    break;
+                }
             }
         }
+
+        let mut signature_schemes = ArrayVec::new();
+        signature_schemes.push(SignatureScheme::ECDSA_SECP256R1_SHA256);
+        signature_schemes.push(SignatureScheme::ECDSA_SECP384R1_SHA384);
+        signature_schemes.push(SignatureScheme::RSA_PSS_RSAE_SHA256);
+        signature_schemes.push(SignatureScheme::RSA_PKCS1_SHA256);
+
+        let mut named_groups = ArrayVec::new();
+        named_groups.push(NamedGroup::X25519);
+        named_groups.push(NamedGroup::SECP256R1);
+        named_groups.push(NamedGroup::SECP384R1);
 
         Self {
             // Security: Use TLS 1.2 as minimum version.
@@ -550,18 +656,9 @@ impl Default for TlsConfig {
             min_version: TlsVersion::TLS_1_2,
             max_version: TlsVersion::TLS_1_3,
             cipher_suites: CipherSuite::defaults(),
-            signature_schemes: vec![
-                SignatureScheme::ECDSA_SECP256R1_SHA256,
-                SignatureScheme::ECDSA_SECP384R1_SHA384,
-                SignatureScheme::RSA_PSS_RSAE_SHA256,
-                SignatureScheme::RSA_PKCS1_SHA256,
-            ],
-            named_groups: vec![
-                NamedGroup::X25519,
-                NamedGroup::SECP256R1,
-                NamedGroup::SECP384R1,
-            ],
-            alpn_protocols: Vec::new(),
+            signature_schemes,
+            named_groups,
+            alpn_protocols: ArrayVec::new(),
             server_name: None,
             enable_session_resumption: true,
             client_cert: None,
@@ -595,15 +692,32 @@ impl TlsConfig {
     }
 
     /// サーバー名を設定
-    pub fn with_server_name(mut self, name: &str) -> Self {
-        self.server_name = Some(String::from(name));
-        self
+    pub fn with_server_name(mut self, name: &str) -> Result<Self, TlsConfigError> {
+        let mut server_name = ArrayString::new();
+        server_name
+            .try_push_str(name)
+            .map_err(|_| TlsConfigError::NameTooLong)?;
+        self.server_name = Some(server_name);
+        Ok(self)
     }
 
     /// ALPNプロトコルを設定
-    pub fn with_alpn(mut self, protocols: &[&str]) -> Self {
-        self.alpn_protocols = protocols.iter().map(|s| String::from(*s)).collect();
-        self
+    pub fn with_alpn(
+        mut self,
+        protocols: &[&str],
+    ) -> Result<Self, TlsConfigError> {
+        let mut alpn_protocols = ArrayVec::new();
+        for protocol in protocols {
+            let mut entry = ArrayString::new();
+            entry
+                .try_push_str(protocol)
+                .map_err(|_| TlsConfigError::AlpnProtocolTooLong)?;
+            alpn_protocols
+                .try_push(entry)
+                .map_err(|_| TlsConfigError::TooManyAlpnProtocols)?;
+        }
+        self.alpn_protocols = alpn_protocols;
+        Ok(self)
     }
 }
 
@@ -634,22 +748,47 @@ impl Certificate {
 
     /// PEMから作成（簡易パース）
     pub fn from_pem(pem: &str) -> Option<Self> {
-        let lines: Vec<&str> = pem.lines().collect();
         let mut in_cert = false;
-        let mut base64_data = String::new();
+        let mut builder = PacketPayloadBuilder::new();
+        let mut chunk = [0u8; 3];
+        let mut chunk_len = 0usize;
+        let mut buf = 0u32;
+        let mut bits = 0u32;
 
-        for line in lines {
+        for line in pem.lines() {
             if line.contains("BEGIN CERTIFICATE") {
                 in_cert = true;
             } else if line.contains("END CERTIFICATE") {
                 break;
             } else if in_cert {
-                base64_data.push_str(line.trim());
+                for c in line.trim().chars() {
+                    if c == '=' {
+                        break;
+                    }
+                    let value = base64_value(c)?;
+                    buf = (buf << 6) | value as u32;
+                    bits += 6;
+
+                    if bits >= 8 {
+                        bits -= 8;
+                        chunk[chunk_len] = (buf >> bits) as u8;
+                        chunk_len += 1;
+                        buf &= (1 << bits) - 1;
+                        if chunk_len == chunk.len() {
+                            builder.push_bytes(&chunk)?;
+                            chunk_len = 0;
+                        }
+                    }
+                }
             }
         }
 
-        // Base64デコード（簡易）
-        base64_decode_payload(&base64_data).map(|der| Self { der })
+        if chunk_len > 0 {
+            builder.push_bytes(&chunk[..chunk_len])?;
+        }
+        Some(Self {
+            der: PayloadSpan::from_payload(builder.build()),
+        })
     }
 }
 
@@ -672,8 +811,6 @@ pub enum KeyType {
 
 /// 簡易Base64デコード
 pub(crate) fn base64_decode_payload(input: &str) -> Option<PayloadSpan> {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
     let mut builder = PacketPayloadBuilder::new();
     let mut chunk = [0u8; 3];
     let mut chunk_len = 0usize;
@@ -685,7 +822,7 @@ pub(crate) fn base64_decode_payload(input: &str) -> Option<PayloadSpan> {
             break;
         }
 
-        let value = TABLE.iter().position(|&x| x == c as u8)? as u32;
+        let value = base64_value(c)? as u32;
         buf = (buf << 6) | value;
         bits += 6;
 
@@ -706,6 +843,17 @@ pub(crate) fn base64_decode_payload(input: &str) -> Option<PayloadSpan> {
     }
 
     Some(PayloadSpan::from_payload(builder.build()))
+}
+
+fn base64_value(c: char) -> Option<u8> {
+    match c {
+        'A'..='Z' => Some((c as u8) - b'A'),
+        'a'..='z' => Some((c as u8) - b'a' + 26),
+        '0'..='9' => Some((c as u8) - b'0' + 52),
+        '+' => Some(62),
+        '/' => Some(63),
+        _ => None,
+    }
 }
 
 // ============================================================================
@@ -752,7 +900,7 @@ pub struct SessionCacheEntry {
     /// ネゴシエートされた暗号スイート
     pub cipher_suite: CipherSuite,
     /// サーバー名
-    pub server_name: Option<String>,
+    pub server_name: Option<ArrayString<TLS_SERVER_NAME_CAPACITY>>,
     /// TLSバージョン
     pub version: TlsVersion,
 }
@@ -760,32 +908,23 @@ pub struct SessionCacheEntry {
 /// セッションキャッシュ
 #[derive(Clone, Debug)]
 pub struct SessionCache {
-    entries: alloc::collections::VecDeque<SessionCacheEntry>,
-    max_entries: usize,
+    entries: ArrayVec<SessionCacheEntry, TLS_SESSION_CACHE_CAPACITY>,
 }
 
 impl SessionCache {
-    pub fn new(max_entries: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            entries: alloc::collections::VecDeque::new(),
-            max_entries,
+            entries: ArrayVec::new(),
         }
     }
 
     pub fn insert(&mut self, entry: SessionCacheEntry) {
-        // 同じセッションIDがあれば上書き
-        if let Some(pos) = self
-            .entries
-            .iter()
-            .position(|e| e.session_id == entry.session_id)
-        {
-            self.entries[pos] = entry;
-        } else {
-            if self.entries.len() >= self.max_entries {
-                self.entries.pop_front(); // LRU: O(1) で最古のエントリを削除
-            }
-            self.entries.push_back(entry);
+        if let Some(pos) = self.entries.iter().position(|e| e.session_id == entry.session_id) {
+            self.entries.remove(pos);
+        } else if self.entries.len() == TLS_SESSION_CACHE_CAPACITY {
+            self.entries.remove(0);
         }
+        self.entries.push(entry);
     }
 
     pub fn find(&self, session_id: &[u8]) -> Option<&SessionCacheEntry> {
@@ -799,6 +938,12 @@ impl SessionCache {
         self.entries
             .iter()
             .rev()
-            .find(|e| e.server_name.as_deref() == Some(name))
+            .find(|entry| {
+                entry
+                    .server_name
+                    .as_ref()
+                    .map(|server_name| server_name.as_str())
+                    == Some(name)
+            })
     }
 }

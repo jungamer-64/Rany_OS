@@ -1,6 +1,3 @@
-use alloc::vec;
-use alloc::vec::Vec;
-
 use super::*;
 
 mod aes_gcm;
@@ -27,7 +24,8 @@ impl TlsConnection {
         let shared_secret = local_keypair
             .shared_secret(server_pubkey)
             .map_err(|_| TlsError::CryptoError)?;
-        let shared_secret = TlsBytes::from_slice(&shared_secret).ok_or(TlsError::CryptoError)?;
+        let shared_secret =
+            TlsBytes::from_slice(shared_secret.as_slice()).ok_or(TlsError::CryptoError)?;
         Ok((local_keypair, shared_secret))
     }
 
@@ -86,36 +84,35 @@ impl TlsConnection {
     ) -> Option<kernel_api::resource::net::PacketPayload> {
         let keypair = self.local_ecdh_keypair.as_ref()?;
         let pubkey_bytes = keypair.public_key_bytes();
+        let point_len = pubkey_bytes.len();
+        let body_len = 1 + point_len;
+        let msg_len = 4 + body_len;
 
-        // ECPoint format: length(1) + point(N)
-        let mut body = Vec::with_capacity(1 + pubkey_bytes.len());
-        body.push(pubkey_bytes.len() as u8);
-        body.extend_from_slice(&pubkey_bytes);
+        let mut message = [0u8; 69];
+        if msg_len > message.len() {
+            return None;
+        }
+        message[0] = 16; // ClientKeyExchange
+        message[2] = ((body_len >> 8) & 0xff) as u8;
+        message[3] = (body_len & 0xff) as u8;
+        message[4] = point_len as u8;
+        message[5..5 + point_len].copy_from_slice(pubkey_bytes.as_slice());
+        let message = &message[..msg_len];
 
-        // Handshakeヘッダ: type(1) + length(3)
-        let mut message = Vec::with_capacity(4 + body.len());
-        message.push(16); // ClientKeyExchange type = 16
-        message.push(0);
-        message.push((body.len() >> 8) as u8);
-        message.push(body.len() as u8);
-        message.extend_from_slice(&body);
-
-        // ハンドシェイクメッセージを記録（Finished verify用）
-        self.append_transcript_bytes(&message)
+        self.append_transcript_bytes(message)
             .expect("tls12 client key exchange transcript append");
 
-        // TLSレコードヘッダ
         let record_header = [
             ContentType::Handshake as u8,
             0x03,
             0x03,
-            (message.len() >> 8) as u8,
-            message.len() as u8,
+            (msg_len >> 8) as u8,
+            msg_len as u8,
         ];
 
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder.push_bytes(&record_header)?;
-        builder.push_bytes(&message)?;
+        builder.push_bytes(message)?;
         Some(builder.build())
     }
 
@@ -310,34 +307,31 @@ impl TlsConnection {
         let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
         let use_sha384 = cipher.uses_sha384();
 
-        let key_block = if version <= TlsVersion::TLS_1_1 {
-            // TLS 1.0/1.1: デュアルハッシュPRF (P_MD5 XOR P_SHA-1)
-            let mut kb = vec![0u8; key_material_len];
-            let mut seed = Vec::with_capacity(64);
-            seed.extend_from_slice(&self.server_random);
-            seed.extend_from_slice(&self.client_random);
-            tls10_prf(&self.master_secret, b"key expansion", &seed, &mut kb);
-            kb
+        let mut key_block_storage = [0u8; 256];
+        if key_material_len > key_block_storage.len() {
+            return Err(TlsError::CryptoError);
+        }
+        let key_block = &mut key_block_storage[..key_material_len];
+
+        if version <= TlsVersion::TLS_1_1 {
+            let mut seed = [0u8; 64];
+            seed[..32].copy_from_slice(&self.server_random);
+            seed[32..].copy_from_slice(&self.client_random);
+            tls10_prf(&self.master_secret, b"key expansion", &seed, key_block);
         } else if use_sha384 {
-            // TLS 1.2 SHA-384
             derive_key_block_sha384(
                 &self.master_secret,
                 &self.server_random,
                 &self.client_random,
-                key_material_len,
-            )
+                key_block,
+            );
         } else {
-            // TLS 1.2 SHA-256
             derive_key_block(
                 &self.master_secret,
                 &self.server_random,
                 &self.client_random,
-                key_material_len,
-            )
-        };
-
-        if key_block.len() < key_material_len {
-            return Err(TlsError::CryptoError);
+                key_block,
+            );
         }
 
         let mut offset = 0;
@@ -385,6 +379,9 @@ impl TlsConnection {
         &mut self,
         data: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         if self.write_key.is_empty() || self.write_iv.len() < 4 {
@@ -397,9 +394,10 @@ impl TlsConnection {
 
         let aad = Self::tls12_aad(self.write_seq, ContentType::Handshake as u8, data.len());
 
-        let (ciphertext, auth_tag) = aes_gcm_encrypt(self.write_key.as_slice(), &nonce, &aad, data);
+        let (ciphertext, auth_tag) =
+            Self::encrypt_aead_payload(cipher, self.write_key.as_slice(), &nonce, &aad, data)?;
 
-        let record_len = 8 + ciphertext.len() + 16;
+        let record_len = 8 + ciphertext.total_len() + 16;
         let record_header = [
             ContentType::Handshake as u8,
             0x03,
@@ -416,9 +414,7 @@ impl TlsConnection {
         builder
             .push_bytes(&explicit_nonce)
             .ok_or(TlsError::DecodeError)?;
-        builder
-            .push_bytes(&ciphertext)
-            .ok_or(TlsError::DecodeError)?;
+        builder.push_payload(ciphertext);
         builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
@@ -428,6 +424,9 @@ impl TlsConnection {
         &mut self,
         data: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256);
         if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
             return Err(TlsError::CryptoError);
         }
@@ -444,9 +443,10 @@ impl TlsConnection {
         let mut key = [0u8; 32];
         key.copy_from_slice(&self.write_key.as_slice()[0..32]);
 
-        let (ciphertext, auth_tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, data);
+        let (ciphertext, auth_tag) =
+            Self::encrypt_aead_payload(cipher, self.write_key.as_slice(), &nonce, &aad, data)?;
 
-        let record_len = ciphertext.len() + 16;
+        let record_len = ciphertext.total_len() + 16;
         let record_header = [
             ContentType::Handshake as u8,
             0x03,
@@ -460,9 +460,7 @@ impl TlsConnection {
         builder
             .push_bytes(&record_header)
             .ok_or(TlsError::DecodeError)?;
-        builder
-            .push_bytes(&ciphertext)
-            .ok_or(TlsError::DecodeError)?;
+        builder.push_payload(ciphertext);
         builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
@@ -501,7 +499,7 @@ impl TlsConnection {
         let use_sha1 = cipher.uses_sha1_mac();
 
         // Step 1: MAC計算
-        let mac = compute_tls_mac(
+        let (mac, mac_len) = compute_tls_mac_into(
             self.write_mac_key.as_slice(),
             self.write_seq,
             content_type,
@@ -509,14 +507,14 @@ impl TlsConnection {
             data,
             use_sha1,
         );
-
-        // Step 2: plaintext = data || MAC
-        let mut plaintext = Vec::with_capacity(data.len() + mac.len());
-        plaintext.extend_from_slice(data);
-        plaintext.extend_from_slice(&mac);
-
-        // Step 3: パディング追加
-        let padded = tls_add_padding(&plaintext, 16);
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(data.len() + mac_len + 16, 0)
+            .ok_or(TlsError::DecodeError)?;
+        let packet_data = packet.data_mut();
+        packet_data[..data.len()].copy_from_slice(data);
+        packet_data[data.len()..data.len() + mac_len].copy_from_slice(&mac[..mac_len]);
+        let padded_len = tls_add_padding_in_place(packet_data, data.len() + mac_len, 16)
+            .ok_or(TlsError::CryptoError)?;
+        packet.set_len(padded_len);
 
         // Step 4: IV決定
         let iv = if version >= TlsVersion::TLS_1_1 {
@@ -532,34 +530,28 @@ impl TlsConnection {
         };
 
         // Step 5: CBC暗号化
-        let ciphertext = aes_cbc_encrypt(self.write_key.as_slice(), &iv, &padded);
+        aes_cbc_encrypt_in_place(self.write_key.as_slice(), &iv, &mut packet.data_mut()[..padded_len])
+            .ok_or(TlsError::CryptoError)?;
 
         // TLS 1.0: 最終暗号文ブロックを記憶（次レコードのIVに使用）
-        if version == TlsVersion::TLS_1_0 && ciphertext.len() >= 16 {
+        if version == TlsVersion::TLS_1_0 && padded_len >= 16 {
             let mut last_block = [0u8; 16];
-            last_block.copy_from_slice(&ciphertext[ciphertext.len() - 16..]);
+            last_block.copy_from_slice(&packet.data()[padded_len - 16..padded_len]);
             self.last_write_ciphertext_block = Some(last_block);
         }
-
-        // レコード構築
         let version_bytes = version.to_bytes();
-        let payload = if version >= TlsVersion::TLS_1_1 {
-            // TLS 1.1+: IV + ciphertext
-            let mut p = Vec::with_capacity(16 + ciphertext.len());
-            p.extend_from_slice(&iv);
-            p.extend_from_slice(&ciphertext);
-            p
+        let payload_len = if version >= TlsVersion::TLS_1_1 {
+            16 + padded_len
         } else {
-            // TLS 1.0: ciphertext のみ
-            ciphertext
+            padded_len
         };
 
         let record_header = [
             content_type,
             version_bytes[0],
             version_bytes[1],
-            (payload.len() >> 8) as u8,
-            payload.len() as u8,
+            (payload_len >> 8) as u8,
+            payload_len as u8,
         ];
 
         self.write_seq += 1;
@@ -567,7 +559,10 @@ impl TlsConnection {
         builder
             .push_bytes(&record_header)
             .ok_or(TlsError::DecodeError)?;
-        builder.push_bytes(&payload).ok_or(TlsError::DecodeError)?;
+        if version >= TlsVersion::TLS_1_1 {
+            builder.push_bytes(&iv).ok_or(TlsError::DecodeError)?;
+        }
+        builder.push_payload(kernel_api::resource::net::PacketPayload::single(packet));
         Ok(builder.build())
     }
 
@@ -624,7 +619,7 @@ impl TlsConnection {
             &decrypted[safe_content_len.saturating_sub(mac_len)..safe_content_len]
         };
 
-        let expected_mac = compute_tls_mac(
+        let (expected_mac, expected_mac_len) = compute_tls_mac_into(
             self.read_mac_key.as_slice(),
             self.read_seq,
             content_type,
@@ -633,8 +628,8 @@ impl TlsConnection {
             use_sha1,
         );
 
-        let len_match = received_mac.len() == expected_mac.len();
-        let compare_len = mac_len.min(expected_mac.len()).min(received_mac.len());
+        let len_match = received_mac.len() == expected_mac_len;
+        let compare_len = mac_len.min(expected_mac_len).min(received_mac.len());
         let mut diff = 0u8;
         for i in 0..compare_len {
             diff |= received_mac[i] ^ expected_mac[i];
@@ -692,18 +687,24 @@ impl TlsConnection {
 
         self.store_last_ciphertext_block_if_tls10(version, ciphertext);
 
-        let decrypted = aes_cbc_decrypt(self.read_key.as_slice(), &iv, ciphertext)
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(ciphertext.len(), 0)
+            .ok_or(TlsError::DecodeError)?;
+        packet.data_mut()[..ciphertext.len()].copy_from_slice(ciphertext);
+        aes_cbc_decrypt_in_place(self.read_key.as_slice(), &iv, &mut packet.data_mut()[..ciphertext.len()])
             .ok_or(TlsError::DecryptError)?;
+        packet.set_len(ciphertext.len());
 
-        let fragment_len =
-            self.verify_cbc_padding_and_mac(&decrypted, content_type, version, use_sha1, mac_len)?;
+        let fragment_len = self.verify_cbc_padding_and_mac(
+            &packet.data()[..ciphertext.len()],
+            content_type,
+            version,
+            use_sha1,
+            mac_len,
+        )?;
 
         self.read_seq += 1;
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder
-            .push_bytes(&decrypted[..fragment_len])
-            .ok_or(TlsError::DecodeError)?;
-        Ok(builder.build())
+        crate::net::payload::payload_from_packet_range(&packet, 0, fragment_len)
+            .ok_or(TlsError::DecodeError)
     }
 
     // ========================================================================
@@ -747,24 +748,25 @@ impl TlsConnection {
 
         // RSA暗号化
         let rsa_key = crate::net::security::rsa::RsaPublicKey { modulus, exponent };
-        let encrypted_pms = crate::net::security::rsa::rsa_pkcs1_encrypt(&rsa_key, &pms).ok()?;
+        let mut encrypted_pms = [0u8; crate::net::security::rsa::RSA_MAX_BYTES];
+        let encrypted_pms_len =
+            crate::net::security::rsa::rsa_pkcs1_encrypt_into(&rsa_key, &pms, &mut encrypted_pms)
+                .ok()?;
+        let encrypted_pms = &encrypted_pms[..encrypted_pms_len];
 
         // EncryptedPreMasterSecret: length(2) || encrypted_pms
-        let mut body = Vec::with_capacity(2 + encrypted_pms.len());
-        body.push((encrypted_pms.len() >> 8) as u8);
-        body.push(encrypted_pms.len() as u8);
-        body.extend_from_slice(&encrypted_pms);
+        let mut body = TlsBytes::<1024>::new();
+        body.append_be_u16(encrypted_pms.len() as u16)?;
+        body.append_slice(encrypted_pms)?;
 
         // Handshakeヘッダ: type(1) + length(3)
-        let mut message = Vec::with_capacity(4 + body.len());
-        message.push(16); // ClientKeyExchange type = 16
-        message.push(0);
-        message.push((body.len() >> 8) as u8);
-        message.push(body.len() as u8);
-        message.extend_from_slice(&body);
+        let mut message = TlsBytes::<1028>::new();
+        message.push_byte(16)?; // ClientKeyExchange type = 16
+        message.append_be_u24(body.len())?;
+        message.append_slice(body.as_slice())?;
 
         // ハンドシェイクメッセージを記録
-        self.append_transcript_bytes(&message)
+        self.append_transcript_bytes(message.as_slice())
             .expect("rsa client key exchange transcript append");
 
         // TLSレコードヘッダ
@@ -780,7 +782,7 @@ impl TlsConnection {
 
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder.push_bytes(&record_header)?;
-        builder.push_bytes(&message)?;
+        builder.push_bytes(message.as_slice())?;
         Some(builder.build())
     }
 
@@ -794,10 +796,12 @@ impl TlsConnection {
         payload: &kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let view = crate::net::payload::PacketPayloadView::new(payload);
-        let data = view.read_vec(0, view.total_len());
-        if data.len() != view.total_len() {
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(view.total_len(), 0)
+            .ok_or(TlsError::DecodeError)?;
+        if view.copy_all_into(&mut packet.data_mut()[..view.total_len()]) != view.total_len() {
             return Err(TlsError::DecodeError);
         }
+        let data = &packet.data()[..view.total_len()];
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);

@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use super::*;
 
 mod encrypt_decrypt;
@@ -106,13 +104,13 @@ impl TlsConnection {
         let encrypted_len = inner.len() + 16;
         let aad = Self::tls13_record_aad(encrypted_len);
 
-        let (ciphertext, auth_tag) = if cipher.is_chacha20_poly1305() {
-            let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&self.early_write_key.as_slice()[..32]);
-            chacha20_poly1305_encrypt(&key_arr, &nonce, &aad, &inner)
-        } else {
-            aes_gcm_encrypt(self.early_write_key.as_slice(), &nonce, &aad, &inner)
-        };
+        let (ciphertext, auth_tag) = Self::encrypt_aead_payload(
+            cipher,
+            self.early_write_key.as_slice(),
+            &nonce,
+            &aad,
+            &inner,
+        )?;
 
         let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
         let record_header = [
@@ -128,9 +126,7 @@ impl TlsConnection {
         builder
             .push_bytes(&record_header)
             .ok_or(TlsError::DecodeError)?;
-        builder
-            .push_bytes(&ciphertext)
-            .ok_or(TlsError::DecodeError)?;
+        builder.push_payload(ciphertext);
         builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
         Ok(Some(builder.build()))
     }
@@ -150,20 +146,27 @@ impl TlsConnection {
             .unwrap_or(&[]);
         let ctx_len = ctx.len();
         let cert_body_len = 1 + ctx_len + 3;
-        let mut cert_msg = Vec::with_capacity(4 + cert_body_len);
-        cert_msg.push(11); // Certificate type
-        cert_msg.push(0);
-        cert_msg.push(((cert_body_len >> 8) & 0xFF) as u8);
-        cert_msg.push((cert_body_len & 0xFF) as u8);
-        cert_msg.push(ctx_len as u8);
-        cert_msg.extend_from_slice(ctx);
-        cert_msg.extend_from_slice(&[0, 0, 0]); // empty certificate_list
+        let mut cert_msg = TlsBytes::<512>::new();
+        cert_msg.push_byte(11).ok_or(TlsError::DecodeError)?; // Certificate type
+        cert_msg.append_be_u24(cert_body_len).ok_or(TlsError::DecodeError)?;
+        cert_msg
+            .push_byte(ctx_len as u8)
+            .ok_or(TlsError::DecodeError)?;
+        cert_msg.append_slice(ctx).ok_or(TlsError::DecodeError)?;
+        cert_msg
+            .append_slice(&[0, 0, 0])
+            .ok_or(TlsError::DecodeError)?; // empty certificate_list
 
-        self.append_transcript_bytes(&cert_msg)?;
+        self.append_transcript_bytes(cert_msg.as_slice())?;
 
-        let mut inner_cert = cert_msg;
-        inner_cert.push(ContentType::Handshake as u8);
-        let encrypted_cert = self.tls13_encrypt_record(&inner_cert, true)?;
+        let mut inner_cert = TlsBytes::<513>::new();
+        inner_cert
+            .append_slice(cert_msg.as_slice())
+            .ok_or(TlsError::DecodeError)?;
+        inner_cert
+            .push_byte(ContentType::Handshake as u8)
+            .ok_or(TlsError::DecodeError)?;
+        let encrypted_cert = self.tls13_encrypt_record(inner_cert.as_slice(), true)?;
         Ok(Some(encrypted_cert))
     }
 
@@ -268,12 +271,16 @@ impl TlsConnection {
             self.client_app_traffic_secret = cas;
             self.server_app_traffic_secret = sas;
 
-            let (server_key, server_iv) = tls13_derive_traffic_keys_sha384(&sas, key_len);
-            let (client_key, client_iv) = tls13_derive_traffic_keys_sha384(&cas, key_len);
+            let mut server_key = [0u8; 32];
+            let mut server_iv = [0u8; 12];
+            let mut client_key = [0u8; 32];
+            let mut client_iv = [0u8; 12];
+            tls13_derive_traffic_keys_sha384(&sas, &mut server_key[..key_len], &mut server_iv);
+            tls13_derive_traffic_keys_sha384(&cas, &mut client_key[..key_len], &mut client_iv);
 
-            Self::set_tls_bytes(&mut self.read_key, &server_key)?;
+            Self::set_tls_bytes(&mut self.read_key, &server_key[..key_len])?;
             Self::set_tls_bytes(&mut self.read_iv, &server_iv)?;
-            Self::set_tls_bytes(&mut self.write_key, &client_key)?;
+            Self::set_tls_bytes(&mut self.write_key, &client_key[..key_len])?;
             Self::set_tls_bytes(&mut self.write_iv, &client_iv)?;
         } else {
             let transcript_sf = self
@@ -288,12 +295,16 @@ impl TlsConnection {
             self.client_app_traffic_secret[..32].copy_from_slice(&cas);
             self.server_app_traffic_secret[..32].copy_from_slice(&sas);
 
-            let (server_key, server_iv) = tls13_derive_traffic_keys(&sas, key_len);
-            let (client_key, client_iv) = tls13_derive_traffic_keys(&cas, key_len);
+            let mut server_key = [0u8; 32];
+            let mut server_iv = [0u8; 12];
+            let mut client_key = [0u8; 32];
+            let mut client_iv = [0u8; 12];
+            tls13_derive_traffic_keys(&sas, &mut server_key[..key_len], &mut server_iv);
+            tls13_derive_traffic_keys(&cas, &mut client_key[..key_len], &mut client_iv);
 
-            Self::set_tls_bytes(&mut self.read_key, &server_key)?;
+            Self::set_tls_bytes(&mut self.read_key, &server_key[..key_len])?;
             Self::set_tls_bytes(&mut self.read_iv, &server_iv)?;
-            Self::set_tls_bytes(&mut self.write_key, &client_key)?;
+            Self::set_tls_bytes(&mut self.write_key, &client_key[..key_len])?;
             Self::set_tls_bytes(&mut self.write_iv, &client_iv)?;
         }
 
@@ -346,25 +357,7 @@ impl TlsConnection {
         ciphertext: &[u8],
         tag: &[u8; 16],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        if cipher.is_chacha20_poly1305() {
-            let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&key[..32]);
-            chacha20_poly1305_decrypt(&key_arr, nonce, aad, ciphertext, tag)
-                .and_then(|plaintext| {
-                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    builder.push_bytes(&plaintext)?;
-                    Some(builder.build())
-                })
-                .ok_or(TlsError::DecryptError)
-        } else {
-            aes_gcm_decrypt(key, nonce, aad, ciphertext, tag)
-                .and_then(|plaintext| {
-                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    builder.push_bytes(&plaintext)?;
-                    Some(builder.build())
-                })
-                .ok_or(TlsError::DecryptError)
-        }
+        Self::decrypt_aead_payload(cipher, key, nonce, aad, ciphertext, tag)
     }
 
     /// TLS 1.3: レコード復号
@@ -393,11 +386,8 @@ impl TlsConnection {
             return Err(TlsError::DecryptError);
         }
 
-        let data_view = crate::net::payload::PacketPayloadView::new(data);
-        let data_bytes = data_view.read_vec(0, data_view.total_len());
-        if data_bytes.len() != data_view.total_len() {
-            return Err(TlsError::DecodeError);
-        }
+        let data_packet = Self::copy_payload_into_packet(data)?;
+        let data_bytes = data_packet.data();
         let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv.as_slice(), seq, data_bytes.len());
 
         if data_bytes.len() < 16 {
@@ -459,13 +449,8 @@ impl TlsConnection {
         // AAD: TLS record header
         let aad = Self::tls13_record_aad(encrypted_len);
 
-        let (ciphertext, auth_tag) = if cipher.is_chacha20_poly1305() {
-            let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&key.as_slice()[..32]);
-            chacha20_poly1305_encrypt(&key_arr, &nonce, &aad, inner_plaintext)
-        } else {
-            aes_gcm_encrypt(key.as_slice(), &nonce, &aad, inner_plaintext)
-        };
+        let (ciphertext, auth_tag) =
+            Self::encrypt_aead_payload(cipher, key.as_slice(), &nonce, &aad, inner_plaintext)?;
 
         // TLS record
         let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
@@ -488,9 +473,7 @@ impl TlsConnection {
         builder
             .push_bytes(&record_header)
             .ok_or(TlsError::DecodeError)?;
-        builder
-            .push_bytes(&ciphertext)
-            .ok_or(TlsError::DecodeError)?;
+        builder.push_payload(ciphertext);
         builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
@@ -501,15 +484,15 @@ impl TlsConnection {
         payload: &kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let payload_view = crate::net::payload::PacketPayloadView::new(payload);
-        let data = payload_view.read_vec(0, payload_view.total_len());
-        if data.len() != payload_view.total_len() {
+        let mut inner = crate::net::payload::alloc_packet_with_headroom(payload_view.total_len() + 1, 0)
+            .ok_or(TlsError::DecodeError)?;
+        if payload_view.copy_all_into(&mut inner.data_mut()[..payload_view.total_len()])
+            != payload_view.total_len()
+        {
             return Err(TlsError::DecodeError);
         }
-        // inner plaintext = data + content_type
-        let mut inner = Vec::with_capacity(data.len() + 1);
-        inner.extend_from_slice(&data);
-        inner.push(ContentType::ApplicationData as u8);
-        self.tls13_encrypt_record(&inner, false)
+        inner.data_mut()[payload_view.total_len()] = ContentType::ApplicationData as u8;
+        self.tls13_encrypt_record(&inner.data()[..payload_view.total_len() + 1], false)
     }
 
     /// フルハンドシェイク完了後にセッションをキャッシュに保存する
@@ -518,7 +501,7 @@ impl TlsConnection {
             return;
         }
         if self.session_cache.is_none() {
-            self.session_cache = Some(SessionCache::new(8));
+            self.session_cache = Some(SessionCache::new());
         }
         if let Some(ref mut cache) = self.session_cache {
             cache.insert(SessionCacheEntry {
@@ -576,11 +559,8 @@ impl TlsConnection {
         data: &kernel_api::resource::net::PacketPayload,
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let data_view = crate::net::payload::PacketPayloadView::new(data);
-        let data_bytes = data_view.read_vec(0, data_view.total_len());
-        if data_bytes.len() != data_view.total_len() {
-            return Err(TlsError::DecodeError);
-        }
+        let data_packet = Self::copy_payload_into_packet(data)?;
+        let data_bytes = data_packet.data();
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
@@ -600,6 +580,9 @@ impl TlsConnection {
         data: &[u8],
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         // レコード構造:
         // - explicit_nonce (8 bytes, TLS 1.2)
         // - ciphertext (variable)
@@ -641,17 +624,10 @@ impl TlsConnection {
         tag.copy_from_slice(auth_tag);
 
         // AES-GCM復号
-        match aes_gcm_decrypt(self.read_key.as_slice(), &nonce, &aad, ciphertext, &tag) {
-            Some(plaintext) => {
-                self.read_seq += 1;
-                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                builder
-                    .push_bytes(&plaintext)
-                    .ok_or(TlsError::DecodeError)?;
-                Ok(builder.build())
-            }
-            None => Err(TlsError::DecryptError),
-        }
+        let plaintext =
+            Self::decrypt_aead_payload(cipher, self.read_key.as_slice(), &nonce, &aad, ciphertext, &tag)?;
+        self.read_seq += 1;
+        Ok(plaintext)
     }
 
     /// ChaCha20-Poly1305 record decryption (RFC 7905 for TLS 1.2, RFC 8446 for TLS 1.3)
@@ -669,6 +645,9 @@ impl TlsConnection {
         data: &[u8],
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256);
         if data.len() < 16 {
             // Minimum: tag(16), no ciphertext is allowed (empty message)
             return Err(TlsError::DecodeError);
@@ -696,23 +675,12 @@ impl TlsConnection {
         // AAD: seq_num(8) || type(1) || version(2) || length(2)
         let aad = Self::tls12_aad(self.read_seq, content_type, ciphertext_len);
 
-        // Convert key and tag to fixed-size arrays
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&self.read_key.as_slice()[0..32]);
-
         let mut tag = [0u8; 16];
         tag.copy_from_slice(auth_tag);
 
-        match chacha20_poly1305_decrypt(&key, &nonce, &aad, ciphertext, &tag) {
-            Some(plaintext) => {
-                self.read_seq += 1;
-                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                builder
-                    .push_bytes(&plaintext)
-                    .ok_or(TlsError::DecodeError)?;
-                Ok(builder.build())
-            }
-            None => Err(TlsError::DecryptError),
-        }
+        let plaintext =
+            Self::decrypt_aead_payload(cipher, self.read_key.as_slice(), &nonce, &aad, ciphertext, &tag)?;
+        self.read_seq += 1;
+        Ok(plaintext)
     }
 }

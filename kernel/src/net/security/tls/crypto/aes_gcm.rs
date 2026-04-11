@@ -3,8 +3,6 @@
 use super::aes_core::{
     AesRoundKeySchedule, aes_encrypt_block_with_schedule, aes_expand_key_schedule,
 };
-use alloc::vec;
-use alloc::vec::Vec;
 use core::ptr;
 
 /// Constant-time 16-byte tag comparison to prevent timing side-channels.
@@ -194,28 +192,20 @@ pub(crate) fn gf128_mul(x: &[u8; 16], h: &[u8; 16]) -> [u8; 16] {
 /// AES-GCM convenience wrapper.  This allocates a temporary context on
 /// every call; use `AesGcmKey` directly for high‑volume cases to avoid
 /// recomputing the key schedule repeatedly.
-pub(crate) fn aes_gcm_encrypt(
+pub(crate) fn aes_gcm_encrypt_into(
     key: &[u8],
     nonce: &[u8],
     aad: &[u8],
     plaintext: &[u8],
-) -> (Vec<u8>, [u8; 16]) {
+    ciphertext_out: &mut [u8],
+    tag_out: &mut [u8; 16],
+) -> Result<(), ()> {
     if nonce.len() != 12 {
-        return (Vec::new(), [0u8; 16]);
+        return Err(());
     }
 
-    if let Some(ctx) = AesGcmKey::new(key) {
-        let mut ciphertext = vec![0u8; plaintext.len()];
-        let mut tag = [0u8; 16];
-        if ctx
-            .encrypt_in_place(nonce, aad, plaintext, &mut ciphertext, &mut tag)
-            .is_ok()
-        {
-            return (ciphertext, tag);
-        }
-    }
-
-    (Vec::new(), [0u8; 16])
+    let ctx = AesGcmKey::new(key).ok_or(())?;
+    ctx.encrypt_in_place(nonce, aad, plaintext, ciphertext_out, tag_out)
 }
 
 #[cfg(test)]
@@ -286,31 +276,26 @@ mod tests {
         // Test decryption
         let decrypted = aes_gcm_decrypt(&key, &nonce, &aad, &ct, &tag);
         assert!(decrypted.is_some());
-        assert_eq!(decrypted.unwrap(), plaintext.to_vec());
+        assert_eq!(
+            decrypted.expect("AES-GCM decrypt should succeed").as_slice(),
+            plaintext.as_slice()
+        );
     }
 }
 
 /// AES-GCM decryption convenience wrapper.  See `aes_gcm_encrypt`.
-pub(crate) fn aes_gcm_decrypt(
+pub(crate) fn aes_gcm_decrypt_into(
     key: &[u8],
     nonce: &[u8],
     aad: &[u8],
     ciphertext: &[u8],
+    plaintext_out: &mut [u8],
     tag: &[u8; 16],
-) -> Option<Vec<u8>> {
+) -> Result<(), ()> {
     if nonce.len() != 12 {
-        return None;
+        return Err(());
     }
 
-    if let Some(ctx) = AesGcmKey::new(key) {
-        let mut plaintext = vec![0u8; ciphertext.len()];
-        if ctx
-            .decrypt_in_place(nonce, aad, ciphertext, &mut plaintext, tag)
-            .is_ok()
-        {
-            return Some(plaintext);
-        }
-    }
-
-    None
+    let ctx = AesGcmKey::new(key).ok_or(())?;
+    ctx.decrypt_in_place(nonce, aad, ciphertext, plaintext_out, tag)
 }

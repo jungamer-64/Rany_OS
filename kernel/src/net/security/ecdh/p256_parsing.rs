@@ -203,16 +203,8 @@ pub(crate) fn scalar_reduce_mod_n(val: &[u64; 8]) -> [u8; 32] {
     let n_bytes = n_fe.to_be_bytes();
     let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
 
-    let rem = val_big.rem(&n_big);
-    let rem_bytes = rem.to_be_bytes();
-
     let mut out = [0u8; 32];
-    if rem_bytes.len() <= 32 {
-        let start = 32 - rem_bytes.len();
-        out[start..].copy_from_slice(&rem_bytes);
-    } else {
-        out.copy_from_slice(&rem_bytes[rem_bytes.len() - 32..]);
-    }
+    val_big.rem(&n_big).write_be_bytes_padded(&mut out);
     out
 }
 
@@ -228,14 +220,8 @@ pub fn scalar_inv_mod_n(a: &[u8; 32]) -> [u8; 32] {
     // n - 2 を BigUint 経由で計算
     let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
     let two_big = crate::net::security::rsa::BigUint::from_be_bytes(&[2]);
-    let nm2 = n_big.sub(&two_big);
-    let nm2_bytes = nm2.to_be_bytes();
-
     let mut exp = [0u8; 32];
-    if nm2_bytes.len() <= 32 {
-        let start = 32 - nm2_bytes.len();
-        exp[start..].copy_from_slice(&nm2_bytes);
-    }
+    n_big.sub(&two_big).write_be_bytes_padded(&mut exp);
 
     // a^(n-2) mod n をバイナリ法で計算
     scalar_pow_mod_n(a, &exp)
@@ -291,8 +277,8 @@ pub(crate) fn verify_r_equals_x(r_bytes: &[u8; 32], r_point: &P256Point) -> Resu
     let n_bytes = n_fe.to_be_bytes();
     let rx_big = crate::net::security::rsa::BigUint::from_be_bytes(&rx_bytes);
     let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
-    let rx_mod_n = rx_big.rem(&n_big);
-    let rx_mod_n_bytes = rx_mod_n.to_be_bytes_padded(32);
+    let mut rx_mod_n_bytes = [0u8; 32];
+    rx_big.rem(&n_big).write_be_bytes_padded(&mut rx_mod_n_bytes);
 
     // r == r' ?
     let mut diff = 0u8;

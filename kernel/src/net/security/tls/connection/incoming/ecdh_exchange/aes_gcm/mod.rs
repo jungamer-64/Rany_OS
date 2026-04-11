@@ -1,8 +1,8 @@
-use alloc::vec::Vec;
-
 use super::*;
 
 mod signature_verify;
+use arrayvec::ArrayVec;
+
 impl TlsConnection {
     /// AES-GCM レコード暗号化 (TLS 1.2)
     pub(super) fn encrypt_aes_gcm_record(
@@ -10,6 +10,9 @@ impl TlsConnection {
         content_type: u8,
         data: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         if self.write_key.is_empty() || self.write_iv.len() < 4 {
@@ -22,9 +25,10 @@ impl TlsConnection {
 
         let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
-        let (ciphertext, auth_tag) = aes_gcm_encrypt(self.write_key.as_slice(), &nonce, &aad, data);
+        let (ciphertext, auth_tag) =
+            Self::encrypt_aead_payload(cipher, self.write_key.as_slice(), &nonce, &aad, data)?;
 
-        let record_len = 8 + ciphertext.len() + 16;
+        let record_len = 8 + ciphertext.total_len() + 16;
         let record_header = [
             content_type,
             0x03,
@@ -41,9 +45,7 @@ impl TlsConnection {
         builder
             .push_bytes(&explicit_nonce)
             .ok_or(TlsError::DecodeError)?;
-        builder
-            .push_bytes(&ciphertext)
-            .ok_or(TlsError::DecodeError)?;
+        builder.push_payload(ciphertext);
         builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
@@ -54,6 +56,9 @@ impl TlsConnection {
         content_type: u8,
         data: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256);
         if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
             return Err(TlsError::CryptoError);
         }
@@ -67,12 +72,15 @@ impl TlsConnection {
 
         let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
-        let mut key = [0u8; 32];
-        key.copy_from_slice(&self.write_key.as_slice()[0..32]);
+        let (ciphertext, auth_tag) = Self::encrypt_aead_payload(
+            cipher,
+            self.write_key.as_slice(),
+            &nonce,
+            &aad,
+            data,
+        )?;
 
-        let (ciphertext, auth_tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, data);
-
-        let record_len = ciphertext.len() + 16;
+        let record_len = ciphertext.total_len() + 16;
         let record_header = [
             content_type,
             0x03,
@@ -86,9 +94,7 @@ impl TlsConnection {
         builder
             .push_bytes(&record_header)
             .ok_or(TlsError::DecodeError)?;
-        builder
-            .push_bytes(&ciphertext)
-            .ok_or(TlsError::DecodeError)?;
+        builder.push_payload(ciphertext);
         builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
@@ -131,12 +137,25 @@ impl TlsConnection {
             self.client_hs_traffic_secret = chs;
             self.server_hs_traffic_secret = shs;
 
-            let (server_key, server_iv) = tls13_derive_traffic_keys_sha384(&shs, key_len);
-            let (client_key, client_iv) = tls13_derive_traffic_keys_sha384(&chs, key_len);
-
-            Self::set_tls_bytes(&mut self.hs_read_key, &server_key)?;
+            let mut server_iv = [0u8; 12];
+            let mut client_iv = [0u8; 12];
+            tls13_derive_traffic_keys_sha384(
+                &shs,
+                &mut self.hs_read_key.as_mut_storage()[..key_len],
+                &mut server_iv,
+            );
+            tls13_derive_traffic_keys_sha384(
+                &chs,
+                &mut self.hs_write_key.as_mut_storage()[..key_len],
+                &mut client_iv,
+            );
+            self.hs_read_key
+                .set_filled_len(key_len)
+                .ok_or(TlsError::DecodeError)?;
+            self.hs_write_key
+                .set_filled_len(key_len)
+                .ok_or(TlsError::DecodeError)?;
             Self::set_tls_bytes(&mut self.hs_read_iv, &server_iv)?;
-            Self::set_tls_bytes(&mut self.hs_write_key, &client_key)?;
             Self::set_tls_bytes(&mut self.hs_write_iv, &client_iv)?;
             self.hs_read_seq = 0;
             self.hs_write_seq = 0;
@@ -160,12 +179,25 @@ impl TlsConnection {
             self.client_hs_traffic_secret[..32].copy_from_slice(&chs);
             self.server_hs_traffic_secret[..32].copy_from_slice(&shs);
 
-            let (server_key, server_iv) = tls13_derive_traffic_keys(&shs, key_len);
-            let (client_key, client_iv) = tls13_derive_traffic_keys(&chs, key_len);
-
-            Self::set_tls_bytes(&mut self.hs_read_key, &server_key)?;
+            let mut server_iv = [0u8; 12];
+            let mut client_iv = [0u8; 12];
+            tls13_derive_traffic_keys(
+                &shs,
+                &mut self.hs_read_key.as_mut_storage()[..key_len],
+                &mut server_iv,
+            );
+            tls13_derive_traffic_keys(
+                &chs,
+                &mut self.hs_write_key.as_mut_storage()[..key_len],
+                &mut client_iv,
+            );
+            self.hs_read_key
+                .set_filled_len(key_len)
+                .ok_or(TlsError::DecodeError)?;
+            self.hs_write_key
+                .set_filled_len(key_len)
+                .ok_or(TlsError::DecodeError)?;
             Self::set_tls_bytes(&mut self.hs_read_iv, &server_iv)?;
-            Self::set_tls_bytes(&mut self.hs_write_key, &client_key)?;
             Self::set_tls_bytes(&mut self.hs_write_iv, &client_iv)?;
             self.hs_read_seq = 0;
             self.hs_write_seq = 0;
@@ -200,11 +232,8 @@ impl TlsConnection {
 
         // 内部コンテントタイプ = 最後の非ゼロバイト
         // TLS 1.3 record format: plaintext || content_type || zeros
-        let decrypted_view = crate::net::payload::PacketPayloadView::new(&decrypted);
-        let decrypted_bytes = decrypted_view.read_vec(0, decrypted_view.total_len());
-        if decrypted_bytes.len() != decrypted_view.total_len() {
-            return Err(TlsError::DecodeError);
-        }
+        let decrypted_packet = Self::copy_payload_into_packet(&decrypted)?;
+        let decrypted_bytes = decrypted_packet.data();
         let mut inner_content_type = 0u8;
         let mut plaintext_len = decrypted_bytes.len();
         for i in (0..decrypted_bytes.len()).rev() {
@@ -416,7 +445,10 @@ impl TlsConnection {
     }
 
     /// TLS 1.3 Certificateメッセージから証明書チェーンDERを抽出する。
-    pub(super) fn tls13_extract_cert_chain<'a>(&self, data: &'a [u8]) -> TlsResult<Vec<&'a [u8]>> {
+    pub(super) fn tls13_extract_cert_chain<'a>(
+        &self,
+        data: &'a [u8],
+    ) -> TlsResult<ArrayVec<&'a [u8], TLS_CERT_CHAIN_CAPACITY>> {
         if data.is_empty() {
             return Err(TlsError::DecodeError);
         }
@@ -438,7 +470,7 @@ impl TlsConnection {
         }
 
         let cert_list_end = offset + certs_len;
-        let mut certs = Vec::new();
+        let mut certs = ArrayVec::<&[u8], TLS_CERT_CHAIN_CAPACITY>::new();
 
         while offset < cert_list_end {
             if offset + 3 > cert_list_end {
@@ -454,7 +486,9 @@ impl TlsConnection {
                 return Err(TlsError::DecodeError);
             }
 
-            certs.push(&data[offset..offset + cert_len]);
+            certs
+                .try_push(&data[offset..offset + cert_len])
+                .map_err(|_| TlsError::CertificateError)?;
             offset += cert_len;
 
             // Skip extensions in CertificateEntry
@@ -518,17 +552,22 @@ impl TlsConnection {
 
         if !self.config.should_skip_verify() {
             // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
-            let ca_ders: Vec<&[u8]> = self
-                .config
-                .ca_certs
-                .iter()
-                .filter_map(|c| c.der.as_contiguous_slice())
-                .collect();
-            if let Some(spki) = crate::net::security::x509::validate_certificate_chain(
-                &certs,
-                self.config.server_name.as_deref(),
-                &ca_ders,
-            ) {
+            let validated_spki = {
+                let mut ca_ders = ArrayVec::<&[u8], TLS_CA_CERTS_CAPACITY>::new();
+                for cert in &self.config.ca_certs {
+                    if let Some(der) = cert.der.as_contiguous_slice() {
+                        ca_ders
+                            .try_push(der)
+                            .map_err(|_| TlsError::CertificateError)?;
+                    }
+                }
+                crate::net::security::x509::validate_certificate_chain(
+                    &certs,
+                    self.config.server_name.as_ref().map(|name| name.as_str()),
+                    &ca_ders,
+                )
+            };
+            if let Some(spki) = validated_spki {
                 self.extract_server_public_key_from_spki(spki)?;
             } else {
                 return Err(TlsError::CertificateError);

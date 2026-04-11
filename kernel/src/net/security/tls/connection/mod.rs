@@ -5,15 +5,12 @@
 // Building block: TLS connection internals
 #![allow(dead_code)]
 
-use alloc::vec;
-use alloc::vec::Vec;
-
 use super::crypto::*;
 use super::error::{TlsError, TlsResult};
 use super::types::*;
 use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpan, append_payload};
 use crate::net::security::ecdh;
-use kernel_api::resource::net::PacketPayload;
+use kernel_api::resource::net::{PacketPayload, PacketRef};
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
 mod incoming;
@@ -113,6 +110,9 @@ impl TranscriptState {
 // ============================================================================
 // TLS Connection
 // ============================================================================
+
+const TLS_CLIENT_HELLO_SCRATCH_CAPACITY: usize = 4096;
+const TLS_EXTENSION_SCRATCH_CAPACITY: usize = 2048;
 
 /// TLS接続
 ///
@@ -256,6 +256,18 @@ impl TlsConnection {
         slot.set(data).ok_or(TlsError::DecodeError)
     }
 
+    pub(super) fn copy_payload_into_packet(payload: &PacketPayload) -> TlsResult<PacketRef> {
+        let payload_view = PacketPayloadView::new(payload);
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(payload_view.total_len(), 0)
+            .ok_or(TlsError::DecodeError)?;
+        if payload_view.copy_all_into(&mut packet.data_mut()[..payload_view.total_len()])
+            != payload_view.total_len()
+        {
+            return Err(TlsError::DecodeError);
+        }
+        Ok(packet)
+    }
+
     fn tls12_aad(seq: u64, content_type: u8, len: usize) -> [u8; 13] {
         let seq_bytes = seq.to_be_bytes();
         let len_bytes = (len as u16).to_be_bytes();
@@ -285,6 +297,81 @@ impl TlsConnection {
             len_bytes[0],
             len_bytes[1],
         ]
+    }
+
+    fn encrypt_aead_payload(
+        cipher: CipherSuite,
+        key: &[u8],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> TlsResult<(kernel_api::resource::net::PacketPayload, [u8; 16])> {
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(plaintext.len(), 0)
+            .ok_or(TlsError::DecodeError)?;
+        if !plaintext.is_empty() {
+            packet.data_mut()[..plaintext.len()].copy_from_slice(plaintext);
+        }
+        let mut tag = [0u8; 16];
+        if cipher.is_chacha20_poly1305() {
+            let mut key_arr = [0u8; 32];
+            key_arr.copy_from_slice(&key[..32]);
+            chacha20_poly1305_encrypt_in_place(
+                &key_arr,
+                nonce,
+                aad,
+                &mut packet.data_mut()[..plaintext.len()],
+                &mut tag,
+            );
+        } else {
+            aes_gcm_encrypt_into(
+                key,
+                nonce,
+                aad,
+                plaintext,
+                &mut packet.data_mut()[..plaintext.len()],
+                &mut tag,
+            )
+            .map_err(|_| TlsError::CryptoError)?;
+        }
+        Ok((PacketPayload::single(packet), tag))
+    }
+
+    fn decrypt_aead_payload(
+        cipher: CipherSuite,
+        key: &[u8],
+        nonce: &[u8; 12],
+        aad: &[u8],
+        ciphertext: &[u8],
+        tag: &[u8; 16],
+    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(ciphertext.len(), 0)
+            .ok_or(TlsError::DecodeError)?;
+        if !ciphertext.is_empty() {
+            packet.data_mut()[..ciphertext.len()].copy_from_slice(ciphertext);
+        }
+        if cipher.is_chacha20_poly1305() {
+            let mut key_arr = [0u8; 32];
+            key_arr.copy_from_slice(&key[..32]);
+            chacha20_poly1305_decrypt_in_place(
+                &key_arr,
+                nonce,
+                aad,
+                &mut packet.data_mut()[..ciphertext.len()],
+                tag,
+            )
+            .map_err(|_| TlsError::DecryptError)?;
+        } else {
+            aes_gcm_decrypt_into(
+                key,
+                nonce,
+                aad,
+                ciphertext,
+                &mut packet.data_mut()[..ciphertext.len()],
+                tag,
+            )
+            .map_err(|_| TlsError::DecryptError)?;
+        }
+        Ok(PacketPayload::single(packet))
     }
 
     fn transcript_len(&self) -> usize {
@@ -431,10 +518,11 @@ impl TlsConnection {
     }
 
     /// セッションキャッシュからセッションIDを探してhelloに追加する
-    fn append_session_id(&mut self, hello: &mut Vec<u8>) {
+    fn append_session_id<const N: usize>(&mut self, hello: &mut TlsBytes<N>) -> Option<()> {
         let cached_session_id = if let Some(ref cache) = self.session_cache {
             if let Some(ref name) = self.config.server_name {
-                cache.find_by_server_name(name).map(|e| e.session_id)
+                cache.find_by_server_name(name.as_str())
+                    .map(|entry| entry.session_id)
             } else {
                 None
             }
@@ -442,17 +530,21 @@ impl TlsConnection {
             None
         };
         if let Some(sid) = cached_session_id {
-            hello.push(32);
-            hello.extend_from_slice(&sid);
+            hello.push_byte(32)?;
+            hello.append_slice(&sid)?;
             self.session_id = SessionId::new(sid);
         } else {
-            hello.push(0);
+            hello.push_byte(0)?;
         }
+        Some(())
     }
 
     /// PSKバインダーを計算してmessageに上書きする (RFC 8446 Section 4.2.11.2)
-    fn compute_psk_binders(&self, message: &mut Vec<u8>) {
-        if self.tls13_psk.is_none() || self.tls13_psk_identity.is_none() {
+    fn compute_psk_binders<const N: usize>(&self, message: &mut TlsBytes<N>) {
+        let Some(psk) = self.tls13_psk.as_ref() else {
+            return;
+        };
+        if self.tls13_psk_identity.is_none() {
             return;
         }
         let use_384 = self.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
@@ -464,16 +556,16 @@ impl TlsConnection {
         }
 
         let truncated_len = message.len() - binders_total;
-        let psk = self.tls13_psk.as_ref().unwrap();
 
         if use_384 {
             let early_secret = tls13_early_secret_sha384(Some(psk.as_slice()));
             let empty_hash = crate::crypto::sha384::compute(&[]);
             let binder_key = tls13_derive_secret_sha384(&early_secret, b"res binder", &empty_hash);
-            let transcript_hash = crate::crypto::sha384::compute(&message[..truncated_len]);
+            let transcript_hash =
+                crate::crypto::sha384::compute(&message.as_slice()[..truncated_len]);
             let binder = hmac_sha384(&binder_key, &transcript_hash);
             let binder_start = message.len() - hash_len;
-            message[binder_start..].copy_from_slice(&binder[..hash_len]);
+            let _ = message.write_slice(binder_start, &binder[..hash_len]);
         } else {
             let early_secret = tls13_early_secret(Some(psk.as_slice()));
             let empty_hash = {
@@ -483,12 +575,12 @@ impl TlsConnection {
             let binder_key = tls13_derive_secret(&early_secret, b"res binder", &empty_hash);
             let transcript_hash = {
                 let mut h = crate::crypto::sha256::Sha256::new();
-                h.update(&message[..truncated_len]);
+                h.update(&message.as_slice()[..truncated_len]);
                 h.finalize()
             };
             let binder = hmac_sha256(&binder_key, &transcript_hash);
             let binder_start = message.len() - hash_len;
-            message[binder_start..].copy_from_slice(&binder[..hash_len]);
+            let _ = message.write_slice(binder_start, &binder[..hash_len]);
         }
     }
 
@@ -508,16 +600,22 @@ impl TlsConnection {
             let early_secret = tls13_early_secret_sha384(Some(psk.as_slice()));
             let ch_hash = self.transcript_hash_sha384();
             let cets = tls13_derive_secret_sha384(&early_secret, b"c e traffic", &ch_hash);
-            let (ew_key, ew_iv) = tls13_derive_traffic_keys_sha384(&cets, key_len);
-            Self::set_tls_bytes(&mut self.early_write_key, &ew_key)
+            let mut ew_iv = [0u8; 12];
+            let ew_key = &mut self.early_write_key.as_mut_storage()[..key_len];
+            tls13_derive_traffic_keys_sha384(&cets, ew_key, &mut ew_iv);
+            self.early_write_key
+                .set_filled_len(key_len)
                 .expect("early write key length");
             Self::set_tls_bytes(&mut self.early_write_iv, &ew_iv).expect("early write iv length");
         } else {
             let early_secret = tls13_early_secret(Some(psk.as_slice()));
             let ch_hash = self.transcript_hash_sha256();
             let cets = tls13_derive_secret(&early_secret, b"c e traffic", &ch_hash);
-            let (ew_key, ew_iv) = tls13_derive_traffic_keys(&cets, key_len);
-            Self::set_tls_bytes(&mut self.early_write_key, &ew_key)
+            let mut ew_iv = [0u8; 12];
+            let ew_key = &mut self.early_write_key.as_mut_storage()[..key_len];
+            tls13_derive_traffic_keys(&cets, ew_key, &mut ew_iv);
+            self.early_write_key
+                .set_filled_len(key_len)
                 .expect("early write key length");
             Self::set_tls_bytes(&mut self.early_write_iv, &ew_iv).expect("early write iv length");
         }
@@ -529,46 +627,66 @@ impl TlsConnection {
         self.prepare_tls13_ecdh_keypair();
         self.init_transcript_hash();
 
-        let mut hello = Vec::new();
+        let mut hello = TlsBytes::<TLS_CLIENT_HELLO_SCRATCH_CAPACITY>::new();
 
         // バージョン（TLS 1.2として送信、supported_versionsで実際のバージョンを指定）
-        hello.extend_from_slice(&[0x03, 0x03]);
+        if hello.append_slice(&[0x03, 0x03]).is_none() {
+            return PacketPayload::default();
+        }
 
         // クライアントランダム
-        hello.extend_from_slice(&self.client_random);
+        if hello.append_slice(&self.client_random).is_none() {
+            return PacketPayload::default();
+        }
 
         // セッションID（キャッシュからの再開を試みる）
-        self.append_session_id(&mut hello);
+        if self.append_session_id(&mut hello).is_none() {
+            return PacketPayload::default();
+        }
 
         // 暗号スイート
-        let cipher_bytes: Vec<u8> = self
-            .config
-            .cipher_suites
-            .iter()
-            .flat_map(|c| [(c.0 >> 8) as u8, c.0 as u8])
-            .collect();
-        hello.extend_from_slice(&[(cipher_bytes.len() >> 8) as u8, cipher_bytes.len() as u8]);
-        hello.extend_from_slice(&cipher_bytes);
+        if hello
+            .append_be_u16((self.config.cipher_suites.len() * 2) as u16)
+            .is_none()
+        {
+            return PacketPayload::default();
+        }
+        for cipher in &self.config.cipher_suites {
+            if hello.append_be_u16(cipher.0).is_none() {
+                return PacketPayload::default();
+            }
+        }
 
         // 圧縮方式（null のみ）
-        hello.extend_from_slice(&[0x01, 0x00]);
+        if hello.append_slice(&[0x01, 0x00]).is_none() {
+            return PacketPayload::default();
+        }
 
         // 拡張機能
-        let mut extensions = Vec::new();
-        self.append_extensions(&mut extensions);
-        hello.extend_from_slice(&[(extensions.len() >> 8) as u8, extensions.len() as u8]);
-        hello.extend_from_slice(&extensions);
+        let mut extensions = TlsBytes::<TLS_EXTENSION_SCRATCH_CAPACITY>::new();
+        if self.append_extensions(&mut extensions).is_none() {
+            return PacketPayload::default();
+        }
+        if hello.append_be_u16(extensions.len() as u16).is_none()
+            || hello.append_slice(extensions.as_slice()).is_none()
+        {
+            return PacketPayload::default();
+        }
 
         // ハンドシェイクヘッダを追加
-        let mut message = vec![HandshakeType::ClientHello as u8];
-        message.extend_from_slice(&[0, (hello.len() >> 8) as u8, hello.len() as u8]);
-        message.extend_from_slice(&hello);
+        let mut message = TlsBytes::<TLS_CLIENT_HELLO_SCRATCH_CAPACITY>::new();
+        if message.push_byte(HandshakeType::ClientHello as u8).is_none()
+            || message.append_be_u24(hello.len()).is_none()
+            || message.append_slice(hello.as_slice()).is_none()
+        {
+            return PacketPayload::default();
+        }
 
         // PSKバインダー計算
         self.compute_psk_binders(&mut message);
 
         // ハンドシェイクメッセージを記録
-        self.append_transcript_bytes(&message)
+        self.append_transcript_bytes(message.as_slice())
             .expect("client hello transcript append");
 
         // Early Data鍵導出
@@ -588,7 +706,7 @@ impl TlsConnection {
         if builder.push_bytes(&record_header).is_none() {
             return PacketPayload::default();
         }
-        if builder.push_bytes(&message).is_none() {
+        if builder.push_bytes(message.as_slice()).is_none() {
             return PacketPayload::default();
         }
         builder.build()
@@ -601,23 +719,33 @@ impl TlsConnection {
     ///
     /// # Returns
     /// 暗号化されたTLSレコード列。鍵未導出時やサイズ超過時は空。
-    fn send_early_data_record_payload(&mut self, data: &[u8]) -> PacketPayload {
+    fn send_early_data_record_payload(&mut self, payload: &PacketPayload) -> PacketPayload {
         if self.early_write_key.is_empty() || self.early_write_iv.len() < 12 {
             return PacketPayload::default();
         }
 
-        if data.is_empty() {
+        if payload.is_empty() {
             return PacketPayload::default();
         }
+
+        let payload_view = PacketPayloadView::new(payload);
 
         let cipher = self
             .tls13_psk_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
 
-        // TLS 1.3 inner plaintext: application_data || ContentType::ApplicationData(23)
-        let mut inner_plaintext = Vec::with_capacity(data.len() + 1);
-        inner_plaintext.extend_from_slice(data);
-        inner_plaintext.push(ContentType::ApplicationData as u8);
+        let mut inner_plaintext =
+            match crate::net::payload::alloc_packet_with_headroom(payload_view.total_len() + 1, 0)
+            {
+                Some(packet) => packet,
+                None => return PacketPayload::default(),
+            };
+        if payload_view.copy_all_into(&mut inner_plaintext.data_mut()[..payload_view.total_len()])
+            != payload_view.total_len()
+        {
+            return PacketPayload::default();
+        }
+        inner_plaintext.data_mut()[payload_view.total_len()] = ContentType::ApplicationData as u8;
 
         // Nonce: IV XOR (zero-padded sequence number)
         let mut nonce = [0u8; 12];
@@ -627,22 +755,20 @@ impl TlsConnection {
             nonce[4 + i] ^= seq_bytes[i];
         }
 
-        let encrypted_len = inner_plaintext.len() + 16;
+        let encrypted_len = payload_view.total_len() + 1 + 16;
 
         // AAD: TLS record header
         let aad = Self::tls13_record_aad(encrypted_len);
 
-        let (ciphertext, auth_tag) = if cipher.is_chacha20_poly1305() {
-            let mut key_arr = [0u8; 32];
-            key_arr.copy_from_slice(&self.early_write_key.as_slice()[..32]);
-            chacha20_poly1305_encrypt(&key_arr, &nonce, &aad, &inner_plaintext)
-        } else {
-            aes_gcm_encrypt(
-                self.early_write_key.as_slice(),
-                &nonce,
-                &aad,
-                &inner_plaintext,
-            )
+        let (ciphertext, auth_tag) = match Self::encrypt_aead_payload(
+            cipher,
+            self.early_write_key.as_slice(),
+            &nonce,
+            &aad,
+            &inner_plaintext.data()[..payload_view.total_len() + 1],
+        ) {
+            Ok(parts) => parts,
+            Err(_) => return PacketPayload::default(),
         };
 
         let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
@@ -660,9 +786,7 @@ impl TlsConnection {
         if builder.push_bytes(&record_header).is_none() {
             return PacketPayload::default();
         }
-        if builder.push_bytes(&ciphertext).is_none() {
-            return PacketPayload::default();
-        }
+        builder.push_payload(ciphertext);
         if builder.push_bytes(&auth_tag).is_none() {
             return PacketPayload::default();
         }
@@ -675,12 +799,7 @@ impl TlsConnection {
             return PacketPayload::default();
         }
         append_payload(&mut self.early_data_buffer, payload.clone());
-        let view = PacketPayloadView::new(payload);
-        let data = view.read_vec(0, view.total_len());
-        if data.len() != view.total_len() {
-            return PacketPayload::default();
-        }
-        self.send_early_data_record_payload(&data)
+        self.send_early_data_record_payload(payload)
     }
 
     /// サーバーに拒否されたEarly Dataの平文を取得
@@ -696,32 +815,38 @@ impl TlsConnection {
 
     /// 拡張機能を構築
     /// Supported Versions拡張を構築 (RFC 8446 Section 4.2.1)
-    fn append_supported_versions_ext(&self, ext: &mut Vec<u8>) {
+    fn append_supported_versions_ext<const N: usize>(&self, ext: &mut TlsBytes<N>) -> Option<()> {
+        let len_offset = ext.len();
+        ext.push_byte(0)?;
         if self.config.max_version >= TlsVersion::TLS_1_3 {
-            ext.extend_from_slice(&[0x03, 0x04]); // TLS 1.3
+            ext.append_slice(&[0x03, 0x04])?; // TLS 1.3
         }
         if self.config.min_version <= TlsVersion::TLS_1_2 {
-            ext.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
+            ext.append_slice(&[0x03, 0x03])?; // TLS 1.2
         }
         if self.config.min_version <= TlsVersion::TLS_1_1
             && self.config.max_version >= TlsVersion::TLS_1_1
         {
-            ext.extend_from_slice(&[0x03, 0x02]); // TLS 1.1
+            ext.append_slice(&[0x03, 0x02])?; // TLS 1.1
         }
         if self.config.min_version <= TlsVersion::TLS_1_0 {
-            ext.extend_from_slice(&[0x03, 0x01]); // TLS 1.0
+            ext.append_slice(&[0x03, 0x01])?; // TLS 1.0
         }
-        ext.insert(0, ext.len() as u8);
+        let versions_len = ext.len().checked_sub(len_offset + 1)?;
+        ext.write_slice(len_offset, &[versions_len as u8])?;
+        Some(())
     }
 
     /// TLS 1.3固有の拡張を追加（PSK modes, Key Share, Early Data, Pre-Shared Key）
-    fn append_tls13_extensions(&self, extensions: &mut Vec<u8>) {
+    fn append_tls13_extensions<const N: usize>(
+        &self,
+        extensions: &mut TlsBytes<N>,
+    ) -> Option<()> {
         // PSK Key Exchange Modes (RFC 8446 Section 4.2.9)
         {
-            let ext = vec![1, 1]; // 1 mode, psk_dhe_ke(1)
-            extensions.extend_from_slice(&[0, 45]); // type = psk_key_exchange_modes
-            extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
-            extensions.extend_from_slice(&ext);
+            extensions.append_slice(&[0, 45])?; // type = psk_key_exchange_modes
+            extensions.append_be_u16(2)?;
+            extensions.append_slice(&[1, 1])?;
         }
 
         // Key Share (RFC 8446 Section 4.2.8)
@@ -729,23 +854,20 @@ impl TlsConnection {
             let pubkey_bytes = keypair.public_key_bytes();
             let group_id = keypair.group().to_named_group();
             let entry_len = 2 + 2 + pubkey_bytes.len();
-            let mut ext = Vec::with_capacity(2 + entry_len);
-            ext.push((entry_len >> 8) as u8);
-            ext.push(entry_len as u8);
-            ext.push((group_id >> 8) as u8);
-            ext.push(group_id as u8);
-            ext.push((pubkey_bytes.len() >> 8) as u8);
-            ext.push(pubkey_bytes.len() as u8);
-            ext.extend_from_slice(&pubkey_bytes);
-            extensions.extend_from_slice(&[0, 51]); // type = key_share
-            extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
-            extensions.extend_from_slice(&ext);
+            let mut ext = TlsBytes::<128>::new();
+            ext.append_be_u16(entry_len as u16)?;
+            ext.append_be_u16(group_id)?;
+            ext.append_be_u16(pubkey_bytes.len() as u16)?;
+            ext.append_slice(pubkey_bytes.as_slice())?;
+            extensions.append_slice(&[0, 51])?; // type = key_share
+            extensions.append_be_u16(ext.len() as u16)?;
+            extensions.append_slice(ext.as_slice())?;
         }
 
         // early_data (RFC 8446 Section 4.2.10)
         if self.tls13_psk.is_some() && self.max_early_data_size > 0 {
-            extensions.extend_from_slice(&[0, 42]); // type = early_data
-            extensions.extend_from_slice(&[0, 0]); // length = 0
+            extensions.append_slice(&[0, 42])?; // type = early_data
+            extensions.append_be_u16(0)?; // length = 0
         }
 
         // pre_shared_key (RFC 8446 Section 4.2.11) - MUST be last extension
@@ -754,104 +876,94 @@ impl TlsConnection {
             let hash_len = if use_384 { 48 } else { 32 };
             let obfuscated_age: u32 = self.tls13_ticket_age_add;
             let Some(identity_bytes) = psk_identity.as_contiguous_slice() else {
-                return;
+                return None;
             };
             let identity_len = identity_bytes.len();
             let identities_len = 2 + identity_len + 4;
             let binders_len = 1 + hash_len;
             let ext_data_len = 2 + identities_len + 2 + binders_len;
 
-            extensions.extend_from_slice(&[0, 41]); // type = pre_shared_key
-            extensions.extend_from_slice(&[(ext_data_len >> 8) as u8, ext_data_len as u8]);
-            extensions.extend_from_slice(&[(identities_len >> 8) as u8, identities_len as u8]);
-            extensions.extend_from_slice(&[(identity_len >> 8) as u8, identity_len as u8]);
-            extensions.extend_from_slice(identity_bytes);
-            extensions.extend_from_slice(&obfuscated_age.to_be_bytes());
-            extensions.extend_from_slice(&[(binders_len >> 8) as u8, binders_len as u8]);
-            extensions.push(hash_len as u8);
-            let new_len = extensions.len() + hash_len;
-            extensions.resize(new_len, 0); // binder placeholder
+            extensions.append_slice(&[0, 41])?; // type = pre_shared_key
+            extensions.append_be_u16(ext_data_len as u16)?;
+            extensions.append_be_u16(identities_len as u16)?;
+            extensions.append_be_u16(identity_len as u16)?;
+            extensions.append_slice(identity_bytes)?;
+            extensions.append_slice(&obfuscated_age.to_be_bytes())?;
+            extensions.append_be_u16(binders_len as u16)?;
+            extensions.push_byte(hash_len as u8)?;
+            extensions.append_zeroes(hash_len)?; // binder placeholder
         }
+        Some(())
     }
 
     /// 拡張機能を構築
-    fn append_extensions(&self, extensions: &mut Vec<u8>) {
+    fn append_extensions<const N: usize>(&self, extensions: &mut TlsBytes<N>) -> Option<()> {
         // Server Name Indication
         if let Some(ref name) = self.config.server_name {
             let name_bytes = name.as_bytes();
-            let mut ext = Vec::new();
+            let mut ext = TlsBytes::<512>::new();
             let list_len = name_bytes.len() + 3;
-            ext.extend_from_slice(&[(list_len >> 8) as u8, (list_len & 0xFF) as u8]);
-            ext.push(0); // hostname type
-            ext.extend_from_slice(&[
-                (name_bytes.len() >> 8) as u8,
-                (name_bytes.len() & 0xFF) as u8,
-            ]);
-            ext.extend_from_slice(name_bytes);
-            extensions.extend_from_slice(&[0, 0]); // SNI type
-            extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
-            extensions.extend_from_slice(&ext);
+            ext.append_be_u16(list_len as u16)?;
+            ext.push_byte(0)?; // hostname type
+            ext.append_be_u16(name_bytes.len() as u16)?;
+            ext.append_slice(name_bytes)?;
+            extensions.append_slice(&[0, 0])?; // SNI type
+            extensions.append_be_u16(ext.len() as u16)?;
+            extensions.append_slice(ext.as_slice())?;
         }
 
         // Supported Groups
         {
-            let groups: Vec<u8> = self
-                .config
-                .named_groups
-                .iter()
-                .flat_map(|g| [(g.0 >> 8) as u8, g.0 as u8])
-                .collect();
-            let mut ext = vec![(groups.len() >> 8) as u8, (groups.len() & 0xFF) as u8];
-            ext.extend_from_slice(&groups);
-            extensions.extend_from_slice(&[0, 10]); // type
-            extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
-            extensions.extend_from_slice(&ext);
+            let mut ext = TlsBytes::<128>::new();
+            ext.append_be_u16((self.config.named_groups.len() * 2) as u16)?;
+            for group in &self.config.named_groups {
+                ext.append_be_u16(group.0)?;
+            }
+            extensions.append_slice(&[0, 10])?; // type
+            extensions.append_be_u16(ext.len() as u16)?;
+            extensions.append_slice(ext.as_slice())?;
         }
 
         // Signature Algorithms
         {
-            let schemes: Vec<u8> = self
-                .config
-                .signature_schemes
-                .iter()
-                .flat_map(|s| [(s.0 >> 8) as u8, s.0 as u8])
-                .collect();
-            let mut ext = vec![(schemes.len() >> 8) as u8, (schemes.len() & 0xFF) as u8];
-            ext.extend_from_slice(&schemes);
-            extensions.extend_from_slice(&[0, 13]); // type
-            extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
-            extensions.extend_from_slice(&ext);
+            let mut ext = TlsBytes::<128>::new();
+            ext.append_be_u16((self.config.signature_schemes.len() * 2) as u16)?;
+            for scheme in &self.config.signature_schemes {
+                ext.append_be_u16(scheme.0)?;
+            }
+            extensions.append_slice(&[0, 13])?; // type
+            extensions.append_be_u16(ext.len() as u16)?;
+            extensions.append_slice(ext.as_slice())?;
         }
 
         // Supported Versions
         {
-            let start = extensions.len();
-            extensions.extend_from_slice(&[0, 43]); // type = supported_versions
-            extensions.extend_from_slice(&[0, 0]);
-            let ext_start = extensions.len();
-            self.append_supported_versions_ext(extensions);
-            let ext_len = extensions.len() - ext_start;
-            extensions[start + 2] = (ext_len >> 8) as u8;
-            extensions[start + 3] = (ext_len & 0xFF) as u8;
+            let mut ext = TlsBytes::<32>::new();
+            self.append_supported_versions_ext(&mut ext)?;
+            extensions.append_slice(&[0, 43])?; // type = supported_versions
+            extensions.append_be_u16(ext.len() as u16)?;
+            extensions.append_slice(ext.as_slice())?;
         }
 
         // TLS 1.3固有の拡張
         if self.config.max_version >= TlsVersion::TLS_1_3 {
-            self.append_tls13_extensions(extensions);
+            self.append_tls13_extensions(extensions)?;
         }
 
         // ALPN
         if !self.config.alpn_protocols.is_empty() {
-            let mut protos = Vec::new();
+            let mut protos = TlsBytes::<512>::new();
             for proto in &self.config.alpn_protocols {
-                protos.push(proto.len() as u8);
-                protos.extend_from_slice(proto.as_bytes());
+                protos.push_byte(proto.len() as u8)?;
+                protos.append_slice(proto.as_bytes())?;
             }
-            let mut ext = vec![(protos.len() >> 8) as u8, (protos.len() & 0xFF) as u8];
-            ext.extend_from_slice(&protos);
-            extensions.extend_from_slice(&[0, 16]); // type
-            extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
-            extensions.extend_from_slice(&ext);
+            let mut ext = TlsBytes::<512>::new();
+            ext.append_be_u16(protos.len() as u16)?;
+            ext.append_slice(protos.as_slice())?;
+            extensions.append_slice(&[0, 16])?; // type
+            extensions.append_be_u16(ext.len() as u16)?;
+            extensions.append_slice(ext.as_slice())?;
         }
+        Some(())
     }
 }

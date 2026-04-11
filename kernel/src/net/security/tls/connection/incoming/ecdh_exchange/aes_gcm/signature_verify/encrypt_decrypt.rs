@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 // Building block: TLS encrypt/decrypt
 
 use super::*;
@@ -14,10 +12,14 @@ impl TlsConnection {
             if self.state != TlsState::Established && self.state != TlsState::Handshaking {
                 return Err(TlsError::NotConnected);
             }
-            let mut inner_plaintext = Vec::with_capacity(data.len() + 1);
-            inner_plaintext.extend_from_slice(data);
-            inner_plaintext.push(ContentType::ApplicationData as u8);
-            return self.tls13_encrypt_record(&inner_plaintext, false);
+            let mut inner_plaintext = TlsBytes::<16384>::new();
+            inner_plaintext
+                .append_slice(data)
+                .ok_or(TlsError::DecodeError)?;
+            inner_plaintext
+                .push_byte(ContentType::ApplicationData as u8)
+                .ok_or(TlsError::DecodeError)?;
+            return self.tls13_encrypt_record(inner_plaintext.as_slice(), false);
         }
 
         // TLS 1.2
@@ -51,6 +53,9 @@ impl TlsConnection {
         let explicit_nonce = self.write_seq.to_be_bytes();
 
         // Keys not set — return error (encryption requires valid keys)
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         let (ciphertext, auth_tag) = if self.write_key.is_empty() || self.write_iv.len() < 4 {
             return Err(TlsError::CryptoError);
         } else {
@@ -62,11 +67,11 @@ impl TlsConnection {
             // AAD: seq_num(8) || type(1) || version(2) || length(2)
             let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
-            aes_gcm_encrypt(self.write_key.as_slice(), &nonce, &aad, data)
+            Self::encrypt_aead_payload(cipher, self.write_key.as_slice(), &nonce, &aad, data)?
         };
 
         // Record length: nonce(8) + ciphertext + tag(16)
-        let record_len = 8 + ciphertext.len() + 16;
+        let record_len = 8 + ciphertext.total_len() + 16;
 
         let record_header = [
             content_type,
@@ -84,9 +89,7 @@ impl TlsConnection {
         builder
             .push_bytes(&explicit_nonce)
             .ok_or(TlsError::DecodeError)?;
-        builder
-            .push_bytes(&ciphertext)
-            .ok_or(TlsError::DecodeError)?;
+        builder.push_payload(ciphertext);
         builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
@@ -105,6 +108,9 @@ impl TlsConnection {
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // Keys not set — return error (encryption requires valid keys)
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256);
         let (ciphertext, auth_tag) =
             if self.write_key.is_empty() || self.write_key.len() < 32 || self.write_iv.len() < 12 {
                 return Err(TlsError::CryptoError);
@@ -120,14 +126,11 @@ impl TlsConnection {
                 // AAD: seq_num(8) || type(1) || version(2) || length(2)
                 let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&self.write_key.as_slice()[0..32]);
-
-                chacha20_poly1305_encrypt(&key, &nonce, &aad, data)
+                Self::encrypt_aead_payload(cipher, self.write_key.as_slice(), &nonce, &aad, data)?
             };
 
         // Record length: ciphertext + tag(16) — no explicit nonce for ChaCha20-Poly1305
-        let record_len = ciphertext.len() + 16;
+        let record_len = ciphertext.total_len() + 16;
 
         let record_header = [
             content_type,
@@ -142,9 +145,7 @@ impl TlsConnection {
         builder
             .push_bytes(&record_header)
             .ok_or(TlsError::DecodeError)?;
-        builder
-            .push_bytes(&ciphertext)
-            .ok_or(TlsError::DecodeError)?;
+        builder.push_payload(ciphertext);
         builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
@@ -272,22 +273,16 @@ impl TlsConnection {
             let mut rms = [0u8; 48];
             let copy_len = self.resumption_master_secret.len().min(48);
             rms[..copy_len].copy_from_slice(&self.resumption_master_secret.as_slice()[..copy_len]);
-            TlsBytes::from_slice(&hkdf_expand_label_sha384(
-                &rms,
-                b"resumption",
-                ticket_nonce,
-                hash_len,
-            ))?
+            let mut derived = [0u8; 48];
+            hkdf_expand_label_sha384(&rms, b"resumption", ticket_nonce, &mut derived[..hash_len]);
+            TlsBytes::from_slice(&derived[..hash_len])?
         } else {
             let mut rms = [0u8; 32];
             let copy_len = self.resumption_master_secret.len().min(32);
             rms[..copy_len].copy_from_slice(&self.resumption_master_secret.as_slice()[..copy_len]);
-            TlsBytes::from_slice(&hkdf_expand_label(
-                &rms,
-                b"resumption",
-                ticket_nonce,
-                hash_len,
-            ))?
+            let mut derived = [0u8; 32];
+            hkdf_expand_label(&rms, b"resumption", ticket_nonce, &mut derived[..hash_len]);
+            TlsBytes::from_slice(&derived[..hash_len])?
         };
         Some(psk)
     }
@@ -371,25 +366,39 @@ impl TlsConnection {
         if use_384 {
             let mut old_secret = [0u8; 48];
             old_secret.copy_from_slice(&self.server_app_traffic_secret);
-            let result = hkdf_expand_label_sha384(&old_secret, b"traffic upd", b"", hash_len);
-            new_server_secret[..hash_len].copy_from_slice(&result[..hash_len]);
+            hkdf_expand_label_sha384(
+                &old_secret,
+                b"traffic upd",
+                b"",
+                &mut new_server_secret[..hash_len],
+            );
         } else {
             let mut old_secret = [0u8; 32];
             old_secret.copy_from_slice(&self.server_app_traffic_secret[..32]);
-            let result = hkdf_expand_label(&old_secret, b"traffic upd", b"", hash_len);
-            new_server_secret[..hash_len].copy_from_slice(&result[..hash_len]);
+            hkdf_expand_label(
+                &old_secret,
+                b"traffic upd",
+                b"",
+                &mut new_server_secret[..hash_len],
+            );
         }
         self.server_app_traffic_secret = new_server_secret;
 
         // 新しいサーバー読み取り鍵を導出
-        let (new_read_key, new_read_iv) = if use_384 {
-            tls13_derive_traffic_keys_sha384(&self.server_app_traffic_secret, key_len)
+        let mut new_read_iv = [0u8; 12];
+        let mut new_read_key = [0u8; 32];
+        if use_384 {
+            tls13_derive_traffic_keys_sha384(
+                &self.server_app_traffic_secret,
+                &mut new_read_key[..key_len],
+                &mut new_read_iv,
+            );
         } else {
             let mut secret32 = [0u8; 32];
             secret32.copy_from_slice(&self.server_app_traffic_secret[..32]);
-            tls13_derive_traffic_keys(&secret32, key_len)
-        };
-        Self::set_tls_bytes(&mut self.read_key, &new_read_key)?;
+            tls13_derive_traffic_keys(&secret32, &mut new_read_key[..key_len], &mut new_read_iv);
+        }
+        Self::set_tls_bytes(&mut self.read_key, &new_read_key[..key_len])?;
         Self::set_tls_bytes(&mut self.read_iv, &new_read_iv)?;
         self.read_seq = 0;
 
@@ -399,24 +408,42 @@ impl TlsConnection {
             if use_384 {
                 let mut old_secret = [0u8; 48];
                 old_secret.copy_from_slice(&self.client_app_traffic_secret);
-                let result = hkdf_expand_label_sha384(&old_secret, b"traffic upd", b"", hash_len);
-                new_client_secret[..hash_len].copy_from_slice(&result[..hash_len]);
+                hkdf_expand_label_sha384(
+                    &old_secret,
+                    b"traffic upd",
+                    b"",
+                    &mut new_client_secret[..hash_len],
+                );
             } else {
                 let mut old_secret = [0u8; 32];
                 old_secret.copy_from_slice(&self.client_app_traffic_secret[..32]);
-                let result = hkdf_expand_label(&old_secret, b"traffic upd", b"", hash_len);
-                new_client_secret[..hash_len].copy_from_slice(&result[..hash_len]);
+                hkdf_expand_label(
+                    &old_secret,
+                    b"traffic upd",
+                    b"",
+                    &mut new_client_secret[..hash_len],
+                );
             }
             self.client_app_traffic_secret = new_client_secret;
 
-            let (new_write_key, new_write_iv) = if use_384 {
-                tls13_derive_traffic_keys_sha384(&self.client_app_traffic_secret, key_len)
+            let mut new_write_iv = [0u8; 12];
+            let mut new_write_key = [0u8; 32];
+            if use_384 {
+                tls13_derive_traffic_keys_sha384(
+                    &self.client_app_traffic_secret,
+                    &mut new_write_key[..key_len],
+                    &mut new_write_iv,
+                );
             } else {
                 let mut secret32 = [0u8; 32];
                 secret32.copy_from_slice(&self.client_app_traffic_secret[..32]);
-                tls13_derive_traffic_keys(&secret32, key_len)
-            };
-            Self::set_tls_bytes(&mut self.write_key, &new_write_key)?;
+                tls13_derive_traffic_keys(
+                    &secret32,
+                    &mut new_write_key[..key_len],
+                    &mut new_write_iv,
+                );
+            }
+            Self::set_tls_bytes(&mut self.write_key, &new_write_key[..key_len])?;
             Self::set_tls_bytes(&mut self.write_iv, &new_write_iv)?;
             self.write_seq = 0;
 

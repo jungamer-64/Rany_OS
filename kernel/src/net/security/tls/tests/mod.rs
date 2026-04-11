@@ -4,15 +4,20 @@
 
 use super::*;
 
-fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
+fn payload_bytes(
+    payload: &kernel_api::resource::net::PacketPayload,
+) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
-    let mut bytes = alloc::vec![0u8; view.total_len()];
-    let copied = view.copy_all_into(&mut bytes);
-    bytes.truncate(copied);
+    let mut bytes = TlsBytes::<16384>::new();
+    bytes
+        .set_filled_len(view.total_len())
+        .expect("test payload fits fixed TLS buffer");
+    let copied = view.copy_all_into(bytes.as_mut_slice());
+    bytes
+        .set_filled_len(copied)
+        .expect("copied test payload length stays in bounds");
     bytes
 }
-use alloc::vec::Vec;
-
 // ---------- RFC 8439 shared test vectors ----------
 
 /// RFC 8439 — plaintext used in multiple test vectors.
@@ -54,40 +59,52 @@ const RFC8439_AEAD_TAG: [u8; 16] = [
 // ---------- AEAD test helpers ----------
 
 /// Encrypt → verify ciphertext differs and preserves length → decrypt → verify roundtrip.
-fn run_aead_roundtrip(
+fn run_aead_roundtrip<Ciphertext, Plaintext>(
     plaintext: &[u8],
-    encrypt: impl FnOnce(&[u8]) -> (Vec<u8>, [u8; 16]),
-    decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Vec<u8>>,
-) {
+    encrypt: impl FnOnce(&[u8]) -> (Ciphertext, [u8; 16]),
+    decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Plaintext>,
+)
+where
+    Ciphertext: AsRef<[u8]>,
+    Plaintext: AsRef<[u8]>,
+{
     let (ct, tag) = encrypt(plaintext);
-    assert_ne!(ct.as_slice(), plaintext);
-    assert_eq!(ct.len(), plaintext.len());
-    let dec = decrypt(&ct, &tag);
+    assert_ne!(ct.as_ref(), plaintext);
+    assert_eq!(ct.as_ref().len(), plaintext.len());
+    let dec = decrypt(ct.as_ref(), &tag);
     assert!(dec.is_some());
-    assert_eq!(dec.unwrap().as_slice(), plaintext);
+    assert_eq!(dec.expect("AEAD decrypt should succeed").as_ref(), plaintext);
 }
 
 /// Encrypt → corrupt tag → verify decrypt fails.
-fn run_aead_auth_failure(
+fn run_aead_auth_failure<Ciphertext, Plaintext>(
     plaintext: &[u8],
-    encrypt: impl FnOnce(&[u8]) -> (Vec<u8>, [u8; 16]),
-    decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Vec<u8>>,
-) {
+    encrypt: impl FnOnce(&[u8]) -> (Ciphertext, [u8; 16]),
+    decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Plaintext>,
+)
+where
+    Ciphertext: AsRef<[u8]>,
+    Plaintext: AsRef<[u8]>,
+{
     let (ct, mut tag) = encrypt(plaintext);
     tag[0] ^= 0xFF;
-    assert!(decrypt(&ct, &tag).is_none());
+    assert!(decrypt(ct.as_ref(), &tag).is_none());
 }
 
 /// Encrypt empty → assert empty ciphertext → decrypt → assert empty result.
-fn run_aead_empty(
-    encrypt: impl FnOnce(&[u8]) -> (Vec<u8>, [u8; 16]),
-    decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Vec<u8>>,
-) {
+fn run_aead_empty<Ciphertext, Plaintext>(
+    encrypt: impl FnOnce(&[u8]) -> (Ciphertext, [u8; 16]),
+    decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Plaintext>,
+)
+where
+    Ciphertext: AsRef<[u8]>,
+    Plaintext: AsRef<[u8]>,
+{
     let (ct, tag) = encrypt(&[]);
-    assert!(ct.is_empty());
+    assert!(ct.as_ref().is_empty());
     let r = decrypt(&[], &tag);
     assert!(r.is_some());
-    assert!(r.unwrap().is_empty());
+    assert!(r.expect("AEAD empty decrypt should succeed").as_ref().is_empty());
 }
 
 // ========================================================================
@@ -687,7 +704,9 @@ fn test_tls_connection_initial_state() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tls_connection_client_hello() {
-    let config = TlsConfig::new().with_server_name("example.com");
+    let config = TlsConfig::new()
+        .with_server_name("example.com")
+        .expect("test server name fits fixed TLS capacity");
     let mut conn = TlsConnection::new(config);
 
     let hello = payload_bytes(&conn.build_client_hello_payload());

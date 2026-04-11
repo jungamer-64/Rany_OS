@@ -26,7 +26,10 @@ pub fn rsa_pss_verify(
     }
 
     let m = s.mod_exp(&e, &n);
-    let em = m.to_be_bytes_padded(k);
+    let mut em = [0u8; RSA_MAX_BYTES];
+    let em = &mut em[..k];
+    m.write_be_bytes_padded(em);
+    let em = &em[..];
 
     // Step 2: EMSA-PSS-VERIFY
     let em_len = em.len();
@@ -42,51 +45,73 @@ pub fn rsa_pss_verify(
     let h = &em[db_len..db_len + h_len];
 
     let db = unmask_db(masked_db, h, db_len, hash_alg, em_len, k);
+    let db = &db[..db_len];
 
     let salt_start = find_pss_padding_separator(&db)?;
     let salt = &db[salt_start..];
 
     // M' = (0x)00 00 00 00 00 00 00 00 || mHash || salt
-    let mut m_prime = Vec::with_capacity(8 + h_len + salt.len());
-    m_prime.extend_from_slice(&[0u8; 8]);
-    m_prime.extend_from_slice(message_hash);
-    m_prime.extend_from_slice(salt);
+    let mut m_prime = [0u8; RSA_MAX_BYTES + 8];
+    let m_prime_len = 8 + h_len + salt.len();
+    if m_prime_len > m_prime.len() {
+        return Err(RsaError::ModulusTooSmall);
+    }
+    m_prime[8..8 + h_len].copy_from_slice(message_hash);
+    m_prime[8 + h_len..m_prime_len].copy_from_slice(salt);
 
-    let h_prime = hash_compute(hash_alg, &m_prime);
+    let mut h_prime = [0u8; 64];
+    let h_prime_len = hash_compute_into(hash_alg, &m_prime[..m_prime_len], &mut h_prime);
 
-    constant_time_hash_eq(h, &h_prime)
+    constant_time_hash_eq(h, &h_prime[..h_prime_len])
 }
 
 /// MGF1 マスク生成関数 (RFC 8017 Appendix B.2.1)
-pub(crate) fn mgf1(seed: &[u8], length: usize, hash_alg: HashAlgorithm) -> Vec<u8> {
-    let h_len = hash_alg.digest_len();
-    let mut output = Vec::with_capacity(length + h_len);
+pub(crate) fn mgf1_into(seed: &[u8], output: &mut [u8], hash_alg: HashAlgorithm) {
     let mut counter: u32 = 0;
+    let mut offset = 0usize;
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while output.len() < length {
-        let mut input = Vec::with_capacity(seed.len() + 4);
-        input.extend_from_slice(seed);
-        input.extend_from_slice(&counter.to_be_bytes());
+    while offset < output.len() {
+        let mut input = [0u8; 128];
+        let input_len = seed.len() + 4;
+        if input_len > input.len() {
+            return;
+        }
+        input[..seed.len()].copy_from_slice(seed);
+        input[seed.len()..input_len].copy_from_slice(&counter.to_be_bytes());
 
-        let hash = hash_compute(hash_alg, &input);
-        output.extend_from_slice(&hash);
+        let mut hash = [0u8; 64];
+        let hash_len = hash_compute_into(hash_alg, &input[..input_len], &mut hash);
+        let copy_len = (output.len() - offset).min(hash_len);
+        output[offset..offset + copy_len].copy_from_slice(&hash[..copy_len]);
+        offset += copy_len;
         counter += 1;
     }
-
-    output.truncate(length);
-    output
 }
 
 /// ハッシュ計算ヘルパー
-pub(crate) fn hash_compute(hash_alg: HashAlgorithm, data: &[u8]) -> Vec<u8> {
+pub(crate) fn hash_compute_into(hash_alg: HashAlgorithm, data: &[u8], out: &mut [u8]) -> usize {
     match hash_alg {
         HashAlgorithm::Sha1 => {
-            crate::net::security::tls::crypto::legacy::sha1_compute(data).to_vec()
+            let hash = crate::net::security::tls::crypto::legacy::sha1_compute(data);
+            out[..20].copy_from_slice(&hash);
+            20
         }
-        HashAlgorithm::Sha256 => crate::crypto::sha256::compute(data).to_vec(),
-        HashAlgorithm::Sha384 => crate::crypto::sha384::compute(data).to_vec(),
-        HashAlgorithm::Sha512 => crate::crypto::sha512::compute(data).to_vec(),
+        HashAlgorithm::Sha256 => {
+            let hash = crate::crypto::sha256::compute(data);
+            out[..32].copy_from_slice(&hash);
+            32
+        }
+        HashAlgorithm::Sha384 => {
+            let hash = crate::crypto::sha384::compute(data);
+            out[..48].copy_from_slice(&hash);
+            48
+        }
+        HashAlgorithm::Sha512 => {
+            let hash = crate::crypto::sha512::compute(data);
+            out[..64].copy_from_slice(&hash);
+            64
+        }
     }
 }
 
@@ -124,10 +149,11 @@ pub mod qemu_tests {
         let modulus = BigUint::from_be_bytes(&[11]);
 
         let result = base.mod_exp(&exp, &modulus);
-        let result_bytes = result.to_be_bytes();
+        let mut result_bytes = [0u8; RSA_MAX_BYTES];
+        let result_len = result.write_be_bytes(&mut result_bytes).unwrap_or(0);
 
         // 3^7 = 2187, 2187 mod 11 = 2187 - 198*11 = 2187 - 2178 = 9
-        result_bytes.len() == 1 && result_bytes[0] == 9
+        result_len == 1 && result_bytes[0] == 9
     }
 
     /// 256ビット決定論的モジュラ冪乗テスト

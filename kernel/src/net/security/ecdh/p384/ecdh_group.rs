@@ -42,6 +42,44 @@ impl EcdhGroup {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EcdhPublicKeyBytes {
+    X25519([u8; 32]),
+    Secp256r1([u8; 65]),
+}
+
+impl EcdhPublicKeyBytes {
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::X25519(bytes) => bytes,
+            Self::Secp256r1(bytes) => bytes,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EcdhSharedSecret {
+    bytes: [u8; 32],
+}
+
+impl EcdhSharedSecret {
+    pub fn new(bytes: [u8; 32]) -> Self {
+        Self { bytes }
+    }
+
+    pub fn as_slice(&self) -> &[u8; 32] {
+        &self.bytes
+    }
+}
+
 // ============================================================================
 // ECDH Key Pair
 // ============================================================================
@@ -118,13 +156,13 @@ impl EcdhKeyPair {
     /// TLSワイヤーフォーマット（ClientKeyExchange/KeyShare）用。
     /// X25519の場合は32バイトのu座標。
     /// P-256の場合は65バイトの非圧縮ポイント（04 || x || y）。
-    pub fn public_key_bytes(&self) -> Vec<u8> {
+    pub fn public_key_bytes(&self) -> EcdhPublicKeyBytes {
         match self {
             EcdhKeyPair::X25519 { pk, .. } => {
                 let bytes: &[u8; 32] = pk;
-                bytes.to_vec()
+                EcdhPublicKeyBytes::X25519(*bytes)
             }
-            EcdhKeyPair::Secp256r1 { pk, .. } => pk.to_vec(),
+            EcdhKeyPair::Secp256r1 { pk, .. } => EcdhPublicKeyBytes::Secp256r1(*pk),
         }
     }
 
@@ -139,14 +177,14 @@ impl EcdhKeyPair {
     /// # Errors
     /// - `EcdhError::InvalidPeerKey` — ピア公開鍵のパースに失敗
     /// - `EcdhError::SharedSecretFailed` — 共有秘密の計算に失敗（弱い鍵等）
-    pub fn shared_secret(&self, peer_public: &[u8]) -> Result<Vec<u8>, EcdhError> {
+    pub fn shared_secret(&self, peer_public: &[u8]) -> Result<EcdhSharedSecret, EcdhError> {
         match self {
             EcdhKeyPair::X25519 { sk, .. } => {
                 let peer_pk = X25519PublicKey::from_slice(peer_public)
                     .map_err(|_| EcdhError::InvalidPeerKey)?;
                 let dh_output = peer_pk.dh(sk).map_err(|_| EcdhError::SharedSecretFailed)?;
                 let bytes: &[u8; 32] = &dh_output;
-                Ok(bytes.to_vec())
+                Ok(EcdhSharedSecret::new(*bytes))
             }
             EcdhKeyPair::Secp256r1 { sk, .. } => {
                 let peer_point =
@@ -162,7 +200,7 @@ impl EcdhKeyPair {
                     .to_affine()
                     .ok_or(EcdhError::SharedSecretFailed)?;
 
-                Ok(x.to_be_bytes().to_vec())
+                Ok(EcdhSharedSecret::new(x.to_be_bytes()))
             }
         }
     }

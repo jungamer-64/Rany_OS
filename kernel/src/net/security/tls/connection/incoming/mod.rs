@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use arrayvec::ArrayVec;
 
 use super::*;
 
@@ -78,12 +78,8 @@ impl TlsConnection {
         };
         match ct {
             ContentType::Handshake => {
-                let view = crate::net::payload::PacketPayloadView::new(final_payload);
-                let data = view.read_vec(0, view.total_len());
-                if data.len() != view.total_len() {
-                    return Err(TlsError::DecodeError);
-                }
-                self.process_handshake(&data)?;
+                let packet = Self::copy_payload_into_packet(final_payload)?;
+                self.process_handshake(packet.data())?;
             }
             ContentType::ChangeCipherSpec => {
                 // TLS 1.2 略式ハンドシェイク: CCS受信で鍵導出
@@ -97,12 +93,8 @@ impl TlsConnection {
                 // TLS 1.3では無視
             }
             ContentType::Alert => {
-                let view = crate::net::payload::PacketPayloadView::new(final_payload);
-                let data = view.read_vec(0, view.total_len());
-                if data.len() != view.total_len() {
-                    return Err(TlsError::DecodeError);
-                }
-                self.handle_alert(&data)?;
+                let packet = Self::copy_payload_into_packet(final_payload)?;
+                self.handle_alert(packet.data())?;
             }
             ContentType::ApplicationData => {
                 self.process_app_data(payload, plaintext)?;
@@ -155,12 +147,8 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         if self.is_tls13 && self.state != TlsState::Established {
             // TLS 1.3: 暗号化ハンドシェイクメッセージ
-            let view = crate::net::payload::PacketPayloadView::new(payload);
-            let data = view.read_vec(0, view.total_len());
-            if data.len() != view.total_len() {
-                return Err(TlsError::DecodeError);
-            }
-            let app_data = self.tls13_process_encrypted_handshake(&data)?;
+            let packet = Self::copy_payload_into_packet(payload)?;
+            let app_data = self.tls13_process_encrypted_handshake(packet.data())?;
             if !app_data.is_empty() {
                 crate::net::payload::append_payload(plaintext, app_data);
             }
@@ -178,12 +166,8 @@ impl TlsConnection {
         decrypted: &kernel_api::resource::net::PacketPayload,
         plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
-        let view = crate::net::payload::PacketPayloadView::new(decrypted);
-        let decrypted_bytes = view.read_vec(0, view.total_len());
-        if decrypted_bytes.len() != view.total_len() {
-            return Err(TlsError::DecodeError);
-        }
-        if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type(&decrypted_bytes) {
+        let packet = Self::copy_payload_into_packet(decrypted)?;
+        if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type(packet.data()) {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
                     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
@@ -483,7 +467,7 @@ impl TlsConnection {
             .shared_secret(&server_pubkey)
             .map_err(|_| TlsError::CryptoError)?;
 
-        Self::set_tls_bytes(&mut self.pre_master_secret, &shared_secret)?;
+        Self::set_tls_bytes(&mut self.pre_master_secret, shared_secret.as_slice())?;
         self.state = TlsState::ServerHelloReceived;
         Ok(())
     }
@@ -619,7 +603,7 @@ impl TlsConnection {
         }
 
         let cert_chain_data = &data[3..3 + certs_len];
-        let mut certs = Vec::new();
+        let mut certs = ArrayVec::<&[u8], TLS_CERT_CHAIN_CAPACITY>::new();
         let mut offset = 0;
 
         // 全ての証明書を抽出
@@ -633,7 +617,9 @@ impl TlsConnection {
                 return Err(TlsError::DecodeError);
             }
 
-            certs.push(&cert_chain_data[offset..offset + cert_len]);
+            certs
+                .try_push(&cert_chain_data[offset..offset + cert_len])
+                .map_err(|_| TlsError::CertificateError)?;
             offset += cert_len;
         }
 
@@ -643,17 +629,22 @@ impl TlsConnection {
 
         if !self.config.should_skip_verify() {
             // 証明書チェーンの検証 (issuerの一致、署名の妥当性、ホスト名の一致、およびルートCAへの信頼)
-            let ca_ders: Vec<&[u8]> = self
-                .config
-                .ca_certs
-                .iter()
-                .filter_map(|c| c.der.as_contiguous_slice())
-                .collect();
-            if let Some(spki) = crate::net::security::x509::validate_certificate_chain(
-                &certs,
-                self.config.server_name.as_deref(),
-                &ca_ders,
-            ) {
+            let validated_spki = {
+                let mut ca_ders = ArrayVec::<&[u8], TLS_CA_CERTS_CAPACITY>::new();
+                for cert in &self.config.ca_certs {
+                    if let Some(der) = cert.der.as_contiguous_slice() {
+                        ca_ders
+                            .try_push(der)
+                            .map_err(|_| TlsError::CertificateError)?;
+                    }
+                }
+                crate::net::security::x509::validate_certificate_chain(
+                    &certs,
+                    self.config.server_name.as_ref().map(|name| name.as_str()),
+                    &ca_ders,
+                )
+            };
+            if let Some(spki) = validated_spki {
                 self.extract_server_public_key_from_spki(spki)?;
             } else {
                 return Err(TlsError::CertificateError);
