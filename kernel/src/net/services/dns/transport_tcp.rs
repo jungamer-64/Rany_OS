@@ -6,14 +6,15 @@ impl DnsClient {
     pub(super) async fn query_single_server(
         &self,
         socket: &crate::net::l4::udp::UdpEndpoint,
-        query_payload: kernel_api::resource::net::PacketPayload,
         server: DnsServerAddr,
-        name: DnsNameOwned,
+        name: DnsNameView,
         qtype: DnsQueryType,
         tick: u64,
+        query_id: u16,
     ) -> Result<DnsResponseView, &'static str> {
         let dest = Self::udp_addr_for_server(server);
-        if socket.send(query_payload.clone(), dest).await.is_err() {
+        let query_payload = self.build_query_payload_for_name_with_id(&name, qtype, query_id)?;
+        if socket.send(query_payload, dest).await.is_err() {
             return Err("UDP send failed");
         }
 
@@ -22,12 +23,8 @@ impl DnsClient {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
                 TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
                     if Self::source_matches_server(src, server) && src.port() == DNS_PORT {
-                        let parsed = self.parse_response_payload_for_name(
-                            &packet,
-                            tick,
-                            &name.as_view(),
-                            qtype,
-                        );
+                        let parsed =
+                            self.parse_response_payload_for_name(&packet, tick, &name, qtype);
                         if let Some(parsed) = parsed {
                             return parsed.map_err(|_| "Parse error");
                         }
@@ -43,7 +40,9 @@ impl DnsClient {
                 _ => {
                     attempt += 1;
                     if attempt < DNS_MAX_RETRIES {
-                        let _ = socket.send(query_payload.clone(), dest).await;
+                        let retry_payload =
+                            self.build_query_payload_for_name_with_id(&name, qtype, query_id)?;
+                        let _ = socket.send(retry_payload, dest).await;
                     }
                 }
             }
@@ -56,7 +55,7 @@ impl DnsClient {
     async fn query_tcp(
         &self,
         server: DnsServerAddr,
-        name: DnsNameOwned,
+        name: DnsNameView,
         qtype: DnsQueryType,
     ) -> Result<DnsResponseView, &'static str> {
         async fn read_exact_payload(
@@ -91,7 +90,9 @@ impl DnsClient {
         .await
         .map_err(|_| "TCP connection failed")?;
 
-        let payload = self.build_tcp_query_payload_for_name(&name.as_view(), qtype)?;
+        let query_id = self.next_query_id();
+        self.register_pending_query_id(query_id);
+        let payload = self.build_tcp_query_payload_for_name_with_id(&name, qtype, query_id)?;
         connection
             .send_payload(payload)
             .await
@@ -124,7 +125,7 @@ impl DnsClient {
             .ok_or("TCP read incomplete message")?;
 
         let tick = crate::task::current_tick();
-        self.parse_response_payload_for_name(&msg_data, tick, &name.as_view(), qtype)
+        self.parse_response_payload_for_name(&msg_data, tick, &name, qtype)
             .ok_or("TCP fallback requested unexpectedly")?
             .map_err(|_| "Parse error")
     }

@@ -188,8 +188,8 @@ impl NetworkStack {
         };
 
         match version {
-            4 => self.send_raw_ipv4_payload_scoped(scope, &view),
-            6 => self.send_raw_ipv6_payload_scoped(scope, &view),
+            4 => self.send_raw_ipv4_payload_scoped(scope, payload),
+            6 => self.send_raw_ipv6_payload_scoped(scope, payload),
             _ => Err(crate::net::types::NetworkError::InvalidAddress),
         }
     }
@@ -197,10 +197,11 @@ impl NetworkStack {
     fn send_raw_ipv4_payload_scoped(
         &mut self,
         scope: crate::net::types::InterfaceScope,
-        payload: &PacketPayloadView<'_>,
+        payload: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
+        let payload_view = PacketPayloadView::new(&payload);
         let mut fixed = [0u8; 60];
-        if payload.copy_range(0, &mut fixed[..20]) < 20 {
+        if payload_view.copy_range(0, &mut fixed[..20]) < 20 {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
@@ -214,12 +215,12 @@ impl NetworkStack {
         }
 
         let mut header = vec![0u8; ihl];
-        if payload.copy_range(0, &mut header) < ihl {
+        if payload_view.copy_range(0, &mut header) < ihl {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
         let total_len = u16::from_be_bytes([header[2], header[3]]) as usize;
-        if total_len < ihl || total_len != payload.total_len() {
+        if total_len < ihl || total_len != payload_view.total_len() {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
@@ -239,7 +240,7 @@ impl NetworkStack {
         let (src_port, dst_port, tcp_flags) = if total_len >= ihl + 4 {
             match protocol {
                 6 if total_len >= ihl + 14 => {
-                    let ports = payload.read_vec(ihl, 14);
+                    let ports = payload_view.read_vec(ihl, 14);
                     if ports.len() < 14 {
                         (0, 0, 0)
                     } else {
@@ -251,7 +252,7 @@ impl NetworkStack {
                     }
                 }
                 17 if total_len >= ihl + 4 => {
-                    let ports = payload.read_vec(ihl, 4);
+                    let ports = payload_view.read_vec(ihl, 4);
                     if ports.len() < 4 {
                         (0, 0, 0)
                     } else {
@@ -282,6 +283,7 @@ impl NetworkStack {
 
         let (if_id, config, _) = self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)?;
         let current_time = self.current_time();
+        let mut pending_payload = Some(payload);
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
@@ -291,7 +293,9 @@ impl NetworkStack {
                     dst_ip,
                     IpProtocol::from(protocol),
                     header[8], // TTL from original header
-                    payload.payload().clone(),
+                    pending_payload
+                        .take()
+                        .expect("pending raw IPv4 payload must exist"),
                     current_time,
                 );
             }) {
@@ -314,7 +318,12 @@ impl NetworkStack {
         if frame_payload.len() < total_len {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
-        if payload.copy_range(0, &mut frame_payload[..total_len]) != total_len {
+        let payload_view = PacketPayloadView::new(
+            pending_payload
+                .as_ref()
+                .expect("resolved raw IPv4 payload must exist"),
+        );
+        if payload_view.copy_range(0, &mut frame_payload[..total_len]) != total_len {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
         frame.set_payload_len(total_len);
@@ -334,8 +343,9 @@ impl NetworkStack {
     fn send_raw_ipv6_payload_scoped(
         &mut self,
         scope: crate::net::types::InterfaceScope,
-        payload: &PacketPayloadView<'_>,
+        payload: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
+        let payload = PacketPayloadView::new(&payload);
         let mut header = [0u8; 40];
         if payload.copy_range(0, &mut header) < 40 {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
@@ -375,11 +385,10 @@ impl NetworkStack {
                 Some(Ok(mac)) => MacAddress::new(mac),
                 Some(Err((ns_if_id, our_ll, ns_msg))) => {
                     let solicited = dst_ip.solicited_node();
-                    let ns_msg = crate::net::payload::PacketPayloadView::new(&ns_msg);
                     if let Some(ns_if_id) = ns_if_id {
-                        self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &solicited, &ns_msg);
+                        self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &solicited, ns_msg);
                     } else {
-                        self.send_ipv6_icmpv6_raw(&our_ll, &solicited, &ns_msg);
+                        self.send_ipv6_icmpv6_raw(&our_ll, &solicited, ns_msg);
                     }
                     return Err(crate::net::types::NetworkError::ArpResolutionPending);
                 }
@@ -815,10 +824,11 @@ impl NetworkStack {
         scope: crate::net::types::InterfaceScope,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: &PacketPayloadView<'_>,
+        tcp_segment: PacketPayload,
         ttl: u8,
     ) -> bool {
-        let Some(header) = tcp_segment.read_array::<14>(0) else {
+        let tcp_segment_view = PacketPayloadView::new(&tcp_segment);
+        let Some(header) = tcp_segment_view.read_array::<14>(0) else {
             return false;
         };
         let src_port = u16::from_be_bytes([header[0], header[1]]);
@@ -845,6 +855,7 @@ impl NetworkStack {
         };
 
         let current_time = self.current_time();
+        let mut pending_segment = Some(tcp_segment);
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
@@ -853,7 +864,9 @@ impl NetworkStack {
                     resolved_src,
                     dst_ip,
                     ttl,
-                    tcp_segment.payload().clone(),
+                    pending_segment
+                        .take()
+                        .expect("pending TCP segment must exist"),
                     current_time,
                 );
             }) {
@@ -863,6 +876,11 @@ impl NetworkStack {
         };
 
         let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
+        let tcp_segment_view = PacketPayloadView::new(
+            pending_segment
+                .as_ref()
+                .expect("resolved TCP segment must exist"),
+        );
         self.send_ipv4_l4_payload_with_pmtu(
             if_id,
             config.mac,
@@ -871,7 +889,7 @@ impl NetworkStack {
             dst_ip,
             IpProtocol::Tcp,
             ttl,
-            tcp_segment,
+            &tcp_segment_view,
             path_mtu,
         )
         .is_ok()
@@ -881,7 +899,7 @@ impl NetworkStack {
         &mut self,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: &PacketPayloadView<'_>,
+        tcp_segment: PacketPayload,
     ) -> bool {
         self.send_tcp_raw_scoped_with_ttl_payload(
             crate::net::types::InterfaceScope::Any,
@@ -897,7 +915,7 @@ impl NetworkStack {
         if_id: NetIfId,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: &PacketPayloadView<'_>,
+        tcp_segment: PacketPayload,
     ) -> bool {
         self.send_tcp_raw_scoped_with_ttl_payload(
             crate::net::types::InterfaceScope::Pinned(if_id),
@@ -912,7 +930,7 @@ impl NetworkStack {
         &mut self,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: &PacketPayloadView<'_>,
+        tcp_segment: PacketPayload,
         ttl: u8,
     ) -> bool {
         self.send_tcp_raw_scoped_with_ttl_payload(
@@ -1053,8 +1071,7 @@ impl NetworkStack {
                 if let Some(msg) =
                     NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes())
                 {
-                    let msg = crate::net::payload::PacketPayloadView::new(&msg);
-                    self.send_ipv6_icmpv6(&src, &dst, &msg);
+                    self.send_ipv6_icmpv6(&src, &dst, msg);
                 }
             }
         }

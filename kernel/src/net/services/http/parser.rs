@@ -123,7 +123,8 @@ impl HttpParser {
             return Err(HttpParseError::InvalidFormat);
         }
 
-        let full = PayloadSpan::from_payload(self.buffer.clone());
+        let full = PayloadSpan::from_range(&self.buffer, 0, self.buffer.total_len())
+            .ok_or(HttpParseError::InvalidFormat)?;
 
         match self.state {
             ParseState::HeaderFound { header_end } => Ok(Some((full, header_end))),

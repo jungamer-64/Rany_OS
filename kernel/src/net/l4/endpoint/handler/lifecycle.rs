@@ -44,11 +44,10 @@ impl NetworkEventHandler {
                     }
                     Some(Err((ns_if_id, our_ll, ns_msg))) => {
                         let sn_mcast = ip.solicited_node();
-                        let ns_msg = crate::net::payload::PacketPayloadView::new(&ns_msg);
                         if let Some(ns_if_id) = ns_if_id {
-                            stack.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, &ns_msg);
+                            stack.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, ns_msg);
                         } else {
-                            stack.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, &ns_msg);
+                            stack.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, ns_msg);
                         }
                     }
                     None => {}

@@ -1,8 +1,6 @@
 use super::*;
 
-fn payload_bytes(
-    payload: &kernel_api::resource::net::PacketPayload,
-) -> TlsBytes<16384> {
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
     let mut bytes = TlsBytes::<16384>::new();
     bytes

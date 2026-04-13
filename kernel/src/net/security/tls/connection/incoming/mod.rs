@@ -7,16 +7,16 @@ impl TlsConnection {
     /// データを受信して処理
     pub fn process_incoming_payload(
         &mut self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // Security: Limit receive buffer size to prevent DoS.
         // Handshake messages can be up to 128KB, so we allow 128KB + overhead.
         const MAX_RECV_BUFFER: usize = 131072 + 2048;
-        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let view = crate::net::payload::PacketPayloadView::new(&payload);
         if self.recv_buffer.total_len() + view.total_len() > MAX_RECV_BUFFER {
             return Err(TlsError::DecodeError);
         }
-        crate::net::payload::append_payload(&mut self.recv_buffer, payload.clone());
+        crate::net::payload::append_payload(&mut self.recv_buffer, payload);
 
         let mut plaintext = kernel_api::resource::net::PacketPayload::default();
 
@@ -93,8 +93,7 @@ impl TlsConnection {
                 // TLS 1.3では無視
             }
             ContentType::Alert => {
-                let packet = Self::copy_payload_into_packet(final_payload)?;
-                self.handle_alert(packet.data())?;
+                self.handle_alert_payload(final_payload)?;
             }
             ContentType::ApplicationData => {
                 self.process_app_data(payload, plaintext)?;
@@ -112,6 +111,24 @@ impl TlsConnection {
         if payload.len() >= 2 {
             let _level = payload[0];
             let description = payload[1];
+            if description == AlertDescription::CloseNotify as u8 {
+                self.state = TlsState::Closed;
+            } else {
+                self.state = TlsState::Error;
+                return Err(TlsError::Alert(description));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_alert_payload(
+        &mut self,
+        payload: &kernel_api::resource::net::PacketPayload,
+    ) -> TlsResult<()> {
+        let span = crate::net::payload::PayloadSpan::from_range(payload, 0, payload.total_len())
+            .ok_or(TlsError::DecodeError)?;
+        if span.total_len() >= 2 {
+            let description = span.byte_at(1).ok_or(TlsError::DecodeError)?;
             if description == AlertDescription::CloseNotify as u8 {
                 self.state = TlsState::Closed;
             } else {
@@ -147,8 +164,7 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         if self.is_tls13 && self.state != TlsState::Established {
             // TLS 1.3: 暗号化ハンドシェイクメッセージ
-            let packet = Self::copy_payload_into_packet(payload)?;
-            let app_data = self.tls13_process_encrypted_handshake(packet.data())?;
+            let app_data = self.tls13_process_encrypted_handshake(payload)?;
             if !app_data.is_empty() {
                 crate::net::payload::append_payload(plaintext, app_data);
             }
@@ -166,22 +182,26 @@ impl TlsConnection {
         decrypted: &kernel_api::resource::net::PacketPayload,
         plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
-        let packet = Self::copy_payload_into_packet(decrypted)?;
-        if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type(packet.data()) {
+        if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type_payload(decrypted) {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
-                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    builder
-                        .push_bytes(inner_data)
-                        .ok_or(TlsError::DecodeError)?;
-                    crate::net::payload::append_payload(plaintext, builder.build());
+                    crate::net::payload::append_payload(
+                        plaintext,
+                        inner_data.to_payload().ok_or(TlsError::DecodeError)?,
+                    );
                 }
                 Some(ContentType::Handshake) => {
                     // Post-handshake: NewSessionTicket, KeyUpdate
-                    self.tls13_process_post_handshake(inner_data)?;
+                    self.tls13_process_post_handshake(
+                        inner_data
+                            .as_contiguous_slice()
+                            .ok_or(TlsError::DecodeError)?,
+                    )?;
                 }
                 Some(ContentType::Alert) => {
-                    self.handle_alert(inner_data)?;
+                    self.handle_alert_payload(
+                        &inner_data.to_payload().ok_or(TlsError::DecodeError)?,
+                    )?;
                 }
                 _ => {}
             }
@@ -640,7 +660,7 @@ impl TlsConnection {
                 }
                 crate::net::security::x509::validate_certificate_chain(
                     &certs,
-                    self.config.server_name.as_ref().map(|name| name.as_str()),
+                    self.server_name.as_ref().map(|name| name.as_str()),
                     &ca_ders,
                 )
             };

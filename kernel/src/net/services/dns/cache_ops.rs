@@ -217,7 +217,9 @@ impl DnsClient {
                     return None;
                 }
 
-                if let Some(cached) = self.resolve_ptr_from_records(&entry.records, &query_name) {
+                if let Some(cached) =
+                    self.resolve_ptr_from_records(&entry.records, &query_name.as_view())
+                {
                     self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(cached);
                 }
@@ -226,10 +228,10 @@ impl DnsClient {
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         let response = self
-            .query_internal_name(query_name.clone(), DnsQueryType::PTR)
+            .query_internal_name(query_name, DnsQueryType::PTR)
             .await
             .ok()?;
-        self.resolve_ptr_from_records(&response.records, &query_name)
+        self.resolve_ptr_from_records(&response.records, &key.as_view())
     }
 
     /// 非同期でIPv6アドレスの逆引き（PTR）を解決
@@ -245,7 +247,9 @@ impl DnsClient {
                     return None;
                 }
 
-                if let Some(cached) = self.resolve_ptr_from_records(&entry.records, &query_name) {
+                if let Some(cached) =
+                    self.resolve_ptr_from_records(&entry.records, &query_name.as_view())
+                {
                     self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(cached);
                 }
@@ -254,10 +258,10 @@ impl DnsClient {
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         let response = self
-            .query_internal_name(query_name.clone(), DnsQueryType::PTR)
+            .query_internal_name(query_name, DnsQueryType::PTR)
             .await
             .ok()?;
-        self.resolve_ptr_from_records(&response.records, &query_name)
+        self.resolve_ptr_from_records(&response.records, &key.as_view())
     }
 
     fn lookup_ipv4_cache(&self, name: &str, current_tick: u64) -> Ipv4CacheLookup {
@@ -431,13 +435,16 @@ impl DnsClient {
     fn resolve_ptr_from_records(
         &self,
         records: &[DnsRecordMeta],
-        query_name: &DnsNameOwned,
+        query_name: &DnsNameView,
     ) -> Option<DnsNameView> {
-        let mut current = query_name.clone();
+        let mut current: Option<DnsNameOwned> = None;
 
         for _ in 0..DNS_MAX_CNAME_DEPTH {
+            let current_labels = current
+                .as_ref()
+                .map_or_else(|| query_name.labels(), DnsNameOwned::labels);
             if let Some(hostname) = records.iter().find_map(|record| {
-                if compare_dns_name_labels(record.name.labels(), current.labels())
+                if compare_dns_name_labels(record.name.labels(), current_labels)
                     == core::cmp::Ordering::Equal
                     && record.rtype.is(DnsQueryType::PTR)
                 {
@@ -450,13 +457,24 @@ impl DnsClient {
                 return Some(hostname);
             }
 
-            let Some(next) = self.cname_target_for_name(records, &current) else {
+            let Some(next) = records.iter().find_map(|record| {
+                if record.rtype.is(DnsQueryType::CNAME)
+                    && compare_dns_name_labels(record.name.labels(), current_labels)
+                        == core::cmp::Ordering::Equal
+                {
+                    if let DnsRecordData::Name(alias) = &record.data {
+                        return Some(DnsNameOwned::from_view(alias));
+                    }
+                }
+                None
+            }) else {
                 return None;
             };
-            if next == current {
+            if compare_dns_name_labels(next.labels(), current_labels) == core::cmp::Ordering::Equal
+            {
                 return None;
             }
-            current = next;
+            current = Some(next);
         }
 
         None

@@ -491,12 +491,18 @@ pub(crate) fn compute_tls_mac_into(
     let len_bytes = (fragment.len() as u16).to_be_bytes();
 
     if use_sha1 {
-        let mac = hmac_sha1_parts(mac_key, &[&seq_bytes, &content, &ver_bytes, &len_bytes, fragment]);
+        let mac = hmac_sha1_parts(
+            mac_key,
+            &[&seq_bytes, &content, &ver_bytes, &len_bytes, fragment],
+        );
         let mut output = [0u8; 32];
         output[..SHA1_OUTPUT_SIZE].copy_from_slice(&mac);
         (output, SHA1_OUTPUT_SIZE)
     } else {
-        let mac = hmac_sha256_parts(mac_key, &[&seq_bytes, &content, &ver_bytes, &len_bytes, fragment]);
+        let mac = hmac_sha256_parts(
+            mac_key,
+            &[&seq_bytes, &content, &ver_bytes, &len_bytes, fragment],
+        );
         let mut output = [0u8; 32];
         output[..32].copy_from_slice(&mac);
         (output, 32)

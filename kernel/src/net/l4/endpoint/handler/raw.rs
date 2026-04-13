@@ -6,7 +6,6 @@
 use crate::net::l4::endpoint::event::NetworkEvent;
 use crate::net::l4::endpoint::handler::{EventHandleResult, NetworkEventHandler};
 use crate::net::l4::endpoint::types::EndpointError;
-use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::NetRuntimeHandle;
 use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
 
@@ -30,7 +29,7 @@ impl NetworkEventHandler {
                 waker,
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
+                let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -44,7 +43,7 @@ impl NetworkEventHandler {
                             src_port,
                             dst,
                             dst_port,
-                            &payload,
+                            payload.take().expect("raw UDP payload already moved"),
                             ttl,
                         ),
                         None => stack.send_udp_raw_payload_scoped_auto_ttl(
@@ -52,7 +51,7 @@ impl NetworkEventHandler {
                             src_port,
                             dst,
                             dst_port,
-                            &payload,
+                            payload.take().expect("raw UDP payload already moved"),
                             ttl,
                         ),
                     }),
@@ -63,7 +62,7 @@ impl NetworkEventHandler {
                             src_port,
                             dst,
                             dst_port,
-                            &payload,
+                            payload.take().expect("raw UDP payload already moved"),
                             ttl,
                         ),
                         None => stack.send_udp_raw_payload_scoped_auto_ttl(
@@ -71,7 +70,7 @@ impl NetworkEventHandler {
                             src_port,
                             dst,
                             dst_port,
-                            &payload,
+                            payload.take().expect("raw UDP payload already moved"),
                             ttl,
                         ),
                     },
@@ -107,7 +106,7 @@ impl NetworkEventHandler {
             } => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
+                let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -115,9 +114,17 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_payload(src, dst, &payload)
+                        stack.send_tcp_payload(
+                            src,
+                            dst,
+                            payload.take().expect("raw TCP payload already moved"),
+                        )
                     }),
-                    None => stack.send_tcp_payload(src, dst, &payload),
+                    None => stack.send_tcp_payload(
+                        src,
+                        dst,
+                        payload.take().expect("raw TCP payload already moved"),
+                    ),
                 };
                 let result = if sent {
                     Ok(())
@@ -153,7 +160,7 @@ impl NetworkEventHandler {
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
+                let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -168,7 +175,7 @@ impl NetworkEventHandler {
                                 src,
                                 dst,
                                 dst_port,
-                                &payload,
+                                payload.take().expect("raw UDPv6 payload already moved"),
                                 ttl,
                             )
                         })
@@ -180,7 +187,7 @@ impl NetworkEventHandler {
                             src,
                             dst,
                             dst_port,
-                            &payload,
+                            payload.take().expect("raw UDPv6 payload already moved"),
                             ttl,
                         )
                         .is_ok(),
@@ -216,7 +223,7 @@ impl NetworkEventHandler {
             } => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let payload = PacketPayloadView::new(&payload);
+                let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -225,10 +232,20 @@ impl NetworkEventHandler {
                 let sent = match tx_meta {
                     Some(meta) => stack
                         .with_pending_tx_meta(meta, |stack| {
-                            stack.send_tcp_v6_payload(src, dst, &payload)
+                            stack.send_tcp_v6_payload(
+                                src,
+                                dst,
+                                payload.take().expect("raw TCPv6 payload already moved"),
+                            )
                         })
                         .is_ok(),
-                    None => stack.send_tcp_v6_payload(src, dst, &payload).is_ok(),
+                    None => stack
+                        .send_tcp_v6_payload(
+                            src,
+                            dst,
+                            payload.take().expect("raw TCPv6 payload already moved"),
+                        )
+                        .is_ok(),
                 };
                 let result = if sent {
                     Ok(())
@@ -265,7 +282,7 @@ impl NetworkEventHandler {
             } => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let payload = PacketPayloadView::new(&payload);
+                let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -279,7 +296,9 @@ impl NetworkEventHandler {
                             src_port,
                             dst,
                             dst_port,
-                            &payload,
+                            payload
+                                .take()
+                                .expect("scoped raw UDP payload already moved"),
                             ttl,
                         ),
                         None => stack.send_udp_raw_payload_scoped_auto_ttl(
@@ -287,7 +306,9 @@ impl NetworkEventHandler {
                             src_port,
                             dst,
                             dst_port,
-                            &payload,
+                            payload
+                                .take()
+                                .expect("scoped raw UDP payload already moved"),
                             ttl,
                         ),
                     }),
@@ -298,7 +319,9 @@ impl NetworkEventHandler {
                             src_port,
                             dst,
                             dst_port,
-                            &payload,
+                            payload
+                                .take()
+                                .expect("scoped raw UDP payload already moved"),
                             ttl,
                         ),
                         None => stack.send_udp_raw_payload_scoped_auto_ttl(
@@ -306,7 +329,9 @@ impl NetworkEventHandler {
                             src_port,
                             dst,
                             dst_port,
-                            &payload,
+                            payload
+                                .take()
+                                .expect("scoped raw UDP payload already moved"),
                             ttl,
                         ),
                     },
@@ -344,7 +369,7 @@ impl NetworkEventHandler {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let payload = PacketPayloadView::new(&payload);
+                let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -352,9 +377,23 @@ impl NetworkEventHandler {
                 });
                 let sent = match tx_meta {
                     Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_payload_on(net_if, src, dst, &payload)
+                        stack.send_tcp_payload_on(
+                            net_if,
+                            src,
+                            dst,
+                            payload
+                                .take()
+                                .expect("scoped raw TCP payload already moved"),
+                        )
                     }),
-                    None => stack.send_tcp_payload_on(net_if, src, dst, &payload),
+                    None => stack.send_tcp_payload_on(
+                        net_if,
+                        src,
+                        dst,
+                        payload
+                            .take()
+                            .expect("scoped raw TCP payload already moved"),
+                    ),
                 };
                 let result = if sent {
                     Ok(())
@@ -392,7 +431,7 @@ impl NetworkEventHandler {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let payload = PacketPayloadView::new(&payload);
+                let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -407,7 +446,9 @@ impl NetworkEventHandler {
                                 src,
                                 dst,
                                 dst_port,
-                                &payload,
+                                payload
+                                    .take()
+                                    .expect("scoped raw UDPv6 payload already moved"),
                                 ttl,
                             )
                         })
@@ -419,7 +460,9 @@ impl NetworkEventHandler {
                             src,
                             dst,
                             dst_port,
-                            &payload,
+                            payload
+                                .take()
+                                .expect("scoped raw UDPv6 payload already moved"),
                             ttl,
                         )
                         .is_ok(),
@@ -457,7 +500,7 @@ impl NetworkEventHandler {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let payload = PacketPayloadView::new(&payload);
+                let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
                     completion_id: Some(completion_id),
                     completion_policy: NetTxCompletionPolicy::DeviceCompletion,
@@ -466,11 +509,25 @@ impl NetworkEventHandler {
                 let sent = match tx_meta {
                     Some(meta) => stack
                         .with_pending_tx_meta(meta, |stack| {
-                            stack.send_tcp_v6_payload_on(net_if, src, dst, &payload)
+                            stack.send_tcp_v6_payload_on(
+                                net_if,
+                                src,
+                                dst,
+                                payload
+                                    .take()
+                                    .expect("scoped raw TCPv6 payload already moved"),
+                            )
                         })
                         .is_ok(),
                     None => stack
-                        .send_tcp_v6_payload_on(net_if, src, dst, &payload)
+                        .send_tcp_v6_payload_on(
+                            net_if,
+                            src,
+                            dst,
+                            payload
+                                .take()
+                                .expect("scoped raw TCPv6 payload already moved"),
+                        )
                         .is_ok(),
                 };
                 let result = if sent {

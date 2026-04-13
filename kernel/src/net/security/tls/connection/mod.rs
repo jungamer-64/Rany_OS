@@ -10,6 +10,7 @@ use super::error::{TlsError, TlsResult};
 use super::types::*;
 use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpan, append_payload};
 use crate::net::security::ecdh;
+use arrayvec::ArrayString;
 use kernel_api::resource::net::{PacketPayload, PacketRef};
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
@@ -69,11 +70,11 @@ impl TranscriptState {
     }
 
     fn current_sha256(&self) -> [u8; SHA256_OUTPUT_SIZE] {
-        self.sha256.clone().finalize()
+        self.sha256.snapshot()
     }
 
     fn current_sha384(&self) -> [u8; SHA384_OUTPUT_SIZE] {
-        self.sha384.clone().finalize()
+        self.sha384.snapshot()
     }
 
     fn replace_with_message_hash(&mut self, use_384: bool) {
@@ -123,6 +124,8 @@ const TLS_EXTENSION_SCRATCH_CAPACITY: usize = 2048;
 pub struct TlsConnection {
     /// 設定
     config: TlsConfig,
+    /// 接続スコープのサーバー名
+    server_name: Option<ArrayString<TLS_SERVER_NAME_CAPACITY>>,
     /// 状態
     state: TlsState,
     /// ネゴシエートされたバージョン
@@ -258,8 +261,9 @@ impl TlsConnection {
 
     pub(super) fn copy_payload_into_packet(payload: &PacketPayload) -> TlsResult<PacketRef> {
         let payload_view = PacketPayloadView::new(payload);
-        let mut packet = crate::net::payload::alloc_packet_with_headroom(payload_view.total_len(), 0)
-            .ok_or(TlsError::DecodeError)?;
+        let mut packet =
+            crate::net::payload::alloc_packet_with_headroom(payload_view.total_len(), 0)
+                .ok_or(TlsError::DecodeError)?;
         if payload_view.copy_all_into(&mut packet.data_mut()[..payload_view.total_len()])
             != payload_view.total_len()
         {
@@ -406,7 +410,7 @@ impl TlsConnection {
     }
 
     /// 新しいTLS接続を作成
-    pub fn new(config: TlsConfig) -> Self {
+    pub fn new(mut config: TlsConfig) -> Self {
         // RNGのセキュリティ状態をチェック
         if !has_secure_random() {
             log::warn!(
@@ -416,9 +420,11 @@ impl TlsConnection {
 
         // クライアントランダムを生成
         let client_random = generate_random();
+        let server_name = config.server_name.take();
 
         Self {
             config,
+            server_name,
             state: TlsState::Initial,
             negotiated_version: None,
             negotiated_cipher: None,
@@ -520,8 +526,9 @@ impl TlsConnection {
     /// セッションキャッシュからセッションIDを探してhelloに追加する
     fn append_session_id<const N: usize>(&mut self, hello: &mut TlsBytes<N>) -> Option<()> {
         let cached_session_id = if let Some(ref cache) = self.session_cache {
-            if let Some(ref name) = self.config.server_name {
-                cache.find_by_server_name(name.as_str())
+            if let Some(ref name) = self.server_name {
+                cache
+                    .find_by_server_name(name.as_str())
                     .map(|entry| entry.session_id)
             } else {
                 None
@@ -675,7 +682,9 @@ impl TlsConnection {
 
         // ハンドシェイクヘッダを追加
         let mut message = TlsBytes::<TLS_CLIENT_HELLO_SCRATCH_CAPACITY>::new();
-        if message.push_byte(HandshakeType::ClientHello as u8).is_none()
+        if message
+            .push_byte(HandshakeType::ClientHello as u8)
+            .is_none()
             || message.append_be_u24(hello.len()).is_none()
             || message.append_slice(hello.as_slice()).is_none()
         {
@@ -734,12 +743,13 @@ impl TlsConnection {
             .tls13_psk_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
 
-        let mut inner_plaintext =
-            match crate::net::payload::alloc_packet_with_headroom(payload_view.total_len() + 1, 0)
-            {
-                Some(packet) => packet,
-                None => return PacketPayload::default(),
-            };
+        let mut inner_plaintext = match crate::net::payload::alloc_packet_with_headroom(
+            payload_view.total_len() + 1,
+            0,
+        ) {
+            Some(packet) => packet,
+            None => return PacketPayload::default(),
+        };
         if payload_view.copy_all_into(&mut inner_plaintext.data_mut()[..payload_view.total_len()])
             != payload_view.total_len()
         {
@@ -793,13 +803,14 @@ impl TlsConnection {
         builder.build()
     }
 
-    pub fn send_early_data_payload(&mut self, payload: &PacketPayload) -> PacketPayload {
+    pub fn send_early_data_payload(&mut self, payload: PacketPayload) -> PacketPayload {
         let total = self.early_data_buffer.total_len() + payload.total_len();
         if self.max_early_data_size > 0 && total > self.max_early_data_size as usize {
             return PacketPayload::default();
         }
-        append_payload(&mut self.early_data_buffer, payload.clone());
-        self.send_early_data_record_payload(payload)
+        let record = self.send_early_data_record_payload(&payload);
+        append_payload(&mut self.early_data_buffer, payload);
+        record
     }
 
     /// サーバーに拒否されたEarly Dataの平文を取得
@@ -838,10 +849,7 @@ impl TlsConnection {
     }
 
     /// TLS 1.3固有の拡張を追加（PSK modes, Key Share, Early Data, Pre-Shared Key）
-    fn append_tls13_extensions<const N: usize>(
-        &self,
-        extensions: &mut TlsBytes<N>,
-    ) -> Option<()> {
+    fn append_tls13_extensions<const N: usize>(&self, extensions: &mut TlsBytes<N>) -> Option<()> {
         // PSK Key Exchange Modes (RFC 8446 Section 4.2.9)
         {
             extensions.append_slice(&[0, 45])?; // type = psk_key_exchange_modes
@@ -899,7 +907,7 @@ impl TlsConnection {
     /// 拡張機能を構築
     fn append_extensions<const N: usize>(&self, extensions: &mut TlsBytes<N>) -> Option<()> {
         // Server Name Indication
-        if let Some(ref name) = self.config.server_name {
+        if let Some(ref name) = self.server_name {
             let name_bytes = name.as_bytes();
             let mut ext = TlsBytes::<512>::new();
             let list_len = name_bytes.len() + 3;

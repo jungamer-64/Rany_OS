@@ -423,7 +423,6 @@ impl NetworkStack {
                     ttl,
                     data,
                 } => {
-                    let data_view = crate::net::payload::PacketPayloadView::new(&data);
                     let config = if let Some(if_id) = if_id {
                         self.interface_config_or_runtime(if_id)
                     } else {
@@ -432,29 +431,18 @@ impl NetworkStack {
 
                     if let Some(config) = config {
                         let _ = self.send_udp_raw_with_config_and_if_ttl_payload(
-                            if_id, &config, pkt.src, src_port, pkt.dst, dst_port, &data_view, ttl,
+                            if_id, &config, pkt.src, src_port, pkt.dst, dst_port, data, ttl,
                         );
                     }
                 }
                 crate::net::runtime::stack::PendingIpv4Payload::Tcp { ttl, segment } => {
-                    let segment_view = crate::net::payload::PacketPayloadView::new(&segment);
-                    if let Some(if_id) = if_id {
-                        let _ = self.send_tcp_raw_scoped_with_ttl_payload(
-                            crate::net::types::InterfaceScope::Pinned(if_id),
-                            pkt.src,
-                            pkt.dst,
-                            &segment_view,
-                            ttl,
-                        );
+                    let scope = if let Some(if_id) = if_id {
+                        crate::net::types::InterfaceScope::Pinned(if_id)
                     } else {
-                        let _ = self.send_tcp_raw_scoped_with_ttl_payload(
-                            crate::net::types::InterfaceScope::Any,
-                            pkt.src,
-                            pkt.dst,
-                            &segment_view,
-                            ttl,
-                        );
-                    }
+                        crate::net::types::InterfaceScope::Any
+                    };
+                    let _ =
+                        self.send_tcp_raw_scoped_with_ttl_payload(scope, pkt.src, pkt.dst, segment, ttl);
                 }
                 crate::net::runtime::stack::PendingIpv4Payload::Raw {
                     protocol,

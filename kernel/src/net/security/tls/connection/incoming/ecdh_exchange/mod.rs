@@ -507,8 +507,9 @@ impl TlsConnection {
             data,
             use_sha1,
         );
-        let mut packet = crate::net::payload::alloc_packet_with_headroom(data.len() + mac_len + 16, 0)
-            .ok_or(TlsError::DecodeError)?;
+        let mut packet =
+            crate::net::payload::alloc_packet_with_headroom(data.len() + mac_len + 16, 0)
+                .ok_or(TlsError::DecodeError)?;
         let packet_data = packet.data_mut();
         packet_data[..data.len()].copy_from_slice(data);
         packet_data[data.len()..data.len() + mac_len].copy_from_slice(&mac[..mac_len]);
@@ -530,8 +531,12 @@ impl TlsConnection {
         };
 
         // Step 5: CBC暗号化
-        aes_cbc_encrypt_in_place(self.write_key.as_slice(), &iv, &mut packet.data_mut()[..padded_len])
-            .ok_or(TlsError::CryptoError)?;
+        aes_cbc_encrypt_in_place(
+            self.write_key.as_slice(),
+            &iv,
+            &mut packet.data_mut()[..padded_len],
+        )
+        .ok_or(TlsError::CryptoError)?;
 
         // TLS 1.0: 最終暗号文ブロックを記憶（次レコードのIVに使用）
         if version == TlsVersion::TLS_1_0 && padded_len >= 16 {
@@ -690,8 +695,12 @@ impl TlsConnection {
         let mut packet = crate::net::payload::alloc_packet_with_headroom(ciphertext.len(), 0)
             .ok_or(TlsError::DecodeError)?;
         packet.data_mut()[..ciphertext.len()].copy_from_slice(ciphertext);
-        aes_cbc_decrypt_in_place(self.read_key.as_slice(), &iv, &mut packet.data_mut()[..ciphertext.len()])
-            .ok_or(TlsError::DecryptError)?;
+        aes_cbc_decrypt_in_place(
+            self.read_key.as_slice(),
+            &iv,
+            &mut packet.data_mut()[..ciphertext.len()],
+        )
+        .ok_or(TlsError::DecryptError)?;
         packet.set_len(ciphertext.len());
 
         let fragment_len = self.verify_cbc_padding_and_mac(

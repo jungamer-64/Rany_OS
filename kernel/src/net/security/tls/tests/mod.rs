@@ -4,9 +4,7 @@
 
 use super::*;
 
-fn payload_bytes(
-    payload: &kernel_api::resource::net::PacketPayload,
-) -> TlsBytes<16384> {
+fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
     let mut bytes = TlsBytes::<16384>::new();
     bytes
@@ -63,8 +61,7 @@ fn run_aead_roundtrip<Ciphertext, Plaintext>(
     plaintext: &[u8],
     encrypt: impl FnOnce(&[u8]) -> (Ciphertext, [u8; 16]),
     decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Plaintext>,
-)
-where
+) where
     Ciphertext: AsRef<[u8]>,
     Plaintext: AsRef<[u8]>,
 {
@@ -73,7 +70,10 @@ where
     assert_eq!(ct.as_ref().len(), plaintext.len());
     let dec = decrypt(ct.as_ref(), &tag);
     assert!(dec.is_some());
-    assert_eq!(dec.expect("AEAD decrypt should succeed").as_ref(), plaintext);
+    assert_eq!(
+        dec.expect("AEAD decrypt should succeed").as_ref(),
+        plaintext
+    );
 }
 
 /// Encrypt → corrupt tag → verify decrypt fails.
@@ -81,8 +81,7 @@ fn run_aead_auth_failure<Ciphertext, Plaintext>(
     plaintext: &[u8],
     encrypt: impl FnOnce(&[u8]) -> (Ciphertext, [u8; 16]),
     decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Plaintext>,
-)
-where
+) where
     Ciphertext: AsRef<[u8]>,
     Plaintext: AsRef<[u8]>,
 {
@@ -95,8 +94,7 @@ where
 fn run_aead_empty<Ciphertext, Plaintext>(
     encrypt: impl FnOnce(&[u8]) -> (Ciphertext, [u8; 16]),
     decrypt: impl FnOnce(&[u8], &[u8; 16]) -> Option<Plaintext>,
-)
-where
+) where
     Ciphertext: AsRef<[u8]>,
     Plaintext: AsRef<[u8]>,
 {
@@ -104,7 +102,11 @@ where
     assert!(ct.as_ref().is_empty());
     let r = decrypt(&[], &tag);
     assert!(r.is_some());
-    assert!(r.expect("AEAD empty decrypt should succeed").as_ref().is_empty());
+    assert!(
+        r.expect("AEAD empty decrypt should succeed")
+            .as_ref()
+            .is_empty()
+    );
 }
 
 // ========================================================================

@@ -702,10 +702,7 @@ impl TlsConfig {
     }
 
     /// ALPNプロトコルを設定
-    pub fn with_alpn(
-        mut self,
-        protocols: &[&str],
-    ) -> Result<Self, TlsConfigError> {
+    pub fn with_alpn(mut self, protocols: &[&str]) -> Result<Self, TlsConfigError> {
         let mut alpn_protocols = ArrayVec::new();
         for protocol in protocols {
             let mut entry = ArrayString::new();
@@ -919,7 +916,11 @@ impl SessionCache {
     }
 
     pub fn insert(&mut self, entry: SessionCacheEntry) {
-        if let Some(pos) = self.entries.iter().position(|e| e.session_id == entry.session_id) {
+        if let Some(pos) = self
+            .entries
+            .iter()
+            .position(|e| e.session_id == entry.session_id)
+        {
             self.entries.remove(pos);
         } else if self.entries.len() == TLS_SESSION_CACHE_CAPACITY {
             self.entries.remove(0);
@@ -935,15 +936,12 @@ impl SessionCache {
     }
 
     pub fn find_by_server_name(&self, name: &str) -> Option<&SessionCacheEntry> {
-        self.entries
-            .iter()
-            .rev()
-            .find(|entry| {
-                entry
-                    .server_name
-                    .as_ref()
-                    .map(|server_name| server_name.as_str())
-                    == Some(name)
-            })
+        self.entries.iter().rev().find(|entry| {
+            entry
+                .server_name
+                .as_ref()
+                .map(|server_name| server_name.as_str())
+                == Some(name)
+        })
     }
 }

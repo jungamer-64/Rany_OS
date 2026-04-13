@@ -65,6 +65,13 @@ impl Sha256 {
         output
     }
 
+    pub fn snapshot(&self) -> [u8; 32] {
+        let result = self.inner.clone().finalize();
+        let mut output = [0u8; 32];
+        output.copy_from_slice(&result);
+        output
+    }
+
     /// ハッシュをリセット
     pub fn reset(&mut self) {
         self.inner = Sha256Impl::new();

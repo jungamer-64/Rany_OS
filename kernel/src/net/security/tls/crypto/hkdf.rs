@@ -74,9 +74,18 @@ pub fn hkdf_expand_label(
 ) {
     let tls_label_prefix = b"tls13 ";
     let full_label_len = tls_label_prefix.len() + label.len();
-    assert!(output.len() <= u16::MAX as usize, "HKDF label length too large");
-    assert!(full_label_len <= u8::MAX as usize, "HKDF label label too large");
-    assert!(context.len() <= u8::MAX as usize, "HKDF label context too large");
+    assert!(
+        output.len() <= u16::MAX as usize,
+        "HKDF label length too large"
+    );
+    assert!(
+        full_label_len <= u8::MAX as usize,
+        "HKDF label label too large"
+    );
+    assert!(
+        context.len() <= u8::MAX as usize,
+        "HKDF label context too large"
+    );
 
     let mut hkdf_label = [0u8; 514];
     let mut offset = 0usize;
@@ -241,9 +250,18 @@ pub fn hkdf_expand_label_sha384(
 ) {
     let tls_label_prefix = b"tls13 ";
     let full_label_len = tls_label_prefix.len() + label.len();
-    assert!(output.len() <= u16::MAX as usize, "HKDF label length too large");
-    assert!(full_label_len <= u8::MAX as usize, "HKDF label label too large");
-    assert!(context.len() <= u8::MAX as usize, "HKDF label context too large");
+    assert!(
+        output.len() <= u16::MAX as usize,
+        "HKDF label length too large"
+    );
+    assert!(
+        full_label_len <= u8::MAX as usize,
+        "HKDF label label too large"
+    );
+    assert!(
+        context.len() <= u8::MAX as usize,
+        "HKDF label context too large"
+    );
 
     let mut hkdf_label = [0u8; 514];
     let mut offset = 0usize;

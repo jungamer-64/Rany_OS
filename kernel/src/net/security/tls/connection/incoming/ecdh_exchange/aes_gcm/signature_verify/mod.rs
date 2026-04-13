@@ -148,7 +148,9 @@ impl TlsConnection {
         let cert_body_len = 1 + ctx_len + 3;
         let mut cert_msg = TlsBytes::<512>::new();
         cert_msg.push_byte(11).ok_or(TlsError::DecodeError)?; // Certificate type
-        cert_msg.append_be_u24(cert_body_len).ok_or(TlsError::DecodeError)?;
+        cert_msg
+            .append_be_u24(cert_body_len)
+            .ok_or(TlsError::DecodeError)?;
         cert_msg
             .push_byte(ctx_len as u8)
             .ok_or(TlsError::DecodeError)?;
@@ -484,8 +486,9 @@ impl TlsConnection {
         payload: &kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         let payload_view = crate::net::payload::PacketPayloadView::new(payload);
-        let mut inner = crate::net::payload::alloc_packet_with_headroom(payload_view.total_len() + 1, 0)
-            .ok_or(TlsError::DecodeError)?;
+        let mut inner =
+            crate::net::payload::alloc_packet_with_headroom(payload_view.total_len() + 1, 0)
+                .ok_or(TlsError::DecodeError)?;
         if payload_view.copy_all_into(&mut inner.data_mut()[..payload_view.total_len()])
             != payload_view.total_len()
         {
@@ -510,7 +513,7 @@ impl TlsConnection {
                 cipher_suite: self
                     .negotiated_cipher
                     .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256),
-                server_name: self.config.server_name.clone(),
+                server_name: self.server_name.take(),
                 version: self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2),
             });
         }
@@ -624,8 +627,14 @@ impl TlsConnection {
         tag.copy_from_slice(auth_tag);
 
         // AES-GCM復号
-        let plaintext =
-            Self::decrypt_aead_payload(cipher, self.read_key.as_slice(), &nonce, &aad, ciphertext, &tag)?;
+        let plaintext = Self::decrypt_aead_payload(
+            cipher,
+            self.read_key.as_slice(),
+            &nonce,
+            &aad,
+            ciphertext,
+            &tag,
+        )?;
         self.read_seq += 1;
         Ok(plaintext)
     }
@@ -678,8 +687,14 @@ impl TlsConnection {
         let mut tag = [0u8; 16];
         tag.copy_from_slice(auth_tag);
 
-        let plaintext =
-            Self::decrypt_aead_payload(cipher, self.read_key.as_slice(), &nonce, &aad, ciphertext, &tag)?;
+        let plaintext = Self::decrypt_aead_payload(
+            cipher,
+            self.read_key.as_slice(),
+            &nonce,
+            &aad,
+            ciphertext,
+            &tag,
+        )?;
         self.read_seq += 1;
         Ok(plaintext)
     }

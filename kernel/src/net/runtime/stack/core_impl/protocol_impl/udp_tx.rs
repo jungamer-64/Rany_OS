@@ -96,9 +96,10 @@ impl NetworkStack {
         src_port: u16,
         dst_ip: Ipv4Address,
         dst_port: u16,
-        payload: &crate::net::payload::PacketPayloadView<'_>,
+        payload: kernel_api::resource::net::PacketPayload,
         ttl: u8,
     ) -> bool {
+        let payload_len = payload.total_len();
         if !crate::net::security::firewall::check_egress(
             src_ip.octets(),
             dst_ip.octets(),
@@ -112,6 +113,7 @@ impl NetworkStack {
         }
 
         let current_time = self.current_time();
+        let mut pending_payload = Some(payload);
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
@@ -122,7 +124,9 @@ impl NetworkStack {
                     src_port,
                     dst_port,
                     ttl,
-                    payload.payload().clone(),
+                    pending_payload
+                        .take()
+                        .expect("pending UDP payload must exist"),
                     current_time,
                 );
             }) {
@@ -131,7 +135,7 @@ impl NetworkStack {
             }
         };
         let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
-        let Some(total_len) = 8usize.checked_add(payload.total_len()) else {
+        let Some(total_len) = 8usize.checked_add(payload_len) else {
             return false;
         };
         let Ok(total_len_u16) = u16::try_from(total_len) else {
@@ -156,7 +160,12 @@ impl NetworkStack {
         header.set_checksum(0);
 
         let mut udp_payload = kernel_api::resource::net::PacketPayload::single(header_packet);
-        crate::net::payload::append_payload(&mut udp_payload, payload.payload().clone());
+        crate::net::payload::append_payload(
+            &mut udp_payload,
+            pending_payload
+                .take()
+                .expect("resolved UDP payload must exist"),
+        );
         let pseudo = crate::net::l3::ipv4::pseudo_header_checksum(
             src_ip,
             dst_ip,
@@ -190,7 +199,7 @@ impl NetworkStack {
         src_port: u16,
         dst_ip: Ipv4Address,
         dst_port: u16,
-        payload: &crate::net::payload::PacketPayloadView<'_>,
+        payload: kernel_api::resource::net::PacketPayload,
         ttl: u8,
     ) -> bool {
         let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(scope, None, None, dst_ip)
@@ -211,7 +220,7 @@ impl NetworkStack {
         src_port: u16,
         dst_ip: Ipv4Address,
         dst_port: u16,
-        payload: &crate::net::payload::PacketPayloadView<'_>,
+        payload: kernel_api::resource::net::PacketPayload,
         ttl: u8,
     ) -> bool {
         let Ok((if_id, config, resolved_src)) =
@@ -409,11 +418,15 @@ impl NetworkStack {
                 let Some(()) = builder.push_bytes(data) else {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
-                let payload = builder.build();
-                let payload = PacketPayloadView::new(&payload);
-
                 if self.send_udp_raw_with_config_and_if_ttl_payload(
-                    if_id, &config, src_ip, s_port, d_ip, d_port, &payload, 64,
+                    if_id,
+                    &config,
+                    src_ip,
+                    s_port,
+                    d_ip,
+                    d_port,
+                    builder.build(),
+                    64,
                 ) {
                     Ok(())
                 } else {
@@ -435,14 +448,13 @@ impl NetworkStack {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
                 let payload = builder.build();
-                let payload = PacketPayloadView::new(&payload);
                 self.send_udp_v6_payload_scoped_with_ttl(
                     crate::net::types::InterfaceScope::Any,
                     s_port,
                     s_ip,
                     d_ip,
                     d_port,
-                    &payload,
+                    payload,
                     64,
                 )
             }

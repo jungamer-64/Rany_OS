@@ -887,11 +887,10 @@ impl NetworkStack {
                         self.stats.record_dropped();
                         return;
                     };
-                    let na_msg = crate::net::payload::PacketPayloadView::new(&na_msg);
                     if let Some(if_id) = if_id {
-                        self.send_ipv6_icmpv6_on(if_id, &our_addr, &na_dst, &na_msg);
+                        self.send_ipv6_icmpv6_on(if_id, &our_addr, &na_dst, na_msg);
                     } else {
-                        self.send_ipv6_icmpv6(&our_addr, &na_dst, &na_msg);
+                        self.send_ipv6_icmpv6(&our_addr, &na_dst, na_msg);
                     }
                     log::info!("NDP: Sent NA for {} to {}", target, na_dst);
                 }
@@ -914,11 +913,10 @@ impl NetworkStack {
                         self.stats.record_dropped();
                         return;
                     };
-                    let na_msg = crate::net::payload::PacketPayloadView::new(&na_msg);
                     if let Some(if_id) = if_id {
-                        self.send_ipv6_icmpv6_on(if_id, &our_addr, &mcast_dst, &na_msg);
+                        self.send_ipv6_icmpv6_on(if_id, &our_addr, &mcast_dst, na_msg);
                     } else {
-                        self.send_ipv6_icmpv6(&our_addr, &mcast_dst, &na_msg);
+                        self.send_ipv6_icmpv6(&our_addr, &mcast_dst, na_msg);
                     }
                     log::info!(
                         "NDP: Sent Multicast NA for {} to defend address (DAD)",
@@ -938,11 +936,10 @@ impl NetworkStack {
                     self.stats.record_dropped();
                     return;
                 };
-                let ns_msg = crate::net::payload::PacketPayloadView::new(&ns_msg);
                 if let Some(if_id) = if_id {
-                    self.send_ipv6_icmpv6_on(if_id, &src, &dst, &ns_msg);
+                    self.send_ipv6_icmpv6_on(if_id, &src, &dst, ns_msg);
                 } else {
-                    self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
+                    self.send_ipv6_icmpv6(&src, &dst, ns_msg);
                 }
                 log::info!("NDP: Sent NS from {} to {} for target {}", src, dst, target);
             }
@@ -1066,8 +1063,7 @@ impl NetworkStack {
                     }
 
                     for (src, dst, ns_msg, target) in dad_messages {
-                        let ns_msg = crate::net::payload::PacketPayloadView::new(&ns_msg);
-                        self.send_ipv6_icmpv6_on(if_id, &src, &dst, &ns_msg);
+                        self.send_ipv6_icmpv6_on(if_id, &src, &dst, ns_msg);
                         log::info!("NDP: Sent DAD NS for target {}", target);
                     }
                     return;
@@ -1116,16 +1112,12 @@ impl NetworkStack {
                                                     self.stats.record_dropped();
                                                     continue;
                                                 };
-                                                let ns_msg =
-                                                    crate::net::payload::PacketPayloadView::new(
-                                                        &ns_msg,
-                                                    );
                                                 if let Some(if_id) = if_id {
                                                     self.send_ipv6_icmpv6_on(
-                                                        if_id, &src, &dst, &ns_msg,
+                                                        if_id, &src, &dst, ns_msg,
                                                     );
                                                 } else {
-                                                    self.send_ipv6_icmpv6(&src, &dst, &ns_msg);
+                                                    self.send_ipv6_icmpv6(&src, &dst, ns_msg);
                                                 }
                                                 log::info!(
                                                     "NDP: Sent DAD NS for target {}",

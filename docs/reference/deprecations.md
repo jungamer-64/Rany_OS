@@ -107,7 +107,7 @@ This document lists deprecated symbols and recent removals that still matter for
   - `UdpEndpoint::bind_registered_with_token_in(runtime, scope, port, token)` ❌ **removed**
     - Migration: Use `UdpEndpoint::bind_in(runtime, scope, port, token)`.
   - `kernel/src/net/security/tls/connection::TlsConnection` の byte-slice / `Vec<u8>` TLS record APIs (`process_incoming(&[u8])`, `encrypt_application_data(&[u8])`, `send_early_data(&[u8])`, `get_rejected_early_data()`, `build_key_update_response()`, `close()`) ❌ **removed**
-    - Migration: Use the packet-backed APIs `process_incoming_payload(&payload)`, `encrypt_application_payload(&payload)`, `send_early_data_payload(&payload)`, `get_rejected_early_data_payload()`, `build_key_update_response_payload()`, and `close_payload()`.
+    - Migration: Use the packet-backed APIs `process_incoming_payload(payload)`, `encrypt_application_payload(&payload)`, `send_early_data_payload(payload)`, `get_rejected_early_data_payload()`, `build_key_update_response_payload()`, and `close_payload()`.
   - TLS handshake record builders returning `Vec<u8>` (`build_client_key_exchange()`, `build_client_key_exchange_rsa()`, `build_change_cipher_spec()`, `build_client_finished_tls12()`, `build_client_finished_tls13()`) ❌ **removed**
     - Migration: Use the payload-native builders `build_client_key_exchange_payload()`, `build_client_key_exchange_rsa_payload()`, `build_change_cipher_spec_payload()`, `build_client_finished_tls12_payload()`, and `build_client_finished_tls13_payload()`.
   - TLS copy helpers (`vec_from_payload()`, `packet_payload_from_slice()`, `packet_payload_from_parts()`, `span_from_bytes()`) ❌ **removed**

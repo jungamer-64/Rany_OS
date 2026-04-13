@@ -59,7 +59,7 @@ async fn recv_tls_handshake_payload(
 
 fn process_tls_handshake_payload(
     tls: &mut TlsConnection,
-    in_payload: &PacketPayload,
+    in_payload: PacketPayload,
 ) -> Result<(), HttpClientError> {
     let _ignored_app_data = tls
         .process_incoming_payload(in_payload)
@@ -99,7 +99,7 @@ async fn complete_tls_handshake(
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while tls.state() != TlsState::Established && tls.state() != TlsState::Error {
         let in_payload = recv_tls_handshake_payload(connection).await?;
-        process_tls_handshake_payload(tls, &in_payload)?;
+        process_tls_handshake_payload(tls, in_payload)?;
         send_tls_handshake_followup(tls, connection, &mut tls12_client_flight_sent).await?;
     }
 
@@ -139,7 +139,7 @@ async fn receive_tls_response(
         };
 
         let app_data = tls
-            .process_incoming_payload(&in_payload)
+            .process_incoming_payload(in_payload)
             .map_err(|_| HttpClientError::ReadError)?;
 
         if let Some(resp) = tls.build_key_update_response_payload() {

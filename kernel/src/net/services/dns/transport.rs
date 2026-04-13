@@ -15,19 +15,17 @@ impl DnsClient {
         }
 
         let socket = self.bind_udp_socket()?;
-        let query_payload = self.build_query_payload_for_name(&name.as_view(), qtype)?;
+        let query_id = self.next_query_id();
+        self.register_pending_query_id(query_id);
         let result = self
-            .query_servers_with_failover(
-                &socket,
-                query_payload.clone(),
-                &servers,
-                name.clone(),
-                qtype,
-                tick,
-            )
+            .query_servers_with_failover(&socket, &servers, name, qtype, tick, query_id)
             .await;
         if result.is_err() {
-            self.retire_pending_query_id(&query_payload);
+            let mut id_payload_builder = crate::net::payload::PacketPayloadBuilder::new();
+            id_payload_builder
+                .push_bytes(&query_id.to_be_bytes())
+                .ok_or("Failed to allocate DNS query id payload")?;
+            self.retire_pending_query_id(&id_payload_builder.build());
         }
         result
     }
@@ -65,24 +63,18 @@ impl DnsClient {
     async fn query_servers_with_failover(
         &self,
         socket: &crate::net::l4::udp::UdpEndpoint,
-        query_payload: kernel_api::resource::net::PacketPayload,
         servers: &[DnsServerAddr],
         name: DnsNameOwned,
         qtype: DnsQueryType,
         tick: u64,
+        query_id: u16,
     ) -> Result<DnsResponseView, &'static str> {
         let mut last_error = "DNS query timed out";
 
         for server in servers {
+            let name_view = name.as_view();
             match self
-                .query_single_server(
-                    socket,
-                    query_payload.clone(),
-                    *server,
-                    name.clone(),
-                    qtype,
-                    tick,
-                )
+                .query_single_server(socket, *server, name_view, qtype, tick, query_id)
                 .await
             {
                 Ok(response) => return Ok(response),

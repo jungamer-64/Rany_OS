@@ -176,6 +176,19 @@ impl TlsConnection {
         None
     }
 
+    pub(crate) fn tls13_split_content_type_payload(
+        decrypted: &kernel_api::resource::net::PacketPayload,
+    ) -> Option<(u8, crate::net::payload::PayloadSpan)> {
+        let span = crate::net::payload::PayloadSpan::from_range(decrypted, 0, decrypted.total_len())?;
+        for i in (0..span.total_len()).rev() {
+            let byte = span.byte_at(i)?;
+            if byte != 0 {
+                return span.slice(0, i).map(|inner| (byte, inner));
+            }
+        }
+        None
+    }
+
     /// TLS 1.3: Post-handshake メッセージを処理
     ///
     /// RFC 8446 Section 4.6: Post-Handshake Messages

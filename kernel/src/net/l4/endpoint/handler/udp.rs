@@ -9,7 +9,6 @@ use crate::net::l4::endpoint::handler::common::{
     endpoint_error_from_network, resolve_ingress_if_id_in,
 };
 use crate::net::l4::endpoint::manager::EndpointFamily;
-use crate::net::payload::PacketPayloadView;
 
 impl NetworkEventHandler {
     /// UDPパケットの処理
@@ -129,7 +128,7 @@ impl NetworkEventHandler {
                 .and_then(|addr| addr.as_ipv4())
                 .map(Ipv4Address::new)
                 .filter(|ip| !ip.is_any());
-            let payload_view = PacketPayloadView::new(&payload);
+            let mut outbound_payload = Some(payload);
 
             match stack.resolve_ipv4_egress(scope, None, explicit_src, dst_ip) {
                 Ok((Some(if_id), _, _)) => {
@@ -141,7 +140,9 @@ impl NetworkEventHandler {
                             local_port,
                             dst_ip,
                             remote.port(),
-                            &payload_view,
+                            outbound_payload
+                                .take()
+                                .expect("UDP payload must exist"),
                             64,
                         )
                     } else {
@@ -150,7 +151,9 @@ impl NetworkEventHandler {
                             local_port,
                             dst_ip,
                             remote.port(),
-                            &payload_view,
+                            outbound_payload
+                                .take()
+                                .expect("UDP payload must exist"),
                             64,
                         )
                     }
@@ -163,7 +166,9 @@ impl NetworkEventHandler {
                             local_port,
                             dst_ip,
                             remote.port(),
-                            &payload_view,
+                            outbound_payload
+                                .take()
+                                .expect("UDP payload must exist"),
                             64,
                         )
                     } else {
@@ -172,7 +177,9 @@ impl NetworkEventHandler {
                             local_port,
                             dst_ip,
                             remote.port(),
-                            &payload_view,
+                            outbound_payload
+                                .take()
+                                .expect("UDP payload must exist"),
                             64,
                         )
                     }
@@ -186,7 +193,6 @@ impl NetworkEventHandler {
                 .map(|addr| crate::net::l3::ipv6::Ipv6Address::new(addr.as_ipv6()))
                 .unwrap_or(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED);
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-            let payload_view = PacketPayloadView::new(&payload);
 
             match stack.resolve_ipv6_egress(scope, None, Some(src_v6), dst_v6) {
                 Ok((Some(if_id), _, _)) => stack
@@ -196,7 +202,7 @@ impl NetworkEventHandler {
                         src_v6,
                         dst_v6,
                         remote.port(),
-                        &payload_view,
+                        payload,
                         64,
                     )
                     .is_ok(),
@@ -207,7 +213,7 @@ impl NetworkEventHandler {
                         src_v6,
                         dst_v6,
                         remote.port(),
-                        &payload_view,
+                        payload,
                         64,
                     )
                     .is_ok(),

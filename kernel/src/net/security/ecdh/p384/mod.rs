@@ -323,7 +323,8 @@ pub mod p384 {
         let mut result_bytes = [0u8; 48];
         result.write_be_bytes_padded(&mut result_bytes);
 
-        P384FieldElement::from_be_bytes(&result_bytes).unwrap_or_else(|| P384FieldElement::from_limbs([0; 6]))
+        P384FieldElement::from_be_bytes(&result_bytes)
+            .unwrap_or_else(|| P384FieldElement::from_limbs([0; 6]))
     }
 
     // ========================================================================
@@ -818,7 +819,9 @@ pub mod p384 {
         let rx_big = crate::net::security::rsa::BigUint::from_be_bytes(&rx_bytes);
         let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
         let mut rx_mod_n_bytes = [0u8; 48];
-        rx_big.rem(&n_big).write_be_bytes_padded(&mut rx_mod_n_bytes);
+        rx_big
+            .rem(&n_big)
+            .write_be_bytes_padded(&mut rx_mod_n_bytes);
 
         // r == r' ?
         if !constant_time_eq_48(&r_bytes, &rx_mod_n_bytes) {

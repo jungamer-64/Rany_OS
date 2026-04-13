@@ -1,6 +1,29 @@
 use super::*;
 
 impl DnsClient {
+    pub(super) fn next_query_id(&self) -> u16 {
+        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        u16::from_le_bytes([random_bytes[0], random_bytes[1]])
+    }
+
+    pub(super) fn register_pending_query_id(&self, id: u16) {
+        self.cleanup_stale_pending_ids(crate::task::current_tick());
+        if let Ok(mut pending) = self.pending_ids.lock() {
+            while pending.len() >= 256 {
+                let oldest_id = pending
+                    .iter()
+                    .min_by_key(|(_, created_at)| *created_at)
+                    .map(|(pending_id, _)| *pending_id);
+                if let Some(oldest_id) = oldest_id {
+                    pending.remove(&oldest_id);
+                } else {
+                    break;
+                }
+            }
+            pending.insert(id, crate::task::current_tick());
+        }
+    }
+
     fn push_dns_name_payload(
         builder: &mut crate::net::payload::PacketPayloadBuilder,
         name: &DnsNameView,
@@ -31,10 +54,17 @@ impl DnsClient {
         name: &DnsNameView,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        // トランザクションIDを生成 (RFC 5452: 予測困難なIDを使用)
-        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
-        let id = u16::from_le_bytes([random_bytes[0], random_bytes[1]]);
+        let id = self.next_query_id();
+        self.register_pending_query_id(id);
+        self.build_query_payload_for_name_with_id(name, qtype, id)
+    }
 
+    pub fn build_query_payload_for_name_with_id(
+        &self,
+        name: &DnsNameView,
+        qtype: DnsQueryType,
+        id: u16,
+    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder
             .push_bytes(&id.to_be_bytes())
@@ -80,22 +110,6 @@ impl DnsClient {
 
         self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
 
-        self.cleanup_stale_pending_ids(crate::task::current_tick());
-        if let Ok(mut pending) = self.pending_ids.lock() {
-            while pending.len() >= 256 {
-                let oldest_id = pending
-                    .iter()
-                    .min_by_key(|(_, created_at)| *created_at)
-                    .map(|(pending_id, _)| *pending_id);
-                if let Some(oldest_id) = oldest_id {
-                    pending.remove(&oldest_id);
-                } else {
-                    break;
-                }
-            }
-            pending.insert(id, crate::task::current_tick());
-        }
-
         Ok(builder.build())
     }
 
@@ -115,7 +129,18 @@ impl DnsClient {
         name: &DnsNameView,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let message = self.build_query_payload_for_name(name, qtype)?;
+        let id = self.next_query_id();
+        self.register_pending_query_id(id);
+        self.build_tcp_query_payload_for_name_with_id(name, qtype, id)
+    }
+
+    pub fn build_tcp_query_payload_for_name_with_id(
+        &self,
+        name: &DnsNameView,
+        qtype: DnsQueryType,
+        id: u16,
+    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
+        let message = self.build_query_payload_for_name_with_id(name, qtype, id)?;
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder
             .push_bytes(&(message.total_len() as u16).to_be_bytes())

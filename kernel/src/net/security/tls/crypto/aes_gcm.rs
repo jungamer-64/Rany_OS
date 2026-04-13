@@ -277,7 +277,9 @@ mod tests {
         let decrypted = aes_gcm_decrypt(&key, &nonce, &aad, &ct, &tag);
         assert!(decrypted.is_some());
         assert_eq!(
-            decrypted.expect("AES-GCM decrypt should succeed").as_slice(),
+            decrypted
+                .expect("AES-GCM decrypt should succeed")
+                .as_slice(),
             plaintext.as_slice()
         );
     }

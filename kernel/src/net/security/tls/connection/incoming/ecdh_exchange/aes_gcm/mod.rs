@@ -72,13 +72,8 @@ impl TlsConnection {
 
         let aad = Self::tls12_aad(self.write_seq, content_type, data.len());
 
-        let (ciphertext, auth_tag) = Self::encrypt_aead_payload(
-            cipher,
-            self.write_key.as_slice(),
-            &nonce,
-            &aad,
-            data,
-        )?;
+        let (ciphertext, auth_tag) =
+            Self::encrypt_aead_payload(cipher, self.write_key.as_slice(), &nonce, &aad, data)?;
 
         let record_len = ciphertext.total_len() + 16;
         let record_header = [
@@ -217,43 +212,29 @@ impl TlsConnection {
     /// 復号後、内部コンテントタイプ（最終の非ゼロバイト）に基づいて処理する。
     pub(crate) fn tls13_process_encrypted_handshake(
         &mut self,
-        data: &[u8],
+        data: &kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        // ハンドシェイクトラフィック鍵で復号
-        let mut encrypted_builder = crate::net::payload::PacketPayloadBuilder::new();
-        encrypted_builder
-            .push_bytes(data)
-            .ok_or(TlsError::DecodeError)?;
-        let decrypted = self.tls13_decrypt_record(&encrypted_builder.build(), true)?;
+        let decrypted = self.tls13_decrypt_record(data, true)?;
 
         if decrypted.is_empty() {
             return Err(TlsError::DecodeError);
         }
 
-        // 内部コンテントタイプ = 最後の非ゼロバイト
-        // TLS 1.3 record format: plaintext || content_type || zeros
-        let decrypted_packet = Self::copy_payload_into_packet(&decrypted)?;
-        let decrypted_bytes = decrypted_packet.data();
-        let mut inner_content_type = 0u8;
-        let mut plaintext_len = decrypted_bytes.len();
-        for i in (0..decrypted_bytes.len()).rev() {
-            if decrypted_bytes[i] != 0 {
-                inner_content_type = decrypted_bytes[i];
-                plaintext_len = i;
-                break;
-            }
-        }
-
-        let inner_data = &decrypted_bytes[..plaintext_len];
+        let (inner_content_type, inner_data) =
+            Self::tls13_split_content_type_payload(&decrypted).ok_or(TlsError::DecodeError)?;
 
         match ContentType::from_u8(inner_content_type) {
             Some(ContentType::Handshake) => {
-                self.tls13_process_handshake_messages(inner_data)?;
+                self.tls13_process_handshake_messages(
+                    inner_data
+                        .as_contiguous_slice()
+                        .ok_or(TlsError::DecodeError)?,
+                )?;
                 Ok(kernel_api::resource::net::PacketPayload::default())
             }
             Some(ContentType::Alert) => {
-                if inner_data.len() >= 2 {
-                    let description = inner_data[1];
+                if inner_data.total_len() >= 2 {
+                    let description = inner_data.byte_at(1).ok_or(TlsError::DecodeError)?;
                     if description == AlertDescription::CloseNotify as u8 {
                         self.state = TlsState::Closed;
                     } else {
@@ -265,11 +246,7 @@ impl TlsConnection {
             }
             Some(ContentType::ApplicationData) => {
                 // ハンドシェイク完了後のアプリデータ
-                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                builder
-                    .push_bytes(inner_data)
-                    .ok_or(TlsError::DecodeError)?;
-                Ok(builder.build())
+                inner_data.to_payload().ok_or(TlsError::DecodeError)
             }
             _ => Err(TlsError::UnexpectedMessage),
         }
@@ -563,7 +540,7 @@ impl TlsConnection {
                 }
                 crate::net::security::x509::validate_certificate_chain(
                     &certs,
-                    self.config.server_name.as_ref().map(|name| name.as_str()),
+                    self.server_name.as_ref().map(|name| name.as_str()),
                     &ca_ders,
                 )
             };

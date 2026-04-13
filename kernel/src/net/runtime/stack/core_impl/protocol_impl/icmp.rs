@@ -487,8 +487,7 @@ impl NetworkStack {
             self.stats.record_dropped();
             return false;
         };
-        let icmpv6_msg = crate::net::payload::PacketPayloadView::new(&icmpv6_msg);
-        self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
+        self.send_ipv6_icmpv6(&src_v6, &dst_v6, icmpv6_msg);
         true
     }
 
@@ -537,8 +536,7 @@ impl NetworkStack {
             self.stats.record_dropped();
             return false;
         };
-        let icmpv6_msg = crate::net::payload::PacketPayloadView::new(&icmpv6_msg);
-        self.send_ipv6_icmpv6(&src_v6, &dst_v6, &icmpv6_msg);
+        self.send_ipv6_icmpv6(&src_v6, &dst_v6, icmpv6_msg);
         true
     }
 

@@ -278,7 +278,9 @@ pub(crate) fn verify_r_equals_x(r_bytes: &[u8; 32], r_point: &P256Point) -> Resu
     let rx_big = crate::net::security::rsa::BigUint::from_be_bytes(&rx_bytes);
     let n_big = crate::net::security::rsa::BigUint::from_be_bytes(&n_bytes);
     let mut rx_mod_n_bytes = [0u8; 32];
-    rx_big.rem(&n_big).write_be_bytes_padded(&mut rx_mod_n_bytes);
+    rx_big
+        .rem(&n_big)
+        .write_be_bytes_padded(&mut rx_mod_n_bytes);
 
     // r == r' ?
     let mut diff = 0u8;
