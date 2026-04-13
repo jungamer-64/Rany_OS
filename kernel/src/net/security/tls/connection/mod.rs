@@ -11,7 +11,7 @@ use super::types::*;
 use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpan, append_payload};
 use crate::net::security::ecdh;
 use arrayvec::ArrayString;
-use kernel_api::resource::net::{PacketPayload, PacketRef};
+use kernel_api::resource::net::PacketPayload;
 
 /// TLS 1.3 トランスクリプトハッシュ（SHA-256 or SHA-384）
 mod incoming;
@@ -259,17 +259,11 @@ impl TlsConnection {
         slot.set(data).ok_or(TlsError::DecodeError)
     }
 
-    pub(super) fn copy_payload_into_packet(payload: &PacketPayload) -> TlsResult<PacketRef> {
-        let payload_view = PacketPayloadView::new(payload);
-        let mut packet =
-            crate::net::payload::alloc_packet_with_headroom(payload_view.total_len(), 0)
-                .ok_or(TlsError::DecodeError)?;
-        if payload_view.copy_all_into(&mut packet.data_mut()[..payload_view.total_len()])
-            != payload_view.total_len()
-        {
-            return Err(TlsError::DecodeError);
+    pub(super) fn payload_as_contiguous_slice<'a>(payload: &'a PacketPayload) -> TlsResult<&'a [u8]> {
+        match payload {
+            PacketPayload::Single(packet) => Ok(packet.data()),
+            PacketPayload::Chain(_) => Err(TlsError::DecodeError),
         }
-        Ok(packet)
     }
 
     fn tls12_aad(seq: u64, content_type: u8, len: usize) -> [u8; 13] {

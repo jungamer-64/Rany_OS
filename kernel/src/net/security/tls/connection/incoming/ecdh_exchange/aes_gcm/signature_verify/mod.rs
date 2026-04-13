@@ -388,8 +388,7 @@ impl TlsConnection {
             return Err(TlsError::DecryptError);
         }
 
-        let data_packet = Self::copy_payload_into_packet(data)?;
-        let data_bytes = data_packet.data();
+        let data_bytes = Self::payload_as_contiguous_slice(data)?;
         let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv.as_slice(), seq, data_bytes.len());
 
         if data_bytes.len() < 16 {
@@ -562,8 +561,7 @@ impl TlsConnection {
         data: &kernel_api::resource::net::PacketPayload,
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let data_packet = Self::copy_payload_into_packet(data)?;
-        let data_bytes = data_packet.data();
+        let data_bytes = Self::payload_as_contiguous_slice(data)?;
         let cipher = self
             .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);

@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::net::l4::endpoint::handler::common::{
-    deliver_raw_payload_if_registered, extract_ports, resolve_ingress_if_id_in, subslice_offset,
+    extract_ports, resolve_ingress_if_id_in, subslice_offset,
 };
 use kernel_api::resource::net::PacketPayload;
 
@@ -47,16 +47,17 @@ impl NetworkEventHandler {
 
         match stack.ethernet.process(data) {
             crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
-                let ip_packet = subslice_offset(data, payload).map(|offset| {
-                    let mut ip_packet = packet.clone();
-                    ip_packet.advance(offset);
-                    ip_packet.set_len(payload.len());
-                    ip_packet
-                });
+                let Some(offset) = subslice_offset(data, payload) else {
+                    stack.stats.record_rx_error();
+                    return EventHandleResult::Success;
+                };
+                let payload_len = payload.len();
+                let mut ip_packet = packet;
+                ip_packet.advance(offset);
+                ip_packet.set_len(payload_len);
                 self.handle_ipv4_ingress_with_stack(
                     runtime,
                     if_id,
-                    payload,
                     ip_packet,
                     src_mac,
                     current_time,
@@ -72,55 +73,58 @@ impl NetworkEventHandler {
             }
             crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
                 if stack.ipv6.is_some() {
-                    let ip_packet = subslice_offset(data, payload).map(|offset| {
-                        let mut ip_packet = packet.clone();
-                        ip_packet.advance(offset);
-                        ip_packet.set_len(payload.len());
-                        ip_packet
-                    });
+                    let Some(offset) = subslice_offset(data, payload) else {
+                        stack.stats.record_rx_error();
+                        return EventHandleResult::Success;
+                    };
+                    let payload_len = payload.len();
+                    let mut ip_packet = packet;
+                    ip_packet.advance(offset);
+                    ip_packet.set_len(payload_len);
+                    let ip_data = ip_packet.data();
                     // ── ファイアウォール Ingress チェック (IPv6) ──
-                    if payload.len() >= 40 {
+                    if ip_data.len() >= 40 {
                         let src_ip = [
-                            payload[8],
-                            payload[9],
-                            payload[10],
-                            payload[11],
-                            payload[12],
-                            payload[13],
-                            payload[14],
-                            payload[15],
-                            payload[16],
-                            payload[17],
-                            payload[18],
-                            payload[19],
-                            payload[20],
-                            payload[21],
-                            payload[22],
-                            payload[23],
+                            ip_data[8],
+                            ip_data[9],
+                            ip_data[10],
+                            ip_data[11],
+                            ip_data[12],
+                            ip_data[13],
+                            ip_data[14],
+                            ip_data[15],
+                            ip_data[16],
+                            ip_data[17],
+                            ip_data[18],
+                            ip_data[19],
+                            ip_data[20],
+                            ip_data[21],
+                            ip_data[22],
+                            ip_data[23],
                         ];
                         let dst_ip = [
-                            payload[24],
-                            payload[25],
-                            payload[26],
-                            payload[27],
-                            payload[28],
-                            payload[29],
-                            payload[30],
-                            payload[31],
-                            payload[32],
-                            payload[33],
-                            payload[34],
-                            payload[35],
-                            payload[36],
-                            payload[37],
-                            payload[38],
-                            payload[39],
+                            ip_data[24],
+                            ip_data[25],
+                            ip_data[26],
+                            ip_data[27],
+                            ip_data[28],
+                            ip_data[29],
+                            ip_data[30],
+                            ip_data[31],
+                            ip_data[32],
+                            ip_data[33],
+                            ip_data[34],
+                            ip_data[35],
+                            ip_data[36],
+                            ip_data[37],
+                            ip_data[38],
+                            ip_data[39],
                         ];
-                        let next_header = payload[6];
+                        let next_header = ip_data[6];
                         let (protocol, transport_data) =
                             crate::net::l3::ipv6::skip_extension_headers(
                                 crate::net::l3::ipv4::IpProtocol::from(next_header),
-                                &payload[40..],
+                                &ip_data[40..],
                             );
 
                         let (src_port, dst_port) = if (u8::from(protocol) == 6
@@ -159,7 +163,6 @@ impl NetworkEventHandler {
 
                     stack.process_ipv6_data(
                         if_id,
-                        payload,
                         current_time,
                         src_mac,
                         false,
@@ -204,6 +207,14 @@ impl NetworkEventHandler {
     ) -> EventHandleResult {
         let current_time = stack.current_time();
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let raw_endpoint = {
+            let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            guard
+                .as_ref()
+                .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
+        };
         let view = crate::net::payload::PacketPayloadView::new(&payload);
 
         // Determine if it's IPv4 or IPv6
@@ -262,7 +273,8 @@ impl NetworkEventHandler {
                     return EventHandleResult::Success;
                 }
 
-                if deliver_raw_payload_if_registered(ingress_if_id, payload.clone()) {
+                if let Some(endpoint) = raw_endpoint.as_ref() {
+                    let _ = endpoint.deliver_raw_payload(ingress_if_id, payload);
                     return EventHandleResult::Success;
                 }
 
@@ -369,7 +381,8 @@ impl NetworkEventHandler {
                     return EventHandleResult::Success;
                 }
 
-                if deliver_raw_payload_if_registered(ingress_if_id, payload.clone()) {
+                if let Some(endpoint) = raw_endpoint.as_ref() {
+                    let _ = endpoint.deliver_raw_payload(ingress_if_id, payload);
                     return EventHandleResult::Success;
                 }
 
@@ -423,16 +436,18 @@ impl NetworkEventHandler {
         &self,
         runtime: NetRuntimeHandle,
         if_id: Option<NetIfId>,
-        data: &[u8],
-        ip_packet: Option<PacketRef>,
+        ip_packet: PacketRef,
         src_mac: MacAddress,
         current_time: u64,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
+        let mut ip_packet = Some(ip_packet);
         // ── ファイアウォール Ingress チェック ──
         // IPv4ヘッダから最小限の 5-tuple を抽出してルール照合する。
         // ゼロコピー: データ参照のみでバッファコピーは行わない。
-        if data.len() >= 20 {
+        {
+            let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
+            if data.len() >= 20 {
             let protocol = data[9];
             let src_ip: [u8; 4] = [data[12], data[13], data[14], data[15]];
             let dst_ip: [u8; 4] = [data[16], data[17], data[18], data[19]];
@@ -481,26 +496,34 @@ impl NetworkEventHandler {
                 return EventHandleResult::Success;
             }
         }
+        }
 
         // Ipv4Processorを使用してプロトコル判定
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-        let result = stack
-            .ipv4
-            .process_with_time_and_packet(data, ip_packet.clone(), current_time);
-        let deliver_raw_if_registered = || {
-            ip_packet.as_ref().is_some_and(|packet| {
-                deliver_raw_payload_if_registered(
-                    ingress_if_id,
-                    PacketPayload::single(packet.clone()),
-                )
-            })
+        let raw_endpoint = {
+            let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            guard
+                .as_ref()
+                .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
+        };
+        if let Some(endpoint) = raw_endpoint.as_ref() {
+            if let Some(packet) = ip_packet.take() {
+                let _ = endpoint.deliver_raw_payload(ingress_if_id, PacketPayload::single(packet));
+                return EventHandleResult::Success;
+            }
+        }
+        let result = {
+            let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
+            stack
+                .ipv4
+                .process_with_time_and_packet(data, ip_packet.as_ref(), current_time)
         };
 
         match result {
             crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
-                if deliver_raw_if_registered() {
-                    return EventHandleResult::Success;
-                }
+                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
                 let Some(payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
                 }) else {
@@ -509,9 +532,7 @@ impl NetworkEventHandler {
                 stack.process_icmp_payload(&payload, src_ip, dst_ip, ttl, current_time);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
-                if deliver_raw_if_registered() {
-                    return EventHandleResult::Success;
-                }
+                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
                 let Some(payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
                 }) else {
@@ -520,11 +541,9 @@ impl NetworkEventHandler {
                 stack.process_igmp_payload(&payload, src_ip, ttl);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip, orig) => {
-                if deliver_raw_if_registered() {
-                    return EventHandleResult::Success;
-                }
-                let udp_segment_payload = ip_packet.as_ref().and_then(|ip_packet| {
-                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
+                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
+                let udp_segment_payload = ip_packet.as_ref().and_then(|packet| {
+                    crate::net::payload::payload_from_subslice(packet, data, payload)
                 });
                 let original_packet = if let Some(packet) = ip_packet.as_ref() {
                     PacketPayload::single(packet.clone())
@@ -535,6 +554,7 @@ impl NetworkEventHandler {
                     };
                     builder.build()
                 };
+                let ttl = data.get(8).copied().unwrap_or(64);
                 self.handle_udp_ingress_with_stack(
                     runtime,
                     if_id,
@@ -542,16 +562,14 @@ impl NetworkEventHandler {
                     dst_ip.octets(),
                     payload,
                     udp_segment_payload,
-                    data.get(8).copied().unwrap_or(64),
+                    ttl,
                     stack,
                     original_packet,
                     current_time,
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip, _orig) => {
-                if deliver_raw_if_registered() {
-                    return EventHandleResult::Success;
-                }
+                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
                 let Some(tcp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
                 }) else {
@@ -594,14 +612,6 @@ impl NetworkEventHandler {
                 _dst,
                 orig_packet,
             ) => {
-                if let Some(packet) = ip_packet {
-                    if deliver_raw_payload_if_registered(
-                        ingress_if_id,
-                        PacketPayload::single(packet),
-                    ) {
-                        return EventHandleResult::Success;
-                    }
-                }
                 // RFC 792: Send ICMP Destination Unreachable (Protocol Unreachable, Code 2)
                 log::warn!(
                     "[NET] Unknown protocol {} from {} - sending ICMP Protocol Unreachable",

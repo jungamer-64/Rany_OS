@@ -78,8 +78,7 @@ impl TlsConnection {
         };
         match ct {
             ContentType::Handshake => {
-                let packet = Self::copy_payload_into_packet(final_payload)?;
-                self.process_handshake(packet.data())?;
+                self.process_handshake(Self::payload_as_contiguous_slice(final_payload)?)?;
             }
             ContentType::ChangeCipherSpec => {
                 // TLS 1.2 略式ハンドシェイク: CCS受信で鍵導出

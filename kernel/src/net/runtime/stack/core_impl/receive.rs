@@ -17,9 +17,9 @@ impl NetworkStack {
         packet: PacketRef,
         _src_mac: MacAddress,
     ) {
-        let result =
-            self.ipv4
-                .process_with_time_and_packet(data, Some(packet.clone()), current_time);
+        let result = self
+            .ipv4
+            .process_with_time_and_packet(data, Some(&packet), current_time);
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
@@ -56,7 +56,7 @@ impl NetworkStack {
                 crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
                         if_id: None,
-                        packet: packet.clone(),
+                        packet,
                     },
                 );
             }
@@ -75,7 +75,7 @@ impl NetworkStack {
                 crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
                         if_id: None,
-                        packet: packet.clone(),
+                        packet,
                     },
                 );
             }
@@ -248,59 +248,56 @@ impl NetworkStack {
     pub fn process_ipv6_data(
         &mut self,
         if_id: Option<super::NetIfId>,
-        data: &[u8],
         current_time: u64,
         src_mac: MacAddress,
         _reassembled: bool,
-        ip_packet: Option<PacketRef>,
+        ip_packet: PacketRef,
     ) {
-        let result = if let Some(if_id) = if_id {
-            if let Some(state) = self.interfaces.get_mut(&if_id) {
-                if let Some(ref mut ipv6) = state.ipv6 {
-                    ipv6.process_with_packet(data, current_time, ip_packet.clone())
+        let mut ip_packet = Some(ip_packet);
+        let ingress_if_id = self.resolve_ingress_if(if_id);
+        let raw_endpoint = {
+            let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            guard
+                .as_ref()
+                .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
+        };
+        if let Some(endpoint) = raw_endpoint.as_ref() {
+            if let Some(packet) = ip_packet.take() {
+                let _ = endpoint.deliver_raw_payload(
+                    ingress_if_id,
+                    kernel_api::resource::net::PacketPayload::single(packet),
+                );
+                return;
+            }
+        }
+        let result = {
+            let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
+            if let Some(if_id) = if_id {
+                if let Some(state) = self.interfaces.get_mut(&if_id) {
+                    if let Some(ref mut ipv6) = state.ipv6 {
+                        ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
+                    } else if let Some(ref mut ipv6) = self.ipv6 {
+                        ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
+                    } else {
+                        return;
+                    }
                 } else if let Some(ref mut ipv6) = self.ipv6 {
-                    ipv6.process_with_packet(data, current_time, ip_packet.clone())
+                    ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
                 } else {
                     return;
                 }
             } else if let Some(ref mut ipv6) = self.ipv6 {
-                ipv6.process_with_packet(data, current_time, ip_packet.clone())
+                ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
             } else {
                 return;
             }
-        } else if let Some(ref mut ipv6) = self.ipv6 {
-            ipv6.process_with_packet(data, current_time, ip_packet.clone())
-        } else {
-            return;
         };
 
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
-                let ingress_if_id = self.resolve_ingress_if(if_id);
-                let raw_delivered = {
-                    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                        .read()
-                        .unwrap_or_else(|e| e.into_inner());
-                    guard
-                        .as_ref()
-                        .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-                        .and_then(|endpoint| {
-                            ip_packet.as_ref().map(|packet| {
-                                endpoint
-                                    .deliver_raw_payload(
-                                        ingress_if_id,
-                                        kernel_api::resource::net::PacketPayload::single(
-                                            packet.clone(),
-                                        ),
-                                    )
-                                    .is_ok()
-                            })
-                        })
-                        .unwrap_or(false)
-                };
-                if raw_delivered {
-                    return;
-                }
+                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
                 let Some(icmpv6_payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
                 }) else {
@@ -318,31 +315,7 @@ impl NetworkStack {
                 );
             }
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
-                let ingress_if_id = self.resolve_ingress_if(if_id);
-                let raw_delivered = {
-                    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                        .read()
-                        .unwrap_or_else(|e| e.into_inner());
-                    guard
-                        .as_ref()
-                        .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-                        .and_then(|endpoint| {
-                            ip_packet.as_ref().map(|packet| {
-                                endpoint
-                                    .deliver_raw_payload(
-                                        ingress_if_id,
-                                        kernel_api::resource::net::PacketPayload::single(
-                                            packet.clone(),
-                                        ),
-                                    )
-                                    .is_ok()
-                            })
-                        })
-                        .unwrap_or(false)
-                };
-                if raw_delivered {
-                    return;
-                }
+                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
                 let Some(tcp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
                     crate::net::payload::payload_from_subslice(ip_packet, data, payload)
                 }) else {
@@ -357,39 +330,16 @@ impl NetworkStack {
                 );
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
-                let ingress_if_id = self.resolve_ingress_if(if_id);
-                let raw_delivered = {
-                    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                        .read()
-                        .unwrap_or_else(|e| e.into_inner());
-                    guard
-                        .as_ref()
-                        .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-                        .and_then(|endpoint| {
-                            ip_packet.as_ref().map(|packet| {
-                                endpoint
-                                    .deliver_raw_payload(
-                                        ingress_if_id,
-                                        kernel_api::resource::net::PacketPayload::single(
-                                            packet.clone(),
-                                        ),
-                                    )
-                                    .is_ok()
-                            })
-                        })
-                        .unwrap_or(false)
-                };
-                if raw_delivered {
-                    return;
-                }
-                let Some(udp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
-                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
+                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
+                let Some(udp_segment_payload) = ip_packet.as_ref().and_then(|packet_ref| {
+                    crate::net::payload::payload_from_subslice(packet_ref, data, payload)
                 }) else {
                     self.stats.record_rx_error();
                     return;
                 };
-                let Some(original_packet) =
-                    ip_packet.map(kernel_api::resource::net::PacketPayload::single)
+                let Some(original_packet) = ip_packet
+                    .as_ref()
+                    .map(|packet_ref| kernel_api::resource::net::PacketPayload::single(packet_ref.clone()))
                 else {
                     self.stats.record_rx_error();
                     return;

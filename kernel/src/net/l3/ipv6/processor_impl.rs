@@ -55,7 +55,7 @@ impl Ipv6Processor {
         &mut self,
         data: &'a [u8],
         current_time: u64,
-        packet_ref: Option<PacketRef>,
+        packet_ref: Option<&PacketRef>,
     ) -> Ipv6ProcessResult<'a> {
         // Parse the packet
         let packet = match Ipv6Packet::parse(data) {
@@ -90,7 +90,7 @@ impl Ipv6Processor {
         // Check hop limit
         if packet.hop_limit() == 0 {
             self.stats.record_hop_limit_exceeded();
-            let Some(orig_packet) = Self::packet_payload_from_frame(data, packet_ref.as_ref())
+            let Some(orig_packet) = Self::packet_payload_from_frame(data, packet_ref)
             else {
                 self.stats.record_header_error();
                 return Ipv6ProcessResult::Error;
@@ -116,7 +116,7 @@ impl Ipv6Processor {
                         // RFC 4443 Section 3.4: Parameter Problem Code 1 for unrecognized Next Header
                         // The pointer indicates the octet of the unrecognized Next Header type
                         let Some(orig_packet) =
-                            Self::packet_payload_from_frame(data, packet_ref.as_ref())
+                            Self::packet_payload_from_frame(data, packet_ref)
                         else {
                             self.stats.record_header_error();
                             return Ipv6ProcessResult::Error;
@@ -140,14 +140,14 @@ impl Ipv6Processor {
                     src,
                     dst,
                     unfragmentable,
-                    packet_ref.as_ref().map(|ip_packet| {
+                    packet_ref.map(|ip_packet| {
                         let mut header_packet = ip_packet.clone();
                         header_packet.set_len(unfragmentable.len());
                         header_packet
                     }),
                     &frag_header,
                     frag_payload,
-                    packet_ref.as_ref().and_then(|ip_packet| {
+                    packet_ref.and_then(|ip_packet| {
                         let payload_offset =
                             (frag_payload.as_ptr() as usize).checked_sub(data.as_ptr() as usize)?;
                         let mut payload_packet = ip_packet.clone();
@@ -174,7 +174,7 @@ impl Ipv6Processor {
                         }
                     }
                     Err(e) => {
-                        let Some(ip_packet) = packet_ref.as_ref() else {
+                        let Some(ip_packet) = packet_ref else {
                             return Ipv6ProcessResult::Error;
                         };
                         let mut unfragmentable_packet = ip_packet.clone();

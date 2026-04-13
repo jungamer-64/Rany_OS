@@ -18,7 +18,7 @@ impl Ipv4Processor {
         &mut self,
         packet: &Ipv4Packet<'a>,
         data: &'a [u8],
-        packet_ref: Option<PacketRef>,
+        packet_ref: Option<&PacketRef>,
         current_time: u64,
     ) -> Ipv4ProcessResult<'a> {
         let header = packet.header();
@@ -52,7 +52,7 @@ impl Ipv4Processor {
         let header_len = header.header_len();
         let header_data = &data[..header_len];
         let payload = packet.payload();
-        let payload_packet = packet_ref.as_ref().map(|ip_packet| {
+        let payload_packet = packet_ref.map(|ip_packet| {
             let mut payload_packet = ip_packet.clone();
             payload_packet.advance(header_len);
             payload_packet.set_len(payload.len());

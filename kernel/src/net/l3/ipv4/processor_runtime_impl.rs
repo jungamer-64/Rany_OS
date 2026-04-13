@@ -5,7 +5,7 @@ impl Ipv4Processor {
     pub fn process_with_time_and_packet<'a>(
         &mut self,
         data: &'a [u8],
-        packet_ref: Option<PacketRef>,
+        packet_ref: Option<&PacketRef>,
         current_time: u64,
     ) -> Ipv4ProcessResult<'a> {
         let current_time = Self::normalize_time(current_time);
@@ -51,7 +51,7 @@ impl Ipv4Processor {
             return self.process_fragment_packet(&packet, data, packet_ref, current_time);
         }
 
-        self.process_non_fragment_packet(&packet, data, src, dst, packet_ref.as_ref())
+        self.process_non_fragment_packet(&packet, data, src, dst, packet_ref)
     }
 
     #[inline]
