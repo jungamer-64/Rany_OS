@@ -764,7 +764,7 @@ impl DhcpClient {
                     if opts.dns_servers.len() >= 8 {
                         break;
                     }
-                    let Some(chunk) = opt_data.slice(index * 4, 4) else {
+                    let Some(chunk) = opt_data.as_ref().slice(index * 4, 4) else {
                         break;
                     };
                     let mut bytes = [0u8; 4];
@@ -932,7 +932,11 @@ impl DhcpClient {
             }
 
             let Some(opt_data) =
-                crate::net::payload::PayloadSpan::from_range(payload, offset + 2, len)
+                crate::net::payload::PayloadSpan::from_owned_range(
+                    payload.clone(),
+                    offset + 2,
+                    len,
+                )
             else {
                 break;
             };

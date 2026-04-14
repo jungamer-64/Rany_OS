@@ -36,7 +36,7 @@ impl DnsClient {
         len: usize,
     ) -> DnsRecordData {
         DnsRecordData::Raw(
-            PayloadSpan::from_range(payload, offset, len).unwrap_or_else(|| {
+            PayloadSpan::from_owned_range(payload.clone(), offset, len).unwrap_or_else(|| {
                 PayloadSpan::from_payload(kernel_api::resource::net::PacketPayload::default())
             }),
         )
@@ -321,7 +321,7 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        PayloadSpan::from_range(payload, offset + 1, len as usize)
+        PayloadSpan::from_owned_range(payload.clone(), offset + 1, len as usize)
             .ok_or(DnsResponseCode::FormatError)
     }
 
@@ -393,7 +393,7 @@ impl DnsClient {
             if offset.saturating_add(len) > end {
                 return self.raw_record_span(payload, rdata_offset, rdlength);
             }
-            let Some(span) = PayloadSpan::from_range(payload, offset, len) else {
+            let Some(span) = PayloadSpan::from_owned_range(payload.clone(), offset, len) else {
                 return self.raw_record_span(payload, rdata_offset, rdlength);
             };
             text_len = text_len.saturating_add(span.total_len());
@@ -413,7 +413,7 @@ impl DnsClient {
     ) -> DnsResponseView {
         self.stats.responses_received.fetch_add(1, Ordering::Relaxed);
         let response_payload =
-            crate::net::payload::clone_payload_window(payload, 0, payload.total_len())
+            crate::net::payload::retain_payload_window_owned(payload.clone(), 0, payload.total_len())
             .unwrap_or_default();
         DnsResponseView {
             payload: response_payload,

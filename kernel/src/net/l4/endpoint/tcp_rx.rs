@@ -366,7 +366,7 @@ impl TcpOptionsScratch {
         }
 
         let payload_len = view.total_len().saturating_sub(data_offset);
-        let payload = crate::net::payload::clone_payload_window(segment, data_offset, payload_len)?;
+        let payload = crate::net::payload::retain_payload_window_owned(segment.clone(), data_offset, payload_len)?;
 
         Some((
             ParsedTcpHeader {
@@ -559,7 +559,7 @@ fn try_fast_path(
     let mut pushed = 0usize;
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
         let Some(payload) =
-            crate::net::payload::clone_payload_window(data_payload, 0, payload_len)
+            crate::net::payload::retain_payload_window_owned(data_payload.clone(), 0, payload_len)
         else {
             return false;
         };

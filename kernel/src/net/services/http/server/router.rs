@@ -438,7 +438,8 @@ fn write_content_type_header(
         HeaderValue::Text(value) => push_builder_str(builder, &value)?,
         HeaderValue::PayloadOrDefault(Some(value)) => {
             let payload = value
-                .to_payload()
+                .clone()
+                .into_payload()
                 .ok_or(HttpResponseBuildError::InvalidPayloadSpan)?;
             builder.push_payload(payload);
         }

@@ -82,11 +82,11 @@ impl DnsClient {
             if stash.total_len() < len {
                 return Ok(None);
             }
-            let prefix = crate::net::payload::clone_payload_window(stash, 0, len)
-                .ok_or("TCP payload prefix split failed")?;
-            if !crate::net::payload::discard_payload_prefix(stash, len) {
-                return Err("TCP payload prefix split failed");
-            }
+            let owned_stash = core::mem::take(stash);
+            let (prefix, remainder) =
+                crate::net::payload::split_payload_prefix_owned(owned_stash, len)
+                    .ok_or("TCP payload prefix split failed")?;
+            *stash = remainder;
             Ok(Some(prefix))
         }
 
@@ -202,7 +202,7 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let message = crate::net::payload::clone_payload_window(payload, 2, msg_len)
+        let message = crate::net::payload::retain_payload_window_owned(payload.clone(), 2, msg_len)
             .ok_or(DnsResponseCode::FormatError)?;
         self.parse_response_payload(&message, current_tick, expected_name, expected_type)
             .ok_or(DnsResponseCode::FormatError)?

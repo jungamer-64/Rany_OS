@@ -148,7 +148,7 @@ impl HttpInboundRequest {
     }
 
     pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body.as_ref().and_then(PayloadSpan::to_payload)
+        self.body.clone().and_then(PayloadSpan::into_payload)
     }
 }
 
@@ -232,6 +232,6 @@ impl HttpInboundResponse {
     }
 
     pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body.as_ref().and_then(PayloadSpan::to_payload)
+        self.body.clone().and_then(PayloadSpan::into_payload)
     }
 }

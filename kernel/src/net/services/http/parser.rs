@@ -39,6 +39,16 @@ pub struct HttpParser {
     state: ParseState,
 }
 
+fn span_slice(span: &PayloadSpan, offset: usize, len: usize) -> Option<PayloadSpan> {
+    let sub = span.as_ref().slice(offset, len)?;
+    PayloadSpan::from_owned_range(sub.payload().clone(), sub.offset(), sub.total_len())
+}
+
+fn trim_span(span: &PayloadSpan) -> Option<PayloadSpan> {
+    let trimmed = span.trim_ascii_whitespace();
+    PayloadSpan::from_owned_range(trimmed.payload().clone(), trimmed.offset(), trimmed.total_len())
+}
+
 impl HttpParser {
     pub fn new() -> Self {
         Self {
@@ -123,8 +133,7 @@ impl HttpParser {
             return Err(HttpParseError::InvalidFormat);
         }
 
-        let full = PayloadSpan::from_range(&self.buffer, 0, self.buffer.total_len())
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let full = PayloadSpan::from_payload(self.buffer.clone());
 
         match self.state {
             ParseState::HeaderFound { header_end } => Ok(Some((full, header_end))),
@@ -170,9 +179,7 @@ impl HttpParser {
         let (first_space, second_space) = self.find_first_two_spaces(&status_line)?;
 
         let version = HttpVersion::parse_span(
-            &status_line
-                .slice(0, first_space)
-                .ok_or(HttpParseError::InvalidFormat)?,
+            &span_slice(&status_line, 0, first_space).ok_or(HttpParseError::InvalidFormat)?,
         )
         .ok_or(HttpParseError::UnsupportedVersion)?;
 
@@ -195,9 +202,7 @@ impl HttpParser {
             return Err(HttpParseError::InvalidFormat);
         }
 
-        let line = full
-            .slice(0, line_end)
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let line = span_slice(full, 0, line_end).ok_or(HttpParseError::InvalidFormat)?;
         Ok((line, line_end))
     }
 
@@ -207,9 +212,7 @@ impl HttpParser {
         first_space: usize,
     ) -> Result<HttpMethod, HttpParseError> {
         HttpMethod::parse_span(
-            &line
-                .slice(0, first_space)
-                .ok_or(HttpParseError::InvalidFormat)?,
+            &span_slice(line, 0, first_space).ok_or(HttpParseError::InvalidFormat)?,
         )
         .ok_or(HttpParseError::InvalidFormat)
     }
@@ -228,9 +231,7 @@ impl HttpParser {
             return Err(HttpParseError::InvalidFormat);
         }
 
-        let uri = line
-            .slice(uri_offset, uri_len)
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let uri = span_slice(line, uri_offset, uri_len).ok_or(HttpParseError::InvalidFormat)?;
         if uri.total_len() > MAX_URI_SIZE {
             return Err(HttpParseError::InvalidFormat);
         }
@@ -252,10 +253,7 @@ impl HttpParser {
             .ok_or(HttpParseError::InvalidFormat)?;
 
         HttpStatusCode::parse_span(
-            &line
-                .slice(status_start, status_len)
-                .ok_or(HttpParseError::InvalidFormat)?
-                .trim_ascii_whitespace(),
+            &span_slice(line, status_start, status_len).ok_or(HttpParseError::InvalidFormat)?,
         )
         .ok_or(HttpParseError::InvalidFormat)
     }
@@ -265,13 +263,14 @@ impl HttpParser {
         line: &PayloadSpan,
         second_space: usize,
     ) -> Result<PayloadSpan, HttpParseError> {
-        let phrase = line
-            .slice(
-                second_space + 1,
-                line.total_len().saturating_sub(second_space + 1),
-            )
-            .ok_or(HttpParseError::InvalidFormat)?
-            .trim_ascii_whitespace();
+        let phrase = trim_span(
+            &span_slice(
+            line,
+            second_space + 1,
+            line.total_len().saturating_sub(second_space + 1),
+        )
+        .ok_or(HttpParseError::InvalidFormat)?)
+        .ok_or(HttpParseError::InvalidFormat)?;
 
         if phrase.total_len() > MAX_REASON_PHRASE_SIZE {
             return Err(HttpParseError::InvalidFormat);
@@ -288,15 +287,15 @@ impl HttpParser {
         let version_offset = second_space
             .checked_add(1)
             .ok_or(HttpParseError::InvalidFormat)?;
-        let version = HttpVersion::parse_span(
-            &line
-                .slice(
-                    version_offset,
-                    line.total_len().saturating_sub(version_offset),
-                )
-                .ok_or(HttpParseError::InvalidFormat)?
-                .trim_ascii_whitespace(),
+        let version = HttpVersion::parse_span(&trim_span(
+            &span_slice(
+                line,
+                version_offset,
+                line.total_len().saturating_sub(version_offset),
+            )
+            .ok_or(HttpParseError::InvalidFormat)?,
         )
+        .ok_or(HttpParseError::InvalidFormat)?)
         .ok_or(HttpParseError::UnsupportedVersion)?;
         Ok(version)
     }
@@ -392,9 +391,7 @@ impl HttpParser {
             return Ok(None);
         }
 
-        let body = full
-            .slice(body_start, len)
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let body = span_slice(full, body_start, len).ok_or(HttpParseError::InvalidFormat)?;
         Ok(Some((Some(body), body_end)))
     }
 
@@ -412,9 +409,8 @@ impl HttpParser {
             return Ok(Some((None, full.total_len())));
         }
 
-        let body = full
-            .slice(body_start, remaining_len)
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let body =
+            span_slice(full, body_start, remaining_len).ok_or(HttpParseError::InvalidFormat)?;
         Ok(Some((Some(body), full.total_len())))
     }
 
@@ -472,9 +468,7 @@ impl HttpParser {
             return Ok(None);
         };
 
-        let line = full
-            .slice(cursor, line_end - cursor)
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let line = span_slice(full, cursor, line_end - cursor).ok_or(HttpParseError::InvalidFormat)?;
         let (name, value) = self.parse_header_name_value(&line)?;
         self.validate_header_name_value(headers.len(), &name, &value)?;
         self.apply_content_headers(&name, &value, content_length, chunked)?;
@@ -511,14 +505,13 @@ impl HttpParser {
         line: &PayloadSpan,
     ) -> Result<(PayloadSpan, PayloadSpan), HttpParseError> {
         let colon = line.find_bytes(b":").ok_or(HttpParseError::InvalidFormat)?;
-        let name = line
-            .slice(0, colon)
-            .ok_or(HttpParseError::InvalidFormat)?
-            .trim_ascii_whitespace();
-        let value = line
-            .slice(colon + 1, line.total_len().saturating_sub(colon + 1))
-            .ok_or(HttpParseError::InvalidFormat)?
-            .trim_ascii_whitespace();
+        let name = trim_span(&span_slice(line, 0, colon).ok_or(HttpParseError::InvalidFormat)?)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        let value = trim_span(
+            &span_slice(line, colon + 1, line.total_len().saturating_sub(colon + 1))
+                .ok_or(HttpParseError::InvalidFormat)?,
+        )
+        .ok_or(HttpParseError::InvalidFormat)?;
         Ok((name, value))
     }
 

@@ -253,8 +253,8 @@ impl Icmpv6Processor {
         // 1232 bytes is the max payload that fits in a minimum IPv6 MTU (1280).
         let max_payload = 1232;
         let echo_data_len = (view.total_len() - ICMPV6_ECHO_HEADER_SIZE).min(max_payload);
-        let Some(echo_data) = crate::net::payload::clone_payload_window(
-            view.payload(),
+        let Some(echo_data) = crate::net::payload::retain_payload_window_owned(
+            view.payload().clone(),
             ICMPV6_ECHO_HEADER_SIZE,
             echo_data_len,
         )
@@ -328,8 +328,11 @@ impl Icmpv6Processor {
 
             // Quoted portion starts after the ICMPv6 header (offset 8)
             let quoted_len = view.total_len() - 8;
-            let Some(quoted_packet) =
-                crate::net::payload::clone_payload_window(view.payload(), 8, quoted_len)
+            let Some(quoted_packet) = crate::net::payload::retain_payload_window_owned(
+                view.payload().clone(),
+                8,
+                quoted_len,
+            )
             else {
                 return Icmpv6Result::Error;
             };

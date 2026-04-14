@@ -23,10 +23,9 @@ impl TlsConnection {
         &mut self,
         payload: &kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
-        let span = crate::net::payload::PayloadSpan::from_range(payload, 0, payload.total_len())
-            .ok_or(TlsError::DecodeError)?;
-        if span.total_len() >= 2 {
-            let description = span.byte_at(1).ok_or(TlsError::DecodeError)?;
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        if view.total_len() >= 2 {
+            let description = view.read_u8(1).ok_or(TlsError::DecodeError)?;
             if description == AlertDescription::CloseNotify as u8 {
                 self.state = TlsState::Closed;
             } else {
@@ -48,7 +47,7 @@ impl TlsConnection {
                 Some(ContentType::ApplicationData) => {
                     crate::net::payload::append_payload(
                         plaintext,
-                        inner_data.to_payload().ok_or(TlsError::DecodeError)?,
+                        inner_data.clone().into_payload().ok_or(TlsError::DecodeError)?,
                     );
                 }
                 Some(ContentType::Handshake) => {
@@ -61,7 +60,7 @@ impl TlsConnection {
                 }
                 Some(ContentType::Alert) => {
                     self.handle_alert_payload(
-                        &inner_data.to_payload().ok_or(TlsError::DecodeError)?,
+                        &inner_data.clone().into_payload().ok_or(TlsError::DecodeError)?,
                     )?;
                 }
                 _ => {}

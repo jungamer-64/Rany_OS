@@ -330,7 +330,8 @@ impl EndpointInner {
                 break;
             }
             let take = remaining.min(payload.total_len());
-            let prefix = crate::net::payload::clone_payload_window(payload, 0, take)?;
+            let prefix =
+                crate::net::payload::retain_payload_window_owned(payload.clone(), 0, take)?;
             segments.extend(prefix.into_segments());
             remaining -= take;
         }
@@ -487,14 +488,12 @@ impl EndpointInner {
 
         let payload = match max_len {
             Some(limit) => {
-                let front = tcp.recv_payload_queue.front_mut()?;
+                let front = tcp.recv_payload_queue.pop_front()?;
                 let take = limit.min(front.total_len());
-                let taken = crate::net::payload::clone_payload_window(front, 0, take)?;
-                if !crate::net::payload::discard_payload_prefix(front, take) {
-                    return None;
-                }
-                if front.is_empty() {
-                    tcp.recv_payload_queue.pop_front();
+                let (taken, remainder) =
+                    crate::net::payload::split_payload_prefix_owned(front, take)?;
+                if !remainder.is_empty() {
+                    tcp.recv_payload_queue.push_front(remainder);
                 }
                 taken
             }
@@ -524,8 +523,9 @@ impl EndpointInner {
         }
 
         let queued = if payload.total_len() > available {
-            crate::net::payload::retain_payload_window_owned(payload, 0, available)
-                .ok_or(EndpointError::BufferFull)?
+            let (queued, _) = crate::net::payload::split_payload_prefix_owned(payload, available)
+                .ok_or(EndpointError::BufferFull)?;
+            queued
         } else {
             payload
         };
@@ -591,8 +591,8 @@ impl EndpointInner {
         }
 
         let queued = if payload.total_len() > available {
-            match crate::net::payload::retain_payload_window_owned(payload, 0, available) {
-                Some(payload) => payload,
+            match crate::net::payload::split_payload_prefix_owned(payload, available) {
+                Some((payload, _)) => payload,
                 None => return 0,
             }
         } else {

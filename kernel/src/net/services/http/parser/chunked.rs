@@ -2,10 +2,16 @@ use super::{HttpParseError, HttpParser, MAX_CONTENT_LENGTH};
 use crate::net::payload::{PayloadSequence, PayloadSpan};
 use kernel_api::resource::net::PacketPayload;
 
+fn span_slice(span: &PayloadSpan, offset: usize, len: usize) -> Option<PayloadSpan> {
+    let sub = span.as_ref().slice(offset, len)?;
+    PayloadSpan::from_owned_range(sub.payload().clone(), sub.offset(), sub.total_len())
+}
+
 impl HttpParser {
     fn parse_chunk_size(&self, line: &PayloadSpan) -> Option<usize> {
         let semicolon = line.find_bytes(b";").unwrap_or(line.total_len());
-        let size = line.slice(0, semicolon)?.trim_ascii_whitespace();
+        let size_span = span_slice(line, 0, semicolon)?;
+        let size = size_span.trim_ascii_whitespace();
         size.parse_ascii_hex_usize()
     }
 
@@ -42,10 +48,8 @@ impl HttpParser {
         let Some(chunk_len_end) = self.find_line_end(full, cursor) else {
             return Ok(None);
         };
-        let chunk_len = full
-            .slice(cursor, chunk_len_end - cursor)
-            .ok_or(HttpParseError::InvalidFormat)?
-            .trim_ascii_whitespace();
+        let chunk_len =
+            span_slice(full, cursor, chunk_len_end - cursor).ok_or(HttpParseError::InvalidFormat)?;
         let chunk_size = self
             .parse_chunk_size(&chunk_len)
             .ok_or(HttpParseError::InvalidFormat)?;
@@ -78,12 +82,8 @@ impl HttpParser {
             return Ok(None);
         }
 
-        body.push(
-            full.slice(cursor, chunk_size)
-                .ok_or(HttpParseError::InvalidFormat)?,
-        );
-        if !full
-            .slice(cursor + chunk_size, 2)
+        body.push(span_slice(full, cursor, chunk_size).ok_or(HttpParseError::InvalidFormat)?);
+        if !span_slice(full, cursor + chunk_size, 2)
             .ok_or(HttpParseError::InvalidFormat)?
             .eq_bytes(b"\r\n")
         {
@@ -131,9 +131,7 @@ impl HttpParser {
         cursor: usize,
         line_end: usize,
     ) -> Result<usize, HttpParseError> {
-        let line = full
-            .slice(cursor, line_end - cursor)
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let line = span_slice(full, cursor, line_end - cursor).ok_or(HttpParseError::InvalidFormat)?;
         let (name, value) = self.parse_header_name_value(&line)?;
         self.validate_header_name_value(0, &name, &value)?;
         // Trailer ヘッダーは現時点では検証のみ行い、レスポンス構造体には保持しない。

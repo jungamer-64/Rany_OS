@@ -554,17 +554,19 @@ impl TlsConnection {
         record: PacketPayload,
         plaintext: &mut PacketPayload,
     ) -> TlsResult<()> {
-        let record = PayloadSpanRef::from_payload(&record);
-        let header = record.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+        let record_span = PayloadSpanRef::from_payload(&record);
+        let header = record_span.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
         let content_type = header[0];
         let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
-        let body = record
+        let body_range = record_span
             .slice(5, record_len)
-            .ok_or(TlsError::DecodeError)?
-            .into_owned()
-            .ok_or(TlsError::DecodeError)?
-            .into_payload()
             .ok_or(TlsError::DecodeError)?;
+        let body = crate::net::payload::retain_payload_window_owned(
+            record.clone(),
+            body_range.offset(),
+            body_range.total_len(),
+        )
+        .ok_or(TlsError::DecodeError)?;
 
         match ContentType::from_u8(content_type) {
             Some(ContentType::Handshake) => {
@@ -620,12 +622,12 @@ impl TlsConnection {
                 break;
             }
 
-            let record = crate::net::payload::clone_payload_window(&self.recv_buffer, 0, total_len)
-                .ok_or(TlsError::DecodeError)?;
+            let recv_buffer = core::mem::take(&mut self.recv_buffer);
+            let (record, remainder) =
+                crate::net::payload::split_payload_prefix_owned(recv_buffer, total_len)
+                    .ok_or(TlsError::DecodeError)?;
+            self.recv_buffer = remainder;
             self.consume_tls_record_payload(record, &mut plaintext)?;
-            if !crate::net::payload::discard_payload_prefix(&mut self.recv_buffer, total_len) {
-                return Err(TlsError::DecodeError);
-            }
         }
 
         Ok(plaintext)

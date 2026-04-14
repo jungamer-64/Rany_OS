@@ -197,7 +197,7 @@ impl RetransmitQueue {
             seg.is_retransmit = true;
             self.rto_calc.backoff();
 
-            return crate::net::payload::clone_payload_window(&seg.data, 0, seg.data.total_len());
+            return crate::net::payload::retain_payload_window_owned(seg.data.clone(), 0, seg.data.total_len());
         }
         None
     }

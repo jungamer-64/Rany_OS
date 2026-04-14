@@ -276,11 +276,15 @@ impl NetworkEventHandler {
                 return EventHandleResult::Success;
             }
 
-            let transport_payload =
-                crate::net::payload::clone_payload_window(&payload, header_len, transport_len);
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    if let Some(transport_payload) = transport_payload {
+                    if let Some(transport_payload) =
+                        crate::net::payload::retain_payload_window_owned(
+                            payload,
+                            header_len,
+                            transport_len,
+                        )
+                    {
                         crate::net::l4::endpoint::tcp_rx::process_tcp_segment_payload_on(
                             if_id,
                             src_ip.octets(),
@@ -290,7 +294,13 @@ impl NetworkEventHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    if let Some(transport_payload) = transport_payload {
+                    if let Some(transport_payload) =
+                        crate::net::payload::retain_payload_window_owned(
+                            payload.clone(),
+                            header_len,
+                            transport_len,
+                        )
+                    {
                         stack.process_udp_payload(
                             if_id,
                             transport_payload,
@@ -303,7 +313,13 @@ impl NetworkEventHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmp => {
-                    if let Some(transport_payload) = transport_payload {
+                    if let Some(transport_payload) =
+                        crate::net::payload::retain_payload_window_owned(
+                            payload,
+                            header_len,
+                            transport_len,
+                        )
+                    {
                         stack.process_icmp_payload(
                             &transport_payload,
                             src_ip,
@@ -314,7 +330,13 @@ impl NetworkEventHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Igmp => {
-                    if let Some(transport_payload) = transport_payload {
+                    if let Some(transport_payload) =
+                        crate::net::payload::retain_payload_window_owned(
+                            payload,
+                            header_len,
+                            transport_len,
+                        )
+                    {
                         stack.process_igmp_payload(&transport_payload, src_ip, ttl);
                     }
                 }
@@ -386,11 +408,15 @@ impl NetworkEventHandler {
                 return EventHandleResult::Success;
             }
 
-            let transport_payload =
-                crate::net::payload::clone_payload_window(&payload, payload_offset, transport_len);
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    if let Some(transport_payload) = transport_payload {
+                    if let Some(transport_payload) =
+                        crate::net::payload::retain_payload_window_owned(
+                            payload,
+                            payload_offset,
+                            transport_len,
+                        )
+                    {
                         crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_payload_on(
                             if_id,
                             src,
@@ -400,7 +426,13 @@ impl NetworkEventHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    if let Some(transport_payload) = transport_payload {
+                    if let Some(transport_payload) =
+                        crate::net::payload::retain_payload_window_owned(
+                            payload.clone(),
+                            payload_offset,
+                            transport_len,
+                        )
+                    {
                         stack.process_udp_payload_v6(
                             if_id,
                             transport_payload,
@@ -412,7 +444,13 @@ impl NetworkEventHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
-                    if let Some(transport_payload) = transport_payload {
+                    if let Some(transport_payload) =
+                        crate::net::payload::retain_payload_window_owned(
+                            payload,
+                            payload_offset,
+                            transport_len,
+                        )
+                    {
                         stack.process_icmpv6_data(
                             if_id,
                             transport_payload,
@@ -532,8 +570,8 @@ impl NetworkEventHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(payload) = crate::net::payload::clone_payload_window(
-                    &original_packet,
+                let Some(payload) = crate::net::payload::retain_payload_window_owned(
+                    original_packet.clone(),
                     offset,
                     payload_len,
                 )
@@ -554,8 +592,8 @@ impl NetworkEventHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(payload) = crate::net::payload::clone_payload_window(
-                    &original_packet,
+                let Some(payload) = crate::net::payload::retain_payload_window_owned(
+                    original_packet.clone(),
                     offset,
                     payload_len,
                 )
@@ -588,7 +626,7 @@ impl NetworkEventHandler {
                 };
                 let original_packet = PacketPayload::single(packet_ref);
                 let udp_segment_payload =
-                    crate::net::payload::clone_payload_window(&original_packet, offset, data_len + 8);
+                    crate::net::payload::retain_payload_window_owned(original_packet.clone(), offset, data_len + 8);
                 self.handle_udp_ingress_with_stack(
                     runtime,
                     if_id,
@@ -616,8 +654,8 @@ impl NetworkEventHandler {
                     return EventHandleResult::Success;
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(tcp_segment_payload) = crate::net::payload::clone_payload_window(
-                    &original_packet,
+                let Some(tcp_segment_payload) = crate::net::payload::retain_payload_window_owned(
+                    original_packet.clone(),
                     offset,
                     payload_len,
                 )

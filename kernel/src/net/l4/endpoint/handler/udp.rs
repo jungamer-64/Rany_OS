@@ -46,7 +46,7 @@ impl NetworkEventHandler {
                 Some(ingress_if_id),
             ) {
                 if let Some(payload) =
-                    crate::net::payload::clone_payload_window(&udp_segment_payload, 8, data_len)
+                    crate::net::payload::retain_payload_window_owned(udp_segment_payload, 8, data_len)
                 {
                     let _ = socket.deliver_udp_payload(ingress_if_id, remote, ttl, payload);
                 } else {

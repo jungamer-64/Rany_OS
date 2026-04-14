@@ -933,7 +933,7 @@ impl DhcpV6Client {
                 2 => {
                     if len > 0 {
                         if let Ok(mut g) = self.server_duid.lock() {
-                            *g = PayloadSpan::from_range(payload, off, len);
+                            *g = PayloadSpan::from_owned_range(payload.clone(), off, len);
                         }
                     }
                 }
@@ -1005,7 +1005,9 @@ impl DhcpV6Client {
                     }
                 }
                 24 => {
-                    let Some(domain_data) = PayloadSpan::from_range(payload, off, len) else {
+                    let Some(domain_data) =
+                        PayloadSpan::from_owned_range(payload.clone(), off, len)
+                    else {
                         return Err("packet too small");
                     };
                     Self::parse_domain_search_list_span(&domain_data, &mut domain_search);
@@ -1073,7 +1075,8 @@ impl DhcpV6Client {
             if code == 1 {
                 // Client Identifier (Option 1)
                 if off + len <= view.total_len() {
-                    let Some(duid) = PayloadSpan::from_range(payload, off, len) else {
+                    let Some(duid) = PayloadSpan::from_owned_range(payload.clone(), off, len)
+                    else {
                         return false;
                     };
                     return duid.eq_bytes(&self.duid);
@@ -1240,7 +1243,7 @@ impl DhcpV6Client {
         domain_data: &PayloadSpan,
         domain_search: &mut Vec<crate::net::services::dns::DnsNameOwned>,
     ) {
-        let Some(domain_payload) = domain_data.to_payload() else {
+        let Some(domain_payload) = domain_data.clone().into_payload() else {
             return;
         };
         let view = crate::net::payload::PacketPayloadView::new(&domain_payload);

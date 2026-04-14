@@ -181,14 +181,14 @@ impl Ipv6Processor {
                 let unfragmentable_payload = if unfrag_len == 0 {
                     None
                 } else {
-                    crate::net::payload::clone_payload_window(&original, 0, unfrag_len)
+                    crate::net::payload::retain_payload_window_owned(original.clone(), 0, unfrag_len)
                 };
                 let Some(frag_payload_offset) = subslice_offset(raw_packet, frag_payload) else {
                     self.stats.record_header_error();
                     return Ipv6ProcessResult::Error;
                 };
-                let Some(frag_payload_packet) = crate::net::payload::clone_payload_window(
-                    &original,
+                let Some(frag_payload_packet) = crate::net::payload::retain_payload_window_owned(
+                    original.clone(),
                     frag_payload_offset,
                     frag_payload.len(),
                 )
@@ -224,7 +224,7 @@ impl Ipv6Processor {
                     }
                     Err(error) => {
                         let Some(mut quoted) =
-                            crate::net::payload::clone_payload_window(&original, 0, unfrag_len)
+                            crate::net::payload::retain_payload_window_owned(original.clone(), 0, unfrag_len)
                         else {
                             self.stats.record_header_error();
                             return Ipv6ProcessResult::Error;

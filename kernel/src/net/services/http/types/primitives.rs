@@ -1,4 +1,4 @@
-use crate::net::payload::PayloadSpan;
+use crate::net::payload::{PayloadSpan, PayloadSpanRef};
 use core::fmt;
 use core::str::FromStr;
 
@@ -45,6 +45,10 @@ impl HttpMethod {
     }
 
     pub fn parse_span(span: &PayloadSpan) -> Option<Self> {
+        Self::parse_span_ref(span.as_ref())
+    }
+
+    pub fn parse_span_ref(span: PayloadSpanRef<'_>) -> Option<Self> {
         if span.eq_ignore_ascii_case(b"GET") {
             Some(Self::Get)
         } else if span.eq_ignore_ascii_case(b"POST") {
@@ -88,6 +92,10 @@ pub enum HttpVersion {
 
 impl HttpVersion {
     pub fn parse_span(span: &PayloadSpan) -> Option<Self> {
+        Self::parse_span_ref(span.as_ref())
+    }
+
+    pub fn parse_span_ref(span: PayloadSpanRef<'_>) -> Option<Self> {
         if span.eq_bytes(b"HTTP/1.0") {
             Some(Self::Http1_0)
         } else if span.eq_bytes(b"HTTP/1.1") {
@@ -145,6 +153,14 @@ impl HttpStatusCode {
         Self::new(code as u16)
     }
 
+    pub fn parse_span_ref(span: PayloadSpanRef<'_>) -> Option<Self> {
+        let code = span.trim_ascii_whitespace().parse_ascii_usize()?;
+        if code > u16::MAX as usize {
+            return None;
+        }
+        Self::new(code as u16)
+    }
+
     pub const fn as_u16(self) -> u16 {
         self.0
     }
@@ -186,6 +202,10 @@ pub enum ConnectionDirective {
 
 impl ConnectionDirective {
     pub fn parse_span(span: &PayloadSpan) -> Option<Self> {
+        Self::parse_span_ref(span.as_ref())
+    }
+
+    pub fn parse_span_ref(span: PayloadSpanRef<'_>) -> Option<Self> {
         if span.eq_ignore_ascii_case(b"keep-alive") {
             Some(Self::KeepAlive)
         } else if span.eq_ignore_ascii_case(b"close") {

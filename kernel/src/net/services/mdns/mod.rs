@@ -564,7 +564,7 @@ fn push_dns_name_payload(builder: &mut PacketPayloadBuilder, name: &DnsNameOwned
             return None;
         }
         builder.push_bytes(&[len as u8])?;
-        builder.push_payload(label.to_payload()?);
+        builder.push_payload(label.clone().into_payload()?);
     }
     builder.push_bytes(&[0])
 }
@@ -823,7 +823,11 @@ pub fn decode_dns_name_owned_view(
             return None;
         }
 
-        labels.push(PayloadSpan::from_range(view.payload(), current, label_len)?);
+        labels.push(PayloadSpan::from_owned_range(
+            view.payload().clone(),
+            current,
+            label_len,
+        )?);
         current += label_len;
     }
 

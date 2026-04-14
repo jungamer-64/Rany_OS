@@ -38,7 +38,8 @@ impl DnsClient {
                 .ok_or("Failed to allocate DNS label")?;
             builder.push_payload(
                 label
-                    .to_payload()
+                    .clone()
+                    .into_payload()
                     .ok_or("Failed to allocate DNS label payload")?,
             );
         }
