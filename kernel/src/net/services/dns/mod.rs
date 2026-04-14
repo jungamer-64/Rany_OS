@@ -6,13 +6,11 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
-use crate::net::payload::PayloadSpan;
+use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
 use crate::net::runtime::context::default_runtime_context;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -233,22 +231,13 @@ impl DnsHeader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DnsNameView {
     labels: Vec<PayloadSpan>,
     text_len: usize,
 }
 
 impl DnsNameView {
-    pub fn from_labels(labels: Vec<PayloadSpan>) -> Self {
-        let text_len = labels
-            .iter()
-            .map(PayloadSpan::total_len)
-            .sum::<usize>()
-            .saturating_add(labels.len().saturating_sub(1));
-        Self { labels, text_len }
-    }
-
     pub fn eq_ignore_ascii_case(&self, name: &str) -> bool {
         let mut parts = name.split('.');
         for label in &self.labels {
@@ -266,84 +255,72 @@ impl DnsNameView {
         &self.labels
     }
 
-    pub fn to_owned_string(&self) -> String {
-        let mut out = String::with_capacity(self.text_len);
-        for (index, label) in self.labels.iter().enumerate() {
-            if index > 0 {
-                out.push('.');
-            }
-            if let Some(slice) = label.as_contiguous_slice() {
-                out.push_str(&String::from_utf8_lossy(slice));
-            } else {
-                let mut bytes = vec![0u8; label.total_len()];
-                let copied = label.copy_into(&mut bytes);
-                bytes.truncate(copied);
-                out.push_str(&String::from_utf8_lossy(&bytes));
-            }
-        }
-        out
-    }
-
-    pub fn to_lowercase_string(&self) -> String {
-        self.to_owned_string().to_ascii_lowercase()
+    pub fn text_len(&self) -> usize {
+        self.text_len
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsNameError {
+    EmptyName,
+    EmptyLabel,
+    LabelTooLong,
+    NonAsciiLabel,
+    AllocationFailed,
+}
+
+#[derive(Debug)]
 pub struct DnsNameOwned {
     labels: Vec<PayloadSpan>,
     text_len: usize,
 }
 
 impl DnsNameOwned {
-    pub fn from_view(view: &DnsNameView) -> Self {
-        Self {
-            labels: view.labels.clone(),
-            text_len: view.text_len,
-        }
-    }
-
-    pub fn from_labels(labels: Vec<PayloadSpan>) -> Self {
-        let text_len = labels
-            .iter()
-            .map(PayloadSpan::total_len)
-            .sum::<usize>()
-            .saturating_add(labels.len().saturating_sub(1));
+    pub(crate) fn from_parsed_labels(labels: Vec<PayloadSpan>, text_len: usize) -> Self {
         Self { labels, text_len }
     }
 
-    pub fn from_ascii_name(name: &str) -> Option<Self> {
+    pub fn parse_ascii(name: &str) -> Result<Self, DnsNameError> {
+        let trimmed = name.strip_suffix('.').unwrap_or(name);
+        if trimmed.is_empty() {
+            return Err(DnsNameError::EmptyName);
+        }
+
         let mut labels = Vec::new();
-        for label in name.split('.') {
+        let mut text_len = 0usize;
+        for (index, label) in trimmed.split('.').enumerate() {
             if label.is_empty() {
-                continue;
+                return Err(DnsNameError::EmptyLabel);
             }
-            labels.push(PayloadSpan::from_bytes(label.as_bytes())?);
+
+            let bytes = label.as_bytes();
+            if bytes.len() > 63 {
+                return Err(DnsNameError::LabelTooLong);
+            }
+            if !bytes.is_ascii() {
+                return Err(DnsNameError::NonAsciiLabel);
+            }
+
+            let mut builder = PacketPayloadBuilder::new();
+            builder
+                .push_bytes(bytes)
+                .ok_or(DnsNameError::AllocationFailed)?;
+            labels.push(PayloadSpan::from_payload(builder.build()));
+            text_len = text_len.saturating_add(bytes.len());
+            if index > 0 {
+                text_len = text_len.saturating_add(1);
+            }
         }
-        Some(Self::from_labels(labels))
-    }
 
-    pub fn as_view(&self) -> DnsNameView {
-        DnsNameView {
-            labels: self.labels.clone(),
-            text_len: self.text_len,
-        }
-    }
-
-    pub fn eq_ignore_ascii_case(&self, name: &str) -> bool {
-        self.as_view().eq_ignore_ascii_case(name)
-    }
-
-    pub fn to_owned_string(&self) -> String {
-        self.as_view().to_owned_string()
-    }
-
-    pub fn to_lowercase_string(&self) -> String {
-        self.as_view().to_lowercase_string()
+        Ok(Self::from_parsed_labels(labels, text_len))
     }
 
     pub fn labels(&self) -> &[PayloadSpan] {
         &self.labels
+    }
+
+    pub fn text_len(&self) -> usize {
+        self.text_len
     }
 }
 
@@ -367,36 +344,24 @@ impl Ord for DnsNameOwned {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DnsTxtView {
     spans: Vec<PayloadSpan>,
     text_len: usize,
 }
 
 impl DnsTxtView {
-    pub fn from_spans(spans: Vec<PayloadSpan>) -> Self {
-        let text_len = spans.iter().map(PayloadSpan::total_len).sum();
-        Self { spans, text_len }
+    pub fn spans(&self) -> &[PayloadSpan] {
+        &self.spans
     }
 
-    pub fn to_owned_string(&self) -> String {
-        let mut out = String::with_capacity(self.text_len);
-        for span in &self.spans {
-            if let Some(slice) = span.as_contiguous_slice() {
-                out.push_str(&String::from_utf8_lossy(slice));
-            } else {
-                let mut bytes = vec![0u8; span.total_len()];
-                let copied = span.copy_into(&mut bytes);
-                bytes.truncate(copied);
-                out.push_str(&String::from_utf8_lossy(&bytes));
-            }
-        }
-        out
+    pub fn text_len(&self) -> usize {
+        self.text_len
     }
 }
 
 /// DNSリソースレコード metadata。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DnsRecordMeta {
     /// レコード名
     pub name: DnsNameView,
@@ -411,7 +376,7 @@ pub struct DnsRecordMeta {
 }
 
 /// SRV resolve API の出力型。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DnsSrvRecord {
     /// 優先度
     pub priority: u16,
@@ -424,7 +389,7 @@ pub struct DnsSrvRecord {
 }
 
 /// MX resolve API の出力型。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DnsMxRecord {
     /// 優先度（小さいほど優先）
     pub preference: u16,
@@ -433,7 +398,7 @@ pub struct DnsMxRecord {
 }
 
 /// DNS 応答 view。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DnsResponseView {
     /// 応答 payload ownership
     pub payload: PacketPayload,
@@ -442,7 +407,7 @@ pub struct DnsResponseView {
 }
 
 /// DNSレコードデータ
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum DnsRecordData {
     /// IPv4アドレス (Aレコード)
     A(Ipv4Address),
@@ -466,7 +431,7 @@ pub enum DnsRecordData {
 }
 
 /// DNSキャッシュエントリ
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DnsCacheEntry {
     /// 応答 payload ownership
     pub response: PacketPayload,
@@ -520,6 +485,14 @@ impl DnsCache {
             .filter(|entry| !entry.is_expired(current_tick, self.tick_rate))
     }
 
+    pub fn lookup_view(&self, name: &DnsNameView, current_tick: u64) -> Option<&DnsCacheEntry> {
+        self.entries.iter().find_map(|(key, entry)| {
+            (compare_dns_name_labels(key.labels(), name.labels()) == CmpOrdering::Equal
+                && !entry.is_expired(current_tick, self.tick_rate))
+                .then_some(entry)
+        })
+    }
+
     /// キャッシュにエントリを追加
     pub fn insert(
         &mut self,
@@ -537,13 +510,15 @@ impl DnsCache {
 
             // それでも満杯の場合は、DoS攻撃を防ぐために最も古いエントリを強制削除
             if self.entries.len() >= self.max_entries {
-                if let Some(oldest_key) = self
-                    .entries
-                    .iter()
-                    .min_by_key(|(_, entry)| entry.cached_at)
-                    .map(|(k, _)| k.clone())
-                {
-                    self.entries.remove(&oldest_key);
+                let mut dropped_oldest = false;
+                let old_entries = core::mem::take(&mut self.entries);
+                let oldest_tick = old_entries.values().map(|entry| entry.cached_at).min();
+                for (entry_key, entry_value) in old_entries {
+                    if !dropped_oldest && Some(entry_value.cached_at) == oldest_tick {
+                        dropped_oldest = true;
+                        continue;
+                    }
+                    self.entries.insert(entry_key, entry_value);
                 }
             }
         }

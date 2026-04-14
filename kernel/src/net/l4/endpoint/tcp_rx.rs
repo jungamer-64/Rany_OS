@@ -525,6 +525,80 @@ fn process_parsed_tcp_segment(
     }
 }
 
+fn try_fast_path(
+    tcb: &TcpControlBlockEntry,
+    ack_num: u32,
+    options: &[u8],
+    data_payload: &PacketPayload,
+) -> bool {
+    let payload_len = data_payload.total_len();
+    if payload_len == 0 {
+        return false;
+    }
+
+    let ack_diff_una = ack_num.wrapping_sub(tcb.snd_una) as i32;
+    let ack_diff_nxt = tcb.snd_nxt.wrapping_sub(ack_num) as i32;
+    if ack_diff_una < 0 || ack_diff_nxt < 0 {
+        return false;
+    }
+
+    if ooo_queue::has_ooo_segments(tcb.local, tcb.remote) {
+        return false;
+    }
+
+    let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
+
+    if ack_diff_una > 0 {
+        let current_time_ms = tcb_table().get_current_tick();
+        tcb_table().update(tcb.local, tcb.remote, |entry| {
+            entry.on_ack_received(ack_num, false, current_time_ms, 0);
+        });
+        retransmit_queue_ack(tcb.local, tcb.remote, ack_num);
+    }
+
+    let mut pushed = 0usize;
+    if let Some(socket) = get_socket_by_fd(tcb.fd) {
+        let Some(payload) = crate::net::payload::payload_range(data_payload, 0, payload_len) else {
+            return false;
+        };
+        pushed = socket.push_payload(payload);
+    }
+
+    if pushed < payload_len {
+        return false;
+    }
+
+    tcb_table().update(tcb.local, tcb.remote, |entry| {
+        entry.rcv_nxt = new_rcv_nxt;
+        if entry.delayed_ack_pending == 0 {
+            entry.delayed_ack_timer = tcb_table().get_current_tick();
+        }
+        entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
+
+        if entry.ts_enabled && !options.is_empty() {
+            let mut parser = TcpOptionParser::new(options);
+            if let Some((peer_ts_val, _)) = parser.find_timestamps() {
+                entry.ts_ecr = peer_ts_val;
+                entry.ts_val = generate_tcp_timestamp();
+            }
+        }
+    });
+
+    let should_ack_now = tcb_table()
+        .lookup(tcb.local, tcb.remote)
+        .map(|entry| entry.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
+        .unwrap_or(true);
+
+    if should_ack_now {
+        send_ack_for_fast_path(tcb, new_rcv_nxt);
+        tcb_table().update(tcb.local, tcb.remote, |entry| {
+            entry.delayed_ack_pending = 0;
+        });
+    }
+
+    true
+}
+
 pub fn process_tcp_segment_v6_payload_on(
     if_id: Option<NetIfId>,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
@@ -583,101 +657,6 @@ pub fn process_tcp_segment_payload_on(
         options.as_slice(),
         data_payload,
     );
-}
-
-/// TCP Fast Path - ESTABLISHED状態の高速受信処理
-///
-/// 期待通りのシーケンス番号でデータが到着した場合、
-/// フル状態マシン処理をバイパスして直接データを受信バッファに投入する。
-///
-/// 成功時は true を返し、呼び出し元はスローパスをスキップする。
-/// 以下の条件いずれかでフォールバック(false):
-///   - ACK番号が有効範囲外
-///   - OOOキューにセグメントが溜まっている
-///   - 受信バッファが満杯
-fn try_fast_path(
-    tcb: &TcpControlBlockEntry,
-    ack_num: u32,
-    options: &[u8],
-    data_payload: &PacketPayload,
-) -> bool {
-    let payload_len = data_payload.total_len();
-    if payload_len == 0 {
-        return false;
-    }
-
-    // ACK番号の簡易検証: snd_una <= ack_num <= snd_nxt
-    let ack_diff_una = ack_num.wrapping_sub(tcb.snd_una) as i32;
-    let ack_diff_nxt = tcb.snd_nxt.wrapping_sub(ack_num) as i32;
-    if ack_diff_una < 0 || ack_diff_nxt < 0 {
-        return false; // ACKが有効範囲外 → スローパスへ
-    }
-
-    // OOOキューにセグメントがあるなら順序処理が必要
-    if ooo_queue::has_ooo_segments(tcb.local, tcb.remote) {
-        return false;
-    }
-
-    let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
-
-    // ACK処理 (新規ACKならカウンタ更新)
-    let is_new_ack = ack_diff_una > 0;
-    if is_new_ack {
-        let current_time_ms = tcb_table().get_current_tick();
-        tcb_table().update(tcb.local, tcb.remote, |entry| {
-            entry.on_ack_received(ack_num, false, current_time_ms, 0);
-        });
-        retransmit_queue_ack(tcb.local, tcb.remote, ack_num);
-    }
-
-    // データをソケットの受信バッファに追加
-    let mut pushed = 0;
-    if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        pushed = socket.push_payload(data_payload.clone());
-    }
-
-    // もしバッファが満杯で全データを受け入れられなかった場合は
-    // ファストパスを中断してスローパス（handle_data_received_with_delayed_ack）に
-    // 処理を委ねる。これにより正しい rcv_nxt の更新とリトライが行われる。
-    if pushed < payload_len {
-        return false;
-    }
-
-    // TCB更新: rcv_nxt を前進
-    tcb_table().update(tcb.local, tcb.remote, |entry| {
-        entry.rcv_nxt = new_rcv_nxt;
-        // Delayed ACK: セグメントカウンタをインクリメント
-        if entry.delayed_ack_pending == 0 {
-            entry.delayed_ack_timer = tcb_table().get_current_tick();
-        }
-        entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
-
-        // RFC 7323: タイムスタンプ更新 (Fast Path)
-        if entry.ts_enabled && !options.is_empty() {
-            let mut parser = TcpOptionParser::new(options);
-            if let Some((peer_ts_val, _)) = parser.find_timestamps() {
-                entry.ts_ecr = peer_ts_val;
-                entry.ts_val = generate_tcp_timestamp();
-            }
-        }
-    });
-
-    // Delayed ACK 判定:
-    // - 2セグメント受信したら即座にACK (RFC 5681)
-    // - それ以外はタイマーに委ねる (最大200ms後にACK)
-    let should_ack_now = tcb_table()
-        .lookup(tcb.local, tcb.remote)
-        .map(|e| e.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
-        .unwrap_or(true);
-
-    if should_ack_now {
-        send_ack_for_fast_path(tcb, new_rcv_nxt);
-        tcb_table().update(tcb.local, tcb.remote, |entry| {
-            entry.delayed_ack_pending = 0;
-        });
-    }
-
-    true
 }
 
 /// ファストパス用の軽量ACK送信

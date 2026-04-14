@@ -13,7 +13,7 @@ pub fn init(tick_rate: u64) {
 }
 
 /// IPv4 DNSサーバーを設定
-pub fn set_ipv4_servers(servers: Vec<Ipv4Address>) {
+pub fn set_ipv4_servers(servers: &[Ipv4Address]) {
     match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
@@ -27,7 +27,7 @@ pub fn set_ipv4_servers(servers: Vec<Ipv4Address>) {
 }
 
 /// IPv6 DNSサーバーを設定
-pub fn set_ipv6_servers(servers: Vec<Ipv6Address>) {
+pub fn set_ipv6_servers(servers: &[Ipv6Address]) {
     match super::shared_client_lock().lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {

@@ -358,10 +358,6 @@ pub(crate) mod tests {
     use super::*;
     use kernel_api::resource::net::PacketPayload;
 
-    fn test_payload(data: &[u8]) -> PacketPayload {
-        crate::net::payload::payload_from_bytes(data).expect("payload allocation in test")
-    }
-
     #[cfg_attr(test, test_case)]
     pub fn test_igmp_type_conversion() {
         assert_eq!(IgmpType::from_u8(0x11), Some(IgmpType::MembershipQuery));

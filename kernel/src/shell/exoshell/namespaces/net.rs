@@ -1058,202 +1058,6 @@ impl NetNamespace {
     }
 
     // ================================================================
-    // DNS解決
-    // ================================================================
-
-    /// DNS名前解決 (非同期)
-    ///
-    /// usage: net.dns("example.com")
-    pub async fn dns_resolve(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let hostname = match args.first() {
-            Some(ExoValue::String(s)) => s.as_ref(),
-            _ => {
-                return ExoValue::Error(String::from(
-                    "usage: net.dns(hostname)\n例: net.dns(\"example.com\")",
-                ));
-            }
-        };
-        match crate::net::services::dns::resolve_ipv4(hostname).await {
-            Some(addr) => ExoValue::String(Cow::Owned(format!("{}", addr))),
-            None => ExoValue::Error(format!("DNS resolution failed for '{}'", hostname)),
-        }
-    }
-
-    /// DNS名前解決 IPv6 (AAAA)
-    ///
-    /// usage: net.dns6("example.com")
-    pub async fn dns_resolve_ipv6(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let hostname = match args.first() {
-            Some(ExoValue::String(s)) => s.as_ref(),
-            _ => {
-                return ExoValue::Error(String::from(
-                    "usage: net.dns6(hostname)\n例: net.dns6(\"example.com\")",
-                ));
-            }
-        };
-
-        match crate::net::services::dns::resolve_ipv6(hostname).await {
-            Some(addr) => ExoValue::String(Cow::Owned(format!("{}", addr))),
-            None => ExoValue::Error(format!("DNS AAAA resolution failed for '{}'", hostname)),
-        }
-    }
-
-    /// DNS TXT レコード解決
-    ///
-    /// usage: net.dns_txt("example.com")
-    pub async fn dns_resolve_txt(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let hostname = match args.first() {
-            Some(ExoValue::String(s)) => s.as_ref(),
-            _ => {
-                return ExoValue::Error(String::from(
-                    "usage: net.dns_txt(hostname)\n例: net.dns_txt(\"example.com\")",
-                ));
-            }
-        };
-
-        match crate::net::services::dns::resolve_txt(hostname).await {
-            Some(records) if !records.is_empty() => ExoValue::Array(
-                records
-                    .into_iter()
-                    .map(|txt| ExoValue::String(Cow::Owned(txt.to_owned_string())))
-                    .collect(),
-            ),
-            _ => ExoValue::Error(format!("DNS TXT resolution failed for '{}'", hostname)),
-        }
-    }
-
-    /// DNS MX レコード解決
-    ///
-    /// usage: net.dns_mx("example.com")
-    pub async fn dns_resolve_mx(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let hostname = match args.first() {
-            Some(ExoValue::String(s)) => s.as_ref(),
-            _ => {
-                return ExoValue::Error(String::from(
-                    "usage: net.dns_mx(hostname)\n例: net.dns_mx(\"example.com\")",
-                ));
-            }
-        };
-
-        match crate::net::services::dns::resolve_mx(hostname).await {
-            Some(records) if !records.is_empty() => {
-                let values: Vec<ExoValue> = records
-                    .into_iter()
-                    .map(|record| {
-                        let mut map = BTreeMap::new();
-                        map.insert(
-                            String::from("preference"),
-                            ExoValue::Int(i64::from(record.preference)),
-                        );
-                        map.insert(
-                            String::from("exchange"),
-                            ExoValue::String(Cow::Owned(record.exchange.to_owned_string())),
-                        );
-                        ExoValue::Map(map)
-                    })
-                    .collect();
-                ExoValue::Array(values)
-            }
-            _ => ExoValue::Error(format!("DNS MX resolution failed for '{}'", hostname)),
-        }
-    }
-
-    /// DNS SRV レコード解決
-    ///
-    /// usage: net.dns_srv("_service._tcp.example.com")
-    pub async fn dns_resolve_srv(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let hostname = match args.first() {
-            Some(ExoValue::String(s)) => s.as_ref(),
-            _ => {
-                return ExoValue::Error(String::from(
-                    "usage: net.dns_srv(name)\n例: net.dns_srv(\"_sip._tcp.example.com\")",
-                ));
-            }
-        };
-
-        match crate::net::services::dns::resolve_srv(hostname).await {
-            Some(records) if !records.is_empty() => {
-                let values: Vec<ExoValue> = records
-                    .into_iter()
-                    .map(|record| {
-                        let mut map = BTreeMap::new();
-                        map.insert(
-                            String::from("priority"),
-                            ExoValue::Int(i64::from(record.priority)),
-                        );
-                        map.insert(
-                            String::from("weight"),
-                            ExoValue::Int(i64::from(record.weight)),
-                        );
-                        map.insert(String::from("port"), ExoValue::Int(i64::from(record.port)));
-                        map.insert(
-                            String::from("target"),
-                            ExoValue::String(Cow::Owned(record.target.to_owned_string())),
-                        );
-                        ExoValue::Map(map)
-                    })
-                    .collect();
-                ExoValue::Array(values)
-            }
-            _ => ExoValue::Error(format!("DNS SRV resolution failed for '{}'", hostname)),
-        }
-    }
-
-    /// DNS PTR 逆引き (IPv4)
-    ///
-    /// usage: net.dns_ptr("1.2.3.4")
-    pub async fn dns_reverse_ipv4(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let ip = match args.first() {
-            Some(value) => match Self::parse_ipv4_arg(value) {
-                Ok(octets) => crate::net::l3::ipv4::Ipv4Address::new(octets),
-                Err(err) => {
-                    return ExoValue::Error(format!(
-                        "usage: net.dns_ptr(ipv4)\n例: net.dns_ptr(\"1.2.3.4\")\nerror: {}",
-                        err
-                    ));
-                }
-            },
-            None => {
-                return ExoValue::Error(String::from(
-                    "usage: net.dns_ptr(ipv4)\n例: net.dns_ptr(\"1.2.3.4\")",
-                ));
-            }
-        };
-
-        match crate::net::services::dns::resolve_ptr_ipv4(ip).await {
-            Some(name) => ExoValue::String(Cow::Owned(name.to_owned_string())),
-            None => ExoValue::Error(String::from("DNS PTR resolution failed")),
-        }
-    }
-
-    /// DNS PTR 逆引き (IPv6)
-    ///
-    /// usage: net.dns_ptr6("2001:db8::1")
-    pub async fn dns_reverse_ipv6(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let ip = match args.first() {
-            Some(value) => match Self::parse_ipv6_arg(value) {
-                Ok(octets) => crate::net::l3::ipv6::Ipv6Address::new(octets),
-                Err(err) => {
-                    return ExoValue::Error(format!(
-                        "usage: net.dns_ptr6(ipv6)\n例: net.dns_ptr6(\"2001:db8::1\")\nerror: {}",
-                        err
-                    ));
-                }
-            },
-            None => {
-                return ExoValue::Error(String::from(
-                    "usage: net.dns_ptr6(ipv6)\n例: net.dns_ptr6(\"2001:db8::1\")",
-                ));
-            }
-        };
-
-        match crate::net::services::dns::resolve_ptr_ipv6(ip).await {
-            Some(name) => ExoValue::String(Cow::Owned(name.to_owned_string())),
-            None => ExoValue::Error(String::from("DNS PTR6 resolution failed")),
-        }
-    }
-
-    // ================================================================
     // ネットワーク診断・スナップショット
     // ================================================================
 
@@ -1357,9 +1161,174 @@ impl NetNamespace {
         ExoValue::Array(values)
     }
 
+    pub async fn dns_resolve(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let name = match args.first() {
+            Some(ExoValue::String(name)) => name.as_ref(),
+            _ => return ExoValue::Error(String::from("usage: net.dns(name)")),
+        };
+        match crate::net::services::dns::resolve_ipv4(name).await {
+            Some(addr) => {
+                let octets = addr.octets();
+                ExoValue::String(Cow::Owned(format!(
+                    "{}.{}.{}.{}",
+                    octets[0], octets[1], octets[2], octets[3]
+                )))
+            }
+            None => ExoValue::Nil,
+        }
+    }
+
+    pub async fn dns_resolve_ipv6(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let name = match args.first() {
+            Some(ExoValue::String(name)) => name.as_ref(),
+            _ => return ExoValue::Error(String::from("usage: net.dns6(name)")),
+        };
+        match crate::net::services::dns::resolve_ipv6(name).await {
+            Some(addr) => ExoValue::String(Cow::Owned(Self::format_ipv6(addr.octets()))),
+            None => ExoValue::Nil,
+        }
+    }
+
+    pub async fn dns_resolve_txt(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let name = match args.first() {
+            Some(ExoValue::String(name)) => name.as_ref(),
+            _ => return ExoValue::Error(String::from("usage: net.dns_txt(name)")),
+        };
+        let Some(records) = crate::net::services::dns::resolve_txt(name).await else {
+            return ExoValue::Nil;
+        };
+        ExoValue::Array(
+            records
+                .into_iter()
+                .map(|record| ExoValue::String(Cow::Owned(Self::dns_txt_to_string(&record))))
+                .collect(),
+        )
+    }
+
+    pub async fn dns_resolve_mx(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let name = match args.first() {
+            Some(ExoValue::String(name)) => name.as_ref(),
+            _ => return ExoValue::Error(String::from("usage: net.dns_mx(name)")),
+        };
+        let Some(records) = crate::net::services::dns::resolve_mx(name).await else {
+            return ExoValue::Nil;
+        };
+        ExoValue::Array(
+            records
+                .into_iter()
+                .map(|record| {
+                    let mut map = BTreeMap::new();
+                    map.insert(
+                        String::from("preference"),
+                        ExoValue::Int(record.preference as i64),
+                    );
+                    map.insert(
+                        String::from("exchange"),
+                        ExoValue::String(Cow::Owned(Self::dns_name_to_string(&record.exchange))),
+                    );
+                    ExoValue::Map(map)
+                })
+                .collect(),
+        )
+    }
+
+    pub async fn dns_resolve_srv(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let name = match args.first() {
+            Some(ExoValue::String(name)) => name.as_ref(),
+            _ => return ExoValue::Error(String::from("usage: net.dns_srv(name)")),
+        };
+        let Some(records) = crate::net::services::dns::resolve_srv(name).await else {
+            return ExoValue::Nil;
+        };
+        ExoValue::Array(
+            records
+                .into_iter()
+                .map(|record| {
+                    let mut map = BTreeMap::new();
+                    map.insert(
+                        String::from("priority"),
+                        ExoValue::Int(record.priority as i64),
+                    );
+                    map.insert(String::from("weight"), ExoValue::Int(record.weight as i64));
+                    map.insert(String::from("port"), ExoValue::Int(record.port as i64));
+                    map.insert(
+                        String::from("target"),
+                        ExoValue::String(Cow::Owned(Self::dns_name_to_string(&record.target))),
+                    );
+                    ExoValue::Map(map)
+                })
+                .collect(),
+        )
+    }
+
+    pub async fn dns_reverse_ipv4(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let octets = match args.first() {
+            Some(value) => match Self::parse_ipv4_arg(value) {
+                Ok(octets) => octets,
+                Err(err) => return ExoValue::Error(err),
+            },
+            None => return ExoValue::Error(String::from("usage: net.dns_ptr(ipv4)")),
+        };
+        match crate::net::services::dns::resolve_ptr_ipv4(
+            crate::net::l3::ipv4::Ipv4Address::new(octets),
+        )
+        .await
+        {
+            Some(name) => ExoValue::String(Cow::Owned(Self::dns_name_to_string(&name))),
+            None => ExoValue::Nil,
+        }
+    }
+
+    pub async fn dns_reverse_ipv6(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let octets = match args.first() {
+            Some(value) => match Self::parse_ipv6_arg(value) {
+                Ok(octets) => octets,
+                Err(err) => return ExoValue::Error(err),
+            },
+            None => return ExoValue::Error(String::from("usage: net.dns_ptr6(ipv6)")),
+        };
+        match crate::net::services::dns::resolve_ptr_ipv6(
+            crate::net::l3::ipv6::Ipv6Address::new(octets),
+        )
+        .await
+        {
+            Some(name) => ExoValue::String(Cow::Owned(Self::dns_name_to_string(&name))),
+            None => ExoValue::Nil,
+        }
+    }
+
     // ================================================================
     // ヘルパー
     // ================================================================
+
+    fn payload_span_to_string(span: &crate::net::payload::PayloadSpan) -> String {
+        let mut out = String::with_capacity(span.total_len());
+        for index in 0..span.total_len() {
+            if let Some(byte) = span.byte_at(index) {
+                out.push(byte as char);
+            }
+        }
+        out
+    }
+
+    fn dns_name_to_string(name: &crate::net::services::dns::DnsNameView) -> String {
+        let mut out = String::with_capacity(name.text_len());
+        for (index, label) in name.labels().iter().enumerate() {
+            if index > 0 {
+                out.push('.');
+            }
+            out.push_str(&Self::payload_span_to_string(label));
+        }
+        out
+    }
+
+    fn dns_txt_to_string(txt: &crate::net::services::dns::DnsTxtView) -> String {
+        let mut out = String::with_capacity(txt.text_len());
+        for span in txt.spans() {
+            out.push_str(&Self::payload_span_to_string(span));
+        }
+        out
+    }
 
     /// ExoValueからIPv4アドレスをパースするヘルパー
     fn parse_ipv4_arg(val: &ExoValue<'_>) -> Result<[u8; 4], String> {

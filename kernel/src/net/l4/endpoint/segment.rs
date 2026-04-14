@@ -587,17 +587,6 @@ pub fn send_tcp_segment_packet(
 pub mod tests {
     use super::*;
 
-    fn test_payload_bytes(data: &[u8]) -> PacketPayload {
-        crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
-    }
-
-    fn send_test_segment(local: EndpointAddr, remote: EndpointAddr, segment: Vec<u8>) -> bool {
-        let Some(payload) = crate::net::payload::payload_from_bytes(&segment) else {
-            return false;
-        };
-        send_tcp_segment_payload(local, remote, payload)
-    }
-
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_segment_builder() {
         // SYNセグメント構築
@@ -747,10 +736,6 @@ pub mod tests {
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
-
-    fn test_payload_bytes(data: &[u8]) -> PacketPayload {
-        crate::net::payload::payload_from_bytes(data).expect("allocate packet-backed test payload")
-    }
 
     pub fn tcp_segment_builder_smoke() -> bool {
         let segment = TcpSegmentBuilder::new(12345, 80)

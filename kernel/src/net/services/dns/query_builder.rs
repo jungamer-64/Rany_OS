@@ -26,9 +26,9 @@ impl DnsClient {
 
     fn push_dns_name_payload(
         builder: &mut crate::net::payload::PacketPayloadBuilder,
-        name: &DnsNameView,
+        labels: &[PayloadSpan],
     ) -> Result<(), &'static str> {
-        for label in name.labels() {
+        for label in labels {
             let len = label.total_len();
             if len > 63 {
                 return Err("Label too long");
@@ -49,9 +49,18 @@ impl DnsClient {
     }
 
     /// DNSクエリパケットを packet-backed payload として構築
+    pub fn build_query_payload(
+        &self,
+        name: &str,
+        qtype: DnsQueryType,
+    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
+        let name = DnsNameOwned::parse_ascii(name).map_err(|_| "Invalid DNS name")?;
+        self.build_query_payload_for_name(&name, qtype)
+    }
+
     pub fn build_query_payload_for_name(
         &self,
-        name: &DnsNameView,
+        name: &DnsNameOwned,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
         let id = self.next_query_id();
@@ -61,7 +70,7 @@ impl DnsClient {
 
     pub fn build_query_payload_for_name_with_id(
         &self,
-        name: &DnsNameView,
+        name: &DnsNameOwned,
         qtype: DnsQueryType,
         id: u16,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
@@ -85,7 +94,7 @@ impl DnsClient {
             .push_bytes(&1u16.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
 
-        Self::push_dns_name_payload(&mut builder, name)?;
+        Self::push_dns_name_payload(&mut builder, name.labels())?;
         builder
             .push_bytes(&(qtype as u16).to_be_bytes())
             .ok_or("Failed to allocate DNS qtype")?;
@@ -113,20 +122,19 @@ impl DnsClient {
         Ok(builder.build())
     }
 
-    /// DNSクエリパケットを packet-backed payload として構築
-    pub fn build_query_payload(
+    /// Build a DNS query for TCP transport as a packet-backed payload.
+    pub fn build_tcp_query_payload(
         &self,
         name: &str,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let owned = DnsNameOwned::from_ascii_name(name).ok_or("Invalid DNS name")?;
-        self.build_query_payload_for_name(&owned.as_view(), qtype)
+        let name = DnsNameOwned::parse_ascii(name).map_err(|_| "Invalid DNS name")?;
+        self.build_tcp_query_payload_for_name(&name, qtype)
     }
 
-    /// Build a DNS query for TCP transport as a packet-backed payload.
     pub fn build_tcp_query_payload_for_name(
         &self,
-        name: &DnsNameView,
+        name: &DnsNameOwned,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
         let id = self.next_query_id();
@@ -136,7 +144,7 @@ impl DnsClient {
 
     pub fn build_tcp_query_payload_for_name_with_id(
         &self,
-        name: &DnsNameView,
+        name: &DnsNameOwned,
         qtype: DnsQueryType,
         id: u16,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
@@ -147,16 +155,6 @@ impl DnsClient {
             .ok_or("Buffer too small for TCP length prefix")?;
         builder.push_payload(message);
         Ok(builder.build())
-    }
-
-    /// Build a DNS query for TCP transport as a packet-backed payload.
-    pub fn build_tcp_query_payload(
-        &self,
-        name: &str,
-        qtype: DnsQueryType,
-    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let owned = DnsNameOwned::from_ascii_name(name).ok_or("Invalid DNS name")?;
-        self.build_tcp_query_payload_for_name(&owned.as_view(), qtype)
     }
 
     /// Check if a DNS query should be retried based on attempt count and elapsed time

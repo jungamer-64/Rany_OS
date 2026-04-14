@@ -726,11 +726,16 @@ fn set_primary_slot_in(runtime: NetRuntimeHandle, primary: Option<NetIfId>) {
 fn apply_primary_runtime_for_interface(if_id: NetIfId) -> Result<(), &'static str> {
     let runtime = default_runtime();
     if let Some(lease) = crate::net::services::dhcp::lease_for_interface(if_id) {
+        let dns_server = manager::get_interface_in(runtime, if_id)
+            .ok()
+            .flatten()
+            .and_then(|iface| iface.config)
+            .and_then(|config| config.ipv4.dns);
         let mut guard = stack::stack_in(runtime)
             .lock()
             .map_err(|_| "network stack poisoned")?;
         let stack = guard.as_mut().ok_or("network stack unavailable")?;
-        stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, true);
+        stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, true, dns_server);
         if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
             if let Some(config) = iface.config {
                 crate::net::services::dhcp::update_runtime_mac(config.mac);

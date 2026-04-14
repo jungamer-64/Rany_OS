@@ -337,7 +337,7 @@ impl TlsConnection {
     // TLS 1.3 Record Layer
     // ========================================================================
 
-    pub(super) fn build_tls13_nonce_and_aad(
+    pub(crate) fn build_tls13_nonce_and_aad(
         iv: &[u8],
         seq: u64,
         data_len: usize,
@@ -351,7 +351,7 @@ impl TlsConnection {
         (nonce, Self::tls13_record_aad(data_len))
     }
 
-    pub(super) fn decrypt_aead(
+    pub(crate) fn decrypt_aead(
         cipher: CipherSuite,
         key: &[u8],
         nonce: &[u8; 12],
@@ -368,50 +368,6 @@ impl TlsConnection {
     /// AAD = TLS record header（5バイト: type || legacy_version || length）
     ///
     /// `is_handshake`: trueの場合ハンドシェイク鍵、falseの場合アプリケーション鍵を使用
-    pub(crate) fn tls13_decrypt_record(
-        &mut self,
-        data: &kernel_api::resource::net::PacketPayload,
-        is_handshake: bool,
-    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let cipher = self
-            .negotiated_cipher
-            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
-
-        // 鍵・IV・シーケンス番号を選択
-        let (key, iv, seq) = if is_handshake {
-            (&self.hs_read_key, &self.hs_read_iv, self.hs_read_seq)
-        } else {
-            (&self.read_key, &self.read_iv, self.read_seq)
-        };
-
-        if key.is_empty() || iv.len() < 12 {
-            return Err(TlsError::DecryptError);
-        }
-
-        let data_bytes = Self::payload_as_contiguous_slice(data)?;
-        let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv.as_slice(), seq, data_bytes.len());
-
-        if data_bytes.len() < 16 {
-            return Err(TlsError::DecryptError);
-        }
-
-        let ciphertext_len = data_bytes.len() - 16;
-        let ciphertext = &data_bytes[..ciphertext_len];
-        let mut tag = [0u8; 16];
-        tag.copy_from_slice(&data_bytes[ciphertext_len..]);
-
-        let plaintext = Self::decrypt_aead(cipher, key.as_slice(), &nonce, &aad, ciphertext, &tag)?;
-
-        // シーケンス番号をインクリメント
-        if is_handshake {
-            self.hs_read_seq += 1;
-        } else {
-            self.read_seq += 1;
-        }
-
-        Ok(plaintext)
-    }
-
     /// TLS 1.3: レコード暗号化
     ///
     /// inner_plaintext = content || content_type
@@ -556,27 +512,8 @@ impl TlsConnection {
     }
 
     /// レコードを復号
-    pub(crate) fn decrypt_record(
-        &mut self,
-        data: &kernel_api::resource::net::PacketPayload,
-        content_type: u8,
-    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let data_bytes = Self::payload_as_contiguous_slice(data)?;
-        let cipher = self
-            .negotiated_cipher
-            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
-
-        if cipher.is_cbc() {
-            self.decrypt_cbc_record(&data_bytes, content_type)
-        } else if cipher.is_chacha20_poly1305() {
-            self.decrypt_chacha20_poly1305(&data_bytes, content_type)
-        } else {
-            self.decrypt_aes_gcm(&data_bytes, content_type)
-        }
-    }
-
     /// AES-GCM record decryption (TLS 1.2)
-    pub(super) fn decrypt_aes_gcm(
+    pub(crate) fn decrypt_aes_gcm(
         &mut self,
         data: &[u8],
         content_type: u8,
@@ -647,7 +584,7 @@ impl TlsConnection {
     /// Nonce construction (RFC 7905 Section 2):
     /// - Write the sequence number as a 64-bit big-endian value, left-padded with zeros to 12 bytes
     /// - XOR with the IV from key derivation (12 bytes)
-    pub(super) fn decrypt_chacha20_poly1305(
+    pub(crate) fn decrypt_chacha20_poly1305(
         &mut self,
         data: &[u8],
         content_type: u8,

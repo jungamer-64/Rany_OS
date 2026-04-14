@@ -61,26 +61,16 @@ impl DhcpClient {
                     let now = crate::task::current_tick();
                     let response = self.process_response_payload(&packet, now);
                     match response {
-                        Ok(DhcpResponseResult::Ack(lease)) => {
+                        Ok(DhcpResponseResult::Ack(result)) => {
+                            let crate::net::services::dhcp::DhcpAckResult { lease, applied } =
+                                result;
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
                             crate::net::l4::endpoint::event::enqueue_event_ignore_in(
                                 self.runtime,
                                 crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
                                     if_id: None,
-                                    ip: *lease.ip_address.as_bytes(),
-                                    subnet: *lease.subnet_mask.as_bytes(),
-                                    gateway: lease
-                                        .gateway
-                                        .map(|a| *a.as_bytes())
-                                        .unwrap_or([0, 0, 0, 0]),
-                                    dns_servers: lease
-                                        .dns_servers
-                                        .iter()
-                                        .map(|a| *a.as_bytes())
-                                        .collect(),
-                                    hostname: lease.hostname.clone(),
-                                    domain_name: lease.domain_name.clone(),
+                                    config: applied,
                                 },
                             );
                             // mDNS のローカル IP を更新
@@ -759,40 +749,6 @@ impl DhcpClient {
         Ok(header)
     }
 
-    /// 単一のDHCPオプションを ParsedOptions に適用する
-    pub(super) fn apply_option(opts: &mut ParsedOptions, opt: u8, opt_data: &[u8]) {
-        match opt {
-            53 => {
-                if !opt_data.is_empty() {
-                    opts.message_type = DhcpMessageType::from_u8(opt_data[0]);
-                }
-            }
-            1 => opts.subnet_mask = Self::parse_ipv4_option(opt_data),
-            3 => opts.router = Self::parse_ipv4_option(opt_data),
-            6 => {
-                // Limit the number of DNS servers to prevent memory exhaustion
-                for chunk in opt_data.chunks(4) {
-                    if chunk.len() == 4 && opts.dns_servers.len() < 8 {
-                        let mut bytes = [0u8; 4];
-                        bytes.copy_from_slice(chunk);
-                        opts.dns_servers.push(Ipv4Address::new(bytes));
-                    }
-                }
-            }
-            51 => {
-                if let Some(v) = Self::parse_u32_option(opt_data) {
-                    opts.lease_time = v;
-                }
-            }
-            58 => opts.renewal_time = Self::parse_u32_option(opt_data),
-            59 => opts.rebinding_time = Self::parse_u32_option(opt_data),
-            54 => opts.server_id = Self::parse_ipv4_option(opt_data),
-            12 => opts.hostname = PayloadSpan::from_bytes(opt_data),
-            15 => opts.domain_name = PayloadSpan::from_bytes(opt_data),
-            _ => {}
-        }
-    }
-
     pub(super) fn apply_option_span(opts: &mut ParsedOptions, opt: u8, opt_data: &PayloadSpan) {
         match opt {
             53 => {
@@ -876,7 +832,49 @@ impl DhcpClient {
                 break;
             }
 
-            Self::apply_option(&mut opts, opt, &data[offset + 2..offset + 2 + len]);
+            let opt_data = &data[offset + 2..offset + 2 + len];
+            match opt {
+                53 => {
+                    if let Some(value) = opt_data.first() {
+                        opts.message_type = DhcpMessageType::from_u8(*value);
+                    }
+                }
+                1 => opts.subnet_mask = Self::parse_ipv4_option(opt_data),
+                3 => opts.router = Self::parse_ipv4_option(opt_data),
+                6 => {
+                    for chunk in opt_data
+                        .chunks_exact(4)
+                        .take(8usize.saturating_sub(opts.dns_servers.len()))
+                    {
+                        let mut bytes = [0u8; 4];
+                        bytes.copy_from_slice(chunk);
+                        opts.dns_servers.push(Ipv4Address::new(bytes));
+                    }
+                }
+                51 => {
+                    if let Some(value) = Self::parse_u32_option(opt_data) {
+                        opts.lease_time = value;
+                    }
+                }
+                58 => opts.renewal_time = Self::parse_u32_option(opt_data),
+                59 => opts.rebinding_time = Self::parse_u32_option(opt_data),
+                54 => opts.server_id = Self::parse_ipv4_option(opt_data),
+                12 => {
+                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                    if builder.push_bytes(opt_data).is_some() {
+                        opts.hostname =
+                            Some(crate::net::payload::PayloadSpan::from_payload(builder.build()));
+                    }
+                }
+                15 => {
+                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                    if builder.push_bytes(opt_data).is_some() {
+                        opts.domain_name =
+                            Some(crate::net::payload::PayloadSpan::from_payload(builder.build()));
+                    }
+                }
+                _ => {}
+            }
             offset += 2 + len;
         }
 
@@ -1098,7 +1096,7 @@ impl DhcpClient {
     /// ParsedOptions と DhcpHeader からリース情報を構築する
     pub(super) fn build_lease(
         header: &DhcpHeader,
-        opts: ParsedOptions,
+        opts: &ParsedOptions,
         current_tick: u64,
     ) -> DhcpLease {
         let t1 = opts.renewal_time.unwrap_or(opts.lease_time / 2);
@@ -1113,14 +1111,11 @@ impl DhcpClient {
                 .subnet_mask
                 .unwrap_or(Ipv4Address::new([255, 255, 255, 0])),
             gateway: opts.router,
-            dns_servers: opts.dns_servers,
             server_ip: opts.server_id.unwrap_or(header.siaddr()),
             lease_time: opts.lease_time,
             t1,
             t2,
             obtained_at: current_tick,
-            hostname: opts.hostname,
-            domain_name: opts.domain_name,
         }
     }
 
@@ -1129,7 +1124,7 @@ impl DhcpClient {
         &self,
         current_state: DhcpState,
         header: &DhcpHeader,
-        opts: ParsedOptions,
+        opts: &ParsedOptions,
         current_tick: u64,
     ) -> Result<DhcpLease, &'static str> {
         if current_state != DhcpState::Informing {
@@ -1142,10 +1137,7 @@ impl DhcpClient {
         let ParsedOptions {
             subnet_mask,
             router,
-            dns_servers,
             server_id,
-            hostname,
-            domain_name,
             ..
         } = opts;
 
@@ -1156,36 +1148,16 @@ impl DhcpClient {
             yiaddr
         };
 
-        let dns_servers = if dns_servers.is_empty() {
-            prev.dns_servers.clone()
-        } else {
-            dns_servers
-        };
-
         Ok(DhcpLease {
             ip_address,
             subnet_mask: subnet_mask.unwrap_or(prev.subnet_mask),
             gateway: router.or(prev.gateway),
-            dns_servers,
             server_ip: server_id.unwrap_or(prev.server_ip),
             // INFORM はアドレス割当更新ではないため既存のリースタイマを維持する
             lease_time: prev.lease_time,
             t1: prev.t1,
             t2: prev.t2,
             obtained_at: prev.obtained_at,
-            hostname: hostname.or(prev.hostname),
-            domain_name: domain_name.or(prev.domain_name),
         })
     }
-}
-
-/// DHCP応答処理結果
-#[derive(Debug)]
-pub enum DhcpResponseResult {
-    /// OFFERを受信
-    Offer(DhcpLease),
-    /// ACKを受信 (リース取得成功)
-    Ack(DhcpLease),
-    /// NAKを受信 (リース取得失敗)
-    Nak,
 }

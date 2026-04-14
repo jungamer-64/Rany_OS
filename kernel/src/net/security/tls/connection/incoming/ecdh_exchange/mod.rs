@@ -668,54 +668,6 @@ impl TlsConnection {
         }
     }
 
-    pub(super) fn decrypt_cbc_record(
-        &mut self,
-        data: &[u8],
-        content_type: u8,
-    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        if self.read_key.is_empty() {
-            return Err(TlsError::CryptoError);
-        }
-
-        let version = self.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
-        let cipher = self
-            .negotiated_cipher
-            .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA);
-        let use_sha1 = cipher.uses_sha1_mac();
-        let mac_len = cipher.mac_len();
-
-        let (iv, ciphertext) = self.split_iv_and_ciphertext(data, version)?;
-
-        if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
-            return Err(TlsError::DecryptError);
-        }
-
-        self.store_last_ciphertext_block_if_tls10(version, ciphertext);
-
-        let mut packet = crate::net::payload::alloc_packet_with_headroom(ciphertext.len(), 0)
-            .ok_or(TlsError::DecodeError)?;
-        packet.data_mut()[..ciphertext.len()].copy_from_slice(ciphertext);
-        aes_cbc_decrypt_in_place(
-            self.read_key.as_slice(),
-            &iv,
-            &mut packet.data_mut()[..ciphertext.len()],
-        )
-        .ok_or(TlsError::DecryptError)?;
-        packet.set_len(ciphertext.len());
-
-        let fragment_len = self.verify_cbc_padding_and_mac(
-            &packet.data()[..ciphertext.len()],
-            content_type,
-            version,
-            use_sha1,
-            mac_len,
-        )?;
-
-        self.read_seq += 1;
-        crate::net::payload::payload_from_packet_range(&packet, 0, fragment_len)
-            .ok_or(TlsError::DecodeError)
-    }
-
     // ========================================================================
     // RSA Key Transport (TLS_RSA_WITH_* cipher suites)
     // ========================================================================

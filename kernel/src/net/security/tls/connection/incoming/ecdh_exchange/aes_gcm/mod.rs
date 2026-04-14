@@ -205,53 +205,6 @@ impl TlsConnection {
         Ok(())
     }
 
-    /// TLS 1.3: 暗号化ハンドシェイクレコードを復号して処理
-    ///
-    /// TLS 1.3では ServerHello 以降のハンドシェイクメッセージは
-    /// ApplicationData レコードとして暗号化されて送信される。
-    /// 復号後、内部コンテントタイプ（最終の非ゼロバイト）に基づいて処理する。
-    pub(crate) fn tls13_process_encrypted_handshake(
-        &mut self,
-        data: &kernel_api::resource::net::PacketPayload,
-    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let decrypted = self.tls13_decrypt_record(data, true)?;
-
-        if decrypted.is_empty() {
-            return Err(TlsError::DecodeError);
-        }
-
-        let (inner_content_type, inner_data) =
-            Self::tls13_split_content_type_payload(&decrypted).ok_or(TlsError::DecodeError)?;
-
-        match ContentType::from_u8(inner_content_type) {
-            Some(ContentType::Handshake) => {
-                self.tls13_process_handshake_messages(
-                    inner_data
-                        .as_contiguous_slice()
-                        .ok_or(TlsError::DecodeError)?,
-                )?;
-                Ok(kernel_api::resource::net::PacketPayload::default())
-            }
-            Some(ContentType::Alert) => {
-                if inner_data.total_len() >= 2 {
-                    let description = inner_data.byte_at(1).ok_or(TlsError::DecodeError)?;
-                    if description == AlertDescription::CloseNotify as u8 {
-                        self.state = TlsState::Closed;
-                    } else {
-                        self.state = TlsState::Error;
-                        return Err(TlsError::Alert(description));
-                    }
-                }
-                Ok(kernel_api::resource::net::PacketPayload::default())
-            }
-            Some(ContentType::ApplicationData) => {
-                // ハンドシェイク完了後のアプリデータ
-                inner_data.to_payload().ok_or(TlsError::DecodeError)
-            }
-            _ => Err(TlsError::UnexpectedMessage),
-        }
-    }
-
     /// TLS 1.3: 暗号化ハンドシェイク内の複数メッセージを処理
     pub(super) fn tls13_process_handshake_messages(&mut self, data: &[u8]) -> TlsResult<()> {
         let mut offset = 0usize;
@@ -361,35 +314,6 @@ impl TlsConnection {
         Ok(())
     }
 
-    /// TLS 1.3: CertificateRequest を処理 (RFC 8446 Section 4.3.2)
-    ///
-    /// 構造:
-    /// - certificate_request_context length (1 byte)
-    /// - certificate_request_context (variable)
-    /// - extensions length (2 bytes)
-    /// - extensions (variable) — signature_algorithms (type 13) は必須
-    pub(super) fn tls13_process_certificate_request(&mut self, data: &[u8]) -> TlsResult<()> {
-        if data.is_empty() {
-            return Err(TlsError::DecodeError);
-        }
-
-        let ctx_len = data[0] as usize;
-        let mut off = 1;
-
-        if data.len() < off + ctx_len {
-            return Err(TlsError::DecodeError);
-        }
-        self.certificate_request_context =
-            Some(PayloadSpan::from_bytes(&data[off..off + ctx_len]).ok_or(TlsError::DecodeError)?);
-        off += ctx_len;
-
-        // 拡張をパース
-        self.tls13_skip_cert_request_extensions(data, off)?;
-
-        self.client_auth_requested = true;
-        Ok(())
-    }
-
     /// Parse and skip certificate request extensions (we only need to detect signature_algorithms).
     pub(super) fn tls13_skip_cert_request_extensions(
         &self,
@@ -418,6 +342,31 @@ impl TlsConnection {
             }
             off += ext_len;
         }
+        Ok(())
+    }
+
+    pub(crate) fn tls13_process_certificate_request(&mut self, data: &[u8]) -> TlsResult<()> {
+        if data.is_empty() {
+            return Err(TlsError::DecodeError);
+        }
+
+        let context_len = data[0] as usize;
+        let ext_start = 1usize.saturating_add(context_len);
+        if ext_start > data.len() {
+            return Err(TlsError::DecodeError);
+        }
+
+        self.client_auth_requested = true;
+        self.certificate_request_context = if context_len == 0 {
+            None
+        } else {
+            let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+            builder
+                .push_bytes(&data[1..1 + context_len])
+                .ok_or(TlsError::DecodeError)?;
+            Some(PayloadSpan::from_payload(builder.build()))
+        };
+        self.tls13_skip_cert_request_extensions(data, ext_start)?;
         Ok(())
     }
 
@@ -481,38 +430,6 @@ impl TlsConnection {
         }
 
         Ok(certs)
-    }
-
-    /// X.509 DERからサーバー公開鍵を抽出して設定する。
-    pub(super) fn set_server_public_key_from_cert(&mut self, cert_der: &[u8]) -> TlsResult<()> {
-        if let Some(cert) = crate::net::security::x509::parse_x509(cert_der) {
-            match cert.subject_public_key_info {
-                crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
-                    self.server_public_key = Some(ServerPublicKey::Rsa {
-                        modulus: PayloadSpan::from_bytes(modulus).ok_or(TlsError::DecodeError)?,
-                        exponent: PayloadSpan::from_bytes(exponent).ok_or(TlsError::DecodeError)?,
-                    });
-                }
-                crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
-                    self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
-                        point: PayloadSpan::from_bytes(public_key).ok_or(TlsError::DecodeError)?,
-                    });
-                }
-                crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
-                    self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
-                        point: PayloadSpan::from_bytes(public_key).ok_or(TlsError::DecodeError)?,
-                    });
-                }
-                _ => {
-                    if !self.config.should_skip_verify() {
-                        return Err(TlsError::CertificateError);
-                    }
-                }
-            }
-        } else if !self.config.should_skip_verify() {
-            return Err(TlsError::CertificateError);
-        }
-        Ok(())
     }
 
     /// TLS 1.3: Certificate を処理 (RFC 8446 Section 4.4.2)

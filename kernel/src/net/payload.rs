@@ -1,5 +1,4 @@
 use crate::net::l3::ipv4::IpProtocol;
-use alloc::vec;
 use alloc::vec::Vec;
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 use kernel_api::resource::net::{PacketPayload, PacketRef};
@@ -12,10 +11,6 @@ pub struct PayloadSpan {
 }
 
 impl PayloadSpan {
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
-        Some(Self::from_payload(payload_from_bytes(data)?))
-    }
-
     pub fn from_payload(payload: PacketPayload) -> Self {
         let len = payload.total_len();
         Self {
@@ -460,13 +455,6 @@ impl<'a> PacketPayloadView<'a> {
         }
     }
 
-    pub fn read_vec(&self, offset: usize, len: usize) -> Vec<u8> {
-        let mut out = vec![0u8; len];
-        let copied = self.copy_range(offset, &mut out);
-        out.truncate(copied);
-        out
-    }
-
     pub fn read_array<const N: usize>(&self, offset: usize) -> Option<[u8; N]> {
         let mut out = [0u8; N];
         (self.copy_range(offset, &mut out) == N).then_some(out)
@@ -548,12 +536,6 @@ impl<'a> PacketPayloadCursor<'a> {
             .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
     }
 
-    pub fn read_vec(&mut self, len: usize) -> Vec<u8> {
-        let bytes = self.view.read_vec(self.offset, len);
-        self.offset = self.offset.saturating_add(bytes.len());
-        bytes
-    }
-
     pub fn copy_into(&mut self, dst: &mut [u8]) -> usize {
         let copied = self.view.copy_range(self.offset, dst);
         self.offset = self.offset.saturating_add(copied);
@@ -600,46 +582,12 @@ fn alloc_packet_for_len(len: usize) -> Option<PacketRef> {
     alloc_packet_with_headroom(len, DEFAULT_PACKET_HEADROOM)
 }
 
-pub fn packet_from_bytes(data: &[u8]) -> Option<PacketRef> {
-    let len = data.len();
-    let mut packet = alloc_packet_for_len(len)?;
-    if len > 0 {
-        packet.data_mut()[..len].copy_from_slice(data);
-    }
-    Some(packet)
-}
-
 pub fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
     let base = container.as_ptr() as usize;
     let sub = subslice.as_ptr() as usize;
     let end = base.checked_add(container.len())?;
     let sub_end = sub.checked_add(subslice.len())?;
     (sub >= base && sub_end <= end).then_some(sub - base)
-}
-
-pub fn payload_from_packet_range(
-    packet: &PacketRef,
-    offset: usize,
-    len: usize,
-) -> Option<PacketPayload> {
-    let packet_len = packet.data().len();
-    if offset.checked_add(len)? > packet_len {
-        return None;
-    }
-
-    let mut packet = packet.clone();
-    packet.advance(offset);
-    packet.set_len(len);
-    Some(PacketPayload::single(packet))
-}
-
-pub fn payload_from_subslice(
-    packet: &PacketRef,
-    container: &[u8],
-    subslice: &[u8],
-) -> Option<PacketPayload> {
-    let offset = subslice_offset(container, subslice)?;
-    payload_from_packet_range(packet, offset, subslice.len())
 }
 
 pub fn payload_range(payload: &PacketPayload, offset: usize, len: usize) -> Option<PacketPayload> {
@@ -716,8 +664,4 @@ pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, Pa
 
     let transport_len = view.total_len().checked_sub(offset)?;
     payload_range(payload, offset, transport_len).map(|transport| (next_header, transport))
-}
-
-pub fn payload_from_bytes(data: &[u8]) -> Option<PacketPayload> {
-    packet_from_bytes(data).map(PacketPayload::single)
 }

@@ -1,18 +1,14 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::payload::{append_payload, payload_range, subslice_offset, PacketPayloadBuilder};
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
-use alloc::vec;
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv6Processor {
     fn packet_payload_from_frame(
         data: &[u8],
-        packet_ref: Option<&PacketRef>,
+        _packet_ref: Option<&PacketRef>,
     ) -> Option<PacketPayload> {
-        if let Some(packet_ref) = packet_ref {
-            return Some(PacketPayload::single(packet_ref.clone()));
-        }
-
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder.push_bytes(data)?;
         Some(builder.build())
@@ -54,7 +50,7 @@ impl Ipv6Processor {
     pub fn process_with_packet<'a>(
         &mut self,
         data: &'a [u8],
-        current_time: u64,
+        _current_time: u64,
         packet_ref: Option<&PacketRef>,
     ) -> Ipv6ProcessResult<'a> {
         // Parse the packet
@@ -132,70 +128,120 @@ impl Ipv6Processor {
                 }
             }
             ExtHeaderResult::Fragment {
+                ..
+            } => Ipv6ProcessResult::Error,
+        }
+    }
+
+    pub(crate) fn process_fragment_owned_packet(
+        &mut self,
+        packet_ref: PacketRef,
+        current_time: u64,
+    ) -> Ipv6ProcessResult<'static> {
+        let original = PacketPayload::single(packet_ref);
+        let raw_packet = match &original {
+            PacketPayload::Single(packet) => packet.data(),
+            PacketPayload::Chain(_) => return Ipv6ProcessResult::Error,
+        };
+
+        let packet = match Ipv6Packet::parse(raw_packet) {
+            Some(packet) => packet,
+            None => {
+                self.stats.record_header_error();
+                return Ipv6ProcessResult::Error;
+            }
+        };
+
+        self.stats.record_rx();
+
+        let src = packet.source();
+        if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
+            self.stats.record_dropped();
+            log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
+            return Ipv6ProcessResult::Dropped;
+        }
+
+        let dst = packet.destination();
+        if !self.is_for_us(&dst) {
+            self.stats.record_dropped();
+            return Ipv6ProcessResult::Dropped;
+        }
+
+        if packet.hop_limit() == 0 {
+            return Ipv6ProcessResult::HopLimitExceeded(src, dst, original);
+        }
+
+        match skip_extension_headers_fraginfo(raw_packet) {
+            ExtHeaderResult::Fragment {
                 unfragmentable,
                 frag_header,
                 frag_payload,
             } => {
-                let (res, expired) = self.reassembler.process_fragment(
+                let unfrag_len = unfragmentable.len();
+                let unfragmentable_payload = if unfrag_len == 0 {
+                    None
+                } else {
+                    payload_range(&original, 0, unfrag_len)
+                };
+                let Some(frag_payload_offset) = subslice_offset(raw_packet, frag_payload) else {
+                    self.stats.record_header_error();
+                    return Ipv6ProcessResult::Error;
+                };
+                let Some(frag_payload_packet) =
+                    payload_range(&original, frag_payload_offset, frag_payload.len())
+                else {
+                    self.stats.record_header_error();
+                    return Ipv6ProcessResult::Error;
+                };
+
+                let (result, expired) = self.reassembler.process_fragment(
                     src,
                     dst,
-                    unfragmentable,
-                    packet_ref.map(|ip_packet| {
-                        let mut header_packet = ip_packet.clone();
-                        header_packet.set_len(unfragmentable.len());
-                        header_packet
-                    }),
+                    unfragmentable_payload,
                     &frag_header,
-                    frag_payload,
-                    packet_ref.and_then(|ip_packet| {
-                        let payload_offset =
-                            (frag_payload.as_ptr() as usize).checked_sub(data.as_ptr() as usize)?;
-                        let mut payload_packet = ip_packet.clone();
-                        payload_packet.advance(payload_offset);
-                        payload_packet.set_len(frag_payload.len());
-                        Some(payload_packet)
-                    }),
+                    frag_payload_packet,
                     current_time,
                 );
 
-                match res {
-                    Ok(Some(data)) => Ipv6ProcessResult::Reassembled(data),
+                match result {
+                    Ok(Some(payload)) => Ipv6ProcessResult::Reassembled(payload),
                     Ok(None) => {
-                        if !expired.is_empty() {
-                            let (e_src, e_dst, e_unfrag, e_frag_header) = expired[0].clone();
+                        if let Some((expired_src, expired_dst, quoted, frag_header)) =
+                            expired.into_iter().next()
+                        {
                             Ipv6ProcessResult::ReassemblyTimeout(
-                                e_src,
-                                e_dst,
-                                e_unfrag,
-                                e_frag_header,
+                                expired_src,
+                                expired_dst,
+                                quoted,
+                                frag_header,
                             )
                         } else {
                             Ipv6ProcessResult::FragmentPending
                         }
                     }
-                    Err(e) => {
-                        let Some(ip_packet) = packet_ref else {
+                    Err(error) => {
+                        let Some(mut quoted) = payload_range(&original, 0, unfrag_len) else {
+                            self.stats.record_header_error();
                             return Ipv6ProcessResult::Error;
                         };
-                        let mut unfragmentable_packet = ip_packet.clone();
-                        unfragmentable_packet.set_len(unfragmentable.len());
-                        let mut fragment_header_packet = ip_packet.clone();
-                        fragment_header_packet.advance(unfragmentable.len());
-                        fragment_header_packet.set_len(8);
-                        Ipv6ProcessResult::ReassemblyError(
-                            e,
-                            src,
-                            dst,
-                            kernel_api::resource::net::PacketPayload::chain(
-                                kernel_api::resource::net::PacketChain::from_segments(vec![
-                                    unfragmentable_packet,
-                                    fragment_header_packet,
-                                ]),
-                            ),
-                        )
+                        let mut frag_bytes = [0u8; 8];
+                        frag_bytes[0] = frag_header.next_header;
+                        let off_and_flags = (frag_header.fragment_offset << 3)
+                            | if frag_header.more_fragments { 0x01 } else { 0 };
+                        frag_bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
+                        frag_bytes[4..8]
+                            .copy_from_slice(&frag_header.identification.to_be_bytes());
+                        let mut builder = PacketPayloadBuilder::new();
+                        if builder.push_bytes(&frag_bytes).is_none() {
+                            self.stats.record_header_error();
+                            return Ipv6ProcessResult::Error;
+                        }
+                        append_payload(&mut quoted, builder.build());
+                        Ipv6ProcessResult::ReassemblyError(error, src, dst, quoted)
                     }
                 }
             }
+            _ => Ipv6ProcessResult::Error,
         }
     }
 

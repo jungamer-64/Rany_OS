@@ -429,14 +429,6 @@ fn push_builder_str(
         .ok_or(HttpResponseBuildError::AllocationFailed)
 }
 
-fn body_payload_from_bytes(body: &[u8]) -> Result<PacketPayload, HttpResponseBuildError> {
-    let mut builder = PacketPayloadBuilder::new();
-    builder
-        .push_bytes(body)
-        .ok_or(HttpResponseBuildError::AllocationFailed)?;
-    Ok(builder.build())
-}
-
 fn write_content_type_header(
     builder: &mut PacketPayloadBuilder,
     content_type: HeaderValue,
@@ -519,15 +511,6 @@ fn build_payload_response(
     Ok(builder.build())
 }
 
-fn build_custom_response(
-    status: &str,
-    content_type: &str,
-    body: &str,
-    keep_alive: bool,
-) -> Result<PacketPayload, HttpResponseBuildError> {
-    build_custom_response_with_headers(status, content_type, body, keep_alive, &[])
-}
-
 fn build_custom_response_with_headers(
     status: &str,
     content_type: &str,
@@ -535,11 +518,22 @@ fn build_custom_response_with_headers(
     keep_alive: bool,
     additional_headers: &[(&str, &str)],
 ) -> Result<PacketPayload, HttpResponseBuildError> {
+    let mut body_builder = PacketPayloadBuilder::new();
+    push_builder_str(&mut body_builder, body)?;
     build_payload_response(
         status,
         HeaderValue::Text(content_type.to_string()),
-        body_payload_from_bytes(body.as_bytes())?,
+        body_builder.build(),
         keep_alive,
         additional_headers,
     )
+}
+
+fn build_custom_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    keep_alive: bool,
+) -> Result<PacketPayload, HttpResponseBuildError> {
+    build_custom_response_with_headers(status, content_type, body, keep_alive, &[])
 }

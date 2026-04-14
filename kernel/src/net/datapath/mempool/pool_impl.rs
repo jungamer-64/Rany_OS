@@ -17,11 +17,6 @@ impl PacketPool {
         }
     }
 
-    /// Allocate a buffer from the pool
-    pub fn alloc(&self) -> Option<Vec<u8>> {
-        self.buffers.lock().unwrap_or_else(|e| e.into_inner()).pop()
-    }
-
     /// Return a buffer to the pool
     pub fn free(&self, mut buffer: Vec<u8>) {
         // Security: Zero out the buffer content
@@ -120,28 +115,6 @@ impl PerCoreTxCache {
             parent,
             refill_count: TX_BATCH_REFILL,
         }
-    }
-
-    /// バッファを割り当て（ローカルキャッシュ優先）
-    pub fn alloc(&self) -> Option<Vec<u8>> {
-        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
-        let idx = cpu_id % self.caches.len();
-
-        let mut cache = self.caches[idx].lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(buf) = cache.pop() {
-            return Some(buf);
-        }
-
-        // キャッシュ空 → 親プールからバッチリフィル
-        let refilled = self.parent.alloc_batch(self.refill_count);
-        let mut iter = refilled.into_iter();
-        let first = iter.next();
-        for buf in iter {
-            if cache.len() < self.per_core_capacity {
-                cache.push(buf);
-            }
-        }
-        first
     }
 
     /// バッファを返却（ローカルキャッシュ優先）

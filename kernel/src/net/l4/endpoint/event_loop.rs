@@ -7,7 +7,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use super::event::{NetworkEvent, event_queue_in};
+use super::event::event_queue_in;
 use super::handler::{EventHandleResult, NetworkEventHandler};
 use super::tcb::tcb_table;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
@@ -47,19 +47,17 @@ pub async fn network_event_task_in(runtime: NetRuntimeHandle) {
 
         if let Ok(mut stack_guard) = runtime.context().stack.lock() {
             if let Some(ref mut stack) = *stack_guard {
-                let event_clone = event.clone();
                 let result = handler.handle_event_with_stack_in(runtime, event, stack);
-                process_handle_result(runtime, result, event_clone);
+                process_handle_result(runtime, result);
 
                 let mut batch_count = 1usize;
                 // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
                 while batch_count < MAX_BATCH_SIZE {
                     match event_queue_in(runtime).recv() {
                         Some(batch_event) => {
-                            let batch_clone = batch_event.clone();
                             let result =
                                 handler.handle_event_with_stack_in(runtime, batch_event, stack);
-                            process_handle_result(runtime, result, batch_clone);
+                            process_handle_result(runtime, result);
                             batch_count += 1;
                         }
                         None => break,
@@ -75,25 +73,19 @@ pub async fn network_event_task_in(runtime: NetRuntimeHandle) {
             }
         }
 
-        let event_clone = event.clone();
         let result = handler.handle_event_in(runtime, event);
-        process_handle_result(runtime, result, event_clone);
+        process_handle_result(runtime, result);
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
         while let Some(batch_event) = event_queue_in(runtime).recv() {
-            let batch_clone = batch_event.clone();
             let result = handler.handle_event_in(runtime, batch_event);
-            process_handle_result(runtime, result, batch_clone);
+            process_handle_result(runtime, result);
         }
     }
 }
 
 /// イベント処理結果の共通対応
-fn process_handle_result(
-    runtime: NetRuntimeHandle,
-    result: EventHandleResult,
-    event_clone: NetworkEvent,
-) {
+fn process_handle_result(runtime: NetRuntimeHandle, result: EventHandleResult) {
     match result {
         EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
         EventHandleResult::SocketNotFound(fd) => {
@@ -120,8 +112,8 @@ fn process_handle_result(
                 PROTO_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
             }
         }
-        EventHandleResult::Retry => {
-            if super::event::enqueue_event_in(runtime, event_clone).is_err() {
+        EventHandleResult::Retry(event) => {
+            if super::event::enqueue_event_in(runtime, event).is_err() {
                 log::warn!("Network: Event requeue failed due to full queue");
             }
         }

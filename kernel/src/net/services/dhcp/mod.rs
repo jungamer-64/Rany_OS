@@ -15,13 +15,13 @@ use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::payload::PayloadSpan;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::stack::NetworkConfig;
 
 /// DHCPクライアントポート
 mod client_impl;
-pub use client_impl::*;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -450,7 +450,8 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                 };
 
                 match result {
-                    Ok(DhcpResponseResult::Ack(lease)) => {
+                    Ok(DhcpResponseResult::Ack(result)) => {
+                        let DhcpAckResult { lease, applied } = result;
                         log::info!(
                             "[NET] DHCPv4 ACK received: if{} mac={} ip={:?}",
                             interface_runtime.if_id.0,
@@ -461,19 +462,7 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                             runtime,
                             crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
                                 if_id: Some(interface_runtime.if_id.0),
-                                ip: *lease.ip_address.as_bytes(),
-                                subnet: *lease.subnet_mask.as_bytes(),
-                                gateway: lease
-                                    .gateway
-                                    .map(|a| *a.as_bytes())
-                                    .unwrap_or([0, 0, 0, 0]),
-                                dns_servers: lease
-                                    .dns_servers
-                                    .iter()
-                                    .map(|a| *a.as_bytes())
-                                    .collect(),
-                                hostname: lease.hostname.clone(),
-                                domain_name: lease.domain_name.clone(),
+                                config: applied,
                             },
                         );
                     }
@@ -853,6 +842,65 @@ impl DhcpHeader {
 const _: [(); DhcpHeader::SIZE] = [(); core::mem::size_of::<DhcpHeader>()];
 const _: [(); core::mem::size_of::<DhcpHeader>()] = [(); DhcpHeader::SIZE];
 
+/// DHCPv4 適用用設定。
+#[derive(Debug)]
+pub struct DhcpV4AppliedConfig {
+    pub ip_address: Ipv4Address,
+    pub subnet_mask: Ipv4Address,
+    pub gateway: Option<Ipv4Address>,
+    pub dns_servers: Vec<Ipv4Address>,
+    pub hostname: Option<PayloadSpan>,
+    pub domain_name: Option<PayloadSpan>,
+}
+
+impl DhcpV4AppliedConfig {
+    pub fn new(
+        ip_address: Ipv4Address,
+        subnet_mask: Ipv4Address,
+        gateway: Option<Ipv4Address>,
+        dns_servers: Vec<Ipv4Address>,
+        hostname: Option<PayloadSpan>,
+        domain_name: Option<PayloadSpan>,
+    ) -> Self {
+        Self {
+            ip_address,
+            subnet_mask,
+            gateway,
+            dns_servers,
+            hostname,
+            domain_name,
+        }
+    }
+}
+
+/// DHCPv6 適用用設定。
+#[derive(Debug)]
+pub struct DhcpV6AppliedConfig {
+    pub addr: Ipv6Address,
+    pub dns_servers: Vec<Ipv6Address>,
+    pub domain_search: Vec<crate::net::services::dns::DnsNameOwned>,
+}
+
+impl DhcpV6AppliedConfig {
+    pub fn new(
+        addr: Ipv6Address,
+        dns_servers: Vec<Ipv6Address>,
+        domain_search: Vec<crate::net::services::dns::DnsNameOwned>,
+    ) -> Self {
+        Self {
+            addr,
+            dns_servers,
+            domain_search,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DhcpAckResult {
+    pub lease: DhcpLease,
+    pub applied: DhcpV4AppliedConfig,
+}
+
 /// 取得したDHCP設定
 #[derive(Debug, Clone)]
 pub struct DhcpLease {
@@ -862,8 +910,6 @@ pub struct DhcpLease {
     pub subnet_mask: Ipv4Address,
     /// デフォルトゲートウェイ
     pub gateway: Option<Ipv4Address>,
-    /// DNSサーバー (最大3つ)
-    pub dns_servers: Vec<Ipv4Address>,
     /// DHCPサーバーのIPアドレス
     pub server_ip: Ipv4Address,
     /// リース時間 (秒)
@@ -874,10 +920,17 @@ pub struct DhcpLease {
     pub t2: u32,
     /// 取得時刻 (tick)
     pub obtained_at: u64,
-    /// ホスト名
-    pub hostname: Option<PayloadSpan>,
-    /// ドメイン名
-    pub domain_name: Option<PayloadSpan>,
+}
+
+/// DHCP応答処理結果
+#[derive(Debug)]
+pub enum DhcpResponseResult {
+    /// OFFERを受信
+    Offer(DhcpLease),
+    /// ACKを受信 (リース取得成功)
+    Ack(DhcpAckResult),
+    /// NAKを受信 (リース取得失敗)
+    Nak,
 }
 
 impl DhcpLease {

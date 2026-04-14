@@ -37,8 +37,7 @@ pub(crate) use aes_gcm::{aes_gcm_decrypt_into, aes_gcm_encrypt_into};
 
 // ── AES-CBC ──────────────────────────────────────────────────────────────────
 pub(crate) use aes_cbc::{
-    aes_cbc_decrypt_in_place, aes_cbc_encrypt_in_place, tls_add_padding_in_place,
-    tls_verify_padding,
+    aes_cbc_encrypt_in_place, tls_add_padding_in_place, tls_verify_padding,
 };
 
 // ── ChaCha20-Poly1305 ────────────────────────────────────────────────────────

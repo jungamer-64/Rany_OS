@@ -4,107 +4,6 @@ use super::*;
 
 mod ecdh_exchange;
 impl TlsConnection {
-    /// データを受信して処理
-    pub fn process_incoming_payload(
-        &mut self,
-        payload: kernel_api::resource::net::PacketPayload,
-    ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        // Security: Limit receive buffer size to prevent DoS.
-        // Handshake messages can be up to 128KB, so we allow 128KB + overhead.
-        const MAX_RECV_BUFFER: usize = 131072 + 2048;
-        let view = crate::net::payload::PacketPayloadView::new(&payload);
-        if self.recv_buffer.total_len() + view.total_len() > MAX_RECV_BUFFER {
-            return Err(TlsError::DecodeError);
-        }
-        crate::net::payload::append_payload(&mut self.recv_buffer, payload);
-
-        let mut plaintext = kernel_api::resource::net::PacketPayload::default();
-
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while self.recv_buffer.total_len() >= 5 {
-            let recv_view = crate::net::payload::PacketPayloadView::new(&self.recv_buffer);
-            let header = recv_view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
-            let content_type = header[0];
-            let length = ((header[3] as usize) << 8) | header[4] as usize;
-
-            // Security (RFC 5246 Section 6.2.1): Limit record length.
-            // Max is 2^14 + 2048 = 18432. We use 20KB as a safe bound.
-            if length > 20480 {
-                return Err(TlsError::DecodeError);
-            }
-
-            if self.recv_buffer.total_len() < 5 + length {
-                break; // もっとデータが必要
-            }
-
-            let record = self
-                .recv_buffer
-                .take_prefix(5 + length)
-                .ok_or(TlsError::DecodeError)?;
-            let record_payload = crate::net::payload::payload_range(&record, 5, length)
-                .ok_or(TlsError::DecodeError)?;
-            self.process_single_record(content_type, &record_payload, &mut plaintext)?;
-        }
-
-        Ok(plaintext)
-    }
-
-    /// 単一のTLSレコードを処理する
-    pub(super) fn process_single_record(
-        &mut self,
-        content_type: u8,
-        payload: &kernel_api::resource::net::PacketPayload,
-        plaintext: &mut kernel_api::resource::net::PacketPayload,
-    ) -> TlsResult<()> {
-        let ct = match ContentType::from_u8(content_type) {
-            Some(c) => c,
-            None => return Err(TlsError::UnexpectedMessage),
-        };
-
-        // TLS 1.2: 読み取り暗号化が有効な場合、Handshake/Alertレコードも復号が必要
-        let decrypted_storage_opt = if !self.is_tls13
-            && self.read_encryption_active
-            && (ct == ContentType::Handshake || ct == ContentType::Alert)
-        {
-            Some(self.decrypt_record(payload, content_type)?)
-        } else {
-            None
-        };
-
-        let final_payload = if let Some(ref decrypted) = decrypted_storage_opt {
-            decrypted
-        } else {
-            payload
-        };
-        match ct {
-            ContentType::Handshake => {
-                self.process_handshake(Self::payload_as_contiguous_slice(final_payload)?)?;
-            }
-            ContentType::ChangeCipherSpec => {
-                // TLS 1.2 略式ハンドシェイク: CCS受信で鍵導出
-                if self.resuming_session && self.state == TlsState::WaitFinishedResumed {
-                    self.derive_tls12_keys()?;
-                }
-                // TLS 1.2: CCS受信後は読み取り暗号化を有効化
-                if !self.is_tls13 {
-                    self.read_encryption_active = true;
-                }
-                // TLS 1.3では無視
-            }
-            ContentType::Alert => {
-                self.handle_alert_payload(final_payload)?;
-            }
-            ContentType::ApplicationData => {
-                self.process_app_data(payload, plaintext)?;
-            }
-            ContentType::Heartbeat => {
-                // Heartbeat is not fully implemented, ignore for now
-                log::debug!("[TLS] Heartbeat received, ignoring");
-            }
-        }
-        Ok(())
-    }
-
     /// TLSアラートを処理する
     pub(super) fn handle_alert(&mut self, payload: &[u8]) -> TlsResult<()> {
         if payload.len() >= 2 {
@@ -134,43 +33,6 @@ impl TlsConnection {
                 self.state = TlsState::Error;
                 return Err(TlsError::Alert(description));
             }
-        }
-        Ok(())
-    }
-
-    /// 確立済みセッションでレコードを復号する
-    pub(super) fn decrypt_established_data(
-        &mut self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        content_type: u8,
-        plaintext: &mut kernel_api::resource::net::PacketPayload,
-    ) -> TlsResult<()> {
-        if self.is_tls13 {
-            let decrypted = self.tls13_decrypt_record(payload, false)?;
-            self.dispatch_tls13_inner_content(&decrypted, plaintext)?;
-        } else {
-            let decrypted = self.decrypt_record(payload, content_type)?;
-            crate::net::payload::append_payload(plaintext, decrypted);
-        }
-        Ok(())
-    }
-
-    /// ApplicationDataレコードを処理する
-    pub(super) fn process_app_data(
-        &mut self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        plaintext: &mut kernel_api::resource::net::PacketPayload,
-    ) -> TlsResult<()> {
-        if self.is_tls13 && self.state != TlsState::Established {
-            // TLS 1.3: 暗号化ハンドシェイクメッセージ
-            let app_data = self.tls13_process_encrypted_handshake(payload)?;
-            if !app_data.is_empty() {
-                crate::net::payload::append_payload(plaintext, app_data);
-            }
-        } else if self.state == TlsState::Established
-            || (!self.is_tls13 && self.read_encryption_active)
-        {
-            self.decrypt_established_data(payload, ContentType::ApplicationData as u8, plaintext)?;
         }
         Ok(())
     }
@@ -410,10 +272,15 @@ impl TlsConnection {
         Ok((actual_version, server_key_share))
     }
 
-    /// Process a single ServerHello extension by type.
-    pub(super) fn apply_server_hello_extension(
+    fn payload_span_from_slice(data: &[u8]) -> TlsResult<PayloadSpan> {
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder.push_bytes(data).ok_or(TlsError::DecodeError)?;
+        Ok(PayloadSpan::from_payload(builder.build()))
+    }
+
+    pub(crate) fn apply_server_hello_extension(
         data: &[u8],
-        eoff: usize,
+        offset: usize,
         ext_type: u16,
         ext_len: usize,
         actual_version: &mut TlsVersion,
@@ -421,29 +288,39 @@ impl TlsConnection {
         tls13_using_psk: &mut bool,
         has_psk: bool,
     ) -> TlsResult<()> {
+        let end = offset.saturating_add(ext_len);
+        if end > data.len() {
+            return Err(TlsError::DecodeError);
+        }
+
         match ext_type {
-            43 if ext_len >= 2 => {
-                *actual_version = TlsVersion(((data[eoff] as u16) << 8) | data[eoff + 1] as u16);
+            43 if ext_len == 2 => {
+                *actual_version = TlsVersion(u16::from_be_bytes([data[offset], data[offset + 1]]));
             }
-            41 if ext_len >= 2 => {
-                let selected_index = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
-                if selected_index == 0 && has_psk {
-                    *tls13_using_psk = true;
+            51 if ext_len >= 2 => {
+                let group = u16::from_be_bytes([data[offset], data[offset + 1]]);
+                if ext_len == 2 {
+                    *server_key_share = Some((group, PayloadSpan::from_payload(PacketPayload::default())));
+                } else {
+                    if ext_len < 4 {
+                        return Err(TlsError::DecodeError);
+                    }
+                    let key_len =
+                        u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
+                    if 4 + key_len > ext_len {
+                        return Err(TlsError::DecodeError);
+                    }
+                    let key_share =
+                        Self::payload_span_from_slice(&data[offset + 4..offset + 4 + key_len])?;
+                    *server_key_share = Some((group, key_share));
                 }
             }
-            51 if ext_len >= 4 => {
-                let group = ((data[eoff] as u16) << 8) | data[eoff + 1] as u16;
-                let key_len = ((data[eoff + 2] as usize) << 8) | data[eoff + 3] as usize;
-                if ext_len >= 4 + key_len {
-                    *server_key_share = Some((
-                        group,
-                        PayloadSpan::from_bytes(&data[eoff + 4..eoff + 4 + key_len])
-                            .ok_or(TlsError::DecodeError)?,
-                    ));
-                }
+            41 if has_psk => {
+                *tls13_using_psk = true;
             }
             _ => {}
         }
+
         Ok(())
     }
 
@@ -568,45 +445,45 @@ impl TlsConnection {
         Some(self.build_client_hello_payload())
     }
 
-    /// Certificateを処理
-    ///
-    /// 証明書チェーンを抽出し、検証を行う。
-    /// 検証成功後、サーバー公開鍵を保存する。
-    pub(super) fn extract_server_public_key_from_spki(
-        &mut self,
-        spki: crate::net::security::x509::SubjectPublicKeyInfo<'_>,
-    ) -> TlsResult<()> {
-        match spki {
-            crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
-                self.server_public_key = Some(ServerPublicKey::Rsa {
-                    modulus: PayloadSpan::from_bytes(modulus).ok_or(TlsError::DecodeError)?,
-                    exponent: PayloadSpan::from_bytes(exponent).ok_or(TlsError::DecodeError)?,
-                });
-            }
-            crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
-                self.server_public_key = Some(ServerPublicKey::EcdsaP256 {
-                    point: PayloadSpan::from_bytes(public_key).ok_or(TlsError::DecodeError)?,
-                });
-            }
-            crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
-                self.server_public_key = Some(ServerPublicKey::EcdsaP384 {
-                    point: PayloadSpan::from_bytes(public_key).ok_or(TlsError::DecodeError)?,
-                });
-            }
-            _ => {
-                if !self.config.should_skip_verify() {
-                    return Err(TlsError::CertificateError);
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn extract_server_public_key(
         &mut self,
         cert: &crate::net::security::x509::X509Certificate,
     ) -> TlsResult<()> {
         self.extract_server_public_key_from_spki(cert.subject_public_key_info)
+    }
+
+    pub(crate) fn extract_server_public_key_from_spki(
+        &mut self,
+        spki: crate::net::security::x509::SubjectPublicKeyInfo<'_>,
+    ) -> TlsResult<()> {
+        self.server_public_key = Some(match spki {
+            crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
+                ServerPublicKey::Rsa {
+                    modulus: Self::payload_span_from_slice(modulus)?,
+                    exponent: Self::payload_span_from_slice(exponent)?,
+                }
+            }
+            crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
+                ServerPublicKey::EcdsaP256 {
+                    point: Self::payload_span_from_slice(public_key)?,
+                }
+            }
+            crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
+                ServerPublicKey::EcdsaP384 {
+                    point: Self::payload_span_from_slice(public_key)?,
+                }
+            }
+            crate::net::security::x509::SubjectPublicKeyInfo::Unknown(_) => {
+                return Err(TlsError::UnsupportedCipherSuite);
+            }
+        });
+        Ok(())
+    }
+
+    pub(crate) fn set_server_public_key_from_cert(&mut self, cert_der: &[u8]) -> TlsResult<()> {
+        let cert = crate::net::security::x509::parse_x509(cert_der)
+            .ok_or(TlsError::CertificateError)?;
+        self.extract_server_public_key(&cert)
     }
 
     pub(super) fn process_certificate(&mut self, data: &[u8]) -> TlsResult<()> {

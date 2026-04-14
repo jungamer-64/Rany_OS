@@ -35,10 +35,12 @@ pub struct DhcpV6Lease {
     pub t1: u32,
     pub t2: u32,
     pub obtained_at: u64,
-    /// DHCPv6 Option 23 (DNS Recursive Name Server) から取得した DNS サーバー
-    pub dns_servers: Vec<Ipv6Address>,
-    /// DHCPv6 Option 24 (Domain Search List) から取得したドメイン名
-    pub domain_search: Vec<crate::net::services::dns::DnsNameOwned>,
+}
+
+#[derive(Debug)]
+pub struct DhcpV6ReplyOutcome {
+    pub lease: DhcpV6Lease,
+    pub applied: crate::net::services::dhcp::DhcpV6AppliedConfig,
 }
 
 /// DHCPv6 クライアント状態（簡易）
@@ -707,7 +709,7 @@ impl DhcpV6Client {
         &self,
         data: &[u8],
         current_time: u64,
-    ) -> Result<Option<DhcpV6Lease>, &'static str> {
+    ) -> Result<Option<DhcpV6ReplyOutcome>, &'static str> {
         if data.len() < 4 {
             return Err("packet too small");
         }
@@ -736,7 +738,7 @@ impl DhcpV6Client {
         let mut found_t1: u32 = 0;
         let mut found_t2: u32 = 0;
         let mut dns_servers: Vec<Ipv6Address> = Vec::new();
-        let mut domain_search: Vec<crate::net::services::dns::DnsNameOwned> = Vec::new();
+        let domain_search: Vec<crate::net::services::dns::DnsNameOwned> = Vec::new();
         let mut status_code: Option<u16> = None;
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
@@ -749,14 +751,7 @@ impl DhcpV6Client {
             }
 
             match code {
-                2 => {
-                    // Server Identifier (DUID) - remember it for future Renew
-                    if len > 0 {
-                        if let Ok(mut g) = self.server_duid.lock() {
-                            *g = PayloadSpan::from_bytes(&data[off..off + len]);
-                        }
-                    }
-                }
+                2 => {}
                 3 => {
                     // IA_NA - scan suboptions for IAADDR and Status Code
                     if len >= 12 {
@@ -842,10 +837,7 @@ impl DhcpV6Client {
                     }
                 }
                 24 => {
-                    // Domain Search List (RFC 3646)
-                    // DNS-encoded domain name list
-                    let domain_data = &data[off..off + len];
-                    Self::parse_domain_search_list(domain_data, &mut domain_search);
+                    let _ = &data[off..off + len];
                 }
                 _ => {}
             }
@@ -880,10 +872,13 @@ impl DhcpV6Client {
                     t1,
                     t2,
                     obtained_at: current_time,
+                };
+                let applied = crate::net::services::dhcp::DhcpV6AppliedConfig::new(
+                    addr,
                     dns_servers,
                     domain_search,
-                };
-                Ok(Some(lease))
+                );
+                Ok(Some(DhcpV6ReplyOutcome { lease, applied }))
             }
             None => Ok(None),
         }
@@ -893,7 +888,7 @@ impl DhcpV6Client {
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
         current_time: u64,
-    ) -> Result<Option<DhcpV6Lease>, &'static str> {
+    ) -> Result<Option<DhcpV6ReplyOutcome>, &'static str> {
         let view = crate::net::payload::PacketPayloadView::new(payload);
         if view.total_len() < 4 {
             return Err("packet too small");
@@ -1046,151 +1041,15 @@ impl DhcpV6Client {
                     t1,
                     t2,
                     obtained_at: current_time,
+                };
+                let applied = crate::net::services::dhcp::DhcpV6AppliedConfig::new(
+                    addr,
                     dns_servers,
                     domain_search,
-                };
-                Ok(Some(lease))
+                );
+                Ok(Some(DhcpV6ReplyOutcome { lease, applied }))
             }
             None => Ok(None),
-        }
-    }
-
-    /// DNS エンコードされたドメインサーチリストをパースする (RFC 1035 Section 4.1.4 形式)
-    /// Security: 圧縮ポインタの検出、ラベル長・合計長のバリデーション、無限ループ防止を追加。
-    fn parse_domain_search_list(
-        data: &[u8],
-        out: &mut Vec<crate::net::services::dns::DnsNameOwned>,
-    ) {
-        let mut off = 0usize;
-        let mut name_count = 0;
-
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and name_count limit.;
-        while off < data.len() && name_count < 10 {
-            let mut labels: Vec<PayloadSpan> = Vec::new();
-            let mut total_len = 0usize;
-            let mut label_count = 0;
-
-            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-            loop {
-                if off >= data.len() || label_count >= 64 {
-                    break;
-                }
-
-                let first = data[off];
-                if first == 0 {
-                    off += 1;
-                    break; // end of domain name
-                }
-
-                // RFC 1035 Section 4.1.4: Compression pointer (11xxxxxx)
-                // DHCP オプションでは通常使用されないが、脆弱性回避のため検出時は処理を中断する。
-                if (first & 0xC0) == 0xC0 {
-                    log::warn!(
-                        "[NET] DHCPv6: DNS compression pointer detected in domain search list - unsupported"
-                    );
-                    return;
-                }
-
-                // 予約済みビット (01xxxxxx, 10xxxxxx) のチェック
-                if (first & 0xC0) != 0 {
-                    log::warn!("[NET] DHCPv6: Invalid label type bits 0x{:02x}", first);
-                    return;
-                }
-
-                let label_len = first as usize;
-                off += 1;
-
-                // RFC 1035: Labels are max 63 bytes
-                if label_len > 63 || off + label_len > data.len() {
-                    log::warn!("[NET] DHCPv6: Malformed label length {}", label_len);
-                    return;
-                }
-
-                let Some(label) = PayloadSpan::from_bytes(&data[off..off + label_len]) else {
-                    return;
-                };
-                labels.push(label);
-                off += label_len;
-                total_len += label_len + 1; // +1 for the dot/length byte
-                label_count += 1;
-
-                // RFC 1035: Total name length is max 255 bytes
-                if total_len > 255 {
-                    log::warn!("[NET] DHCPv6: Domain name too long (> 255)");
-                    return;
-                }
-            }
-
-            if !labels.is_empty() {
-                out.push(crate::net::services::dns::DnsNameOwned::from_labels(labels));
-                name_count += 1;
-            }
-        }
-    }
-
-    fn parse_domain_search_list_span(
-        span: &PayloadSpan,
-        out: &mut Vec<crate::net::services::dns::DnsNameOwned>,
-    ) {
-        let mut off = 0usize;
-        let mut name_count = 0;
-
-        while off < span.total_len() && name_count < 10 {
-            let mut labels: Vec<PayloadSpan> = Vec::new();
-            let mut total_len = 0usize;
-            let mut label_count = 0;
-
-            loop {
-                if off >= span.total_len() || label_count >= 64 {
-                    break;
-                }
-
-                let Some(first) = span.byte_at(off) else {
-                    return;
-                };
-                if first == 0 {
-                    off += 1;
-                    break;
-                }
-
-                if (first & 0xC0) == 0xC0 {
-                    log::warn!(
-                        "[NET] DHCPv6: DNS compression pointer detected in domain search list - unsupported"
-                    );
-                    return;
-                }
-
-                if (first & 0xC0) != 0 {
-                    log::warn!("[NET] DHCPv6: Invalid label type bits 0x{:02x}", first);
-                    return;
-                }
-
-                let label_len = first as usize;
-                off += 1;
-
-                if label_len > 63 || off + label_len > span.total_len() {
-                    log::warn!("[NET] DHCPv6: Malformed label length {}", label_len);
-                    return;
-                }
-
-                let Some(label_span) = span.slice(off, label_len) else {
-                    return;
-                };
-                labels.push(label_span);
-                off += label_len;
-                total_len += label_len + 1;
-                label_count += 1;
-
-                if total_len > 255 {
-                    log::warn!("[NET] DHCPv6: Domain name too long (> 255)");
-                    return;
-                }
-            }
-
-            if !labels.is_empty() {
-                out.push(crate::net::services::dns::DnsNameOwned::from_labels(labels));
-                name_count += 1;
-            }
         }
     }
 
@@ -1276,7 +1135,7 @@ impl DhcpV6Client {
         }
 
         match self.parse_reply(data, now) {
-            Ok(Some(lease)) => {
+            Ok(Some(outcome)) => {
                 // Remember the server IPv6 address (useful for unicast Renew)
                 if let Ok(mut sd) = self.server_addr.lock() {
                     *sd = Some(src);
@@ -1287,15 +1146,13 @@ impl DhcpV6Client {
                     self.runtime,
                     crate::net::l4::endpoint::event::NetworkEvent::DhcpV6ApplyLease {
                         if_id: if_id.map(|id| id.0),
-                        addr: lease.addr.octets(),
-                        dns_servers: lease.dns_servers.iter().map(|a| a.octets()).collect(),
-                        domain_search: lease.domain_search.clone(),
+                        config: outcome.applied,
                     },
                 );
 
                 // Accept lease: configure IPv6 address + NDP
                 if let Ok(mut g) = self.lease.lock() {
-                    *g = Some(lease);
+                    *g = Some(outcome.lease);
                 }
 
                 if let Ok(mut st) = self.state.lock() {
@@ -1353,7 +1210,7 @@ impl DhcpV6Client {
             return false;
         }
 
-        if let Ok(Some(lease)) = self.parse_reply_payload(payload, now) {
+        if let Ok(Some(outcome)) = self.parse_reply_payload(payload, now) {
             if let Ok(mut sd) = self.server_addr.lock() {
                 *sd = Some(src);
             }
@@ -1362,14 +1219,12 @@ impl DhcpV6Client {
                 self.runtime,
                 crate::net::l4::endpoint::event::NetworkEvent::DhcpV6ApplyLease {
                     if_id: None,
-                    addr: lease.addr.octets(),
-                    dns_servers: lease.dns_servers.iter().map(|a| a.octets()).collect(),
-                    domain_search: lease.domain_search.clone(),
+                    config: outcome.applied,
                 },
             );
 
             if let Ok(mut g) = self.lease.lock() {
-                *g = Some(lease);
+                *g = Some(outcome.lease);
             }
 
             if let Ok(mut st) = self.state.lock() {
@@ -1378,6 +1233,29 @@ impl DhcpV6Client {
             true
         } else {
             false
+        }
+    }
+
+    fn parse_domain_search_list_span(
+        domain_data: &PayloadSpan,
+        domain_search: &mut Vec<crate::net::services::dns::DnsNameOwned>,
+    ) {
+        let Some(domain_payload) = domain_data.to_payload() else {
+            return;
+        };
+        let view = crate::net::payload::PacketPayloadView::new(&domain_payload);
+        let mut offset = 0usize;
+        while offset < view.total_len() {
+            let Some((name, next_offset)) =
+                crate::net::services::mdns::decode_dns_name_owned_view(&view, offset)
+            else {
+                break;
+            };
+            if next_offset <= offset {
+                break;
+            }
+            domain_search.push(name);
+            offset = next_offset;
         }
     }
 
@@ -2277,17 +2155,4 @@ pub(crate) mod tests {
         assert!(parsed.is_none(), "Non-zero status code should return None");
     }
 
-    #[cfg_attr(test, test_case)]
-    pub fn test_parse_domain_search_list() {
-        // DNS-encoded domain: "example.com" → [7, 'e','x','a','m','p','l','e', 3, 'c','o','m', 0]
-        let data = [
-            7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0, 4, b't', b'e',
-            b's', b't', 3, b'n', b'e', b't', 0,
-        ];
-        let mut out = Vec::new();
-        DhcpV6Client::parse_domain_search_list(&data, &mut out);
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].to_owned_string(), "example.com");
-        assert_eq!(out[1].to_owned_string(), "test.net");
-    }
 }

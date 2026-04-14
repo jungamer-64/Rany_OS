@@ -7,15 +7,18 @@ impl DnsClient {
         &self,
         socket: &crate::net::l4::udp::UdpEndpoint,
         server: DnsServerAddr,
-        name: DnsNameView,
+        name: DnsNameOwned,
         qtype: DnsQueryType,
         tick: u64,
         query_id: u16,
-    ) -> Result<DnsResponseView, &'static str> {
+    ) -> Result<DnsResponseView, (DnsNameOwned, &'static str)> {
         let dest = Self::udp_addr_for_server(server);
-        let query_payload = self.build_query_payload_for_name_with_id(&name, qtype, query_id)?;
+        let query_payload = match self.build_query_payload_for_name_with_id(&name, qtype, query_id) {
+            Ok(payload) => payload,
+            Err(err) => return Err((name, err)),
+        };
         if socket.send(query_payload, dest).await.is_err() {
-            return Err("UDP send failed");
+            return Err((name, "UDP send failed"));
         }
 
         let mut attempt = 0;
@@ -26,7 +29,7 @@ impl DnsClient {
                         let parsed =
                             self.parse_response_payload_for_name(&packet, tick, &name, qtype);
                         if let Some(parsed) = parsed {
-                            return parsed.map_err(|_| "Parse error");
+                            return parsed.map_err(|_| (name, "Parse error"));
                         }
 
                         log::info!(
@@ -41,23 +44,27 @@ impl DnsClient {
                     attempt += 1;
                     if attempt < DNS_MAX_RETRIES {
                         let retry_payload =
-                            self.build_query_payload_for_name_with_id(&name, qtype, query_id)?;
+                            match self.build_query_payload_for_name_with_id(&name, qtype, query_id)
+                            {
+                                Ok(payload) => payload,
+                                Err(err) => return Err((name, err)),
+                            };
                         let _ = socket.send(retry_payload, dest).await;
                     }
                 }
             }
         }
 
-        Err("DNS query timed out")
+        Err((name, "DNS query timed out"))
     }
 
     /// DNS query over TCP (RFC 7766)
     async fn query_tcp(
         &self,
         server: DnsServerAddr,
-        name: DnsNameView,
+        name: DnsNameOwned,
         qtype: DnsQueryType,
-    ) -> Result<DnsResponseView, &'static str> {
+    ) -> Result<DnsResponseView, (DnsNameOwned, &'static str)> {
         async fn read_exact_payload(
             connection: &mut crate::net::l4::tcp::TcpConnection,
             stash: &mut kernel_api::resource::net::PacketPayload,
@@ -83,51 +90,67 @@ impl DnsClient {
 
         let dest = Self::endpoint_addr_for_server(server);
 
-        let mut connection = crate::net::l4::tcp::TcpConnection::dial_in(
+        let connection = crate::net::l4::tcp::TcpConnection::dial_in(
             crate::net::runtime::default_runtime(),
             dest,
         )
-        .await
-        .map_err(|_| "TCP connection failed")?;
+        .await;
+        let mut connection = match connection {
+            Ok(connection) => connection,
+            Err(_) => return Err((name, "TCP connection failed")),
+        };
 
         let query_id = self.next_query_id();
         self.register_pending_query_id(query_id);
-        let payload = self.build_tcp_query_payload_for_name_with_id(&name, qtype, query_id)?;
-        connection
-            .send_payload(payload)
-            .await
-            .map_err(|_| "TCP write failed")?;
-        connection
-            .drain_tx()
-            .await
-            .map_err(|_| "TCP write drain failed")?;
+        let payload = match self.build_tcp_query_payload_for_name_with_id(&name, qtype, query_id)
+        {
+            Ok(payload) => payload,
+            Err(err) => return Err((name, err)),
+        };
+        if connection.send_payload(payload).await.is_err() {
+            return Err((name, "TCP write failed"));
+        }
+        if connection.drain_tx().await.is_err() {
+            return Err((name, "TCP write drain failed"));
+        }
 
         let mut stash = kernel_api::resource::net::PacketPayload::default();
 
         // Read 2-byte length prefix
-        let len_payload = read_exact_payload(&mut connection, &mut stash, 2)
-            .await?
-            .ok_or("TCP read length prefix failed (connection closed or incomplete)")?;
+        let len_payload = match read_exact_payload(&mut connection, &mut stash, 2).await {
+            Ok(Some(payload)) => payload,
+            Ok(None) => {
+                return Err((name, "TCP read length prefix failed (connection closed or incomplete)"));
+            }
+            Err(err) => return Err((name, err)),
+        };
         let len_buf = crate::net::payload::PacketPayloadView::new(&len_payload)
-            .read_array::<2>(0)
-            .ok_or("TCP length prefix parse failed")?;
+            .read_array::<2>(0);
+        let len_buf = match len_buf {
+            Some(len_buf) => len_buf,
+            None => return Err((name, "TCP length prefix parse failed")),
+        };
         if len_buf == [0, 0] {
-            return Err("TCP read length prefix failed (connection closed or incomplete)");
+            return Err((name, "TCP read length prefix failed (connection closed or incomplete)"));
         }
 
         let msg_len = u16::from_be_bytes(len_buf) as usize;
         if msg_len > 65535 {
-            return Err("TCP message too long");
+            return Err((name, "TCP message too long"));
         }
 
-        let msg_data = read_exact_payload(&mut connection, &mut stash, msg_len)
-            .await?
-            .ok_or("TCP read incomplete message")?;
+        let msg_data = match read_exact_payload(&mut connection, &mut stash, msg_len).await {
+            Ok(Some(payload)) => payload,
+            Ok(None) => return Err((name, "TCP read incomplete message")),
+            Err(err) => return Err((name, err)),
+        };
 
         let tick = crate::task::current_tick();
-        self.parse_response_payload_for_name(&msg_data, tick, &name, qtype)
-            .ok_or("TCP fallback requested unexpectedly")?
-            .map_err(|_| "Parse error")
+        match self.parse_response_payload_for_name(&msg_data, tick, &name, qtype) {
+            Some(Ok(response)) => Ok(response),
+            Some(Err(_)) => Err((name, "Parse error")),
+            None => Err((name, "TCP fallback requested unexpectedly")),
+        }
     }
 
     fn udp_addr_for_server(server: DnsServerAddr) -> UdpAddr {

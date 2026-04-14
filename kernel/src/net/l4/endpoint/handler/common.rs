@@ -4,6 +4,7 @@
 //! NetworkEventHandler 共通型/ヘルパー
 
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::l4::endpoint::event::NetworkEvent;
 use crate::net::l4::endpoint::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
@@ -24,7 +25,7 @@ pub enum EventHandleResult {
     /// プロトコルエラー
     ProtocolError(EndpointError),
     /// 再試行が必要
-    Retry,
+    Retry(NetworkEvent),
 }
 
 #[inline]

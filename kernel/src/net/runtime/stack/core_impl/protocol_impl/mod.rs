@@ -84,11 +84,15 @@ impl NetworkStack {
     }
 
     /// Apply DHCPv4 lease to live stack configuration and synchronize manager state.
-    pub fn apply_dhcp_v4_lease(&mut self, lease: &crate::net::services::dhcp::DhcpLease) {
+    pub fn apply_dhcp_v4_lease(
+        &mut self,
+        lease: &crate::net::services::dhcp::DhcpLease,
+        dns_server: Option<crate::net::l3::ipv4::Ipv4Address>,
+    ) {
         if let Some(primary_if) =
             crate::net::runtime::device::primary_if_in(crate::net::runtime::default_runtime())
         {
-            self.apply_dhcp_v4_lease_for_interface(lease, primary_if, true);
+            self.apply_dhcp_v4_lease_for_interface(lease, primary_if, true, dns_server);
             return;
         }
 
@@ -98,7 +102,7 @@ impl NetworkStack {
         if let Some(gateway) = lease.gateway {
             config.ipv4.gateway = gateway;
         }
-        config.ipv4.dns = lease.dns_servers.first().copied();
+        config.ipv4.dns = dns_server;
 
         self.set_config(config);
     }
@@ -108,6 +112,7 @@ impl NetworkStack {
         lease: &crate::net::services::dhcp::DhcpLease,
         if_id: crate::net::runtime::manager::NetIfId,
         update_primary_runtime: bool,
+        dns_server: Option<crate::net::l3::ipv4::Ipv4Address>,
     ) {
         let runtime = crate::net::runtime::default_runtime();
         let base_config = crate::net::runtime::manager::get_interface_in(runtime, if_id)
@@ -126,11 +131,7 @@ impl NetworkStack {
         } else {
             crate::net::l3::ipv4::Ipv4Address::ANY
         };
-        iface_config.ipv4.dns = if update_primary_runtime {
-            lease.dns_servers.first().copied()
-        } else {
-            None
-        };
+        iface_config.ipv4.dns = dns_server;
 
         if update_primary_runtime {
             self.set_config(iface_config);

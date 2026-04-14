@@ -52,7 +52,12 @@ impl DhcpClient {
     }
 
     /// ACK 受信時の副作用を適用する
-    pub(super) fn apply_ack(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
+    pub(super) fn apply_ack(
+        &self,
+        lease: DhcpLease,
+        applied: crate::net::services::dhcp::DhcpV4AppliedConfig,
+        current_tick: u64,
+    ) -> DhcpResponseResult {
         // Clear any offer probe state
         self.offered_probe_at.store(0, Ordering::SeqCst);
         match self.state.lock() {
@@ -71,7 +76,7 @@ impl DhcpClient {
             ),
         }
 
-        DhcpResponseResult::Ack(lease)
+        DhcpResponseResult::Ack(crate::net::services::dhcp::DhcpAckResult { lease, applied })
     }
 
     /// NAK 受信時の副作用を適用する
@@ -111,12 +116,20 @@ impl DhcpClient {
 
         match msg_type {
             DhcpMessageType::Offer => {
-                let lease = Self::build_lease(header, opts, current_tick);
+                let lease = Self::build_lease(header, &opts, current_tick);
                 Ok(self.apply_offer(lease, current_tick))
             }
             DhcpMessageType::Ack => {
-                let lease = self.build_ack_lease(current_state, header, opts, current_tick)?;
-                Ok(self.apply_ack(lease, current_tick))
+                let lease = self.build_ack_lease(current_state, header, &opts, current_tick)?;
+                let applied = crate::net::services::dhcp::DhcpV4AppliedConfig::new(
+                    lease.ip_address,
+                    lease.subnet_mask,
+                    lease.gateway,
+                    opts.dns_servers,
+                    opts.hostname,
+                    opts.domain_name,
+                );
+                Ok(self.apply_ack(lease, applied, current_tick))
             }
             DhcpMessageType::Nak => Ok(self.apply_nak()),
             _ => Err("Unexpected message type"),
@@ -140,12 +153,20 @@ impl DhcpClient {
 
         match msg_type {
             DhcpMessageType::Offer => {
-                let lease = Self::build_lease(&header, opts, current_tick);
+                let lease = Self::build_lease(&header, &opts, current_tick);
                 Ok(self.apply_offer(lease, current_tick))
             }
             DhcpMessageType::Ack => {
-                let lease = self.build_ack_lease(current_state, &header, opts, current_tick)?;
-                Ok(self.apply_ack(lease, current_tick))
+                let lease = self.build_ack_lease(current_state, &header, &opts, current_tick)?;
+                let applied = crate::net::services::dhcp::DhcpV4AppliedConfig::new(
+                    lease.ip_address,
+                    lease.subnet_mask,
+                    lease.gateway,
+                    opts.dns_servers,
+                    opts.hostname,
+                    opts.domain_name,
+                );
+                Ok(self.apply_ack(lease, applied, current_tick))
             }
             DhcpMessageType::Nak => Ok(self.apply_nak()),
             _ => Err("Unexpected message type"),

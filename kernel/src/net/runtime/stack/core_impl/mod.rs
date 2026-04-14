@@ -1,7 +1,6 @@
 use super::NetIfId;
 use super::*;
 use crate::net::payload::PacketPayloadView;
-use alloc::vec;
 use kernel_api::resource::net::PacketPayload;
 
 mod global_instance;
@@ -204,7 +203,6 @@ impl NetworkStack {
         if payload_view.copy_range(0, &mut fixed[..20]) < 20 {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
-
         if (fixed[0] >> 4) != 4 {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
@@ -214,8 +212,8 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
-        let mut header = vec![0u8; ihl];
-        if payload_view.copy_range(0, &mut header) < ihl {
+        let mut header = [0u8; 60];
+        if payload_view.copy_range(0, &mut header[..ihl]) < ihl {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
@@ -224,9 +222,9 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
-        let observed_checksum = u16::from_be_bytes([header[10], header[11]]);
-        let expected_checksum = crate::net::l3::ipv4::calculate_ip_checksum(&header);
-        if observed_checksum != expected_checksum {
+        if u16::from_be_bytes([header[10], header[11]])
+            != crate::net::l3::ipv4::calculate_ip_checksum(&header[..ihl])
+        {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
@@ -237,36 +235,29 @@ impl NetworkStack {
             header[16], header[17], header[18], header[19],
         ]);
         let protocol = header[9];
-        let (src_port, dst_port, tcp_flags) = if total_len >= ihl + 4 {
-            match protocol {
-                6 if total_len >= ihl + 14 => {
-                    let ports = payload_view.read_vec(ihl, 14);
-                    if ports.len() < 14 {
-                        (0, 0, 0)
-                    } else {
-                        (
-                            u16::from_be_bytes([ports[0], ports[1]]),
-                            u16::from_be_bytes([ports[2], ports[3]]),
-                            ports[13],
-                        )
-                    }
-                }
-                17 if total_len >= ihl + 4 => {
-                    let ports = payload_view.read_vec(ihl, 4);
-                    if ports.len() < 4 {
-                        (0, 0, 0)
-                    } else {
-                        (
-                            u16::from_be_bytes([ports[0], ports[1]]),
-                            u16::from_be_bytes([ports[2], ports[3]]),
-                            0,
-                        )
-                    }
-                }
-                _ => (0, 0, 0),
+
+        let (src_port, dst_port, tcp_flags) = match protocol {
+            6 if total_len >= ihl + 14 => {
+                let ports = payload_view
+                    .read_array::<14>(ihl)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                (
+                    u16::from_be_bytes([ports[0], ports[1]]),
+                    u16::from_be_bytes([ports[2], ports[3]]),
+                    ports[13],
+                )
             }
-        } else {
-            (0, 0, 0)
+            17 if total_len >= ihl + 4 => {
+                let ports = payload_view
+                    .read_array::<4>(ihl)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                (
+                    u16::from_be_bytes([ports[0], ports[1]]),
+                    u16::from_be_bytes([ports[2], ports[3]]),
+                    0,
+                )
+            }
+            _ => (0, 0, 0),
         };
 
         if !crate::net::security::firewall::check_egress(
@@ -292,7 +283,7 @@ impl NetworkStack {
                     src_ip,
                     dst_ip,
                     IpProtocol::from(protocol),
-                    header[8], // TTL from original header
+                    header[8],
                     pending_payload
                         .take()
                         .expect("pending raw IPv4 payload must exist"),
@@ -330,10 +321,8 @@ impl NetworkStack {
         let frame_len = frame.as_bytes().len();
         drop(frame);
         packet.set_len(frame_len);
-        if self.transmit_packet_on(
-            if_id,
-            kernel_api::resource::net::PacketPayload::single(packet),
-        ) {
+        if self.transmit_packet_on(if_id, kernel_api::resource::net::PacketPayload::single(packet))
+        {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -345,18 +334,17 @@ impl NetworkStack {
         scope: crate::net::types::InterfaceScope,
         payload: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
-        let payload = PacketPayloadView::new(&payload);
+        let payload_view = PacketPayloadView::new(&payload);
         let mut header = [0u8; 40];
-        if payload.copy_range(0, &mut header) < 40 {
+        if payload_view.copy_range(0, &mut header) < 40 {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
-
         if (header[0] >> 4) != 6 {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
         let total_len = IPV6_HEADER_SIZE + u16::from_be_bytes([header[4], header[5]]) as usize;
-        if total_len != payload.total_len() {
+        if total_len != payload_view.total_len() {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
@@ -396,44 +384,29 @@ impl NetworkStack {
             }
         };
 
-        let (src_port, dst_port, tcp_flags) = if total_len >= IPV6_HEADER_SIZE + 4 {
-            match next_header {
-                6 if total_len >= IPV6_HEADER_SIZE + 14 => {
-                    let ports = payload.read_vec(IPV6_HEADER_SIZE, 14);
-                    if ports.len() < 14 {
-                        (0, 0, 0)
-                    } else {
-                        (
-                            u16::from_be_bytes([ports[0], ports[1]]),
-                            u16::from_be_bytes([ports[2], ports[3]]),
-                            ports[13],
-                        )
-                    }
-                }
-                17 => {
-                    let ports = payload.read_vec(IPV6_HEADER_SIZE, 4);
-                    if ports.len() < 4 {
-                        (0, 0, 0)
-                    } else {
-                        (
-                            u16::from_be_bytes([ports[0], ports[1]]),
-                            u16::from_be_bytes([ports[2], ports[3]]),
-                            0,
-                        )
-                    }
-                }
-                58 => {
-                    let icmp = payload.read_vec(IPV6_HEADER_SIZE, 2);
-                    if icmp.len() < 2 {
-                        (0, 0, 0)
-                    } else {
-                        (icmp[0] as u16, icmp[1] as u16, 0)
-                    }
-                }
-                _ => (0, 0, 0),
+        let transport_offset = IPV6_HEADER_SIZE;
+        let (src_port, dst_port, tcp_flags) = match next_header {
+            6 if total_len >= transport_offset + 14 => {
+                let ports = payload_view
+                    .read_array::<14>(transport_offset)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                (
+                    u16::from_be_bytes([ports[0], ports[1]]),
+                    u16::from_be_bytes([ports[2], ports[3]]),
+                    ports[13],
+                )
             }
-        } else {
-            (0, 0, 0)
+            17 if total_len >= transport_offset + 4 => {
+                let ports = payload_view
+                    .read_array::<4>(transport_offset)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                (
+                    u16::from_be_bytes([ports[0], ports[1]]),
+                    u16::from_be_bytes([ports[2], ports[3]]),
+                    0,
+                )
+            }
+            _ => (0, 0, 0),
         };
 
         if !crate::net::security::firewall::check_egress(
@@ -462,17 +435,15 @@ impl NetworkStack {
         if frame_payload.len() < total_len {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
-        if payload.copy_range(0, &mut frame_payload[..total_len]) != total_len {
+        if payload_view.copy_range(0, &mut frame_payload[..total_len]) != total_len {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
         frame.set_payload_len(total_len);
         let frame_len = frame.as_bytes().len();
         drop(frame);
         packet.set_len(frame_len);
-        if self.transmit_packet_on(
-            if_id,
-            kernel_api::resource::net::PacketPayload::single(packet),
-        ) {
+        if self.transmit_packet_on(if_id, kernel_api::resource::net::PacketPayload::single(packet))
+        {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)

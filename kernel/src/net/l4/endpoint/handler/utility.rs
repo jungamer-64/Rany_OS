@@ -60,27 +60,24 @@ impl NetworkEventHandler {
             }
             NetworkEvent::DhcpApplyLease {
                 if_id,
-                ip,
-                subnet,
-                gateway,
-                dns_servers,
-                hostname,
-                domain_name,
+                config,
             } => {
+                let crate::net::services::dhcp::DhcpV4AppliedConfig {
+                    ip_address,
+                    subnet_mask,
+                    gateway,
+                    dns_servers,
+                    hostname: _,
+                    domain_name: _,
+                } = config;
                 let lease = crate::net::services::dhcp::DhcpLease {
-                    ip_address: crate::net::l3::ipv4::Ipv4Address::new(ip),
-                    subnet_mask: crate::net::l3::ipv4::Ipv4Address::new(subnet),
-                    gateway: Some(crate::net::l3::ipv4::Ipv4Address::new(gateway)),
-                    dns_servers: dns_servers
-                        .iter()
-                        .map(|a| crate::net::l3::ipv4::Ipv4Address::new(*a))
-                        .collect(),
+                    ip_address,
+                    subnet_mask,
+                    gateway,
                     server_ip: crate::net::l3::ipv4::Ipv4Address::ANY,
                     lease_time: 0,
                     t1: 0,
                     t2: 0,
-                    hostname,
-                    domain_name,
                     obtained_at: crate::task::current_tick(),
                 };
                 let target_if = if_id.map(NetIfId);
@@ -100,8 +97,8 @@ impl NetworkEventHandler {
                         crate::net::services::dhcp::mark_primary_interface(if_id);
 
                         // DNSサーバーを更新
-                        if !lease.dns_servers.is_empty() {
-                            crate::net::services::dns::set_ipv4_servers(lease.dns_servers.clone());
+                        if !dns_servers.is_empty() {
+                            crate::net::services::dns::set_ipv4_servers(&dns_servers);
                         }
 
                         // mDNS のローカル IP を更新
@@ -113,7 +110,12 @@ impl NetworkEventHandler {
                             }
                         }
                     }
-                    stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, is_primary);
+                    stack.apply_dhcp_v4_lease_for_interface(
+                        &lease,
+                        if_id,
+                        is_primary,
+                        dns_servers.first().copied(),
+                    );
                     log::info!(
                         "[NET] DHCP lease bound: if{} primary={} ip={}",
                         if_id.0,
@@ -121,17 +123,19 @@ impl NetworkEventHandler {
                         lease.ip_address
                     );
                 } else {
-                    stack.apply_dhcp_v4_lease(&lease);
+                    stack.apply_dhcp_v4_lease(&lease, dns_servers.first().copied());
                 }
                 EventHandleResult::Success
             }
             NetworkEvent::DhcpV6ApplyLease {
                 if_id,
-                addr,
-                dns_servers,
-                domain_search: _,
+                config,
             } => {
-                let ipv6_addr = crate::net::l3::ipv6::Ipv6Address::new(addr);
+                let crate::net::services::dhcp::DhcpV6AppliedConfig {
+                    addr: ipv6_addr,
+                    dns_servers,
+                    domain_search: _,
+                } = config;
                 stack.enqueue_apply_ipv6_global_address(ipv6_addr);
 
                 let is_primary = if_id
@@ -143,11 +147,7 @@ impl NetworkEventHandler {
                 if is_primary {
                     // DNSサーバーを更新
                     if !dns_servers.is_empty() {
-                        let v6_servers = dns_servers
-                            .iter()
-                            .map(|a| crate::net::l3::ipv6::Ipv6Address::new(*a))
-                            .collect();
-                        crate::net::services::dns::set_ipv6_servers(v6_servers);
+                        crate::net::services::dns::set_ipv6_servers(&dns_servers);
                     }
                 }
 

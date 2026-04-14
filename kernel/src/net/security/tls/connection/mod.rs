@@ -259,13 +259,6 @@ impl TlsConnection {
         slot.set(data).ok_or(TlsError::DecodeError)
     }
 
-    pub(super) fn payload_as_contiguous_slice<'a>(payload: &'a PacketPayload) -> TlsResult<&'a [u8]> {
-        match payload {
-            PacketPayload::Single(packet) => Ok(packet.data()),
-            PacketPayload::Chain(_) => Err(TlsError::DecodeError),
-        }
-    }
-
     fn tls12_aad(seq: u64, content_type: u8, len: usize) -> [u8; 13] {
         let seq_bytes = seq.to_be_bytes();
         let len_bytes = (len as u16).to_be_bytes();
@@ -490,6 +483,144 @@ impl TlsConnection {
     /// ネゴシエートされたバージョンを取得
     pub fn negotiated_version(&self) -> Option<TlsVersion> {
         self.negotiated_version
+    }
+
+    /// Return a contiguous view only when the payload is backed by a single segment.
+    /// Chained payloads are intentionally rejected to keep record parsing strict.
+    fn contiguous_payload_bytes(payload: &PacketPayload) -> Option<&[u8]> {
+        let view = PacketPayloadView::new(payload);
+        let first = view.first_segment()?;
+        (first.data().len() == view.total_len()).then_some(first.data())
+    }
+
+    /// Decide whether incoming TLS 1.3 ApplicationData should be decrypted
+    /// with handshake traffic keys or application traffic keys.
+    fn tls13_reads_handshake_records(&self) -> bool {
+        matches!(
+            self.state,
+            TlsState::Tls13WaitEncryptedExtensions
+                | TlsState::Tls13WaitCertificate
+                | TlsState::Tls13WaitCertificateVerify
+                | TlsState::Tls13WaitFinished
+                | TlsState::Tls13ServerFinishedReceived
+        )
+    }
+
+    /// Decrypt a TLS 1.3 record body (ciphertext || tag) and advance read sequence.
+    fn decrypt_tls13_record_payload(&mut self, payload: &PacketPayload) -> TlsResult<PacketPayload> {
+        let cipher = self
+            .negotiated_cipher
+            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+        let data = Self::contiguous_payload_bytes(payload).ok_or(TlsError::DecodeError)?;
+        if data.len() < 16 {
+            return Err(TlsError::DecodeError);
+        }
+
+        let (key, iv, seq, is_handshake) = if self.tls13_reads_handshake_records() {
+            (&self.hs_read_key, &self.hs_read_iv, self.hs_read_seq, true)
+        } else {
+            (&self.read_key, &self.read_iv, self.read_seq, false)
+        };
+        if key.is_empty() || iv.len() < 12 {
+            return Err(TlsError::CryptoError);
+        }
+
+        let ciphertext_len = data.len() - 16;
+        let mut tag = [0u8; 16];
+        tag.copy_from_slice(&data[ciphertext_len..]);
+        let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv.as_slice(), seq, data.len());
+        let plaintext = Self::decrypt_aead(
+            cipher,
+            key.as_slice(),
+            &nonce,
+            &aad,
+            &data[..ciphertext_len],
+            &tag,
+        )?;
+
+        if is_handshake {
+            self.hs_read_seq = self.hs_read_seq.saturating_add(1);
+        } else {
+            self.read_seq = self.read_seq.saturating_add(1);
+        }
+        Ok(plaintext)
+    }
+
+    /// Consume one full TLS record (header + body) and dispatch by content type.
+    fn consume_tls_record_payload(
+        &mut self,
+        record: PacketPayload,
+        plaintext: &mut PacketPayload,
+    ) -> TlsResult<()> {
+        let view = PacketPayloadView::new(&record);
+        let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+        let content_type = header[0];
+        let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+        let body =
+            crate::net::payload::payload_range(&record, 5, record_len).ok_or(TlsError::DecodeError)?;
+
+        match ContentType::from_u8(content_type) {
+            Some(ContentType::Handshake) => {
+                let bytes = Self::contiguous_payload_bytes(&body).ok_or(TlsError::DecodeError)?;
+                self.process_handshake(bytes)?;
+            }
+            Some(ContentType::Alert) => {
+                self.handle_alert_payload(&body)?;
+            }
+            Some(ContentType::ChangeCipherSpec) => {
+                // TLS 1.2 read-side encryption becomes active after CCS.
+                self.read_encryption_active = true;
+            }
+            Some(ContentType::ApplicationData) if self.is_tls13 => {
+                // TLS 1.3: encrypted inner content is further dispatched by inner type.
+                let decrypted = self.decrypt_tls13_record_payload(&body)?;
+                self.dispatch_tls13_inner_content(&decrypted, plaintext)?;
+            }
+            Some(ContentType::ApplicationData) => {
+                // TLS 1.2: decrypt and append plaintext application payload.
+                let bytes = Self::contiguous_payload_bytes(&body).ok_or(TlsError::DecodeError)?;
+                let decrypted = if self
+                    .negotiated_cipher
+                    .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256)
+                    .is_chacha20_poly1305()
+                {
+                    self.decrypt_chacha20_poly1305(bytes, content_type)?
+                } else {
+                    self.decrypt_aes_gcm(bytes, content_type)?
+                };
+                append_payload(plaintext, decrypted);
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    pub fn process_incoming_payload(&mut self, payload: PacketPayload) -> TlsResult<PacketPayload> {
+        append_payload(&mut self.recv_buffer, payload);
+        let mut plaintext = PacketPayload::default();
+
+        loop {
+            let view = PacketPayloadView::new(&self.recv_buffer);
+            if view.total_len() < 5 {
+                break;
+            }
+
+            let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+            let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+            let total_len = 5usize.saturating_add(record_len);
+            if view.total_len() < total_len {
+                break;
+            }
+
+            let record = self
+                .recv_buffer
+                .take_prefix(total_len)
+                .ok_or(TlsError::DecodeError)?;
+            self.consume_tls_record_payload(record, &mut plaintext)?;
+        }
+
+        Ok(plaintext)
     }
 
     /// ネゴシエートされた暗号スイートのハッシュ長を返す（SHA-256: 32, SHA-384: 48）

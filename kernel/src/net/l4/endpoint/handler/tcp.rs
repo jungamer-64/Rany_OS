@@ -18,18 +18,14 @@ use crate::net::runtime::NetRuntimeHandle;
 use kernel_api::resource::net::PacketPayload;
 
 impl NetworkEventHandler {
-    /// DataReadyイベント処理 (TCP)
     pub(super) fn handle_tcp_data_ready_with_stack(
         &self,
         fd: EndpointFd,
-        stack: &mut crate::net::runtime::stack::NetworkStack,
+        _stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let _ = stack;
         self.handle_data_ready(fd, EndpointType::Tcp)
     }
 
-    /// DataReadyイベント処理
-    /// 送信バッファにデータがあるのでTCPで送信
     pub(super) fn handle_data_ready(
         &self,
         fd: EndpointFd,
@@ -39,28 +35,22 @@ impl NetworkEventHandler {
         let Some(ref mgr) = *manager else {
             return EventHandleResult::SocketNotFound(fd);
         };
-
         let Some(socket) = mgr.get(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        // TCP状態と送信可能量を取得
         let (local, remote) = {
             let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-            let local = match inner.local_addr {
-                Some(addr) => addr,
-                None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
+            let Some(local) = inner.local_addr else {
+                return EventHandleResult::ProtocolError(EndpointError::NotConnected);
             };
-            let remote = match inner.remote_addr {
-                Some(addr) => addr,
-                None => return EventHandleResult::ProtocolError(EndpointError::NotConnected),
+            let Some(remote) = inner.remote_addr else {
+                return EventHandleResult::ProtocolError(EndpointError::NotConnected);
             };
             (local, remote)
         };
 
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
-            // 現在の送信可能データを決定 (MSS, Window, SWS考慮)
             let send_params = tcb_table().lookup(local, remote).and_then(|tcb| {
                 if tcb.state != TcpConnectionState::Established {
                     return None;
@@ -68,88 +58,91 @@ impl NetworkEventHandler {
 
                 let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                 let pending_len = inner.send_payload_bytes();
-                if pending_len == 0 {
+                if pending_len == 0 || tcb.should_delay_send(pending_len) {
                     return None;
                 }
 
-                // 1. Sender SWS Avoidance & Nagle チェック
-                if tcb.should_delay_send(pending_len) {
-                    return None;
-                }
-
-                // 2. 実効ウィンドウによる制限
                 let effective_wnd = tcb.effective_send_window();
                 if effective_wnd == 0 {
                     return None;
                 }
 
-                // 3. 1セグメントあたりのサイズ決定 (min(buffer, window, MSS))
-                let mss = tcb.mss as usize;
-                let len = (pending_len as u32).min(effective_wnd).min(mss as u32) as usize;
-
+                let len = (pending_len as u32)
+                    .min(effective_wnd)
+                    .min(tcb.mss as u32) as usize;
                 if len == 0 {
                     return None;
                 }
 
-                let payload = inner.peek_send_payload_prefix(len)?;
+                let send_payload = inner.peek_send_payload_prefix(len)?;
+                let retransmit_payload = inner.peek_send_payload_prefix(len)?;
                 Some((
-                    payload,
+                    send_payload,
+                    retransmit_payload,
                     tcb.snd_nxt,
                     tcb.rcv_nxt,
                     tcb.advertised_recv_window(),
                 ))
             });
 
-            let Some((payload, seq, ack, advertised_wnd)) = send_params else {
+            let Some((send_payload, retransmit_payload, seq, ack, advertised_wnd)) = send_params
+            else {
                 break;
             };
 
-            let data_len = payload.total_len() as u32;
-
-            // TCPセグメントを構築
-            let segment = match TcpSegmentBuilder::new(local.port(), remote.port())
+            let data_len = send_payload.total_len() as u32;
+            let segment = TcpSegmentBuilder::new(local.port(), remote.port())
                 .seq(seq)
                 .ack(ack)
                 .psh()
                 .window(advertised_wnd)
-                .payload_packet(payload.clone())
-                .build_checked_packet(local, remote)
-            {
-                Ok(segment) => segment,
-                Err(e) => return EventHandleResult::ProtocolError(e),
-            };
-            let segment_payload = segment;
-            let retransmit_segment = segment_payload.clone();
+                .payload_packet(send_payload)
+                .build_checked_packet(local, remote);
+            let retransmit_segment = TcpSegmentBuilder::new(local.port(), remote.port())
+                .seq(seq)
+                .ack(ack)
+                .psh()
+                .window(advertised_wnd)
+                .payload_packet(retransmit_payload)
+                .build_checked_packet(local, remote);
 
-            // パケット送信を試みる
-            match self.send_tcp_segment(local, remote, segment_payload) {
+            let segment = match segment {
+                Ok(segment) => segment,
+                Err(error) => return EventHandleResult::ProtocolError(error),
+            };
+            let retransmit_segment = match retransmit_segment {
+                Ok(segment) => segment,
+                Err(error) => return EventHandleResult::ProtocolError(error),
+            };
+
+            match self.send_tcp_segment(local, remote, segment) {
                 Ok(()) => {
-                    // 送信成功: endpointキューから削除し、TCB を更新
                     {
                         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                         inner.consume_send_payload(data_len as usize);
-                        // 送信可能になったため、待ちタスクを起こす
-                        if let Some(w) = inner.send_waker.take() {
-                            w.wake();
+                        if let Some(waker) = inner.send_waker.take() {
+                            waker.wake();
                         }
                     }
 
-                    // TCB 更新
                     tcb_table().lookup_mut(local, remote, |tcb| {
                         tcb.on_send(data_len);
-                        // 再送キューにも登録
                         crate::net::l4::endpoint::retransmit::retransmit_queue_push(
                             local,
                             remote,
                             tcb.snd_nxt,
-                            retransmit_segment.clone(),
+                            retransmit_segment,
                         );
                         tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
                     });
                 }
                 Err(_) => {
-                    // 送信失敗 (ARP未解決等) -> 再試行
-                    return EventHandleResult::Retry;
+                    return EventHandleResult::Retry(
+                        crate::net::l4::endpoint::event::NetworkEvent::DataReady {
+                            fd,
+                            endpoint_type: EndpointType::Tcp,
+                        },
+                    );
                 }
             }
         }
@@ -157,6 +150,7 @@ impl NetworkEventHandler {
         EventHandleResult::Success
     }
 
+    /// DataReadyイベント処理 (TCP)
     pub(super) fn make_tcp_connection_with_stack(
         &self,
         runtime: NetRuntimeHandle,

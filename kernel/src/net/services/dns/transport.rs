@@ -30,16 +30,6 @@ impl DnsClient {
         result
     }
 
-    /// Internal DNS query logic with UDP-to-TCP fallback (RFC 7766)
-    pub(super) async fn query_internal(
-        &self,
-        name: &str,
-        qtype: DnsQueryType,
-    ) -> Result<DnsResponseView, &'static str> {
-        let owned = DnsNameOwned::from_ascii_name(name).ok_or("Invalid DNS name")?;
-        self.query_internal_name(owned, qtype).await
-    }
-
     pub(super) fn build_prioritized_server_list(
         ipv4_servers: &[Ipv4Address],
         ipv6_servers: &[Ipv6Address],
@@ -70,15 +60,18 @@ impl DnsClient {
         query_id: u16,
     ) -> Result<DnsResponseView, &'static str> {
         let mut last_error = "DNS query timed out";
+        let mut retained_name = name;
 
         for server in servers {
-            let name_view = name.as_view();
             match self
-                .query_single_server(socket, *server, name_view, qtype, tick, query_id)
+                .query_single_server(socket, *server, retained_name, qtype, tick, query_id)
                 .await
             {
                 Ok(response) => return Ok(response),
-                Err(err) => last_error = err,
+                Err((name, err)) => {
+                    retained_name = name;
+                    last_error = err;
+                }
             }
         }
         Err(last_error)

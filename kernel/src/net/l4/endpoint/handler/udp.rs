@@ -18,20 +18,18 @@ impl NetworkEventHandler {
         if_id: Option<NetIfId>,
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
-        payload: &[u8],
+        src_port: u16,
+        dst_port: u16,
+        data_len: usize,
         udp_segment_payload: Option<PacketPayload>,
         ttl: u8,
         stack: &mut crate::net::runtime::stack::NetworkStack,
         original_packet: PacketPayload,
         current_time: u64,
     ) -> EventHandleResult {
-        if payload.len() < 8 {
+        if data_len > u16::MAX as usize {
             return EventHandleResult::Success;
         }
-
-        let src_port = u16::from_be_bytes([payload[0], payload[1]]);
-        let dst_port = u16::from_be_bytes([payload[2], payload[3]]);
-        let data = &payload[8..];
 
         let remote = EndpointAddr::new(src_ip, src_port);
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
@@ -47,7 +45,7 @@ impl NetworkEventHandler {
                 dst_port,
                 Some(ingress_if_id),
             ) {
-                if let Some(payload) = udp_segment_payload.slice(8, data.len()) {
+                if let Some(payload) = udp_segment_payload.slice(8, data_len) {
                     let _ = socket.deliver_udp_payload(ingress_if_id, remote, ttl, payload);
                 } else {
                     log::warn!(

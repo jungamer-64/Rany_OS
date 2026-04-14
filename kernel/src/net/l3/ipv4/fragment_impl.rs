@@ -1,7 +1,6 @@
 use super::*;
-use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{PacketPayloadBuilder, alloc_packet_with_headroom};
-use kernel_api::resource::net::{PacketChain, PacketPayload};
+use crate::net::payload::{append_payload, PacketPayloadView};
+use kernel_api::resource::net::PacketPayload;
 
 // ============================================================================
 // IP Fragment Reassembly (RFC 791)
@@ -44,41 +43,45 @@ pub(crate) struct FragmentHole {
 /// Fragment reassembly buffer for a single datagram
 struct FragmentSegment {
     offset: u16,
-    packet: PacketRef,
+    payload: PacketPayload,
 }
 
 pub struct FragmentBuffer {
-    /// Reassembled data buffer
-    data: Vec<u8>,
     /// List of holes (unfilled regions)
     holes: Vec<FragmentHole>,
     /// Total datagram length (known when last fragment received)
     total_len: Option<u16>,
-    /// First fragment's full header bytes (including options, up to 60 bytes)
-    first_header: Option<[u8; 60]>,
-    /// Length of the stored first header
-    first_header_len: usize,
-    /// First fragment's payload prefix (first 8 bytes for RFC 792 ICMP error)
-    first_payload_prefix: Option<[u8; 8]>,
+    /// First fragment's full header packet.
+    first_header: Option<PacketPayload>,
     /// Creation timestamp (for timeout)
     created_at: u64,
     /// Last update timestamp
     last_update: u64,
     /// Original fragment payload ownership chain used to rebuild a packet-backed result.
     segments: Vec<FragmentSegment>,
-    /// Whether every fragment payload is still represented by packet-backed ownership.
-    segments_complete: bool,
 }
 
 impl FragmentBuffer {
-    fn packet_from_slice(data: &[u8]) -> Option<PacketRef> {
-        if data.is_empty() {
-            return None;
+    fn take_payload_prefix(payload: PacketPayload, len: usize) -> PacketPayload {
+        let mut remaining = len;
+        let mut segments = Vec::new();
+        for mut segment in payload.into_segments() {
+            if remaining == 0 {
+                break;
+            }
+            let take = segment.len().min(remaining);
+            segment.set_len(take);
+            segments.push(segment);
+            remaining -= take;
         }
-        let mut packet = alloc_packet_with_headroom(data.len(), 0)?;
-        packet.data_mut()[..data.len()].copy_from_slice(data);
-        packet.set_len(data.len());
-        Some(packet)
+
+        match segments.len() {
+            0 => PacketPayload::default(),
+            1 => PacketPayload::single(segments.remove(0)),
+            _ => PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
+                segments,
+            )),
+        }
     }
 
     /// Maximum reassembled packet size (64KB - IP header)
@@ -95,19 +98,15 @@ impl FragmentBuffer {
     /// Create a new fragment buffer
     pub fn new(timestamp: u64) -> Self {
         FragmentBuffer {
-            data: Vec::new(),
             holes: vec![FragmentHole {
                 first: 0,
                 last: Self::MAX_DATAGRAM_SIZE as u16,
             }],
             total_len: None,
             first_header: None,
-            first_header_len: 0,
-            first_payload_prefix: None,
             created_at: timestamp,
             last_update: timestamp,
             segments: Vec::new(),
-            segments_complete: true,
         }
     }
 
@@ -127,12 +126,11 @@ impl FragmentBuffer {
     pub fn add_fragment(
         &mut self,
         header: &Ipv4Header,
-        payload: &[u8],
-        payload_packet: Option<PacketRef>,
+        payload_packet: PacketPayload,
         current_time: u64,
     ) -> bool {
         let fragment_offset = (header.fragment_offset() as u32) * 8; // Convert to bytes
-        let fragment_len = payload.len() as u32;
+        let fragment_len = payload_packet.total_len() as u32;
         let fragment_end = fragment_offset + fragment_len;
 
         // Check for overflow
@@ -145,14 +143,6 @@ impl FragmentBuffer {
         let fragment_len = fragment_len as u16;
 
         self.last_update = current_time;
-
-        // Capture first payload prefix for ICMP error (RFC 792)
-        if fragment_offset == 0 && self.first_payload_prefix.is_none() {
-            let mut prefix = [0u8; 8];
-            let copy_len = payload.len().min(8);
-            prefix[..copy_len].copy_from_slice(&payload[..copy_len]);
-            self.first_payload_prefix = Some(prefix);
-        }
 
         // Security: Check for 'Tiny Fragments' (RFC 1858, RFC 3128)
         // The first fragment (offset 0) must be large enough to contain the critical
@@ -209,11 +199,6 @@ impl FragmentBuffer {
 
         // Note: first header storage is now handled in process_fragment for consistency
 
-        // Ensure buffer is large enough
-        if self.data.len() < fragment_end as usize {
-            self.data.resize(fragment_end as usize, 0);
-        }
-
         // Security: Check for overlapping fragments.
         // We detect overlap by checking if the fragment range [offset, end)
         // covers any byte that is not currently in a hole.
@@ -248,26 +233,10 @@ impl FragmentBuffer {
             return false;
         }
 
-        // Copy fragment data
-        self.data[fragment_offset as usize..fragment_end as usize].copy_from_slice(payload);
-        if fragment_len > 0 && self.segments_complete {
-            let Some(packet) = payload_packet.or_else(|| Self::packet_from_slice(payload)) else {
-                self.segments_complete = false;
-                self.segments.clear();
-                log::warn!(
-                    "[NET-IPV4] Falling back to scratch-buffer reassembly for fragment at offset {}",
-                    fragment_offset
-                );
-                self.update_holes(fragment_offset, fragment_end, header.more_fragments());
-                if self.holes.len() > Self::MAX_HOLES {
-                    return false;
-                }
-                self.trim_holes_to_total();
-                return true;
-            };
+        if fragment_len > 0 {
             self.segments.push(FragmentSegment {
                 offset: fragment_offset,
-                packet,
+                payload: payload_packet,
             });
         }
 
@@ -287,17 +256,11 @@ impl FragmentBuffer {
     /// Store the first fragment header for later reassembly
     pub(super) fn store_first_header_if_needed(
         &mut self,
-        header_data: &[u8],
+        header_packet: PacketPayload,
         fragment_offset: u16,
     ) {
         if fragment_offset == 0 && self.first_header.is_none() {
-            if header_data.len() > 60 {
-                return;
-            }
-            let mut stored = [0u8; 60];
-            stored[..header_data.len()].copy_from_slice(header_data);
-            self.first_header = Some(stored);
-            self.first_header_len = header_data.len();
+            self.first_header = Some(header_packet);
         }
     }
 
@@ -352,9 +315,8 @@ impl FragmentBuffer {
         }
 
         let total_len = self.total_len? as usize;
-        let header_storage = self.first_header.as_ref()?;
-        let header_len = self.first_header_len;
-        let header_data = &header_storage[..header_len];
+        let mut header_payload = self.first_header?;
+        let header_len = header_payload.total_len();
 
         // Check if reassembled length fits in IPv4 Total Length field (16 bits)
         if header_len + total_len > 65535 {
@@ -365,44 +327,43 @@ impl FragmentBuffer {
             return None;
         }
 
-        // Build complete packet: header + payload
-        let mut packet = Vec::with_capacity(header_len + total_len);
-        packet.extend_from_slice(header_data);
-        packet.extend_from_slice(&self.data[..total_len]);
+        let mut header_bytes = [0u8; 60];
+        if header_len > header_bytes.len() {
+            return None;
+        }
+        let copied = PacketPayloadView::new(&header_payload).copy_range(0, &mut header_bytes[..header_len]);
+        if copied != header_len {
+            return None;
+        }
 
         // Update header fields
         let packet_total_len = (header_len + total_len) as u16;
-        packet[2] = (packet_total_len >> 8) as u8;
-        packet[3] = (packet_total_len & 0xff) as u8;
+        header_bytes[2] = (packet_total_len >> 8) as u8;
+        header_bytes[3] = (packet_total_len & 0xff) as u8;
 
         // Clear fragment flags/offset (keep DF if set, but actually reassembled packet shouldn't have MF or offset)
-        packet[6] &= 0x40; // Keep only DF flag, clear MF and high offset bits
-        packet[7] = 0; // Clear remaining offset bits
+        header_bytes[6] &= 0x40; // Keep only DF flag, clear MF and high offset bits
+        header_bytes[7] = 0; // Clear remaining offset bits
 
         // Recalculate header checksum
-        packet[10] = 0;
-        packet[11] = 0;
-        let checksum = calculate_ip_checksum(&packet[..header_len]);
-        packet[10] = (checksum >> 8) as u8;
-        packet[11] = (checksum & 0xff) as u8;
+        header_bytes[10] = 0;
+        header_bytes[11] = 0;
+        let checksum = calculate_ip_checksum(&header_bytes[..header_len]);
+        header_bytes[10] = (checksum >> 8) as u8;
+        header_bytes[11] = (checksum & 0xff) as u8;
 
-        let mut header_packet = Self::packet_from_slice(&packet[..header_len])?;
-        header_packet.set_len(header_len);
-
-        let mut chain = PacketChain::new();
-        chain.push(header_packet);
-        if !self.segments_complete || self.segments.is_empty() {
-            if packet.len() > header_len {
-                chain.push(Self::packet_from_slice(&packet[header_len..])?);
-            }
-        } else {
-            let mut segments = self.segments;
-            segments.sort_unstable_by_key(|segment| segment.offset);
-            for segment in segments {
-                chain.push(segment.packet);
-            }
+        if let Some(first_segment) = header_payload.segments_mut().first_mut() {
+            let data = first_segment.data_mut();
+            data[..header_len].copy_from_slice(&header_bytes[..header_len]);
         }
-        Some(PacketPayload::chain(chain))
+
+        let mut packet = header_payload;
+        let mut segments = self.segments;
+        segments.sort_unstable_by_key(|segment| segment.offset);
+        for segment in segments {
+            append_payload(&mut packet, segment.payload);
+        }
+        Some(packet)
     }
 }
 
@@ -456,121 +417,90 @@ impl FragmentReassembler {
     /// Process an incoming fragment
     ///
     /// Returns (reassembled_packet, expired_buffers)
-    pub fn process_fragment(
+    /// Evict expired reassembly buffers
+    /// Returns a list of (src, full_header_plus_payload_prefix) for buffers that had the first fragment
+    pub(crate) fn process_fragment(
         &mut self,
         header: &Ipv4Header,
-        header_data: &[u8],
-        payload: &[u8],
-        payload_packet: Option<PacketRef>,
+        header_packet: PacketPayload,
+        payload_packet: PacketPayload,
         current_time: u64,
     ) -> (Option<PacketPayload>, Vec<(Ipv4Address, PacketPayload)>) {
-        self.stats.fragments_received += 1;
+        let expired = self.evict_expired(current_time);
+        self.stats.fragments_received = self.stats.fragments_received.saturating_add(1);
 
         let key = FragmentKey::from_header(header);
-        let src = header.source();
-
-        // Evict expired buffers
-        let expired = self.evict_expired(current_time);
-
-        // Check if we need to create a new buffer
         if !self.buffers.contains_key(&key) {
-            // Check buffer limit
-            if self.buffers.len() >= self.max_buffers {
-                // Evict the oldest buffer to prevent Reassembly Buffer Exhaustion DoS
-                let oldest = self
+            if self.buffers.len() >= self.max_buffers
+                || self
                     .buffers
-                    .iter()
-                    .min_by_key(|(_, buf)| buf.created_at)
-                    .map(|(&k, _)| k);
-                if let Some(oldest_key) = oldest {
-                    self.buffers.remove(&oldest_key);
-                } else {
-                    self.stats.dropped_limit += 1;
-                    return (None, expired);
-                }
-            }
-
-            // Per-source limit: prevent a single source from monopolizing buffers (RFC 4963 / Best Practice)
-            let source_count = self.buffers.keys().filter(|k| k.src == src).count();
-            if source_count >= Self::MAX_BUFFERS_PER_SOURCE {
-                log::warn!(
-                    "[NET-IPV4] Fragment buffer per-source limit ({}) reached for source {:?}, dropping",
-                    Self::MAX_BUFFERS_PER_SOURCE,
-                    src
-                );
-                self.stats.dropped_limit += 1;
+                    .keys()
+                    .filter(|existing| existing.src == key.src)
+                    .count()
+                    >= Self::MAX_BUFFERS_PER_SOURCE
+            {
+                self.stats.dropped_limit = self.stats.dropped_limit.saturating_add(1);
                 return (None, expired);
             }
-
             self.buffers.insert(key, FragmentBuffer::new(current_time));
         }
 
-        // Get the buffer and add fragment
-        let buffer = match self.buffers.get_mut(&key) {
-            Some(b) => b,
-            None => return (None, expired),
+        let accepted = {
+            let Some(buffer) = self.buffers.get_mut(&key) else {
+                return (None, expired);
+            };
+            buffer.store_first_header_if_needed(header_packet, header.fragment_offset());
+            buffer.add_fragment(header, payload_packet, current_time)
         };
 
-        // Capture first header for reassembly
-        buffer.store_first_header_if_needed(header_data, header.fragment_offset());
-
-        if !buffer.add_fragment(header, payload, payload_packet, current_time) {
-            self.stats.dropped_invalid += 1;
-            // Remove invalid buffer
+        if !accepted {
+            self.stats.dropped_invalid = self.stats.dropped_invalid.saturating_add(1);
             self.buffers.remove(&key);
             return (None, expired);
         }
 
-        // Check if reassembly is complete
-        let complete = buffer.is_complete();
-        if complete {
-            let result = self
-                .buffers
-                .remove(&key)
-                .and_then(FragmentBuffer::get_reassembled);
-
-            if result.is_some() {
-                self.stats.reassembled += 1;
-            }
-
-            return (result, expired);
+        let is_complete = self
+            .buffers
+            .get(&key)
+            .map(FragmentBuffer::is_complete)
+            .unwrap_or(false);
+        if !is_complete {
+            return (None, expired);
         }
 
-        (None, expired)
+        let Some(buffer) = self.buffers.remove(&key) else {
+            return (None, expired);
+        };
+        let reassembled = buffer.get_reassembled();
+        if reassembled.is_some() {
+            self.stats.reassembled = self.stats.reassembled.saturating_add(1);
+        } else {
+            self.stats.dropped_invalid = self.stats.dropped_invalid.saturating_add(1);
+        }
+        (reassembled, expired)
     }
 
-    /// Evict expired reassembly buffers
-    /// Returns a list of (src, full_header_plus_payload_prefix) for buffers that had the first fragment
     pub(super) fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv4Address, PacketPayload)> {
         let mut expired_with_first = Vec::new();
         let mut expired_keys = Vec::new();
 
         for (key, buf) in self.buffers.iter() {
             if buf.is_expired(current_time) {
-                if let Some(ref header) = buf.first_header {
-                    // RFC 792: Include IP header + first 64 bits of data
-                    let mut builder = PacketPayloadBuilder::new();
-                    if builder
-                        .push_bytes(&header[..buf.first_header_len])
-                        .is_none()
-                    {
-                        expired_keys.push(*key);
-                        continue;
-                    }
-                    if let Some(prefix) = buf.first_payload_prefix {
-                        if builder.push_bytes(&prefix).is_none() {
-                            expired_keys.push(*key);
-                            continue;
-                        }
-                    }
-                    expired_with_first.push((key.src, builder.build()));
-                }
                 expired_keys.push(*key);
             }
         }
 
         for key in expired_keys {
-            self.buffers.remove(&key);
+            if let Some(buffer) = self.buffers.remove(&key) {
+                if let Some(header) = buffer.first_header {
+                    let mut quoted = header;
+                    if let Some(segment) = buffer.segments.into_iter().find(|segment| segment.offset == 0) {
+                        let prefix = FragmentBuffer::take_payload_prefix(segment.payload, 8);
+                        append_payload(&mut quoted, prefix);
+                    }
+                    expired_with_first.push((key.src, quoted));
+                }
+            }
             self.stats.timeouts += 1;
         }
 

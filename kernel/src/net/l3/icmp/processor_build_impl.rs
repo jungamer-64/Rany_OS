@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::payload::PacketPayloadView;
 
 impl IcmpProcessor {
     /// Build an echo reply packet
@@ -32,7 +33,7 @@ impl IcmpProcessor {
         buffer: &mut [u8],
         code: DestUnreachCode,
         next_hop_mtu: Option<u16>,
-        original_packet: &[u8],
+        original_packet: &PacketPayloadView<'_>,
     ) -> Option<usize> {
         if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
             return None;
@@ -56,8 +57,10 @@ impl IcmpProcessor {
 
         // RFC 1122 / RFC 1812: Include the full IP header + at least 8 octets of the data.
         // MUST NOT exceed 576 bytes total (IP header 20 + ICMP header 8 + payload 4 + copy_len <= 576 -> copy_len <= 544).
-        let copy_len = original_packet.len().min(payload.len() - 4).min(544);
-        payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
+        let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
+        if original_packet.copy_range(0, &mut payload[4..4 + copy_len]) != copy_len {
+            return None;
+        }
 
         builder.set_payload_len(4 + copy_len);
         Some(builder.finalize())
@@ -67,7 +70,7 @@ impl IcmpProcessor {
     pub fn build_time_exceeded(
         buffer: &mut [u8],
         code: TimeExceededCode,
-        original_packet: &[u8],
+        original_packet: &PacketPayloadView<'_>,
     ) -> Option<usize> {
         if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
             return None;
@@ -82,8 +85,10 @@ impl IcmpProcessor {
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
 
         // RFC 1122 / RFC 1812: MUST NOT exceed 576 bytes total.
-        let copy_len = original_packet.len().min(payload.len() - 4).min(544);
-        payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
+        let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
+        if original_packet.copy_range(0, &mut payload[4..4 + copy_len]) != copy_len {
+            return None;
+        }
 
         builder.set_payload_len(4 + copy_len);
         Some(builder.finalize())
@@ -93,7 +98,7 @@ impl IcmpProcessor {
     pub fn build_parameter_problem(
         buffer: &mut [u8],
         pointer: u8,
-        original_packet: &[u8],
+        original_packet: &PacketPayloadView<'_>,
     ) -> Option<usize> {
         if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
             return None;
@@ -107,8 +112,10 @@ impl IcmpProcessor {
         payload[1..4].copy_from_slice(&[0, 0, 0]); // Unused
 
         // RFC 1122 / RFC 1812: MUST NOT exceed 576 bytes total.
-        let copy_len = original_packet.len().min(payload.len() - 4).min(544);
-        payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
+        let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
+        if original_packet.copy_range(0, &mut payload[4..4 + copy_len]) != copy_len {
+            return None;
+        }
 
         builder.set_payload_len(4 + copy_len);
         Some(builder.finalize())

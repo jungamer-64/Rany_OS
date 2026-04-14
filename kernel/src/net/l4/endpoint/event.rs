@@ -15,13 +15,12 @@ use core::task::{Context, Poll};
 
 use super::types::{EndpointAddr, EndpointFd, EndpointType};
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::PayloadSpan;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
 
 /// ネットワークイベント種別
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum NetworkEvent {
     /// 着信パケット - プロトコルスタックへのオフロード
     IngressPacket {
@@ -253,19 +252,12 @@ pub enum NetworkEvent {
     /// 非同期DHCPv4リース適用
     DhcpApplyLease {
         if_id: Option<u16>,
-        ip: [u8; 4],
-        subnet: [u8; 4],
-        gateway: [u8; 4],
-        dns_servers: Vec<[u8; 4]>,
-        hostname: Option<PayloadSpan>,
-        domain_name: Option<PayloadSpan>,
+        config: crate::net::services::dhcp::DhcpV4AppliedConfig,
     },
     /// 非同期DHCPv6リース適用
     DhcpV6ApplyLease {
         if_id: Option<u16>,
-        addr: [u8; 16],
-        dns_servers: Vec<[u8; 16]>,
-        domain_search: Vec<crate::net::services::dns::DnsNameOwned>,
+        config: crate::net::services::dhcp::DhcpV6AppliedConfig,
     },
     /// 非同期リンクローカルIPv6アドレス取得
     GetLinkLocal {

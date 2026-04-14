@@ -17,19 +17,48 @@ impl NetworkStack {
         packet: PacketRef,
         _src_mac: MacAddress,
     ) {
-        let result = self
-            .ipv4
-            .process_with_time_and_packet(data, Some(&packet), current_time);
+        // Fragmented packets must keep packet ownership for reassembly tracking.
+        // Non-fragmented packets can follow the normal parse path directly.
+        let is_fragment = crate::net::l3::ipv4::Ipv4Packet::parse(data).is_some_and(|packet| {
+            packet.header().more_fragments() || packet.header().fragment_offset() != 0
+        });
+        let mut packet = Some(packet);
+        let result = if is_fragment {
+            match packet.take() {
+                Some(packet_ref) => self.ipv4.process_fragment_owned_packet(packet_ref, current_time),
+                None => {
+                    self.stats.record_rx_error();
+                    return;
+                }
+            }
+        } else {
+            let Some(packet_ref) = packet.as_ref() else {
+                self.stats.record_rx_error();
+                return;
+            };
+            self.ipv4
+                .process_with_time_and_packet(data, Some(packet_ref), current_time)
+        };
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
-                // Security: Only process multicast ICMP if group is joined (except mandatory)
+                // Security: multicast ICMP is accepted only for joined groups.
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
                     self.stats.record_dropped();
                     return;
                 }
+                // Keep zero-copy semantics by slicing from the owned packet payload.
+                let Some(packet_ref) = packet.take() else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                let Some(offset) = crate::net::payload::subslice_offset(data, payload) else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
                 let Some(icmp_payload) =
-                    crate::net::payload::payload_from_subslice(&packet, data, payload)
+                    crate::net::payload::payload_range(&original_packet, offset, payload.len())
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -37,8 +66,17 @@ impl NetworkStack {
                 self.process_icmp_payload(&icmp_payload, src_ip, dst_ip, ttl, current_time);
             }
             Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
+                let Some(packet_ref) = packet.take() else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                let Some(offset) = crate::net::payload::subslice_offset(data, payload) else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
                 let Some(igmp_payload) =
-                    crate::net::payload::payload_from_subslice(&packet, data, payload)
+                    crate::net::payload::payload_range(&original_packet, offset, payload.len())
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -46,22 +84,23 @@ impl NetworkStack {
                 self.process_igmp_payload(&igmp_payload, src_ip, ttl);
             }
             Ipv4ProcessResult::Udp(_payload, _src_ip, dst_ip, _orig) => {
-                // Security: Only process multicast UDP if group is joined (except mandatory)
+                // Security: multicast UDP is accepted only for joined groups.
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
                     self.stats.record_dropped();
                     return;
                 }
-
-                // Offload to asynchronous endpoint stack
-                crate::net::l4::endpoint::event::enqueue_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
-                        if_id: None,
-                        packet,
-                    },
-                );
+                // Offload transport handling to endpoint event path.
+                if let Some(packet_ref) = packet.take() {
+                    crate::net::l4::endpoint::event::enqueue_event_ignore(
+                        crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+                            if_id: None,
+                            packet: packet_ref,
+                        },
+                    );
+                }
             }
             Ipv4ProcessResult::Tcp(_payload, _src_ip, dst_ip, _orig) => {
-                // Security: TCP multicast/broadcast is generally not allowed/supported (RFC 793 / RFC 1122)
+                // Security: TCP over multicast/broadcast is rejected (RFC 793 / RFC 1122).
                 if dst_ip.is_multicast()
                     || dst_ip.is_broadcast()
                     || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
@@ -70,23 +109,21 @@ impl NetworkStack {
                     self.stats.record_dropped();
                     return;
                 }
-
-                // Offload to asynchronous endpoint stack
-                crate::net::l4::endpoint::event::enqueue_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
-                        if_id: None,
-                        packet,
-                    },
-                );
+                // Offload transport handling to endpoint event path.
+                if let Some(packet_ref) = packet.take() {
+                    crate::net::l4::endpoint::event::enqueue_event_ignore(
+                        crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+                            if_id: None,
+                            packet: packet_ref,
+                        },
+                    );
+                }
             }
             Ipv4ProcessResult::Reassembled(payload) => {
-                // Security Fix: Offload reassembled packets to the asynchronous endpoint stack
-                // instead of processing them directly. This ensures fragmented packets are
-                // handled by the same stack as normal packets, preventing DoS and state bypass.
-
-                // We perform basic filtering here as well
-                let view = crate::net::payload::PacketPayloadView::new(&payload);
-                if let Some(header) = view.read_array::<20>(0) {
+                // Reassembled packets are offloaded through the same async endpoint channel.
+                if let Some(header) = crate::net::payload::PacketPayloadView::new(&payload)
+                    .read_array::<20>(0)
+                {
                     let dst = Ipv4Address::new([header[16], header[17], header[18], header[19]]);
                     if IpProtocol::from(header[9]) == IpProtocol::Tcp
                         && (dst.is_multicast()
@@ -98,7 +135,6 @@ impl NetworkStack {
                         return;
                     }
                 }
-
                 crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
                         if_id: None,
@@ -107,15 +143,10 @@ impl NetworkStack {
                 );
             }
             Ipv4ProcessResult::FragmentPending => {
-                // Fragment received, waiting for more fragments
-                // Nothing to do here
+                // Waiting for the remaining fragments.
             }
             Ipv4ProcessResult::ReassemblyTimeout(src, header_data) => {
-                // RFC 792: Send ICMP Time Exceeded (Fragment Reassembly Time Exceeded)
-                log::info!(
-                    "IPv4: Reassembly timeout for {} - sending ICMP Time Exceeded",
-                    src
-                );
+                // RFC 792: send Time Exceeded (fragment reassembly timeout).
                 self.send_icmp_time_exceeded_payload(
                     src,
                     crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
@@ -123,7 +154,7 @@ impl NetworkStack {
                 );
             }
             Ipv4ProcessResult::UnknownProtocol(proto, src, _dst, orig_packet) => {
-                // RFC 792: Send ICMP Destination Unreachable (Protocol Unreachable, Code 2)
+                // RFC 792: send Destination Unreachable / Protocol Unreachable.
                 log::warn!(
                     "IPv4: Unknown protocol {} from {} - sending ICMP Protocol Unreachable",
                     proto,
@@ -137,12 +168,8 @@ impl NetworkStack {
                     current_time,
                 );
             }
-            Ipv4ProcessResult::Dropped => {
-                self.stats.record_dropped();
-            }
-            Ipv4ProcessResult::Error => {
-                self.stats.record_rx_error();
-            }
+            Ipv4ProcessResult::Dropped => self.stats.record_dropped(),
+            Ipv4ProcessResult::Error => self.stats.record_rx_error(),
             Ipv4ProcessResult::Success => {}
         }
     }
@@ -193,10 +220,9 @@ impl NetworkStack {
                 );
             }
             IcmpResult::EchoReplyReceived {
-                identifier,
+                identifier: _,
                 sequence,
             } => {
-                let _ = identifier;
                 let rtt_us = 0;
                 crate::net::api::icmp::notify_icmp_echo_reply(*src_ip.as_bytes(), sequence, rtt_us);
                 crate::net::l4::endpoint::event::enqueue_event_ignore(
@@ -240,10 +266,6 @@ impl NetworkStack {
         }
     }
 
-    // =========================================================================
-    // IPv6 Processing
-    // =========================================================================
-
     /// Process IPv6 packet data
     pub fn process_ipv6_data(
         &mut self,
@@ -272,9 +294,42 @@ impl NetworkStack {
                 return;
             }
         }
+
+        // Detect fragment-header traffic up-front so ownership-preserving
+        // reassembly path is selected before normal protocol dispatch.
+        let is_fragment = matches!(
+            crate::net::l3::ipv6::skip_extension_headers_fraginfo(
+                ip_packet.as_ref().map_or(&[][..], PacketRef::data),
+            ),
+            crate::net::l3::ipv6::ExtHeaderResult::Fragment { .. }
+        );
         let result = {
             let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-            if let Some(if_id) = if_id {
+            if is_fragment {
+                let Some(packet_ref) = ip_packet.take() else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                if let Some(if_id) = if_id {
+                    if let Some(state) = self.interfaces.get_mut(&if_id) {
+                        if let Some(ref mut ipv6) = state.ipv6 {
+                            ipv6.process_fragment_owned_packet(packet_ref, current_time)
+                        } else if let Some(ref mut ipv6) = self.ipv6 {
+                            ipv6.process_fragment_owned_packet(packet_ref, current_time)
+                        } else {
+                            return;
+                        }
+                    } else if let Some(ref mut ipv6) = self.ipv6 {
+                        ipv6.process_fragment_owned_packet(packet_ref, current_time)
+                    } else {
+                        return;
+                    }
+                } else if let Some(ref mut ipv6) = self.ipv6 {
+                    ipv6.process_fragment_owned_packet(packet_ref, current_time)
+                } else {
+                    return;
+                }
+            } else if let Some(if_id) = if_id {
                 if let Some(state) = self.interfaces.get_mut(&if_id) {
                     if let Some(ref mut ipv6) = state.ipv6 {
                         ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
@@ -297,10 +352,27 @@ impl NetworkStack {
 
         match result {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
-                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                let Some(icmpv6_payload) = ip_packet.as_ref().and_then(|ip_packet| {
-                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
-                }) else {
+                let (data_offset, payload_len) = {
+                    let Some(packet_ref) = ip_packet.as_ref() else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    let Some(data_offset) =
+                        crate::net::payload::subslice_offset(packet_ref.data(), payload)
+                    else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    (data_offset, payload.len())
+                };
+                let Some(packet_ref) = ip_packet.take() else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
+                let Some(icmpv6_payload) =
+                    crate::net::payload::payload_range(&original_packet, data_offset, payload_len)
+                else {
                     self.stats.record_rx_error();
                     return;
                 };
@@ -315,10 +387,26 @@ impl NetworkStack {
                 );
             }
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
-                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                let Some(tcp_segment_payload) = ip_packet.as_ref().and_then(|ip_packet| {
-                    crate::net::payload::payload_from_subslice(ip_packet, data, payload)
-                }) else {
+                let (offset, payload_len) = {
+                    let Some(packet_ref) = ip_packet.as_ref() else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    let Some(offset) = crate::net::payload::subslice_offset(packet_ref.data(), payload)
+                    else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    (offset, payload.len())
+                };
+                let Some(packet_ref) = ip_packet.take() else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
+                let Some(tcp_segment_payload) =
+                    crate::net::payload::payload_range(&original_packet, offset, payload_len)
+                else {
                     self.stats.record_rx_error();
                     return;
                 };
@@ -330,16 +418,25 @@ impl NetworkStack {
                 );
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
-                let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                let Some(udp_segment_payload) = ip_packet.as_ref().and_then(|packet_ref| {
-                    crate::net::payload::payload_from_subslice(packet_ref, data, payload)
-                }) else {
+                let (offset, payload_len) = {
+                    let Some(packet_ref) = ip_packet.as_ref() else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    let Some(offset) = crate::net::payload::subslice_offset(packet_ref.data(), payload)
+                    else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    (offset, payload.len())
+                };
+                let Some(packet_ref) = ip_packet.take() else {
                     self.stats.record_rx_error();
                     return;
                 };
-                let Some(original_packet) = ip_packet
-                    .as_ref()
-                    .map(|packet_ref| kernel_api::resource::net::PacketPayload::single(packet_ref.clone()))
+                let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
+                let Some(udp_segment_payload) =
+                    crate::net::payload::payload_range(&original_packet, offset, payload_len)
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -354,7 +451,7 @@ impl NetworkStack {
                 );
             }
             Ipv6ProcessResult::Reassembled(payload) => {
-                // Security Fix: Offload reassembled IPv6 packets to the asynchronous endpoint stack
+                // Reassembled IPv6 payload is offloaded to endpoint async path.
                 crate::net::l4::endpoint::event::enqueue_event_ignore(
                     crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
                         if_id,
@@ -362,16 +459,18 @@ impl NetworkStack {
                     },
                 );
             }
-            Ipv6ProcessResult::FragmentPending => {}
+            Ipv6ProcessResult::FragmentPending => {
+                // Waiting for additional fragments.
+            }
             Ipv6ProcessResult::ReassemblyTimeout(src, _dst, unfragmentable, frag_header) => {
-                // RFC 8200: Send ICMPv6 Time Exceeded (Fragment Reassembly Time Exceeded)
+                // RFC 8200: send ICMPv6 Time Exceeded (fragment reassembly timeout).
                 log::info!(
                     "IPv6: Reassembly timeout for {} - sending ICMPv6 Time Exceeded",
                     src
                 );
 
-                // Security/RFC Compliance: Include the fragment header in the quoted packet
-                // so the sender can identify the datagram via the Identification field.
+                // Include fragment header in quoted payload so sender can match
+                // the Identification value.
                 let mut quoted = unfragmentable;
                 if let Some(fh) = frag_header {
                     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
@@ -385,77 +484,48 @@ impl NetworkStack {
                 let quoted = crate::net::payload::PacketPayloadView::new(&quoted);
                 self.send_icmpv6_time_exceeded(src, 1, &quoted);
             }
-            Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => {
-                match err {
-                    crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
-                        // RFC 8200/5722: Silent discard for overlapping fragments (no ICMP error required)
-                        log::warn!(
-                            "IPv6: Fragment overlap from {} - discarding (RFC 8200)",
-                            src
-                        );
-                    }
-                    crate::net::l3::ipv6::Ipv6ReassemblyError::InvalidSize => {
-                        // RFC 8200: Send ICMPv6 Parameter Problem (Code 0), pointing to Payload Length
-                        // Payload Length is at offset 4 in IPv6 header
-                        log::warn!(
-                            "IPv6: Invalid fragment size (not multiple of 8) from {} - sending ICMPv6 Parameter Problem (RFC 8200)",
-                            src
-                        );
-                        self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
-                    }
-                    crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
-                        // RFC 8200: If the reassembled packet would be larger than 65,535 octets,
-                        // send ICMPv6 Parameter Problem Code 0 pointing to Payload Length field.
-                        log::warn!(
-                            "IPv6: Fragmented packet too large from {} - sending ICMPv6 Parameter Problem (RFC 8200)",
-                            src
-                        );
-                        self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
-                    }
-                    crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
-                        // RFC 7112: Send ICMPv6 Parameter Problem (Code 0), pointing to the first octet
-                        // of the Fragment Header.
-                        // quoted_packet contains unfragmentable + 8-byte fragment header.
-                        let fragment_header_pointer =
-                            (quoted_packet.total_len() as u32).saturating_sub(8);
-                        log::warn!(
-                            "IPv6: Incomplete header chain in first fragment from {} - sending ICMPv6 Parameter Problem (RFC 7112)",
-                            src
-                        );
-                        self.send_icmpv6_parameter_problem_payload(
-                            src,
-                            0,
-                            fragment_header_pointer,
-                            &quoted_packet,
-                        );
-                    }
+            Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => match err {
+                crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
+                    // RFC 8200 / RFC 5722: overlapping fragments are silently dropped.
+                    log::warn!(
+                        "IPv6: Fragment overlap from {} - discarding (RFC 8200)",
+                        src
+                    );
                 }
-            }
+                crate::net::l3::ipv6::Ipv6ReassemblyError::InvalidSize
+                | crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
+                    // RFC 8200: Parameter Problem, pointer to Payload Length field.
+                    self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
+                }
+                crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
+                    // RFC 7112: pointer targets first byte of Fragment Header.
+                    let fragment_header_pointer =
+                        (quoted_packet.total_len() as u32).saturating_sub(8);
+                    self.send_icmpv6_parameter_problem_payload(
+                        src,
+                        0,
+                        fragment_header_pointer,
+                        &quoted_packet,
+                    );
+                }
+            },
             Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst, orig_packet) => {
-                // RFC 4443 Section 3.4: Send ICMPv6 Parameter Problem (Code 1)
-                log::warn!(
-                    "IPv6: Unknown Next Header from {} - sending ICMPv6 Parameter Problem",
-                    src
-                );
+                // RFC 4443 Section 3.4: Parameter Problem (Code 1).
                 self.send_icmpv6_parameter_problem_payload(src, 1, pointer, &orig_packet);
             }
             Ipv6ProcessResult::HopLimitExceeded(src, _dst, orig_packet) => {
-                // RFC 4443 Section 3.3: Send ICMPv6 Time Exceeded (Code 0)
-                log::warn!(
-                    "IPv6: Hop Limit exceeded from {} - sending ICMPv6 Time Exceeded",
-                    src
-                );
+                // RFC 4443 Section 3.3: Time Exceeded (Code 0).
                 let orig_packet = crate::net::payload::PacketPayloadView::new(&orig_packet);
                 self.send_icmpv6_time_exceeded(src, 0, &orig_packet);
             }
-            Ipv6ProcessResult::Dropped => {
-                self.stats.record_dropped();
-            }
-            Ipv6ProcessResult::Error => {
-                self.stats.record_rx_error();
-            }
+            Ipv6ProcessResult::Dropped => self.stats.record_dropped(),
+            Ipv6ProcessResult::Error => self.stats.record_rx_error(),
         }
     }
+
+    // =========================================================================
+    // IPv6 Processing
+    // =========================================================================
 
     /// Process ICMPv6 data
     pub(crate) fn process_icmpv6_data(

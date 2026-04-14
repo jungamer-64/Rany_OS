@@ -274,6 +274,64 @@ impl TlsConnection {
         max_early_data_size
     }
 
+    pub(crate) fn tls13_process_new_session_ticket(&mut self, data: &[u8]) -> TlsResult<()> {
+        if data.len() < 11 {
+            return Err(TlsError::DecodeError);
+        }
+
+        let lifetime = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+        let age_add = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let nonce_len = data[8] as usize;
+        let nonce_start = 9usize;
+        let nonce_end = nonce_start.saturating_add(nonce_len);
+        if nonce_end + 2 > data.len() {
+            return Err(TlsError::DecodeError);
+        }
+
+        let ticket_len = u16::from_be_bytes([data[nonce_end], data[nonce_end + 1]]) as usize;
+        let ticket_start = nonce_end + 2;
+        let ticket_end = ticket_start.saturating_add(ticket_len);
+        if ticket_end + 2 > data.len() {
+            return Err(TlsError::DecodeError);
+        }
+
+        let max_early_data_size = Self::parse_ticket_extensions(data, ticket_end);
+
+        let mut nonce_builder = crate::net::payload::PacketPayloadBuilder::new();
+        nonce_builder
+            .push_bytes(&data[nonce_start..nonce_end])
+            .ok_or(TlsError::DecodeError)?;
+        let nonce = PayloadSpan::from_payload(nonce_builder.build());
+
+        let mut ticket_builder = crate::net::payload::PacketPayloadBuilder::new();
+        ticket_builder
+            .push_bytes(&data[ticket_start..ticket_end])
+            .ok_or(TlsError::DecodeError)?;
+        let ticket = PayloadSpan::from_payload(ticket_builder.build());
+
+        let mut identity_builder = crate::net::payload::PacketPayloadBuilder::new();
+        identity_builder
+            .push_bytes(&data[ticket_start..ticket_end])
+            .ok_or(TlsError::DecodeError)?;
+        let psk_identity = PayloadSpan::from_payload(identity_builder.build());
+
+        self.tls13_ticket_age_add = age_add;
+        self.max_early_data_size = max_early_data_size;
+        self.tls13_psk_identity = Some(psk_identity);
+        self.session_ticket = Some(SessionTicket {
+            lifetime,
+            age_add,
+            nonce,
+            ticket,
+        });
+
+        if let Some(psk) = self.derive_tls13_psk_from_rms(&data[nonce_start..nonce_end]) {
+            self.tls13_psk = Some(psk);
+        }
+
+        Ok(())
+    }
+
     /// Resumption Master SecretからPSKを導出
     pub(super) fn derive_tls13_psk_from_rms(&self, ticket_nonce: &[u8]) -> Option<TlsBytes<48>> {
         if self.resumption_master_secret.is_empty() {
@@ -298,54 +356,6 @@ impl TlsConnection {
             TlsBytes::from_slice(&derived[..hash_len])?
         };
         Some(psk)
-    }
-
-    pub(super) fn tls13_process_new_session_ticket(&mut self, data: &[u8]) -> TlsResult<()> {
-        if data.len() < 9 {
-            return Err(TlsError::DecodeError);
-        }
-
-        let ticket_lifetime = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        let ticket_age_add = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-        let nonce_len = data[8] as usize;
-
-        let mut off = 9;
-        if data.len() < off + nonce_len {
-            return Err(TlsError::DecodeError);
-        }
-        let ticket_nonce = &data[off..off + nonce_len];
-        off += nonce_len;
-
-        if data.len() < off + 2 {
-            return Err(TlsError::DecodeError);
-        }
-        let ticket_len = ((data[off] as usize) << 8) | data[off + 1] as usize;
-        off += 2;
-
-        if data.len() < off + ticket_len {
-            return Err(TlsError::DecodeError);
-        }
-        let ticket = &data[off..off + ticket_len];
-        off += ticket_len;
-
-        self.max_early_data_size = Self::parse_ticket_extensions(data, off);
-
-        self.session_ticket = Some(SessionTicket {
-            lifetime: ticket_lifetime,
-            age_add: ticket_age_add,
-            nonce: PayloadSpan::from_bytes(ticket_nonce).ok_or(TlsError::DecodeError)?,
-            ticket: PayloadSpan::from_bytes(ticket).ok_or(TlsError::DecodeError)?,
-        });
-
-        if let Some(psk) = self.derive_tls13_psk_from_rms(ticket_nonce) {
-            self.tls13_psk = Some(psk);
-            self.tls13_psk_identity =
-                Some(PayloadSpan::from_bytes(ticket).ok_or(TlsError::DecodeError)?);
-            self.tls13_ticket_age_add = ticket_age_add;
-            self.tls13_psk_cipher = self.negotiated_cipher;
-        }
-
-        Ok(())
     }
 
     /// TLS 1.3: KeyUpdate を処理 (RFC 8446 Section 4.6.3)

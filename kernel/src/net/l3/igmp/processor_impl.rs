@@ -149,8 +149,12 @@ impl IgmpProcessor {
             return IgmpResult::InvalidPacket;
         }
 
-        let bytes = view.read_vec(0, total_len);
-        if bytes.len() != total_len || compute_igmp_checksum(&bytes) != 0 {
+        let mut bytes = Vec::with_capacity(total_len);
+        bytes.resize(total_len, 0);
+        if view.copy_range(0, &mut bytes) != total_len {
+            return IgmpResult::InvalidPacket;
+        }
+        if compute_igmp_checksum(&bytes) != 0 {
             return IgmpResult::InvalidChecksum;
         }
 

@@ -138,7 +138,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     // DNS 初期化
     crate::net::services::dns::init(1000);
     if !dns_servers.is_empty() {
-        crate::net::services::dns::set_ipv4_servers(dns_servers);
+        crate::net::services::dns::set_ipv4_servers(&dns_servers);
     }
 
     // DHCPv4 is driven by the per-interface runtime registry; bootstrap only
