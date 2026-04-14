@@ -305,7 +305,11 @@ impl UdpProcessor {
             }
         }
 
-        let Some(udp_payload) = payload.slice(UdpHeader::SIZE, length - UdpHeader::SIZE) else {
+        let Some(udp_payload) = crate::net::payload::retain_payload_window_owned(
+            payload,
+            UdpHeader::SIZE,
+            length - UdpHeader::SIZE,
+        ) else {
             return UdpResult::Invalid;
         };
         let src = crate::net::l4::endpoint::EndpointAddr::new(
@@ -419,7 +423,11 @@ impl UdpProcessor {
             return UdpResult::ChecksumError;
         }
 
-        let Some(udp_payload) = payload.slice(UdpHeader::SIZE, length - UdpHeader::SIZE) else {
+        let Some(udp_payload) = crate::net::payload::retain_payload_window_owned(
+            payload,
+            UdpHeader::SIZE,
+            length - UdpHeader::SIZE,
+        ) else {
             return UdpResult::Invalid;
         };
         let src = crate::net::l4::endpoint::EndpointAddr::new_v6(

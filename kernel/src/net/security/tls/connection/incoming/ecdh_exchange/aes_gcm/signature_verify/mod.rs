@@ -444,7 +444,7 @@ impl TlsConnection {
         let mut inner =
             crate::net::payload::alloc_packet_with_headroom(payload_view.total_len() + 1, 0)
                 .ok_or(TlsError::DecodeError)?;
-        if payload_view.copy_all_into(&mut inner.data_mut()[..payload_view.total_len()])
+        if payload_view.copy_range(0, &mut inner.data_mut()[..payload_view.total_len()])
             != payload_view.total_len()
         {
             return Err(TlsError::DecodeError);

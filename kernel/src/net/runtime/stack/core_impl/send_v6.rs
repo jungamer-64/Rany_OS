@@ -190,7 +190,7 @@ impl NetworkStack {
             packet.set_len(frame_len);
 
             let fragment_payload =
-                crate::net::payload::payload_range(&payload, offset, fragment_data_len)
+                crate::net::payload::clone_payload_window(&payload, offset, fragment_data_len)
                     .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
             let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
             crate::net::payload::append_payload(&mut frame_payload, fragment_payload);

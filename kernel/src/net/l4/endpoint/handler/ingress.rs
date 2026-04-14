@@ -276,7 +276,8 @@ impl NetworkEventHandler {
                 return EventHandleResult::Success;
             }
 
-            let transport_payload = crate::net::payload::payload_range(&payload, header_len, transport_len);
+            let transport_payload =
+                crate::net::payload::clone_payload_window(&payload, header_len, transport_len);
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
                     if let Some(transport_payload) = transport_payload {
@@ -386,7 +387,7 @@ impl NetworkEventHandler {
             }
 
             let transport_payload =
-                crate::net::payload::payload_range(&payload, payload_offset, transport_len);
+                crate::net::payload::clone_payload_window(&payload, payload_offset, transport_len);
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
                     if let Some(transport_payload) = transport_payload {
@@ -531,8 +532,11 @@ impl NetworkEventHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(payload) =
-                    crate::net::payload::payload_range(&original_packet, offset, payload_len)
+                let Some(payload) = crate::net::payload::clone_payload_window(
+                    &original_packet,
+                    offset,
+                    payload_len,
+                )
                 else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
@@ -550,8 +554,11 @@ impl NetworkEventHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(payload) =
-                    crate::net::payload::payload_range(&original_packet, offset, payload_len)
+                let Some(payload) = crate::net::payload::clone_payload_window(
+                    &original_packet,
+                    offset,
+                    payload_len,
+                )
                 else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
@@ -581,7 +588,7 @@ impl NetworkEventHandler {
                 };
                 let original_packet = PacketPayload::single(packet_ref);
                 let udp_segment_payload =
-                    crate::net::payload::payload_range(&original_packet, offset, data_len + 8);
+                    crate::net::payload::clone_payload_window(&original_packet, offset, data_len + 8);
                 self.handle_udp_ingress_with_stack(
                     runtime,
                     if_id,
@@ -609,8 +616,11 @@ impl NetworkEventHandler {
                     return EventHandleResult::Success;
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(tcp_segment_payload) =
-                    crate::net::payload::payload_range(&original_packet, offset, payload_len)
+                let Some(tcp_segment_payload) = crate::net::payload::clone_payload_window(
+                    &original_packet,
+                    offset,
+                    payload_len,
+                )
                 else {
                     return EventHandleResult::Success;
                 };

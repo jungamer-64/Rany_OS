@@ -57,8 +57,11 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(icmp_payload) =
-                    crate::net::payload::payload_range(&original_packet, offset, payload.len())
+                let Some(icmp_payload) = crate::net::payload::clone_payload_window(
+                    &original_packet,
+                    offset,
+                    payload.len(),
+                )
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -75,8 +78,11 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(igmp_payload) =
-                    crate::net::payload::payload_range(&original_packet, offset, payload.len())
+                let Some(igmp_payload) = crate::net::payload::clone_payload_window(
+                    &original_packet,
+                    offset,
+                    payload.len(),
+                )
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -206,7 +212,7 @@ impl NetworkStack {
                 data_len,
             } => {
                 let Some(echo_data) =
-                    crate::net::payload::payload_range(payload, data_offset, data_len)
+                    crate::net::payload::clone_payload_window(payload, data_offset, data_len)
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -370,8 +376,11 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(icmpv6_payload) =
-                    crate::net::payload::payload_range(&original_packet, data_offset, payload_len)
+                let Some(icmpv6_payload) = crate::net::payload::clone_payload_window(
+                    &original_packet,
+                    data_offset,
+                    payload_len,
+                )
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -404,8 +413,11 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(tcp_segment_payload) =
-                    crate::net::payload::payload_range(&original_packet, offset, payload_len)
+                let Some(tcp_segment_payload) = crate::net::payload::clone_payload_window(
+                    &original_packet,
+                    offset,
+                    payload_len,
+                )
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -435,8 +447,11 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(udp_segment_payload) =
-                    crate::net::payload::payload_range(&original_packet, offset, payload_len)
+                let Some(udp_segment_payload) = crate::net::payload::clone_payload_window(
+                    &original_packet,
+                    offset,
+                    payload_len,
+                )
                 else {
                     self.stats.record_rx_error();
                     return;

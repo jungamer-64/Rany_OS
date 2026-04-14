@@ -330,7 +330,7 @@ impl EndpointInner {
                 break;
             }
             let take = remaining.min(payload.total_len());
-            let prefix = payload.slice(0, take)?;
+            let prefix = crate::net::payload::clone_payload_window(payload, 0, take)?;
             segments.extend(prefix.into_segments());
             remaining -= take;
         }
@@ -361,17 +361,16 @@ impl EndpointInner {
             }
 
             let take = remaining.min(front.total_len());
-            let used = front.consume_prefix(take);
-            consumed += used;
-            remaining = remaining.saturating_sub(used);
+            if !crate::net::payload::discard_payload_prefix(front, take) {
+                break;
+            }
+            consumed += take;
+            remaining = remaining.saturating_sub(take);
 
             if front.is_empty() {
                 queue.pop_front();
             }
 
-            if used == 0 {
-                break;
-            }
         }
 
         consumed
@@ -490,7 +489,10 @@ impl EndpointInner {
             Some(limit) => {
                 let front = tcp.recv_payload_queue.front_mut()?;
                 let take = limit.min(front.total_len());
-                let taken = front.take_prefix(take)?;
+                let taken = crate::net::payload::clone_payload_window(front, 0, take)?;
+                if !crate::net::payload::discard_payload_prefix(front, take) {
+                    return None;
+                }
                 if front.is_empty() {
                     tcp.recv_payload_queue.pop_front();
                 }
@@ -522,8 +524,7 @@ impl EndpointInner {
         }
 
         let queued = if payload.total_len() > available {
-            payload
-                .slice(0, available)
+            crate::net::payload::retain_payload_window_owned(payload, 0, available)
                 .ok_or(EndpointError::BufferFull)?
         } else {
             payload
@@ -590,7 +591,7 @@ impl EndpointInner {
         }
 
         let queued = if payload.total_len() > available {
-            match payload.slice(0, available) {
+            match crate::net::payload::retain_payload_window_owned(payload, 0, available) {
                 Some(payload) => payload,
                 None => return 0,
             }

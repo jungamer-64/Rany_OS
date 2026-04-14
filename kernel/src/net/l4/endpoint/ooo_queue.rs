@@ -122,7 +122,7 @@ impl ConnectionOooQueue {
                 if seq_before(rcv_nxt, seg_end) {
                     // 部分的な重複: rcv_nxtより前の部分をカットして再挿入候補にする
                     let overlap = rcv_nxt.wrapping_sub(seq) as usize;
-                    if packet.consume_prefix(overlap) != overlap {
+                    if !crate::net::payload::discard_payload_prefix(&mut packet, overlap) {
                         GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                         continue;
                     }

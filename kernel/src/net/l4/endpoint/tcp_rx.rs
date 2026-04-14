@@ -366,7 +366,7 @@ impl TcpOptionsScratch {
         }
 
         let payload_len = view.total_len().saturating_sub(data_offset);
-        let payload = segment.slice(data_offset, payload_len)?;
+        let payload = crate::net::payload::clone_payload_window(segment, data_offset, payload_len)?;
 
         Some((
             ParsedTcpHeader {
@@ -558,7 +558,9 @@ fn try_fast_path(
 
     let mut pushed = 0usize;
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        let Some(payload) = crate::net::payload::payload_range(data_payload, 0, payload_len) else {
+        let Some(payload) =
+            crate::net::payload::clone_payload_window(data_payload, 0, payload_len)
+        else {
             return false;
         };
         pushed = socket.push_payload(payload);
@@ -946,7 +948,7 @@ fn handle_data_received_with_delayed_ack(
             }
         } else {
             // Trim prefix
-            if data_payload.consume_prefix(skip) != skip {
+            if !crate::net::payload::discard_payload_prefix(&mut data_payload, skip) {
                 send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
                 return;
             }

@@ -69,12 +69,17 @@ impl Endpoint {
 
         let payload_len = payload.total_len();
         let (queued, remainder) = if payload_len > available {
-            let Some(queued) = payload.slice(0, available) else {
+            let Some(queued) = crate::net::payload::clone_payload_window(&payload, 0, available)
+            else {
                 return (0, Some(payload));
             };
             (
                 queued,
-                payload.slice(available, payload_len.saturating_sub(available)),
+                crate::net::payload::retain_payload_window_owned(
+                    payload,
+                    available,
+                    payload_len.saturating_sub(available),
+                ),
             )
         } else {
             (payload, None)

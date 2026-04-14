@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::ipv4::IpProtocol;
 use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
-use crate::net::payload::{PacketPayloadView, alloc_packet_with_headroom, payload_range};
+use crate::net::payload::{PacketPayloadView, alloc_packet_with_headroom};
 use kernel_api::resource::net::PacketPayload;
 
 fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {

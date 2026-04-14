@@ -412,7 +412,8 @@ impl DnsClient {
         records: Vec<DnsRecordMeta>,
     ) -> DnsResponseView {
         self.stats.responses_received.fetch_add(1, Ordering::Relaxed);
-        let response_payload = crate::net::payload::payload_range(payload, 0, payload.total_len())
+        let response_payload =
+            crate::net::payload::clone_payload_window(payload, 0, payload.total_len())
             .unwrap_or_default();
         DnsResponseView {
             payload: response_payload,

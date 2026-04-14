@@ -231,7 +231,9 @@ impl NetworkStack {
                     Some(ingress_if_id),
                 ) {
                     let data_len = view.total_len().saturating_sub(8);
-                    if let Some(payload) = payload.slice(8, data_len) {
+                    if let Some(payload) =
+                        crate::net::payload::retain_payload_window_owned(payload, 8, data_len)
+                    {
                         let _ =
                             socket.deliver_udp_payload(ingress_if_id, remote, hop_limit, payload);
                         return;

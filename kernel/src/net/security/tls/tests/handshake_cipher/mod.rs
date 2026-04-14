@@ -6,7 +6,7 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
     bytes
         .set_filled_len(view.total_len())
         .expect("test payload fits fixed TLS buffer");
-    let copied = view.copy_all_into(bytes.as_mut_slice());
+    let copied = view.copy_range(0, bytes.as_mut_slice());
     bytes
         .set_filled_len(copied)
         .expect("copied test payload length stays in bounds");

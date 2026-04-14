@@ -8,7 +8,9 @@
 use super::crypto::*;
 use super::error::{TlsError, TlsResult};
 use super::types::*;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpan, append_payload};
+use crate::net::payload::{
+    PacketPayloadBuilder, PacketPayloadView, PayloadSpan, PayloadSpanRef, append_payload,
+};
 use crate::net::security::ecdh;
 use arrayvec::ArrayString;
 use kernel_api::resource::net::PacketPayload;
@@ -552,12 +554,17 @@ impl TlsConnection {
         record: PacketPayload,
         plaintext: &mut PacketPayload,
     ) -> TlsResult<()> {
-        let view = PacketPayloadView::new(&record);
-        let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+        let record = PayloadSpanRef::from_payload(&record);
+        let header = record.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
         let content_type = header[0];
         let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
-        let body =
-            crate::net::payload::payload_range(&record, 5, record_len).ok_or(TlsError::DecodeError)?;
+        let body = record
+            .slice(5, record_len)
+            .ok_or(TlsError::DecodeError)?
+            .into_owned()
+            .ok_or(TlsError::DecodeError)?
+            .into_payload()
+            .ok_or(TlsError::DecodeError)?;
 
         match ContentType::from_u8(content_type) {
             Some(ContentType::Handshake) => {
@@ -613,11 +620,12 @@ impl TlsConnection {
                 break;
             }
 
-            let record = self
-                .recv_buffer
-                .take_prefix(total_len)
+            let record = crate::net::payload::clone_payload_window(&self.recv_buffer, 0, total_len)
                 .ok_or(TlsError::DecodeError)?;
             self.consume_tls_record_payload(record, &mut plaintext)?;
+            if !crate::net::payload::discard_payload_prefix(&mut self.recv_buffer, total_len) {
+                return Err(TlsError::DecodeError);
+            }
         }
 
         Ok(plaintext)
@@ -875,7 +883,7 @@ impl TlsConnection {
             Some(packet) => packet,
             None => return PacketPayload::default(),
         };
-        if payload_view.copy_all_into(&mut inner_plaintext.data_mut()[..payload_view.total_len()])
+        if payload_view.copy_range(0, &mut inner_plaintext.data_mut()[..payload_view.total_len()])
             != payload_view.total_len()
         {
             return PacketPayload::default();

@@ -45,7 +45,9 @@ impl NetworkEventHandler {
                 dst_port,
                 Some(ingress_if_id),
             ) {
-                if let Some(payload) = udp_segment_payload.slice(8, data_len) {
+                if let Some(payload) =
+                    crate::net::payload::clone_payload_window(&udp_segment_payload, 8, data_len)
+                {
                     let _ = socket.deliver_udp_payload(ingress_if_id, remote, ttl, payload);
                 } else {
                     log::warn!(

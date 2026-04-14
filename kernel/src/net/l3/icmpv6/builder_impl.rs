@@ -66,7 +66,7 @@ impl Icmpv6Builder {
         let mut message_payload = PacketPayload::single(packet);
         if payload_len > 0 {
             let payload_span =
-                crate::net::payload::payload_range(payload.payload(), 0, payload_len)?;
+                crate::net::payload::clone_payload_window(payload.payload(), 0, payload_len)?;
             crate::net::payload::append_payload(&mut message_payload, payload_span);
         }
 
@@ -162,7 +162,7 @@ impl Icmpv6Builder {
         let mut message_payload = PacketPayload::single(packet);
         if max_trigger > 0 {
             let quoted =
-                crate::net::payload::payload_range(trigger_packet.payload(), 0, max_trigger)?;
+                crate::net::payload::clone_payload_window(trigger_packet.payload(), 0, max_trigger)?;
             crate::net::payload::append_payload(&mut message_payload, quoted);
         }
 

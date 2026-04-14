@@ -6,7 +6,7 @@ use super::types::{
     HttpHeaderView, HttpInboundRequest, HttpInboundResponse, HttpMethod, HttpStatusCode,
     HttpVersion,
 };
-use crate::net::payload::{PayloadSpan, append_payload, payload_range};
+use crate::net::payload::{PayloadSpan, append_payload};
 use alloc::vec::Vec;
 use kernel_api::resource::net::PacketPayload;
 
@@ -65,7 +65,7 @@ impl HttpParser {
             return Ok(None);
         };
 
-        self.consume_prefix(consumed_len);
+        self.discard_consumed(consumed_len);
 
         Ok(Some(HttpInboundRequest {
             method,
@@ -107,7 +107,7 @@ impl HttpParser {
             return Ok(None);
         };
 
-        self.consume_prefix(consumed_len);
+        self.discard_consumed(consumed_len);
 
         Ok(Some(HttpInboundResponse {
             version,
@@ -418,13 +418,12 @@ impl HttpParser {
         Ok(Some((Some(body), full.total_len())))
     }
 
-    fn consume_prefix(&mut self, consumed_len: usize) {
-        let remaining = self.buffer.total_len().saturating_sub(consumed_len);
-        self.buffer = if remaining == 0 {
-            PacketPayload::default()
-        } else {
-            payload_range(&self.buffer, consumed_len, remaining).unwrap_or_default()
-        };
+    fn discard_consumed(&mut self, consumed_len: usize) {
+        if consumed_len >= self.buffer.total_len() {
+            self.buffer = PacketPayload::default();
+        } else if !crate::net::payload::discard_payload_prefix(&mut self.buffer, consumed_len) {
+            self.buffer = PacketPayload::default();
+        }
         self.state = ParseState::SearchingHeaders { search_from: 0 };
     }
 

@@ -759,7 +759,7 @@ impl TlsConnection {
         let view = crate::net::payload::PacketPayloadView::new(payload);
         let mut packet = crate::net::payload::alloc_packet_with_headroom(view.total_len(), 0)
             .ok_or(TlsError::DecodeError)?;
-        if view.copy_all_into(&mut packet.data_mut()[..view.total_len()]) != view.total_len() {
+        if view.copy_range(0, &mut packet.data_mut()[..view.total_len()]) != view.total_len() {
             return Err(TlsError::DecodeError);
         }
         let data = &packet.data()[..view.total_len()];
