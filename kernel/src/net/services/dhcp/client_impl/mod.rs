@@ -638,7 +638,9 @@ impl DhcpClient {
         }
     }
 
-    pub(super) fn parse_ipv4_option_span(opt_data: &PayloadSpan) -> Option<Ipv4Address> {
+    pub(super) fn parse_ipv4_option_ref(
+        opt_data: crate::net::payload::PayloadSpanRef<'_>,
+    ) -> Option<Ipv4Address> {
         if opt_data.total_len() != 4 {
             return None;
         }
@@ -649,7 +651,9 @@ impl DhcpClient {
         Some(Ipv4Address::new(bytes))
     }
 
-    pub(super) fn parse_u32_option_span(opt_data: &PayloadSpan) -> Option<u32> {
+    pub(super) fn parse_u32_option_ref(
+        opt_data: crate::net::payload::PayloadSpanRef<'_>,
+    ) -> Option<u32> {
         if opt_data.total_len() != 4 {
             return None;
         }
@@ -749,22 +753,26 @@ impl DhcpClient {
         Ok(header)
     }
 
-    pub(super) fn apply_option_span(opts: &mut ParsedOptions, opt: u8, opt_data: &PayloadSpan) {
+    pub(super) fn apply_option_span_ref(
+        opts: &mut ParsedOptions,
+        opt: u8,
+        opt_data: crate::net::payload::PayloadSpanRef<'_>,
+    ) {
         match opt {
             53 => {
                 if let Some(value) = opt_data.byte_at(0) {
                     opts.message_type = DhcpMessageType::from_u8(value);
                 }
             }
-            1 => opts.subnet_mask = Self::parse_ipv4_option_span(opt_data),
-            3 => opts.router = Self::parse_ipv4_option_span(opt_data),
+            1 => opts.subnet_mask = Self::parse_ipv4_option_ref(opt_data),
+            3 => opts.router = Self::parse_ipv4_option_ref(opt_data),
             6 => {
                 let server_count = opt_data.total_len() / 4;
                 for index in 0..server_count {
                     if opts.dns_servers.len() >= 8 {
                         break;
                     }
-                    let Some(chunk) = opt_data.as_ref().slice(index * 4, 4) else {
+                    let Some(chunk) = opt_data.slice(index * 4, 4) else {
                         break;
                     };
                     let mut bytes = [0u8; 4];
@@ -775,15 +783,27 @@ impl DhcpClient {
                 }
             }
             51 => {
-                if let Some(value) = Self::parse_u32_option_span(opt_data) {
+                if let Some(value) = Self::parse_u32_option_ref(opt_data) {
                     opts.lease_time = value;
                 }
             }
-            58 => opts.renewal_time = Self::parse_u32_option_span(opt_data),
-            59 => opts.rebinding_time = Self::parse_u32_option_span(opt_data),
-            54 => opts.server_id = Self::parse_ipv4_option_span(opt_data),
-            12 => opts.hostname = Some(opt_data.clone()),
-            15 => opts.domain_name = Some(opt_data.clone()),
+            58 => opts.renewal_time = Self::parse_u32_option_ref(opt_data),
+            59 => opts.rebinding_time = Self::parse_u32_option_ref(opt_data),
+            54 => opts.server_id = Self::parse_ipv4_option_ref(opt_data),
+            12 => {
+                opts.hostname = PayloadSpan::from_owned_range(
+                    opt_data.payload().clone(),
+                    opt_data.offset(),
+                    opt_data.total_len(),
+                )
+            }
+            15 => {
+                opts.domain_name = PayloadSpan::from_owned_range(
+                    opt_data.payload().clone(),
+                    opt_data.offset(),
+                    opt_data.total_len(),
+                )
+            }
             _ => {}
         }
     }
@@ -931,16 +951,15 @@ impl DhcpClient {
                 break;
             }
 
-            let Some(opt_data) =
-                crate::net::payload::PayloadSpan::from_owned_range(
-                    payload.clone(),
-                    offset + 2,
-                    len,
-                )
+            let Some(opt_data) = crate::net::payload::PayloadSpanRef::from_range(
+                payload,
+                offset + 2,
+                len,
+            )
             else {
                 break;
             };
-            Self::apply_option_span(&mut opts, opt, &opt_data);
+            Self::apply_option_span_ref(&mut opts, opt, opt_data);
             offset += 2 + len;
         }
 

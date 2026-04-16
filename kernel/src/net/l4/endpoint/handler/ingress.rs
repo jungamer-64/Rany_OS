@@ -289,7 +289,7 @@ impl NetworkEventHandler {
                             if_id,
                             src_ip.octets(),
                             dst_ip.octets(),
-                            &transport_payload,
+                            transport_payload,
                         );
                     }
                 }
@@ -421,7 +421,7 @@ impl NetworkEventHandler {
                             if_id,
                             src,
                             dst,
-                            &transport_payload,
+                            transport_payload,
                         );
                     }
                 }
@@ -571,7 +571,7 @@ impl NetworkEventHandler {
                 };
                 let original_packet = PacketPayload::single(packet_ref);
                 let Some(payload) = crate::net::payload::retain_payload_window_owned(
-                    original_packet.clone(),
+                    original_packet,
                     offset,
                     payload_len,
                 )
@@ -593,7 +593,7 @@ impl NetworkEventHandler {
                 };
                 let original_packet = PacketPayload::single(packet_ref);
                 let Some(payload) = crate::net::payload::retain_payload_window_owned(
-                    original_packet.clone(),
+                    original_packet,
                     offset,
                     payload_len,
                 )
@@ -655,7 +655,7 @@ impl NetworkEventHandler {
                 };
                 let original_packet = PacketPayload::single(packet_ref);
                 let Some(tcp_segment_payload) = crate::net::payload::retain_payload_window_owned(
-                    original_packet.clone(),
+                    original_packet,
                     offset,
                     payload_len,
                 )
@@ -666,7 +666,7 @@ impl NetworkEventHandler {
                     if_id,
                     src_ip.octets(),
                     dst_ip.octets(),
-                    &tcp_segment_payload,
+                    tcp_segment_payload,
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Reassembled(payload) => {

@@ -183,12 +183,12 @@ impl DnsClient {
     /// Parse a DNS response received over TCP
     pub fn parse_tcp_response_payload(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         current_tick: u64,
         expected_name: &str,
         expected_type: DnsQueryType,
     ) -> Result<DnsResponseView, DnsResponseCode> {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let view = crate::net::payload::PacketPayloadView::new(&payload);
         if view.total_len() < 2 {
             return Err(DnsResponseCode::FormatError);
         }
@@ -202,7 +202,7 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let message = crate::net::payload::retain_payload_window_owned(payload.clone(), 2, msg_len)
+        let message = crate::net::payload::retain_payload_window_owned(payload, 2, msg_len)
             .ok_or(DnsResponseCode::FormatError)?;
         self.parse_response_payload(&message, current_tick, expected_name, expected_type)
             .ok_or(DnsResponseCode::FormatError)?

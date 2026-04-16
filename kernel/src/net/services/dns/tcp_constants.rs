@@ -175,7 +175,7 @@ pub fn build_tcp_query_payload(
 
 /// Parse a DNS response received over TCP (global API)
 pub fn parse_tcp_response_payload(
-    payload: &kernel_api::resource::net::PacketPayload,
+    payload: kernel_api::resource::net::PacketPayload,
     current_tick: u64,
     expected_name: &str,
     expected_type: DnsQueryType,

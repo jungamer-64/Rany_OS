@@ -58,7 +58,7 @@ impl NetworkStack {
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
                 let Some(icmp_payload) = crate::net::payload::retain_payload_window_owned(
-                    original_packet.clone(),
+                    original_packet,
                     offset,
                     payload.len(),
                 )
@@ -79,7 +79,7 @@ impl NetworkStack {
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
                 let Some(igmp_payload) = crate::net::payload::retain_payload_window_owned(
-                    original_packet.clone(),
+                    original_packet,
                     offset,
                     payload.len(),
                 )
@@ -212,7 +212,7 @@ impl NetworkStack {
                 data_len,
             } => {
                 let Some(echo_data) =
-                    crate::net::payload::retain_payload_window_owned(payload.clone(), data_offset, data_len)
+                    crate::net::payload::PayloadSpanRef::from_range(payload, data_offset, data_len)
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -221,7 +221,7 @@ impl NetworkStack {
                     src_ip,
                     identifier,
                     sequence,
-                    &echo_data,
+                    echo_data,
                     current_time,
                 );
             }
@@ -377,7 +377,7 @@ impl NetworkStack {
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
                 let Some(icmpv6_payload) = crate::net::payload::retain_payload_window_owned(
-                    original_packet.clone(),
+                    original_packet,
                     data_offset,
                     payload_len,
                 )
@@ -414,7 +414,7 @@ impl NetworkStack {
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
                 let Some(tcp_segment_payload) = crate::net::payload::retain_payload_window_owned(
-                    original_packet.clone(),
+                    original_packet,
                     offset,
                     payload_len,
                 )
@@ -426,7 +426,7 @@ impl NetworkStack {
                     if_id,
                     src,
                     dst,
-                    &tcp_segment_payload,
+                    tcp_segment_payload,
                 );
             }
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {

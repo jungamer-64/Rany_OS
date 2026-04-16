@@ -1006,11 +1006,11 @@ impl DhcpV6Client {
                 }
                 24 => {
                     let Some(domain_data) =
-                        PayloadSpan::from_owned_range(payload.clone(), off, len)
+                        crate::net::payload::PayloadSpanRef::from_range(payload, off, len)
                     else {
                         return Err("packet too small");
                     };
-                    Self::parse_domain_search_list_span(&domain_data, &mut domain_search);
+                    Self::parse_domain_search_list_ref(domain_data, &mut domain_search);
                 }
                 _ => {}
             }
@@ -1075,7 +1075,7 @@ impl DhcpV6Client {
             if code == 1 {
                 // Client Identifier (Option 1)
                 if off + len <= view.total_len() {
-                    let Some(duid) = PayloadSpan::from_owned_range(payload.clone(), off, len)
+                    let Some(duid) = crate::net::payload::PayloadSpanRef::from_range(payload, off, len)
                     else {
                         return false;
                     };
@@ -1239,11 +1239,15 @@ impl DhcpV6Client {
         }
     }
 
-    fn parse_domain_search_list_span(
-        domain_data: &PayloadSpan,
+    fn parse_domain_search_list_ref(
+        domain_data: crate::net::payload::PayloadSpanRef<'_>,
         domain_search: &mut Vec<crate::net::services::dns::DnsNameOwned>,
     ) {
-        let Some(domain_payload) = domain_data.clone().into_payload() else {
+        let Some(domain_payload) = crate::net::payload::retain_payload_window_owned(
+            domain_data.payload().clone(),
+            domain_data.offset(),
+            domain_data.total_len(),
+        ) else {
             return;
         };
         let view = crate::net::payload::PacketPayloadView::new(&domain_payload);

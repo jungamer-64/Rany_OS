@@ -130,6 +130,17 @@ impl<'a> IcmpEchoBuilder<'a> {
         copied
     }
 
+    pub fn write_payload_span_ref(
+        &mut self,
+        span: crate::net::payload::PayloadSpanRef<'_>,
+    ) -> usize {
+        let max = self.buffer.len() - IcmpEchoHeader::SIZE;
+        let len = span.total_len().min(max);
+        let copied = span.copy_into(&mut self.buffer[IcmpEchoHeader::SIZE..IcmpEchoHeader::SIZE + len]);
+        self.data_len = copied;
+        copied
+    }
+
     /// Finalize the packet
     pub fn finalize(&mut self) -> usize {
         let total_len = IcmpEchoHeader::SIZE + self.data_len;

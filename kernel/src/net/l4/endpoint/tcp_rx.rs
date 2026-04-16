@@ -346,8 +346,8 @@ struct TcpOptionsScratch {
 }
 
 impl TcpOptionsScratch {
-    fn parse(segment: &PacketPayload) -> Option<(ParsedTcpHeader, Self, PacketPayload)> {
-        let view = PacketPayloadView::new(segment);
+    fn parse(segment: PacketPayload) -> Option<(ParsedTcpHeader, Self, PacketPayload)> {
+        let view = PacketPayloadView::new(&segment);
         let header = view.read_array::<20>(0)?;
         let data_off_flags = u16::from_be_bytes([header[12], header[13]]);
         let data_offset = ((data_off_flags >> 12) & 0x0F) as usize * 4;
@@ -366,7 +366,8 @@ impl TcpOptionsScratch {
         }
 
         let payload_len = view.total_len().saturating_sub(data_offset);
-        let payload = crate::net::payload::retain_payload_window_owned(segment.clone(), data_offset, payload_len)?;
+        let payload =
+            crate::net::payload::retain_payload_window_owned(segment, data_offset, payload_len)?;
 
         Some((
             ParsedTcpHeader {
@@ -405,6 +406,7 @@ fn process_parsed_tcp_segment(
             entry.update_peer_window(header.window);
         });
 
+        let mut data_payload = data_payload;
         let payload_len = data_payload.total_len();
         let mut seg_len = payload_len;
         if (header.flags & tcp_flags::SYN) != 0 {
@@ -422,24 +424,20 @@ fn process_parsed_tcp_segment(
         }
 
         let base_flags = header.flags & !(tcp_flags::CWR | tcp_flags::ECE);
-        if tcb.state == TcpConnectionState::Established
+        let can_try_fast_path = tcb.state == TcpConnectionState::Established
             && header.seq_num == tcb.rcv_nxt
-            && base_flags == tcp_flags::ACK
             && payload_len > 0
-            && try_fast_path(&tcb, header.ack_num, options, &data_payload)
-        {
-            FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-
-        if tcb.state == TcpConnectionState::Established
-            && header.seq_num == tcb.rcv_nxt
-            && base_flags == (tcp_flags::ACK | tcp_flags::PSH)
-            && payload_len > 0
-            && try_fast_path(&tcb, header.ack_num, options, &data_payload)
-        {
-            FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
-            return;
+            && (base_flags == tcp_flags::ACK || base_flags == (tcp_flags::ACK | tcp_flags::PSH));
+        if can_try_fast_path {
+            match try_fast_path(&tcb, header.ack_num, options, data_payload) {
+                Ok(()) => {
+                    FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+                Err(payload) => {
+                    data_payload = payload;
+                }
+            }
         }
 
         SLOW_PATH_HITS.fetch_add(1, Ordering::Relaxed);
@@ -529,21 +527,21 @@ fn try_fast_path(
     tcb: &TcpControlBlockEntry,
     ack_num: u32,
     options: &[u8],
-    data_payload: &PacketPayload,
-) -> bool {
+    data_payload: PacketPayload,
+) -> Result<(), PacketPayload> {
     let payload_len = data_payload.total_len();
     if payload_len == 0 {
-        return false;
+        return Err(data_payload);
     }
 
     let ack_diff_una = ack_num.wrapping_sub(tcb.snd_una) as i32;
     let ack_diff_nxt = tcb.snd_nxt.wrapping_sub(ack_num) as i32;
     if ack_diff_una < 0 || ack_diff_nxt < 0 {
-        return false;
+        return Err(data_payload);
     }
 
     if ooo_queue::has_ooo_segments(tcb.local, tcb.remote) {
-        return false;
+        return Err(data_payload);
     }
 
     let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
@@ -556,18 +554,23 @@ fn try_fast_path(
         retransmit_queue_ack(tcb.local, tcb.remote, ack_num);
     }
 
-    let mut pushed = 0usize;
     if let Some(socket) = get_socket_by_fd(tcb.fd) {
-        let Some(payload) =
-            crate::net::payload::retain_payload_window_owned(data_payload.clone(), 0, payload_len)
-        else {
-            return false;
+        let can_accept = {
+            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            inner
+                .recv_buffer_limit
+                .saturating_sub(inner.recv_payload_bytes())
+                >= payload_len
         };
-        pushed = socket.push_payload(payload);
-    }
-
-    if pushed < payload_len {
-        return false;
+        if !can_accept {
+            return Err(data_payload);
+        }
+        let pushed = socket.push_payload(data_payload);
+        if pushed < payload_len {
+            return Err(PacketPayload::default());
+        }
+    } else {
+        return Err(data_payload);
     }
 
     tcb_table().update(tcb.local, tcb.remote, |entry| {
@@ -598,25 +601,25 @@ fn try_fast_path(
         });
     }
 
-    true
+    Ok(())
 }
 
 pub fn process_tcp_segment_v6_payload_on(
     if_id: Option<NetIfId>,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    segment: &PacketPayload,
+    segment: PacketPayload,
 ) {
-    let Some((header, options, data_payload)) = TcpOptionsScratch::parse(segment) else {
-        return;
-    };
-
     if !crate::net::runtime::bridge::rx_csum_hw_verified()
-        && !verify_tcp_checksum_v6(segment, src_ip, dst_ip)
+        && !verify_tcp_checksum_v6(&segment, src_ip, dst_ip)
     {
         log::warn!("[TCP] IPv6 Checksum verification failed, dropping segment");
         return;
     }
+
+    let Some((header, options, data_payload)) = TcpOptionsScratch::parse(segment) else {
+        return;
+    };
 
     let remote = EndpointAddr::new_v6(src_ip.octets(), header.src_port);
     let local = EndpointAddr::new_v6(dst_ip.octets(), header.dst_port);
@@ -635,18 +638,18 @@ pub fn process_tcp_segment_payload_on(
     if_id: Option<NetIfId>,
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
-    segment: &PacketPayload,
+    segment: PacketPayload,
 ) {
-    let Some((header, options, data_payload)) = TcpOptionsScratch::parse(segment) else {
-        return;
-    };
-
     if !crate::net::runtime::bridge::rx_csum_hw_verified()
-        && !verify_tcp_checksum(segment, src_ip, dst_ip)
+        && !verify_tcp_checksum(&segment, src_ip, dst_ip)
     {
         log::warn!("[TCP] Checksum verification failed, dropping segment");
         return;
     }
+
+    let Some((header, options, data_payload)) = TcpOptionsScratch::parse(segment) else {
+        return;
+    };
 
     let remote = EndpointAddr::new(src_ip, header.src_port);
     let local = EndpointAddr::new(dst_ip, header.dst_port);

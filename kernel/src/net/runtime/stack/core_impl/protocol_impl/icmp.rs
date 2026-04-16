@@ -15,7 +15,7 @@ impl NetworkStack {
         dst_ip: Ipv4Address,
         identifier: u16,
         sequence: u16,
-        echo_data: &kernel_api::resource::net::PacketPayload,
+        echo_data: crate::net::payload::PayloadSpanRef<'_>,
         current_time: u64,
     ) -> bool {
         if !self.icmp.check_rate_limit(dst_ip, current_time) {
@@ -45,11 +45,10 @@ impl NetworkStack {
             }
         };
 
-        let echo_view = crate::net::payload::PacketPayloadView::new(echo_data);
         let total_len = EthernetHeader::SIZE
             + 20
             + crate::net::l3::icmp::IcmpEchoHeader::SIZE
-            + echo_view.total_len();
+            + echo_data.total_len();
         let mut packet = match self.alloc_ethernet_frame_packet(total_len) {
             Some(packet) => packet,
             None => return false,
@@ -74,7 +73,7 @@ impl NetworkStack {
                 if let Some(mut icmp_builder) = crate::net::l3::icmp::IcmpEchoBuilder::new(ip_payload)
                 {
                     icmp_builder.build_reply(identifier, sequence);
-                    icmp_builder.write_payload_view(&echo_view);
+                    icmp_builder.write_payload_span_ref(echo_data);
                     let icmp_len = icmp_builder.finalize();
                     ip_packet.finalize(icmp_len);
                     let ip_len = ip_packet.total_len();
