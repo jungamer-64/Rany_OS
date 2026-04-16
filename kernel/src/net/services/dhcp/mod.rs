@@ -534,7 +534,7 @@ async fn dhcp_v6_dispatcher_task(runtime: NetRuntimeHandle) {
                     find_runtime_for_v6_payload_in(runtime, &packet).map(|interface_runtime| {
                         let handled = interface_runtime.v6.handle_packet_payload(
                             Some(interface_runtime.if_id),
-                            &packet,
+                            packet,
                             src_v6,
                         );
                         (interface_runtime, handled)

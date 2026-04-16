@@ -170,92 +170,71 @@ impl NetworkStack {
     pub fn process_udp_payload(
         &mut self,
         if_id: Option<crate::net::runtime::manager::NetIfId>,
-        payload: PacketPayload,
+        original_packet: PacketPayload,
+        udp_offset: usize,
+        udp_len: usize,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         ttl: u8,
-        original_packet: &PacketPayload,
         current_time: u64,
     ) {
-        let result = self
-            .udp
-            .process_payload_on(if_id, payload, src_ip, dst_ip, ttl);
-
-        match result {
-            UdpResult::Delivered => {}
-            UdpResult::NoEndpoint => {
+        match self.udp.process_window_on(
+            if_id,
+            original_packet,
+            udp_offset,
+            udp_len,
+            src_ip,
+            dst_ip,
+            ttl,
+        ) {
+            Ok(()) => {}
+            Err((UdpResult::NoEndpoint, original_packet)) => {
                 self.stats.record_dropped();
                 if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
                     self.send_icmp_error_payload(
                         src_ip,
                         DestUnreachCode::PortUnreachable,
                         None,
-                        original_packet,
+                        &original_packet,
                         current_time,
                     );
                 }
             }
-            UdpResult::ChecksumError | UdpResult::Invalid => {
+            Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
                 self.stats.record_rx_error();
             }
+            Err((UdpResult::Delivered, _)) => unreachable!(),
         }
     }
 
     pub(crate) fn process_udp_payload_v6(
         &mut self,
         if_id: Option<crate::net::runtime::manager::NetIfId>,
-        payload: PacketPayload,
+        original_packet: PacketPayload,
+        udp_offset: usize,
+        udp_len: usize,
         src: crate::net::l3::ipv6::Ipv6Address,
         dst: crate::net::l3::ipv6::Ipv6Address,
         hop_limit: u8,
-        original_packet: &PacketPayload,
     ) {
-        use crate::net::l4::udp::UdpResult;
-
-        let view = crate::net::payload::PacketPayloadView::new(&payload);
-        if let Some(header) = view.read_array::<4>(0) {
-            let src_port = u16::from_be_bytes([header[0], header[1]]);
-            let dst_port = u16::from_be_bytes([header[2], header[3]]);
-            let remote =
-                crate::net::l4::endpoint::types::EndpointAddr::new_v6(src.octets(), src_port);
-            let ingress_if_id = self.resolve_ingress_if(if_id);
-
-            if let Some(ref mgr) = *crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-            {
-                if let Some(socket) = mgr.find_by_port(
-                    crate::net::l4::endpoint::types::EndpointType::Udp,
-                    crate::net::l4::endpoint::manager::EndpointFamily::Ipv6,
-                    dst_port,
-                    Some(ingress_if_id),
-                ) {
-                    let data_len = view.total_len().saturating_sub(8);
-                    if let Some(payload) =
-                        crate::net::payload::retain_payload_window_owned(payload, 8, data_len)
-                    {
-                        let _ =
-                            socket.deliver_udp_payload(ingress_if_id, remote, hop_limit, payload);
-                        return;
-                    }
-                    self.stats.record_dropped();
-                    return;
-                }
-            }
-        }
-
-        match self
-            .udp
-            .process_payload_v6_on(if_id, payload, src, dst, hop_limit)
-        {
-            UdpResult::Delivered => {}
-            UdpResult::NoEndpoint => {
+        match self.udp.process_window_v6_on(
+            if_id,
+            original_packet,
+            udp_offset,
+            udp_len,
+            src,
+            dst,
+            hop_limit,
+        ) {
+            Ok(()) => {}
+            Err((UdpResult::NoEndpoint, original_packet)) => {
                 self.stats.record_dropped();
-                self.send_icmpv6_error_payload(src, 4, original_packet);
+                self.send_icmpv6_error_payload(src, 4, &original_packet);
             }
-            UdpResult::ChecksumError | UdpResult::Invalid => {
+            Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
                 self.stats.record_rx_error();
             }
+            Err((UdpResult::Delivered, _)) => unreachable!(),
         }
     }
 }

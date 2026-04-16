@@ -447,22 +447,14 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(udp_segment_payload) = crate::net::payload::retain_payload_window_owned(
-                    original_packet.clone(),
-                    offset,
-                    payload_len,
-                )
-                else {
-                    self.stats.record_rx_error();
-                    return;
-                };
                 self.process_udp_payload_v6(
                     if_id,
-                    udp_segment_payload,
+                    original_packet,
+                    offset,
+                    payload_len,
                     src,
                     dst,
                     hop_limit,
-                    &original_packet,
                 );
             }
             Ipv6ProcessResult::Reassembled(payload) => {

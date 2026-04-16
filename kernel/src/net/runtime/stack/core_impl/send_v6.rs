@@ -132,16 +132,18 @@ impl NetworkStack {
         }
 
         let identification = Self::next_ipv6_fragment_identification();
+        let total_payload_len = payload_view.total_len();
+        let mut remaining_payload = payload;
         let mut offset = 0usize;
 
-        while offset < payload_view.total_len() {
-            let remaining = payload_view.total_len() - offset;
+        while offset < total_payload_len {
+            let remaining = remaining_payload.total_len();
             let fragment_data_len = if remaining > fragment_payload_limit {
                 non_last_fragment_len.min(remaining)
             } else {
                 remaining
             };
-            let more_fragments = offset + fragment_data_len < payload_view.total_len();
+            let more_fragments = offset + fragment_data_len < total_payload_len;
             if more_fragments && (fragment_data_len % 8 != 0) {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
@@ -189,9 +191,10 @@ impl NetworkStack {
             drop(frame);
             packet.set_len(frame_len);
 
-            let fragment_payload =
-                crate::net::payload::retain_payload_window_owned(payload.clone(), offset, fragment_data_len)
+            let (fragment_payload, next_remaining) =
+                crate::net::payload::split_payload_prefix_owned(remaining_payload, fragment_data_len)
                     .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            remaining_payload = next_remaining;
             let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
             crate::net::payload::append_payload(&mut frame_payload, fragment_payload);
             if !self.transmit_packet_on(if_id, frame_payload) {

@@ -5,10 +5,7 @@
 
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::endpoint::handler::common::{
-    endpoint_error_from_network, resolve_ingress_if_id_in,
-};
-use crate::net::l4::endpoint::manager::EndpointFamily;
+use crate::net::l4::endpoint::handler::common::endpoint_error_from_network;
 
 impl NetworkEventHandler {
     /// UDPパケットの処理
@@ -21,67 +18,30 @@ impl NetworkEventHandler {
         src_port: u16,
         dst_port: u16,
         data_len: usize,
-        udp_segment_payload: Option<PacketPayload>,
         ttl: u8,
         stack: &mut crate::net::runtime::stack::NetworkStack,
         original_packet: PacketPayload,
+        udp_offset: usize,
+        udp_len: usize,
         current_time: u64,
     ) -> EventHandleResult {
         if data_len > u16::MAX as usize {
             return EventHandleResult::Success;
         }
 
-        let remote = EndpointAddr::new(src_ip, src_port);
-        let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-        let Some(udp_segment_payload) = udp_segment_payload else {
-            return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-        };
-
-        let mut found = false;
-        if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
-            if let Some(socket) = mgr.find_by_port(
-                EndpointType::Udp,
-                EndpointFamily::Ipv4,
-                dst_port,
-                Some(ingress_if_id),
-            ) {
-                if let Some(payload) =
-                    crate::net::payload::retain_payload_window_owned(udp_segment_payload, 8, data_len)
-                {
-                    let _ = socket.deliver_udp_payload(ingress_if_id, remote, ttl, payload);
-                } else {
-                    log::warn!(
-                        "[NET] UDP ingress payload allocation failed for {}:{} -> {}:{}",
-                        EndpointAddr::new(src_ip, src_port),
-                        src_port,
-                        EndpointAddr::new(dst_ip, dst_port),
-                        dst_port,
-                    );
-                    return EventHandleResult::Success;
-                }
-                found = true;
-            }
-        }
-
-        if !found {
-            // RFC 1122: Send ICMP Port Unreachable
-            use crate::net::l3::icmp::DestUnreachCode;
-            use crate::net::l3::ipv4::Ipv4Address;
-
-            let src_v4 = Ipv4Address::new(src_ip);
-            let dst_v4 = Ipv4Address::new(dst_ip);
-
-            // Only send if it wasn't broadcast/multicast (RFC 1122)
-            if !dst_v4.is_broadcast() && !dst_v4.is_multicast() {
-                stack.send_icmp_error_payload(
-                    src_v4,
-                    DestUnreachCode::PortUnreachable,
-                    None,
-                    &original_packet,
-                    current_time,
-                );
-            }
-        }
+        let _ = runtime;
+        let _ = src_port;
+        let _ = dst_port;
+        stack.process_udp_payload(
+            if_id,
+            original_packet,
+            udp_offset,
+            udp_len,
+            crate::net::l3::ipv4::Ipv4Address::new(src_ip),
+            crate::net::l3::ipv4::Ipv4Address::new(dst_ip),
+            ttl,
+            current_time,
+        );
 
         EventHandleResult::Success
     }

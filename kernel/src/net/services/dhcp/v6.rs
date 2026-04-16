@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::net::l3::ipv6::Ipv6Address;
-use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
+use crate::net::payload::PacketPayloadBuilder;
 use crate::task::{self, TimeoutResult};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -64,7 +64,7 @@ pub struct DhcpV6Client {
     iaid: u32,
     lease: PoisonLock<Option<DhcpV6Lease>>,
     /// Last-seen server DUID (Server Identifier option)
-    server_duid: PoisonLock<Option<PayloadSpan>>,
+    server_duid: PoisonLock<Option<kernel_api::resource::net::PacketPayload>>,
     /// Last-seen server IPv6 source address (used for unicast Renew)
     server_addr: PoisonLock<Option<Ipv6Address>>,
     state_time: AtomicU64,
@@ -153,22 +153,23 @@ impl DhcpV6Client {
         duid
     }
 
-    fn append_option_span(
+    fn append_option_payload(
         buf: &mut [u8],
         offset: &mut usize,
         code: u16,
-        span: &PayloadSpan,
+        payload: &kernel_api::resource::net::PacketPayload,
     ) -> Result<(), &'static str> {
-        if *offset + 4 + span.total_len() > buf.len() {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        if *offset + 4 + view.total_len() > buf.len() {
             return Err("Buffer overflow during option writing");
         }
         buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
-        buf[*offset + 2..*offset + 4].copy_from_slice(&(span.total_len() as u16).to_be_bytes());
-        if span.copy_into(&mut buf[*offset + 4..*offset + 4 + span.total_len()]) != span.total_len()
+        buf[*offset + 2..*offset + 4].copy_from_slice(&(view.total_len() as u16).to_be_bytes());
+        if view.copy_range(0, &mut buf[*offset + 4..*offset + 4 + view.total_len()]) != view.total_len()
         {
             return Err("Buffer overflow during option writing");
         }
-        *offset += 4 + span.total_len();
+        *offset += 4 + view.total_len();
         Ok(())
     }
 
@@ -230,7 +231,7 @@ impl DhcpV6Client {
                         }
                     };
 
-                    let handled = self.handle_packet_payload(None, &packet, src_v6);
+                    let handled = self.handle_packet_payload(None, packet, src_v6);
                     if handled {
                         log::info!("[NET] DHCPv6 packet handled from {}", src_v6);
                     }
@@ -437,7 +438,7 @@ impl DhcpV6Client {
         // Server Identifier (option 2) if we have a DUID
         if let Ok(g) = self.server_duid.lock() {
             if let Some(ref duid) = *g {
-                Self::append_option_span(buf, &mut off, 2, duid)?;
+                Self::append_option_payload(buf, &mut off, 2, duid)?;
             }
         }
 
@@ -493,7 +494,7 @@ impl DhcpV6Client {
         // Server Identifier (option 2) — RFC 8415 requires this for Renew
         if let Ok(g) = self.server_duid.lock() {
             if let Some(ref duid) = *g {
-                Self::append_option_span(buf, &mut off, 2, duid)?;
+                Self::append_option_payload(buf, &mut off, 2, duid)?;
             }
         }
 
@@ -623,7 +624,7 @@ impl DhcpV6Client {
         // Server Identifier (option 2) — RFC 8415 requires this for Release
         if let Ok(g) = self.server_duid.lock() {
             if let Some(ref duid) = *g {
-                Self::append_option_span(buf, &mut off, 2, duid)?;
+                Self::append_option_payload(buf, &mut off, 2, duid)?;
             }
         }
 
@@ -886,10 +887,10 @@ impl DhcpV6Client {
 
     pub fn parse_reply_payload(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         current_time: u64,
     ) -> Result<Option<DhcpV6ReplyOutcome>, &'static str> {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let view = crate::net::payload::PacketPayloadView::new(&payload);
         if view.total_len() < 4 {
             return Err("packet too small");
         }
@@ -919,6 +920,7 @@ impl DhcpV6Client {
         let mut dns_servers: Vec<Ipv6Address> = Vec::new();
         let mut domain_search: Vec<crate::net::services::dns::DnsNameOwned> = Vec::new();
         let mut status_code: Option<u16> = None;
+        let mut server_duid_range = None;
 
         while off + 4 <= view.total_len() {
             let code = u16::from_be_bytes(view.read_array::<2>(off).ok_or("packet too small")?);
@@ -932,9 +934,7 @@ impl DhcpV6Client {
             match code {
                 2 => {
                     if len > 0 {
-                        if let Ok(mut g) = self.server_duid.lock() {
-                            *g = PayloadSpan::from_owned_range(payload.clone(), off, len);
-                        }
+                        server_duid_range = Some((off, len));
                     }
                 }
                 3 => {
@@ -1006,7 +1006,7 @@ impl DhcpV6Client {
                 }
                 24 => {
                     let Some(domain_data) =
-                        crate::net::payload::PayloadSpanRef::from_range(payload, off, len)
+                        crate::net::payload::PayloadSpanRef::from_range(&payload, off, len)
                     else {
                         return Err("packet too small");
                     };
@@ -1016,6 +1016,17 @@ impl DhcpV6Client {
             }
 
             off += len;
+        }
+
+        if let Some((server_duid_offset, server_duid_len)) = server_duid_range {
+            let retained_server_duid = crate::net::payload::retain_payload_window_owned(
+                payload,
+                server_duid_offset,
+                server_duid_len,
+            );
+            if let Ok(mut g) = self.server_duid.lock() {
+                *g = retained_server_duid;
+            }
         }
 
         if let Some(sc) = status_code {
@@ -1171,16 +1182,15 @@ impl DhcpV6Client {
     pub fn handle_packet_payload(
         &self,
         if_id: Option<NetIfId>,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         src: Ipv6Address,
     ) -> bool {
         let now = crate::net::l4::endpoint::tcb_table().get_current_tick();
-        let msg_type = crate::net::payload::PacketPayloadView::new(payload)
+        let msg_type = crate::net::payload::PacketPayloadView::new(&payload)
             .read_array::<1>(0)
             .map(|bytes| bytes[0])
             .unwrap_or(0);
-
-        let _ = self.parse_reply_payload(payload, now);
+        let parsed_reply = self.parse_reply_payload(payload, now);
 
         if msg_type == (DhcpV6MessageType::Advertise as u8) {
             if let Ok(mut st) = self.state.lock() {
@@ -1213,7 +1223,7 @@ impl DhcpV6Client {
             return false;
         }
 
-        if let Ok(Some(outcome)) = self.parse_reply_payload(payload, now) {
+        if let Ok(Some(outcome)) = parsed_reply {
             if let Ok(mut sd) = self.server_addr.lock() {
                 *sd = Some(src);
             }
@@ -1772,7 +1782,11 @@ pub(crate) mod tests {
         }
         // server_duid recorded
         if let Ok(g) = client.server_duid.lock() {
-            assert_eq!(g.as_ref().unwrap().as_slice(), &server_duid);
+            let stored = g.as_ref().unwrap();
+            let view = crate::net::payload::PacketPayloadView::new(stored);
+            let mut actual = alloc::vec![0u8; view.total_len()];
+            assert_eq!(view.copy_all_into(&mut actual), server_duid.len());
+            assert_eq!(actual.as_slice(), &server_duid);
         } else {
             panic!("server_duid lock poisoned");
         }
@@ -1808,7 +1822,11 @@ pub(crate) mod tests {
             assert_eq!(g.as_ref().unwrap(), &src_ip);
         }
         if let Ok(g) = client.server_duid.lock() {
-            assert_eq!(g.as_ref().unwrap().as_slice(), &server_duid);
+            let stored = g.as_ref().unwrap();
+            let view = crate::net::payload::PacketPayloadView::new(stored);
+            let mut actual = alloc::vec![0u8; view.total_len()];
+            assert_eq!(view.copy_all_into(&mut actual), server_duid.len());
+            assert_eq!(actual.as_slice(), &server_duid);
         }
     }
 
@@ -1971,7 +1989,9 @@ pub(crate) mod tests {
         };
         // Set server DUID
         if let Ok(mut g) = client.server_duid.lock() {
-            *g = Some(alloc::vec![0x01, 0x02, 0x03, 0x04]);
+            let mut builder = PacketPayloadBuilder::new();
+            let _ = builder.push_bytes(&[0x01, 0x02, 0x03, 0x04]);
+            *g = Some(builder.build());
         }
         client.xid.store(0x123456, Ordering::SeqCst);
         let mut buf = [0u8; 512];
@@ -2039,7 +2059,9 @@ pub(crate) mod tests {
             domain_search: Vec::new(),
         };
         if let Ok(mut g) = client.server_duid.lock() {
-            *g = Some(alloc::vec![0xAA, 0xBB]);
+            let mut builder = PacketPayloadBuilder::new();
+            let _ = builder.push_bytes(&[0xAA, 0xBB]);
+            *g = Some(builder.build());
         }
         client.xid.store(0x654321, Ordering::SeqCst);
         let mut buf = [0u8; 512];
@@ -2069,7 +2091,9 @@ pub(crate) mod tests {
             *st = DhcpV6State::Bound;
         }
         if let Ok(mut sg) = client.server_duid.lock() {
-            *sg = Some(alloc::vec![0x01]);
+            let mut builder = PacketPayloadBuilder::new();
+            let _ = builder.push_bytes(&[0x01]);
+            *sg = Some(builder.build());
         }
         if let Ok(mut ag) = client.server_addr.lock() {
             *ag = Some(Ipv6Address::new([

@@ -102,6 +102,28 @@ impl<'a> PayloadSpanRef<'a> {
         PacketPayloadView::new(self.payload).copy_range(self.offset, &mut dst[..len])
     }
 
+    pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
+        let span_start = self.offset;
+        let span_end = self.offset.saturating_add(self.len);
+        let mut cursor = 0usize;
+
+        PacketPayloadView::new(self.payload).for_each_chunk(|chunk| {
+            let chunk_start = cursor;
+            let chunk_end = cursor.saturating_add(chunk.len());
+            cursor = chunk_end;
+
+            if chunk_end <= span_start || chunk_start >= span_end {
+                return;
+            }
+
+            let local_start = span_start.saturating_sub(chunk_start);
+            let local_end = chunk.len().min(span_end.saturating_sub(chunk_start));
+            if local_start < local_end {
+                f(&chunk[local_start..local_end]);
+            }
+        });
+    }
+
     pub fn eq_bytes(&self, bytes: &[u8]) -> bool {
         if self.len != bytes.len() {
             return false;

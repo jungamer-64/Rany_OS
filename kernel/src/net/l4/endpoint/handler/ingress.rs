@@ -294,23 +294,16 @@ impl NetworkEventHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    if let Some(transport_payload) =
-                        crate::net::payload::retain_payload_window_owned(
-                            payload.clone(),
-                            header_len,
-                            transport_len,
-                        )
-                    {
-                        stack.process_udp_payload(
-                            if_id,
-                            transport_payload,
-                            src_ip,
-                            dst_ip,
-                            ttl,
-                            &payload,
-                            current_time,
-                        );
-                    }
+                    stack.process_udp_payload(
+                        if_id,
+                        payload,
+                        header_len,
+                        transport_len,
+                        src_ip,
+                        dst_ip,
+                        ttl,
+                        current_time,
+                    );
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmp => {
                     if let Some(transport_payload) =
@@ -426,22 +419,15 @@ impl NetworkEventHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    if let Some(transport_payload) =
-                        crate::net::payload::retain_payload_window_owned(
-                            payload.clone(),
-                            payload_offset,
-                            transport_len,
-                        )
-                    {
-                        stack.process_udp_payload_v6(
-                            if_id,
-                            transport_payload,
-                            src,
-                            dst,
-                            hop_limit,
-                            &payload,
-                        );
-                    }
+                    stack.process_udp_payload_v6(
+                        if_id,
+                        payload,
+                        payload_offset,
+                        transport_len,
+                        src,
+                        dst,
+                        hop_limit,
+                    );
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
                     if let Some(transport_payload) =
@@ -625,8 +611,6 @@ impl NetworkEventHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let udp_segment_payload =
-                    crate::net::payload::retain_payload_window_owned(original_packet.clone(), offset, data_len + 8);
                 self.handle_udp_ingress_with_stack(
                     runtime,
                     if_id,
@@ -635,10 +619,11 @@ impl NetworkEventHandler {
                     src_port,
                     dst_port,
                     data_len,
-                    udp_segment_payload,
                     ttl,
                     stack,
                     original_packet,
+                    offset,
+                    data_len + 8,
                     current_time,
                 );
             }
