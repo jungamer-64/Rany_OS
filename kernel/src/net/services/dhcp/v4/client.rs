@@ -1,7 +1,15 @@
-use super::*;
+use super::{
+    DhcpClient, DhcpHeader, DhcpLease, DhcpMessageType, DhcpOperation, DhcpOption,
+    DhcpResponseResult, DhcpState, ParsedOptions, DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE,
+    DHCP_MAX_MESSAGE_SIZE,
+};
+use crate::net::l2::ethernet::MacAddress;
+use crate::net::l3::ipv4::Ipv4Address;
+use crate::sync::PoisonLock;
 use crate::task::{self, TimeoutResult};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-mod offer_handling;
 impl DhcpClient {
     /// 最大再試行回数
     pub const MAX_RETRIES: u32 = 4;
@@ -211,7 +219,7 @@ impl DhcpClient {
     }
 
     /// INFORM / REQUEST 共通で利用する、現在有効なリースを取得する
-    fn get_active_lease(&self) -> Result<DhcpLease, &'static str> {
+    pub(super) fn get_active_lease(&self) -> Result<DhcpLease, &'static str> {
         self.with_lease(|g| g.cloned().ok_or("No active lease available"))
     }
 

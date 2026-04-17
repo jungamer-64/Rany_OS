@@ -1,77 +1,12 @@
 use super::*;
-
+use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::payload::PacketPayloadBuilder;
+use crate::net::runtime::manager::NetIfId;
+use crate::sync::PoisonLock;
 use crate::task::{self, TimeoutResult};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-
-/// DHCPv6 クライアントポート / サーバーポート
-pub const DHCPV6_CLIENT_PORT: u16 = 546;
-pub const DHCPV6_SERVER_PORT: u16 = 547;
-
-/// DHCPv6 メッセージタイプ（RFC 8415 準拠）
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DhcpV6MessageType {
-    Solicit = 1,
-    Advertise = 2,
-    Request = 3,
-    Confirm = 4,
-    Renew = 5,
-    Rebind = 6,
-    Reply = 7,
-    Release = 8,
-    Decline = 9,
-    InformationRequest = 11,
-}
-
-/// IA_NA による割当情報
-#[derive(Debug, Clone)]
-pub struct DhcpV6Lease {
-    pub addr: Ipv6Address,
-    pub preferred_lifetime: u32,
-    pub valid_lifetime: u32,
-    pub t1: u32,
-    pub t2: u32,
-    pub obtained_at: u64,
-}
-
-#[derive(Debug)]
-pub struct DhcpV6ReplyOutcome {
-    pub lease: DhcpV6Lease,
-    pub applied: crate::net::services::dhcp::DhcpV6AppliedConfig,
-}
-
-/// DHCPv6 クライアント状態（簡易）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DhcpV6State {
-    Init,
-    SolicitSent,
-    Requesting,
-    Bound,
-    Renewing,
-    Rebinding,
-}
-
-/// シンプルな DHCPv6 クライアント実装（IA_NA サポート）
-pub struct DhcpV6Client {
-    runtime: crate::net::runtime::NetRuntimeHandle,
-    mac: crate::net::l2::ethernet::MacAddress,
-    duid: [u8; 10],
-    state: PoisonLock<DhcpV6State>,
-    xid: AtomicU32, // 24-bit トランザクションIDを格納
-    iaid: u32,
-    lease: PoisonLock<Option<DhcpV6Lease>>,
-    /// Last-seen server DUID (Server Identifier option)
-    server_duid: PoisonLock<Option<kernel_api::resource::net::PacketPayload>>,
-    /// Last-seen server IPv6 source address (used for unicast Renew)
-    server_addr: PoisonLock<Option<Ipv6Address>>,
-    state_time: AtomicU64,
-    retry_count: AtomicU32,
-    /// キャッシュ済みリンクローカルIPv6アドレス（初回取得後はロックフリー）
-    cached_link_local: PoisonLock<Option<Ipv6Address>>,
-}
 
 impl DhcpV6Client {
     pub const MAX_RETRIES: u32 = 4;
