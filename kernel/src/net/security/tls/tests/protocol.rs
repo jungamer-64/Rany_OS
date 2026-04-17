@@ -1,82 +1,27 @@
 use super::super::credentials::base64_decode_payload;
-use super::super::crypto::legacy::compute_tls_mac_into;
-use super::super::protocol::ContentType;
 use super::super::{CipherSuite, TlsConfig, TlsVersion};
-use alloc::vec::Vec;
 
-fn compute_tls_mac(
-    mac_key: &[u8],
-    seq_num: u64,
-    content_type: u8,
-    version: TlsVersion,
-    fragment: &[u8],
-    use_sha1: bool,
-) -> Vec<u8> {
-    let (mac, len) = compute_tls_mac_into(mac_key, seq_num, content_type, version, fragment, use_sha1);
-    mac[..len].to_vec()
-}
-
+/// CipherSuite helper methods
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls_mac_sha1() {
-    let key = [0x0Au8; 20];
-    let mac = compute_tls_mac(
-        &key,
-        0,
-        ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_0,
-        b"hello",
-        true,
-    );
-    assert_eq!(mac.len(), 20);
+pub(crate) fn test_cipher_suite_helpers() {
+    assert!(CipherSuite::TLS_CHACHA20_POLY1305_SHA256.is_chacha20_poly1305());
+    assert!(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256.is_chacha20_poly1305());
+    assert!(CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256.is_chacha20_poly1305());
+    assert!(!CipherSuite::TLS_AES_128_GCM_SHA256.is_chacha20_poly1305());
 
-    let mac2 = compute_tls_mac(
-        &key,
-        0,
-        ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_0,
-        b"hello",
-        true,
-    );
-    assert_eq!(mac, mac2);
-}
+    assert!(CipherSuite::TLS_AES_128_GCM_SHA256.is_aes_gcm());
+    assert!(CipherSuite::TLS_AES_256_GCM_SHA384.is_aes_gcm());
+    assert!(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256.is_aes_gcm());
+    assert!(!CipherSuite::TLS_CHACHA20_POLY1305_SHA256.is_aes_gcm());
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls_mac_sha256() {
-    let key = [0x0Bu8; 32];
-    let mac = compute_tls_mac(
-        &key,
-        0,
-        ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_2,
-        b"hello",
-        false,
-    );
-    assert_eq!(mac.len(), 32);
-}
+    assert_eq!(CipherSuite::TLS_AES_128_GCM_SHA256.key_len(), 16);
+    assert_eq!(CipherSuite::TLS_AES_256_GCM_SHA384.key_len(), 32);
+    assert_eq!(CipherSuite::TLS_CHACHA20_POLY1305_SHA256.key_len(), 32);
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls_mac_seq_affects_output() {
-    let key = [0x0Au8; 20];
-    let mac1 = compute_tls_mac(
-        &key,
-        0,
-        ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_0,
-        b"hello",
-        true,
-    );
-    let mac2 = compute_tls_mac(
-        &key,
-        1,
-        ContentType::ApplicationData as u8,
-        TlsVersion::TLS_1_0,
-        b"hello",
-        true,
-    );
-    assert_ne!(mac1, mac2);
+    assert_eq!(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256.iv_len(), 4);
+    assert_eq!(CipherSuite::TLS_AES_128_GCM_SHA256.iv_len(), 12);
+    assert_eq!(CipherSuite::TLS_CHACHA20_POLY1305_SHA256.iv_len(), 12);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -136,6 +81,15 @@ pub(crate) fn test_tls_version() {
     assert_eq!(TlsVersion::TLS_1_3.major(), 3);
     assert_eq!(TlsVersion::TLS_1_3.minor(), 4);
     assert_eq!(TlsVersion::TLS_1_0.minor(), 1);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+pub(crate) fn test_tls_version_ordering() {
+    assert!(TlsVersion::TLS_1_0 < TlsVersion::TLS_1_1);
+    assert!(TlsVersion::TLS_1_1 < TlsVersion::TLS_1_2);
+    assert!(TlsVersion::TLS_1_2 < TlsVersion::TLS_1_3);
+    assert!(TlsVersion::TLS_1_3 >= TlsVersion::TLS_1_3);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

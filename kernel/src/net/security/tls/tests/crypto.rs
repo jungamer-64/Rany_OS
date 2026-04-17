@@ -1,34 +1,25 @@
 use super::super::crypto::{
     derive_key_block, derive_master_secret, hkdf_expand, hkdf_expand_label, hkdf_extract,
-    generate_random, hmac_sha256, tls12_prf, tls13_derive_secret, tls13_derive_traffic_keys,
-    tls13_early_secret, tls13_finished_key, tls13_handshake_secret, tls13_master_secret,
-    tls13_verify_data,
+    generate_random, hmac_sha256, tls10_prf, tls12_prf, tls13_derive_secret,
+    tls13_derive_traffic_keys, tls13_early_secret, tls13_finished_key, tls13_handshake_secret,
+    tls13_master_secret, tls13_verify_data,
 };
-use super::super::crypto::aes_core::{aes_ctr_into, aes_key_expansion};
-use super::super::crypto::aes_gcm::AesGcmKey;
+use super::super::crypto::aes_cbc::{
+    aes_cbc_decrypt_in_place, aes_cbc_encrypt_in_place, tls_add_padding_in_place,
+    tls_verify_padding,
+};
+use super::super::crypto::aes_core::{aes_ctr_into, aes_key_expansion, gf_mul};
+use super::super::crypto::aes_gcm::{gf128_mul, AesGcmKey};
 use super::super::crypto::chacha20::{
     chacha20_block, chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
     chacha20_xor_in_place, poly1305_mac,
 };
-use super::super::protocol::ContentType;
-use super::super::{
-    TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState,
-    tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished,
+use super::super::crypto::legacy::{
+    compute_tls_mac_into, hmac_md5, hmac_sha1, md5_compute, sha1_compute,
 };
+use super::super::protocol::ContentType;
+use super::super::TlsVersion;
 use alloc::vec::Vec;
-
-fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
-    let view = crate::net::payload::PacketPayloadView::new(payload);
-    let mut bytes = TlsBytes::<16384>::new();
-    bytes
-        .set_filled_len(view.total_len())
-        .expect("test payload fits fixed TLS buffer");
-    let copied = view.copy_range(0, bytes.as_mut_slice());
-    bytes
-        .set_filled_len(copied)
-        .expect("copied test payload length stays in bounds");
-    bytes
-}
 
 fn aes_ctr(key: &[u8], nonce: &[u8; 12], data: &[u8]) -> Vec<u8> {
     match aes_ctr_into(key, nonce, data) {
@@ -95,6 +86,49 @@ fn chacha20_poly1305_decrypt(
     chacha20_poly1305_decrypt_in_place(key, nonce, aad, &mut plaintext, tag)
         .ok()?;
     Some(plaintext)
+}
+
+fn aes_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
+    let mut buffer = vec![0u8; plaintext.len() + 16];
+    buffer[..plaintext.len()].copy_from_slice(plaintext);
+    let Some(total_len) = tls_add_padding_in_place(&mut buffer, plaintext.len(), 16) else {
+        return Vec::new();
+    };
+    buffer.truncate(total_len);
+    if aes_cbc_encrypt_in_place(key, iv, &mut buffer).is_none() {
+        return Vec::new();
+    }
+    buffer
+}
+
+fn aes_cbc_decrypt(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> Option<Vec<u8>> {
+    let mut plaintext = ciphertext.to_vec();
+    aes_cbc_decrypt_in_place(key, iv, &mut plaintext)?;
+    let plaintext_len = tls_verify_padding(&plaintext)?;
+    plaintext.truncate(plaintext_len);
+    Some(plaintext)
+}
+
+fn compute_tls_mac(
+    mac_key: &[u8],
+    seq_num: u64,
+    content_type: u8,
+    version: TlsVersion,
+    fragment: &[u8],
+    use_sha1: bool,
+) -> Vec<u8> {
+    let (mac, len) = compute_tls_mac_into(mac_key, seq_num, content_type, version, fragment, use_sha1);
+    mac[..len].to_vec()
+}
+
+fn tls_add_padding(data: &[u8], block_size: usize) -> Vec<u8> {
+    let mut buffer = vec![0u8; data.len() + block_size];
+    buffer[..data.len()].copy_from_slice(data);
+    let Some(total_len) = tls_add_padding_in_place(&mut buffer, data.len(), block_size) else {
+        return Vec::new();
+    };
+    buffer.truncate(total_len);
+    buffer
 }
 // ---------- RFC 8439 shared test vectors ----------
 
@@ -767,72 +801,470 @@ fn test_hkdf_expand_label_different_labels() {
 }
 
 // ========================================================================
-// TLS Connection Integration Tests
+// Legacy MAC / GF / TLS 1.3 Key Schedule Tests
 // ========================================================================
 
-/// TLS connection state machine: initial state
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_tls_connection_initial_state() {
-    let config = TlsConfig::new();
-    let conn = TlsConnection::new(config);
-    assert_eq!(conn.state(), TlsState::Initial);
-    assert!(conn.negotiated_version().is_none());
+fn test_tls_mac_sha1() {
+    let key = [0x0Au8; 20];
+    let mac = compute_tls_mac(
+        &key,
+        0,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_0,
+        b"hello",
+        true,
+    );
+    assert_eq!(mac.len(), 20);
+
+    let mac2 = compute_tls_mac(
+        &key,
+        0,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_0,
+        b"hello",
+        true,
+    );
+    assert_eq!(mac, mac2);
 }
 
-/// TLS connection: build ClientHello
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_tls_connection_client_hello() {
-    let config = TlsConfig::new()
-        .with_server_name("example.com")
-        .expect("test server name fits fixed TLS capacity");
-    let mut conn = TlsConnection::new(config);
-
-    let hello = payload_bytes(&conn.build_client_hello_payload());
-
-    // Should start with TLS record header
-    assert_eq!(hello[0], ContentType::Handshake as u8);
-    // Version should be TLS 1.0 for compatibility
-    assert_eq!(hello[1], 0x03);
-    assert_eq!(hello[2], 0x01);
-
-    // State should advance
-    assert_eq!(conn.state(), TlsState::ClientHelloSent);
+fn test_tls_mac_sha256() {
+    let key = [0x0Bu8; 32];
+    let mac = compute_tls_mac(
+        &key,
+        0,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_2,
+        b"hello",
+        false,
+    );
+    assert_eq!(mac.len(), 32);
 }
 
-/// TLS connection: encrypt fails when not established
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_tls_connection_encrypt_not_established() {
-    let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
-    let result = conn.encrypt(b"hello");
-    assert!(matches!(result, Err(TlsError::NotConnected)));
+fn test_tls_mac_seq_affects_output() {
+    let key = [0x0Au8; 20];
+    let mac1 = compute_tls_mac(
+        &key,
+        0,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_0,
+        b"hello",
+        true,
+    );
+    let mac2 = compute_tls_mac(
+        &key,
+        1,
+        ContentType::ApplicationData as u8,
+        TlsVersion::TLS_1_0,
+        b"hello",
+        true,
+    );
+    assert_ne!(mac1, mac2);
 }
 
-/// TLS handshake parser should handle multiple handshake messages in one record
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_process_handshake_multiple_messages() {
-    let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
-
-    let data = tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished();
-    let result = conn.process_handshake(&data);
-    assert!(result.is_ok());
-    assert_eq!(conn.state(), TlsState::Established);
-    assert_eq!(conn.handshake_transcript_len(), data.len());
+fn test_gf128_mul_zero() {
+    let zero = [0u8; 16];
+    let h = [0x42u8; 16];
+    let result = gf128_mul(&zero, &h);
+    assert_eq!(result, zero);
 }
 
-/// Finished(len=0) is invalid for TLS 1.2 and must be rejected.
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_process_handshake_finished_without_verify_data_rejected() {
-    let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
+fn test_gf_mul_basic() {
+    assert_eq!(gf_mul(0x02, 0x87), 0x15);
+    assert_eq!(gf_mul(0x01, 0x53), 0x53);
+    assert_eq!(gf_mul(0x00, 0x53), 0x00);
+}
 
-    let data = [20u8, 0, 0, 0];
-    let result = conn.process_handshake(&data);
-    assert!(matches!(result, Err(TlsError::DecodeError)));
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_early_secret_no_psk() {
+    let early_secret = tls13_early_secret(None);
+    assert_eq!(early_secret.len(), 32);
+    let early_secret2 = tls13_early_secret(None);
+    assert_eq!(early_secret, early_secret2);
+    assert!(early_secret.iter().any(|&b| b != 0));
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_handshake_secret() {
+    let early_secret = tls13_early_secret(None);
+    let shared_secret = [0x42u8; 32];
+    let hs_secret = tls13_handshake_secret(&early_secret, &shared_secret);
+    assert_eq!(hs_secret.len(), 32);
+    assert!(hs_secret.iter().any(|&b| b != 0));
+
+    let hs_secret2 = tls13_handshake_secret(&early_secret, &[0x43u8; 32]);
+    assert_ne!(hs_secret, hs_secret2);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_master_secret() {
+    let early_secret = tls13_early_secret(None);
+    let hs_secret = tls13_handshake_secret(&early_secret, &[0x42u8; 32]);
+    let master_secret = tls13_master_secret(&hs_secret);
+    assert_eq!(master_secret.len(), 32);
+    assert!(master_secret.iter().any(|&b| b != 0));
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_derive_secret() {
+    let secret = [0x55u8; 32];
+    let transcript = [0xAAu8; 32];
+    let result = tls13_derive_secret(&secret, b"c hs traffic", &transcript);
+    assert_eq!(result.len(), 32);
+    assert!(result.iter().any(|&b| b != 0));
+
+    let result2 = tls13_derive_secret(&secret, b"s hs traffic", &transcript);
+    assert_ne!(result, result2);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_derive_traffic_keys() {
+    let secret = [0x42u8; 32];
+
+    let (key128, iv128) = tls13_derive_traffic_keys(&secret, 16);
+    assert_eq!(key128.len(), 16);
+    assert_eq!(iv128.len(), 12);
+
+    let (key256, iv256) = tls13_derive_traffic_keys(&secret, 32);
+    assert_eq!(key256.len(), 32);
+    assert_eq!(iv256.len(), 12);
+    assert_ne!(key128.as_slice(), &key256[..16]);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_finished_key_and_verify_data() {
+    let base_key = [0x42u8; 32];
+    let finished_key = tls13_finished_key(&base_key);
+    assert_eq!(finished_key.len(), 32);
+    assert!(finished_key.iter().any(|&b| b != 0));
+
+    let transcript = [0xBBu8; 32];
+    let verify_data = tls13_verify_data(&finished_key, &transcript);
+    assert_eq!(verify_data.len(), 32);
+
+    let verify_data2 = tls13_verify_data(&finished_key, &transcript);
+    assert_eq!(verify_data, verify_data2);
+
+    let verify_data3 = tls13_verify_data(&finished_key, &[0xCCu8; 32]);
+    assert_ne!(verify_data, verify_data3);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_full_key_schedule() {
+    let shared_secret = [0x01u8; 32];
+    let early_secret = tls13_early_secret(None);
+    let hs_secret = tls13_handshake_secret(&early_secret, &shared_secret);
+
+    let transcript_ch_sh = [0x02u8; 32];
+    let c_hs_traffic = tls13_derive_secret(&hs_secret, b"c hs traffic", &transcript_ch_sh);
+    let s_hs_traffic = tls13_derive_secret(&hs_secret, b"s hs traffic", &transcript_ch_sh);
+    assert_ne!(c_hs_traffic, s_hs_traffic);
+
+    let (c_key, c_iv) = tls13_derive_traffic_keys(&c_hs_traffic, 16);
+    let (s_key, s_iv) = tls13_derive_traffic_keys(&s_hs_traffic, 16);
+    assert_ne!(c_key, s_key);
+    assert_ne!(c_iv, s_iv);
+
+    let master = tls13_master_secret(&hs_secret);
+    let transcript_sf = [0x03u8; 32];
+    let c_app_traffic = tls13_derive_secret(&master, b"c ap traffic", &transcript_sf);
+    let s_app_traffic = tls13_derive_secret(&master, b"s ap traffic", &transcript_sf);
+    assert_ne!(c_app_traffic, s_app_traffic);
+    assert_ne!(c_app_traffic, c_hs_traffic);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_hkdf_expand_label_rfc8446() {
+    let secret = [0x33u8; 32];
+    let result1 = hkdf_expand_label(&secret, b"key", b"", 16);
+    let result2 = hkdf_expand_label(&secret, b"key", b"", 16);
+    assert_eq!(result1, result2);
+    assert_eq!(result1.len(), 16);
+
+    let result3 = hkdf_expand_label(&secret, b"key", &[0x42u8; 32], 16);
+    assert_ne!(result1, result3);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_key_schedule_chain_consistency() {
+    use crate::crypto::sha256;
+
+    let shared = [0xABu8; 32];
+    let empty_hash = sha256::compute(&[]);
+
+    let early = tls13_early_secret(None);
+    let derived1 = tls13_derive_secret(&early, b"derived", &empty_hash);
+    let hs = hkdf_extract(&derived1, &shared);
+    let derived2 = tls13_derive_secret(&hs, b"derived", &empty_hash);
+    let master = hkdf_extract(&derived2, &[0u8; 32]);
+
+    let hs2 = tls13_handshake_secret(&early, &shared);
+    let master2 = tls13_master_secret(&hs2);
+
+    assert_eq!(hs, hs2);
+    assert_eq!(master, master2);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls13_finished_round_trip() {
+    let base_key = [0x77u8; 32];
+    let transcript_hash = [0x88u8; 32];
+
+    let finished_key = tls13_finished_key(&base_key);
+    let verify_data = tls13_verify_data(&finished_key, &transcript_hash);
+    let expected = hmac_sha256(&finished_key, &transcript_hash);
+    assert_eq!(verify_data, expected);
+}
+
+// ========================================================================
+// MD5 / SHA-1 / HMAC / CBC / TLS 1.0 PRF Tests
+// ========================================================================
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_md5_empty() {
+    let result = md5_compute(b"");
+    let expected = [
+        0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8, 0x42,
+        0x7e,
+    ];
+    assert_eq!(result, expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_md5_a() {
+    let result = md5_compute(b"a");
+    let expected = [
+        0x0c, 0xc1, 0x75, 0xb9, 0xc0, 0xf1, 0xb6, 0xa8, 0x31, 0xc3, 0x99, 0xe2, 0x69, 0x77, 0x26,
+        0x61,
+    ];
+    assert_eq!(result, expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_md5_abc() {
+    let result = md5_compute(b"abc");
+    let expected = [
+        0x90, 0x01, 0x50, 0x98, 0x3c, 0xd2, 0x4f, 0xb0, 0xd6, 0x96, 0x3f, 0x7d, 0x28, 0xe1, 0x7f,
+        0x72,
+    ];
+    assert_eq!(result, expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_md5_message_digest() {
+    let result = md5_compute(b"message digest");
+    let expected = [
+        0xf9, 0x6b, 0x69, 0x7d, 0x7c, 0xb7, 0x93, 0x8d, 0x52, 0x5a, 0x2f, 0x31, 0xaa, 0xf1, 0x61,
+        0xd0,
+    ];
+    assert_eq!(result, expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_md5_alphabet() {
+    let result = md5_compute(b"abcdefghijklmnopqrstuvwxyz");
+    let expected = [
+        0xc3, 0xfc, 0xd3, 0xd7, 0x61, 0x92, 0xe4, 0x00, 0x7d, 0xfb, 0x49, 0x6c, 0xca, 0x67, 0xe1,
+        0x3b,
+    ];
+    assert_eq!(result, expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_sha1_abc() {
+    let result = sha1_compute(b"abc");
+    let expected = [
+        0xa9, 0x99, 0x3e, 0x36, 0x47, 0x06, 0x81, 0x6a, 0xba, 0x3e, 0x25, 0x71, 0x78, 0x50, 0xc2,
+        0x6c, 0x9c, 0xd0, 0xd8, 0x9d,
+    ];
+    assert_eq!(result, expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_sha1_empty() {
+    let result = sha1_compute(b"");
+    let expected = [
+        0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55, 0xbf, 0xef, 0x95, 0x60, 0x18,
+        0x90, 0xaf, 0xd8, 0x07, 0x09,
+    ];
+    assert_eq!(result, expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_sha1_long() {
+    let result = sha1_compute(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+    let expected = [
+        0x84, 0x98, 0x3e, 0x44, 0x1c, 0x3b, 0xd2, 0x6e, 0xba, 0xae, 0x4a, 0xa1, 0xf9, 0x51, 0x29,
+        0xe5, 0xe5, 0x46, 0x70, 0xf1,
+    ];
+    assert_eq!(result, expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_hmac_md5_rfc2202_case1() {
+    let key = [0x0bu8; 16];
+    let data = b"Hi There";
+    let expected = [
+        0x92, 0x94, 0x72, 0x7a, 0x36, 0x38, 0xbb, 0x1c, 0x13, 0xf4, 0x8e, 0xf8, 0x15, 0x8b, 0xfc,
+        0x9d,
+    ];
+    assert_eq!(hmac_md5(&key, data), expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_hmac_md5_rfc2202_case2() {
+    let key = b"Jefe";
+    let data = b"what do ya want for nothing?";
+    let expected = [
+        0x75, 0x0c, 0x78, 0x3e, 0x6a, 0xb0, 0xb5, 0x03, 0xea, 0xa8, 0x6e, 0x31, 0x0a, 0x5d, 0xb7,
+        0x38,
+    ];
+    assert_eq!(hmac_md5(key, data), expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_hmac_sha1_rfc2202_case1() {
+    let key = [0x0bu8; 20];
+    let data = b"Hi There";
+    let expected = [
+        0xb6, 0x17, 0x31, 0x86, 0x55, 0x05, 0x72, 0x64, 0xe2, 0x8b, 0xc0, 0xb6, 0xfb, 0x37, 0x8c,
+        0x8e, 0xf1, 0x46, 0xbe, 0x00,
+    ];
+    assert_eq!(hmac_sha1(&key, data), expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_hmac_sha1_rfc2202_case2() {
+    let key = b"Jefe";
+    let data = b"what do ya want for nothing?";
+    let expected = [
+        0xef, 0xfc, 0xdf, 0x6a, 0xe5, 0xeb, 0x2f, 0xa2, 0xd2, 0x74, 0x16, 0xd5, 0xf1, 0x84, 0xdf,
+        0x9c, 0x25, 0x9a, 0x7c, 0x79,
+    ];
+    assert_eq!(hmac_sha1(key, data), expected);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_aes_cbc_roundtrip_128() {
+    let ciphertext = aes_cbc_encrypt(&[0x2bu8; 16], &[0x00u8; 16], b"Hello, AES-CBC mode test!");
+    let decrypted = aes_cbc_decrypt(&[0x2bu8; 16], &[0x00u8; 16], &ciphertext);
+    assert!(decrypted.is_some());
+    assert_eq!(
+        &decrypted.unwrap()[..b"Hello, AES-CBC mode test!".len()],
+        b"Hello, AES-CBC mode test!",
+    );
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_aes_cbc_roundtrip_256() {
+    let plaintext = b"AES-256-CBC round-trip test data for verification!";
+    let ciphertext = aes_cbc_encrypt(&[0x60u8; 32], &[0x01u8; 16], plaintext);
+    let decrypted = aes_cbc_decrypt(&[0x60u8; 32], &[0x01u8; 16], &ciphertext);
+    assert!(decrypted.is_some());
+    assert_eq!(&decrypted.unwrap()[..plaintext.len()], plaintext);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_aes_cbc_empty() {
+    let key = [0x00u8; 16];
+    let iv = [0x00u8; 16];
+    let ciphertext = aes_cbc_encrypt(&key, &iv, b"");
+    assert_eq!(ciphertext.len(), 16);
+    let decrypted = aes_cbc_decrypt(&key, &iv, &ciphertext);
+    assert!(decrypted.is_some());
+    assert_eq!(decrypted.unwrap().len(), 0);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls_padding_add_verify() {
+    let data = b"test data";
+    let padded = tls_add_padding(data, 16);
+    assert_eq!(padded.len() % 16, 0);
+    let valid_len = tls_verify_padding(&padded);
+    assert!(valid_len.is_some());
+    assert_eq!(valid_len.unwrap(), data.len());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls_padding_exact_block() {
+    let data = [0xAA; 15];
+    let padded = tls_add_padding(&data, 16);
+    assert_eq!(padded.len(), 16);
+    assert_eq!(padded[15], 0x00);
+    let valid_len = tls_verify_padding(&padded);
+    assert!(valid_len.is_some());
+    assert_eq!(valid_len.unwrap(), 15);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls_padding_full_block_pad() {
+    let data = [0xBB; 16];
+    let padded = tls_add_padding(&data, 16);
+    assert_eq!(padded.len(), 32);
+    let valid_len = tls_verify_padding(&padded);
+    assert!(valid_len.is_some());
+    assert_eq!(valid_len.unwrap(), 16);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls10_prf_deterministic() {
+    let secret = [0x42u8; 48];
+    let label = b"master secret";
+    let seed = [0x01u8; 64];
+    let mut out1 = [0u8; 48];
+    let mut out2 = [0u8; 48];
+    tls10_prf(&secret, label, &seed, &mut out1);
+    tls10_prf(&secret, label, &seed, &mut out2);
+    assert_eq!(out1, out2);
+    assert!(out1.iter().any(|&b| b != 0));
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_tls10_prf_different_labels() {
+    let secret = [0x42u8; 48];
+    let seed = [0x01u8; 64];
+    let mut out1 = [0u8; 48];
+    let mut out2 = [0u8; 48];
+    tls10_prf(&secret, b"client finished", &seed, &mut out1);
+    tls10_prf(&secret, b"server finished", &seed, &mut out2);
+    assert_ne!(out1, out2);
 }

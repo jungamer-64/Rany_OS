@@ -11,22 +11,7 @@ use super::super::crypto::chacha20::{
     chacha20_xor_in_place, poly1305_mac,
 };
 use super::super::crypto::hkdf::{hkdf_expand, hkdf_extract};
-use super::super::protocol::ContentType;
-use super::super::{CipherSuite, TlsBytes, TlsConfig, TlsConnection, TlsState, TlsVersion};
 use alloc::{vec, vec::Vec};
-
-fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
-    let view = crate::net::payload::PacketPayloadView::new(payload);
-    let mut bytes = TlsBytes::<16384>::new();
-    bytes
-        .set_filled_len(view.total_len())
-        .expect("qemu TLS payload fits fixed test buffer");
-    let copied = view.copy_range(0, bytes.as_mut_slice());
-    bytes
-        .set_filled_len(copied)
-        .expect("copied qemu TLS payload length stays in bounds");
-    bytes
-}
 
 fn aes_ctr(key: &[u8], nonce: &[u8; 12], data: &[u8]) -> Vec<u8> {
     match aes_ctr_into(key, nonce, data) {
@@ -463,94 +448,6 @@ pub fn wave8_tls_tls13_finished_round_trip_smoke() -> bool {
     verify_data == expected
 }
 
-pub fn wave8_tls_tls13_initial_state_smoke() -> bool {
-    let config = TlsConfig::new();
-    let conn = TlsConnection::new(config);
-    !conn.is_tls13() && !conn.needs_client_finished()
-}
-
-pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
-    let config = match TlsConfig::new().with_server_name("example.com") {
-        Ok(config) => config,
-        Err(_) => return false,
-    };
-    let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello_payload());
-
-    if !conn.has_local_ecdh_keypair() || !conn.has_transcript_hash() {
-        return false;
-    }
-    if hello.first().copied() != Some(ContentType::Handshake as u8) {
-        return false;
-    }
-
-    let Some(hello_payload) = hello.get(5..) else {
-        return false;
-    };
-
-    for i in 0..hello_payload.len().saturating_sub(1) {
-        if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x33 {
-            return true;
-        }
-    }
-
-    false
-}
-
-pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
-    let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello_payload());
-    let Some(hello_payload) = hello.get(5..) else {
-        return false;
-    };
-
-    for i in 0..hello_payload.len().saturating_sub(1) {
-        if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x2B {
-            if i + 8 >= hello_payload.len() {
-                return false;
-            }
-            let ext_len = ((hello_payload[i + 2] as usize) << 8) | hello_payload[i + 3] as usize;
-            let versions_len = hello_payload[i + 4] as usize;
-            return versions_len >= 4 && ext_len == versions_len + 1;
-        }
-    }
-
-    false
-}
-
-pub fn wave8_tls_tls13_client_hello_psk_modes_smoke() -> bool {
-    let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello_payload());
-    let Some(hello_payload) = hello.get(5..) else {
-        return false;
-    };
-
-    for i in 0..hello_payload.len().saturating_sub(1) {
-        if hello_payload[i] == 0x00 && hello_payload[i + 1] == 0x2D {
-            return true;
-        }
-    }
-
-    false
-}
-
-pub fn wave8_tls_tls13_strip_content_type_smoke() -> bool {
-    let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17];
-    let data2 = [0x48, 0x65, 0x17, 0x00, 0x00];
-    let data3 = [0x16];
-    let data4 = [0x00, 0x00, 0x00];
-
-    let case1 = matches!(TlsConnection::tls13_strip_content_type(&data), Some(v) if v == &[0x48, 0x65, 0x6c, 0x6c, 0x6f]);
-    let case2 =
-        matches!(TlsConnection::tls13_strip_content_type(&data2), Some(v) if v == &[0x48, 0x65]);
-    let case3 = matches!(TlsConnection::tls13_strip_content_type(&data3), Some(v) if v.is_empty());
-    let case4 = TlsConnection::tls13_strip_content_type(&data4).is_none();
-
-    case1 && case2 && case3 && case4
-}
-
 pub fn wave8_tls_hmac_sha256_long_key_smoke() -> bool {
     let key = [0xaau8; 131];
     let data = b"Test Using Larger Than Block-Size Key - Hash Key First";
@@ -653,4 +550,342 @@ pub fn wave8_tls_aes_gcm_corrupted_ciphertext_smoke() -> bool {
     }
 
     aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag).is_none()
+}
+
+pub fn wave8_tls_aes_gcm_empty_plaintext_smoke() -> bool {
+    let key = [0x11u8; 16];
+    let nonce = [0x22u8; 12];
+    let aad = b"aad only, no payload";
+
+    let (ciphertext, tag) = aes_gcm_encrypt(&key, &nonce, aad, &[]);
+    if !ciphertext.is_empty() {
+        return false;
+    }
+
+    match aes_gcm_decrypt(&key, &nonce, aad, &[], &tag) {
+        Some(decrypted) => decrypted.is_empty(),
+        None => false,
+    }
+}
+
+pub fn wave8_tls_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
+    let key = [0x5au8; 16];
+    let nonce = [0x33u8; 12];
+    let aad = b"in-place aad";
+    let plaintext = b"in-place aes-gcm payload";
+
+    let Some(ctx) = AesGcmKey::new(&key) else {
+        return false;
+    };
+
+    let mut ciphertext = alloc::vec![0u8; plaintext.len()];
+    let mut tag = [0u8; 16];
+    if ctx
+        .encrypt_in_place(nonce.as_slice(), aad, plaintext, &mut ciphertext, &mut tag)
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut decrypted = alloc::vec![0u8; plaintext.len()];
+    if ctx
+        .decrypt_in_place(nonce.as_slice(), aad, &ciphertext, &mut decrypted, &tag)
+        .is_err()
+    {
+        return false;
+    }
+
+    decrypted.as_slice() == plaintext
+}
+
+pub fn wave8_tls_aes_gcm_key_invalid_nonce_len_smoke() -> bool {
+    let key = [0x11u8; 16];
+    let Some(ctx) = AesGcmKey::new(&key) else {
+        return false;
+    };
+
+    let bad_nonce = [0x22u8; 11];
+    let mut ciphertext = [0u8; 4];
+    let mut tag = [0u8; 16];
+    let enc_err = ctx.encrypt_in_place(&bad_nonce, b"", b"test", &mut ciphertext, &mut tag);
+
+    let mut plaintext = [0u8; 4];
+    let dec_err = ctx.decrypt_in_place(&bad_nonce, b"", &ciphertext, &mut plaintext, &tag);
+
+    enc_err.is_err() && dec_err.is_err()
+}
+
+pub fn wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke() -> bool {
+    let key = [0x77u8; 16];
+    let nonce = [0x88u8; 12];
+    let aad = b"aad";
+    let plaintext = b"secret";
+
+    let Some(ctx) = AesGcmKey::new(&key) else {
+        return false;
+    };
+
+    let mut ciphertext = alloc::vec![0u8; plaintext.len()];
+    let mut tag = [0u8; 16];
+    if ctx
+        .encrypt_in_place(nonce.as_slice(), aad, plaintext, &mut ciphertext, &mut tag)
+        .is_err()
+    {
+        return false;
+    }
+
+    tag[0] ^= 0xff;
+    let mut out = [0xa5u8; 6];
+    let before = out;
+
+    ctx.decrypt_in_place(nonce.as_slice(), aad, &ciphertext, &mut out, &tag)
+        .is_err()
+        && out == before
+}
+
+pub fn wave8_tls_aes_key_expansion_smoke() -> bool {
+    let key: [u8; 16] = [
+        0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
+        0x3c,
+    ];
+    let round_keys = aes_key_expansion(&key);
+    if round_keys[0] != key {
+        return false;
+    }
+    for i in 0..10 {
+        if round_keys[i] == round_keys[i + 1] {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn wave8_tls_derive_master_secret_length_smoke() -> bool {
+    let pre_master = [0x42u8; 48];
+    let client_random = [0x01u8; 32];
+    let server_random = [0x02u8; 32];
+
+    let ms = derive_master_secret(&pre_master, &client_random, &server_random);
+    ms.len() == 48 && ms.iter().any(|&b| b != 0)
+}
+
+pub fn wave8_tls_derive_key_block_length_smoke() -> bool {
+    let master_secret = [0x55u8; 48];
+    let server_random = [0xAAu8; 32];
+    let client_random = [0xBBu8; 32];
+
+    let kb = derive_key_block(&master_secret, &server_random, &client_random, 40);
+    let kb256 = derive_key_block(&master_secret, &server_random, &client_random, 72);
+
+    kb.len() == 40 && kb.iter().any(|&b| b != 0) && kb256.len() == 72
+}
+
+pub fn wave8_tls_derive_master_secret_deterministic_smoke() -> bool {
+    let pre_master = [0x42u8; 48];
+    let client_random = [0x01u8; 32];
+    let server_random = [0x02u8; 32];
+
+    let ms1 = derive_master_secret(&pre_master, &client_random, &server_random);
+    let ms2 = derive_master_secret(&pre_master, &client_random, &server_random);
+    ms1 == ms2
+}
+
+pub fn wave8_tls_derive_master_secret_differs_with_input_smoke() -> bool {
+    let client_random = [0x01u8; 32];
+    let server_random = [0x02u8; 32];
+
+    let ms1 = derive_master_secret(&[0x42u8; 48], &client_random, &server_random);
+    let ms2 = derive_master_secret(&[0x43u8; 48], &client_random, &server_random);
+    ms1 != ms2
+}
+
+pub fn wave8_tls_tls12_prf_deterministic_smoke() -> bool {
+    let secret = b"test secret";
+    let label = b"test label";
+    let seed = b"test seed";
+
+    let mut out1 = [0u8; 64];
+    let mut out2 = [0u8; 64];
+    tls12_prf(secret, label, seed, &mut out1);
+    tls12_prf(secret, label, seed, &mut out2);
+    out1 == out2
+}
+
+pub fn wave8_tls_tls12_prf_different_labels_smoke() -> bool {
+    let secret = b"test secret";
+    let seed = b"test seed";
+
+    let mut out1 = [0u8; 32];
+    let mut out2 = [0u8; 32];
+    tls12_prf(secret, b"label A", seed, &mut out1);
+    tls12_prf(secret, b"label B", seed, &mut out2);
+    out1 != out2
+}
+
+pub fn wave8_tls_hkdf_expand_label_length_smoke() -> bool {
+    let secret = [0x42u8; 32];
+    let result = hkdf_expand_label(&secret, b"key", b"", 16);
+    let result32 = hkdf_expand_label(&secret, b"iv", b"", 12);
+    result.len() == 16 && result32.len() == 12
+}
+
+pub fn wave8_tls_hkdf_expand_label_different_labels_smoke() -> bool {
+    let secret = [0x42u8; 32];
+    let result1 = hkdf_expand_label(&secret, b"key", b"", 32);
+    let result2 = hkdf_expand_label(&secret, b"iv", b"", 32);
+    result1 != result2
+}
+
+pub fn wave8_tls_generate_random_not_all_zeros_smoke() -> bool {
+    qemu_test_set_random_override_seed(0x0123_4567_89AB_CDEF);
+    let random = generate_random();
+    let ok = random.iter().any(|&b| b != 0);
+    qemu_test_clear_random_override();
+    ok
+}
+
+pub fn wave8_tls_generate_random_different_calls_smoke() -> bool {
+    qemu_test_set_random_override_seed(0x89AB_CDEF_0123_4567);
+    let first = generate_random();
+    let second = generate_random();
+    qemu_test_clear_random_override();
+    first != second
+}
+
+pub fn wave8_tls_sha384_empty_smoke() -> bool {
+    use crate::crypto::sha384;
+
+    let hash = sha384::compute(b"");
+    let expected: [u8; 48] = [
+        0x38, 0xb0, 0x60, 0xa7, 0x51, 0xac, 0x96, 0x38, 0x4c, 0xd9, 0x32, 0x7e, 0xb1, 0xb1, 0xe3,
+        0x6a, 0x21, 0xfd, 0xb7, 0x11, 0x14, 0xbe, 0x07, 0x43, 0x4c, 0x0c, 0xc7, 0xbf, 0x63, 0xf6,
+        0xe1, 0xda, 0x27, 0x4e, 0xde, 0xbf, 0xe7, 0x6f, 0x65, 0xfb, 0xd5, 0x1a, 0xd2, 0xf1, 0x48,
+        0x98, 0xb9, 0x5b,
+    ];
+    hash == expected
+}
+
+pub fn wave8_tls_sha384_abc_smoke() -> bool {
+    use crate::crypto::sha384;
+
+    let hash = sha384::compute(b"abc");
+    let expected: [u8; 48] = [
+        0xcb, 0x00, 0x75, 0x3f, 0x45, 0xa3, 0x5e, 0x8b, 0xb5, 0xa0, 0x3d, 0x69, 0x9a, 0xc6, 0x50,
+        0x07, 0x27, 0x2c, 0x32, 0xab, 0x0e, 0xde, 0xd1, 0x63, 0x1a, 0x8b, 0x60, 0x5a, 0x43, 0xff,
+        0x5b, 0xed, 0x80, 0x86, 0x07, 0x2b, 0xa1, 0xe7, 0xcc, 0x23, 0x58, 0xba, 0xec, 0xa1, 0x34,
+        0xc8, 0x25, 0xa7,
+    ];
+    hash == expected
+}
+
+pub fn wave8_tls_hmac_sha384_rfc4231_case1_smoke() -> bool {
+    let key = [0x0bu8; 20];
+    let data = b"Hi There";
+    let expected: [u8; 48] = [
+        0xaf, 0xd0, 0x39, 0x44, 0xd8, 0x48, 0x95, 0x62, 0x6b, 0x08, 0x25, 0xf4, 0xab, 0x46, 0x90,
+        0x7f, 0x15, 0xf9, 0xda, 0xdb, 0xe4, 0x10, 0x1e, 0xc6, 0x82, 0xaa, 0x03, 0x4c, 0x7c, 0xeb,
+        0xc5, 0x9c, 0xfa, 0xea, 0x9e, 0xa9, 0x07, 0x6e, 0xde, 0x7f, 0x4a, 0xf1, 0x52, 0xe8, 0xb2,
+        0xfa, 0x9c, 0xb6,
+    ];
+    hmac_sha384(&key, data) == expected
+}
+
+pub fn wave8_tls_hmac_sha384_rfc4231_case2_smoke() -> bool {
+    let key = b"Jefe";
+    let data = b"what do ya want for nothing?";
+    let expected: [u8; 48] = [
+        0xaf, 0x45, 0xd2, 0xe3, 0x76, 0x48, 0x40, 0x31, 0x61, 0x7f, 0x78, 0xd2, 0xb5, 0x8a, 0x6b,
+        0x1b, 0x9c, 0x7e, 0xf4, 0x64, 0xf5, 0xa0, 0x1b, 0x47, 0xe4, 0x2e, 0xc3, 0x73, 0x63, 0x22,
+        0x44, 0x5e, 0x8e, 0x22, 0x40, 0xca, 0x5e, 0x69, 0xe2, 0xc7, 0x8b, 0x32, 0x39, 0xec, 0xfa,
+        0xb2, 0x16, 0x49,
+    ];
+    hmac_sha384(key, data) == expected
+}
+
+pub fn wave8_tls_p256_point_on_curve_smoke() -> bool {
+    use crate::net::security::ecdh::p256::P256Point;
+    let g = P256Point::generator();
+    g.is_on_curve()
+}
+
+pub fn wave8_tls_p256_scalar_mul_base_smoke() -> bool {
+    use crate::net::security::ecdh::p256::P256Point;
+    use crate::net::security::ecdh::scalar_base_mul;
+
+    let g = P256Point::generator();
+    let (gx, gy) = match g.to_affine() {
+        Some(v) => v,
+        None => return false,
+    };
+
+    let mut scalar_one = [0u8; 32];
+    scalar_one[31] = 1;
+
+    let result = scalar_base_mul(&scalar_one);
+    let (rx, ry) = match result.to_affine() {
+        Some(v) => v,
+        None => return false,
+    };
+
+    rx == gx && ry == gy
+}
+
+pub fn wave8_ecdh_p256_key_exchange_symmetry_smoke() -> bool {
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_key_exchange_symmetry_smoke()
+}
+
+pub fn wave8_ecdh_p256_public_key_length_smoke() -> bool {
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_public_key_length_smoke()
+}
+
+pub fn wave8_ecdh_p256_reject_invalid_peer_key_smoke() -> bool {
+    crate::net::security::ecdh::qemu_tests::ecdh_p256_reject_invalid_peer_key_smoke()
+}
+
+pub fn wave8_ecdh_group_from_named_group_p256_smoke() -> bool {
+    crate::net::security::ecdh::qemu_tests::ecdh_group_from_named_group_p256_smoke()
+}
+
+pub fn wave8_tls_der_parse_tag_length_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_der_parse_tag_length_smoke()
+}
+
+pub fn wave8_tls_der_parse_integer_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_der_parse_integer_smoke()
+}
+
+pub fn wave8_tls_der_parse_sequence_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_der_parse_sequence_smoke()
+}
+
+pub fn wave8_tls_x509_parse_self_signed_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_parse_self_signed_smoke()
+}
+
+pub fn wave8_tls_x509_extract_rsa_pubkey_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_extract_rsa_pubkey_smoke()
+}
+
+pub fn wave8_tls_x509_signature_algorithm_oid_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_signature_algorithm_oid_smoke()
+}
+
+pub fn wave8_tls_rsa_modexp_small_smoke() -> bool {
+    crate::net::security::rsa::qemu_tests::rsa_modexp_small_smoke()
+}
+
+pub fn wave8_tls_rsa_modexp_medium_smoke() -> bool {
+    crate::net::security::rsa::qemu_tests::rsa_modexp_medium_smoke()
+}
+
+pub fn wave8_tls_rsa_pkcs1_verify_smoke() -> bool {
+    crate::net::security::rsa::qemu_tests::rsa_pkcs1_verify_smoke()
+}
+
+pub fn wave8_tls_rsa_pkcs1_verify_bad_sig_smoke() -> bool {
+    crate::net::security::rsa::qemu_tests::rsa_pkcs1_verify_bad_sig_smoke()
+}
+
+pub fn wave8_tls_rsa_biguint_mul_div_smoke() -> bool {
+    crate::net::security::rsa::qemu_tests::rsa_biguint_mul_div_smoke()
 }
