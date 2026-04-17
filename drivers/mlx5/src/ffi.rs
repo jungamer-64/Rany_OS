@@ -18,13 +18,13 @@ use kernel_api::abi::driver::AbiDmaSlice;
 use kernel_api::abi::driver::{AbiBlockDeviceRegistration, AbiNvmeNamespaceRegistration};
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
-    AbiNetPortKind, AbiNetPortOpsV3, AbiNetPortRegistrationV3, AbiNetPortRuntimeV2,
-    AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta, AbiPacketRefRaw, DriverContext, KernelApiV4,
-    PackedPciLocation,
+    AbiNetPortKind, AbiNetPortOpsV4, AbiNetPortRegistrationV4, AbiNetPortRuntimeV3,
+    AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSegmentV4, AbiNetTxSubmissionV4,
+    AbiPacketRefRaw, DriverContext, KernelApiV4, PackedPciLocation,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
-use kernel_api::service::netdev::{NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP};
+use kernel_api::service::netdev::{NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, TxLeaseId};
 use spin::Mutex;
 
 use crate::bootstrap::{
@@ -119,7 +119,7 @@ extern "C" fn test_kernel_unregister_nvme_namespace(_handle: u64) -> i32 {
 
 #[cfg(test)]
 extern "C" fn test_kernel_register_netdev_port(
-    _reg: *const AbiNetPortRegistrationV3,
+    _reg: *const AbiNetPortRegistrationV4,
     _out: *mut u64,
 ) -> i32 {
     -1
@@ -516,7 +516,7 @@ struct Mlx5StandaloneState {
     mmio: AbiMmioHandle,
     pci_locator: PackedPciLocation,
     registration_handle: Option<u64>,
-    runtime: Option<AbiNetPortRuntimeV2>,
+    runtime: Option<AbiNetPortRuntimeV3>,
     poll_generation: u64,
     next_sq: AtomicU32,
     last_link_up: bool,
@@ -524,7 +524,7 @@ struct Mlx5StandaloneState {
     rx_packets: u64,
     tx_errors: u64,
     rx_errors: u64,
-    tx_slots: Vec<Vec<Option<AbiPacketRefRaw>>>,
+    tx_slots: Vec<Vec<Option<TxLeaseId>>>,
     rx_slots: Vec<Vec<Option<AbiPacketRefRaw>>>,
 }
 
@@ -560,7 +560,7 @@ fn init_slot_ring<T>() -> Vec<Option<T>> {
     ring
 }
 
-fn allocate_runtime_packet(runtime: AbiNetPortRuntimeV2) -> Result<AbiPacketRefRaw, AbiError> {
+fn allocate_runtime_packet(runtime: AbiNetPortRuntimeV3) -> Result<AbiPacketRefRaw, AbiError> {
     let mut packet = AbiPacketRefRaw::default();
     let status = (runtime.alloc_packet)(runtime.runtime_cookie, &mut packet);
     let status = AbiError::from_raw(status);
@@ -742,7 +742,16 @@ fn poll_tx_locked(state: &mut Mlx5StandaloneState) {
             let _ = state
                 .device
                 .process_tx_completions(sq_index, cqe.wqe_counter);
-            let _ = state.tx_slots[sq_index][slot].take();
+            if let Some(lease_id) = state.tx_slots[sq_index][slot].take() {
+                if let Some(runtime) = state.runtime {
+                    let status = if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
+                        AbiError::IoError as i32
+                    } else {
+                        AbiError::Success as i32
+                    };
+                    let _ = (runtime.complete_tx_lease)(runtime.runtime_cookie, lease_id, status);
+                }
+            }
             if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
                 state.tx_errors = state.tx_errors.saturating_add(1);
             }
@@ -801,7 +810,7 @@ async fn mlx5_poll_kicker(generation: u64) {
     }
 }
 
-extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntimeV2) -> i32 {
+extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntimeV3) -> i32 {
     if runtime.is_null() {
         return AbiError::InvalidParam as i32;
     }
@@ -843,14 +852,24 @@ extern "C" fn mlx5_netdev_bind(_opaque: u64, _if_id: u16) -> i32 {
     AbiError::Success as i32
 }
 
-extern "C" fn mlx5_netdev_submit_tx(
+unsafe fn tx_segment_bytes(segment: &AbiNetTxSegmentV4) -> &[u8] {
+    unsafe { core::slice::from_raw_parts(segment.cpu_ptr, segment.len) }
+}
+
+extern "C" fn mlx5_netdev_submit_tx_chain(
     _opaque: u64,
-    packet: *mut AbiPacketRefRaw,
+    submission: *const AbiNetTxSubmissionV4,
     meta: AbiNetTxMeta,
 ) -> i32 {
-    let Some(mut packet) = (unsafe { AbiPacketRefRaw::take(packet) }) else {
+    if submission.is_null() {
         return AbiError::InvalidParam as i32;
-    };
+    }
+    let submission = unsafe { &*submission };
+    if submission.segments_ptr.is_null() || submission.segments_len == 0 {
+        return AbiError::InvalidParam as i32;
+    }
+    let segments =
+        unsafe { core::slice::from_raw_parts(submission.segments_ptr, submission.segments_len) };
     let mut guard = MLX5_STANDALONE_STATE.lock();
     let Some(state) = guard.as_mut() else {
         return AbiError::NotInitialized as i32;
@@ -859,16 +878,12 @@ extern "C" fn mlx5_netdev_submit_tx(
         return AbiError::NotInitialized as i32;
     }
 
-    let data_len = packet.len();
+    let data_len: usize = segments.iter().map(|segment| segment.len).sum();
     if data_len == 0 {
         return AbiError::InvalidParam as i32;
     }
 
     let frame_len = cmp::max(data_len, 60);
-    if frame_len > packet.capacity().saturating_sub(packet.headroom()) {
-        return AbiError::OutOfMemory as i32;
-    }
-    packet.set_len(frame_len);
     let inline_len = match state
         .device
         .port(0)
@@ -876,21 +891,20 @@ extern "C" fn mlx5_netdev_submit_tx(
         .unwrap_or(0)
     {
         0 => 0,
-        1 => cmp::min(frame_len, 18),
+        1 => {
+            let Some(first) = segments.first() else {
+                return AbiError::InvalidParam as i32;
+            };
+            let first_bytes = unsafe { tx_segment_bytes(first) };
+            cmp::min(frame_len, cmp::min(first_bytes.len(), 18))
+        }
         _ => return AbiError::NotSupported as i32,
     };
     let mut inline_hdr = [0u8; 18];
-    {
-        if frame_len > data_len {
-            packet.data_mut()[data_len..frame_len].fill(0);
-        }
-        if inline_len > 0 {
-            inline_hdr[..inline_len].copy_from_slice(&packet.data()[..inline_len]);
-        }
+    if inline_len > 0 {
+        let first_bytes = unsafe { tx_segment_bytes(&segments[0]) };
+        inline_hdr[..inline_len].copy_from_slice(&first_bytes[..inline_len]);
     }
-
-    let data_device = packet.device_address();
-    let data_virt = packet.data_mut().as_ptr() as u64;
     let sq_count = state.tx_slots.len().max(1) as u32;
     let sq_index = if meta.has_queue_index {
         (meta.queue_index as u32 % sq_count) as usize
@@ -903,11 +917,28 @@ extern "C" fn mlx5_netdev_submit_tx(
         options.vlan_tag = meta.vlan_tag;
     }
 
+    let mut dma_segments = Vec::with_capacity(segments.len());
+    let mut remaining_inline = inline_len;
+    for segment in segments {
+        let skip = remaining_inline.min(segment.len);
+        remaining_inline = remaining_inline.saturating_sub(skip);
+        if skip == segment.len {
+            continue;
+        }
+        dma_segments.push(crate::wq::DmaSegment {
+            device_addr: segment.device_addr + skip as u64,
+            virt_addr: segment.cpu_ptr as u64 + skip as u64,
+            len: (segment.len - skip) as u32,
+        });
+    }
+    if dma_segments.is_empty() {
+        return AbiError::InvalidParam as i32;
+    }
+
     match unsafe {
-        state.device.transmit(
+        state.device.transmit_segments(
             sq_index,
-            data_device,
-            data_virt,
+            &dma_segments,
             frame_len as u32,
             &inline_hdr[..inline_len],
             options,
@@ -915,7 +946,7 @@ extern "C" fn mlx5_netdev_submit_tx(
     } {
         Ok(wqe_idx) => {
             let slot = (wqe_idx as usize) % (MLX5_WQ_DEPTH as usize);
-            state.tx_slots[sq_index][slot] = Some(packet);
+            state.tx_slots[sq_index][slot] = Some(submission.lease_id);
             state.tx_packets = state.tx_packets.saturating_add(1);
             schedule_runtime_poll_locked(state);
             AbiError::Success as i32
@@ -980,8 +1011,8 @@ extern "C" fn mlx5_netdev_set_interrupts_enabled(_opaque: u64, _enabled: bool) -
     AbiError::Success as i32
 }
 
-fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistrationV3 {
-    AbiNetPortRegistrationV3::new(
+fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistrationV4 {
+    AbiNetPortRegistrationV4::new(
         AbiNetPortInfo {
             port_id: 0x0002_0000,
             kind: AbiNetPortKind::Mlx5 as u32,
@@ -995,10 +1026,10 @@ fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistrationV3 
             name_len: mlx5_driver_name().len(),
         },
         0,
-        AbiNetPortOpsV3 {
+        AbiNetPortOpsV4 {
             start: mlx5_netdev_start,
             bind: mlx5_netdev_bind,
-            submit_tx_packet: mlx5_netdev_submit_tx,
+            submit_tx_chain: mlx5_netdev_submit_tx_chain,
             poll: mlx5_netdev_poll,
             handle_event: mlx5_netdev_handle_event,
             stats: mlx5_netdev_stats,
@@ -1100,7 +1131,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let _ = unsafe { device.refresh_port_runtime_state(0) };
 
             let mut tx_slots = Vec::with_capacity(device.num_sqs());
-            tx_slots.resize_with(device.num_sqs(), init_slot_ring::<AbiPacketRefRaw>);
+            tx_slots.resize_with(device.num_sqs(), init_slot_ring::<TxLeaseId>);
             let mut rx_slots = Vec::with_capacity(device.num_rqs());
             rx_slots.resize_with(device.num_rqs(), init_slot_ring::<AbiPacketRefRaw>);
 

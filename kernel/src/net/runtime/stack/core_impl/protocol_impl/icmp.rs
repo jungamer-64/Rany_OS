@@ -577,7 +577,6 @@ impl NetworkStack {
         if let Some((final_proto, icmp_data)) =
             crate::net::payload::ipv6_transport_payload(original_packet.payload())
         {
-            let icmp_data = crate::net::payload::PacketPayloadView::new(&icmp_data);
             if final_proto == IpProtocol::Icmpv6 {
                 let Some(icmp_type) = icmp_data.read_array::<1>(0).map(|bytes| bytes[0]) else {
                     return false;
@@ -949,14 +948,13 @@ impl NetworkStack {
         else {
             return;
         };
-        let transport_data = crate::net::payload::PacketPayloadView::new(&transport_payload);
-        if transport_data.total_len() < 8 {
+        if transport_payload.total_len() < 8 {
             return;
         }
 
         match final_proto {
             IpProtocol::Tcp => {
-                let Some(header) = transport_data.read_array::<8>(0) else {
+                let Some(header) = transport_payload.read_array::<8>(0) else {
                     return;
                 };
                 let src_port = u16::from_be_bytes([header[0], header[1]]);
@@ -987,7 +985,7 @@ impl NetworkStack {
                 }
             }
             IpProtocol::Udp => {
-                let Some(header) = transport_data.read_array::<4>(0) else {
+                let Some(header) = transport_payload.read_array::<4>(0) else {
                     return;
                 };
                 let src_port = u16::from_be_bytes([header[0], header[1]]);

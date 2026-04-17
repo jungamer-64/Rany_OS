@@ -19,10 +19,12 @@ use super::types::{
 };
 
 /// 未確認セグメント（再送用）
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct UnackedSegment {
     /// シーケンス番号
     pub seq: u32,
+    /// TCP sequence space consumed by this segment body/control flags.
+    pub seq_len: u32,
     /// セグメントデータ（ヘッダ含む）
     pub data: PacketPayload,
     /// 送信時刻（tick）
@@ -133,9 +135,10 @@ impl RetransmitQueue {
     }
 
     /// セグメントを追加
-    pub fn push(&mut self, seq: u32, data: PacketPayload, current_tick: u64) {
+    pub fn push(&mut self, seq: u32, seq_len: u32, data: PacketPayload, current_tick: u64) {
         self.unacked.push_back(UnackedSegment {
             seq,
+            seq_len,
             data,
             send_tick: current_tick,
             retransmit_count: 0,
@@ -150,8 +153,7 @@ impl RetransmitQueue {
         // 累積ACKによって完全に確認されたセグメントを全て削除
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(seg) = self.unacked.front() {
-            let seg_len = seg.data.total_len() as u32;
-            let seg_end = seg.seq.wrapping_add(seg_len);
+            let seg_end = seg.seq.wrapping_add(seg.seq_len);
 
             // セグメントの末尾まで確認されているか？
             if Self::seq_leq(seg_end, ack_num) {
@@ -197,7 +199,7 @@ impl RetransmitQueue {
             seg.is_retransmit = true;
             self.rto_calc.backoff();
 
-            return crate::net::payload::retain_payload_window_owned(seg.data.clone(), 0, seg.data.total_len());
+            return copy_payload(&seg.data);
         }
         None
     }
@@ -290,6 +292,7 @@ pub fn retransmit_queue_push(
     local: EndpointAddr,
     remote: EndpointAddr,
     seq: u32,
+    seq_len: u32,
     data: PacketPayload,
 ) {
     let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
@@ -299,7 +302,7 @@ pub fn retransmit_queue_push(
         .unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         let was_empty = queue.is_empty();
-        queue.push(seq, data, current_tick);
+        queue.push(seq, seq_len, data, current_tick);
         if was_empty {
             let deadline = current_tick + queue.get_rto();
             schedule_retransmit_timer(local, remote, deadline);
@@ -337,7 +340,7 @@ pub fn retransmit_queue_process_sack(
         .unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         for seg in queue.unacked.iter_mut() {
-            let seg_end = seg.seq.wrapping_add(seg.data.total_len() as u32);
+            let seg_end = seg.seq.wrapping_add(seg.seq_len);
             for &(l, r) in blocks {
                 let in_left = (seg.seq.wrapping_sub(l) as i32) >= 0;
                 let in_right = (r.wrapping_sub(seg_end) as i32) >= 0;
@@ -348,6 +351,22 @@ pub fn retransmit_queue_process_sack(
             }
         }
     }
+}
+
+pub(super) fn copy_payload(payload: &PacketPayload) -> Option<PacketPayload> {
+    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+    let view = crate::net::payload::PacketPayloadView::new(payload);
+    let mut copied = 0usize;
+    let total_len = view.total_len();
+    view.for_each_chunk(|chunk| {
+        if copied >= total_len {
+            return;
+        }
+        if !chunk.is_empty() && builder.push_bytes(chunk).is_some() {
+            copied += chunk.len();
+        }
+    });
+    (copied == total_len).then(|| builder.build())
 }
 
 /// 再送キュー削除

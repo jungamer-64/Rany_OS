@@ -8,9 +8,8 @@ use alloc::vec::Vec;
 use exorust_sync::PoisonRwLock;
 use kernel_api::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
-    NetPortStats, NetTxMeta,
+    NetPortStats, NetTxMeta, TxSubmission,
 };
-use kernel_api::resource::net::PacketPayload;
 
 const VIRTIO_PORT_ID_BASE: u64 = 0x0001_0000;
 
@@ -162,16 +161,17 @@ impl NetDevicePort for VirtioNetDriverAdapter {
         }
     }
 
-    fn submit_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> Result<(), &'static str> {
-        let PacketPayload::Single(packet) = payload else {
-            return Err("VirtIO-Net TX requires single-segment payload");
-        };
+    fn submit_tx_chain(
+        &self,
+        submission: TxSubmission<'_>,
+        meta: NetTxMeta,
+    ) -> Result<(), &'static str> {
         with_virtio_net_at_index(self.index, |device| {
             device
-                .enqueue_send_zero_copy(packet, meta)
+                .enqueue_send_submission(submission, meta)
                 .map_err(|err| match err {
                     VirtioNetError::QueueFull => "TX queue full",
-                    _ => "enqueue_send_zero_copy failed",
+                    _ => "enqueue_send_submission failed",
                 })
         })
         .unwrap_or(Err("VirtIO-Net device not initialized"))
@@ -380,13 +380,7 @@ mod tests {
             _payload_len: usize,
         ) {
         }
-        fn transmit_complete(
-            &self,
-            _queue_index: u16,
-            _packet: PacketRef,
-            _completion_id: Option<u64>,
-        ) {
-        }
+        fn transmit_complete(&self, _queue_index: u16, _lease_id: kernel_api::netdev::TxLeaseId) {}
         fn schedule_wake(&self, _queue_index: u16) {}
         fn log(&self, _level: log::Level, _msg: core::fmt::Arguments) {}
     }

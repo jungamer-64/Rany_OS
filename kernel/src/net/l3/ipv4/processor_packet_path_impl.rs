@@ -1,6 +1,6 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{PacketPayloadBuilder, retain_payload_window_owned};
+use crate::net::payload::{PacketPayloadBuilder, split_payload_prefix_owned};
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv4Processor {
@@ -86,16 +86,9 @@ impl Ipv4Processor {
             }
         }
 
-        let Some(header_packet) = retain_payload_window_owned(original.clone(), 0, header_len)
+        let Some((header_packet, payload_packet)) =
+            split_payload_prefix_owned(original, header_len)
         else {
-            self.stats.rx_errors += 1;
-            return Ipv4ProcessResult::Error;
-        };
-        let Some(payload_packet) = retain_payload_window_owned(
-            original.clone(),
-            header_len,
-            total_len.saturating_sub(header_len),
-        ) else {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
         };

@@ -529,12 +529,17 @@ impl TcbTable {
                                     else {
                                         continue;
                                     };
-                                    let retransmit_segment = segment.clone();
+                                    let Some(retransmit_segment) =
+                                        super::retransmit::copy_payload(&segment)
+                                    else {
+                                        continue;
+                                    };
                                     if send_tcp_segment_payload(key.0, key.1, segment) {
                                         retransmit_queue_push(
                                             key.0,
                                             key.1,
                                             seq,
+                                            1,
                                             retransmit_segment,
                                         );
                                         entry.snd_nxt = entry.snd_nxt.wrapping_add(1);

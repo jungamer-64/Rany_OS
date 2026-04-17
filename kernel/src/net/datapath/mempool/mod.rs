@@ -249,10 +249,26 @@ unsafe fn pooled_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
     state.buffer.as_ref().set_len(state.len);
     true
 }
-unsafe fn pooled_clone(storage: &PacketRefStorage) -> PacketRefStorage {
-    let state = pooled_state_ref(storage);
+unsafe fn pooled_split_at(
+    storage: &mut PacketRefStorage,
+    len: usize,
+) -> Option<PacketRefStorage> {
+    let state = pooled_state_mut(storage);
+    if len == 0 || len >= state.len {
+        return None;
+    }
+
     state.buffer.as_ref().add_ref();
-    PacketRefStorage::from_state(*state)
+    let prefix = PooledPacketState {
+        buffer: state.buffer,
+        pool: state.pool,
+        offset: state.offset,
+        len,
+    };
+    state.offset = state.offset.saturating_add(len);
+    state.len = state.len.saturating_sub(len);
+    state.buffer.as_ref().set_len(state.len);
+    Some(PacketRefStorage::from_state(prefix))
 }
 unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
     let state = pooled_state_mut(storage);
@@ -272,7 +288,7 @@ static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: pooled_headroom,
     advance: pooled_advance,
     retreat: pooled_retreat,
-    clone_storage: pooled_clone,
+    split_at: pooled_split_at,
     drop_storage: pooled_drop,
 };
 
@@ -325,9 +341,23 @@ unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
     state.len = state.len.saturating_add(size);
     true
 }
-unsafe fn dma_clone(storage: &PacketRefStorage) -> PacketRefStorage {
-    let state = dma_state_ref(storage);
-    PacketRefStorage::from_state(state.clone())
+unsafe fn dma_split_at(
+    storage: &mut PacketRefStorage,
+    len: usize,
+) -> Option<PacketRefStorage> {
+    let state = dma_state_mut(storage);
+    if len == 0 || len >= state.len {
+        return None;
+    }
+
+    let prefix = DmaPacketState {
+        buf: Arc::clone(&state.buf),
+        offset: state.offset,
+        len,
+    };
+    state.offset = state.offset.saturating_add(len);
+    state.len = state.len.saturating_sub(len);
+    Some(PacketRefStorage::from_state(prefix))
 }
 unsafe fn dma_drop(storage: &mut PacketRefStorage) {
     core::ptr::drop_in_place(storage.as_state_mut::<DmaPacketState>());
@@ -344,7 +374,7 @@ static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: dma_headroom,
     advance: dma_advance,
     retreat: dma_retreat,
-    clone_storage: dma_clone,
+    split_at: dma_split_at,
     drop_storage: dma_drop,
 };
 
@@ -408,9 +438,24 @@ unsafe fn borrowed_retreat(storage: &mut PacketRefStorage, size: usize) -> bool 
     true
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_clone(storage: &PacketRefStorage) -> PacketRefStorage {
-    let state = borrowed_state_ref(storage);
-    PacketRefStorage::from_state(*state)
+unsafe fn borrowed_split_at(
+    storage: &mut PacketRefStorage,
+    len: usize,
+) -> Option<PacketRefStorage> {
+    let state = borrowed_state_mut(storage);
+    if len == 0 || len >= state.len {
+        return None;
+    }
+
+    let prefix = BorrowedTestPacketState {
+        ptr: state.ptr,
+        cap: state.cap,
+        offset: state.offset,
+        len,
+    };
+    state.offset = state.offset.saturating_add(len);
+    state.len = state.len.saturating_sub(len);
+    Some(PacketRefStorage::from_state(prefix))
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_drop(_: &mut PacketRefStorage) {}
@@ -427,7 +472,7 @@ static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: borrowed_headroom,
     advance: borrowed_advance,
     retreat: borrowed_retreat,
-    clone_storage: borrowed_clone,
+    split_at: borrowed_split_at,
     drop_storage: borrowed_drop,
 };
 

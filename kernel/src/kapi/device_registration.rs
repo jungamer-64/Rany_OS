@@ -2,7 +2,7 @@ use crate::domain::DomainId;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use kernel_api::abi::driver::AbiError as AbiErrorCode;
 use kernel_api::abi::driver::{
-    AbiBlockDeviceRegistration, AbiNetPortRegistrationV3, AbiNvmeNamespaceRegistration,
+    AbiBlockDeviceRegistration, AbiNetPortRegistrationV4, AbiNvmeNamespaceRegistration,
     PackedPciLocation,
 };
 use kernel_api::error::KapiError;
@@ -137,7 +137,7 @@ pub(crate) fn unregister_nvme_namespace_for_current_subject(handle: u64) -> Resu
 }
 
 pub(crate) fn register_netdev_port_for_current_subject(
-    registration: &AbiNetPortRegistrationV3,
+    registration: &AbiNetPortRegistrationV4,
 ) -> Result<u64, KapiError> {
     let owner = current_driver_domain()?;
     crate::resource_registry::net::register_port(owner, registration).map_err(map_registry_error)

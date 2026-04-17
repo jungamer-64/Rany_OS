@@ -218,7 +218,7 @@ pub struct PacketRefVTable {
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
     pub advance: unsafe fn(&mut PacketRefStorage, usize),
     pub retreat: unsafe fn(&mut PacketRefStorage, usize) -> bool,
-    pub clone_storage: unsafe fn(&PacketRefStorage) -> PacketRefStorage,
+    pub split_at: unsafe fn(&mut PacketRefStorage, usize) -> Option<PacketRefStorage>,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
 }
 
@@ -312,6 +312,17 @@ impl PacketRef {
     }
 
     #[inline]
+    pub fn split_at(&mut self, len: usize) -> Option<Self> {
+        let storage = unsafe { (self.vtable.split_at)(&mut self.storage, len) }?;
+        Some(Self {
+            storage,
+            vtable: self.vtable,
+            meta_cache: self.meta_cache,
+            _not_sync: PhantomData,
+        })
+    }
+
+    #[inline]
     pub fn meta(&self) -> &PacketMeta {
         &self.meta_cache
     }
@@ -326,26 +337,9 @@ impl PacketRef {
         self.meta_cache = meta;
     }
 
-    #[inline]
-    pub fn clone_ref(&self) -> Self {
-        self.clone()
-    }
-
     #[cfg(any(test, feature = "net-test-helpers"))]
     pub fn to_vec(&self) -> Vec<u8> {
         self.data().to_vec()
-    }
-}
-
-impl Clone for PacketRef {
-    fn clone(&self) -> Self {
-        let storage = unsafe { (self.vtable.clone_storage)(&self.storage) };
-        Self {
-            storage,
-            vtable: self.vtable,
-            meta_cache: self.meta_cache,
-            _not_sync: PhantomData,
-        }
     }
 }
 
@@ -451,9 +445,20 @@ unsafe fn heap_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
     true
 }
 
-unsafe fn heap_clone(storage: &PacketRefStorage) -> PacketRefStorage {
-    let state = unsafe { heap_state_ref(storage) };
-    unsafe { PacketRefStorage::from_state(state.clone()) }
+unsafe fn heap_split_at(storage: &mut PacketRefStorage, len: usize) -> Option<PacketRefStorage> {
+    let state = unsafe { heap_state_mut(storage) };
+    if len == 0 || len >= state.len {
+        return None;
+    }
+
+    let prefix = HeapPacketState {
+        backing: Arc::clone(&state.backing),
+        offset: state.offset,
+        len,
+    };
+    state.offset = state.offset.saturating_add(len);
+    state.len = state.len.saturating_sub(len);
+    Some(unsafe { PacketRefStorage::from_state(prefix) })
 }
 
 unsafe fn heap_drop(storage: &mut PacketRefStorage) {
@@ -471,7 +476,7 @@ static HEAP_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: heap_headroom,
     advance: heap_advance,
     retreat: heap_retreat,
-    clone_storage: heap_clone,
+    split_at: heap_split_at,
     drop_storage: heap_drop,
 };
 
@@ -493,7 +498,7 @@ impl PacketRef {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct PacketChain {
     segments: Vec<PacketRef>,
     total_len: usize,
@@ -570,7 +575,7 @@ impl PacketChain {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum PacketPayload {
     Single(PacketRef),
     Chain(PacketChain),
@@ -644,121 +649,6 @@ impl PacketPayload {
                 len
             }
             Self::Chain(chain) => chain.copy_into(dst),
-        }
-    }
-
-    pub fn take_prefix(&mut self, len: usize) -> Option<Self> {
-        if len == 0 {
-            return Some(Self::default());
-        }
-        if len > self.total_len() {
-            return None;
-        }
-
-        match self {
-            Self::Single(packet) => {
-                if len == packet.len() {
-                    let taken = packet.clone();
-                    *self = Self::default();
-                    return Some(Self::Single(taken));
-                }
-
-                let mut taken = packet.clone();
-                taken.set_len(len);
-                packet.advance(len);
-                Some(Self::Single(taken))
-            }
-            Self::Chain(chain) => {
-                let mut remaining = len;
-                let mut segments = Vec::new();
-
-                while remaining > 0 {
-                    let Some(front) = chain.segments.first_mut() else {
-                        break;
-                    };
-                    if front.is_empty() {
-                        chain.segments.remove(0);
-                        continue;
-                    }
-
-                    let take = remaining.min(front.len());
-                    let mut prefix = front.clone();
-                    prefix.set_len(take);
-                    segments.push(prefix);
-
-                    front.advance(take);
-                    chain.total_len = chain.total_len.saturating_sub(take);
-                    remaining -= take;
-
-                    if front.is_empty() {
-                        chain.segments.remove(0);
-                    }
-                }
-
-                if remaining != 0 {
-                    return None;
-                }
-
-                if chain.is_empty() {
-                    *self = Self::default();
-                }
-
-                if segments.len() == 1 {
-                    Some(Self::Single(segments.remove(0)))
-                } else {
-                    Some(Self::Chain(PacketChain::from_segments(segments)))
-                }
-            }
-        }
-    }
-
-    pub fn consume_prefix(&mut self, len: usize) -> usize {
-        self.take_prefix(len).map_or(0, |prefix| prefix.total_len())
-    }
-
-    pub fn slice(&self, offset: usize, len: usize) -> Option<Self> {
-        let total_len = self.total_len();
-        if len == 0 {
-            return (offset <= total_len).then(Self::default);
-        }
-        if offset >= total_len || len > total_len.saturating_sub(offset) {
-            return None;
-        }
-
-        match self {
-            Self::Single(packet) => {
-                let mut slice = packet.clone();
-                slice.advance(offset);
-                slice.set_len(len);
-                Some(Self::Single(slice))
-            }
-            Self::Chain(chain) => {
-                let mut segments = Vec::new();
-                let mut remaining_offset = offset;
-                let mut remaining_len = len;
-
-                for segment in chain.segments() {
-                    if remaining_len == 0 {
-                        break;
-                    }
-                    if remaining_offset >= segment.len() {
-                        remaining_offset -= segment.len();
-                        continue;
-                    }
-
-                    let mut slice = segment.clone();
-                    if remaining_offset > 0 {
-                        slice.advance(remaining_offset);
-                    }
-                    let take = remaining_len.min(slice.len());
-                    slice.set_len(take);
-                    segments.push(slice);
-                    remaining_len -= take;
-                    remaining_offset = 0;
-                }
-
-                (remaining_len == 0).then(|| Self::Chain(PacketChain::from_segments(segments)))
-            }
         }
     }
 
@@ -1117,9 +1007,23 @@ mod packet_ref_tests {
         true
     }
 
-    unsafe fn heap_clone(storage: &PacketRefStorage) -> PacketRefStorage {
-        let state = unsafe { heap_state_ref(storage) };
-        unsafe { PacketRefStorage::from_state(state.clone()) }
+    unsafe fn heap_split_at(
+        storage: &mut PacketRefStorage,
+        len: usize,
+    ) -> Option<PacketRefStorage> {
+        let state = unsafe { heap_state_mut(storage) };
+        if len == 0 || len >= state.len {
+            return None;
+        }
+
+        let prefix = HeapPacketState {
+            backing: Arc::clone(&state.backing),
+            offset: state.offset,
+            len,
+        };
+        state.offset = state.offset.saturating_add(len);
+        state.len = state.len.saturating_sub(len);
+        Some(unsafe { PacketRefStorage::from_state(prefix) })
     }
 
     unsafe fn heap_drop(storage: &mut PacketRefStorage) {
@@ -1137,7 +1041,7 @@ mod packet_ref_tests {
         headroom: heap_headroom,
         advance: heap_advance,
         retreat: heap_retreat,
-        clone_storage: heap_clone,
+        split_at: heap_split_at,
         drop_storage: heap_drop,
     };
 
@@ -1217,9 +1121,20 @@ mod packet_ref_tests {
         true
     }
 
-    unsafe fn dma_clone(storage: &PacketRefStorage) -> PacketRefStorage {
-        let state = unsafe { dma_state_ref(storage) };
-        unsafe { PacketRefStorage::from_state(state.clone()) }
+    unsafe fn dma_split_at(storage: &mut PacketRefStorage, len: usize) -> Option<PacketRefStorage> {
+        let state = unsafe { dma_state_mut(storage) };
+        if len == 0 || len >= state.len {
+            return None;
+        }
+
+        let prefix = DmaPacketState {
+            backing: Rc::clone(&state.backing),
+            offset: state.offset,
+            len,
+        };
+        state.offset = state.offset.saturating_add(len);
+        state.len = state.len.saturating_sub(len);
+        Some(unsafe { PacketRefStorage::from_state(prefix) })
     }
 
     unsafe fn dma_drop(storage: &mut PacketRefStorage) {
@@ -1237,7 +1152,7 @@ mod packet_ref_tests {
         headroom: dma_headroom,
         advance: dma_advance,
         retreat: dma_retreat,
-        clone_storage: dma_clone,
+        split_at: dma_split_at,
         drop_storage: dma_drop,
     };
 
@@ -1291,7 +1206,7 @@ mod packet_ref_tests {
     }
 
     #[test]
-    fn heap_backing_supports_len_advance_clone_drop_and_meta() {
+    fn heap_backing_supports_len_advance_drop_and_meta() {
         HEAP_RELEASES.store(0, Ordering::SeqCst);
 
         let mut packet = make_heap_packet();
@@ -1311,16 +1226,12 @@ mod packet_ref_tests {
         assert!(packet.meta().ip_csum_verified());
         assert_eq!(packet.meta().header_len(), 34);
 
-        let mut clone = packet.clone_ref();
-        clone.advance(2);
-        assert_eq!(clone.len(), 4);
-        assert_eq!(clone.data(), b"rnel");
-        assert_eq!(clone.phys_addr().as_u64(), 0x1002);
-        assert_eq!(packet.len(), 6);
+        packet.advance(2);
+        assert_eq!(packet.len(), 4);
+        assert_eq!(packet.data(), b"rnel");
+        assert_eq!(packet.phys_addr().as_u64(), 0x1002);
 
         drop(packet);
-        assert_eq!(HEAP_RELEASES.load(Ordering::SeqCst), 0);
-        drop(clone);
         assert_eq!(HEAP_RELEASES.load(Ordering::SeqCst), 1);
     }
 
@@ -1343,13 +1254,10 @@ mod packet_ref_tests {
         assert_eq!(packet.device_address(), 0x4001);
 
         packet.meta_mut().pkt_type = PacketType::Unicast;
-        let clone = packet.clone_ref();
-        assert_eq!(clone.meta().pkt_type, PacketType::Unicast);
-        assert_eq!(clone.device_address(), 0x4001);
+        assert_eq!(packet.meta().pkt_type, PacketType::Unicast);
+        assert_eq!(packet.device_address(), 0x4001);
 
         drop(packet);
-        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 0);
-        drop(clone);
         assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
     }
 }

@@ -4,6 +4,7 @@
 
 use core::ptr::NonNull;
 use kernel_api::dma::{CpuOwned, DmaSlice};
+use kernel_api::netdev::{NetTxSegment, TxLeaseId};
 use kernel_api::resource::net::PacketRef;
 
 pub mod device;
@@ -27,11 +28,7 @@ pub struct RxInflight {
 /// In-flight TX packet state.
 #[derive(Debug)]
 pub struct TxInflight {
-    pub packet: PacketRef,
-    /// Bounce buffer if used (owned via DmaSlice)
-    pub bounce_buffer: Option<DmaSlice<CpuOwned>>,
-    pub dma_mapping: Option<NetDmaMappingToken>,
-    pub completion_id: Option<u64>,
+    pub lease_id: TxLeaseId,
 }
 
 /// Opaque DMA mapping token returned by the runtime.
@@ -126,7 +123,7 @@ pub trait NetRuntime: Send + Sync {
     );
 
     /// Called when a packet transmission is complete.
-    fn transmit_complete(&self, queue_index: u16, packet: PacketRef, completion_id: Option<u64>);
+    fn transmit_complete(&self, queue_index: u16, lease_id: TxLeaseId);
 
     /// Schedule a waker for a queue event.
     fn schedule_wake(&self, queue_index: u16);
@@ -203,6 +200,60 @@ impl NetVirtQueue {
             self.vq.submit_avail(desc_idx);
         }
 
+        Ok(desc_idx)
+    }
+
+    /// Add a TX buffer chain backed by caller-retained packet segments.
+    pub unsafe fn add_tx_buffer_chain(
+        &self,
+        header: &VirtioNetHeader,
+        segments: &[NetTxSegment],
+    ) -> Result<u16, VirtioNetError> {
+        if segments.is_empty() {
+            return Err(VirtioNetError::DeviceError);
+        }
+
+        let desc_idx = self.vq.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+        let mut data_descs = alloc::vec::Vec::with_capacity(segments.len());
+        for _ in segments {
+            let Some(desc) = self.vq.alloc_desc() else {
+                self.vq.free_desc(desc_idx);
+                for allocated in data_descs {
+                    self.vq.free_desc(allocated);
+                }
+                return Err(VirtioNetError::QueueFull);
+            };
+            data_descs.push(desc);
+        }
+
+        let header_ptr = self.tx_headers.ok_or(VirtioNetError::DeviceError)?;
+        let header_dma_base = self.tx_header_phys.ok_or(VirtioNetError::DeviceError)?;
+
+        let header_slot = unsafe { &mut *header_ptr.as_ptr().add(desc_idx as usize) };
+        *header_slot = *header;
+
+        let header_desc = self.vq.get_desc_mut(desc_idx);
+        header_desc.addr = header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64);
+        header_desc.len = VirtioNetHeader::SIZE as u32;
+        header_desc.flags = crate::defs::vring_flags::VRING_DESC_F_NEXT;
+        header_desc.next = data_descs[0];
+
+        for (index, segment) in segments.iter().enumerate() {
+            let desc = self.vq.get_desc_mut(data_descs[index]);
+            desc.addr = segment.device_addr;
+            desc.len = segment.len as u32;
+            if index + 1 < data_descs.len() {
+                desc.flags = crate::defs::vring_flags::VRING_DESC_F_NEXT;
+                desc.next = data_descs[index + 1];
+            } else {
+                desc.flags = 0;
+                desc.next = 0;
+            }
+        }
+
+        unsafe {
+            self.vq.submit_avail(desc_idx);
+        }
         Ok(desc_idx)
     }
 

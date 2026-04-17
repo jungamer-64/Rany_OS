@@ -13,8 +13,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::Waker;
 use exorust_sync::{IrqPoisonLock, PoisonLock};
-use kernel_api::netdev::{NetDeviceInfo, NetPortStats, NetTxMeta};
-use kernel_api::resource::net::PacketRef;
+use kernel_api::netdev::{NetDeviceInfo, NetPortStats, NetTxMeta, TxSubmission};
 
 const DEFAULT_MTU: u32 = 1500;
 
@@ -100,6 +99,14 @@ impl ManagedNetVirtQueue {
         data_len: usize,
     ) -> Result<u16, VirtioNetError> {
         self.add_tx_buffer_zero_copy_with_header(phys_addr, data_len, VirtioNetHeader::new_tx())
+    }
+
+    pub fn add_tx_submission(
+        &self,
+        submission: TxSubmission<'_>,
+        header: VirtioNetHeader,
+    ) -> Result<u16, VirtioNetError> {
+        self.with_core(|inner| unsafe { inner.add_tx_buffer_chain(&header, submission.segments()) })
     }
 
     pub fn add_rx_buffer_zero_copy(
@@ -322,43 +329,29 @@ impl VirtioNetDevice {
             .unwrap_or_else(|e| e.into_inner()) = handler;
     }
 
-    pub fn enqueue_send_zero_copy(
+    pub fn enqueue_send_submission(
         &self,
-        packet: PacketRef,
-        meta: NetTxMeta,
+        submission: TxSubmission<'_>,
+        _meta: NetTxMeta,
     ) -> Result<(), VirtioNetError> {
         let Some(tx_queue) = self.tx_queues.first() else {
             return Err(VirtioNetError::NotInitialized);
         };
 
-        let dma_mapping = self
-            .runtime
-            .map_packet(&packet, super::NetDmaDirection::ToDevice)?;
-        let device_addr = dma_mapping.device_address();
-        let inflight_mapping = dma_mapping.requires_unmap().then_some(dma_mapping);
-
-        match tx_queue.add_tx_buffer_zero_copy(device_addr, packet.len()) {
+        match tx_queue.add_tx_submission(submission, VirtioNetHeader::new_tx()) {
             Ok(desc_idx) => {
                 if let Some(tracker) = self.core.tx_trackers.get(0) {
                     tracker.put(
                         desc_idx,
                         TxInflight {
-                            packet,
-                            bounce_buffer: None,
-                            dma_mapping: inflight_mapping,
-                            completion_id: meta.completion_id,
+                            lease_id: submission.lease_id(),
                         },
                     );
                 }
                 tx_queue.notify(self.transport.as_ref());
                 Ok(())
             }
-            Err(err) => {
-                if dma_mapping.requires_unmap() {
-                    self.runtime.release_dma_mapping(dma_mapping);
-                }
-                Err(err)
-            }
+            Err(err) => Err(err),
         }
     }
 
@@ -568,22 +561,15 @@ impl VirtioNetDevice {
                     continue;
                 };
 
-                let Some(mut inflight) = tracker.take(desc_idx) else {
+                let Some(inflight) = tracker.take(desc_idx) else {
                     tx_queue.free_desc_chain(desc_idx);
                     continue;
                 };
 
-                if let Some(mapping) = inflight.dma_mapping.take() {
-                    self.runtime.release_dma_mapping(mapping);
-                }
-
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);
                 self.tx_bytes.fetch_add(len, Ordering::Relaxed);
-                self.runtime.transmit_complete(
-                    queue_index,
-                    inflight.packet,
-                    inflight.completion_id,
-                );
+                self.runtime
+                    .transmit_complete(queue_index, inflight.lease_id);
 
                 tx_queue.free_desc_chain(desc_idx);
             }

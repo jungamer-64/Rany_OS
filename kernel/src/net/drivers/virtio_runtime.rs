@@ -130,15 +130,12 @@ impl virtio_driver::net::NetRuntime for KernelVirtioNetRuntime {
         }
     }
 
-    fn transmit_complete(&self, _queue_index: u16, _packet: PacketRef, completion_id: Option<u64>) {
-        if let Some(completion_id) = completion_id {
-            let _ = crate::net::runtime::device::complete_tx_request_in(
-                crate::net::runtime::default_runtime(),
-                completion_id,
-                Ok(()),
-            );
-        }
-
+    fn transmit_complete(&self, _queue_index: u16, lease_id: kernel_api::netdev::TxLeaseId) {
+        let _ = crate::net::runtime::device::complete_tx_lease_in(
+            crate::net::runtime::default_runtime(),
+            lease_id,
+            Ok(()),
+        );
         crate::net::l4::endpoint::event::enqueue_event_ignore(
             crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
         );

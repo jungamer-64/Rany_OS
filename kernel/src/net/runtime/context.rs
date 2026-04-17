@@ -1,6 +1,6 @@
 use crate::net::l4::endpoint::event::NetworkEventQueue;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
-use crate::net::runtime::device::{NetDeviceManager, TxCompletionState};
+use crate::net::runtime::device::{NetDeviceManager, TxCompletionState, TxLeaseState};
 use crate::net::runtime::manager::NetworkManager;
 use crate::net::runtime::stack::NetworkStack;
 use crate::net::services::dhcp::DhcpRuntimeState;
@@ -59,6 +59,8 @@ pub struct NetRuntimeContext {
     pub(crate) event_task_ready_waiters: WakerQueue,
     pub(crate) tx_completion_next_id: AtomicU64,
     pub(crate) tx_completions: PoisonRwLock<BTreeMap<u64, Arc<TxCompletionState>>>,
+    pub(crate) tx_lease_next_id: AtomicU64,
+    pub(crate) tx_leases: PoisonLock<BTreeMap<u64, TxLeaseState>>,
     pub(crate) device_manager: PoisonRwLock<NetDeviceManager>,
     pub(crate) stack_initialized: AtomicBool,
     pub(crate) dhcp_bound_primary_selected: AtomicBool,
@@ -79,6 +81,8 @@ impl NetRuntimeContext {
             event_task_ready_waiters: WakerQueue::new(),
             tx_completion_next_id: AtomicU64::new(1),
             tx_completions: PoisonRwLock::new(BTreeMap::new()),
+            tx_lease_next_id: AtomicU64::new(1),
+            tx_leases: PoisonLock::new(BTreeMap::new()),
             device_manager: PoisonRwLock::new(NetDeviceManager::new()),
             stack_initialized: AtomicBool::new(false),
             dhcp_bound_primary_selected: AtomicBool::new(false),

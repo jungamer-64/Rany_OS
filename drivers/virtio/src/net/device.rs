@@ -125,7 +125,7 @@ impl VirtioNetDevice {
     /// Process completions on a TX queue.
     pub fn process_tx_completions<F>(
         &self,
-        runtime: &dyn NetRuntime,
+        _runtime: &dyn NetRuntime,
         queue_index: u16,
         vq: &NetVirtQueue,
         mut handler: F,
@@ -146,11 +146,7 @@ impl VirtioNetDevice {
                 break;
             };
             processed += 1;
-            if let Some(mut inflight) = tracker.take(desc_idx) {
-                if let Some(mapping) = inflight.dma_mapping.take() {
-                    runtime.release_dma_mapping(mapping);
-                }
-
+            if let Some(inflight) = tracker.take(desc_idx) {
                 handler(desc_idx, inflight, len);
                 vq.free_desc_chain(desc_idx);
                 count += 1;

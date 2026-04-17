@@ -13,10 +13,10 @@
 use alloc::collections::VecDeque;
 
 use crate::net::l4::tcp::TcpStats;
-use crate::net::payload::PacketPayloadView;
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpanRef};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
-use kernel_api::resource::net::{PacketChain, PacketPayload};
+use kernel_api::resource::net::PacketPayload;
 
 use super::congestion::CongestionAlgorithm;
 use super::types::{
@@ -323,28 +323,31 @@ impl EndpointInner {
         }
 
         let mut remaining = len;
-        let mut segments = alloc::vec::Vec::new();
+        let mut builder = PacketPayloadBuilder::new();
 
         for payload in queue {
             if remaining == 0 {
                 break;
             }
             let take = remaining.min(payload.total_len());
-            let prefix =
-                crate::net::payload::retain_payload_window_owned(payload.clone(), 0, take)?;
-            segments.extend(prefix.into_segments());
+            let prefix = PayloadSpanRef::from_range(payload, 0, take)?;
+            let mut copied = 0usize;
+            prefix.for_each_chunk(|chunk| {
+                if copied >= take {
+                    return;
+                }
+                let chunk_take = (take - copied).min(chunk.len());
+                if chunk_take > 0 && builder.push_bytes(&chunk[..chunk_take]).is_some() {
+                    copied += chunk_take;
+                }
+            });
+            if copied != take {
+                return None;
+            }
             remaining -= take;
         }
 
-        if remaining != 0 {
-            return None;
-        }
-
-        if segments.len() == 1 {
-            Some(PacketPayload::single(segments.remove(0)))
-        } else {
-            Some(PacketPayload::chain(PacketChain::from_segments(segments)))
-        }
+        (remaining == 0).then(|| builder.build())
     }
 
     fn consume_queued_prefix(queue: &mut VecDeque<PacketPayload>, len: usize) -> usize {
@@ -371,7 +374,6 @@ impl EndpointInner {
             if front.is_empty() {
                 queue.pop_front();
             }
-
         }
 
         consumed

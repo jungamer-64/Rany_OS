@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) fn register_port(
     owner: DomainId,
-    registration: &AbiNetPortRegistrationV3,
+    registration: &AbiNetPortRegistrationV4,
 ) -> Result<u64, AbiErrorCode> {
     NETDEV_PORTS.register(owner, registration)
 }

@@ -122,7 +122,7 @@ impl Icmpv6Processor {
                 );
                 Icmpv6Result::Dropped
             }
-            _ => self.dispatch_message_payload(&view, msg_type, code, src, dst, src_mac, hop_limit),
+            _ => self.dispatch_message_payload(payload, msg_type, code, src, dst),
         }
     }
 
@@ -140,26 +140,24 @@ impl Icmpv6Processor {
 
     fn dispatch_message_payload(
         &self,
-        view: &PacketPayloadView<'_>,
+        payload: PacketPayload,
         msg_type: Icmpv6Type,
         code: u8,
         src: Ipv6Address,
         dst: Ipv6Address,
-        src_mac: crate::net::l2::ethernet::MacAddress,
-        hop_limit: u8,
     ) -> Icmpv6Result {
-        let _ = hop_limit;
+        let view = PacketPayloadView::new(&payload);
         match msg_type {
             Icmpv6Type::EchoRequest => {
                 self.stats.rx_echo_requests.fetch_add(1, Ordering::Relaxed);
-                self.handle_echo_request_payload(view, src, dst)
+                self.handle_echo_request_payload(payload, src, dst)
             }
             Icmpv6Type::EchoReply => {
                 self.stats.rx_echo_replies.fetch_add(1, Ordering::Relaxed);
-                self.handle_echo_reply_payload(view, src)
+                self.handle_echo_reply_payload(&view, src)
             }
             Icmpv6Type::DestinationUnreachable => {
-                self.handle_quoted_error_payload(view, |code, _arg, src, dst, packet| {
+                self.handle_quoted_error_payload(payload, |code, _arg, src, dst, packet| {
                     Icmpv6Result::DestinationUnreachable {
                         code,
                         quoted_src: src,
@@ -168,9 +166,9 @@ impl Icmpv6Processor {
                     }
                 })
             }
-            Icmpv6Type::PacketTooBig => self.handle_packet_too_big_payload(view),
+            Icmpv6Type::PacketTooBig => self.handle_packet_too_big_payload(payload),
             Icmpv6Type::TimeExceeded => {
-                self.handle_quoted_error_payload(view, |code, arg, src, dst, packet| {
+                self.handle_quoted_error_payload(payload, |code, arg, src, dst, packet| {
                     let _ = arg;
                     Icmpv6Result::TimeExceeded {
                         code,
@@ -181,7 +179,7 @@ impl Icmpv6Processor {
                 })
             }
             Icmpv6Type::ParameterProblem => {
-                self.handle_quoted_error_payload(view, |code, arg, src, dst, packet| {
+                self.handle_quoted_error_payload(payload, |code, arg, src, dst, packet| {
                     Icmpv6Result::ParameterProblem {
                         code,
                         pointer: arg,
@@ -199,20 +197,6 @@ impl Icmpv6Processor {
                 );
                 Icmpv6Result::Dropped
             }
-            Icmpv6Type::RouterSolicitation
-            | Icmpv6Type::RouterAdvertisement
-            | Icmpv6Type::NeighborSolicitation
-            | Icmpv6Type::NeighborAdvertisement => {
-                self.stats.rx_ndp.fetch_add(1, Ordering::Relaxed);
-                Icmpv6Result::NdpMessage {
-                    msg_type,
-                    data: view.payload().clone(),
-                    src,
-                    dst,
-                    src_mac,
-                    hop_limit,
-                }
-            }
             _ => {
                 log::debug!("ICMPv6: Unknown type {} code {}", u8::from(msg_type), code);
                 Icmpv6Result::Dropped
@@ -223,10 +207,11 @@ impl Icmpv6Processor {
     /// Handle Echo Request → produce Echo Reply
     fn handle_echo_request_payload(
         &self,
-        view: &PacketPayloadView<'_>,
+        payload: PacketPayload,
         src: Ipv6Address,
         dst: Ipv6Address,
     ) -> Icmpv6Result {
+        let view = PacketPayloadView::new(&payload);
         if !self.echo_enabled {
             return Icmpv6Result::Dropped;
         }
@@ -254,11 +239,10 @@ impl Icmpv6Processor {
         let max_payload = 1232;
         let echo_data_len = (view.total_len() - ICMPV6_ECHO_HEADER_SIZE).min(max_payload);
         let Some(echo_data) = crate::net::payload::retain_payload_window_owned(
-            view.payload().clone(),
+            payload,
             ICMPV6_ECHO_HEADER_SIZE,
             echo_data_len,
-        )
-        else {
+        ) else {
             return Icmpv6Result::Error;
         };
 
@@ -297,10 +281,11 @@ impl Icmpv6Processor {
     }
 
     /// Helper to extract info from quoted packets in ICMPv6 error messages (RFC 4443)
-    fn handle_quoted_error_payload<F>(&self, view: &PacketPayloadView<'_>, f: F) -> Icmpv6Result
+    fn handle_quoted_error_payload<F>(&self, payload: PacketPayload, f: F) -> Icmpv6Result
     where
         F: FnOnce(u8, u32, Ipv6Address, Ipv6Address, PacketPayload) -> Icmpv6Result,
     {
+        let view = PacketPayloadView::new(&payload);
         if view.total_len() < 8 {
             return Icmpv6Result::Error;
         }
@@ -328,11 +313,8 @@ impl Icmpv6Processor {
 
             // Quoted portion starts after the ICMPv6 header (offset 8)
             let quoted_len = view.total_len() - 8;
-            let Some(quoted_packet) = crate::net::payload::retain_payload_window_owned(
-                view.payload().clone(),
-                8,
-                quoted_len,
-            )
+            let Some(quoted_packet) =
+                crate::net::payload::retain_payload_window_owned(payload, 8, quoted_len)
             else {
                 return Icmpv6Result::Error;
             };
@@ -344,8 +326,8 @@ impl Icmpv6Processor {
     }
 
     /// Handle Packet Too Big (Path MTU Discovery)
-    fn handle_packet_too_big_payload(&self, view: &PacketPayloadView<'_>) -> Icmpv6Result {
-        self.handle_quoted_error_payload(view, |_, mtu, src, dst, packet| {
+    fn handle_packet_too_big_payload(&self, payload: PacketPayload) -> Icmpv6Result {
+        self.handle_quoted_error_payload(payload, |_, mtu, src, dst, packet| {
             Icmpv6Result::PacketTooBig {
                 quoted_src: src,
                 dst,

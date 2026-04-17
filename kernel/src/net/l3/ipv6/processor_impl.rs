@@ -1,7 +1,9 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{append_payload, subslice_offset, PacketPayloadBuilder};
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
+use crate::net::payload::{
+    PacketPayloadBuilder, append_payload, split_payload_prefix_owned, subslice_offset,
+};
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv6Processor {
@@ -86,8 +88,7 @@ impl Ipv6Processor {
         // Check hop limit
         if packet.hop_limit() == 0 {
             self.stats.record_hop_limit_exceeded();
-            let Some(orig_packet) = Self::packet_payload_from_frame(data, packet_ref)
-            else {
+            let Some(orig_packet) = Self::packet_payload_from_frame(data, packet_ref) else {
                 self.stats.record_header_error();
                 return Ipv6ProcessResult::Error;
             };
@@ -111,8 +112,7 @@ impl Ipv6Processor {
                     p => {
                         // RFC 4443 Section 3.4: Parameter Problem Code 1 for unrecognized Next Header
                         // The pointer indicates the octet of the unrecognized Next Header type
-                        let Some(orig_packet) =
-                            Self::packet_payload_from_frame(data, packet_ref)
+                        let Some(orig_packet) = Self::packet_payload_from_frame(data, packet_ref)
                         else {
                             self.stats.record_header_error();
                             return Ipv6ProcessResult::Error;
@@ -127,9 +127,7 @@ impl Ipv6Processor {
                     }
                 }
             }
-            ExtHeaderResult::Fragment {
-                ..
-            } => Ipv6ProcessResult::Error,
+            ExtHeaderResult::Fragment { .. } => Ipv6ProcessResult::Error,
         }
     }
 
@@ -138,115 +136,154 @@ impl Ipv6Processor {
         packet_ref: PacketRef,
         current_time: u64,
     ) -> Ipv6ProcessResult<'static> {
-        let original = PacketPayload::single(packet_ref);
-        let raw_packet = match &original {
-            PacketPayload::Single(packet) => packet.data(),
-            PacketPayload::Chain(_) => return Ipv6ProcessResult::Error,
-        };
+        let fragment_info = {
+            let raw_packet = packet_ref.data();
+            let packet = match Ipv6Packet::parse(raw_packet) {
+                Some(packet) => packet,
+                None => {
+                    self.stats.record_header_error();
+                    return Ipv6ProcessResult::Error;
+                }
+            };
 
-        let packet = match Ipv6Packet::parse(raw_packet) {
-            Some(packet) => packet,
-            None => {
-                self.stats.record_header_error();
-                return Ipv6ProcessResult::Error;
+            self.stats.record_rx();
+
+            let src = packet.source();
+            if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
+                self.stats.record_dropped();
+                log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
+                return Ipv6ProcessResult::Dropped;
             }
-        };
 
-        self.stats.record_rx();
+            let dst = packet.destination();
+            if !self.is_for_us(&dst) {
+                self.stats.record_dropped();
+                return Ipv6ProcessResult::Dropped;
+            }
 
-        let src = packet.source();
-        if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
-            self.stats.record_dropped();
-            log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
-            return Ipv6ProcessResult::Dropped;
-        }
-
-        let dst = packet.destination();
-        if !self.is_for_us(&dst) {
-            self.stats.record_dropped();
-            return Ipv6ProcessResult::Dropped;
-        }
-
-        if packet.hop_limit() == 0 {
-            return Ipv6ProcessResult::HopLimitExceeded(src, dst, original);
-        }
-
-        match skip_extension_headers_fraginfo(raw_packet) {
-            ExtHeaderResult::Fragment {
-                unfragmentable,
-                frag_header,
-                frag_payload,
-            } => {
-                let unfrag_len = unfragmentable.len();
-                let unfragmentable_payload = if unfrag_len == 0 {
-                    None
-                } else {
-                    crate::net::payload::retain_payload_window_owned(original.clone(), 0, unfrag_len)
-                };
-                let Some(frag_payload_offset) = subslice_offset(raw_packet, frag_payload) else {
-                    self.stats.record_header_error();
-                    return Ipv6ProcessResult::Error;
-                };
-                let Some(frag_payload_packet) = crate::net::payload::retain_payload_window_owned(
-                    original.clone(),
-                    frag_payload_offset,
-                    frag_payload.len(),
-                )
-                else {
-                    self.stats.record_header_error();
-                    return Ipv6ProcessResult::Error;
-                };
-
-                let (result, expired) = self.reassembler.process_fragment(
+            if packet.hop_limit() == 0 {
+                return Ipv6ProcessResult::HopLimitExceeded(
                     src,
                     dst,
-                    unfragmentable_payload,
-                    &frag_header,
-                    frag_payload_packet,
-                    current_time,
+                    PacketPayload::single(packet_ref),
                 );
+            }
 
-                match result {
-                    Ok(Some(payload)) => Ipv6ProcessResult::Reassembled(payload),
-                    Ok(None) => {
-                        if let Some((expired_src, expired_dst, quoted, frag_header)) =
-                            expired.into_iter().next()
-                        {
-                            Ipv6ProcessResult::ReassemblyTimeout(
-                                expired_src,
-                                expired_dst,
-                                quoted,
-                                frag_header,
-                            )
-                        } else {
-                            Ipv6ProcessResult::FragmentPending
-                        }
-                    }
-                    Err(error) => {
-                        let Some(mut quoted) =
-                            crate::net::payload::retain_payload_window_owned(original.clone(), 0, unfrag_len)
-                        else {
-                            self.stats.record_header_error();
-                            return Ipv6ProcessResult::Error;
-                        };
-                        let mut frag_bytes = [0u8; 8];
-                        frag_bytes[0] = frag_header.next_header;
-                        let off_and_flags = (frag_header.fragment_offset << 3)
-                            | if frag_header.more_fragments { 0x01 } else { 0 };
-                        frag_bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
-                        frag_bytes[4..8]
-                            .copy_from_slice(&frag_header.identification.to_be_bytes());
+            match skip_extension_headers_fraginfo(raw_packet) {
+                ExtHeaderResult::Fragment {
+                    unfragmentable,
+                    frag_header,
+                    frag_payload,
+                } => {
+                    let unfrag_len = unfragmentable.len();
+                    let quoted_unfragmentable = if unfrag_len == 0 {
+                        PacketPayload::default()
+                    } else {
                         let mut builder = PacketPayloadBuilder::new();
-                        if builder.push_bytes(&frag_bytes).is_none() {
+                        if builder.push_bytes(&raw_packet[..unfrag_len]).is_none() {
                             self.stats.record_header_error();
                             return Ipv6ProcessResult::Error;
                         }
-                        append_payload(&mut quoted, builder.build());
-                        Ipv6ProcessResult::ReassemblyError(error, src, dst, quoted)
-                    }
+                        builder.build()
+                    };
+                    let Some(frag_payload_offset) = subslice_offset(raw_packet, frag_payload)
+                    else {
+                        self.stats.record_header_error();
+                        return Ipv6ProcessResult::Error;
+                    };
+                    (
+                        src,
+                        dst,
+                        unfrag_len,
+                        quoted_unfragmentable,
+                        frag_payload_offset,
+                        frag_payload.len(),
+                        frag_header,
+                    )
+                }
+                _ => return Ipv6ProcessResult::Error,
+            }
+        };
+
+        let original = PacketPayload::single(packet_ref);
+        let (
+            src,
+            dst,
+            unfrag_len,
+            quoted_unfragmentable,
+            frag_payload_offset,
+            frag_payload_len,
+            frag_header,
+        ) = fragment_info;
+        let (unfragmentable_payload, after_unfragmentable) = if unfrag_len == 0 {
+            (None, original)
+        } else {
+            let Some((prefix, remainder)) = split_payload_prefix_owned(original, unfrag_len) else {
+                self.stats.record_header_error();
+                return Ipv6ProcessResult::Error;
+            };
+            (Some(prefix), remainder)
+        };
+        let skip_between = frag_payload_offset.saturating_sub(unfrag_len);
+        let after_fragment_header = if skip_between == 0 {
+            after_unfragmentable
+        } else {
+            let Some((_, remainder)) =
+                split_payload_prefix_owned(after_unfragmentable, skip_between)
+            else {
+                self.stats.record_header_error();
+                return Ipv6ProcessResult::Error;
+            };
+            remainder
+        };
+        let Some((frag_payload_packet, _)) =
+            split_payload_prefix_owned(after_fragment_header, frag_payload_len)
+        else {
+            self.stats.record_header_error();
+            return Ipv6ProcessResult::Error;
+        };
+
+        let (result, expired) = self.reassembler.process_fragment(
+            src,
+            dst,
+            unfragmentable_payload,
+            &frag_header,
+            frag_payload_packet,
+            current_time,
+        );
+
+        match result {
+            Ok(Some(payload)) => Ipv6ProcessResult::Reassembled(payload),
+            Ok(None) => {
+                if let Some((expired_src, expired_dst, quoted, frag_header)) =
+                    expired.into_iter().next()
+                {
+                    Ipv6ProcessResult::ReassemblyTimeout(
+                        expired_src,
+                        expired_dst,
+                        quoted,
+                        frag_header,
+                    )
+                } else {
+                    Ipv6ProcessResult::FragmentPending
                 }
             }
-            _ => Ipv6ProcessResult::Error,
+            Err(error) => {
+                let mut quoted = quoted_unfragmentable;
+                let mut frag_bytes = [0u8; 8];
+                frag_bytes[0] = frag_header.next_header;
+                let off_and_flags = (frag_header.fragment_offset << 3)
+                    | if frag_header.more_fragments { 0x01 } else { 0 };
+                frag_bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
+                frag_bytes[4..8].copy_from_slice(&frag_header.identification.to_be_bytes());
+                let mut builder = PacketPayloadBuilder::new();
+                if builder.push_bytes(&frag_bytes).is_none() {
+                    self.stats.record_header_error();
+                    return Ipv6ProcessResult::Error;
+                }
+                append_payload(&mut quoted, builder.build());
+                Ipv6ProcessResult::ReassemblyError(error, src, dst, quoted)
+            }
         }
     }
 

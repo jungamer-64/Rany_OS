@@ -17,17 +17,17 @@ use crate::net::runtime::device::{self as net_device_runtime, NetDeviceKey};
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::{PoisonLock, PoisonRwLock};
 #[cfg(test)]
-use kernel_api::abi::driver::AbiNetPortOpsV3;
+use kernel_api::abi::driver::AbiNetPortOpsV4;
 use kernel_api::abi::driver::{
     AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
     AbiError as AbiErrorCode, AbiIoCompletion, AbiNetDriverEvent, AbiNetDriverEventKind,
-    AbiNetPortInfo, AbiNetPortKind, AbiNetPortRegistrationV3, AbiNetPortRuntimeV2, AbiNetPortStats,
-    AbiNetRxMeta, AbiNetTxMeta, AbiNvmeNamespaceInfo, AbiNvmeNamespaceRegistration,
-    AbiPacketRefRaw,
+    AbiNetPortInfo, AbiNetPortKind, AbiNetPortRegistrationV4, AbiNetPortRuntimeV3, AbiNetPortStats,
+    AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSegmentV4, AbiNetTxSubmissionV4, AbiNvmeNamespaceInfo,
+    AbiNvmeNamespaceRegistration, AbiPacketRefRaw,
 };
 use kernel_api::service::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
-    NetPortStats, NetRxMeta, NetTxMeta,
+    NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, TxSubmission,
 };
 use kernel_api::service::storage::{StorageDeviceInfo, StorageTransport};
 
@@ -398,7 +398,7 @@ fn leak_driver_name(info: &AbiNetPortInfo) -> &'static str {
 
 struct NetRuntimeState {
     runtime: Arc<dyn NetPortRuntime>,
-    table: AbiNetPortRuntimeV2,
+    table: AbiNetPortRuntimeV3,
 }
 
 extern "C" fn runtime_alloc_packet(runtime_cookie: u64, out_packet: *mut AbiPacketRefRaw) -> i32 {
@@ -451,6 +451,24 @@ extern "C" fn runtime_schedule_event(runtime_cookie: u64, event: AbiNetDriverEve
     }
 }
 
+extern "C" fn runtime_complete_tx_lease(runtime_cookie: u64, lease_id: u64, status: i32) -> i32 {
+    let _state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
+    let result = if AbiErrorCode::from_raw(status).is_success() {
+        Ok(())
+    } else {
+        Err("standalone netdev device completion failed")
+    };
+    if crate::net::runtime::device::complete_tx_lease_in(
+        crate::net::runtime::default_runtime(),
+        lease_id,
+        result,
+    ) {
+        AbiErrorCode::Success as i32
+    } else {
+        AbiErrorCode::DeviceNotFound as i32
+    }
+}
+
 extern "C" fn runtime_update_link(runtime_cookie: u64, up: bool) -> i32 {
     let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
     match state.runtime.update_link(up) {
@@ -480,7 +498,7 @@ extern "C" fn runtime_log(runtime_cookie: u64, level: u32, msg_ptr: *const u8, m
 }
 
 struct NetdevPortAdapter {
-    registration: AbiNetPortRegistrationV3,
+    registration: AbiNetPortRegistrationV4,
     driver_name: &'static str,
     runtime_state: PoisonLock<Option<Box<NetRuntimeState>>>,
 }
@@ -490,7 +508,7 @@ unsafe impl Sync for NetdevPortAdapter {}
 
 impl NetdevPortAdapter {
     fn new(
-        registration: &AbiNetPortRegistrationV3,
+        registration: &AbiNetPortRegistrationV4,
         driver_name: &'static str,
     ) -> Result<Self, AbiErrorCode> {
         Ok(Self {
@@ -523,10 +541,11 @@ impl NetDevicePort for NetdevPortAdapter {
     fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
         let mut state = Box::new(NetRuntimeState {
             runtime,
-            table: AbiNetPortRuntimeV2::new(
+            table: AbiNetPortRuntimeV3::new(
                 0,
                 runtime_alloc_packet,
                 runtime_submit_rx_packet,
+                runtime_complete_tx_lease,
                 runtime_schedule_event,
                 runtime_update_link,
                 runtime_log,
@@ -534,7 +553,7 @@ impl NetDevicePort for NetdevPortAdapter {
         });
         let cookie = (&mut *state) as *mut NetRuntimeState as usize as u64;
         state.table.runtime_cookie = cookie;
-        let table_ptr = &state.table as *const AbiNetPortRuntimeV2;
+        let table_ptr = &state.table as *const AbiNetPortRuntimeV3;
         let status = (self.registration.start)(self.registration.opaque, table_ptr);
         if !AbiErrorCode::from_raw(status).is_success() {
             return Err("standalone netdev start failed");
@@ -552,15 +571,26 @@ impl NetDevicePort for NetdevPortAdapter {
         }
     }
 
-    fn submit_tx(
+    fn submit_tx_chain(
         &self,
-        payload: kernel_api::resource::net::PacketPayload,
+        submission: TxSubmission<'_>,
         meta: NetTxMeta,
     ) -> Result<(), &'static str> {
-        let kernel_api::resource::net::PacketPayload::Single(packet) = payload else {
-            return Err("standalone netdev ABI only supports single-segment TX payloads");
+        let abi_segments: Vec<AbiNetTxSegmentV4> = submission
+            .segments()
+            .iter()
+            .copied()
+            .map(|segment: NetTxSegment| AbiNetTxSegmentV4 {
+                cpu_ptr: segment.cpu_ptr as *const u8,
+                device_addr: segment.device_addr,
+                len: segment.len,
+            })
+            .collect();
+        let abi_submission = AbiNetTxSubmissionV4 {
+            lease_id: submission.lease_id(),
+            segments_ptr: abi_segments.as_ptr(),
+            segments_len: abi_segments.len(),
         };
-        let mut packet = AbiPacketRefRaw::from_packet(packet);
         let abi_meta = AbiNetTxMeta {
             queue_index: meta.queue_index.unwrap_or(0),
             has_queue_index: meta.queue_index.is_some(),
@@ -570,8 +600,11 @@ impl NetDevicePort for NetdevPortAdapter {
             vlan_tag: meta.vlan_tag.unwrap_or(0),
             reserved1: 0,
         };
-        let status =
-            (self.registration.submit_tx_packet)(self.registration.opaque, &mut packet, abi_meta);
+        let status = (self.registration.submit_tx_chain)(
+            self.registration.opaque,
+            &abi_submission,
+            abi_meta,
+        );
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
@@ -669,7 +702,7 @@ impl NetdevBridgeRegistry {
     fn register(
         &self,
         owner: DomainId,
-        registration: &AbiNetPortRegistrationV3,
+        registration: &AbiNetPortRegistrationV4,
     ) -> Result<u64, AbiErrorCode> {
         let key = match registration.info.kind {
             x if x == AbiNetPortKind::Virtio as u32 => {
@@ -786,7 +819,7 @@ mod tests {
     static TEST_NET_INTERRUPT_CALLS: AtomicUsize = AtomicUsize::new(0);
     static TEST_NET_INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
 
-    extern "C" fn test_net_start(_opaque: u64, _runtime: *const AbiNetPortRuntimeV2) -> i32 {
+    extern "C" fn test_net_start(_opaque: u64, _runtime: *const AbiNetPortRuntimeV3) -> i32 {
         AbiErrorCode::Success as i32
     }
 
@@ -796,10 +829,19 @@ mod tests {
 
     extern "C" fn test_net_submit_tx(
         _opaque: u64,
-        packet: *mut AbiPacketRefRaw,
+        submission: *const AbiNetTxSubmissionV4,
         _meta: AbiNetTxMeta,
     ) -> i32 {
-        let _ = unsafe { AbiPacketRefRaw::take(packet) };
+        if submission.is_null() {
+            return AbiErrorCode::InvalidParam as i32;
+        }
+        let submission = unsafe { &*submission };
+        if submission.segments_ptr.is_null() || submission.segments_len == 0 {
+            return AbiErrorCode::InvalidParam as i32;
+        }
+        let _segments = unsafe {
+            core::slice::from_raw_parts(submission.segments_ptr, submission.segments_len)
+        };
         AbiErrorCode::Success as i32
     }
 
@@ -848,14 +890,14 @@ mod tests {
         }
     }
 
-    fn test_net_registration(port_index: u16) -> AbiNetPortRegistrationV3 {
-        AbiNetPortRegistrationV3::new(
+    fn test_net_registration(port_index: u16) -> AbiNetPortRegistrationV4 {
+        AbiNetPortRegistrationV4::new(
             test_net_info(AbiNetPortKind::Virtio, port_index),
             0,
-            AbiNetPortOpsV3 {
+            AbiNetPortOpsV4 {
                 start: test_net_start,
                 bind: test_net_bind,
-                submit_tx_packet: test_net_submit_tx,
+                submit_tx_chain: test_net_submit_tx,
                 poll: test_net_poll,
                 handle_event: test_net_handle_event,
                 stats: test_net_stats,

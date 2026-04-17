@@ -676,6 +676,22 @@ pub struct AbiNetTxMeta {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
+pub struct AbiNetTxSegmentV4 {
+    pub cpu_ptr: *const u8,
+    pub device_addr: u64,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiNetTxSubmissionV4 {
+    pub lease_id: u64,
+    pub segments_ptr: *const AbiNetTxSegmentV4,
+    pub segments_len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct AbiNetDriverEvent {
     pub kind: u32,
     pub queue_index: u16,
@@ -799,23 +815,25 @@ impl Drop for AbiPacketRefRaw {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AbiNetPortRuntimeV2 {
+pub struct AbiNetPortRuntimeV3 {
     pub abi_size: u64,
     pub runtime_cookie: u64,
     pub alloc_packet: extern "C" fn(runtime_cookie: u64, out_packet: *mut AbiPacketRefRaw) -> i32,
     pub submit_rx_packet:
         extern "C" fn(runtime_cookie: u64, packet: *mut AbiPacketRefRaw, meta: AbiNetRxMeta) -> i32,
+    pub complete_tx_lease: extern "C" fn(runtime_cookie: u64, lease_id: u64, status: i32) -> i32,
     pub schedule_event: extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
     pub update_link: extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
     pub log: extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
-    pub reserved: [u64; 3],
+    pub reserved: [u64; 2],
 }
 
-impl AbiNetPortRuntimeV2 {
+impl AbiNetPortRuntimeV3 {
     pub const fn new(
         runtime_cookie: u64,
         alloc_packet: extern "C" fn(u64, *mut AbiPacketRefRaw) -> i32,
         submit_rx_packet: extern "C" fn(u64, *mut AbiPacketRefRaw, AbiNetRxMeta) -> i32,
+        complete_tx_lease: extern "C" fn(u64, u64, i32) -> i32,
         schedule_event: extern "C" fn(u64, AbiNetDriverEvent) -> i32,
         update_link: extern "C" fn(u64, bool) -> i32,
         log: extern "C" fn(u64, u32, *const u8, usize),
@@ -826,24 +844,28 @@ impl AbiNetPortRuntimeV2 {
             runtime_cookie,
             alloc_packet,
             submit_rx_packet,
+            complete_tx_lease,
             schedule_event,
             update_link,
             log,
-            reserved: [0; 3],
+            reserved: [0; 2],
         }
     }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AbiNetPortRegistrationV3 {
+pub struct AbiNetPortRegistrationV4 {
     pub abi_size: u64,
     pub info: AbiNetPortInfo,
     pub opaque: u64,
-    pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV2) -> i32,
+    pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntimeV3) -> i32,
     pub bind: extern "C" fn(opaque: u64, if_id: u16) -> i32,
-    pub submit_tx_packet:
-        extern "C" fn(opaque: u64, packet: *mut AbiPacketRefRaw, meta: AbiNetTxMeta) -> i32,
+    pub submit_tx_chain: extern "C" fn(
+        opaque: u64,
+        submission: *const AbiNetTxSubmissionV4,
+        meta: AbiNetTxMeta,
+    ) -> i32,
     pub poll: extern "C" fn(opaque: u64, if_id: u16) -> i32,
     pub handle_event: extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
     pub stats: extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
@@ -853,10 +875,10 @@ pub struct AbiNetPortRegistrationV3 {
 }
 
 #[derive(Clone, Copy)]
-pub struct AbiNetPortOpsV3 {
-    pub start: extern "C" fn(u64, *const AbiNetPortRuntimeV2) -> i32,
+pub struct AbiNetPortOpsV4 {
+    pub start: extern "C" fn(u64, *const AbiNetPortRuntimeV3) -> i32,
     pub bind: extern "C" fn(u64, u16) -> i32,
-    pub submit_tx_packet: extern "C" fn(u64, *mut AbiPacketRefRaw, AbiNetTxMeta) -> i32,
+    pub submit_tx_chain: extern "C" fn(u64, *const AbiNetTxSubmissionV4, AbiNetTxMeta) -> i32,
     pub poll: extern "C" fn(u64, u16) -> i32,
     pub handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
     pub stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
@@ -864,15 +886,15 @@ pub struct AbiNetPortOpsV3 {
     pub set_interrupts_enabled: extern "C" fn(u64, bool) -> i32,
 }
 
-impl AbiNetPortRegistrationV3 {
-    pub const fn new(info: AbiNetPortInfo, opaque: u64, ops: AbiNetPortOpsV3) -> Self {
+impl AbiNetPortRegistrationV4 {
+    pub const fn new(info: AbiNetPortInfo, opaque: u64, ops: AbiNetPortOpsV4) -> Self {
         Self {
             abi_size: core::mem::size_of::<Self>() as u64,
             info,
             opaque,
             start: ops.start,
             bind: ops.bind,
-            submit_tx_packet: ops.submit_tx_packet,
+            submit_tx_chain: ops.submit_tx_chain,
             poll: ops.poll,
             handle_event: ops.handle_event,
             stats: ops.stats,
@@ -1203,7 +1225,7 @@ pub struct KernelApiV4 {
     pub unregister_nvme_namespace: extern "C" fn(handle: u64) -> i32,
 
     pub register_netdev_port:
-        extern "C" fn(registration: *const AbiNetPortRegistrationV3, out_handle: *mut u64) -> i32,
+        extern "C" fn(registration: *const AbiNetPortRegistrationV4, out_handle: *mut u64) -> i32,
     pub unregister_netdev_port: extern "C" fn(handle: u64) -> i32,
 
     pub reserved: [u64; 2],

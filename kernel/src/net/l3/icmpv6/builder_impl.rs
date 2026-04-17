@@ -1,6 +1,29 @@
 use super::*;
 
 impl Icmpv6Builder {
+    fn append_copied_prefix(
+        target: &mut PacketPayload,
+        source: &PacketPayloadView<'_>,
+        len: usize,
+    ) -> Option<()> {
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        let mut copied = 0usize;
+        source.for_each_chunk(|chunk| {
+            if copied >= len {
+                return;
+            }
+            let take = (len - copied).min(chunk.len());
+            if take > 0 && builder.push_bytes(&chunk[..take]).is_some() {
+                copied += take;
+            }
+        });
+        if copied != len {
+            return None;
+        }
+        crate::net::payload::append_payload(target, builder.build());
+        Some(())
+    }
+
     /// Build an ICMPv6 Echo Reply
     ///
     /// Returns the complete ICMPv6 message with correct checksum
@@ -9,7 +32,7 @@ impl Icmpv6Builder {
         dst: &Ipv6Address,
         identifier: u16,
         sequence: u16,
-        payload: &PacketPayloadView<'_>,
+        payload: PacketPayload,
     ) -> Option<PacketPayload> {
         Self::build_echo(
             src,
@@ -29,7 +52,7 @@ impl Icmpv6Builder {
         dst: &Ipv6Address,
         identifier: u16,
         sequence: u16,
-        payload: &PacketPayloadView<'_>,
+        payload: PacketPayload,
     ) -> Option<PacketPayload> {
         Self::build_echo(
             src,
@@ -48,7 +71,7 @@ impl Icmpv6Builder {
         msg_type: Icmpv6Type,
         identifier: u16,
         sequence: u16,
-        payload: &PacketPayloadView<'_>,
+        payload: PacketPayload,
     ) -> Option<PacketPayload> {
         let payload_len = payload.total_len();
         let total_len = ICMPV6_ECHO_HEADER_SIZE + payload_len;
@@ -65,12 +88,7 @@ impl Icmpv6Builder {
 
         let mut message_payload = PacketPayload::single(packet);
         if payload_len > 0 {
-            let payload_span = crate::net::payload::retain_payload_window_owned(
-                payload.payload().clone(),
-                0,
-                payload_len,
-            )?;
-            crate::net::payload::append_payload(&mut message_payload, payload_span);
+            crate::net::payload::append_payload(&mut message_payload, payload);
         }
 
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
@@ -164,12 +182,7 @@ impl Icmpv6Builder {
 
         let mut message_payload = PacketPayload::single(packet);
         if max_trigger > 0 {
-            let quoted = crate::net::payload::retain_payload_window_owned(
-                trigger_packet.payload().clone(),
-                0,
-                max_trigger,
-            )?;
-            crate::net::payload::append_payload(&mut message_payload, quoted);
+            Self::append_copied_prefix(&mut message_payload, trigger_packet, max_trigger)?;
         }
 
         // Compute checksum

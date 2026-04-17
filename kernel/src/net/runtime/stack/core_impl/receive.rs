@@ -25,7 +25,9 @@ impl NetworkStack {
         let mut packet = Some(packet);
         let result = if is_fragment {
             match packet.take() {
-                Some(packet_ref) => self.ipv4.process_fragment_owned_packet(packet_ref, current_time),
+                Some(packet_ref) => self
+                    .ipv4
+                    .process_fragment_owned_packet(packet_ref, current_time),
                 None => {
                     self.stats.record_rx_error();
                     return;
@@ -61,8 +63,7 @@ impl NetworkStack {
                     original_packet,
                     offset,
                     payload.len(),
-                )
-                else {
+                ) else {
                     self.stats.record_rx_error();
                     return;
                 };
@@ -82,8 +83,7 @@ impl NetworkStack {
                     original_packet,
                     offset,
                     payload.len(),
-                )
-                else {
+                ) else {
                     self.stats.record_rx_error();
                     return;
                 };
@@ -127,8 +127,8 @@ impl NetworkStack {
             }
             Ipv4ProcessResult::Reassembled(payload) => {
                 // Reassembled packets are offloaded through the same async endpoint channel.
-                if let Some(header) = crate::net::payload::PacketPayloadView::new(&payload)
-                    .read_array::<20>(0)
+                if let Some(header) =
+                    crate::net::payload::PacketPayloadView::new(&payload).read_array::<20>(0)
                 {
                     let dst = Ipv4Address::new([header[16], header[17], header[18], header[19]]);
                     if IpProtocol::from(header[9]) == IpProtocol::Tcp
@@ -380,8 +380,7 @@ impl NetworkStack {
                     original_packet,
                     data_offset,
                     payload_len,
-                )
-                else {
+                ) else {
                     self.stats.record_rx_error();
                     return;
                 };
@@ -401,7 +400,8 @@ impl NetworkStack {
                         self.stats.record_rx_error();
                         return;
                     };
-                    let Some(offset) = crate::net::payload::subslice_offset(packet_ref.data(), payload)
+                    let Some(offset) =
+                        crate::net::payload::subslice_offset(packet_ref.data(), payload)
                     else {
                         self.stats.record_rx_error();
                         return;
@@ -417,8 +417,7 @@ impl NetworkStack {
                     original_packet,
                     offset,
                     payload_len,
-                )
-                else {
+                ) else {
                     self.stats.record_rx_error();
                     return;
                 };
@@ -435,7 +434,8 @@ impl NetworkStack {
                         self.stats.record_rx_error();
                         return;
                     };
-                    let Some(offset) = crate::net::payload::subslice_offset(packet_ref.data(), payload)
+                    let Some(offset) =
+                        crate::net::payload::subslice_offset(packet_ref.data(), payload)
                     else {
                         self.stats.record_rx_error();
                         return;
@@ -610,14 +610,13 @@ impl NetworkStack {
                 }
 
                 if let Some(src_addr) = reply_src {
-                    let echo_data = crate::net::payload::PacketPayloadView::new(&echo_data);
                     if let Some(if_id) = if_id {
                         self.send_icmpv6_echo_reply_with_src_on(
-                            if_id, src_addr, reply_dst, identifier, sequence, &echo_data,
+                            if_id, src_addr, reply_dst, identifier, sequence, echo_data,
                         );
                     } else {
                         self.send_icmpv6_echo_reply_with_src(
-                            src_addr, reply_dst, identifier, sequence, &echo_data,
+                            src_addr, reply_dst, identifier, sequence, echo_data,
                         );
                     }
                 }
@@ -689,11 +688,9 @@ impl NetworkStack {
                     if let Some((final_proto, transport_payload)) =
                         crate::net::payload::ipv6_transport_payload(&quoted_packet)
                     {
-                        let transport_data =
-                            crate::net::payload::PacketPayloadView::new(&transport_payload);
                         match final_proto {
                             IpProtocol::Tcp => {
-                                if let Some(header) = transport_data.read_array::<8>(0) {
+                                if let Some(header) = transport_payload.read_array::<8>(0) {
                                     let src_port = u16::from_be_bytes([header[0], header[1]]);
                                     let dst_port = u16::from_be_bytes([header[2], header[3]]);
                                     let seq_num = u32::from_be_bytes([
@@ -718,7 +715,7 @@ impl NetworkStack {
                                 }
                             }
                             IpProtocol::Udp => {
-                                if let Some(header) = transport_data.read_array::<4>(0) {
+                                if let Some(header) = transport_payload.read_array::<4>(0) {
                                     let src_port = u16::from_be_bytes([header[0], header[1]]);
                                     let has_udp_port =
                                         crate::net::l4::endpoint::manager::ENDPOINT_MANAGER

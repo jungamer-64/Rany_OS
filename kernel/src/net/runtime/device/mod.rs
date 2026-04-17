@@ -27,7 +27,7 @@ use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
     NetLogLevel, NetPortKind, NetPortRuntime, NetPortStats, NetRxMeta, NetTxCompletionPolicy,
-    NetTxMeta,
+    NetTxMeta, NetTxSegment, TxLeaseId, TxSubmission,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
@@ -53,6 +53,20 @@ impl TxCompletionState {
             *slot = Some(result);
         }
         self.waker.wake();
+    }
+}
+
+pub(crate) struct TxLeaseState {
+    keepalive: Vec<PacketRef>,
+    completion_id: Option<u64>,
+}
+
+impl TxLeaseState {
+    fn new(keepalive: Vec<PacketRef>, completion_id: Option<u64>) -> Self {
+        Self {
+            keepalive,
+            completion_id,
+        }
     }
 }
 
@@ -126,9 +140,10 @@ pub struct NetDeviceBinding {
 }
 
 #[derive(Debug)]
-struct TxRequest {
-    payload: PacketPayload,
-    meta: NetTxMeta,
+pub(crate) struct TxRequest {
+    pub(crate) lease_id: TxLeaseId,
+    pub(crate) descriptors: Vec<NetTxSegment>,
+    pub(crate) meta: NetTxMeta,
 }
 
 pub struct NetTxQueue {
@@ -146,8 +161,8 @@ impl NetTxQueue {
         }
     }
 
-    pub fn push(&self, payload: PacketPayload, meta: NetTxMeta) -> bool {
-        match self.queue.push(TxRequest { payload, meta }) {
+    pub fn push(&self, request: TxRequest) -> bool {
+        match self.queue.push(request) {
             Ok(()) => {
                 self.waker.wake();
                 true
@@ -301,6 +316,80 @@ pub fn complete_tx_request_in(
         .remove(&completion_id);
     if let Some(state) = state {
         state.complete(result);
+        true
+    } else {
+        false
+    }
+}
+
+fn packet_to_tx_segment(packet: &PacketRef) -> Option<NetTxSegment> {
+    (!packet.is_empty()).then_some(NetTxSegment::new(
+        packet.data().as_ptr(),
+        packet.device_address(),
+        packet.len(),
+    ))
+}
+
+fn payload_to_keepalive_and_descriptors(
+    payload: PacketPayload,
+) -> Option<(Vec<PacketRef>, Vec<NetTxSegment>)> {
+    let keepalive = payload.into_segments();
+    let descriptors: Vec<NetTxSegment> =
+        keepalive.iter().filter_map(packet_to_tx_segment).collect();
+    (!descriptors.is_empty()).then_some((keepalive, descriptors))
+}
+
+pub(crate) fn register_tx_lease_in(
+    runtime: NetRuntimeHandle,
+    keepalive: Vec<PacketRef>,
+    descriptors: Vec<NetTxSegment>,
+    completion_id: Option<u64>,
+) -> Option<TxRequest> {
+    if descriptors.is_empty() {
+        return None;
+    }
+
+    let lease_id = runtime_context_for(runtime)
+        .tx_lease_next_id
+        .fetch_add(1, Ordering::Relaxed);
+    let state = TxLeaseState::new(keepalive, completion_id);
+    runtime_context_for(runtime)
+        .tx_leases
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(lease_id, state);
+    Some(TxRequest {
+        lease_id,
+        descriptors,
+        meta: NetTxMeta::default(),
+    })
+}
+
+fn register_payload_tx_request_in(
+    runtime: NetRuntimeHandle,
+    payload: PacketPayload,
+    meta: NetTxMeta,
+) -> Option<TxRequest> {
+    let (keepalive, descriptors) = payload_to_keepalive_and_descriptors(payload)?;
+    let mut request = register_tx_lease_in(runtime, keepalive, descriptors, meta.completion_id)?;
+    request.meta = meta;
+    Some(request)
+}
+
+pub fn complete_tx_lease_in(
+    runtime: NetRuntimeHandle,
+    lease_id: TxLeaseId,
+    result: TxCompletionResult,
+) -> bool {
+    let lease = runtime_context_for(runtime)
+        .tx_leases
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&lease_id);
+    if let Some(lease) = lease {
+        if let Some(completion_id) = lease.completion_id {
+            let _ = complete_tx_request_in(runtime, completion_id, result);
+        }
         true
     } else {
         false
@@ -493,7 +582,8 @@ impl NetDeviceHandle {
     }
 
     pub fn enqueue_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> bool {
-        self.tx_queue.push(payload, meta)
+        register_payload_tx_request_in(default_runtime(), payload, meta)
+            .is_some_and(|request| self.tx_queue.push(request))
     }
 
     pub fn enqueue_event(&self, event: NetDriverEvent) -> bool {
@@ -552,12 +642,10 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
                 return;
             }
 
-            let completion_id = request.meta.completion_id;
             let completion_policy = request.meta.completion_policy;
-            if let Err(err) = handle.driver.submit_tx(request.payload, request.meta) {
-                if let Some(completion_id) = completion_id {
-                    let _ = complete_tx_request_in(default_runtime(), completion_id, Err(err));
-                }
+            let submission = TxSubmission::new(request.lease_id, &request.descriptors);
+            if let Err(err) = handle.driver.submit_tx_chain(submission, request.meta) {
+                let _ = complete_tx_lease_in(default_runtime(), request.lease_id, Err(err));
                 log::warn!(
                     target: "net::device",
                     "device {:?} TX submission failed: {}",
@@ -565,9 +653,7 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
                     err
                 );
             } else if completion_policy == NetTxCompletionPolicy::QueueAcceptance {
-                if let Some(completion_id) = completion_id {
-                    let _ = complete_tx_request_in(default_runtime(), completion_id, Ok(()));
-                }
+                let _ = complete_tx_lease_in(default_runtime(), request.lease_id, Ok(()));
             }
             pending = handle.tx_queue.pop();
         }
@@ -1360,7 +1446,11 @@ mod tests {
             Ok(())
         }
 
-        fn submit_tx(&self, _payload: PacketPayload, _meta: NetTxMeta) -> Result<(), &'static str> {
+        fn submit_tx_chain(
+            &self,
+            _submission: TxSubmission<'_>,
+            _meta: NetTxMeta,
+        ) -> Result<(), &'static str> {
             Ok(())
         }
 

@@ -67,9 +67,7 @@ impl NetworkEventHandler {
                     return None;
                 }
 
-                let len = (pending_len as u32)
-                    .min(effective_wnd)
-                    .min(tcb.mss as u32) as usize;
+                let len = (pending_len as u32).min(effective_wnd).min(tcb.mss as u32) as usize;
                 if len == 0 {
                     return None;
                 }
@@ -131,6 +129,7 @@ impl NetworkEventHandler {
                             local,
                             remote,
                             tcb.snd_nxt,
+                            data_len,
                             retransmit_segment,
                         );
                         tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);

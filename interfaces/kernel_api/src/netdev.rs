@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-use crate::resource::net::{PacketPayload, PacketRef};
+use crate::resource::net::PacketRef;
 use crate::service::kernel;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -92,6 +92,54 @@ impl Default for NetTxMeta {
     }
 }
 
+pub type TxLeaseId = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct NetTxSegment {
+    pub cpu_ptr: usize,
+    pub device_addr: u64,
+    pub len: usize,
+}
+
+impl NetTxSegment {
+    pub fn new(cpu_ptr: *const u8, device_addr: u64, len: usize) -> Self {
+        Self {
+            cpu_ptr: cpu_ptr as usize,
+            device_addr,
+            len,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TxSubmission<'a> {
+    lease_id: TxLeaseId,
+    segments: &'a [NetTxSegment],
+}
+
+impl<'a> TxSubmission<'a> {
+    pub const fn new(lease_id: TxLeaseId, segments: &'a [NetTxSegment]) -> Self {
+        Self { lease_id, segments }
+    }
+
+    pub const fn lease_id(self) -> TxLeaseId {
+        self.lease_id
+    }
+
+    pub const fn segments(self) -> &'a [NetTxSegment] {
+        self.segments
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.segments.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NetPortStats {
     pub tx_packets: u64,
@@ -151,7 +199,11 @@ pub trait NetDevicePort: Send + Sync {
         Ok(())
     }
 
-    fn submit_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> Result<(), &'static str>;
+    fn submit_tx_chain(
+        &self,
+        submission: TxSubmission<'_>,
+        meta: NetTxMeta,
+    ) -> Result<(), &'static str>;
 
     fn set_interrupts_enabled(&self, _enabled: bool) -> Result<(), &'static str> {
         Ok(())
@@ -228,7 +280,11 @@ mod tests {
             Ok(())
         }
 
-        fn submit_tx(&self, _payload: PacketPayload, _meta: NetTxMeta) -> Result<(), &'static str> {
+        fn submit_tx_chain(
+            &self,
+            _submission: TxSubmission<'_>,
+            _meta: NetTxMeta,
+        ) -> Result<(), &'static str> {
             Ok(())
         }
 

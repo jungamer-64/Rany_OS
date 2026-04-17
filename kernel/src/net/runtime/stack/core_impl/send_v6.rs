@@ -192,8 +192,11 @@ impl NetworkStack {
             packet.set_len(frame_len);
 
             let (fragment_payload, next_remaining) =
-                crate::net::payload::split_payload_prefix_owned(remaining_payload, fragment_data_len)
-                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                crate::net::payload::split_payload_prefix_owned(
+                    remaining_payload,
+                    fragment_data_len,
+                )
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
             remaining_payload = next_remaining;
             let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
             crate::net::payload::append_payload(&mut frame_payload, fragment_payload);
@@ -214,7 +217,7 @@ impl NetworkStack {
         dst: Ipv6Address,
         identifier: u16,
         sequence: u16,
-        echo_data: &crate::net::payload::PacketPayloadView<'_>,
+        echo_data: kernel_api::resource::net::PacketPayload,
     ) {
         let Some(icmpv6_msg) =
             Icmpv6Builder::build_echo_reply(&src, &dst, identifier, sequence, echo_data)
@@ -241,7 +244,7 @@ impl NetworkStack {
         dst: Ipv6Address,
         identifier: u16,
         sequence: u16,
-        echo_data: &crate::net::payload::PacketPayloadView<'_>,
+        echo_data: kernel_api::resource::net::PacketPayload,
     ) {
         let Some(icmpv6_msg) =
             Icmpv6Builder::build_echo_reply(&src, &dst, identifier, sequence, echo_data)

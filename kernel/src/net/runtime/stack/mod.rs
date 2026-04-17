@@ -383,7 +383,6 @@ const NDP_PENDING_QUEUE_SIZE: usize = 16;
 const NDP_PENDING_TIMEOUT_MS: u64 = 3000; // 3秒タイムアウト
 
 /// NDP解決待ちパケット
-#[derive(Clone)]
 pub(crate) enum PendingIpv6Payload {
     Icmpv6(PacketPayload),
     Udp {
@@ -398,7 +397,6 @@ pub(crate) enum PendingIpv6Payload {
 }
 
 /// NDP解決待ちパケット
-#[derive(Clone)]
 pub(crate) struct PendingIpv6Packet {
     /// 送信先IPv6アドレス
     dst: Ipv6Address,
@@ -517,7 +515,6 @@ const ARP_PENDING_QUEUE_SIZE: usize = 16;
 const ARP_PENDING_TIMEOUT_MS: u64 = 3000; // 3秒タイムアウト
 
 /// ARP解決待ちペイロード
-#[derive(Clone)]
 pub(crate) enum PendingIpv4Payload {
     Icmpv4(PacketPayload),
     Udp {
@@ -538,7 +535,6 @@ pub(crate) enum PendingIpv4Payload {
 }
 
 /// ARP解決待ちパケット
-#[derive(Clone)]
 pub(crate) struct PendingIpv4Packet {
     /// 送信先IPv4アドレス
     dst: Ipv4Address,
