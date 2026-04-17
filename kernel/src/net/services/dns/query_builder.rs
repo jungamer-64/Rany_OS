@@ -26,7 +26,7 @@ impl DnsClient {
 
     fn push_dns_name_payload(
         builder: &mut crate::net::payload::PacketPayloadBuilder,
-        labels: &[PayloadSpan],
+        labels: &[OwnedPayloadRange],
     ) -> Result<(), &'static str> {
         for label in labels {
             let len = label.total_len();
@@ -36,12 +36,9 @@ impl DnsClient {
             builder
                 .push_bytes(&[len as u8])
                 .ok_or("Failed to allocate DNS label")?;
-            builder.push_payload(
-                label
-                    .clone()
-                    .into_payload()
-                    .ok_or("Failed to allocate DNS label payload")?,
-            );
+            builder
+                .push_span_ref(label.span())
+                .ok_or("Failed to allocate DNS label payload")?;
         }
         builder
             .push_bytes(&[0])

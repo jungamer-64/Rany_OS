@@ -9,7 +9,7 @@ use super::crypto::*;
 use super::error::{TlsError, TlsResult};
 use super::types::*;
 use crate::net::payload::{
-    PacketPayloadBuilder, PacketPayloadView, PayloadSpan, PayloadSpanRef, append_payload,
+    OwnedPayloadRange, PacketPayloadBuilder, PacketPayloadView, PayloadSpanRef, append_payload,
 };
 use crate::net::security::ecdh;
 use arrayvec::ArrayString;
@@ -223,7 +223,7 @@ pub struct TlsConnection {
     /// TLS 1.3: 導出済みPSK (チケットから導出)
     tls13_psk: Option<TlsBytes<48>>,
     /// TLS 1.3: PSK identity (セッションチケットそのもの)
-    tls13_psk_identity: Option<PayloadSpan>,
+    tls13_psk_identity: Option<OwnedPayloadRange>,
     /// TLS 1.3: チケットage_add値
     tls13_ticket_age_add: u32,
     /// TLS 1.3: 現在の接続がPSKを使用中か
@@ -249,7 +249,7 @@ pub struct TlsConnection {
     /// クライアント認証が要求されたか
     client_auth_requested: bool,
     /// CertificateRequestコンテキスト
-    certificate_request_context: Option<PayloadSpan>,
+    certificate_request_context: Option<OwnedPayloadRange>,
     /// TLS 1.2: 読み取り暗号化が有効か (ChangeCipherSpec受信後)
     read_encryption_active: bool,
     /// TLS 1.2: 書き込み暗号化が有効か (ChangeCipherSpec送信後)
@@ -558,15 +558,11 @@ impl TlsConnection {
         let header = record_span.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
         let content_type = header[0];
         let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
-        let body_range = record_span
+        let _body_range = record_span
             .slice(5, record_len)
             .ok_or(TlsError::DecodeError)?;
-        let body = crate::net::payload::retain_payload_window_owned(
-            record.clone(),
-            body_range.offset(),
-            body_range.total_len(),
-        )
-        .ok_or(TlsError::DecodeError)?;
+        let body = crate::net::payload::retain_payload_window_owned(record, 5, record_len)
+            .ok_or(TlsError::DecodeError)?;
 
         match ContentType::from_u8(content_type) {
             Some(ContentType::Handshake) => {

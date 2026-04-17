@@ -178,20 +178,12 @@ impl TlsConnection {
 
     pub(crate) fn tls13_split_content_type_payload(
         decrypted: &kernel_api::resource::net::PacketPayload,
-    ) -> Option<(u8, crate::net::payload::PayloadSpan)> {
-        let span = crate::net::payload::PayloadSpan::from_owned_range(
-            decrypted.clone(),
-            0,
-            decrypted.total_len(),
-        )?;
+    ) -> Option<(u8, crate::net::payload::PayloadSpanRef<'_>)> {
+        let span = crate::net::payload::PayloadSpanRef::from_payload(decrypted);
         for i in (0..span.total_len()).rev() {
             let byte = span.byte_at(i)?;
             if byte != 0 {
-                return crate::net::payload::PayloadSpan::from_owned_range(
-                    decrypted.clone(),
-                    0,
-                    i,
-                )
+                return crate::net::payload::PayloadSpanRef::from_range(decrypted, 0, i)
                 .map(|inner| (byte, inner));
             }
         }
@@ -310,19 +302,19 @@ impl TlsConnection {
         nonce_builder
             .push_bytes(&data[nonce_start..nonce_end])
             .ok_or(TlsError::DecodeError)?;
-        let nonce = PayloadSpan::from_payload(nonce_builder.build());
+        let nonce = OwnedPayloadRange::from_payload(nonce_builder.build());
 
         let mut ticket_builder = crate::net::payload::PacketPayloadBuilder::new();
         ticket_builder
             .push_bytes(&data[ticket_start..ticket_end])
             .ok_or(TlsError::DecodeError)?;
-        let ticket = PayloadSpan::from_payload(ticket_builder.build());
+        let ticket = OwnedPayloadRange::from_payload(ticket_builder.build());
 
         let mut identity_builder = crate::net::payload::PacketPayloadBuilder::new();
         identity_builder
             .push_bytes(&data[ticket_start..ticket_end])
             .ok_or(TlsError::DecodeError)?;
-        let psk_identity = PayloadSpan::from_payload(identity_builder.build());
+        let psk_identity = OwnedPayloadRange::from_payload(identity_builder.build());
 
         self.tls13_ticket_age_add = age_add;
         self.max_early_data_size = max_early_data_size;

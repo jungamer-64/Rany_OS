@@ -1,9 +1,10 @@
-use crate::net::payload::PayloadSpan;
+use crate::net::payload::{PayloadRange, PayloadSpanRef};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
+use kernel_api::resource::net::PacketPayload;
 
-fn payload_span_to_string(span: &PayloadSpan) -> Option<String> {
+fn payload_span_to_string(span: PayloadSpanRef<'_>) -> Option<String> {
     let mut bytes = Vec::new();
     bytes.resize(span.total_len(), 0);
     if span.copy_into(&mut bytes) != bytes.len() {
@@ -31,7 +32,7 @@ fn is_valid_header_value(value: &str) -> bool {
         .any(|byte| byte == b'\r' || byte == b'\n' || byte == 0)
 }
 
-fn is_valid_header_name_span(span: &PayloadSpan) -> bool {
+fn is_valid_header_name_span(span: PayloadSpanRef<'_>) -> bool {
     if span.is_empty() {
         return false;
     }
@@ -48,7 +49,7 @@ fn is_valid_header_name_span(span: &PayloadSpan) -> bool {
     true
 }
 
-fn is_valid_header_value_span(span: &PayloadSpan) -> bool {
+fn is_valid_header_value_span(span: PayloadSpanRef<'_>) -> bool {
     for index in 0..span.total_len() {
         let Some(byte) = span.byte_at(index) else {
             return false;
@@ -168,30 +169,40 @@ impl HttpHeader {
 
 #[derive(Debug, Clone)]
 pub struct HttpHeaderView {
-    pub name: PayloadSpan,
-    pub value: PayloadSpan,
+    pub name: PayloadRange,
+    pub value: PayloadRange,
 }
 
 impl HttpHeaderView {
-    pub fn try_new(name: PayloadSpan, value: PayloadSpan) -> Option<Self> {
-        let header = Self { name, value };
-
-        if !is_valid_header_name_span(&header.name) || !is_valid_header_value_span(&header.value) {
+    pub fn try_new(name: PayloadSpanRef<'_>, value: PayloadSpanRef<'_>) -> Option<Self> {
+        if !is_valid_header_name_span(name) || !is_valid_header_value_span(value) {
             return None;
         }
 
-        Some(header)
+        Some(Self {
+            name: name.range(),
+            value: value.range(),
+        })
     }
 
-    pub fn name_eq(&self, name: &str) -> bool {
-        self.name.eq_ignore_ascii_case(name.as_bytes())
+    pub fn name_span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
+        self.name.span(payload)
     }
 
-    pub fn typed_name(&self) -> Option<HttpHeaderName> {
-        HttpHeaderName::parse(&payload_span_to_string(&self.name)?)
+    pub fn value_span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
+        self.value.span(payload)
     }
 
-    pub fn typed_value(&self) -> Option<HttpHeaderValue> {
-        HttpHeaderValue::parse(&payload_span_to_string(&self.value)?)
+    pub fn name_eq(&self, payload: &PacketPayload, name: &str) -> bool {
+        self.name_span(payload)
+            .is_some_and(|span| span.eq_ignore_ascii_case(name.as_bytes()))
+    }
+
+    pub fn typed_name(&self, payload: &PacketPayload) -> Option<HttpHeaderName> {
+        HttpHeaderName::parse(&payload_span_to_string(self.name_span(payload)?)?)
+    }
+
+    pub fn typed_value(&self, payload: &PacketPayload) -> Option<HttpHeaderValue> {
+        HttpHeaderValue::parse(&payload_span_to_string(self.value_span(payload)?)?)
     }
 }

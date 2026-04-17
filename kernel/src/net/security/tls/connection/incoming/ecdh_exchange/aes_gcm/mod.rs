@@ -364,7 +364,7 @@ impl TlsConnection {
             builder
                 .push_bytes(&data[1..1 + context_len])
                 .ok_or(TlsError::DecodeError)?;
-            Some(PayloadSpan::from_payload(builder.build()))
+            Some(OwnedPayloadRange::from_payload(builder.build()))
         };
         self.tls13_skip_cert_request_extensions(data, ext_start)?;
         Ok(())

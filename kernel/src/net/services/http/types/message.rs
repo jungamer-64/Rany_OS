@@ -2,7 +2,7 @@ use super::{
     ConnectionDirective, HttpHeader, HttpHeaderName, HttpHeaderValue, HttpMethod, HttpRequestUri,
     HttpStatusCode, HttpVersion,
 };
-use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
+use crate::net::payload::{PacketPayloadBuilder, PayloadRange, PayloadSpanRef};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kernel_api::resource::net::PacketPayload;
@@ -24,7 +24,7 @@ fn write_optional_body(builder: &mut PacketPayloadBuilder, body: Option<PacketPa
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HttpRequest {
     pub method: HttpMethod,
     pub uri: HttpRequestUri,
@@ -106,19 +106,63 @@ impl HttpRequest {
 }
 
 #[derive(Debug, Clone)]
+pub struct HttpBodyView {
+    pub ranges: Vec<PayloadRange>,
+    total_len: usize,
+}
+
+impl HttpBodyView {
+    pub fn from_range(range: PayloadRange) -> Self {
+        Self {
+            total_len: range.total_len(),
+            ranges: alloc::vec![range],
+        }
+    }
+
+    pub fn from_ranges(ranges: Vec<PayloadRange>) -> Self {
+        let total_len = ranges.iter().map(PayloadRange::total_len).sum();
+        Self { ranges, total_len }
+    }
+
+    pub fn total_len(&self) -> usize {
+        self.total_len
+    }
+
+    pub fn spans<'a>(
+        &'a self,
+        payload: &'a PacketPayload,
+    ) -> impl Iterator<Item = PayloadSpanRef<'a>> + 'a {
+        self.ranges.iter().filter_map(|range| range.span(payload))
+    }
+
+    pub fn to_payload(&self, payload: &PacketPayload) -> Option<PacketPayload> {
+        let mut builder = PacketPayloadBuilder::new();
+        for span in self.spans(payload) {
+            builder.push_span_ref(span)?;
+        }
+        Some(builder.build())
+    }
+}
+
+#[derive(Debug)]
 pub struct HttpInboundRequest {
+    pub payload: PacketPayload,
     pub method: HttpMethod,
-    pub uri: PayloadSpan,
+    pub uri: PayloadRange,
     pub version: HttpVersion,
     pub headers: Vec<super::HttpHeaderView>,
-    pub body: Option<PayloadSpan>,
+    pub body: Option<HttpBodyView>,
 }
 
 impl HttpInboundRequest {
-    pub fn get_header(&self, name: &str) -> Option<&PayloadSpan> {
+    pub fn uri(&self) -> Option<PayloadSpanRef<'_>> {
+        self.uri.span(&self.payload)
+    }
+
+    pub fn get_header(&self, name: &str) -> Option<PayloadSpanRef<'_>> {
         self.headers.iter().find_map(|header| {
-            if header.name_eq(name) {
-                Some(&header.value)
+            if header.name_eq(&self.payload, name) {
+                header.value_span(&self.payload)
             } else {
                 None
             }
@@ -126,7 +170,8 @@ impl HttpInboundRequest {
     }
 
     pub fn uri_eq(&self, uri: &str) -> bool {
-        self.uri.eq_bytes(uri.as_bytes())
+        self.uri()
+            .is_some_and(|request_uri| request_uri.eq_bytes(uri.as_bytes()))
     }
 
     pub fn connection_is(&self, value: &str) -> bool {
@@ -140,19 +185,19 @@ impl HttpInboundRequest {
 
     pub fn connection_directive(&self) -> Option<ConnectionDirective> {
         self.get_header("Connection")
-            .and_then(ConnectionDirective::parse_span)
+            .and_then(ConnectionDirective::parse_span_ref)
     }
 
-    pub fn content_type(&self) -> Option<PayloadSpan> {
-        self.get_header("Content-Type").cloned()
+    pub fn content_type(&self) -> Option<PayloadSpanRef<'_>> {
+        self.get_header("Content-Type")
     }
 
     pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body.clone().and_then(PayloadSpan::into_payload)
+        self.body.as_ref().and_then(|body| body.to_payload(&self.payload))
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HttpResponse {
     pub version: HttpVersion,
     pub status_code: HttpStatusCode,
@@ -211,20 +256,25 @@ impl HttpResponse {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HttpInboundResponse {
+    pub payload: PacketPayload,
     pub version: HttpVersion,
     pub status_code: HttpStatusCode,
-    pub reason_phrase: PayloadSpan,
+    pub reason_phrase: PayloadRange,
     pub headers: Vec<super::HttpHeaderView>,
-    pub body: Option<PayloadSpan>,
+    pub body: Option<HttpBodyView>,
 }
 
 impl HttpInboundResponse {
-    pub fn get_header(&self, name: &str) -> Option<&PayloadSpan> {
+    pub fn reason_phrase(&self) -> Option<PayloadSpanRef<'_>> {
+        self.reason_phrase.span(&self.payload)
+    }
+
+    pub fn get_header(&self, name: &str) -> Option<PayloadSpanRef<'_>> {
         self.headers.iter().find_map(|header| {
-            if header.name_eq(name) {
-                Some(&header.value)
+            if header.name_eq(&self.payload, name) {
+                header.value_span(&self.payload)
             } else {
                 None
             }
@@ -232,6 +282,6 @@ impl HttpInboundResponse {
     }
 
     pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body.clone().and_then(PayloadSpan::into_payload)
+        self.body.as_ref().and_then(|body| body.to_payload(&self.payload))
     }
 }

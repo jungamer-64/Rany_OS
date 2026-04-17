@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpan};
+use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder, PacketPayloadView};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::services::dns::DnsNameOwned;
 use crate::sync::PoisonLock;
@@ -564,7 +564,7 @@ fn push_dns_name_payload(builder: &mut PacketPayloadBuilder, name: &DnsNameOwned
             return None;
         }
         builder.push_bytes(&[len as u8])?;
-        builder.push_payload(label.clone().into_payload()?);
+        builder.push_span_ref(label.span())?;
     }
     builder.push_bytes(&[0])
 }
@@ -823,17 +823,16 @@ pub fn decode_dns_name_owned_view(
             return None;
         }
 
-        labels.push(PayloadSpan::from_owned_range(
-            view.payload().clone(),
-            current,
-            label_len,
-        )?);
+        let span = crate::net::payload::PayloadSpanRef::from_range(view.payload(), current, label_len)?;
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        builder.push_span_ref(span)?;
+        labels.push(OwnedPayloadRange::from_payload(builder.build()));
         current += label_len;
     }
 
     let text_len = labels
         .iter()
-        .map(PayloadSpan::total_len)
+        .map(OwnedPayloadRange::total_len)
         .sum::<usize>()
         .saturating_add(labels.len().saturating_sub(1));
     Some((DnsNameOwned::from_parsed_labels(labels, text_len), final_offset))

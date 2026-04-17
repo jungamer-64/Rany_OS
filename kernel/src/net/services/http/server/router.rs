@@ -2,7 +2,7 @@ use alloc::string::{String, ToString};
 use alloc::{format, vec};
 use core::sync::atomic::Ordering;
 
-use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
+use crate::net::payload::{PacketPayloadBuilder, PayloadSpanRef};
 use crate::net::services::http::types::{
     ConnectionDirective, HttpInboundRequest, HttpMethod, HttpVersion,
 };
@@ -409,9 +409,9 @@ fn build_html_response(
     build_custom_response(status, "text/html; charset=utf-8", body, keep_alive)
 }
 
-enum HeaderValue {
+enum HeaderValue<'a> {
     Text(String),
-    PayloadOrDefault(Option<PayloadSpan>),
+    PayloadOrDefault(Option<PayloadSpanRef<'a>>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -431,17 +431,15 @@ fn push_builder_str(
 
 fn write_content_type_header(
     builder: &mut PacketPayloadBuilder,
-    content_type: HeaderValue,
+    content_type: HeaderValue<'_>,
 ) -> Result<(), HttpResponseBuildError> {
     push_builder_str(builder, "Content-Type: ")?;
     match content_type {
         HeaderValue::Text(value) => push_builder_str(builder, &value)?,
         HeaderValue::PayloadOrDefault(Some(value)) => {
-            let payload = value
-                .clone()
-                .into_payload()
+            builder
+                .push_span_ref(value)
                 .ok_or(HttpResponseBuildError::InvalidPayloadSpan)?;
-            builder.push_payload(payload);
         }
         HeaderValue::PayloadOrDefault(None) => {
             push_builder_str(builder, "application/octet-stream")?;
@@ -496,7 +494,7 @@ fn write_content_length_header(
 
 fn build_payload_response(
     status: &str,
-    content_type: HeaderValue,
+    content_type: HeaderValue<'_>,
     body: PacketPayload,
     keep_alive: bool,
     additional_headers: &[(&str, &str)],

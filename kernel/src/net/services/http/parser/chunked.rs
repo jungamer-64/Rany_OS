@@ -1,26 +1,29 @@
-use super::{HttpParseError, HttpParser, MAX_CONTENT_LENGTH};
-use crate::net::payload::{PayloadSequence, PayloadSpan};
-use kernel_api::resource::net::PacketPayload;
+use super::{HttpBodyView, HttpParseError, HttpParser, MAX_CONTENT_LENGTH};
+use crate::net::payload::{PayloadRange, PayloadSpanRef};
 
-fn span_slice(span: &PayloadSpan, offset: usize, len: usize) -> Option<PayloadSpan> {
-    let sub = span.as_ref().slice(offset, len)?;
-    PayloadSpan::from_owned_range(sub.payload().clone(), sub.offset(), sub.total_len())
+fn span_slice(
+    span: PayloadSpanRef<'_>,
+    offset: usize,
+    len: usize,
+) -> Option<PayloadSpanRef<'_>> {
+    span.slice(offset, len)
 }
 
 impl HttpParser {
-    fn parse_chunk_size(&self, line: &PayloadSpan) -> Option<usize> {
+    fn parse_chunk_size(&self, line: &PayloadSpanRef<'_>) -> Option<usize> {
         let semicolon = line.find_bytes(b";").unwrap_or(line.total_len());
-        let size_span = span_slice(line, 0, semicolon)?;
+        let size_span = span_slice(*line, 0, semicolon)?;
         let size = size_span.trim_ascii_whitespace();
         size.parse_ascii_hex_usize()
     }
 
     pub(super) fn parse_chunked_body(
         &self,
-        full: &PayloadSpan,
+        full: &PayloadSpanRef<'_>,
         mut cursor: usize,
-    ) -> Result<Option<(PacketPayload, usize)>, HttpParseError> {
-        let mut body = PayloadSequence::new();
+    ) -> Result<Option<(HttpBodyView, usize)>, HttpParseError> {
+        let mut body = alloc::vec::Vec::new();
+        let mut total_len = 0usize;
 
         loop {
             let Some((chunk_size, next_cursor)) = self.read_chunk_header(full, cursor)? else {
@@ -32,7 +35,13 @@ impl HttpParser {
                 return self.finish_chunked_body(full, cursor, body);
             }
 
-            let Some(next_cursor) = self.append_chunk_data(full, &mut body, cursor, chunk_size)?
+            let Some(next_cursor) = self.append_chunk_data(
+                full,
+                &mut body,
+                &mut total_len,
+                cursor,
+                chunk_size,
+            )?
             else {
                 return Ok(None);
             };
@@ -42,14 +51,14 @@ impl HttpParser {
 
     fn read_chunk_header(
         &self,
-        full: &PayloadSpan,
+        full: &PayloadSpanRef<'_>,
         cursor: usize,
     ) -> Result<Option<(usize, usize)>, HttpParseError> {
         let Some(chunk_len_end) = self.find_line_end(full, cursor) else {
             return Ok(None);
         };
-        let chunk_len =
-            span_slice(full, cursor, chunk_len_end - cursor).ok_or(HttpParseError::InvalidFormat)?;
+        let chunk_len = span_slice(*full, cursor, chunk_len_end - cursor)
+            .ok_or(HttpParseError::InvalidFormat)?;
         let chunk_size = self
             .parse_chunk_size(&chunk_len)
             .ok_or(HttpParseError::InvalidFormat)?;
@@ -61,13 +70,13 @@ impl HttpParser {
 
     fn append_chunk_data(
         &self,
-        full: &PayloadSpan,
-        body: &mut PayloadSequence,
+        full: &PayloadSpanRef<'_>,
+        body: &mut alloc::vec::Vec<PayloadRange>,
+        total_len: &mut usize,
         cursor: usize,
         chunk_size: usize,
     ) -> Result<Option<usize>, HttpParseError> {
-        let next_body_len = body
-            .total_len()
+        let next_body_len = total_len
             .checked_add(chunk_size)
             .ok_or(HttpParseError::InvalidFormat)?;
         if next_body_len > MAX_CONTENT_LENGTH {
@@ -82,8 +91,13 @@ impl HttpParser {
             return Ok(None);
         }
 
-        body.push(span_slice(full, cursor, chunk_size).ok_or(HttpParseError::InvalidFormat)?);
-        if !span_slice(full, cursor + chunk_size, 2)
+        body.push(
+            span_slice(*full, cursor, chunk_size)
+                .ok_or(HttpParseError::InvalidFormat)?
+                .range(),
+        );
+        *total_len = next_body_len;
+        if !span_slice(*full, cursor + chunk_size, 2)
             .ok_or(HttpParseError::InvalidFormat)?
             .eq_bytes(b"\r\n")
         {
@@ -95,19 +109,19 @@ impl HttpParser {
 
     fn finish_chunked_body(
         &self,
-        full: &PayloadSpan,
+        full: &PayloadSpanRef<'_>,
         cursor: usize,
-        body: PayloadSequence,
-    ) -> Result<Option<(PacketPayload, usize)>, HttpParseError> {
+        body: alloc::vec::Vec<PayloadRange>,
+    ) -> Result<Option<(HttpBodyView, usize)>, HttpParseError> {
         let Some(trailer_end) = self.parse_chunked_trailers(full, cursor)? else {
             return Ok(None);
         };
-        Ok(Some((body.into_payload().unwrap_or_default(), trailer_end)))
+        Ok(Some((HttpBodyView::from_ranges(body), trailer_end)))
     }
 
     fn parse_chunked_trailers(
         &self,
-        full: &PayloadSpan,
+        full: &PayloadSpanRef<'_>,
         mut cursor: usize,
     ) -> Result<Option<usize>, HttpParseError> {
         loop {
@@ -127,11 +141,12 @@ impl HttpParser {
 
     fn parse_non_empty_trailer_line(
         &self,
-        full: &PayloadSpan,
+        full: &PayloadSpanRef<'_>,
         cursor: usize,
         line_end: usize,
     ) -> Result<usize, HttpParseError> {
-        let line = span_slice(full, cursor, line_end - cursor).ok_or(HttpParseError::InvalidFormat)?;
+        let line = span_slice(*full, cursor, line_end - cursor)
+            .ok_or(HttpParseError::InvalidFormat)?;
         let (name, value) = self.parse_header_name_value(&line)?;
         self.validate_header_name_value(0, &name, &value)?;
         // Trailer ヘッダーは現時点では検証のみ行い、レスポンス構造体には保持しない。

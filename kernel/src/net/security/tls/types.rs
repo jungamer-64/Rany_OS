@@ -2,7 +2,7 @@
 // tls/types.rs - TLS Type Definitions
 // ============================================================================
 
-use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
+use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder};
 use arrayvec::{ArrayString, ArrayVec};
 use kernel_api::resource::net::PacketPayload;
 
@@ -594,7 +594,7 @@ pub enum TlsConfigError {
 }
 
 /// TLS設定
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct TlsConfig {
     /// 最小バージョン
     pub min_version: TlsVersion,
@@ -723,16 +723,16 @@ impl TlsConfig {
 // ============================================================================
 
 /// 証明書
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Certificate {
     /// DERエンコードされた証明書
-    pub der: PayloadSpan,
+    pub der: OwnedPayloadRange,
 }
 
 impl Certificate {
     pub fn from_der_payload(der: PacketPayload) -> Self {
         Self {
-            der: PayloadSpan::from_payload(der),
+            der: OwnedPayloadRange::from_payload(der),
         }
     }
 
@@ -784,16 +784,16 @@ impl Certificate {
             builder.push_bytes(&chunk[..chunk_len])?;
         }
         Some(Self {
-            der: PayloadSpan::from_payload(builder.build()),
+            der: OwnedPayloadRange::from_payload(builder.build()),
         })
     }
 }
 
 /// 秘密鍵
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct PrivateKey {
     /// DERエンコードされた秘密鍵
-    pub der: PayloadSpan,
+    pub der: OwnedPayloadRange,
     /// 鍵タイプ
     pub key_type: KeyType,
 }
@@ -807,7 +807,7 @@ pub enum KeyType {
 }
 
 /// 簡易Base64デコード
-pub(crate) fn base64_decode_payload(input: &str) -> Option<PayloadSpan> {
+pub(crate) fn base64_decode_payload(input: &str) -> Option<OwnedPayloadRange> {
     let mut builder = PacketPayloadBuilder::new();
     let mut chunk = [0u8; 3];
     let mut chunk_len = 0usize;
@@ -839,7 +839,7 @@ pub(crate) fn base64_decode_payload(input: &str) -> Option<PayloadSpan> {
         builder.push_bytes(&chunk[..chunk_len])?;
     }
 
-    Some(PayloadSpan::from_payload(builder.build()))
+    Some(OwnedPayloadRange::from_payload(builder.build()))
 }
 
 fn base64_value(c: char) -> Option<u8> {
@@ -858,29 +858,30 @@ fn base64_value(c: char) -> Option<u8> {
 // ============================================================================
 
 /// サーバー証明書から抽出した公開鍵情報
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ServerPublicKey {
     /// RSA公開鍵 (modulus, exponent をビッグエンディアンで保持)
     Rsa {
-        modulus: PayloadSpan,
-        exponent: PayloadSpan,
+        modulus: OwnedPayloadRange,
+        exponent: OwnedPayloadRange,
     },
     /// ECDSA P-256公開鍵 (非圧縮ポイント 04 || x || y)
-    EcdsaP256 { point: PayloadSpan },
+    EcdsaP256 { point: OwnedPayloadRange },
     /// ECDSA P-384公開鍵 (非圧縮ポイント 04 || x || y)
-    EcdsaP384 { point: PayloadSpan },
+    EcdsaP384 { point: OwnedPayloadRange },
 }
 
 /// TLS 1.3 セッションチケット (RFC 8446 Section 4.6.1)
+#[derive(Debug)]
 pub struct SessionTicket {
     /// チケット有効期間（秒）
     pub lifetime: u32,
     /// チケットエイジ加算値（難読化用）
     pub age_add: u32,
     /// チケットnonce
-    pub nonce: PayloadSpan,
+    pub nonce: OwnedPayloadRange,
     /// チケットデータ
-    pub ticket: PayloadSpan,
+    pub ticket: OwnedPayloadRange,
 }
 
 // ============================================================================

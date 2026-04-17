@@ -1,5 +1,5 @@
 use super::*;
-use crate::net::payload::PayloadSpan;
+use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder, PayloadSpanRef};
 
 struct DnsSectionCounts {
     qcount: usize,
@@ -29,6 +29,18 @@ struct DnsRecordHeader {
 }
 
 impl DnsClient {
+    fn copied_owned_range(
+        &self,
+        payload: &kernel_api::resource::net::PacketPayload,
+        offset: usize,
+        len: usize,
+    ) -> Option<OwnedPayloadRange> {
+        let span = PayloadSpanRef::from_range(payload, offset, len)?;
+        let mut builder = PacketPayloadBuilder::new();
+        builder.push_span_ref(span)?;
+        Some(OwnedPayloadRange::from_payload(builder.build()))
+    }
+
     pub(crate) fn raw_record_span(
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
@@ -36,8 +48,8 @@ impl DnsClient {
         len: usize,
     ) -> DnsRecordData {
         DnsRecordData::Raw(
-            PayloadSpan::from_owned_range(payload.clone(), offset, len).unwrap_or_else(|| {
-                PayloadSpan::from_payload(kernel_api::resource::net::PacketPayload::default())
+            self.copied_owned_range(payload, offset, len).unwrap_or_else(|| {
+                OwnedPayloadRange::from_payload(kernel_api::resource::net::PacketPayload::default())
             }),
         )
     }
@@ -316,12 +328,12 @@ impl DnsClient {
         payload: &kernel_api::resource::net::PacketPayload,
         offset: usize,
         len: u8,
-    ) -> Result<PayloadSpan, DnsResponseCode> {
+    ) -> Result<OwnedPayloadRange, DnsResponseCode> {
         if len > 63 {
             return Err(DnsResponseCode::FormatError);
         }
 
-        PayloadSpan::from_owned_range(payload.clone(), offset + 1, len as usize)
+        self.copied_owned_range(payload, offset + 1, len as usize)
             .ok_or(DnsResponseCode::FormatError)
     }
 
@@ -393,7 +405,7 @@ impl DnsClient {
             if offset.saturating_add(len) > end {
                 return self.raw_record_span(payload, rdata_offset, rdlength);
             }
-            let Some(span) = PayloadSpan::from_owned_range(payload.clone(), offset, len) else {
+            let Some(span) = self.copied_owned_range(payload, offset, len) else {
                 return self.raw_record_span(payload, rdata_offset, rdlength);
             };
             text_len = text_len.saturating_add(span.total_len());
@@ -412,8 +424,9 @@ impl DnsClient {
         records: Vec<DnsRecordMeta>,
     ) -> DnsResponseView {
         self.stats.responses_received.fetch_add(1, Ordering::Relaxed);
-        let response_payload =
-            crate::net::payload::retain_payload_window_owned(payload.clone(), 0, payload.total_len())
+        let response_payload = self
+            .copied_owned_range(payload, 0, payload.total_len())
+            .and_then(OwnedPayloadRange::into_payload)
             .unwrap_or_default();
         DnsResponseView {
             payload: response_payload,

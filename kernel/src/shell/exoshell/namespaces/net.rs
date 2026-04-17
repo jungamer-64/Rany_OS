@@ -1301,7 +1301,7 @@ impl NetNamespace {
     // ヘルパー
     // ================================================================
 
-    fn payload_span_to_string(span: &crate::net::payload::PayloadSpan) -> String {
+    fn payload_span_to_string(span: crate::net::payload::PayloadSpanRef<'_>) -> String {
         let mut out = String::with_capacity(span.total_len());
         for index in 0..span.total_len() {
             if let Some(byte) = span.byte_at(index) {
@@ -1317,7 +1317,7 @@ impl NetNamespace {
             if index > 0 {
                 out.push('.');
             }
-            out.push_str(&Self::payload_span_to_string(label));
+            out.push_str(&Self::payload_span_to_string(label.span()));
         }
         out
     }
@@ -1325,7 +1325,7 @@ impl NetNamespace {
     fn dns_txt_to_string(txt: &crate::net::services::dns::DnsTxtView) -> String {
         let mut out = String::with_capacity(txt.text_len());
         for span in txt.spans() {
-            out.push_str(&Self::payload_span_to_string(span));
+            out.push_str(&Self::payload_span_to_string(span.span()));
         }
         out
     }

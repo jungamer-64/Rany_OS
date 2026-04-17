@@ -791,18 +791,18 @@ impl DhcpClient {
             59 => opts.rebinding_time = Self::parse_u32_option_ref(opt_data),
             54 => opts.server_id = Self::parse_ipv4_option_ref(opt_data),
             12 => {
-                opts.hostname = PayloadSpan::from_owned_range(
-                    opt_data.payload().clone(),
-                    opt_data.offset(),
-                    opt_data.total_len(),
-                )
+                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                if builder.push_span_ref(opt_data).is_some() {
+                    opts.hostname =
+                        Some(crate::net::payload::OwnedPayloadRange::from_payload(builder.build()));
+                }
             }
             15 => {
-                opts.domain_name = PayloadSpan::from_owned_range(
-                    opt_data.payload().clone(),
-                    opt_data.offset(),
-                    opt_data.total_len(),
-                )
+                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                if builder.push_span_ref(opt_data).is_some() {
+                    opts.domain_name =
+                        Some(crate::net::payload::OwnedPayloadRange::from_payload(builder.build()));
+                }
             }
             _ => {}
         }
@@ -882,15 +882,17 @@ impl DhcpClient {
                 12 => {
                     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
                     if builder.push_bytes(opt_data).is_some() {
-                        opts.hostname =
-                            Some(crate::net::payload::PayloadSpan::from_payload(builder.build()));
+                        opts.hostname = Some(crate::net::payload::OwnedPayloadRange::from_payload(
+                            builder.build(),
+                        ));
                     }
                 }
                 15 => {
                     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
                     if builder.push_bytes(opt_data).is_some() {
-                        opts.domain_name =
-                            Some(crate::net::payload::PayloadSpan::from_payload(builder.build()));
+                        opts.domain_name = Some(
+                            crate::net::payload::OwnedPayloadRange::from_payload(builder.build()),
+                        );
                     }
                 }
                 _ => {}

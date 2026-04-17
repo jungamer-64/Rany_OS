@@ -45,10 +45,11 @@ impl TlsConnection {
         if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type_payload(decrypted) {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
-                    crate::net::payload::append_payload(
-                        plaintext,
-                        inner_data.clone().into_payload().ok_or(TlsError::DecodeError)?,
-                    );
+                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                    builder
+                        .push_span_ref(inner_data)
+                        .ok_or(TlsError::DecodeError)?;
+                    crate::net::payload::append_payload(plaintext, builder.build());
                 }
                 Some(ContentType::Handshake) => {
                     // Post-handshake: NewSessionTicket, KeyUpdate
@@ -59,9 +60,11 @@ impl TlsConnection {
                     )?;
                 }
                 Some(ContentType::Alert) => {
-                    self.handle_alert_payload(
-                        &inner_data.clone().into_payload().ok_or(TlsError::DecodeError)?,
-                    )?;
+                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+                    builder
+                        .push_span_ref(inner_data)
+                        .ok_or(TlsError::DecodeError)?;
+                    self.handle_alert_payload(&builder.build())?;
                 }
                 _ => {}
             }
@@ -232,9 +235,9 @@ impl TlsConnection {
         default_version: TlsVersion,
         tls13_using_psk: &mut bool,
         has_psk: bool,
-    ) -> TlsResult<(TlsVersion, Option<(u16, PayloadSpan)>)> {
+    ) -> TlsResult<(TlsVersion, Option<(u16, OwnedPayloadRange)>)> {
         let mut actual_version = default_version;
-        let mut server_key_share: Option<(u16, PayloadSpan)> = None;
+        let mut server_key_share: Option<(u16, OwnedPayloadRange)> = None;
 
         if ext_offset + 2 > data.len() {
             return Ok((actual_version, server_key_share));
@@ -271,10 +274,10 @@ impl TlsConnection {
         Ok((actual_version, server_key_share))
     }
 
-    fn payload_span_from_slice(data: &[u8]) -> TlsResult<PayloadSpan> {
+    fn payload_span_from_slice(data: &[u8]) -> TlsResult<OwnedPayloadRange> {
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder.push_bytes(data).ok_or(TlsError::DecodeError)?;
-        Ok(PayloadSpan::from_payload(builder.build()))
+        Ok(OwnedPayloadRange::from_payload(builder.build()))
     }
 
     pub(crate) fn apply_server_hello_extension(
@@ -283,7 +286,7 @@ impl TlsConnection {
         ext_type: u16,
         ext_len: usize,
         actual_version: &mut TlsVersion,
-        server_key_share: &mut Option<(u16, PayloadSpan)>,
+        server_key_share: &mut Option<(u16, OwnedPayloadRange)>,
         tls13_using_psk: &mut bool,
         has_psk: bool,
     ) -> TlsResult<()> {
@@ -299,7 +302,10 @@ impl TlsConnection {
             51 if ext_len >= 2 => {
                 let group = u16::from_be_bytes([data[offset], data[offset + 1]]);
                 if ext_len == 2 {
-                    *server_key_share = Some((group, PayloadSpan::from_payload(PacketPayload::default())));
+                    *server_key_share = Some((
+                        group,
+                        OwnedPayloadRange::from_payload(PacketPayload::default()),
+                    ));
                 } else {
                     if ext_len < 4 {
                         return Err(TlsError::DecodeError);
@@ -327,7 +333,7 @@ impl TlsConnection {
     pub(super) fn handle_tls13_hello(
         &mut self,
         cipher: CipherSuite,
-        server_key_share: Option<(u16, PayloadSpan)>,
+        server_key_share: Option<(u16, OwnedPayloadRange)>,
     ) -> TlsResult<()> {
         self.is_tls13 = true;
 
@@ -400,7 +406,7 @@ impl TlsConnection {
     pub(super) fn process_hello_retry_request(
         &mut self,
         cipher: CipherSuite,
-        _server_key_share: &Option<(u16, PayloadSpan)>,
+        _server_key_share: &Option<(u16, OwnedPayloadRange)>,
     ) -> TlsResult<()> {
         // RFC 8446 Section 4.4.1: synthetic message_hash に置き換え
         // MessageHash = Handshake(254, Hash(messages_so_far))

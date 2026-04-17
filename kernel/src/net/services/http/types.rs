@@ -8,7 +8,7 @@ mod primitives;
 mod uri;
 
 pub use header::{HttpHeader, HttpHeaderName, HttpHeaderValue, HttpHeaderView};
-pub use message::{HttpInboundRequest, HttpInboundResponse, HttpRequest, HttpResponse};
+pub use message::{HttpBodyView, HttpInboundRequest, HttpInboundResponse, HttpRequest, HttpResponse};
 pub use primitives::{
     ConnectionDirective, HttpMethod, HttpPort, HttpScheme, HttpStatusCode, HttpVersion,
 };

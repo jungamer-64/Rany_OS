@@ -16,6 +16,12 @@ pub struct PayloadRange {
     len: usize,
 }
 
+#[derive(Debug)]
+pub struct OwnedPayloadRange {
+    payload: PacketPayload,
+    range: PayloadRange,
+}
+
 impl PayloadRange {
     pub const fn new(offset: usize, len: usize) -> Self {
         Self { offset, len }
@@ -29,8 +35,134 @@ impl PayloadRange {
         self.len
     }
 
+    pub const fn end_offset(&self) -> usize {
+        self.offset + self.len
+    }
+
     pub fn span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
         PayloadSpanRef::from_range(payload, self.offset, self.len)
+    }
+
+    pub fn slice(self, offset: usize, len: usize) -> Option<Self> {
+        if offset > self.len || len > self.len.saturating_sub(offset) {
+            return None;
+        }
+        Some(Self::new(self.offset + offset, len))
+    }
+}
+
+impl OwnedPayloadRange {
+    pub fn from_payload(payload: PacketPayload) -> Self {
+        let total_len = payload.total_len();
+        Self {
+            payload,
+            range: PayloadRange::new(0, total_len),
+        }
+    }
+
+    pub fn from_owned_range(payload: PacketPayload, offset: usize, len: usize) -> Option<Self> {
+        let range = PayloadRange::new(offset, len);
+        range.span(&payload)?;
+        Some(Self { payload, range })
+    }
+
+    pub const fn payload(&self) -> &PacketPayload {
+        &self.payload
+    }
+
+    pub const fn range(&self) -> PayloadRange {
+        self.range
+    }
+
+    pub fn span(&self) -> PayloadSpanRef<'_> {
+        PayloadSpanRef {
+            payload: &self.payload,
+            offset: self.range.offset,
+            len: self.range.len,
+        }
+    }
+
+    pub const fn offset(&self) -> usize {
+        self.range.offset
+    }
+
+    pub const fn total_len(&self) -> usize {
+        self.range.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.range.len == 0
+    }
+
+    pub fn byte_at(&self, index: usize) -> Option<u8> {
+        self.span().byte_at(index)
+    }
+
+    pub fn read_array<const N: usize>(&self, index: usize) -> Option<[u8; N]> {
+        self.span().read_array(index)
+    }
+
+    pub fn read_u8(&self, index: usize) -> Option<u8> {
+        self.span().read_u8(index)
+    }
+
+    pub fn read_u16_be(&self, index: usize) -> Option<u16> {
+        self.span().read_u16_be(index)
+    }
+
+    pub fn read_u24_be(&self, index: usize) -> Option<u32> {
+        self.span().read_u24_be(index)
+    }
+
+    pub fn read_u32_be(&self, index: usize) -> Option<u32> {
+        self.span().read_u32_be(index)
+    }
+
+    pub fn as_contiguous_slice(&self) -> Option<&[u8]> {
+        self.span().as_contiguous_slice()
+    }
+
+    pub fn copy_into(&self, dst: &mut [u8]) -> usize {
+        self.span().copy_into(dst)
+    }
+
+    pub fn eq_bytes(&self, bytes: &[u8]) -> bool {
+        self.span().eq_bytes(bytes)
+    }
+
+    pub fn eq_ignore_ascii_case(&self, bytes: &[u8]) -> bool {
+        self.span().eq_ignore_ascii_case(bytes)
+    }
+
+    pub fn contains_ascii_case(&self, needle: &[u8]) -> bool {
+        self.span().contains_ascii_case(needle)
+    }
+
+    pub fn find_bytes(&self, pattern: &[u8]) -> Option<usize> {
+        self.span().find_bytes(pattern)
+    }
+
+    pub fn find_bytes_from(&self, pattern: &[u8], start: usize) -> Option<usize> {
+        self.span().find_bytes_from(pattern, start)
+    }
+
+    pub fn parse_ascii_usize(&self) -> Option<usize> {
+        self.span().parse_ascii_usize()
+    }
+
+    pub fn parse_ascii_hex_usize(&self) -> Option<usize> {
+        self.span().parse_ascii_hex_usize()
+    }
+
+    pub fn trim_ascii_whitespace(&self) -> PayloadSpanRef<'_> {
+        self.span().trim_ascii_whitespace()
+    }
+
+    pub fn into_payload(self) -> Option<PacketPayload> {
+        if self.range.offset == 0 && self.range.len == self.payload.total_len() {
+            return Some(self.payload);
+        }
+        retain_payload_window_owned(self.payload, self.range.offset, self.range.len)
     }
 }
 
@@ -76,6 +208,10 @@ impl<'a> PayloadSpanRef<'a> {
             return None;
         }
         Self::from_range(self.payload, self.offset + offset, len)
+    }
+
+    pub const fn range(self) -> PayloadRange {
+        PayloadRange::new(self.offset, self.len)
     }
 
     pub fn byte_at(&self, index: usize) -> Option<u8> {
@@ -317,6 +453,18 @@ impl PacketPayloadBuilder {
 
     pub fn push_str(&mut self, data: &str) -> Option<()> {
         self.push_bytes(data.as_bytes())
+    }
+
+    pub fn push_span_ref(&mut self, span: PayloadSpanRef<'_>) -> Option<()> {
+        if span.is_empty() {
+            return Some(());
+        }
+        let mut bytes = Vec::new();
+        bytes.resize(span.total_len(), 0);
+        if span.copy_into(&mut bytes) != bytes.len() {
+            return None;
+        }
+        self.push_bytes(&bytes)
     }
 
     pub fn push_payload(&mut self, payload: PacketPayload) {

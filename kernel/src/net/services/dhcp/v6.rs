@@ -1253,13 +1253,11 @@ impl DhcpV6Client {
         domain_data: crate::net::payload::PayloadSpanRef<'_>,
         domain_search: &mut Vec<crate::net::services::dns::DnsNameOwned>,
     ) {
-        let Some(domain_payload) = crate::net::payload::retain_payload_window_owned(
-            domain_data.payload().clone(),
-            domain_data.offset(),
-            domain_data.total_len(),
-        ) else {
+        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+        if builder.push_span_ref(domain_data).is_none() {
             return;
-        };
+        }
+        let domain_payload = builder.build();
         let view = crate::net::payload::PacketPayloadView::new(&domain_payload);
         let mut offset = 0usize;
         while offset < view.total_len() {

@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
-use crate::net::payload::PayloadSpan;
+use crate::net::payload::OwnedPayloadRange;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::stack::NetworkConfig;
 
@@ -849,8 +849,8 @@ pub struct DhcpV4AppliedConfig {
     pub subnet_mask: Ipv4Address,
     pub gateway: Option<Ipv4Address>,
     pub dns_servers: Vec<Ipv4Address>,
-    pub hostname: Option<PayloadSpan>,
-    pub domain_name: Option<PayloadSpan>,
+    pub hostname: Option<OwnedPayloadRange>,
+    pub domain_name: Option<OwnedPayloadRange>,
 }
 
 impl DhcpV4AppliedConfig {
@@ -859,8 +859,8 @@ impl DhcpV4AppliedConfig {
         subnet_mask: Ipv4Address,
         gateway: Option<Ipv4Address>,
         dns_servers: Vec<Ipv4Address>,
-        hostname: Option<PayloadSpan>,
-        domain_name: Option<PayloadSpan>,
+        hostname: Option<OwnedPayloadRange>,
+        domain_name: Option<OwnedPayloadRange>,
     ) -> Self {
         Self {
             ip_address,
@@ -1007,6 +1007,6 @@ struct ParsedOptions {
     renewal_time: Option<u32>,
     rebinding_time: Option<u32>,
     server_id: Option<Ipv4Address>,
-    hostname: Option<PayloadSpan>,
-    domain_name: Option<PayloadSpan>,
+    hostname: Option<OwnedPayloadRange>,
+    domain_name: Option<OwnedPayloadRange>,
 }

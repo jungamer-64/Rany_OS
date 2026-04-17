@@ -6,7 +6,7 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
-use crate::net::payload::{PacketPayloadBuilder, PayloadSpan};
+use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder};
 use crate::net::runtime::context::default_runtime_context;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -233,7 +233,7 @@ impl DnsHeader {
 
 #[derive(Debug)]
 pub struct DnsNameView {
-    labels: Vec<PayloadSpan>,
+    labels: Vec<OwnedPayloadRange>,
     text_len: usize,
 }
 
@@ -251,7 +251,7 @@ impl DnsNameView {
         parts.next().is_none()
     }
 
-    pub fn labels(&self) -> &[PayloadSpan] {
+    pub fn labels(&self) -> &[OwnedPayloadRange] {
         &self.labels
     }
 
@@ -271,12 +271,12 @@ pub enum DnsNameError {
 
 #[derive(Debug)]
 pub struct DnsNameOwned {
-    labels: Vec<PayloadSpan>,
+    labels: Vec<OwnedPayloadRange>,
     text_len: usize,
 }
 
 impl DnsNameOwned {
-    pub(crate) fn from_parsed_labels(labels: Vec<PayloadSpan>, text_len: usize) -> Self {
+    pub(crate) fn from_parsed_labels(labels: Vec<OwnedPayloadRange>, text_len: usize) -> Self {
         Self { labels, text_len }
     }
 
@@ -305,7 +305,7 @@ impl DnsNameOwned {
             builder
                 .push_bytes(bytes)
                 .ok_or(DnsNameError::AllocationFailed)?;
-            labels.push(PayloadSpan::from_payload(builder.build()));
+            labels.push(OwnedPayloadRange::from_payload(builder.build()));
             text_len = text_len.saturating_add(bytes.len());
             if index > 0 {
                 text_len = text_len.saturating_add(1);
@@ -315,7 +315,7 @@ impl DnsNameOwned {
         Ok(Self::from_parsed_labels(labels, text_len))
     }
 
-    pub fn labels(&self) -> &[PayloadSpan] {
+    pub fn labels(&self) -> &[OwnedPayloadRange] {
         &self.labels
     }
 
@@ -346,12 +346,12 @@ impl Ord for DnsNameOwned {
 
 #[derive(Debug)]
 pub struct DnsTxtView {
-    spans: Vec<PayloadSpan>,
+    spans: Vec<OwnedPayloadRange>,
     text_len: usize,
 }
 
 impl DnsTxtView {
-    pub fn spans(&self) -> &[PayloadSpan] {
+    pub fn spans(&self) -> &[OwnedPayloadRange] {
         &self.spans
     }
 
@@ -427,7 +427,7 @@ pub enum DnsRecordData {
         target: DnsNameView,
     },
     /// その他/未解析
-    Raw(PayloadSpan),
+    Raw(OwnedPayloadRange),
 }
 
 /// DNSキャッシュエントリ
@@ -574,7 +574,10 @@ impl DnsCache {
     }
 }
 
-pub(crate) fn compare_dns_name_labels(lhs: &[PayloadSpan], rhs: &[PayloadSpan]) -> CmpOrdering {
+pub(crate) fn compare_dns_name_labels(
+    lhs: &[OwnedPayloadRange],
+    rhs: &[OwnedPayloadRange],
+) -> CmpOrdering {
     let mut index = 0usize;
     while index < lhs.len() && index < rhs.len() {
         let left = &lhs[index];
