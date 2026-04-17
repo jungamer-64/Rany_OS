@@ -59,7 +59,7 @@ impl DhcpClient {
             match task::with_timeout(socket.recv(), 1000).await {
                 TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
                     let now = crate::task::current_tick();
-                    let response = self.process_response_payload(&packet, now);
+                    let response = self.process_response_payload(packet, now);
                     match response {
                         Ok(DhcpResponseResult::Ack(result)) => {
                             let crate::net::services::dhcp::DhcpAckResult { lease, applied } =
@@ -790,20 +790,8 @@ impl DhcpClient {
             58 => opts.renewal_time = Self::parse_u32_option_ref(opt_data),
             59 => opts.rebinding_time = Self::parse_u32_option_ref(opt_data),
             54 => opts.server_id = Self::parse_ipv4_option_ref(opt_data),
-            12 => {
-                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                if builder.push_span_ref(opt_data).is_some() {
-                    opts.hostname =
-                        Some(crate::net::payload::OwnedPayloadRange::from_payload(builder.build()));
-                }
-            }
-            15 => {
-                let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                if builder.push_span_ref(opt_data).is_some() {
-                    opts.domain_name =
-                        Some(crate::net::payload::OwnedPayloadRange::from_payload(builder.build()));
-                }
-            }
+            12 => opts.hostname = Some(opt_data.range()),
+            15 => opts.domain_name = Some(opt_data.range()),
             _ => {}
         }
     }
@@ -819,6 +807,7 @@ impl DhcpClient {
             renewal_time: None,
             rebinding_time: None,
             server_id: None,
+            metadata_payload: None,
             hostname: None,
             domain_name: None,
         };
@@ -879,22 +868,8 @@ impl DhcpClient {
                 58 => opts.renewal_time = Self::parse_u32_option(opt_data),
                 59 => opts.rebinding_time = Self::parse_u32_option(opt_data),
                 54 => opts.server_id = Self::parse_ipv4_option(opt_data),
-                12 => {
-                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    if builder.push_bytes(opt_data).is_some() {
-                        opts.hostname = Some(crate::net::payload::OwnedPayloadRange::from_payload(
-                            builder.build(),
-                        ));
-                    }
-                }
-                15 => {
-                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    if builder.push_bytes(opt_data).is_some() {
-                        opts.domain_name = Some(
-                            crate::net::payload::OwnedPayloadRange::from_payload(builder.build()),
-                        );
-                    }
-                }
+                12 => {}
+                15 => {}
                 _ => {}
             }
             offset += 2 + len;
@@ -904,9 +879,9 @@ impl DhcpClient {
     }
 
     pub(super) fn parse_options_payload(
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
     ) -> ParsedOptions {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let view = crate::net::payload::PacketPayloadView::new(&payload);
         let mut opts = ParsedOptions {
             message_type: None,
             subnet_mask: None,
@@ -916,6 +891,7 @@ impl DhcpClient {
             renewal_time: None,
             rebinding_time: None,
             server_id: None,
+            metadata_payload: None,
             hostname: None,
             domain_name: None,
         };
@@ -954,7 +930,7 @@ impl DhcpClient {
             }
 
             let Some(opt_data) = crate::net::payload::PayloadSpanRef::from_range(
-                payload,
+                &payload,
                 offset + 2,
                 len,
             )
@@ -964,6 +940,8 @@ impl DhcpClient {
             Self::apply_option_span_ref(&mut opts, opt, opt_data);
             offset += 2 + len;
         }
+
+        opts.metadata_payload = Some(payload);
 
         opts
     }

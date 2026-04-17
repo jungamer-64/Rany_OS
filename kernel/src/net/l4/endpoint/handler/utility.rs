@@ -67,6 +67,7 @@ impl NetworkEventHandler {
                     subnet_mask,
                     gateway,
                     dns_servers,
+                    metadata_payload: _,
                     hostname: _,
                     domain_name: _,
                 } = config;

@@ -22,7 +22,9 @@ use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
-use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
+use super::tcb::{
+    TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot, tcb_table, tcp_flags,
+};
 use super::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
 };
@@ -82,7 +84,7 @@ fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
 /// RFC 793 Step 1: 受信セグメントのシーケンス番号妥当性を検証
 ///
 /// SEG.LEN は SYN および FIN ビットを含むシーケンス空間の長さを指定する必要がある。
-fn is_acceptable_sequence(tcb: &TcpControlBlockEntry, seq_num: u32, seg_len: usize) -> bool {
+fn is_acceptable_sequence(tcb: &TcpControlBlockSnapshot, seq_num: u32, seg_len: usize) -> bool {
     let rcv_nxt = tcb.rcv_nxt;
     let rcv_wnd = tcb.effective_recv_window();
 
@@ -220,7 +222,7 @@ fn check_challenge_ack_rate_limit() -> bool {
 }
 
 /// チャレンジACK（シーケンス番号エラー時の応答）を送信
-fn send_challenge_ack(tcb: &TcpControlBlockEntry) {
+fn send_challenge_ack(tcb: &TcpControlBlockSnapshot) {
     if !check_challenge_ack_rate_limit() {
         log::debug!("[TCP] Challenge ACK rate limit exceeded, dropping");
         return;
@@ -401,7 +403,7 @@ fn process_parsed_tcp_segment(
         entry.ingress_if_id = Some(ingress_if_id)
     });
 
-    if let Some(tcb) = tcb_table().get(local, remote) {
+    if let Some(tcb) = tcb_table().read(local, remote, |entry| TcpControlBlockSnapshot::from(entry)) {
         tcb_table().update(local, remote, |entry| {
             entry.update_peer_window(header.window);
         });
@@ -495,7 +497,7 @@ fn process_parsed_tcp_segment(
                 tcb.state = TcpConnectionState::Established;
                 tcb.mss = mss;
 
-                if let Err(e) = tcb_table().insert(tcb.clone()) {
+                if let Err(e) = tcb_table().insert(tcb) {
                     log::warn!(
                         "[TCP] Failed to insert TCB after SYN Cookie verification: {}",
                         e
@@ -503,20 +505,24 @@ fn process_parsed_tcp_segment(
                     return;
                 }
 
-                if let Some(accepted) = create_accepted_socket(&tcb, ingress_if_id) {
+                if let Some(accepted) = create_accepted_socket(local, remote, ingress_if_id) {
                     let _ = push_to_accept_queue(local.port(), Some(ingress_if_id), accepted);
                 }
 
                 if !data_payload.is_empty() {
-                    process_tcp_with_tcb(
-                        tcb,
-                        header.flags,
-                        header.seq_num,
-                        header.ack_num,
-                        header.urgent_ptr,
-                        options,
-                        data_payload,
-                    );
+                    if let Some(snapshot) = tcb_table()
+                        .read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
+                    {
+                        process_tcp_with_tcb(
+                            snapshot,
+                            header.flags,
+                            header.seq_num,
+                            header.ack_num,
+                            header.urgent_ptr,
+                            options,
+                            data_payload,
+                        );
+                    }
                 }
             }
         }
@@ -524,7 +530,7 @@ fn process_parsed_tcp_segment(
 }
 
 fn try_fast_path(
-    tcb: &TcpControlBlockEntry,
+    tcb: &TcpControlBlockSnapshot,
     ack_num: u32,
     options: &[u8],
     data_payload: PacketPayload,
@@ -590,8 +596,8 @@ fn try_fast_path(
     });
 
     let should_ack_now = tcb_table()
-        .lookup(tcb.local, tcb.remote)
-        .map(|entry| entry.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
+        .read(tcb.local, tcb.remote, |entry| entry.delayed_ack_pending)
+        .map(|pending| pending >= DELAYED_ACK_SEGMENTS)
         .unwrap_or(true);
 
     if should_ack_now {
@@ -669,7 +675,7 @@ pub fn process_tcp_segment_payload_on(
 /// TCPオプション(Timestamps等)が有効なら含めるが、
 /// SACKブロック等の複雑な処理は行わない。
 #[inline]
-fn send_ack_for_fast_path(tcb: &TcpControlBlockEntry, rcv_nxt: u32) {
+fn send_ack_for_fast_path(tcb: &TcpControlBlockSnapshot, rcv_nxt: u32) {
     let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(tcb.snd_nxt)
         .ack(rcv_nxt)
@@ -738,7 +744,7 @@ pub fn flush_delayed_acks() {
 
 /// SYN-SENT状態でのセグメント処理
 fn handle_syn_sent_segment(
-    tcb: TcpControlBlockEntry,
+    tcb: TcpControlBlockSnapshot,
     flags: u8,
     seq_num: u32,
     ack_num: u32,
@@ -763,7 +769,11 @@ fn handle_syn_sent_segment(
 }
 
 /// 同時オープン(Simultaneous Open)時のSYN受信処理
-fn handle_simultaneous_syn_received(tcb: TcpControlBlockEntry, seq_num: u32, options: &[u8]) {
+fn handle_simultaneous_syn_received(
+    tcb: TcpControlBlockSnapshot,
+    seq_num: u32,
+    options: &[u8],
+) {
     // TCPオプション解析
     let (peer_ts, sack_permitted) = if !options.is_empty() {
         let mut parser = TcpOptionParser::new(options);
@@ -805,7 +815,7 @@ fn handle_simultaneous_syn_received(tcb: TcpControlBlockEntry, seq_num: u32, opt
 }
 
 /// 予期しないACKに対するRST送信 (RFC 793)
-fn send_rst_for_unexpected_ack(tcb: &TcpControlBlockEntry, ack_num: u32) {
+fn send_rst_for_unexpected_ack(tcb: &TcpControlBlockSnapshot, ack_num: u32) {
     let builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(ack_num)
         .rst();
@@ -814,7 +824,7 @@ fn send_rst_for_unexpected_ack(tcb: &TcpControlBlockEntry, ack_num: u32) {
 
 /// 既存TCBに対するTCPセグメント処理（RFC 793 / 9293 / 5961 準拠）
 fn handle_synchronized_segment(
-    tcb: TcpControlBlockEntry,
+    tcb: TcpControlBlockSnapshot,
     flags: u8,
     seq_num: u32,
     ack_num: u32,
@@ -910,22 +920,22 @@ fn handle_synchronized_segment(
     }
 
     // Acceptable ACK: Process it
-    handle_ack_received(tcb.clone(), ack_num);
+    handle_ack_received(tcb, ack_num);
 
     // 4. Check URG bit (RFC 793 / RFC 6093)
     if is_urg && urgent_ptr > 0 {
-        handle_urgent_received(tcb.clone(), seq_num, urgent_ptr);
+        handle_urgent_received(tcb, seq_num, urgent_ptr);
     }
 
     // 5. Process segment data and FIN (RFC 793)
     if payload_len > 0 || is_fin {
-        handle_data_received_with_delayed_ack(tcb.clone(), seq_num, data_payload, is_fin);
+        handle_data_received_with_delayed_ack(tcb, seq_num, data_payload, is_fin);
     }
 }
 
 /// Slow path データ受信処理 (Delayed ACK対応)
 fn handle_data_received_with_delayed_ack(
-    tcb: TcpControlBlockEntry,
+    tcb: TcpControlBlockSnapshot,
     mut seq_num: u32,
     mut data_payload: PacketPayload,
     fin: bool,
@@ -1026,8 +1036,7 @@ fn handle_data_received_with_delayed_ack(
         true
     } else {
         tcb_table()
-            .lookup(tcb.local, tcb.remote)
-            .map(|e| e.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
+            .read(tcb.local, tcb.remote, |entry| entry.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
             .unwrap_or(true)
     };
 
@@ -1041,7 +1050,7 @@ fn handle_data_received_with_delayed_ack(
 
 /// 既存TCBに対するTCPセグメント処理
 fn process_tcp_with_tcb(
-    tcb: TcpControlBlockEntry,
+    tcb: TcpControlBlockSnapshot,
     flags: u8,
     seq_num: u32,
     ack_num: u32,
@@ -1107,18 +1116,19 @@ fn process_tcp_with_tcb(
                     });
 
                     // Continue processing in Established state
-                    let mut established_tcb = tcb.clone();
-                    established_tcb.snd_una = ack_num;
-                    established_tcb.state = TcpConnectionState::Established;
-                    handle_synchronized_segment(
-                        established_tcb,
-                        flags,
-                        seq_num,
-                        ack_num,
-                        urgent_ptr,
-                        options,
-                        data_payload,
-                    );
+                    if let Some(established_tcb) = tcb_table()
+                        .read(tcb.local, tcb.remote, |entry| TcpControlBlockSnapshot::from(entry))
+                    {
+                        handle_synchronized_segment(
+                            established_tcb,
+                            flags,
+                            seq_num,
+                            ack_num,
+                            urgent_ptr,
+                            options,
+                            data_payload,
+                        );
+                    }
                 } else if (flags & tcp_flags::RST) == 0 {
                     send_rst_for_unexpected_ack(&tcb, ack_num);
                 }
@@ -1273,7 +1283,12 @@ pub fn handle_icmpv6_error(
     }
 }
 /// SYN-ACK受信処理（クライアント側3ウェイハンドシェイク）
-fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32, options: &[u8]) {
+fn handle_syn_ack_received(
+    tcb: TcpControlBlockSnapshot,
+    seq_num: u32,
+    ack_num: u32,
+    options: &[u8],
+) {
     // ACK番号を検証
     if ack_num != tcb.snd_nxt {
         log::info!(
@@ -1583,7 +1598,7 @@ fn process_tcp_new_connection(
 /// RFC 5961: RSTパケットのシーケンス番号がrcv_nxtと完全一致する場合のみ受理する。
 /// ウィンドウ内だが不一致の場合はChallenge ACKを送信する。
 /// ウィンドウ外の場合は黙って破棄する。
-fn handle_rst_received(tcb: TcpControlBlockEntry, seq_num: u32) {
+fn handle_rst_received(tcb: TcpControlBlockSnapshot, seq_num: u32) {
     if seq_num == tcb.rcv_nxt {
         // RFC 5961: 完全一致 → 接続をリセット
         tcb_table().update(tcb.local, tcb.remote, |entry| {
@@ -1620,7 +1635,7 @@ fn handle_rst_received(tcb: TcpControlBlockEntry, seq_num: u32) {
 }
 
 /// ACK受信処理（データ確認応答 + 輻輳制御）
-fn handle_ack_received(tcb: TcpControlBlockEntry, ack_num: u32) {
+fn handle_ack_received(tcb: TcpControlBlockSnapshot, ack_num: u32) {
     // RFC 793 validation: SND.UNA < SEG.ACK =< SND.NXT
     // ack_num > snd_nxt の場合、送信していないデータのACKなので不正。
     let diff_nxt = ack_num.wrapping_sub(tcb.snd_nxt) as i32;
@@ -1681,7 +1696,7 @@ fn handle_ack_received(tcb: TcpControlBlockEntry, ack_num: u32) {
 
 /// SYN確認応答処理（サーバー側）
 /// ハンドシェイク完了時にAcceptキューに追加
-fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
+fn handle_ack_for_syn(tcb: TcpControlBlockSnapshot, ack_num: u32) {
     if ack_num != tcb.snd_nxt {
         return;
     }
@@ -1700,7 +1715,7 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
     );
 
     // 新しい接続用ソケットを作成
-    let new_socket = match create_accepted_socket(&tcb, ingress_if_id) {
+    let new_socket = match create_accepted_socket(tcb.local, tcb.remote, ingress_if_id) {
         Some(s) => s,
         None => {
             log::info!("TCP: Failed to create accepted socket");
@@ -1719,7 +1734,8 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
 
 /// Accept用の新規ソケットを作成
 fn create_accepted_socket(
-    tcb: &TcpControlBlockEntry,
+    local: EndpointAddr,
+    remote: EndpointAddr,
     ingress_if_id: NetIfId,
 ) -> Option<AcceptedConnection> {
     let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
@@ -1729,22 +1745,18 @@ fn create_accepted_socket(
     let new_fd = mgr.generate_fd();
 
     // TCB情報を更新してFDを紐付け
-    tcb_table().update(tcb.local, tcb.remote, |entry| {
+    tcb_table().update(local, remote, |entry| {
         entry.fd = new_fd;
     });
 
     // 再送キューを作成
-    get_or_create_retransmit_queue(tcb.local, tcb.remote);
-
-    // 更新されたTCBを取得
-    let updated_tcb = tcb_table().get(tcb.local, tcb.remote)?;
+    get_or_create_retransmit_queue(local, remote);
 
     Some(AcceptedConnection::new(
         new_fd,
-        tcb.local,
-        tcb.remote,
+        local,
+        remote,
         ingress_if_id,
-        updated_tcb,
     ))
 }
 
@@ -1804,7 +1816,7 @@ fn push_to_accept_queue(
 }
 
 /// 順序通りに到達した（またはOOOから復元された）FINを処理
-fn handle_fin_in_order(tcb: TcpControlBlockEntry, rcv_nxt_at_fin: u32) {
+fn handle_fin_in_order(tcb: TcpControlBlockSnapshot, rcv_nxt_at_fin: u32) {
     let mut should_ack = false;
     let mut final_rcv_nxt = rcv_nxt_at_fin;
 
@@ -1889,7 +1901,7 @@ fn notify_socket_peer_fin(fd: EndpointFd) {
 ///
 /// URGフラグが設定されたセグメントを受信した際の処理。
 /// urgent pointerは、セグメント開始からurgent dataの最後のバイトまでのオフセットを示す。
-fn handle_urgent_received(tcb: TcpControlBlockEntry, seq_num: u32, urgent_ptr: u16) {
+fn handle_urgent_received(tcb: TcpControlBlockSnapshot, seq_num: u32, urgent_ptr: u16) {
     // TCBのurgent状態を更新
     tcb_table().update(tcb.local, tcb.remote, |entry| {
         let has_new_urgent = entry.on_urgent_received(seq_num, urgent_ptr);

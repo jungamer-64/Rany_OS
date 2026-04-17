@@ -44,8 +44,7 @@ fn endpoint_send_budget(
 ) -> usize {
     match (local, remote) {
         (Some(local), Some(remote)) => tcb_table()
-            .get(local, remote)
-            .map(|tcb| tcb.effective_send_window() as usize)
+            .read(local, remote, |tcb| tcb.effective_send_window() as usize)
             .unwrap_or(0)
             .saturating_sub(queued_bytes),
         _ => 0,

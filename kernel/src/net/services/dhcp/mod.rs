@@ -16,7 +16,8 @@ use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
-use crate::net::payload::OwnedPayloadRange;
+use crate::net::payload::{PayloadRange, PayloadSpanRef};
+use kernel_api::resource::net::PacketPayload;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::stack::NetworkConfig;
 
@@ -442,7 +443,7 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                 let now = crate::task::current_tick();
                 let process =
                     find_runtime_for_v4_payload_in(runtime, &packet).map(|interface_runtime| {
-                        let result = interface_runtime.v4.process_response_payload(&packet, now);
+                        let result = interface_runtime.v4.process_response_payload(packet, now);
                         (interface_runtime, result)
                     });
                 let Some((interface_runtime, result)) = process else {
@@ -849,8 +850,9 @@ pub struct DhcpV4AppliedConfig {
     pub subnet_mask: Ipv4Address,
     pub gateway: Option<Ipv4Address>,
     pub dns_servers: Vec<Ipv4Address>,
-    pub hostname: Option<OwnedPayloadRange>,
-    pub domain_name: Option<OwnedPayloadRange>,
+    pub metadata_payload: Option<PacketPayload>,
+    pub hostname: Option<PayloadRange>,
+    pub domain_name: Option<PayloadRange>,
 }
 
 impl DhcpV4AppliedConfig {
@@ -859,17 +861,29 @@ impl DhcpV4AppliedConfig {
         subnet_mask: Ipv4Address,
         gateway: Option<Ipv4Address>,
         dns_servers: Vec<Ipv4Address>,
-        hostname: Option<OwnedPayloadRange>,
-        domain_name: Option<OwnedPayloadRange>,
+        metadata_payload: Option<PacketPayload>,
+        hostname: Option<PayloadRange>,
+        domain_name: Option<PayloadRange>,
     ) -> Self {
         Self {
             ip_address,
             subnet_mask,
             gateway,
             dns_servers,
+            metadata_payload,
             hostname,
             domain_name,
         }
+    }
+
+    pub fn hostname_span(&self) -> Option<PayloadSpanRef<'_>> {
+        self.hostname
+            .and_then(|range| self.metadata_payload.as_ref().and_then(|payload| range.span(payload)))
+    }
+
+    pub fn domain_name_span(&self) -> Option<PayloadSpanRef<'_>> {
+        self.domain_name
+            .and_then(|range| self.metadata_payload.as_ref().and_then(|payload| range.span(payload)))
     }
 }
 
@@ -1007,6 +1021,7 @@ struct ParsedOptions {
     renewal_time: Option<u32>,
     rebinding_time: Option<u32>,
     server_id: Option<Ipv4Address>,
-    hostname: Option<OwnedPayloadRange>,
-    domain_name: Option<OwnedPayloadRange>,
+    metadata_payload: Option<PacketPayload>,
+    hostname: Option<PayloadRange>,
+    domain_name: Option<PayloadRange>,
 }

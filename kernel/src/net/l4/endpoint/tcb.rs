@@ -33,7 +33,7 @@ pub mod tcp_flags {
 pub use crate::net::l4::tcp::TcpState as TcpConnectionState;
 
 /// TCP制御ブロック（RFC 5681/7323準拠）
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TcpControlBlockEntry {
     pub fd: EndpointFd,
     pub local: EndpointAddr,
@@ -66,6 +66,116 @@ pub struct TcpControlBlockEntry {
     pub delayed_ack_pending: u8,
     pub delayed_ack_timer: u64,
     pub pending_error: Option<EndpointError>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TcpControlBlockSnapshot {
+    pub fd: EndpointFd,
+    pub local: EndpointAddr,
+    pub remote: EndpointAddr,
+    pub scope: InterfaceScope,
+    pub ingress_if_id: Option<NetIfId>,
+    pub state: TcpConnectionState,
+    pub snd_nxt: u32,
+    pub snd_una: u32,
+    pub rcv_nxt: u32,
+    pub snd_wnd: u16,
+    pub max_snd_wnd: u32,
+    pub rcv_wnd: u16,
+    pub scaled_snd_wnd: u32,
+    pub effective_send_window: u32,
+    pub advertised_recv_window: u16,
+    pub effective_recv_window: u32,
+    pub mss: u32,
+    pub snd_up: u32,
+    pub snd_urg: bool,
+    pub rcv_up: u32,
+    pub rcv_urg: bool,
+    pub sack_enabled: bool,
+    pub ts_enabled: bool,
+    pub ts_val: u32,
+    pub ts_ecr: u32,
+    pub nagle_enabled: bool,
+    pub priority: u8,
+    pub delayed_ack_pending: u8,
+    pub delayed_ack_timer: u64,
+}
+
+impl From<&TcpControlBlockEntry> for TcpControlBlockSnapshot {
+    fn from(value: &TcpControlBlockEntry) -> Self {
+        Self {
+            fd: value.fd,
+            local: value.local,
+            remote: value.remote,
+            scope: value.scope,
+            ingress_if_id: value.ingress_if_id,
+            state: value.state,
+            snd_nxt: value.snd_nxt,
+            snd_una: value.snd_una,
+            rcv_nxt: value.rcv_nxt,
+            snd_wnd: value.snd_wnd,
+            max_snd_wnd: value.max_snd_wnd,
+            rcv_wnd: value.rcv_wnd,
+            scaled_snd_wnd: value.window_scale.scale_snd_window(value.snd_wnd),
+            effective_send_window: value.effective_send_window(),
+            advertised_recv_window: value.advertised_recv_window(),
+            effective_recv_window: value.effective_recv_window(),
+            mss: value.mss,
+            snd_up: value.snd_up,
+            snd_urg: value.snd_urg,
+            rcv_up: value.rcv_up,
+            rcv_urg: value.rcv_urg,
+            sack_enabled: value.sack_enabled,
+            ts_enabled: value.ts_enabled,
+            ts_val: value.ts_val,
+            ts_ecr: value.ts_ecr,
+            nagle_enabled: value.nagle_enabled,
+            priority: value.priority,
+            delayed_ack_pending: value.delayed_ack_pending,
+            delayed_ack_timer: value.delayed_ack_timer,
+        }
+    }
+}
+
+impl TcpControlBlockSnapshot {
+    pub fn effective_send_window(self) -> u32 {
+        self.effective_send_window
+    }
+
+    pub fn advertised_recv_window(self) -> u16 {
+        self.advertised_recv_window
+    }
+
+    pub fn effective_recv_window(self) -> u32 {
+        self.effective_recv_window
+    }
+
+    pub fn is_outstanding(self) -> bool {
+        self.snd_nxt != self.snd_una
+    }
+
+    pub fn is_nodelay_enabled(self) -> bool {
+        !self.nagle_enabled
+    }
+
+    pub fn should_delay_send(self, data_len: usize) -> bool {
+        if data_len >= self.mss as usize {
+            return false;
+        }
+        let sws_threshold = self.max_snd_wnd / 2;
+        let scaled_rwnd = self.scaled_snd_wnd;
+        if scaled_rwnd >= sws_threshold && scaled_rwnd > 0 && data_len > 0 {
+        } else if self.is_outstanding() {
+            return true;
+        }
+        if !self.nagle_enabled {
+            return false;
+        }
+        if self.is_outstanding() {
+            return true;
+        }
+        false
+    }
 }
 
 impl TcpControlBlockEntry {
@@ -500,18 +610,10 @@ impl TcbTable {
                             if let Some(socket) = mgr.get(entry.fd) {
                                 let mut inner =
                                     socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                                if let Some(probe_byte) = inner.peek_send_byte() {
-                                    inner.consume_send_payload(1);
+                                if let Some(probe_payload) = inner.take_send_payload_prefix(1) {
                                     drop(inner);
                                     drop(manager);
-                                    let payload = alloc::vec![probe_byte];
                                     let seq = entry.snd_nxt;
-                                    let mut builder =
-                                        crate::net::payload::PacketPayloadBuilder::new();
-                                    let Some(()) = builder.push_bytes(&payload) else {
-                                        continue;
-                                    };
-                                    let payload_packet = builder.build();
                                     let mut builder =
                                         TcpSegmentBuilder::new(key.0.port(), key.1.port())
                                             .seq(seq)
@@ -519,7 +621,7 @@ impl TcbTable {
                                             .ack_flag()
                                             .psh()
                                             .window(entry.advertised_recv_window())
-                                            .payload_packet(payload_packet);
+                                            .payload_packet(probe_payload);
                                     if entry.ts_enabled {
                                         let ts_val = (current_tick / 10) as u32;
                                         builder =
@@ -530,7 +632,7 @@ impl TcbTable {
                                         continue;
                                     };
                                     let Some(retransmit_segment) =
-                                        super::retransmit::copy_payload(&segment)
+                                        super::retransmit::materialize_retransmit_copy(&segment)
                                     else {
                                         continue;
                                     };
@@ -549,10 +651,14 @@ impl TcbTable {
                                             .inner()
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner());
-                                        let mut builder =
-                                            crate::net::payload::PacketPayloadBuilder::new();
-                                        if builder.push_bytes(&[probe_byte]).is_some() {
-                                            inner.push_send_payload_front(builder.build());
+                                        if let Some(probe_body) =
+                                            crate::net::payload::retain_payload_window_owned(
+                                                retransmit_segment,
+                                                crate::net::l4::tcp::TcpHeader::MIN_HEADER_LEN,
+                                                1,
+                                            )
+                                        {
+                                            inner.push_send_payload_front(probe_body);
                                         }
                                     }
                                 }
@@ -660,11 +766,13 @@ impl TcbTable {
         Ok(())
     }
 
-    pub fn get(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlockEntry> {
+    pub fn read<R, F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> Option<R>
+    where
+        F: FnOnce(&TcpControlBlockEntry) -> R,
+    {
         let idx = shard_index(&local, &remote);
         let shard = self.shards[idx].read().unwrap_or_else(|e| e.into_inner());
-        let found = shard.get(&(local, remote));
-        found.cloned()
+        shard.get(&(local, remote)).map(f)
     }
 
     pub fn update<F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> bool
@@ -709,11 +817,14 @@ impl TcbTable {
         }
     }
 
-    pub fn find_by_fd(&self, fd: EndpointFd) -> Option<TcpControlBlockEntry> {
+    pub fn read_by_fd<R, F>(&self, fd: EndpointFd, f: F) -> Option<R>
+    where
+        F: FnOnce(&TcpControlBlockEntry) -> R,
+    {
         for shard in &self.shards {
             let guard = shard.read().unwrap_or_else(|e| e.into_inner());
             if let Some(entry) = guard.values().find(|e| e.fd == fd) {
-                return Some(entry.clone());
+                return Some(f(entry));
             }
         }
         None
@@ -734,19 +845,6 @@ impl TcbTable {
             }
         }
         None
-    }
-
-    pub fn lookup(
-        &self,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-    ) -> Option<TcpControlBlockEntry> {
-        let idx = shard_index(&local, &remote);
-        self.shards[idx]
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&(local, remote))
-            .cloned()
     }
 
     pub fn lookup_mut<R, F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> Option<R>
@@ -786,16 +884,16 @@ impl TcbTable {
         remote: EndpointAddr,
         seq: u32,
     ) -> bool {
-        if let Some(tcb) = self.get(local, remote) {
-            if tcb.state == TcpConnectionState::SynSent {
-                return seq == tcb.snd_una;
+        if let Some(snapshot) = self.read(local, remote, |entry| TcpControlBlockSnapshot::from(entry)) {
+            if snapshot.state == TcpConnectionState::SynSent {
+                return seq == snapshot.snd_una;
             }
-            match tcb.state {
+            match snapshot.state {
                 TcpConnectionState::Closed | TcpConnectionState::Listen => return false,
                 _ => {}
             }
-            let una = tcb.snd_una;
-            let nxt = tcb.snd_nxt;
+            let una = snapshot.snd_una;
+            let nxt = snapshot.snd_nxt;
             let diff_una = seq.wrapping_sub(una);
             let diff_nxt = nxt.wrapping_sub(una);
             return diff_una <= diff_nxt;

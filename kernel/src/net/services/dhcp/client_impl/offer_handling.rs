@@ -126,6 +126,7 @@ impl DhcpClient {
                     lease.subnet_mask,
                     lease.gateway,
                     opts.dns_servers,
+                    opts.metadata_payload,
                     opts.hostname,
                     opts.domain_name,
                 );
@@ -138,10 +139,10 @@ impl DhcpClient {
 
     pub fn process_response_payload(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         current_tick: u64,
     ) -> Result<DhcpResponseResult, &'static str> {
-        let header = self.validate_header_payload(payload)?;
+        let header = self.validate_header_payload(&payload)?;
         let opts = Self::parse_options_payload(payload);
         let msg_type = opts.message_type.ok_or("No message type in response")?;
         let current_state = self.state();
@@ -163,6 +164,7 @@ impl DhcpClient {
                     lease.subnet_mask,
                     lease.gateway,
                     opts.dns_servers,
+                    opts.metadata_payload,
                     opts.hostname,
                     opts.domain_name,
                 );

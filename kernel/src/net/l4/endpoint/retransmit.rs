@@ -199,7 +199,7 @@ impl RetransmitQueue {
             seg.is_retransmit = true;
             self.rto_calc.backoff();
 
-            return copy_payload(&seg.data);
+            return materialize_retransmit_copy(&seg.data);
         }
         None
     }
@@ -353,7 +353,7 @@ pub fn retransmit_queue_process_sack(
     }
 }
 
-pub(super) fn copy_payload(payload: &PacketPayload) -> Option<PacketPayload> {
+pub(super) fn materialize_retransmit_copy(payload: &PacketPayload) -> Option<PacketPayload> {
     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
     let view = crate::net::payload::PacketPayloadView::new(payload);
     let mut copied = 0usize;

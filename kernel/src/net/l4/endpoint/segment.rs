@@ -486,8 +486,7 @@ pub fn send_tcp_segment_payload(
     segment: PacketPayload,
 ) -> bool {
     let (scope, ingress_if) = super::tcb::tcb_table()
-        .get(local, remote)
-        .map(|tcb| (tcb.scope, tcb.ingress_if_id))
+        .read(local, remote, |tcb| (tcb.scope, tcb.ingress_if_id))
         .unwrap_or((crate::net::types::InterfaceScope::Any, None));
     let scoped_if = scope.as_if_id().or(ingress_if);
     let segment_len = segment.total_len();

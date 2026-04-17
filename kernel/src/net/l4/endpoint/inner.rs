@@ -13,7 +13,7 @@
 use alloc::collections::VecDeque;
 
 use crate::net::l4::tcp::TcpStats;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadSpanRef};
+use crate::net::payload::{PacketPayloadView, append_payload};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
@@ -317,66 +317,32 @@ impl EndpointInner {
         }
     }
 
-    fn queued_prefix(queue: &VecDeque<PacketPayload>, len: usize) -> Option<PacketPayload> {
+    fn drain_send_prefix(queue: &mut VecDeque<PacketPayload>, len: usize) -> Option<PacketPayload> {
         if len == 0 {
             return Some(PacketPayload::default());
         }
 
         let mut remaining = len;
-        let mut builder = PacketPayloadBuilder::new();
-
-        for payload in queue {
-            if remaining == 0 {
-                break;
-            }
-            let take = remaining.min(payload.total_len());
-            let prefix = PayloadSpanRef::from_range(payload, 0, take)?;
-            let mut copied = 0usize;
-            prefix.for_each_chunk(|chunk| {
-                if copied >= take {
-                    return;
-                }
-                let chunk_take = (take - copied).min(chunk.len());
-                if chunk_take > 0 && builder.push_bytes(&chunk[..chunk_take]).is_some() {
-                    copied += chunk_take;
-                }
-            });
-            if copied != take {
-                return None;
-            }
-            remaining -= take;
-        }
-
-        (remaining == 0).then(|| builder.build())
-    }
-
-    fn consume_queued_prefix(queue: &mut VecDeque<PacketPayload>, len: usize) -> usize {
-        let mut remaining = len;
-        let mut consumed = 0usize;
+        let mut taken = PacketPayload::default();
 
         while remaining > 0 {
-            let Some(front) = queue.front_mut() else {
-                break;
-            };
-
-            if front.is_empty() {
-                queue.pop_front();
+            let front = queue.pop_front()?;
+            let front_len = front.total_len();
+            if front_len <= remaining {
+                append_payload(&mut taken, front);
+                remaining -= front_len;
                 continue;
             }
 
-            let take = remaining.min(front.total_len());
-            if !crate::net::payload::discard_payload_prefix(front, take) {
-                break;
+            let (prefix, remainder) = crate::net::payload::split_payload_prefix_owned(front, remaining)?;
+            append_payload(&mut taken, prefix);
+            if !remainder.is_empty() {
+                queue.push_front(remainder);
             }
-            consumed += take;
-            remaining = remaining.saturating_sub(take);
-
-            if front.is_empty() {
-                queue.pop_front();
-            }
+            remaining = 0;
         }
 
-        consumed
+        Some(taken)
     }
 
     // ================================================================
@@ -540,20 +506,14 @@ impl EndpointInner {
     }
 
     #[inline]
-    pub fn peek_send_payload_prefix(&self, len: usize) -> Option<PacketPayload> {
-        let tcp = self.tcp()?;
-        Self::queued_prefix(&tcp.send_payload_queue, len)
-    }
-
-    #[inline]
-    pub fn consume_send_payload(&mut self, len: usize) -> usize {
+    pub fn take_send_payload_prefix(&mut self, len: usize) -> Option<PacketPayload> {
         let Some(tcp) = self.tcp_mut() else {
-            return 0;
+            return None;
         };
-        let consumed = Self::consume_queued_prefix(&mut tcp.send_payload_queue, len);
-        tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_sub(consumed);
+        let taken = Self::drain_send_prefix(&mut tcp.send_payload_queue, len)?;
+        tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_sub(taken.total_len());
         Self::trim_empty_payloads(&mut tcp.send_payload_queue);
-        consumed
+        Some(taken)
     }
 
     #[inline]

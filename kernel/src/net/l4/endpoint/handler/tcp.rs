@@ -10,7 +10,9 @@ use super::common::{
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::endpoint::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
-use crate::net::l4::endpoint::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
+use crate::net::l4::endpoint::tcb::{
+    TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot, tcb_table,
+};
 use crate::net::l4::endpoint::types::{
     EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
 };
@@ -51,39 +53,39 @@ impl NetworkEventHandler {
         };
 
         loop {
-            let send_params = tcb_table().lookup(local, remote).and_then(|tcb| {
-                if tcb.state != TcpConnectionState::Established {
-                    return None;
-                }
+            let send_params = tcb_table()
+                .read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
+                .and_then(|tcb| {
+                    if tcb.state != TcpConnectionState::Established {
+                        return None;
+                    }
 
-                let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                let pending_len = inner.send_payload_bytes();
-                if pending_len == 0 || tcb.should_delay_send(pending_len) {
-                    return None;
-                }
+                    let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                    let pending_len = inner.send_payload_bytes();
+                    if pending_len == 0 || tcb.should_delay_send(pending_len) {
+                        return None;
+                    }
 
-                let effective_wnd = tcb.effective_send_window();
-                if effective_wnd == 0 {
-                    return None;
-                }
+                    let effective_wnd = tcb.effective_send_window();
+                    if effective_wnd == 0 {
+                        return None;
+                    }
 
-                let len = (pending_len as u32).min(effective_wnd).min(tcb.mss as u32) as usize;
-                if len == 0 {
-                    return None;
-                }
+                    let len = (pending_len as u32).min(effective_wnd).min(tcb.mss as u32) as usize;
+                    if len == 0 {
+                        return None;
+                    }
 
-                let send_payload = inner.peek_send_payload_prefix(len)?;
-                let retransmit_payload = inner.peek_send_payload_prefix(len)?;
-                Some((
-                    send_payload,
-                    retransmit_payload,
-                    tcb.snd_nxt,
-                    tcb.rcv_nxt,
-                    tcb.advertised_recv_window(),
-                ))
-            });
+                    let send_payload = inner.take_send_payload_prefix(len)?;
+                    Some((
+                        send_payload,
+                        tcb.snd_nxt,
+                        tcb.rcv_nxt,
+                        tcb.advertised_recv_window(),
+                    ))
+                });
 
-            let Some((send_payload, retransmit_payload, seq, ack, advertised_wnd)) = send_params
+            let Some((send_payload, seq, ack, advertised_wnd)) = send_params
             else {
                 break;
             };
@@ -96,28 +98,20 @@ impl NetworkEventHandler {
                 .window(advertised_wnd)
                 .payload_packet(send_payload)
                 .build_checked_packet(local, remote);
-            let retransmit_segment = TcpSegmentBuilder::new(local.port(), remote.port())
-                .seq(seq)
-                .ack(ack)
-                .psh()
-                .window(advertised_wnd)
-                .payload_packet(retransmit_payload)
-                .build_checked_packet(local, remote);
-
             let segment = match segment {
                 Ok(segment) => segment,
                 Err(error) => return EventHandleResult::ProtocolError(error),
             };
-            let retransmit_segment = match retransmit_segment {
-                Ok(segment) => segment,
-                Err(error) => return EventHandleResult::ProtocolError(error),
-            };
+            let retransmit_segment =
+                match crate::net::l4::endpoint::retransmit::materialize_retransmit_copy(&segment) {
+                    Some(segment) => segment,
+                    None => return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
+                };
 
             match self.send_tcp_segment(local, remote, segment) {
                 Ok(()) => {
                     {
                         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                        inner.consume_send_payload(data_len as usize);
                         if let Some(waker) = inner.send_waker.take() {
                             waker.wake();
                         }
@@ -136,6 +130,14 @@ impl NetworkEventHandler {
                     });
                 }
                 Err(_) => {
+                    if let Some(body) = crate::net::payload::retain_payload_window_owned(
+                        retransmit_segment,
+                        crate::net::l4::tcp::TcpHeader::MIN_HEADER_LEN,
+                        data_len as usize,
+                    ) {
+                        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                        inner.push_send_payload_front(body);
+                    }
                     return EventHandleResult::Retry(
                         crate::net::l4::endpoint::event::NetworkEvent::DataReady {
                             fd,
@@ -565,8 +567,7 @@ impl NetworkEventHandler {
 
         // TCBエントリの状態を取得
         let state = tcb_table()
-            .lookup(local, remote)
-            .map(|tcb| tcb.state)
+            .read(local, remote, |tcb| tcb.state)
             .unwrap_or(TcpConnectionState::Closed);
 
         match state {
