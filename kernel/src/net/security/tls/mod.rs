@@ -13,17 +13,16 @@
 //! - セッション再開 (TLS 1.2 abbreviated + TLS 1.3 PSK)
 //! - 0-RTT Early Data
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-use self::crypto::tls12_prf;
-#[cfg(any(test, feature = "qemu-test-export"))]
-use alloc::vec::Vec;
-
-// ── Sub-modules ──────────────────────────────────────────────────────────────
+mod buffer;
+mod config;
+mod credentials;
+mod protocol;
+mod session;
+mod state;
 
 pub mod connection;
 pub mod crypto;
 pub mod error;
-pub mod types;
 
 #[cfg(all(test, not(feature = "qemu-test-export")))]
 mod tests;
@@ -31,49 +30,19 @@ mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 
-// ── Re-exports (外部インターフェース維持) ──────────────────────────────────────
+pub use connection::TlsConnection;
+pub use config::TlsConfig;
+pub use credentials::{Certificate, PrivateKey};
+pub use error::{TlsError, TlsResult};
+pub use protocol::{CipherSuite, TlsVersion};
+pub use session::{SessionCache, SessionTicket};
+pub use state::TlsState;
 
-pub use types::*;
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use connection::TlsConnection;
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::aes_cbc::{
-    aes_cbc_decrypt, aes_cbc_encrypt, tls_add_padding, tls_verify_padding,
-};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::aes_core::{aes_ctr, aes_key_expansion, gf_mul};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::aes_gcm::{aes_gcm_decrypt, aes_gcm_encrypt, gf128_mul};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::chacha20::{
-    chacha20_block, chacha20_encrypt, chacha20_poly1305_decrypt, chacha20_poly1305_encrypt,
-    poly1305_mac,
-};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::hkdf::{hkdf_expand, hkdf_extract};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::hmac::hmac_sha256;
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::legacy::{compute_tls_mac, hmac_md5, hmac_sha1, md5_compute, sha1_compute};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::prf::{derive_key_block, derive_master_secret};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use crypto::{
-    hkdf_expand_label, tls10_prf, tls13_derive_secret, tls13_derive_traffic_keys,
-    tls13_early_secret, tls13_finished_key, tls13_handshake_secret, tls13_master_secret,
-    tls13_verify_data,
-};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) use error::TlsError;
-
-// Crypto re-exports (public API)
-
-// Crypto re-exports (crate-internal)
-pub(crate) use crypto::generate_random;
-
-#[cfg(feature = "qemu-test-export")]
-pub use crypto::{qemu_test_clear_random_override, qemu_test_set_random_override_seed};
+pub(crate) use buffer::TlsBytes;
+pub(crate) use config::{TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, TLS_SERVER_NAME_CAPACITY};
+pub(crate) use credentials::ServerPublicKey;
+pub(crate) use protocol::{AlertDescription, AlertLevel, ContentType, HandshakeType};
+pub(crate) use session::{SessionCacheEntry, SessionId};
 
 // ============================================================================
 // Shared Test Fixtures
@@ -84,6 +53,8 @@ pub use crypto::{qemu_test_clear_random_override, qemu_test_set_random_override_
 /// Used by both unit tests and QEMU integration tests.
 #[cfg(any(test, feature = "qemu-test-export"))]
 fn tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished() -> TlsBytes<20> {
+    use self::crypto::tls12_prf;
+
     // Handshake #1: ServerHelloDone (len=0)
     let server_hello_done = [14u8, 0, 0, 0];
 
@@ -100,12 +71,14 @@ fn tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished() -> TlsB
     );
 
     // Handshake #2: Finished (len=12) + verify_data
-    let mut data = TlsBytes::<20>::new();
-    data.append_slice(&server_hello_done)
-        .expect("fixture fits fixed TLS test buffer");
-    data.append_slice(&[20u8, 0, 0, 12])
-        .expect("fixture fits fixed TLS test buffer");
-    data.append_slice(&verify_data)
-        .expect("fixture fits fixed TLS test buffer");
+    let Some(mut data) = TlsBytes::<20>::from_slice(&server_hello_done) else {
+        return TlsBytes::new();
+    };
+    if data.append_slice(&[20u8, 0, 0, 12]).is_none() {
+        return TlsBytes::new();
+    }
+    if data.append_slice(&verify_data).is_none() {
+        return TlsBytes::new();
+    }
     data
 }

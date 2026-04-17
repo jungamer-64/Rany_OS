@@ -1,4 +1,20 @@
-use super::*;
+use super::super::credentials::base64_decode_payload;
+use super::super::crypto::{
+    hkdf_expand, hkdf_expand_label, hkdf_extract, hmac_sha256, tls10_prf, tls13_derive_secret,
+    tls13_derive_traffic_keys, tls13_early_secret, tls13_finished_key, tls13_handshake_secret,
+    tls13_master_secret, tls13_verify_data,
+};
+use super::super::crypto::aes_cbc::{
+    aes_cbc_decrypt_in_place, aes_cbc_encrypt_in_place, tls_add_padding_in_place, tls_verify_padding,
+};
+use super::super::crypto::aes_core::gf_mul;
+use super::super::crypto::aes_gcm::gf128_mul;
+use super::super::crypto::legacy::{
+    compute_tls_mac_into, hmac_md5, hmac_sha1, md5_compute, sha1_compute,
+};
+use super::super::protocol::ContentType;
+use super::super::{CipherSuite, TlsBytes, TlsConfig, TlsConnection, TlsError, TlsVersion};
+use alloc::vec::Vec;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -11,6 +27,49 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
         .set_filled_len(copied)
         .expect("copied test payload length stays in bounds");
     bytes
+}
+
+fn aes_cbc_encrypt(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
+    let mut buffer = vec![0u8; plaintext.len() + 16];
+    buffer[..plaintext.len()].copy_from_slice(plaintext);
+    let Some(total_len) = tls_add_padding_in_place(&mut buffer, plaintext.len(), 16) else {
+        return Vec::new();
+    };
+    buffer.truncate(total_len);
+    if aes_cbc_encrypt_in_place(key, iv, &mut buffer).is_none() {
+        return Vec::new();
+    }
+    buffer
+}
+
+fn aes_cbc_decrypt(key: &[u8], iv: &[u8; 16], ciphertext: &[u8]) -> Option<Vec<u8>> {
+    let mut plaintext = ciphertext.to_vec();
+    aes_cbc_decrypt_in_place(key, iv, &mut plaintext)?;
+    let plaintext_len = tls_verify_padding(&plaintext)?;
+    plaintext.truncate(plaintext_len);
+    Some(plaintext)
+}
+
+fn compute_tls_mac(
+    mac_key: &[u8],
+    seq_num: u64,
+    content_type: u8,
+    version: TlsVersion,
+    fragment: &[u8],
+    use_sha1: bool,
+) -> Vec<u8> {
+    let (mac, len) = compute_tls_mac_into(mac_key, seq_num, content_type, version, fragment, use_sha1);
+    mac[..len].to_vec()
+}
+
+fn tls_add_padding(data: &[u8], block_size: usize) -> Vec<u8> {
+    let mut buffer = vec![0u8; data.len() + block_size];
+    buffer[..data.len()].copy_from_slice(data);
+    let Some(total_len) = tls_add_padding_in_place(&mut buffer, data.len(), block_size) else {
+        return Vec::new();
+    };
+    buffer.truncate(total_len);
+    buffer
 }
 
 // ---------- Helpers ----------
@@ -36,8 +95,6 @@ fn run_cbc_roundtrip(key: &[u8], iv: &[u8; 16], plaintext: &[u8]) {
 }
 
 /// TLS handshake parser should reject truncated handshake headers
-mod mac_tests;
-pub use mac_tests::*;
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_truncated_header() {

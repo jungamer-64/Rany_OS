@@ -267,12 +267,12 @@ pub(crate) fn aes_ctr_with_schedule_into(
     nonce: &[u8],
     data: &[u8],
     initial_counter: u32,
-) -> Option<crate::net::security::tls::types::TlsBytes<20480>> {
+) -> Option<crate::net::security::tls::TlsBytes<20480>> {
     if nonce.len() != 12 || data.len() > 20480 {
         return None;
     }
 
-    let mut result = crate::net::security::tls::types::TlsBytes::<20480>::new();
+    let mut result = crate::net::security::tls::TlsBytes::<20480>::new();
     result.append_zeroes(data.len())?;
     let dst = &mut result.as_mut_storage()[..data.len()];
     let mut counter_block = [0u8; 16];
@@ -327,7 +327,7 @@ pub(crate) fn aes_ctr_into(
     key: &[u8],
     nonce: &[u8],
     data: &[u8],
-) -> Option<crate::net::security::tls::types::TlsBytes<20480>> {
+) -> Option<crate::net::security::tls::TlsBytes<20480>> {
     let schedule = aes_expand_key_schedule(key)?;
     aes_ctr_with_schedule_into(&schedule, nonce, data, 1)
 }

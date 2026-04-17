@@ -1,6 +1,16 @@
-use super::*;
-use crate::net::security::tls::crypto::aes_core::aes_key_expansion;
-use crate::net::security::tls::error::TlsError;
+use super::super::credentials::base64_decode_payload;
+use super::super::crypto::{
+    derive_key_block, derive_master_secret, generate_random, hkdf_expand_label, hmac_sha384,
+    qemu_test_clear_random_override, qemu_test_set_random_override_seed, tls12_prf,
+};
+use super::super::crypto::aes_core::aes_key_expansion;
+use super::super::crypto::aes_gcm::AesGcmKey;
+use super::super::protocol::ContentType;
+use super::super::{
+    CipherSuite, TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState, TlsVersion,
+    tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished,
+};
+use alloc::{vec, vec::Vec};
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -13,6 +23,35 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
         .set_filled_len(copied)
         .expect("copied qemu TLS payload length stays in bounds");
     bytes
+}
+
+fn aes_gcm_encrypt(key: &[u8], nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> (Vec<u8>, [u8; 16]) {
+    let Some(ctx) = AesGcmKey::new(key) else {
+        return (Vec::new(), [0u8; 16]);
+    };
+    let mut ciphertext = vec![0u8; plaintext.len()];
+    let mut tag = [0u8; 16];
+    if ctx
+        .encrypt_in_place(nonce.as_slice(), aad, plaintext, &mut ciphertext, &mut tag)
+        .is_err()
+    {
+        return (Vec::new(), [0u8; 16]);
+    }
+    (ciphertext, tag)
+}
+
+fn aes_gcm_decrypt(
+    key: &[u8],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    ciphertext: &[u8],
+    tag: &[u8; 16],
+) -> Option<Vec<u8>> {
+    let ctx = AesGcmKey::new(key)?;
+    let mut plaintext = vec![0u8; ciphertext.len()];
+    ctx.decrypt_in_place(nonce.as_slice(), aad, ciphertext, &mut plaintext, tag)
+        .ok()?;
+    Some(plaintext)
 }
 
 pub fn wave8_tls_aes_gcm_empty_plaintext_smoke() -> bool {

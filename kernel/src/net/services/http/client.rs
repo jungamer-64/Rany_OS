@@ -10,8 +10,7 @@ use super::types::{
     HttpRequest, HttpRequestTarget, HttpRequestUri,
 };
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
-use crate::net::security::tls::connection::TlsConnection;
-use crate::net::security::tls::types::{TlsConfig, TlsState};
+use crate::net::security::tls::{TlsConfig, TlsConnection, TlsState};
 use crate::net::services::dns::resolve_ipv4;
 use kernel_api::resource::net::PacketPayload;
 
