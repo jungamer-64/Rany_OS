@@ -2,7 +2,8 @@
 // tls/connection/handshake/mod.rs - Handshake frame dispatch
 // ============================================================================
 
-use super::*;
+use super::super::TlsConnection;
+use crate::net::security::tls::error::{TlsError, TlsResult};
 
 mod certificate;
 mod server_hello;

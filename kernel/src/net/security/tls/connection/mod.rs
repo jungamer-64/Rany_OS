@@ -2,7 +2,6 @@
 // tls/connection/mod.rs - TLS Connection public boundary
 // ============================================================================
 
-pub(crate) use super::crypto::*;
 pub(crate) use super::error::{TlsError, TlsResult};
 pub(crate) use super::{
     AlertDescription, AlertLevel, CipherSuite, ContentType, HandshakeType, ServerPublicKey,
@@ -25,6 +24,7 @@ use state::{
     EarlyDataState, HandshakeSecrets, NegotiationState, RecordProtectionState, ResumptionState,
     Tls13State,
 };
+use super::crypto::{generate_random, has_secure_random};
 use transcript::TranscriptState;
 
 const TLS_CLIENT_HELLO_SCRATCH_CAPACITY: usize = 4096;

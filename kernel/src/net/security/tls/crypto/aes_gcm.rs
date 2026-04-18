@@ -210,7 +210,7 @@ pub(crate) fn aes_gcm_encrypt_into(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{AesGcmKey, aes_gcm_decrypt_into, aes_gcm_encrypt_into, gf128_mul};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]

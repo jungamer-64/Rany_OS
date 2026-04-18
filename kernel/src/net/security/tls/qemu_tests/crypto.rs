@@ -1,16 +1,18 @@
 use super::super::crypto::{
-    derive_key_block, derive_master_secret, generate_random, hkdf_expand_label, hmac_sha256,
-    hmac_sha384, qemu_test_clear_random_override, qemu_test_set_random_override_seed, tls12_prf,
-    tls13_derive_secret, tls13_derive_traffic_keys, tls13_early_secret, tls13_finished_key,
-    tls13_handshake_secret, tls13_master_secret, tls13_verify_data,
+    derive_key_block as derive_key_block_into, derive_master_secret, generate_random,
+    hkdf_expand_label as hkdf_expand_label_into, hmac_sha256, hmac_sha384,
+    qemu_test_clear_random_override, qemu_test_set_random_override_seed, tls12_prf,
+    tls13_derive_secret, tls13_derive_traffic_keys as tls13_derive_traffic_keys_into,
+    tls13_early_secret, tls13_finished_key, tls13_handshake_secret, tls13_master_secret,
+    tls13_verify_data,
 };
-use super::super::crypto::aes_core::{aes_ctr_into, gf_mul};
+use super::super::crypto::aes_core::{aes_ctr_into, aes_key_expansion, gf_mul};
 use super::super::crypto::aes_gcm::{gf128_mul, AesGcmKey};
 use super::super::crypto::chacha20::{
     chacha20_block, chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
     chacha20_xor_in_place, poly1305_mac,
 };
-use super::super::crypto::hkdf::{hkdf_expand, hkdf_extract};
+use super::super::crypto::hkdf::{hkdf_expand as hkdf_expand_into, hkdf_extract};
 use alloc::{vec, vec::Vec};
 
 fn aes_ctr(key: &[u8], nonce: &[u8; 12], data: &[u8]) -> Vec<u8> {
@@ -78,6 +80,36 @@ fn chacha20_poly1305_decrypt(
     chacha20_poly1305_decrypt_in_place(key, nonce, aad, &mut plaintext, tag)
         .ok()?;
     Some(plaintext)
+}
+
+fn hkdf_expand(prk: &[u8; 32], info: &[u8], len: usize) -> Vec<u8> {
+    let mut output = vec![0u8; len];
+    hkdf_expand_into(prk, info, &mut output);
+    output
+}
+
+fn hkdf_expand_label(secret: &[u8; 32], label: &[u8], context: &[u8], len: usize) -> Vec<u8> {
+    let mut output = vec![0u8; len];
+    hkdf_expand_label_into(secret, label, context, &mut output);
+    output
+}
+
+fn derive_key_block(
+    master_secret: &[u8; 48],
+    server_random: &[u8; 32],
+    client_random: &[u8; 32],
+    len: usize,
+) -> Vec<u8> {
+    let mut output = vec![0u8; len];
+    derive_key_block_into(master_secret, server_random, client_random, &mut output);
+    output
+}
+
+fn tls13_derive_traffic_keys(secret: &[u8; 32], key_len: usize) -> (Vec<u8>, [u8; 12]) {
+    let mut key = vec![0u8; key_len];
+    let mut iv = [0u8; 12];
+    tls13_derive_traffic_keys_into(secret, &mut key, &mut iv);
+    (key, iv)
 }
 pub fn wave8_tls_hmac_sha256_rfc4231_case1_smoke() -> bool {
     let key = [0x0bu8; 20];
