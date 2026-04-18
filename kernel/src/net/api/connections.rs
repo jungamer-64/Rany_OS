@@ -72,12 +72,12 @@ impl Future for GetArpCacheFuture {
         let this = self.get_mut();
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::GetArpCache {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetArpCache {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -86,7 +86,7 @@ impl Future for GetArpCacheFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -95,12 +95,12 @@ pub fn get_arp_cache_in(runtime: NetRuntimeHandle) -> GetArpCacheFuture {
 }
 
 pub fn enqueue_arp_cache_insert_in(runtime: NetRuntimeHandle, ip: Ipv4Address, mac: MacAddress) {
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::ArpInsert {
+        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpInsert {
             ip: *ip.as_bytes(),
             mac: *mac.as_bytes(),
-        },
+        }),
     );
 }
 
@@ -130,12 +130,12 @@ impl Future for GetUdpEndpointsFuture {
         let this = self.get_mut();
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::GetUdpEndpoints {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetUdpEndpoints {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -144,7 +144,7 @@ impl Future for GetUdpEndpointsFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -178,12 +178,12 @@ impl Future for GetTcpConnectionsFuture {
         let this = self.get_mut();
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::GetTcpConnections {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetTcpConnections {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -192,7 +192,7 @@ impl Future for GetTcpConnectionsFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -206,7 +206,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn connection_queries_complete_with_event_task() {
         let tcp = {
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
             let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
             let mut executor = crate::task::TestExecutor::new();
@@ -220,7 +220,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::event_loop::network_event_task().await;
+                crate::net::runtime::command_loop::runtime_command_task().await;
             }));
 
             let mut output = None;
@@ -231,11 +231,11 @@ mod tests {
                     break;
                 }
             }
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             output.expect("get_tcp_connections test timed out")
         };
         let udp = {
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
             let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
             let mut executor = crate::task::TestExecutor::new();
@@ -249,7 +249,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::event_loop::network_event_task().await;
+                crate::net::runtime::command_loop::runtime_command_task().await;
             }));
 
             let mut output = None;
@@ -260,11 +260,11 @@ mod tests {
                     break;
                 }
             }
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             output.expect("get_udp_endpoints test timed out")
         };
         let arp = {
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
             let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
             let mut executor = crate::task::TestExecutor::new();
@@ -277,7 +277,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::event_loop::network_event_task().await;
+                crate::net::runtime::command_loop::runtime_command_task().await;
             }));
 
             let mut output = None;
@@ -288,7 +288,7 @@ mod tests {
                     break;
                 }
             }
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             output.expect("get_arp_cache test timed out")
         };
 

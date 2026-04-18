@@ -1,6 +1,7 @@
 use crate::domain::{DomainCredentials, DomainId, DomainSecurity};
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::l4::endpoint::{Endpoint, EndpointState, EndpointType};
+use crate::net::l4::socket::Endpoint;
+use crate::net::l4::types::{EndpointState, EndpointType};
 use crate::net::l4::tcp::TcpConnection;
 use crate::net::runtime::default_runtime;
 use crate::security::capability::manager;

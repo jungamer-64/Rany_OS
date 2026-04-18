@@ -1,7 +1,4 @@
 use super::*;
-
-mod net_endpoint_tests;
-pub use net_endpoint_tests::*;
 mod net_peripheral_tests;
 pub use net_peripheral_tests::*;
 pub fn net_tls_wave8_tls13_full_key_schedule_smoke() -> bool {

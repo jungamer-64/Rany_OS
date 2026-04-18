@@ -151,7 +151,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
 
     // initially None
     let st = {
-        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        crate::net::runtime::command::reset_command_system_for_tests();
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
@@ -167,7 +167,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async {
-            crate::net::l4::endpoint::event_loop::network_event_task().await;
+            crate::net::runtime::command_loop::runtime_command_task().await;
         }));
 
         let mut output = None;
@@ -179,7 +179,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             }
         }
 
-        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        crate::net::runtime::command::reset_command_system_for_tests();
         output.expect("dhcp_state smoke future timed out")
     };
     if st.v4_last_declined.is_some() || st.v4_last_released.is_some() {
@@ -203,7 +203,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     client.release();
 
     let st2 = {
-        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        crate::net::runtime::command::reset_command_system_for_tests();
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
@@ -219,7 +219,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async {
-            crate::net::l4::endpoint::event_loop::network_event_task().await;
+            crate::net::runtime::command_loop::runtime_command_task().await;
         }));
 
         let mut output = None;
@@ -231,7 +231,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             }
         }
 
-        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        crate::net::runtime::command::reset_command_system_for_tests();
         output.expect("dhcp_state release snapshot future timed out")
     };
     if st2.v4_last_released != Some([1, 2, 3, 4]) {
@@ -240,7 +240,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
 
     let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5, 6, 7, 8]), None);
     let st3 = {
-        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        crate::net::runtime::command::reset_command_system_for_tests();
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
@@ -256,7 +256,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async {
-            crate::net::l4::endpoint::event_loop::network_event_task().await;
+            crate::net::runtime::command_loop::runtime_command_task().await;
         }));
 
         let mut output = None;
@@ -268,7 +268,7 @@ pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
             }
         }
 
-        crate::net::l4::endpoint::event::reset_event_system_for_tests();
+        crate::net::runtime::command::reset_command_system_for_tests();
         output.expect("dhcp_state decline snapshot future timed out")
     };
     if st3.v4_last_declined != Some([5, 6, 7, 8]) {

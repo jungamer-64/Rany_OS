@@ -17,7 +17,7 @@
 //! - G. Varghese & A. Lauck, "Hashed and Hierarchical Timing Wheels" (1997)
 //! - Linux kernel: `net/core/timer_defs.h`
 
-use super::types::EndpointAddr;
+use crate::net::l4::types::EndpointAddr;
 use alloc::vec::Vec;
 
 /// ホイールのスロット数（2のべき乗）

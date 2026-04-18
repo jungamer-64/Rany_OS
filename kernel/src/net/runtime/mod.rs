@@ -4,6 +4,9 @@
 //! マネージャー、タイムアウト管理。
 
 pub mod bridge;
+pub mod command;
+pub(crate) mod command_handler;
+pub mod command_loop;
 pub mod context;
 pub mod device;
 pub mod manager;

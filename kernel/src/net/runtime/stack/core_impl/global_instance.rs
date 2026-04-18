@@ -1,5 +1,5 @@
 use super::*;
-use crate::net::l4::endpoint::event::{new_detached_command_channel, poll_command_result};
+use crate::net::runtime::command::{new_detached_command_channel, poll_command_result};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::context::default_runtime;
 
@@ -24,9 +24,9 @@ pub(crate) fn receive_batch_on_in(
     // Offload each packet in the batch to the async event queue to avoid
     // taking the global stack lock in interrupt/polling contexts.
     for pkt in batch.into_iter() {
-        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+        crate::net::runtime::command::enqueue_command_ignore_in(
             runtime,
-            crate::net::l4::endpoint::event::NetworkEvent::IngressPacket { if_id, packet: pkt },
+            crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet { if_id, packet: pkt }),
         );
     }
 }
@@ -47,9 +47,9 @@ pub(crate) fn enqueue_udp_send_scoped_with_src_in(
         );
     }
     let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawUdpSend {
+        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSend {
             src_port,
             src_ip: Some(*src_ip.as_bytes()),
             dst_ip: *dst_ip.as_bytes(),
@@ -59,7 +59,7 @@ pub(crate) fn enqueue_udp_send_scoped_with_src_in(
             completion_id: None,
             result_slot,
             waker,
-        },
+        }),
     );
     true
 }
@@ -80,9 +80,9 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
         );
     }
     let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawUdpV6Send {
+        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6Send {
             src_port,
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
@@ -92,7 +92,7 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
             completion_id: None,
             result_slot,
             waker,
-        },
+        }),
     );
     true
 }
@@ -104,16 +104,16 @@ pub(crate) fn enqueue_tcp_send_in(
     payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawTcpSend {
+        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSend {
             src_ip: *src_ip.as_bytes(),
             dst_ip: *dst_ip.as_bytes(),
             payload,
             completion_id: None,
             result_slot,
             waker,
-        },
+        }),
     );
     true
 }
@@ -125,23 +125,23 @@ pub(crate) fn enqueue_tcp_v6_send_in(
     payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawTcpV6Send {
+        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6Send {
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
             payload,
             completion_id: None,
             result_slot,
             waker,
-        },
+        }),
     );
     true
 }
 
 /// 非同期タイムアウト処理タスク
 ///
-/// 定期的に `NetworkEvent::ProcessTimeouts` を投入する常駐タスク。
+/// 定期的に `RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ProcessTimeouts)` を投入する常駐タスク。
 /// TCPリトランスミッション、Keep-Alive、TIME_WAIT、ARP期限切れ等の
 /// タイマー処理をイベントキュー経由で非同期コンテキストで実行する。
 ///
@@ -166,9 +166,9 @@ async fn timeout_task_in(runtime: NetRuntimeHandle) {
         // イベントキュー経由でタイムアウト処理をリクエスト
         // イベントハンドラ側でNETWORK_STACKロックを取得して処理するため、
         // asyncタスク内での同期ロック取得を回避
-        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+        crate::net::runtime::command::enqueue_command_ignore_in(
             runtime,
-            crate::net::l4::endpoint::event::NetworkEvent::ProcessTimeouts,
+            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ProcessTimeouts),
         );
     }
 }
@@ -194,13 +194,13 @@ impl core::future::Future for MulticastJoinFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::MulticastJoin {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastJoin {
                     group: *self.group.as_bytes(),
                     result_slot: self.result_slot.clone(),
                     waker: self.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 core::task::Poll::Ready(Ok(())) => {
@@ -232,13 +232,13 @@ impl core::future::Future for MulticastLeaveFuture {
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         if !self.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::MulticastLeave {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastLeave {
                     group: *self.group.as_bytes(),
                     result_slot: self.result_slot.clone(),
                     waker: self.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 core::task::Poll::Ready(Ok(())) => {
@@ -294,9 +294,9 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
     ttl: u8,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawUdpSendOn {
+        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSendOn {
             if_id: if_id.0,
             src_port,
             src_ip: Some(*src_ip.as_bytes()),
@@ -307,7 +307,7 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
             completion_id: None,
             result_slot,
             waker,
-        },
+        }),
     );
     true
 }
@@ -320,9 +320,9 @@ pub(crate) fn enqueue_tcp_send_on_in(
     payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawTcpSendOn {
+        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSendOn {
             if_id: if_id.0,
             src_ip: *src_ip.as_bytes(),
             dst_ip: *dst_ip.as_bytes(),
@@ -330,7 +330,7 @@ pub(crate) fn enqueue_tcp_send_on_in(
             completion_id: None,
             result_slot,
             waker,
-        },
+        }),
     );
     true
 }
@@ -346,9 +346,9 @@ fn enqueue_udp_v6_send_on_in(
     ttl: u8,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawUdpV6SendOn {
+        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
             if_id: if_id.0,
             src_port,
             src_ip: src_ip.octets(),
@@ -359,7 +359,7 @@ fn enqueue_udp_v6_send_on_in(
             completion_id: None,
             result_slot,
             waker,
-        },
+        }),
     );
     true
 }
@@ -372,9 +372,9 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
     payload: kernel_api::resource::net::PacketPayload,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::RawTcpV6SendOn {
+        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
             if_id: if_id.0,
             src_ip: src_ip.octets(),
             dst_ip: dst_ip.octets(),
@@ -382,7 +382,7 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
             completion_id: None,
             result_slot,
             waker,
-        },
+        }),
     );
     true
 }

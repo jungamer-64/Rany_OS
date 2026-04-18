@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/endpoint_core.rs
+// kernel/src/net/l4/socket/entry.rs
 // ============================================================================
 //! # Socket - Arc<PoisonLock<EndpointInner>>ラッパー
 //!
@@ -14,15 +14,15 @@ use crate::net::runtime::manager::NetIfId;
 use crate::sync::poison_lock::PoisonLock;
 use kernel_api::resource::net::PacketPayload;
 
-use super::event::{NetworkEvent, enqueue_event_ignore_in, enqueue_event_in};
-use super::inner::EndpointInner;
-use super::manager::ENDPOINT_MANAGER;
-use super::types::{
+use crate::net::runtime::command::{RuntimeCommand, enqueue_command_ignore_in, enqueue_command_in};
+use super::registry::SOCKET_REGISTRY;
+use super::state::EndpointInner;
+use crate::net::l4::types::{
     EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType, NEXT_FD,
 };
 
 fn register_endpoint(endpoint: &Endpoint) {
-    if let Some(ref manager) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
+    if let Some(ref manager) = *SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner()) {
         manager.register(endpoint.clone());
     }
 }
@@ -50,7 +50,7 @@ impl Endpoint {
         }
 
         if let (Some(local), Some(remote)) = (local, remote) {
-            let _ = crate::net::l4::endpoint::tcb::tcb_table().lookup_mut(local, remote, |tcb| {
+            let _ = crate::net::l4::tcp::tcb::tcb_table().lookup_mut(local, remote, |tcb| {
                 tcb.on_data_received(pushed as u32);
             });
         }
@@ -440,7 +440,7 @@ impl Endpoint {
         }
 
         // ネットワークスタックにクローズを通知（エラーは無視 - クローズは必ず進める）
-        enqueue_event_ignore_in(self.runtime, NetworkEvent::Close { fd: self.fd });
+        enqueue_command_ignore_in(self.runtime, RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket { fd: self.fd }));
 
         Ok(())
     }
@@ -457,12 +457,12 @@ impl Endpoint {
         }
 
         // ネットワークスタックに通知（接続済みの場合、TCBに反映させる）
-        enqueue_event_in(
+        enqueue_command_in(
             self.runtime,
-            NetworkEvent::SetNoDelay {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::SetTcpNoDelay {
                 fd: self.fd,
                 nodelay,
-            },
+            }),
         )
     }
 
@@ -474,12 +474,12 @@ impl Endpoint {
         }
 
         // ネットワークスタックに通知
-        enqueue_event_in(
+        enqueue_command_in(
             self.runtime,
-            NetworkEvent::SetPriority {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::SetSocketPriority {
                 fd: self.fd,
                 priority: priority & 0x3F,
-            },
+            }),
         )
     }
 }
@@ -505,9 +505,9 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_new_registered_endpoint_registers_socket() {
-        crate::net::l4::endpoint::manager::init_endpoint_manager();
+        crate::net::l4::socket::registry::init_socket_registry();
         let endpoint = Endpoint::new_registered_in(EndpointType::Tcp, default_runtime());
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+        let manager = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
         let manager = manager.as_ref().expect("endpoint manager");
         assert!(manager.get(endpoint.fd()).is_some());
     }
@@ -518,9 +518,9 @@ pub mod qemu_tests {
     use super::*;
 
     pub fn registered_endpoint_smoke() -> bool {
-        crate::net::l4::endpoint::manager::init_endpoint_manager();
+        crate::net::l4::socket::registry::init_socket_registry();
         let endpoint = Endpoint::new_registered_in(EndpointType::Tcp, default_runtime());
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+        let manager = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
         manager
             .as_ref()
             .and_then(|mgr| mgr.get(endpoint.fd()))

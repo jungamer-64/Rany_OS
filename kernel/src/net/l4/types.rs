@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/types.rs
+// kernel/src/net/l4/types.rs
 // ============================================================================
 //! # 基本型定義 - エンドポイントAPI用の型
 //!
@@ -12,7 +12,7 @@ use crate::net::runtime::manager::NetIfId;
 /// エンドポイントファイルディスクリプタ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct EndpointFd(u32);
+pub(crate) struct EndpointFd(u32);
 
 impl EndpointFd {
     /// 無効なファイルディスクリプタ
@@ -38,11 +38,11 @@ impl EndpointFd {
 }
 
 /// 次のファイルディスクリプタ
-pub static NEXT_FD: AtomicU32 = AtomicU32::new(0);
+pub(crate) static NEXT_FD: AtomicU32 = AtomicU32::new(0);
 
 /// エンドポイントタイプ
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EndpointType {
+pub(crate) enum EndpointType {
     /// TCPストリームエンドポイント
     Tcp,
     /// UDPデータグラムエンドポイント
@@ -53,7 +53,7 @@ pub enum EndpointType {
 
 /// エンドポイント状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EndpointState {
+pub(crate) enum EndpointState {
     /// 作成直後
     Created,
     /// バインド済み
@@ -187,7 +187,7 @@ impl EndpointError {
 }
 
 /// エンドポイント結果型
-pub type EndpointResult<T> = Result<T, EndpointError>;
+pub(crate) type EndpointResult<T> = Result<T, EndpointError>;
 
 /// エンドポイントアドレス（IPv4 / IPv6 - unified）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -403,7 +403,7 @@ impl core::fmt::Display for EndpointAddr {
 
 /// ハンドシェイク完了済みの接続（Acceptキュー用）
 #[derive(Debug, Clone, Copy)]
-pub struct AcceptedConnection {
+pub(crate) struct AcceptedConnection {
     /// 新規作成されたエンドポイントFD
     pub fd: EndpointFd,
     /// ローカルアドレス
@@ -435,7 +435,7 @@ impl AcceptedConnection {
 static CONN_HASH_SECRET: AtomicU32 = AtomicU32::new(0);
 
 /// ハッシュシークレットを初期化（ネットワークスタック起動時に一度だけ呼ぶ）
-pub fn init_hash_secrets() {
+pub(crate) fn init_hash_secrets() {
     let mut bytes = [0u8; 4];
     // RDRAND または別のセキュアなソースから取得
     let rand = crate::net::security::tls::crypto::random::generate_random();
@@ -449,7 +449,7 @@ pub fn init_hash_secrets() {
 /// シャードインデックスの決定に使用。ハッシュフロッディング防止のため
 /// 起動ごとに生成されるシークレットをシードとして使用する。
 #[inline]
-pub fn conn_key_hash(local: &EndpointAddr, remote: &EndpointAddr) -> u32 {
+pub(crate) fn conn_key_hash(local: &EndpointAddr, remote: &EndpointAddr) -> u32 {
     const FNV_OFFSET: u32 = 0x811c9dc5;
     const FNV_PRIME: u32 = 0x01000193;
 
@@ -497,37 +497,37 @@ pub fn conn_key_hash(local: &EndpointAddr, remote: &EndpointAddr) -> u32 {
 /// $a < b$ iff $(a - b)$ を符号付き 32bit として解釈したとき負。
 /// 距離が $2^{31}$ 未満のときのみ有効。
 #[inline(always)]
-pub fn seq_before(a: u32, b: u32) -> bool {
+pub(crate) fn seq_before(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) < 0
 }
 
 /// a が b 以前（before or equal）か判定する
 #[inline(always)]
-pub fn seq_leq(a: u32, b: u32) -> bool {
+pub(crate) fn seq_leq(a: u32, b: u32) -> bool {
     a == b || seq_before(a, b)
 }
 
 /// a と b のうち前（earlier）の方を返す
 #[inline(always)]
-pub fn seq_min(a: u32, b: u32) -> u32 {
+pub(crate) fn seq_min(a: u32, b: u32) -> u32 {
     if seq_before(a, b) { a } else { b }
 }
 
 /// a と b のうち後（later）の方を返す
 #[inline(always)]
-pub fn seq_max(a: u32, b: u32) -> u32 {
+pub(crate) fn seq_max(a: u32, b: u32) -> u32 {
     if seq_after(a, b) { a } else { b }
 }
 
 /// a が b より後（strictly after）か判定する
 #[inline(always)]
-pub fn seq_after(a: u32, b: u32) -> bool {
+pub(crate) fn seq_after(a: u32, b: u32) -> bool {
     seq_before(b, a)
 }
 
 /// a が b 以後（after or equal）か判定する
 #[inline(always)]
-pub fn seq_geq(a: u32, b: u32) -> bool {
+pub(crate) fn seq_geq(a: u32, b: u32) -> bool {
     a == b || seq_after(a, b)
 }
 

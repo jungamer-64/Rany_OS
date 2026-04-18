@@ -1,7 +1,7 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/manager.rs
 // ============================================================================
-//! # EndpointManager - RwLockによる読み取り並列化
+//! # SocketRegistry - RwLockによる読み取り並列化
 //!
 //! ソケット管理マネージャ
 
@@ -9,8 +9,8 @@ use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use super::endpoint_core::Endpoint;
-use super::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
+use crate::net::l4::socket::Endpoint;
+use crate::net::l4::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 
@@ -18,12 +18,12 @@ const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum EndpointFamily {
+pub enum SocketFamily {
     Ipv4,
     Ipv6,
 }
 
-impl EndpointFamily {
+impl SocketFamily {
     pub(crate) fn from_addr(addr: EndpointAddr) -> Self {
         if addr.is_ipv6() {
             Self::Ipv6
@@ -35,13 +35,13 @@ impl EndpointFamily {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PortBindingKey {
-    family: EndpointFamily,
+    family: SocketFamily,
     port: u16,
     scope: InterfaceScope,
 }
 
 impl PortBindingKey {
-    fn new(family: EndpointFamily, port: u16, scope: InterfaceScope) -> Self {
+    fn new(family: SocketFamily, port: u16, scope: InterfaceScope) -> Self {
         Self {
             family,
             port,
@@ -57,7 +57,7 @@ fn scopes_conflict(lhs: InterfaceScope, rhs: InterfaceScope) -> bool {
     }
 }
 
-pub struct EndpointManager {
+pub struct SocketRegistry {
     endpoints: PoisonRwLock<BTreeMap<EndpointFd, Endpoint>>,
     tcp_ports: PoisonRwLock<BTreeMap<PortBindingKey, EndpointFd>>,
     udp_ports: PoisonRwLock<BTreeMap<PortBindingKey, EndpointFd>>,
@@ -65,7 +65,7 @@ pub struct EndpointManager {
     next_ephemeral_port: AtomicU32,
 }
 
-impl EndpointManager {
+impl SocketRegistry {
     pub const fn new() -> Self {
         Self {
             endpoints: PoisonRwLock::new(BTreeMap::new()),
@@ -169,7 +169,7 @@ impl EndpointManager {
     pub fn bind_port(
         &self,
         endpoint_type: EndpointType,
-        family: EndpointFamily,
+        family: SocketFamily,
         port: u16,
         scope: InterfaceScope,
         fd: EndpointFd,
@@ -197,15 +197,15 @@ impl EndpointManager {
         fd: EndpointFd,
     ) -> EndpointResult<()> {
         let mut guard = self.udp_ports.write().unwrap_or_else(|e| e.into_inner());
-        let ipv4 = PortBindingKey::new(EndpointFamily::Ipv4, port, scope);
-        let ipv6 = PortBindingKey::new(EndpointFamily::Ipv6, port, scope);
+        let ipv4 = PortBindingKey::new(SocketFamily::Ipv4, port, scope);
+        let ipv6 = PortBindingKey::new(SocketFamily::Ipv6, port, scope);
         let ipv4_conflict = guard.keys().any(|key| {
-            key.family == EndpointFamily::Ipv4
+            key.family == SocketFamily::Ipv4
                 && key.port == port
                 && scopes_conflict(key.scope, scope)
         });
         let ipv6_conflict = guard.keys().any(|key| {
-            key.family == EndpointFamily::Ipv6
+            key.family == SocketFamily::Ipv6
                 && key.port == port
                 && scopes_conflict(key.scope, scope)
         });
@@ -243,7 +243,7 @@ impl EndpointManager {
     pub fn find_by_port(
         &self,
         endpoint_type: EndpointType,
-        family: EndpointFamily,
+        family: SocketFamily,
         port: u16,
         ingress_if_id: Option<NetIfId>,
     ) -> Option<Endpoint> {
@@ -271,7 +271,7 @@ impl EndpointManager {
             let Some(local_addr) = inner.local_addr else {
                 continue;
             };
-            if EndpointFamily::from_addr(local_addr) != family || local_addr.port() != port {
+            if SocketFamily::from_addr(local_addr) != family || local_addr.port() != port {
                 continue;
             }
 
@@ -314,32 +314,32 @@ impl EndpointManager {
     }
 }
 
-impl Default for EndpointManager {
+impl Default for SocketRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub static ENDPOINT_MANAGER: PoisonRwLock<Option<EndpointManager>> = PoisonRwLock::new(None);
+pub static SOCKET_REGISTRY: PoisonRwLock<Option<SocketRegistry>> = PoisonRwLock::new(None);
 
-pub fn init_endpoint_manager() {
-    *ENDPOINT_MANAGER.write().unwrap_or_else(|e| e.into_inner()) = Some(EndpointManager::new());
+pub fn init_socket_registry() {
+    *SOCKET_REGISTRY.write().unwrap_or_else(|e| e.into_inner()) = Some(SocketRegistry::new());
 }
 
-pub fn find_listening_socket(
+pub fn find_listening_tcp_socket(
     local: EndpointAddr,
     ingress_if_id: Option<NetIfId>,
 ) -> Option<Endpoint> {
-    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
+    let manager = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
     let mgr = manager.as_ref()?;
     let socket = mgr.find_by_port(
         EndpointType::Tcp,
-        EndpointFamily::from_addr(local),
+        SocketFamily::from_addr(local),
         local.port(),
         ingress_if_id,
     )?;
     let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-    if inner.state == super::types::EndpointState::Listening {
+    if inner.state == crate::net::l4::types::EndpointState::Listening {
         Some(socket.clone())
     } else {
         None

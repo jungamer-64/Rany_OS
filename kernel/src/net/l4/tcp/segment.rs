@@ -6,7 +6,7 @@
 //! TcpSegmentBuilder - パケット構築
 
 use super::tcb::tcp_flags;
-use super::types::{EndpointAddr, EndpointError};
+use crate::net::l4::types::{EndpointAddr, EndpointError};
 use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload, PacketRef};
 

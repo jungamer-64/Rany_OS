@@ -1,4 +1,4 @@
-use crate::net::l4::endpoint::event::NetworkEventQueue;
+use crate::net::runtime::command::RuntimeCommandQueue;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
 use crate::net::runtime::device::{NetDeviceManager, TxCompletionState, TxLeaseState};
 use crate::net::runtime::manager::NetworkManager;
@@ -54,9 +54,9 @@ pub struct NetRuntimeContext {
     id: NetRuntimeId,
     pub(crate) stack: PoisonLock<Option<NetworkStack>>,
     pub(crate) manager: PoisonLock<Option<NetworkManager>>,
-    pub(crate) event_queue: NetworkEventQueue,
-    pub(crate) event_task_running: AtomicBool,
-    pub(crate) event_task_ready_waiters: WakerQueue,
+    pub(crate) command_queue: RuntimeCommandQueue,
+    pub(crate) command_task_running: AtomicBool,
+    pub(crate) command_task_ready_waiters: WakerQueue,
     pub(crate) tx_completion_next_id: AtomicU64,
     pub(crate) tx_completions: PoisonRwLock<BTreeMap<u64, Arc<TxCompletionState>>>,
     pub(crate) tx_lease_next_id: AtomicU64,
@@ -76,9 +76,9 @@ impl NetRuntimeContext {
             id,
             stack: PoisonLock::new(None),
             manager: PoisonLock::new(None),
-            event_queue: NetworkEventQueue::new(),
-            event_task_running: AtomicBool::new(false),
-            event_task_ready_waiters: WakerQueue::new(),
+            command_queue: RuntimeCommandQueue::new(),
+            command_task_running: AtomicBool::new(false),
+            command_task_ready_waiters: WakerQueue::new(),
             tx_completion_next_id: AtomicU64::new(1),
             tx_completions: PoisonRwLock::new(BTreeMap::new()),
             tx_lease_next_id: AtomicU64::new(1),
@@ -198,7 +198,7 @@ pub fn stack_initialized(handle: NetRuntimeHandle) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::l4::endpoint::event::NetworkEvent;
+    use crate::net::runtime::command::RuntimeCommand;
     use crate::net::runtime::manager;
 
     #[test]
@@ -211,8 +211,8 @@ mod tests {
         assert_ne!(runtime_a.id(), runtime_b.id());
         assert_eq!(list_runtimes().len(), 2);
 
-        runtime_a.context().event_queue.reset_for_tests();
-        runtime_b.context().event_queue.reset_for_tests();
+        runtime_a.context().command_queue.reset_for_tests();
+        runtime_b.context().command_queue.reset_for_tests();
 
         manager::init_network_manager_in(runtime_a);
         assert!(manager::list_interfaces_in(runtime_a).is_ok());
@@ -221,10 +221,10 @@ mod tests {
         assert!(
             runtime_a
                 .context()
-                .event_queue
-                .send(NetworkEvent::TxAvailable)
+                .command_queue
+                .send(RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TxAvailable))
         );
-        assert!(runtime_a.context().event_queue.has_events());
-        assert!(runtime_b.context().event_queue.is_empty());
+        assert!(runtime_a.context().command_queue.has_events());
+        assert!(runtime_b.context().command_queue.is_empty());
     }
 }

@@ -667,12 +667,12 @@ impl NetworkStack {
                 let seq_num = u32::from_be_bytes(seq_bytes);
                 let local = TcpEndpointAddr::new(original_src.octets(), src_port);
                 let remote = TcpEndpointAddr::new(original_dst.octets(), dst_port);
-                let tcb_table = crate::net::l4::endpoint::tcb_table();
+                let tcb_table = crate::net::l4::tcp::tcb_table();
                 if tcb_table.validate_icmp_sequence(local, remote, seq_num) {
                     if icmp_type == IcmpType::SourceQuench {
-                        crate::net::l4::endpoint::tcp_rx::handle_source_quench(local, remote);
+                        crate::net::l4::tcp::tcp_rx::handle_source_quench(local, remote);
                     } else if icmp_type == IcmpType::DestinationUnreachable {
-                        crate::net::l4::endpoint::tcp_rx::handle_icmp_error(
+                        crate::net::l4::tcp::tcp_rx::handle_icmp_error(
                             local, remote, icmp_type, code,
                         );
                     }
@@ -686,12 +686,7 @@ impl NetworkStack {
                 }
             }
             17 => {
-                let has_udp_port = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .as_ref()
-                    .map(|manager| manager.has_udp_port(src_port))
-                    .unwrap_or(false);
+                let has_udp_port = crate::net::l4::socket::has_udp_port(src_port);
                 if !has_udp_port {
                     return;
                 }
@@ -966,10 +961,10 @@ impl NetworkStack {
                 let remote_addr = TcpEndpointAddr::new_v6(quoted_dst.octets(), dst_port);
 
                 // Validate sequence number (RFC 5927)
-                let tcb_table = crate::net::l4::endpoint::tcb_table();
+                let tcb_table = crate::net::l4::tcp::tcb_table();
                 if tcb_table.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
                     // Notify TCP stack
-                    crate::net::l4::endpoint::tcp_rx::handle_icmpv6_error(
+                    crate::net::l4::tcp::tcp_rx::handle_icmpv6_error(
                         local_addr,
                         remote_addr,
                         icmp_type,
@@ -989,12 +984,7 @@ impl NetworkStack {
                     return;
                 };
                 let src_port = u16::from_be_bytes([header[0], header[1]]);
-                let has_udp_port = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .as_ref()
-                    .map(|manager| manager.has_udp_port(src_port))
-                    .unwrap_or(false);
+                let has_udp_port = crate::net::l4::socket::has_udp_port(src_port);
                 if !has_udp_port {
                     return;
                 }

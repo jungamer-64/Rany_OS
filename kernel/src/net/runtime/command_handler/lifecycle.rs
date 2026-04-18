@@ -1,23 +1,23 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/handler/lifecycle.rs
 // ============================================================================
-//! NetworkEventHandler ソケット制御/ライフサイクル系メソッド
+//! RuntimeCommandHandler ソケット制御/ライフサイクル系メソッド
 
-use crate::net::l4::endpoint::event::NetworkEvent;
-use crate::net::l4::endpoint::handler::{EventHandleResult, NetworkEventHandler};
-use crate::net::l4::endpoint::tcb::tcb_table;
-use crate::net::l4::endpoint::types::EndpointError;
+use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
+use crate::net::l4::tcp::tcb::tcb_table;
+use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
 
-impl NetworkEventHandler {
+impl RuntimeCommandHandler {
     pub(super) fn handle_lifecycle_event_with_stack(
         &self,
         runtime: NetRuntimeHandle,
-        event: NetworkEvent,
+        event: RuntimeCommand,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         match event {
-            NetworkEvent::ArpResolveRequest { target_ip } => {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolveRequest { target_ip }) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
                 let current_time = stack.current_time();
                 if let Some(mac) = stack.arp.resolve(ip, current_time) {
@@ -27,7 +27,7 @@ impl NetworkEventHandler {
                 }
                 EventHandleResult::Success
             }
-            NetworkEvent::NdpResolveRequest { if_id, target_ip } => {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::NdpResolveRequest { if_id, target_ip }) => {
                 let ip = crate::net::l3::ipv6::Ipv6Address::new(target_ip);
 
                 if ip.is_multicast() {
@@ -54,17 +54,17 @@ impl NetworkEventHandler {
                 }
                 EventHandleResult::Success
             }
-            NetworkEvent::ArpResolved { ip, mac } => {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac }) => {
                 crate::net::l2::arp::notify_arp_resolved(ip, mac);
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpDialConnection {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpDial {
                 local,
                 remote,
                 scope,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let result =
                     self.make_tcp_connection_with_stack(runtime, local, remote, scope, stack);
                 if let Ok(mut slot) = result_slot.lock() {
@@ -73,11 +73,11 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::MulticastJoin {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastJoin {
                 group,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
                 let success = stack.join_multicast_group(ip).is_ok();
                 if let Ok(mut slot) = result_slot.lock() {
@@ -86,11 +86,11 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::MulticastLeave {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastLeave {
                 group,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
                 let success = stack.leave_multicast_group(ip).is_ok();
                 if let Ok(mut slot) = result_slot.lock() {
@@ -99,13 +99,13 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::TcpBindAcceptor {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpBind {
                 local,
                 scope,
                 backlog,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let result = self.make_tcp_acceptor_with_stack(runtime, local, scope, backlog);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
@@ -113,7 +113,7 @@ impl NetworkEventHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            NetworkEvent::ProcessTimeouts => {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ProcessTimeouts) => {
                 // NetworkStack内部タイマーの基準時刻を同期する。
                 // IGMP/ARP/NDP等が `NetworkStack::current_time()` を参照するため、
                 // timeoutイベントごとに必ず更新しておく。
@@ -126,7 +126,7 @@ impl NetworkEventHandler {
                 // 1. TCB table maintenance (RTO, TimeWait, FinWait2, etc.)
                 tcb_table().tick();
                 // 2. Delayed ACK flushing (RFC 1122 Section 4.2.3.2)
-                super::super::tcp_rx::flush_delayed_acks();
+                crate::net::l4::tcp::tcp_rx::flush_delayed_acks();
 
                 // ICMP Echo待ちの期限切れエントリをクリーンアップ
                 crate::net::api::icmp::cleanup_icmp_echo_waiters();

@@ -418,12 +418,12 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                             interface_runtime.mac(),
                             lease.ip_address
                         );
-                        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                        crate::net::runtime::command::enqueue_command_ignore_in(
                             runtime,
-                            crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
+                            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpApplyLease {
                                 if_id: Some(interface_runtime.if_id.0),
                                 config: applied,
-                            },
+                            }),
                         );
                     }
                     Ok(DhcpResponseResult::Offer(lease)) => {

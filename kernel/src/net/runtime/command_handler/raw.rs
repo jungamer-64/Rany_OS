@@ -1,23 +1,23 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/handler/raw.rs
 // ============================================================================
-//! NetworkEventHandler Raw送信系メソッド
+//! RuntimeCommandHandler Raw送信系メソッド
 
-use crate::net::l4::endpoint::event::NetworkEvent;
-use crate::net::l4::endpoint::handler::{EventHandleResult, NetworkEventHandler};
-use crate::net::l4::endpoint::types::EndpointError;
+use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
+use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
 use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
 
-impl NetworkEventHandler {
+impl RuntimeCommandHandler {
     pub(super) fn handle_raw_event_with_stack(
         &self,
         runtime: NetRuntimeHandle,
-        event: NetworkEvent,
+        event: RuntimeCommand,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         match event {
-            NetworkEvent::RawUdpSend {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSend {
                 src_port,
                 src_ip,
                 dst_ip,
@@ -27,7 +27,7 @@ impl NetworkEventHandler {
                 completion_id,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
@@ -96,14 +96,14 @@ impl NetworkEventHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            NetworkEvent::RawTcpSend {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSend {
                 src_ip,
                 dst_ip,
                 payload,
                 completion_id,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let mut payload = Some(payload);
@@ -147,7 +147,7 @@ impl NetworkEventHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            NetworkEvent::RawUdpV6Send {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6Send {
                 src_port,
                 src_ip,
                 dst_ip,
@@ -157,7 +157,7 @@ impl NetworkEventHandler {
                 completion_id,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let mut payload = Some(payload);
@@ -213,14 +213,14 @@ impl NetworkEventHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            NetworkEvent::RawTcpV6Send {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6Send {
                 src_ip,
                 dst_ip,
                 payload,
                 completion_id,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let mut payload = Some(payload);
@@ -268,7 +268,7 @@ impl NetworkEventHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            NetworkEvent::RawUdpSendOn {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSendOn {
                 if_id,
                 src_port,
                 src_ip,
@@ -279,7 +279,7 @@ impl NetworkEventHandler {
                 completion_id,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
                 let mut payload = Some(payload);
@@ -357,7 +357,7 @@ impl NetworkEventHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            NetworkEvent::RawTcpSendOn {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSendOn {
                 if_id,
                 src_ip,
                 dst_ip,
@@ -365,7 +365,7 @@ impl NetworkEventHandler {
                 completion_id,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
@@ -416,7 +416,7 @@ impl NetworkEventHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            NetworkEvent::RawUdpV6SendOn {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
                 if_id,
                 src_port,
                 src_ip,
@@ -427,7 +427,7 @@ impl NetworkEventHandler {
                 completion_id,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
@@ -488,7 +488,7 @@ impl NetworkEventHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            NetworkEvent::RawTcpV6SendOn {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
                 if_id,
                 src_ip,
                 dst_ip,
@@ -496,7 +496,7 @@ impl NetworkEventHandler {
                 completion_id,
                 result_slot,
                 waker,
-            } => {
+            }) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);

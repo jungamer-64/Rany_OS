@@ -205,12 +205,12 @@ pub async fn primary_interface_config_in(
     runtime: NetRuntimeHandle,
 ) -> Option<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
-        crate::net::l4::endpoint::event::new_command_channel::<Option<InterfaceConfigSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::GetPrimaryInterfaceConfig {
+        crate::net::runtime::command::new_command_channel::<Option<InterfaceConfigSnapshot>>();
+    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig {
         result_slot,
         waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+    });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
@@ -219,25 +219,25 @@ pub async fn get_interface_config_in(
     if_id: NetIfId,
 ) -> Option<InterfaceConfigSnapshot> {
     let (result_slot, waker, command_future) =
-        crate::net::l4::endpoint::event::new_command_channel::<Option<InterfaceConfigSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::GetInterfaceConfig {
+        crate::net::runtime::command::new_command_channel::<Option<InterfaceConfigSnapshot>>();
+    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetInterfaceConfig {
         if_id: if_id.0,
         result_slot,
         waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+    });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_interface_configs_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceConfigSnapshot> {
-    let (result_slot, waker, command_future) = crate::net::l4::endpoint::event::new_command_channel::<
+    let (result_slot, waker, command_future) = crate::net::runtime::command::new_command_channel::<
         alloc::vec::Vec<InterfaceConfigSnapshot>,
     >();
     let event =
-        crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceConfigs { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { result_slot, waker });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
@@ -246,35 +246,35 @@ pub async fn get_interface_stats_in(
     if_id: NetIfId,
 ) -> Option<InterfaceStatsSnapshot> {
     let (result_slot, waker, command_future) =
-        crate::net::l4::endpoint::event::new_command_channel::<Option<InterfaceStatsSnapshot>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::GetInterfaceStats {
+        crate::net::runtime::command::new_command_channel::<Option<InterfaceStatsSnapshot>>();
+    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetInterfaceStats {
         if_id: if_id.0,
         result_slot,
         waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+    });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_interface_stats_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
-    let (result_slot, waker, command_future) = crate::net::l4::endpoint::event::new_command_channel::<
+    let (result_slot, waker, command_future) = crate::net::runtime::command::new_command_channel::<
         alloc::vec::Vec<InterfaceStatsSnapshot>,
     >();
     let event =
-        crate::net::l4::endpoint::event::NetworkEvent::ListInterfaceStats { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaceStats { result_slot, waker });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_interfaces_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceSnapshot> {
-    let (result_slot, waker, command_future) = crate::net::l4::endpoint::event::new_command_channel::<
+    let (result_slot, waker, command_future) = crate::net::runtime::command::new_command_channel::<
         alloc::vec::Vec<InterfaceSnapshot>,
     >();
     let event =
-        crate::net::l4::endpoint::event::NetworkEvent::ListInterfaces { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaces { result_slot, waker });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
@@ -291,7 +291,7 @@ mod tests {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+        crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
@@ -306,7 +306,7 @@ mod tests {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async move {
-            crate::net::l4::endpoint::event_loop::network_event_task_in(runtime).await;
+            crate::net::runtime::command_loop::runtime_command_task_in(runtime).await;
         }));
 
         let mut output = None;
@@ -318,7 +318,7 @@ mod tests {
             }
         }
 
-        crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+        crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
         output.expect("network config test future timed out")
     }
 
@@ -326,7 +326,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn list_interfaces_completes_with_event_task() {
         let interfaces = {
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
             let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
             let mut executor = crate::task::TestExecutor::new();
@@ -339,7 +339,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::event_loop::network_event_task().await;
+                crate::net::runtime::command_loop::runtime_command_task().await;
             }));
 
             let mut output = None;
@@ -350,7 +350,7 @@ mod tests {
                     break;
                 }
             }
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             output.expect("list_interfaces test timed out")
         };
         assert!(interfaces.is_empty());

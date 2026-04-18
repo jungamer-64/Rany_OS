@@ -1,13 +1,13 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/handler/udp.rs
 // ============================================================================
-//! NetworkEventHandler UDP系メソッド
+//! RuntimeCommandHandler UDP系メソッド
 
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::endpoint::handler::common::endpoint_error_from_network;
+use crate::net::runtime::command_handler::common::endpoint_error_from_network;
 
-impl NetworkEventHandler {
+impl RuntimeCommandHandler {
     /// UDPパケットの処理
     pub(super) fn handle_udp_ingress_with_stack(
         &self,
@@ -54,12 +54,7 @@ impl NetworkEventHandler {
         payload: PacketPayload,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 

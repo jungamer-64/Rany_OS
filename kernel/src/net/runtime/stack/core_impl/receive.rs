@@ -97,11 +97,11 @@ impl NetworkStack {
                 }
                 // Offload transport handling to endpoint event path.
                 if let Some(packet_ref) = packet.take() {
-                    crate::net::l4::endpoint::event::enqueue_event_ignore(
-                        crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+                    crate::net::runtime::command::enqueue_command_ignore(
+                        crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
                             if_id: None,
                             packet: packet_ref,
-                        },
+                        }),
                     );
                 }
             }
@@ -117,11 +117,11 @@ impl NetworkStack {
                 }
                 // Offload transport handling to endpoint event path.
                 if let Some(packet_ref) = packet.take() {
-                    crate::net::l4::endpoint::event::enqueue_event_ignore(
-                        crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+                    crate::net::runtime::command::enqueue_command_ignore(
+                        crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
                             if_id: None,
                             packet: packet_ref,
-                        },
+                        }),
                     );
                 }
             }
@@ -141,11 +141,11 @@ impl NetworkStack {
                         return;
                     }
                 }
-                crate::net::l4::endpoint::event::enqueue_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
+                crate::net::runtime::command::enqueue_command_ignore(
+                    crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Reassembled {
                         if_id: None,
                         payload,
-                    },
+                    }),
                 );
             }
             Ipv4ProcessResult::FragmentPending => {
@@ -231,12 +231,12 @@ impl NetworkStack {
             } => {
                 let rtt_us = 0;
                 crate::net::api::icmp::notify_icmp_echo_reply(*src_ip.as_bytes(), sequence, rtt_us);
-                crate::net::l4::endpoint::event::enqueue_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoReply {
+                crate::net::runtime::command::enqueue_command_ignore(
+                    crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoReply {
                         source: *src_ip.as_bytes(),
                         sequence,
                         rtt_us,
-                    },
+                    }),
                 );
             }
             IcmpResult::Error { icmp_type, code } => {
@@ -283,14 +283,7 @@ impl NetworkStack {
     ) {
         let mut ip_packet = Some(ip_packet);
         let ingress_if_id = self.resolve_ingress_if(if_id);
-        let raw_endpoint = {
-            let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            guard
-                .as_ref()
-                .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-        };
+        let raw_endpoint = crate::net::l4::socket::find_raw_endpoint(ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
                 let _ = endpoint.deliver_raw_payload(
@@ -421,7 +414,7 @@ impl NetworkStack {
                     self.stats.record_rx_error();
                     return;
                 };
-                crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_payload_on(
+                crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
                     if_id,
                     src,
                     dst,
@@ -459,11 +452,11 @@ impl NetworkStack {
             }
             Ipv6ProcessResult::Reassembled(payload) => {
                 // Reassembled IPv6 payload is offloaded to endpoint async path.
-                crate::net::l4::endpoint::event::enqueue_event_ignore(
-                    crate::net::l4::endpoint::event::NetworkEvent::ReassembledPacket {
+                crate::net::runtime::command::enqueue_command_ignore(
+                    crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Reassembled {
                         if_id,
                         payload,
-                    },
+                    }),
                 );
             }
             Ipv6ProcessResult::FragmentPending => {
@@ -703,7 +696,7 @@ impl NetworkStack {
                                     let remote_addr =
                                         TcpEndpointAddr::new_v6(dst.octets(), dst_port);
 
-                                    if !crate::net::l4::endpoint::tcb_table()
+                                    if !crate::net::l4::tcp::tcb_table()
                                         .validate_icmp_sequence(local_addr, remote_addr, seq_num)
                                     {
                                         log::warn!(
@@ -718,12 +711,7 @@ impl NetworkStack {
                                 if let Some(header) = transport_payload.read_array::<4>(0) {
                                     let src_port = u16::from_be_bytes([header[0], header[1]]);
                                     let has_udp_port =
-                                        crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                                            .read()
-                                            .unwrap_or_else(|e| e.into_inner())
-                                            .as_ref()
-                                            .map(|manager| manager.has_udp_port(src_port))
-                                            .unwrap_or(false);
+                                        crate::net::l4::socket::has_udp_port(src_port);
                                     if !has_udp_port {
                                         log::warn!(
                                             "[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})",

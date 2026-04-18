@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
 use super::flow_control::FlowController;
 use super::retransmit::check_retransmit_timeouts;
-use super::types::{EndpointAddr, EndpointError, EndpointFd, conn_key_hash, seq_after};
+use crate::net::l4::types::{EndpointAddr, EndpointError, EndpointFd, conn_key_hash, seq_after};
 use super::window_scale::WindowScaleOption;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
@@ -594,7 +594,7 @@ impl TcbTable {
     }
 
     fn check_zero_window_probes(&self, current_tick: u64) {
-        use super::manager::ENDPOINT_MANAGER;
+        use crate::net::l4::socket::lookup_endpoint;
         use super::retransmit::retransmit_queue_push;
         use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
         for shard in &self.shards {
@@ -605,61 +605,52 @@ impl TcbTable {
                         continue;
                     }
                     if entry.flow_control.should_send_probe(current_tick) {
-                        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-                        if let Some(ref mgr) = *manager {
-                            if let Some(socket) = mgr.get(entry.fd) {
-                                let mut inner =
-                                    socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                                if let Some(probe_payload) = inner.take_send_payload_prefix(1) {
-                                    drop(inner);
-                                    drop(manager);
-                                    let seq = entry.snd_nxt;
-                                    let mut builder =
-                                        TcpSegmentBuilder::new(key.0.port(), key.1.port())
-                                            .seq(seq)
-                                            .ack(entry.rcv_nxt)
-                                            .ack_flag()
-                                            .psh()
-                                            .window(entry.advertised_recv_window())
-                                            .payload_packet(probe_payload);
-                                    if entry.ts_enabled {
-                                        let ts_val = (current_tick / 10) as u32;
-                                        builder =
-                                            builder.nop().nop().timestamp(ts_val, entry.ts_ecr);
-                                    }
-                                    let Ok(segment) = builder.build_checked_packet(key.0, key.1)
-                                    else {
-                                        continue;
-                                    };
-                                    let Some(retransmit_segment) =
-                                        super::retransmit::materialize_retransmit_copy(&segment)
-                                    else {
-                                        continue;
-                                    };
-                                    if send_tcp_segment_payload(key.0, key.1, segment) {
-                                        retransmit_queue_push(
-                                            key.0,
-                                            key.1,
-                                            seq,
-                                            1,
+                        if let Some(socket) = lookup_endpoint(entry.fd) {
+                            let mut inner =
+                                socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(probe_payload) = inner.take_send_payload_prefix(1) {
+                                drop(inner);
+                                let seq = entry.snd_nxt;
+                                let mut builder = TcpSegmentBuilder::new(key.0.port(), key.1.port())
+                                    .seq(seq)
+                                    .ack(entry.rcv_nxt)
+                                    .ack_flag()
+                                    .psh()
+                                    .window(entry.advertised_recv_window())
+                                    .payload_packet(probe_payload);
+                                if entry.ts_enabled {
+                                    let ts_val = (current_tick / 10) as u32;
+                                    builder = builder.nop().nop().timestamp(ts_val, entry.ts_ecr);
+                                }
+                                let Ok(segment) = builder.build_checked_packet(key.0, key.1) else {
+                                    continue;
+                                };
+                                let Some(retransmit_segment) =
+                                    super::retransmit::materialize_retransmit_copy(&segment)
+                                else {
+                                    continue;
+                                };
+                                if send_tcp_segment_payload(key.0, key.1, segment) {
+                                    retransmit_queue_push(
+                                        key.0,
+                                        key.1,
+                                        seq,
+                                        1,
+                                        retransmit_segment,
+                                    );
+                                    entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
+                                    entry.flow_control.on_probe_sent(current_tick);
+                                } else {
+                                    let mut inner =
+                                        socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Some(probe_body) =
+                                        crate::net::payload::retain_payload_window_owned(
                                             retransmit_segment,
-                                        );
-                                        entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
-                                        entry.flow_control.on_probe_sent(current_tick);
-                                    } else {
-                                        let mut inner = socket
-                                            .inner()
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        if let Some(probe_body) =
-                                            crate::net::payload::retain_payload_window_owned(
-                                                retransmit_segment,
-                                                crate::net::l4::tcp::TcpHeader::MIN_HEADER_LEN,
-                                                1,
-                                            )
-                                        {
-                                            inner.push_send_payload_front(probe_body);
-                                        }
+                                            crate::net::l4::tcp::TcpHeader::MIN_HEADER_LEN,
+                                            1,
+                                        )
+                                    {
+                                        inner.push_send_payload_front(probe_body);
                                     }
                                 }
                             }

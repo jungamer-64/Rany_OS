@@ -1,7 +1,7 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/handler/tcp.rs
 // ============================================================================
-//! NetworkEventHandler TCP系メソッド
+//! RuntimeCommandHandler TCP系メソッド
 
 use super::common::{
     endpoint_error_from_network, endpoint_ipv4_pair, endpoint_is_native_v6_pair,
@@ -9,35 +9,27 @@ use super::common::{
 };
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::endpoint::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
-use crate::net::l4::endpoint::tcb::{
+use crate::net::l4::tcp::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
+use crate::net::l4::tcp::tcb::{
     TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot, tcb_table,
 };
-use crate::net::l4::endpoint::types::{
+use crate::net::l4::types::{
     EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType,
 };
 use crate::net::runtime::NetRuntimeHandle;
 use kernel_api::resource::net::PacketPayload;
 
-impl NetworkEventHandler {
+impl RuntimeCommandHandler {
     pub(super) fn handle_tcp_data_ready_with_stack(
         &self,
         fd: EndpointFd,
         _stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        self.handle_data_ready(fd, EndpointType::Tcp)
+        self.handle_data_ready(fd)
     }
 
-    pub(super) fn handle_data_ready(
-        &self,
-        fd: EndpointFd,
-        _socket_type: EndpointType,
-    ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-        let Some(socket) = mgr.get(fd) else {
+    pub(super) fn handle_data_ready(&self, fd: EndpointFd) -> EventHandleResult {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
@@ -103,7 +95,7 @@ impl NetworkEventHandler {
                 Err(error) => return EventHandleResult::ProtocolError(error),
             };
             let retransmit_segment =
-                match crate::net::l4::endpoint::retransmit::materialize_retransmit_copy(&segment) {
+                match crate::net::l4::tcp::retransmit::materialize_retransmit_copy(&segment) {
                     Some(segment) => segment,
                     None => return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
                 };
@@ -119,7 +111,7 @@ impl NetworkEventHandler {
 
                     tcb_table().lookup_mut(local, remote, |tcb| {
                         tcb.on_send(data_len);
-                        crate::net::l4::endpoint::retransmit::retransmit_queue_push(
+                        crate::net::l4::tcp::retransmit::retransmit_queue_push(
                             local,
                             remote,
                             tcb.snd_nxt,
@@ -139,11 +131,10 @@ impl NetworkEventHandler {
                         inner.push_send_payload_front(body);
                     }
                     return EventHandleResult::Retry(
-                        crate::net::l4::endpoint::event::NetworkEvent::DataReady {
-                            fd,
-                            endpoint_type: EndpointType::Tcp,
-                        },
-                    );
+                        crate::net::runtime::command::RuntimeCommand::Transport(
+                            crate::net::runtime::command::TransportCommand::TcpDataReady { fd },
+                        ),
+                    )
                 }
             }
         }
@@ -160,8 +151,8 @@ impl NetworkEventHandler {
         scope: crate::net::types::InterfaceScope,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError> {
-        let endpoint = crate::net::l4::endpoint::endpoint_core::Endpoint::new_registered_in(
-            crate::net::l4::endpoint::EndpointType::Tcp,
+        let endpoint = crate::net::l4::socket::Endpoint::new_registered_in(
+            crate::net::l4::types::EndpointType::Tcp,
             runtime,
         );
 
@@ -196,8 +187,8 @@ impl NetworkEventHandler {
         scope: crate::net::types::InterfaceScope,
         backlog: u32,
     ) -> Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError> {
-        let endpoint = crate::net::l4::endpoint::endpoint_core::Endpoint::new_registered_in(
-            crate::net::l4::endpoint::EndpointType::Tcp,
+        let endpoint = crate::net::l4::socket::Endpoint::new_registered_in(
+            crate::net::l4::types::EndpointType::Tcp,
             runtime,
         );
 
@@ -235,18 +226,12 @@ impl NetworkEventHandler {
         remote: EndpointAddr,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
         let local_port = if local.port() == 0 {
-            mgr.allocate_ephemeral_port(EndpointType::Tcp)
-                .unwrap_or(49152)
+            crate::net::l4::socket::allocate_ephemeral_port(EndpointType::Tcp).unwrap_or(49152)
         } else {
             local.port()
         };
@@ -337,7 +322,7 @@ impl NetworkEventHandler {
                 1460,
                 Some(7),
                 true,
-                Some(crate::net::l4::endpoint::tcp_rx::generate_tcp_timestamp()),
+                Some(crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp()),
             )
             .build_checked_packet(local_addr, remote);
 
@@ -369,19 +354,13 @@ impl NetworkEventHandler {
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
         // ローカルポートが未割り当ての場合はエフェメラルポートを割り当て
         let local_port = if local.port() == 0 {
-            mgr.allocate_ephemeral_port(EndpointType::Tcp)
-                .unwrap_or(49152)
+            crate::net::l4::socket::allocate_ephemeral_port(EndpointType::Tcp).unwrap_or(49152)
         } else {
             local.port()
         };
@@ -430,7 +409,7 @@ impl NetworkEventHandler {
                 1460,
                 Some(7),
                 true,
-                Some(crate::net::l4::endpoint::tcp_rx::generate_tcp_timestamp()),
+                Some(crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp()),
             ) // MSS + Window Scale + SACK Permitted + TS
             .build_checked_packet(local_addr, remote);
 
@@ -488,12 +467,7 @@ impl NetworkEventHandler {
         local: EndpointAddr,
         backlog: u32,
     ) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
@@ -536,12 +510,7 @@ impl NetworkEventHandler {
     /// Closeイベント処理
     /// 接続を終了
     pub(super) fn handle_close(&self, fd: EndpointFd) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 

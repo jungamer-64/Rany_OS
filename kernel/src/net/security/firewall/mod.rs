@@ -16,7 +16,7 @@
 //!
 //! ## 統合ポイント
 //!
-//! - Ingress: `NetworkEventHandler::handle_event_with_stack()` の
+//! - Ingress: `RuntimeCommandHandler::handle_event_with_stack()` の
 //!   `IngressPacket` 処理前に `check_ingress()` を呼び出す
 //! - Egress: `NetworkStack` の送信関数（`send_tcp`, `send_udp_raw` 等）で
 //!   `check_egress()` を呼び出す

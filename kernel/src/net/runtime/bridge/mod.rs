@@ -370,12 +370,12 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     }
 
     compute_and_set_flow_hash(&mut packet);
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::IngressPacket {
+        crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
             if_id: Some(if_id),
             packet,
-        },
+        }),
     );
 }
 

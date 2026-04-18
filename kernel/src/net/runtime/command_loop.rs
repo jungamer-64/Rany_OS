@@ -7,9 +7,9 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use super::event::event_queue_in;
-use super::handler::{EventHandleResult, NetworkEventHandler};
-use super::tcb::tcb_table;
+use super::command::command_queue_in;
+use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
+use crate::net::l4::tcp::tcb_table;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 /// ネットワークイベント処理タスク（完全非同期版）
@@ -23,27 +23,27 @@ use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 /// - バッチサイズに上限を設け、長時間のロック保持によるスターベーションを防止
 /// - バッチ間でロックを解放し、yield_now()で他のタスクに実行機会を与える
 /// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
-pub async fn network_event_task() {
-    network_event_task_in(default_runtime()).await;
+pub(crate) async fn runtime_command_task() {
+    runtime_command_task_in(default_runtime()).await;
 }
 
-pub async fn network_event_task_in(runtime: NetRuntimeHandle) {
+pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
     log::info!(
-        "[NET] network_event_task started on CPU {} (fully async)",
+        "[NET] runtime_command_task started on CPU {} (fully async)",
         crate::cpu::try_current_id().unwrap_or(0)
     );
-    log::info!("[NET][boot] network_event_task stage: awaiting first event batch");
-    super::event::mark_event_task_running_in(runtime);
+    log::info!("[NET][boot] runtime_command_task stage: awaiting first event batch");
+    super::command::mark_command_task_running_in(runtime);
 
     /// 1回のバッチで処理するイベントの最大数
     /// ロック保持時間を制限し、他タスクのスターベーションを防止
     const MAX_BATCH_SIZE: usize = 128;
 
-    let handler = NetworkEventHandler::new();
+    let handler = RuntimeCommandHandler::new();
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.
     loop {
-        let event = event_queue_in(runtime).wait_for_events().await;
+        let event = command_queue_in(runtime).wait_for_events().await;
 
         if let Ok(mut stack_guard) = runtime.context().stack.lock() {
             if let Some(ref mut stack) = *stack_guard {
@@ -53,7 +53,7 @@ pub async fn network_event_task_in(runtime: NetRuntimeHandle) {
                 let mut batch_count = 1usize;
                 // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
                 while batch_count < MAX_BATCH_SIZE {
-                    match event_queue_in(runtime).recv() {
+                    match command_queue_in(runtime).recv() {
                         Some(batch_event) => {
                             let result =
                                 handler.handle_event_with_stack_in(runtime, batch_event, stack);
@@ -77,7 +77,7 @@ pub async fn network_event_task_in(runtime: NetRuntimeHandle) {
         process_handle_result(runtime, result);
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
-        while let Some(batch_event) = event_queue_in(runtime).recv() {
+        while let Some(batch_event) = command_queue_in(runtime).recv() {
             let result = handler.handle_event_in(runtime, batch_event);
             process_handle_result(runtime, result);
         }
@@ -113,7 +113,7 @@ fn process_handle_result(runtime: NetRuntimeHandle, result: EventHandleResult) {
             }
         }
         EventHandleResult::Retry(event) => {
-            if super::event::enqueue_event_in(runtime, event).is_err() {
+            if super::command::enqueue_command_in(runtime, event).is_err() {
                 log::warn!("Network: Event requeue failed due to full queue");
             }
         }

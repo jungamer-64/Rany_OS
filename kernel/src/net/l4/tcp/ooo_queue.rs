@@ -14,7 +14,7 @@
 
 // Building block: Out-of-order queue implementation
 
-use super::types::{EndpointAddr, conn_key_hash, seq_before};
+use crate::net::l4::types::{EndpointAddr, conn_key_hash, seq_before};
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -215,7 +215,7 @@ impl ConnectionOooQueue {
 
     /// SACKブロックを生成（最大4ブロック、RFC 2018）
     fn sack_blocks(&self) -> SackBlocks {
-        use crate::net::l4::endpoint::types::seq_max;
+        use crate::net::l4::types::seq_max;
         let mut sack = SackBlocks::new();
         let mut block_start: Option<u32> = None;
         let mut block_end = 0u32;

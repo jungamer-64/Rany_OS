@@ -14,10 +14,10 @@ extern crate alloc;
 
 pub async fn network_snapshot_in(runtime: NetRuntimeHandle) -> NetSnapshot {
     let (result_slot, waker, command_future) =
-        crate::net::l4::endpoint::event::new_command_channel::<NetSnapshot>();
+        crate::net::runtime::command::new_command_channel::<NetSnapshot>();
     let event =
-        crate::net::l4::endpoint::event::NetworkEvent::GetNetworkSnapshot { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { result_slot, waker });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
@@ -26,13 +26,13 @@ pub async fn network_recent_events_in(
     limit: usize,
 ) -> Vec<NetTraceEvent> {
     let (result_slot, waker, command_future) =
-        crate::net::l4::endpoint::event::new_command_channel::<Vec<NetTraceEvent>>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::GetNetworkRecentEvents {
+        crate::net::runtime::command::new_command_channel::<Vec<NetTraceEvent>>();
+    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents {
         limit,
         result_slot,
         waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+    });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
@@ -42,7 +42,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recent_events_complete_with_event_task() {
         let events = {
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
             let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
             let mut executor = crate::task::TestExecutor::new();
@@ -57,7 +57,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::event_loop::network_event_task().await;
+                crate::net::runtime::command_loop::runtime_command_task().await;
             }));
 
             let mut output = None;
@@ -68,7 +68,7 @@ mod tests {
                     break;
                 }
             }
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             output.expect("network_recent_events test timed out")
         };
         assert!(events.len() <= 1);

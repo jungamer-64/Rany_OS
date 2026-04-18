@@ -12,7 +12,7 @@ pub(crate) fn stack_scope(
 }
 
 pub(crate) fn apply_endpoint_scope(
-    endpoint: &crate::net::l4::endpoint::endpoint_core::Endpoint,
+    endpoint: &crate::net::l4::socket::Endpoint,
     scope: kernel_api::resource::net::InterfaceScope,
 ) {
     let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -21,24 +21,24 @@ pub(crate) fn apply_endpoint_scope(
 
 pub(crate) fn endpoint_addr_from_kapi(
     addr: kernel_api::resource::net::NetSocketAddr,
-) -> crate::net::l4::endpoint::EndpointAddr {
+) -> crate::net::l4::EndpointAddr {
     match addr {
         kernel_api::resource::net::NetSocketAddr::V4 { ip, port } => {
-            crate::net::l4::endpoint::EndpointAddr::new(ip, port)
+            crate::net::l4::EndpointAddr::new(ip, port)
         }
         kernel_api::resource::net::NetSocketAddr::V6 { ip, port } => {
-            crate::net::l4::endpoint::EndpointAddr::new_v6(ip, port)
+            crate::net::l4::EndpointAddr::new_v6(ip, port)
         }
     }
 }
 
-pub(crate) fn endpoint_error_to_kapi(error: crate::net::l4::endpoint::EndpointError) -> KapiError {
+pub(crate) fn endpoint_error_to_kapi(error: crate::net::l4::EndpointError) -> KapiError {
     match error {
-        crate::net::l4::endpoint::EndpointError::Timeout => KapiError::Timeout,
-        crate::net::l4::endpoint::EndpointError::PortInUse
-        | crate::net::l4::endpoint::EndpointError::AddressInUse => KapiError::ResourceExhausted,
-        crate::net::l4::endpoint::EndpointError::PermissionDenied => KapiError::PermissionDenied,
-        crate::net::l4::endpoint::EndpointError::NotFound => KapiError::InvalidHandle,
+        crate::net::l4::EndpointError::Timeout => KapiError::Timeout,
+        crate::net::l4::EndpointError::PortInUse
+        | crate::net::l4::EndpointError::AddressInUse => KapiError::ResourceExhausted,
+        crate::net::l4::EndpointError::PermissionDenied => KapiError::PermissionDenied,
+        crate::net::l4::EndpointError::NotFound => KapiError::InvalidHandle,
         _ => KapiError::IoError,
     }
 }
@@ -69,29 +69,17 @@ pub(crate) fn network_error_to_kapi(error: crate::net::types::NetworkError) -> K
 }
 
 pub(crate) fn lookup_endpoint(
-    fd: crate::net::l4::endpoint::EndpointFd,
-) -> Result<crate::net::l4::endpoint::endpoint_core::Endpoint, KapiError> {
-    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner());
-    let Some(mgr) = guard.as_ref() else {
-        return Err(KapiError::NotFound);
-    };
-    mgr.get(fd).ok_or(KapiError::InvalidHandle)
+    fd: crate::net::l4::types::EndpointFd,
+) -> Result<crate::net::l4::socket::Endpoint, KapiError> {
+    crate::net::l4::socket::lookup_endpoint(fd).ok_or(KapiError::InvalidHandle)
 }
 
 pub(crate) fn close_endpoint_handle(
-    fd: crate::net::l4::endpoint::EndpointFd,
+    fd: crate::net::l4::types::EndpointFd,
 ) -> Result<(), KapiError> {
     let socket = lookup_endpoint(fd)?;
     socket.close_immediate().map_err(endpoint_error_to_kapi)?;
-
-    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(mgr) = guard.as_ref() {
-        let _ = mgr.unregister(fd);
-    }
+    let _ = crate::net::l4::socket::unregister_endpoint(fd);
 
     Ok(())
 }

@@ -1,15 +1,15 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/handler/ingress.rs
 // ============================================================================
-//! NetworkEventHandler Ingress系メソッド
+//! RuntimeCommandHandler Ingress系メソッド
 
 use super::*;
-use crate::net::l4::endpoint::handler::common::{
+use crate::net::runtime::command_handler::common::{
     extract_ports, resolve_ingress_if_id_in, subslice_offset,
 };
 use kernel_api::resource::net::PacketPayload;
 
-impl NetworkEventHandler {
+impl RuntimeCommandHandler {
     /// IngressPacketイベント処理
     ///
     /// 【完全非同期化】このメソッドはイベントキュー経由でのみ呼び出されるべき。
@@ -24,11 +24,11 @@ impl NetworkEventHandler {
         packet: PacketRef,
     ) -> EventHandleResult {
         // スタックロックなしのコンテキストから呼ばれた場合:
-        // イベントキュー経由で再エンキューし、network_event_taskが
+        // イベントキュー経由で再エンキューし、runtime_command_taskが
         // スタックロック保持下で処理する（二重ロック取得を回避）
-        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+        crate::net::runtime::command::enqueue_command_ignore_in(
             runtime,
-            NetworkEvent::IngressPacket { if_id, packet },
+            RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet { if_id, packet }),
         );
         EventHandleResult::Success
     }
@@ -190,7 +190,7 @@ impl NetworkEventHandler {
         for packet in packets {
             self.handle_event_with_stack_in(
                 runtime,
-                NetworkEvent::IngressPacket { if_id, packet },
+                RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet { if_id, packet }),
                 stack,
             );
         }
@@ -206,14 +206,7 @@ impl NetworkEventHandler {
     ) -> EventHandleResult {
         let current_time = stack.current_time();
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-        let raw_endpoint = {
-            let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            guard
-                .as_ref()
-                .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-        };
+        let raw_endpoint = crate::net::l4::socket::find_raw_endpoint(ingress_if_id);
         let view = crate::net::payload::PacketPayloadView::new(&payload);
 
         if view.total_len() >= 20 && view.first_byte().map(|byte| byte >> 4) == Some(4) {
@@ -285,7 +278,7 @@ impl NetworkEventHandler {
                             transport_len,
                         )
                     {
-                        crate::net::l4::endpoint::tcp_rx::process_tcp_segment_payload_on(
+                        crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
                             if_id,
                             src_ip.octets(),
                             dst_ip.octets(),
@@ -410,7 +403,7 @@ impl NetworkEventHandler {
                             transport_len,
                         )
                     {
-                        crate::net::l4::endpoint::tcp_rx::process_tcp_segment_v6_payload_on(
+                        crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
                             if_id,
                             src,
                             dst,
@@ -508,14 +501,7 @@ impl NetworkEventHandler {
         }
 
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-        let raw_endpoint = {
-            let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-                .read()
-                .unwrap_or_else(|e| e.into_inner());
-            guard
-                .as_ref()
-                .and_then(|manager| manager.find_raw_endpoint(ingress_if_id))
-        };
+        let raw_endpoint = crate::net::l4::socket::find_raw_endpoint(ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
                 let _ = endpoint.deliver_raw_payload(ingress_if_id, PacketPayload::single(packet));
@@ -647,7 +633,7 @@ impl NetworkEventHandler {
                 else {
                     return EventHandleResult::Success;
                 };
-                crate::net::l4::endpoint::tcp_rx::process_tcp_segment_payload_on(
+                crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
                     if_id,
                     src_ip.octets(),
                     dst_ip.octets(),
@@ -658,7 +644,7 @@ impl NetworkEventHandler {
                 let _ = src_mac;
                 self.handle_event_with_stack_in(
                     runtime,
-                    NetworkEvent::ReassembledPacket { if_id, payload },
+                    RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Reassembled { if_id, payload }),
                     stack,
                 );
             }

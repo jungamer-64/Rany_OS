@@ -150,13 +150,13 @@ pub(crate) fn init_network_infra() {
     info!(target: "init", "Initializing network infrastructure (pre-executor)");
 
     // Initialize hash secrets for sharded structures (e.g. OOO queue)
-    crate::net::l4::endpoint::types::init_hash_secrets();
+    crate::net::l4::types::init_hash_secrets();
 
     // Initialize firewall with secure default rules
     crate::net::security::firewall::setup_default_firewall();
 
     // Initialize TCP SYN cookies
-    crate::net::l4::endpoint::tcb::tcb_table().init_syncookies();
+    crate::net::l4::tcp::tcb::tcb_table().init_syncookies();
 
     let stack_initialized = crate::net::runtime::device::is_initialized();
     let port_runtime_initialized = !crate::net::runtime::device::list_port_keys_in(
@@ -164,10 +164,7 @@ pub(crate) fn init_network_infra() {
         None,
     )
     .is_empty();
-    let endpoint_manager_initialized = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some();
+    let endpoint_manager_initialized = crate::net::l4::socket::socket_registry_initialized();
     debug!(
         target: "init",
         "Network bootstrap precheck: port_runtime_active={} stack_initialized={} socket_manager_initialized={}",
@@ -194,12 +191,8 @@ pub(crate) fn init_network_infra() {
         }
     }
 
-    if !crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some()
-    {
-        crate::net::l4::endpoint::init_endpoint_manager();
+    if !crate::net::l4::socket::socket_registry_initialized() {
+        crate::net::l4::socket::init_socket_registry();
         info!(target: "init", "Socket manager initialized");
     } else {
         info!(
@@ -214,10 +207,7 @@ pub(crate) fn init_network_infra() {
         None,
     )
     .is_empty();
-    let endpoint_manager_initialized = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some();
+    let endpoint_manager_initialized = crate::net::l4::socket::socket_registry_initialized();
     info!(
         target: "init",
         "Network core ready: stack_initialized={} socket_manager_initialized={} port_runtime_active={} async_port_bootstrap_pending={}",
@@ -228,8 +218,8 @@ pub(crate) fn init_network_infra() {
     );
 
     // OOOキューとタイミングホイールを初期化
-    crate::net::l4::endpoint::ooo_queue::init_ooo_queues();
-    crate::net::l4::endpoint::retransmit::init_timer_wheel();
+    crate::net::l4::tcp::ooo_queue::init_ooo_queues();
+    crate::net::l4::tcp::retransmit::init_timer_wheel();
     info!(target: "init", "OOO queues and retransmit timer wheel initialized");
 
     let virtio_net_present = virtio_driver::net::virtio_net_driver_adapter(0)

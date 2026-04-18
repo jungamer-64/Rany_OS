@@ -1046,11 +1046,11 @@ pub(crate) fn spawn_core_runtime_tasks() {
     info!(target: "init", "ICMP responder server active");
 
     // Initialize network event handler and spawn the background task for async networking
-    crate::net::l4::endpoint::handler::init_network_event_handler();
+    crate::net::runtime::command_handler::init_network_event_handler();
     spawn_early_network_task(
         "network event task",
         crate::task::Priority::High,
-        crate::net::l4::endpoint::event_loop::network_event_task(),
+        crate::net::runtime::command_loop::runtime_command_task(),
     );
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)

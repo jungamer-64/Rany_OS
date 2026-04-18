@@ -1,13 +1,23 @@
 // ============================================================================
 // kernel/src/net/l4/tcp/mod.rs
 // ============================================================================
-//! TCP public facade backed by the endpoint subsystem.
+//! TCP public facade plus TCP-specific internals.
 
+pub(crate) mod congestion;
 mod connection;
+pub(crate) mod flow_control;
+pub(crate) mod ooo_queue;
+pub(crate) mod retransmit;
+pub(crate) mod segment;
+pub(crate) mod tcb;
+pub(crate) mod tcp_rx;
+pub(crate) mod timer_wheel;
+pub(crate) mod window_scale;
 
-pub use crate::net::l4::endpoint::types::EndpointAddr;
+pub use crate::net::l4::types::EndpointAddr;
 pub use crate::net::types::Ipv4Addr;
 pub use connection::*;
+pub(crate) use tcb::tcb_table;
 
 /// TCP state machine values shared with the endpoint TCB table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

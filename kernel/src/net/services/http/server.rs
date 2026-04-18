@@ -155,14 +155,14 @@ pub fn start_once() {
 /// 低負荷時は10msスリープで省電力、高負荷時は1msに短縮して
 /// レスポンスレイテンシを低減する。
 ///
-/// VirtIO-Net割り込み処理はISR + network_event_task で非同期に
+/// VirtIO-Net割り込み処理はISR + runtime_command_task で非同期に
 /// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
 async fn run_net_poller() {
     let mut consecutive_idle: u32 = 0;
     let mut observed_signal_seq = current_http_poller_signal_seq();
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
-        // ISR + network_event_task が非同期にパケット処理を行うため、
+        // ISR + runtime_command_task が非同期にパケット処理を行うため、
         // ここでは Executor へ制御を返しつつ、HTTP接続イベント通知を待機する。
         // Poll event は non-ISR の文脈で device event queue に投入する。
         task::yield_now().await;

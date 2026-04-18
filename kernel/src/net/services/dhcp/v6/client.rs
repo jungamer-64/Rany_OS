@@ -1037,7 +1037,7 @@ impl DhcpV6Client {
     /// `src` is the IPv6 source address the packet was received from.
     /// Returns true if handled
     pub fn handle_packet(&self, if_id: Option<NetIfId>, data: &[u8], src: Ipv6Address) -> bool {
-        let now = crate::net::l4::endpoint::tcb_table().get_current_tick();
+        let now = crate::net::l4::tcp::tcb_table().get_current_tick();
 
         // Inspect message type first so we can react to ADVERTISE even when no IAADDR is present
         let msg_type = data.get(0).copied().unwrap_or(0);
@@ -1091,12 +1091,12 @@ impl DhcpV6Client {
                 }
 
                 // Apply IPv6 lease info to the running NetworkStack (fire-and-forget via event queue)
-                crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                crate::net::runtime::command::enqueue_command_ignore_in(
                     self.runtime,
-                    crate::net::l4::endpoint::event::NetworkEvent::DhcpV6ApplyLease {
+                    crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
                         if_id: if_id.map(|id| id.0),
                         config: outcome.applied,
-                    },
+                    }),
                 );
 
                 // Accept lease: configure IPv6 address + NDP
@@ -1120,7 +1120,7 @@ impl DhcpV6Client {
         payload: kernel_api::resource::net::PacketPayload,
         src: Ipv6Address,
     ) -> bool {
-        let now = crate::net::l4::endpoint::tcb_table().get_current_tick();
+        let now = crate::net::l4::tcp::tcb_table().get_current_tick();
         let msg_type = crate::net::payload::PacketPayloadView::new(&payload)
             .read_array::<1>(0)
             .map(|bytes| bytes[0])
@@ -1163,12 +1163,12 @@ impl DhcpV6Client {
                 *sd = Some(src);
             }
 
-            crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+            crate::net::runtime::command::enqueue_command_ignore_in(
                 self.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::DhcpV6ApplyLease {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
                     if_id: None,
                     config: outcome.applied,
-                },
+                }),
             );
 
             if let Ok(mut g) = self.lease.lock() {

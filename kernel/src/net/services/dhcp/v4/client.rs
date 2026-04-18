@@ -74,12 +74,12 @@ impl DhcpClient {
                                 result;
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
-                            crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+                            crate::net::runtime::command::enqueue_command_ignore_in(
                                 self.runtime,
-                                crate::net::l4::endpoint::event::NetworkEvent::DhcpApplyLease {
+                                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpApplyLease {
                                     if_id: None,
                                     config: applied,
-                                },
+                                }),
                             );
                             // mDNS のローカル IP を更新
                             if let Ok(mut guard) =

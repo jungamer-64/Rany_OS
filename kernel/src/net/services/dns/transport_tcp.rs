@@ -171,8 +171,8 @@ impl DnsClient {
 
     fn endpoint_addr_for_server(
         server: DnsServerAddr,
-    ) -> crate::net::l4::endpoint::types::EndpointAddr {
-        use crate::net::l4::endpoint::types::EndpointAddr;
+    ) -> crate::net::l4::types::EndpointAddr {
+        use crate::net::l4::types::EndpointAddr;
 
         match server {
             DnsServerAddr::V4(ip) => EndpointAddr::new(ip.octets(), DNS_PORT),

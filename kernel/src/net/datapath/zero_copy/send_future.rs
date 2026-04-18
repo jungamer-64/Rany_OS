@@ -30,8 +30,8 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
                     }
                     Err(_) => {
                         // デバイス未初期化 or キュー満杯 → TX キューへフォールバック
-                        crate::net::l4::endpoint::event::enqueue_event_ignore(
-                            crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
+                        crate::net::runtime::command::enqueue_command_ignore(
+                            crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TxAvailable),
                         );
                         return Poll::Ready(Err("VirtIO enqueue failed, packet dropped"));
                     }

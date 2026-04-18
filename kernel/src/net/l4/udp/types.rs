@@ -1,4 +1,5 @@
 use super::*;
+use crate::net::l4::socket::{SocketFamily, find_endpoint_by_port};
 
 fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
     if let Some(if_id) = if_id {
@@ -48,27 +49,19 @@ impl UdpProcessor {
     fn deliver_payload(
         &self,
         if_id: NetIfId,
-        src: crate::net::l4::endpoint::EndpointAddr,
+        src: crate::net::l4::EndpointAddr,
         dst_port: u16,
         ttl: u8,
         payload: PacketPayload,
     ) -> bool {
         let family = if src.is_ipv6() {
-            crate::net::l4::endpoint::manager::EndpointFamily::Ipv6
+            SocketFamily::Ipv6
         } else {
-            crate::net::l4::endpoint::manager::EndpointFamily::Ipv4
+            SocketFamily::Ipv4
         };
 
-        let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(manager) = guard.as_ref() else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return false;
-        };
-
-        let Some(endpoint) = manager.find_by_port(
-            crate::net::l4::endpoint::EndpointType::Udp,
+        let Some(endpoint) = find_endpoint_by_port(
+            crate::net::l4::types::EndpointType::Udp,
             family,
             dst_port,
             Some(if_id),
@@ -92,23 +85,19 @@ impl UdpProcessor {
     fn lookup_endpoint(
         &self,
         if_id: NetIfId,
-        family: crate::net::l4::endpoint::manager::EndpointFamily,
+        family: SocketFamily,
         dst_port: u16,
     ) -> Option<Endpoint> {
-        let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(manager) = guard.as_ref() else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return None;
-        };
-
-        manager.find_by_port(
-            crate::net::l4::endpoint::EndpointType::Udp,
+        let endpoint = find_endpoint_by_port(
+            crate::net::l4::types::EndpointType::Udp,
             family,
             dst_port,
             Some(if_id),
-        )
+        );
+        if endpoint.is_none() {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        endpoint
     }
 
     fn payload_span_checksum(
@@ -203,9 +192,9 @@ impl UdpProcessor {
         }
 
         let src =
-            crate::net::l4::endpoint::EndpointAddr::new(src_ip.octets(), u16::from_be_bytes([header[0], header[1]]));
+            crate::net::l4::EndpointAddr::new(src_ip.octets(), u16::from_be_bytes([header[0], header[1]]));
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
-        let family = crate::net::l4::endpoint::manager::EndpointFamily::Ipv4;
+        let family = SocketFamily::Ipv4;
         let Some(endpoint) = self.lookup_endpoint(if_id, family, dst_port) else {
             return Err((UdpResult::NoEndpoint, packet));
         };
@@ -282,12 +271,12 @@ impl UdpProcessor {
             return Err((UdpResult::ChecksumError, packet));
         }
 
-        let src = crate::net::l4::endpoint::EndpointAddr::new_v6(
+        let src = crate::net::l4::EndpointAddr::new_v6(
             src_ip.octets(),
             u16::from_be_bytes([header[0], header[1]]),
         );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
-        let family = crate::net::l4::endpoint::manager::EndpointFamily::Ipv6;
+        let family = SocketFamily::Ipv6;
         let Some(endpoint) = self.lookup_endpoint(if_id, family, dst_port) else {
             return Err((UdpResult::NoEndpoint, packet));
         };
@@ -358,7 +347,7 @@ impl UdpProcessor {
             buf[..payload.len()].copy_from_slice(payload);
 
             let src =
-                crate::net::l4::endpoint::EndpointAddr::new(src_ip.octets(), packet.src_port());
+                crate::net::l4::EndpointAddr::new(src_ip.octets(), packet.src_port());
             let dst_port = packet.dst_port();
 
             if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(pkt_ref)) {
@@ -417,7 +406,7 @@ impl UdpProcessor {
             buf[..payload.len()].copy_from_slice(payload);
 
             let src =
-                crate::net::l4::endpoint::EndpointAddr::new_v6(src_ip.octets(), packet.src_port());
+                crate::net::l4::EndpointAddr::new_v6(src_ip.octets(), packet.src_port());
             let dst_port = packet.dst_port();
 
             if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(pkt_ref)) {
@@ -475,7 +464,7 @@ impl UdpProcessor {
         packet.set_len(payload_len);
 
         let src =
-            crate::net::l4::endpoint::EndpointAddr::new(src_ip.octets(), packet_view.src_port());
+            crate::net::l4::EndpointAddr::new(src_ip.octets(), packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
         if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(packet)) {
@@ -533,7 +522,7 @@ impl UdpProcessor {
         ) else {
             return UdpResult::Invalid;
         };
-        let src = crate::net::l4::endpoint::EndpointAddr::new(
+        let src = crate::net::l4::EndpointAddr::new(
             src_ip.octets(),
             u16::from_be_bytes([header[0], header[1]]),
         );
@@ -591,7 +580,7 @@ impl UdpProcessor {
         packet.set_len(payload_len);
 
         let src =
-            crate::net::l4::endpoint::EndpointAddr::new_v6(src_ip.octets(), packet_view.src_port());
+            crate::net::l4::EndpointAddr::new_v6(src_ip.octets(), packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
         if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(packet)) {
@@ -651,7 +640,7 @@ impl UdpProcessor {
         ) else {
             return UdpResult::Invalid;
         };
-        let src = crate::net::l4::endpoint::EndpointAddr::new_v6(
+        let src = crate::net::l4::EndpointAddr::new_v6(
             src_ip.octets(),
             u16::from_be_bytes([header[0], header[1]]),
         );

@@ -4,7 +4,7 @@
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod variant_tests {
-    use crate::net::l4::endpoint::congestion::{
+    use crate::net::l4::tcp::congestion::{
         CongestionAlgorithm, CongestionControllerVariant, CongestionState, DEFAULT_MSS,
         INITIAL_WINDOW,
     };

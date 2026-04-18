@@ -11,7 +11,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
-use crate::net::l4::endpoint::tcb_table;
+use crate::net::l4::tcp::tcb_table;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
@@ -344,35 +344,35 @@ pub(crate) fn dhcp_state_snapshot_in(runtime: NetRuntimeHandle) -> DhcpRuntimeSt
 
 pub async fn get_dhcp_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
-        crate::net::l4::endpoint::event::new_command_channel::<DhcpRuntimeState>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::GetDhcpState {
+        crate::net::runtime::command::new_command_channel::<DhcpRuntimeState>();
+    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetDhcpState {
         if_id: Some(if_id.0),
         result_slot,
         waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+    });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_dhcp_states_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceDhcpState> {
-    let (result_slot, waker, command_future) = crate::net::l4::endpoint::event::new_command_channel::<
+    let (result_slot, waker, command_future) = crate::net::runtime::command::new_command_channel::<
         alloc::vec::Vec<InterfaceDhcpState>,
     >();
     let event =
-        crate::net::l4::endpoint::event::NetworkEvent::ListDhcpStates { result_slot, waker };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListDhcpStates { result_slot, waker });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn dhcp_state_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =
-        crate::net::l4::endpoint::event::new_command_channel::<DhcpRuntimeState>();
-    let event = crate::net::l4::endpoint::event::NetworkEvent::GetDhcpState {
+        crate::net::runtime::command::new_command_channel::<DhcpRuntimeState>();
+    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetDhcpState {
         if_id: None,
         result_slot,
         waker,
-    };
-    let _ = crate::net::l4::endpoint::event::send_event_in(runtime, event).await;
+    });
+    let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
@@ -402,12 +402,12 @@ impl Future for DhcpRenewFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::DhcpRenew {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -418,7 +418,7 @@ impl Future for DhcpRenewFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -452,12 +452,12 @@ impl Future for DhcpReleaseFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::DhcpRelease {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRelease {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -466,7 +466,7 @@ impl Future for DhcpReleaseFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -500,12 +500,12 @@ impl Future for DhcpDiscoverFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::DhcpDiscover {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpDiscover {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -514,7 +514,7 @@ impl Future for DhcpDiscoverFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -548,12 +548,12 @@ impl Future for DhcpInformFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::DhcpInform {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -564,7 +564,7 @@ impl Future for DhcpInformFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -598,12 +598,12 @@ impl Future for DhcpLastDeclinedFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::DhcpLastDeclined {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastDeclined {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -612,7 +612,7 @@ impl Future for DhcpLastDeclinedFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -646,12 +646,12 @@ impl Future for DhcpLastReleasedFuture {
         let this = unsafe { self.get_unchecked_mut() };
 
         if !this.sent {
-            let mut enqueue = crate::net::l4::endpoint::event::send_event_in(
+            let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::l4::endpoint::event::NetworkEvent::DhcpLastReleased {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastReleased {
                     result_slot: this.result_slot.clone(),
                     waker: this.waker.clone(),
-                },
+                }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -660,7 +660,7 @@ impl Future for DhcpLastReleasedFuture {
             }
         }
 
-        crate::net::l4::endpoint::event::poll_command_result(&this.result_slot, &this.waker, cx)
+        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
     }
 }
 
@@ -681,7 +681,7 @@ mod tests {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+        crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
 
         let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
         let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
@@ -696,7 +696,7 @@ mod tests {
             completed_clone.store(true, core::sync::atomic::Ordering::Release);
         }));
         executor.spawn(crate::task::Task::new(async move {
-            crate::net::l4::endpoint::event_loop::network_event_task_in(runtime).await;
+            crate::net::runtime::command_loop::runtime_command_task_in(runtime).await;
         }));
 
         let mut output = None;
@@ -708,7 +708,7 @@ mod tests {
             }
         }
 
-        crate::net::l4::endpoint::event::reset_event_system_for_tests_in(runtime);
+        crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
         output.expect("dhcp api test future timed out")
     }
 
@@ -716,7 +716,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn dhcp_state_completes_with_event_task() {
         let state = {
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
             let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
             let mut executor = crate::task::TestExecutor::new();
@@ -729,7 +729,7 @@ mod tests {
                 completed_clone.store(true, core::sync::atomic::Ordering::Release);
             }));
             executor.spawn(crate::task::Task::new(async {
-                crate::net::l4::endpoint::event_loop::network_event_task().await;
+                crate::net::runtime::command_loop::runtime_command_task().await;
             }));
 
             let mut output = None;
@@ -740,7 +740,7 @@ mod tests {
                     break;
                 }
             }
-            crate::net::l4::endpoint::event::reset_event_system_for_tests();
+            crate::net::runtime::command::reset_command_system_for_tests();
             output.expect("dhcp_state test timed out")
         };
         assert!(!state.v4_state.is_empty());

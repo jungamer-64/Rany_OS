@@ -15,8 +15,10 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use super::endpoint_core::Endpoint;
-use super::manager::ENDPOINT_MANAGER;
+use crate::net::l4::socket::{
+    Endpoint, SocketFamily, find_endpoint_by_port, find_listening_tcp_socket,
+    generate_endpoint_fd, lookup_endpoint,
+};
 use super::ooo_queue;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
@@ -25,7 +27,7 @@ use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
 use super::tcb::{
     TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot, tcb_table, tcp_flags,
 };
-use super::types::{
+use crate::net::l4::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
 };
 use super::window_scale::TcpOptionParser;
@@ -481,9 +483,7 @@ fn process_parsed_tcp_segment(
                 remote
             );
 
-            if let Some(socket) =
-                crate::net::l4::endpoint::manager::find_listening_socket(local, Some(ingress_if_id))
-            {
+            if let Some(socket) = find_listening_tcp_socket(local, Some(ingress_if_id)) {
                 let mss = match mss_idx {
                     2 => 1460,
                     1 => 536,
@@ -847,7 +847,7 @@ fn handle_synchronized_segment(
         if tcb.sack_enabled {
             if let Some(blocks) = parser.find_sack_blocks() {
                 if !blocks.is_empty() {
-                    crate::net::l4::endpoint::retransmit::retransmit_queue_process_sack(
+                    crate::net::l4::tcp::retransmit::retransmit_queue_process_sack(
                         tcb.local, tcb.remote, &blocks,
                     );
                 }
@@ -1373,11 +1373,7 @@ fn handle_syn_ack_received(
 
 /// Helper to get a socket by its file descriptor.
 fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
-    ENDPOINT_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .and_then(|m| m.get(fd))
+    lookup_endpoint(fd)
 }
 
 /// Helper to notify a socket that it is connected.
@@ -1414,16 +1410,9 @@ fn process_tcp_new_connection(
     }
 
     // リッスン中のソケットを探す
-    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-    let mgr = if let Some(ref m) = *manager {
-        m
-    } else {
-        return;
-    };
-
-    let socket = mgr.find_by_port(
+    let socket = find_endpoint_by_port(
         EndpointType::Tcp,
-        crate::net::l4::endpoint::manager::EndpointFamily::from_addr(local),
+        SocketFamily::from_addr(local),
         local.port(),
         Some(ingress_if_id),
     );
@@ -1738,11 +1727,8 @@ fn create_accepted_socket(
     remote: EndpointAddr,
     ingress_if_id: NetIfId,
 ) -> Option<AcceptedConnection> {
-    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-    let mgr = manager.as_ref()?;
-
     // 新しいFDを割り当て
-    let new_fd = mgr.generate_fd();
+    let new_fd = generate_endpoint_fd()?;
 
     // TCB情報を更新してFDを紐付け
     tcb_table().update(local, remote, |entry| {
@@ -1766,19 +1752,8 @@ fn push_to_accept_queue(
     ingress_if_id: Option<NetIfId>,
     conn: AcceptedConnection,
 ) -> bool {
-    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-    let Some(ref mgr) = *manager else {
-        return false;
-    };
-
     // ローカルポートでリッスン中のソケットを検索
-    // find_by_portを使用
-    if let Some(socket) = mgr.find_by_port(
-        EndpointType::Tcp,
-        crate::net::l4::endpoint::manager::EndpointFamily::from_addr(conn.local_addr),
-        local_port,
-        ingress_if_id,
-    ) {
+    if let Some(socket) = find_listening_tcp_socket(conn.local_addr, ingress_if_id) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         // Listening状態でなければスキップ
@@ -1883,12 +1858,7 @@ fn handle_fin_in_order(tcb: TcpControlBlockSnapshot, rcv_nxt_at_fin: u32) {
 /// recv_wakerを起こすことで、アプリケーション側のread操作が
 /// EOF (0バイト読み取り) を返せるようにする。
 fn notify_socket_peer_fin(fd: EndpointFd) {
-    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-    let Some(ref mgr) = *manager else {
-        return;
-    };
-
-    if let Some(socket) = mgr.get(fd) {
+    if let Some(socket) = lookup_endpoint(fd) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         // recv_wakerを起こしてEOFを通知
         if let Some(waker) = inner.recv_waker.take() {
@@ -1915,12 +1885,7 @@ fn handle_urgent_received(tcb: TcpControlBlockSnapshot, seq_num: u32, urgent_ptr
 
 /// ソケットにurgent data到着を通知
 fn notify_socket_urgent(fd: EndpointFd) {
-    let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-    let Some(ref mgr) = *manager else {
-        return;
-    };
-
-    if let Some(socket) = mgr.get(fd) {
+    if let Some(socket) = lookup_endpoint(fd) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         // urgent flagを設定
         inner.set_urgent_pending(true);

@@ -136,8 +136,8 @@ impl virtio_driver::net::NetRuntime for KernelVirtioNetRuntime {
             lease_id,
             Ok(()),
         );
-        crate::net::l4::endpoint::event::enqueue_event_ignore(
-            crate::net::l4::endpoint::event::NetworkEvent::TxAvailable,
+        crate::net::runtime::command::enqueue_command_ignore(
+            crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TxAvailable),
         );
     }
 

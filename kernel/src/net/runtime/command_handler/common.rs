@@ -1,11 +1,11 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/handler/common.rs
 // ============================================================================
-//! NetworkEventHandler 共通型/ヘルパー
+//! RuntimeCommandHandler 共通型/ヘルパー
 
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::l4::endpoint::event::NetworkEvent;
-use crate::net::l4::endpoint::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult};
+use crate::net::runtime::command::RuntimeCommand;
+use crate::net::l4::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use kernel_api::resource::net::PacketPayload;
@@ -25,7 +25,7 @@ pub enum EventHandleResult {
     /// プロトコルエラー
     ProtocolError(EndpointError),
     /// 再試行が必要
-    Retry(NetworkEvent),
+    Retry(RuntimeCommand),
 }
 
 #[inline]
@@ -69,13 +69,7 @@ pub(super) fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize
 
 #[inline]
 pub(super) fn deliver_raw_payload_if_registered(if_id: NetIfId, payload: PacketPayload) -> bool {
-    let guard = crate::net::l4::endpoint::manager::ENDPOINT_MANAGER
-        .read()
-        .unwrap_or_else(|e| e.into_inner());
-    let Some(manager) = guard.as_ref() else {
-        return false;
-    };
-    let Some(endpoint) = manager.find_raw_endpoint(if_id) else {
+    let Some(endpoint) = crate::net::l4::socket::find_raw_endpoint(if_id) else {
         return false;
     };
     endpoint.deliver_raw_payload(if_id, payload).is_ok()
@@ -140,13 +134,13 @@ pub(super) fn apply_tcp_checksum_for_addrs(
     remote: EndpointAddr,
 ) -> EndpointResult<()> {
     if let Some((lv4, rv4)) = endpoint_ipv4_pair(local, remote) {
-        crate::net::l4::endpoint::segment::TcpSegmentBuilder::calculate_checksum_bytes(
+        crate::net::l4::tcp::segment::TcpSegmentBuilder::calculate_checksum_bytes(
             segment, lv4, rv4,
         );
         return Ok(());
     }
     if endpoint_is_native_v6_pair(local, remote) {
-        crate::net::l4::endpoint::segment::TcpSegmentBuilder::calculate_checksum_v6_bytes(
+        crate::net::l4::tcp::segment::TcpSegmentBuilder::calculate_checksum_v6_bytes(
             segment,
             crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
             crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),

@@ -14,7 +14,7 @@ use kernel_api::resource::net::PacketPayload;
 use super::segment::send_tcp_segment_payload;
 use super::tcb::tcb_table;
 use super::timer_wheel::TimingWheel;
-use super::types::{
+use crate::net::l4::types::{
     EndpointAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn,
 };
 
@@ -353,7 +353,7 @@ pub fn retransmit_queue_process_sack(
     }
 }
 
-pub(super) fn materialize_retransmit_copy(payload: &PacketPayload) -> Option<PacketPayload> {
+pub(crate) fn materialize_retransmit_copy(payload: &PacketPayload) -> Option<PacketPayload> {
     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
     let view = crate::net::payload::PacketPayloadView::new(payload);
     let mut copied = 0usize;

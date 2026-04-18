@@ -39,11 +39,11 @@ impl DhcpClient {
     /// OFFER 受信時の副作用を適用する
     pub(super) fn apply_offer(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
         // Best-effort: ARP probe をイベントキュー経由で送信（デッドロック回避）
-        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+        crate::net::runtime::command::enqueue_command_ignore_in(
             self.runtime,
-            crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
+            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe {
                 target_ip: *lease.ip_address.as_bytes(),
-            },
+            }),
         );
         self.offered_probe_at.store(current_tick, Ordering::SeqCst);
 
@@ -711,11 +711,11 @@ impl DhcpClient {
         current_tick: u64,
     ) -> bool {
         // ARP probe をイベントキュー経由で送信（デッドロック回避）
-        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+        crate::net::runtime::command::enqueue_command_ignore_in(
             self.runtime,
-            crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
+            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe {
                 target_ip: *offered_ip.as_bytes(),
-            },
+            }),
         );
         self.offered_probe_at.store(current_tick, Ordering::SeqCst);
         false // wait for probe reply
@@ -742,11 +742,11 @@ impl DhcpClient {
         }
 
         // また、将来的な競合を防ぐため、追加のプローブを定期的に送信
-        crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+        crate::net::runtime::command::enqueue_command_ignore_in(
             self.runtime,
-            crate::net::l4::endpoint::event::NetworkEvent::ArpProbe {
+            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe {
                 target_ip: *offered_ip.as_bytes(),
-            },
+            }),
         );
         false
     }

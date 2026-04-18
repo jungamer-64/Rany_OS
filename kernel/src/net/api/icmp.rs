@@ -5,8 +5,8 @@
 
 extern crate alloc;
 
-use crate::net::l4::endpoint::event::EventDispatch;
-use crate::net::l4::endpoint::types::EndpointError;
+use crate::net::runtime::command::CommandDispatch;
+use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -22,12 +22,12 @@ use core::task::{Context, Poll};
 /// エグゼキュータが起動しているasyncコンテキストから呼び出す。
 /// 応答を待機するには `ping_in(runtime, ...)` または `IcmpEchoFuture` を使用すること。
 pub fn enqueue_icmp_echo_in(runtime: NetRuntimeHandle, target: [u8; 4], seq: u16) -> bool {
-    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
+    crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoRequest {
+        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoRequest {
             target,
             sequence: seq,
-        },
+        }),
     );
     true
 }
@@ -146,7 +146,7 @@ pub struct IcmpEchoFuture {
     registered: bool,
     sent: bool,
     timeout_us: u64,
-    dispatch: EventDispatch,
+    dispatch: CommandDispatch,
 }
 
 impl IcmpEchoFuture {
@@ -158,7 +158,7 @@ impl IcmpEchoFuture {
             registered: false,
             sent: false,
             timeout_us: 5_000_000,
-            dispatch: EventDispatch::new_in(runtime),
+            dispatch: CommandDispatch::new_in(runtime),
         }
     }
 
@@ -175,7 +175,7 @@ impl IcmpEchoFuture {
             registered: false,
             sent: false,
             timeout_us,
-            dispatch: EventDispatch::new_in(runtime),
+            dispatch: CommandDispatch::new_in(runtime),
         }
     }
 }
@@ -195,10 +195,10 @@ impl Future for IcmpEchoFuture {
 
         if !this.sent {
             match this.dispatch.poll(cx, || {
-                crate::net::l4::endpoint::event::NetworkEvent::IcmpEchoRequest {
+                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoRequest {
                     target: this.target,
                     sequence: this.sequence,
-                }
+                })
             }) {
                 Poll::Ready(Ok(())) => this.sent = true,
                 Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),

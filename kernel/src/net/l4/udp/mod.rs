@@ -9,12 +9,13 @@
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
-use crate::net::l4::endpoint::EndpointAddr;
-use crate::net::l4::endpoint::endpoint_core::Endpoint;
-use crate::net::l4::endpoint::event::EventDispatch;
-use crate::net::l4::endpoint::manager::ENDPOINT_MANAGER;
-use crate::net::l4::endpoint::types::{EndpointError, EndpointState, EndpointType};
+use crate::net::l4::EndpointAddr;
+use crate::net::l4::socket::{
+    Endpoint, allocate_ephemeral_port, bind_udp_dual_stack, register_endpoint, unregister_endpoint,
+};
+use crate::net::l4::types::{EndpointError, EndpointState, EndpointType};
 use crate::net::payload::PacketPayloadView;
+use crate::net::runtime::command::CommandDispatch;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
@@ -518,12 +519,8 @@ impl UdpEndpoint {
     ) -> Result<Self, NetworkError> {
         validate_udp_bind_permission(port, token)?;
 
-        let guard = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let manager = guard.as_ref().ok_or(NetworkError::LockPoisoned)?;
         let local_port = if port == 0 {
-            manager
-                .allocate_ephemeral_port(EndpointType::Udp)
-                .ok_or(NetworkError::PortInUse)?
+            allocate_ephemeral_port(EndpointType::Udp).ok_or(NetworkError::PortInUse)?
         } else {
             port
         };
@@ -542,9 +539,9 @@ impl UdpEndpoint {
             return Err(error);
         }
 
-        manager.register(endpoint.clone());
-        if let Err(error) = manager.bind_udp_dual_stack(local_port, scope, endpoint.fd()) {
-            let _ = manager.unregister(endpoint.fd());
+        register_endpoint(endpoint.clone());
+        if let Err(error) = bind_udp_dual_stack(local_port, scope, endpoint.fd()) {
+            let _ = unregister_endpoint(endpoint.fd());
             return Err(endpoint_error_to_network(error));
         }
 
@@ -558,13 +555,7 @@ impl UdpEndpoint {
     fn close_internal(&self) {
         let _ = self.endpoint.close_immediate();
         if self.registered {
-            if let Some(manager) = ENDPOINT_MANAGER
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-            {
-                let _ = manager.unregister(self.endpoint.fd());
-            }
+            let _ = unregister_endpoint(self.endpoint.fd());
         }
     }
 
@@ -602,7 +593,7 @@ impl UdpEndpoint {
             payload: Some(payload),
             payload_len,
             dst: endpoint_addr_from_udp(dst),
-            dispatch: EventDispatch::new_in(self.runtime),
+            dispatch: CommandDispatch::new_in(self.runtime),
         }
     }
 }
@@ -649,7 +640,7 @@ pub struct UdpSendFuture {
     payload: Option<PacketPayload>,
     payload_len: usize,
     dst: EndpointAddr,
-    dispatch: EventDispatch,
+    dispatch: CommandDispatch,
 }
 
 impl Future for UdpSendFuture {
@@ -670,14 +661,14 @@ impl Future for UdpSendFuture {
         }
 
         match this.dispatch.poll(cx, || {
-            crate::net::l4::endpoint::event::NetworkEvent::SendTo {
+            crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::UdpSendTo {
                 fd: this.endpoint.fd(),
                 payload: this
                     .payload
                     .take()
                     .expect("UdpSendFuture payload already dispatched"),
                 remote: this.dst,
-            }
+            })
         }) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(this.payload_len)),
             Poll::Ready(Err(err)) => Poll::Ready(Err(endpoint_error_to_network(err))),

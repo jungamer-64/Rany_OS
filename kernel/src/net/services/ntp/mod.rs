@@ -4,7 +4,7 @@
 //! NTP (Network Time Protocol) / SNTP Client Implementation (RFC 4330)
 
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::l4::endpoint::EndpointError;
+use crate::net::l4::EndpointError;
 use crate::net::l4::udp::UdpAddr;
 use crate::net::payload::PacketPayloadBuilder;
 use core::sync::atomic::{AtomicU64, Ordering};

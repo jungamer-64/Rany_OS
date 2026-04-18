@@ -18,8 +18,8 @@ use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
 
-use super::congestion::CongestionAlgorithm;
-use super::types::{
+use crate::net::l4::tcp::congestion::CongestionAlgorithm;
+use crate::net::l4::types::{
     AcceptedConnection, EndpointAddr, EndpointError, EndpointResult, EndpointState,
 };
 

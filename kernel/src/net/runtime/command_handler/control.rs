@@ -1,23 +1,17 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/handler/control.rs
 // ============================================================================
-//! NetworkEventHandler 制御系メソッド
-use crate::net::l4::endpoint::EndpointFd;
-use crate::net::l4::endpoint::handler::ENDPOINT_MANAGER;
-use crate::net::l4::endpoint::handler::EventHandleResult;
-use crate::net::l4::endpoint::handler::NetworkEventHandler;
-use crate::net::l4::endpoint::tcb_table;
-use crate::net::l4::endpoint::types::EndpointState;
+//! RuntimeCommandHandler 制御系メソッド
+use crate::net::l4::types::{EndpointFd, EndpointType};
+use crate::net::runtime::command_handler::EventHandleResult;
+use crate::net::runtime::command_handler::RuntimeCommandHandler;
+use crate::net::l4::tcp::tcb_table;
+use crate::net::l4::types::EndpointState;
 
-impl NetworkEventHandler {
+impl RuntimeCommandHandler {
     /// SetPriorityイベント処理
     pub(super) fn handle_set_priority(&self, fd: EndpointFd, priority: u8) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
@@ -44,12 +38,7 @@ impl NetworkEventHandler {
 
     /// SetNoDelayイベント処理
     pub(super) fn handle_set_nodelay(&self, fd: EndpointFd, nodelay: bool) -> EventHandleResult {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        let Some(socket) = mgr.get(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
@@ -78,47 +67,40 @@ impl NetworkEventHandler {
     pub(super) fn handle_tx_available(&self) -> EventHandleResult {
         // 送信待ちのソケットに DataReady イベントを再送して再試行を促す（TCP）
         // また、イベントキュー満杯で待機していた UDP ソケットの send_waker も起床させる
-        if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
-            mgr.for_each(|socket| {
-                let pending = {
-                    let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                    inner.has_send_data()
-                };
-                if pending {
-                    crate::net::l4::endpoint::event::enqueue_event_ignore_in(
-                        socket.runtime(),
-                        crate::net::l4::endpoint::event::NetworkEvent::DataReady {
+        crate::net::l4::socket::for_each_endpoint(|socket| {
+            let pending = {
+                let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                inner.has_send_data()
+            };
+            if pending && socket.socket_type() == EndpointType::Tcp {
+                crate::net::runtime::command::enqueue_command_ignore_in(
+                    socket.runtime(),
+                    crate::net::runtime::command::RuntimeCommand::Transport(
+                        crate::net::runtime::command::TransportCommand::TcpDataReady {
                             fd: socket.fd(),
-                            endpoint_type: socket.socket_type(),
                         },
-                    );
-                } else {
-                    // TCPバッファが空でも send_waker が設定されている場合（UDP の ResourceExhausted 待ち）
-                    // はここで直接起床させる。TCP の write/poll_write 境界も安全に再ポーリング可能。
-                    let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(w) = inner.send_waker.take() {
-                        drop(inner); // ロック解放後に wake（デッドロック回避）
-                        w.wake();
-                    }
+                    ),
+                );
+            } else {
+                // TCPバッファが空でも send_waker が設定されている場合（UDP の ResourceExhausted 待ち）
+                // はここで直接起床させる。TCP の write/poll_write 境界も安全に再ポーリング可能。
+                let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(w) = inner.send_waker.take() {
+                    drop(inner); // ロック解放後に wake（デッドロック回避）
+                    w.wake();
                 }
-            });
-        }
+            }
+        });
 
         EventHandleResult::Success
     }
 
     pub(super) fn unregister_endpoint(&self, fd: EndpointFd) {
-        if let Some(ref mgr) = *ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner()) {
-            let _ = mgr.unregister(fd);
-        }
+        let _ = crate::net::l4::socket::unregister_endpoint(fd);
     }
 
     pub(super) fn close_endpoint_now(&self, fd: EndpointFd) {
-        let manager = ENDPOINT_MANAGER.read().unwrap_or_else(|e| e.into_inner());
-        let Some(ref mgr) = *manager else {
-            return;
-        };
-        let Some(socket) = mgr.get(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
             return;
         };
 
@@ -140,7 +122,7 @@ impl NetworkEventHandler {
         let _ = inner.transition_to(EndpointState::Closed);
         drop(inner);
 
-        let _ = mgr.unregister(fd);
+        let _ = crate::net::l4::socket::unregister_endpoint(fd);
     }
 
     /// ICMP Echo Requestイベント処理（イベントキュー経由で非同期処理）

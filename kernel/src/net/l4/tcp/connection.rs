@@ -1,8 +1,8 @@
 use super::*;
-use crate::net::l4::endpoint::endpoint_core::Endpoint;
-use crate::net::l4::endpoint::event::{NetworkEvent, enqueue_event_ignore_in, send_event_in};
-use crate::net::l4::endpoint::tcb::tcb_table;
-use crate::net::l4::endpoint::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
+use crate::net::l4::socket::Endpoint;
+use crate::net::runtime::command::{RuntimeCommand, enqueue_command_ignore_in, send_command_in};
+use crate::net::l4::tcp::tcb::tcb_table;
+use crate::net::l4::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::types::InterfaceScope;
 use crate::sync::PoisonLock;
@@ -110,10 +110,10 @@ fn poll_tcp_dispatch<T>(
     result_slot: &TcpCommandResultSlot<T>,
     waker: &TcpCommandWaker,
     cx: &mut Context<'_>,
-    event: NetworkEvent,
+    event: RuntimeCommand,
 ) -> Poll<Result<T, TcpError>> {
     if !*sent {
-        let mut enqueue = send_event_in(runtime, event);
+        let mut enqueue = send_command_in(runtime, event);
         match Future::poll(Pin::new(&mut enqueue), cx) {
             Poll::Ready(Ok(())) => {
                 *sent = true;
@@ -166,13 +166,13 @@ impl Future for TcpDialDispatchFuture {
         let scope = self.scope;
         let result_slot = self.result_slot.clone();
         let waker = self.waker.clone();
-        let event = NetworkEvent::TcpDialConnection {
+        let event = RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpDial {
             local,
             remote,
             scope,
             result_slot: result_slot.clone(),
             waker: waker.clone(),
-        };
+        });
         let sent = &mut self.sent;
         poll_tcp_dispatch(runtime, sent, &result_slot, &waker, cx, event)
     }
@@ -218,13 +218,13 @@ impl Future for TcpAcceptorBindDispatchFuture {
         let backlog = self.backlog;
         let result_slot = self.result_slot.clone();
         let waker = self.waker.clone();
-        let event = NetworkEvent::TcpBindAcceptor {
+        let event = RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpBind {
             local: addr,
             scope,
             backlog,
             result_slot: result_slot.clone(),
             waker: waker.clone(),
-        };
+        });
 
         let sent = &mut self.sent;
         poll_tcp_dispatch(runtime, sent, &result_slot, &waker, cx, event)
@@ -413,11 +413,11 @@ impl TcpConnection {
         }
         drop(inner);
 
-        enqueue_event_ignore_in(
+        enqueue_command_ignore_in(
             self.runtime,
-            NetworkEvent::Close {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket {
                 fd: self.endpoint.fd(),
-            },
+            }),
         );
         Ok(())
     }
@@ -433,11 +433,11 @@ impl Drop for TcpConnection {
             return;
         }
 
-        enqueue_event_ignore_in(
+        enqueue_command_ignore_in(
             self.runtime,
-            NetworkEvent::Close {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket {
                 fd: self.endpoint.fd(),
-            },
+            }),
         );
     }
 }
@@ -491,7 +491,7 @@ impl TcpAcceptor {
             runtime,
             InterfaceScope::Any,
             addr,
-            crate::net::l4::endpoint::inner::EndpointInner::DEFAULT_BACKLOG as u32,
+            crate::net::l4::socket::DEFAULT_TCP_ACCEPT_BACKLOG as u32,
         )
         .await
     }
@@ -530,11 +530,11 @@ impl Drop for TcpAcceptor {
             return;
         }
 
-        enqueue_event_ignore_in(
+        enqueue_command_ignore_in(
             self.runtime,
-            NetworkEvent::Close {
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket {
                 fd: self.endpoint.fd(),
-            },
+            }),
         );
     }
 }
@@ -604,11 +604,11 @@ impl Future for ConnectTimeoutFuture {
                 let now = crate::time::precise_time_nanos() / 1000;
                 if now.saturating_sub(this.start_us) >= this.timeout_us {
                     drop(inner);
-                    enqueue_event_ignore_in(
+                    enqueue_command_ignore_in(
                         this.connection.runtime,
-                        NetworkEvent::Close {
+                        RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket {
                             fd: this.connection.endpoint.fd(),
-                        },
+                        }),
                     );
                     return Poll::Ready(Err(TcpError::Timeout));
                 }
@@ -713,12 +713,13 @@ impl<'a> Future for SendPayloadFuture<'a> {
             inner.send_waker = Some(cx.waker().clone());
             drop(inner);
             if has_queued_data {
-                enqueue_event_ignore_in(
+                enqueue_command_ignore_in(
                     this.connection.runtime,
-                    NetworkEvent::DataReady {
-                        fd: this.connection.endpoint.fd(),
-                        endpoint_type: EndpointType::Tcp,
-                    },
+                    RuntimeCommand::Transport(
+                        crate::net::runtime::command::TransportCommand::TcpDataReady {
+                            fd: this.connection.endpoint.fd(),
+                        },
+                    ),
                 );
             }
             this.payload = Some(payload);
@@ -735,12 +736,13 @@ impl<'a> Future for SendPayloadFuture<'a> {
         }
         drop(inner);
 
-        enqueue_event_ignore_in(
+        enqueue_command_ignore_in(
             this.connection.runtime,
-            NetworkEvent::DataReady {
-                fd: this.connection.endpoint.fd(),
-                endpoint_type: EndpointType::Tcp,
-            },
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpDataReady {
+                    fd: this.connection.endpoint.fd(),
+                },
+            ),
         );
 
         Poll::Ready(Ok(()))
@@ -774,12 +776,13 @@ impl<'a> Future for DrainTxFuture<'a> {
         inner.send_waker = Some(cx.waker().clone());
         drop(inner);
 
-        enqueue_event_ignore_in(
+        enqueue_command_ignore_in(
             this.connection.runtime,
-            NetworkEvent::DataReady {
-                fd: this.connection.endpoint.fd(),
-                endpoint_type: EndpointType::Tcp,
-            },
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpDataReady {
+                    fd: this.connection.endpoint.fd(),
+                },
+            ),
         );
         Poll::Pending
     }
