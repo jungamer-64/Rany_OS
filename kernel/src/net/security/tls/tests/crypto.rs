@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/tests/crypto.rs - セキュリティ / TLS / テスト / 暗号
+// ============================================================================
+
 use super::super::crypto::{
     derive_key_block, derive_master_secret, hkdf_expand, hkdf_expand_label, hkdf_extract,
     generate_random, hmac_sha256, tls10_prf, tls12_prf, tls13_derive_secret,

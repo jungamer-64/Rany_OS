@@ -508,17 +508,17 @@ impl ZeroCopyBuffer {
             .expect("ZeroCopyBuffer::as_mut_slice requires unique ownership")
     }
 
-    /// 互換API: データを取得
+    /// データを取得
     pub fn data(&self) -> &[u8] {
         self.as_slice()
     }
 
-    /// 互換API: 可変データを取得（排他的所有時のみ）
+    /// 可変データを取得（排他的所有時のみ）
     pub fn data_mut(&mut self) -> Result<&mut [u8], ZeroCopyError> {
         self.try_as_mut_slice()
     }
 
-    /// 互換API: データを書き込む（必要に応じて長さを更新）
+    /// データを書き込む（必要に応じて長さを更新）
     pub fn write(&mut self, data: &[u8]) -> usize {
         if self.slot().ref_count.load(Ordering::Acquire) != 1 {
             return 0;

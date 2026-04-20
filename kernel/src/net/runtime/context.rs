@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/runtime/context.rs - ランタイム / context
+// ============================================================================
+
 use crate::net::runtime::command::RuntimeCommandQueue;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
 use crate::net::runtime::device::{NetDeviceManager, TxCompletionState, TxLeaseState};

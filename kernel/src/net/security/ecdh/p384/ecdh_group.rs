@@ -1,4 +1,6 @@
-// Building block: P-384 ECDH group operations
+// ============================================================================
+// kernel/src/net/security/ecdh/p384/ecdh_group.rs - P-384 ECDH group operations
+// ============================================================================
 
 use super::*;
 

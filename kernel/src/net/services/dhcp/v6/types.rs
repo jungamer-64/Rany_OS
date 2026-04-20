@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/dhcp/v6/types.rs - サービス / DHCP / v6 / 型定義
+// ============================================================================
+
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::runtime::NetRuntimeHandle;

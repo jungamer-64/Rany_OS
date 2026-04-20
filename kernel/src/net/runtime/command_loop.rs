@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/event_loop.rs
+// kernel/src/net/runtime/command_loop.rs - Socket Event Loop
 // ============================================================================
 //! # Socket Event Loop
 //!

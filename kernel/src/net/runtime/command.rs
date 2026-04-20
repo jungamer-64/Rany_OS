@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/event.rs
+// kernel/src/net/runtime/command.rs - Runtime command bus
 // ============================================================================
 //! # Runtime command bus
 //!

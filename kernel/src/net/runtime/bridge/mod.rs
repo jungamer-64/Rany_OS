@@ -1,5 +1,5 @@
 // ============================================================================
-// src/net/runtime/bridge/mod.rs - Network stack glue
+// kernel/src/net/runtime/bridge/mod.rs - Network stack glue
 // ============================================================================
 //!
 //! ネットワークドライバと NetworkStack を接続する stack glue モジュール。

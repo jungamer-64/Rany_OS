@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/protocol.rs - TLS protocol primitives
+// kernel/src/net/security/tls/protocol.rs - TLS protocol primitives
 // ============================================================================
 
 use arrayvec::ArrayVec;

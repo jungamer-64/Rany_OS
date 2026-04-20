@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l3/icmp/mod.rs
+// kernel/src/net/l3/icmp/mod.rs - L3 / ICMP モジュール
 // ============================================================================
 //! ICMP (Internet Control Message Protocol) Implementation for ExoRust
 //!

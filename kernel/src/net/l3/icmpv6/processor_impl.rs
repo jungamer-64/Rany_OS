@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l3/icmpv6/processor_impl.rs - L3 / ICMPv6 / プロセッサ実装
+// ============================================================================
+
 use super::*;
 
 impl Icmpv6Processor {
@@ -216,7 +220,7 @@ impl Icmpv6Processor {
             return Icmpv6Result::Dropped;
         }
 
-        // Security: RFC 4443 Section 2.4(e) - MUST NOT respond to multicast
+        // SECURITY: RFC 4443 Section 2.4(e) に従い、multicast には応答しない。
         if dst.is_multicast() {
             return Icmpv6Result::Dropped;
         }
@@ -234,7 +238,7 @@ impl Icmpv6Processor {
         let identifier = u16::from_be_bytes(identifier_bytes);
         let sequence = u16::from_be_bytes(sequence_bytes);
 
-        // Security: Limit Echo payload size to prevent memory exhaustion.
+        // SECURITY: memory exhaustion を防ぐため Echo payload size を制限する。
         // 1232 bytes is the max payload that fits in a minimum IPv6 MTU (1280).
         let max_payload = 1232;
         let echo_data_len = (view.total_len() - ICMPV6_ECHO_HEADER_SIZE).min(max_payload);

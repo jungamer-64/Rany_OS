@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/connection/handshake/tls13.rs - セキュリティ / TLS / 接続 / ハンドシェイク / TLS 1.3ハンドシェイク
+// ============================================================================
+
 use arrayvec::ArrayVec;
 
 use super::super::{
@@ -611,7 +615,7 @@ impl TlsConnection {
                 crate::net::security::rsa::rsa_pss_verify(&pubkey, hash_alg, &digest, signature)
                     .map_err(|_| TlsError::CryptoError)
             }
-            // Security: SHA-1 is not supported for PSS in TLS 1.3.
+            // SECURITY: TLS 1.3 の PSS では SHA-1 をサポートしない。
             _ => Err(TlsError::CryptoError),
         }
     }

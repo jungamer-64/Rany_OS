@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/http/server.rs - サービス / HTTP / サーバ
+// ============================================================================
+
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};

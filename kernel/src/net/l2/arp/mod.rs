@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l2/arp/mod.rs
+// kernel/src/net/l2/arp/mod.rs - L2 / ARP モジュール
 // ============================================================================
 //! ARP (Address Resolution Protocol) Implementation for ExoRust
 //!

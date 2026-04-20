@@ -1,5 +1,5 @@
 // ============================================================================
-// Protocol-specific NetworkStack impl methods
+// kernel/src/net/runtime/stack/core_impl/protocol_impl/mod.rs - ランタイム / スタック / コア実装 / プロトコル実装 モジュール
 // ============================================================================
 //! Contains protocol-level `impl NetworkStack` methods, split into sub-files
 //! by protocol responsibility:

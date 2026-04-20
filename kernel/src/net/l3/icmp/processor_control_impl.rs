@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l3/icmp/processor_control_impl.rs - L3 / ICMP / 制御処理
+// ============================================================================
+
 use super::*;
 
 impl IcmpProcessor {
@@ -7,7 +11,7 @@ impl IcmpProcessor {
         packet: &IcmpPacket<'_>,
         _src_ip: Ipv4Address,
     ) -> IcmpResult {
-        // Security: ICMP Redirects are dangerous.
+        // SECURITY: ICMP Redirect は危険なため制限する。
         // Even if we don't apply them here, we extract information for the stack to decide.
         let payload = packet.payload();
         if payload.len() >= 4 {

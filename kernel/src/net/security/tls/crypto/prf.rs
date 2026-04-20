@@ -1,4 +1,6 @@
-// tls/crypto/prf.rs - TLS 1.2 PRF and Key Derivation (RFC 5246)
+// ============================================================================
+// kernel/src/net/security/tls/crypto/prf.rs - TLS 1.2 PRF and Key Derivation (RFC 5246)
+// ============================================================================
 
 use super::hmac::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, hmac_sha256, hmac_sha256_parts, hmac_sha384,

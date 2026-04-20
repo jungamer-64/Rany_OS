@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/runtime/stack/core_impl/global_instance.rs - ランタイム / スタック / コア実装 / グローバルインスタンス
+// ============================================================================
+
 use super::*;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{new_detached_command_channel, poll_command_result};

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/connection/handshake/certificate.rs - セキュリティ / TLS / 接続 / ハンドシェイク / 証明書処理
+// ============================================================================
+
 use arrayvec::ArrayVec;
 
 use super::super::{
@@ -55,7 +59,7 @@ impl TlsConnection {
 
         let certs_len = ((data[0] as usize) << 16) | ((data[1] as usize) << 8) | (data[2] as usize);
 
-        // Security: Limit certificate chain length (e.g. 64KB)
+        // SECURITY: certificate chain length を制限する（例: 64KB）。
         if data.len() < 3 + certs_len || certs_len == 0 || certs_len > 65536 {
             return Err(TlsError::CertificateError);
         }
@@ -210,7 +214,7 @@ impl TlsConnection {
             0x0501 => self.verify_rsa_ske_signature_parts(ecdhe_params, signature, 3), // 3 = SHA384
             // ECDSA-SECP256R1-SHA256 (0x0403)
             0x0403 => self.verify_ecdsa_ske_signature_parts(ecdhe_params, signature),
-            // Security: SHA-1 (0x0201) is deprecated and removed for security reasons.
+            // SECURITY: SHA-1 (0x0201) は deprecated であり、安全性のため除外する。
             _ => Err(TlsError::UnsupportedCipherSuite),
         }
     }

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/connection/handshake/tls12.rs - セキュリティ / TLS / 接続 / ハンドシェイク / TLS 1.2ハンドシェイク
+// ============================================================================
+
 use super::super::{
     CipherSuite, ContentType, HandshakeType, ServerPublicKey, TlsBytes, TlsConnection, TlsError,
     TlsResult, TlsState, TlsVersion, ecdh,
@@ -604,7 +608,7 @@ impl TlsConnection {
         let content_len = padding_result.unwrap_or(0);
         let padding_ok = padding_result.is_some() && content_len >= mac_len;
 
-        // Security (Lucky13 mitigation): Always compute MAC over the same amount of data
+        // SECURITY: Lucky13 対策として、常に同量の data で MAC を計算する。
         // regardless of whether padding was valid or not. If padding is invalid,
         // we use a dummy fragment (the entire decrypted data up to where the MAC would be
         // if padding length was 0) to ensure the HMAC function takes the same time.

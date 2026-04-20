@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/tests/protocol.rs - セキュリティ / TLS / テスト / プロトコル
+// ============================================================================
+
 use super::super::credentials::base64_decode_payload;
 use super::super::{CipherSuite, TlsConfig, TlsVersion};
 

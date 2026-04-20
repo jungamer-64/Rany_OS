@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l3/ipv4/packet_impl.rs - L3 / IPv4 / パケット実装
+// ============================================================================
+
 use super::*;
 
 impl<'a> Ipv4Packet<'a> {
@@ -76,7 +80,7 @@ impl<'a> Ipv4Packet<'a> {
     #[inline]
     pub fn as_bytes(&self) -> &'a [u8] {
         let total_len = self.header().total_length() as usize;
-        // Security: Clamp to physical buffer size to prevent panic in slice indexing
+        // SECURITY: slice indexing の panic を防ぐため physical buffer size へ clamp する。
         &self.data[..core::cmp::min(total_len, self.data.len())]
     }
 
@@ -240,7 +244,7 @@ impl<'a> Ipv4PacketMut<'a> {
             return;
         };
 
-        // Security: Clamp payload length to physical buffer size to prevent buffer overflow/panic
+        // SECURITY: buffer overflow / panic を防ぐため payload length を physical buffer size へ clamp する。
         let max_payload = self.data.len().saturating_sub(header_len);
         let actual_payload = payload_len.min(max_payload);
 
@@ -260,7 +264,7 @@ impl<'a> Ipv4PacketMut<'a> {
             .map(|h| h.total_length() as usize)
             .unwrap_or(Ipv4Header::MIN_SIZE);
 
-        // Security: Clamp to physical buffer size to prevent panic in slice indexing
+        // SECURITY: slice indexing の panic を防ぐため physical buffer size へ clamp する。
         core::cmp::min(declared_len, self.data.len())
     }
 

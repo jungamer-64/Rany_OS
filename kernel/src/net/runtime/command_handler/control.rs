@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/control.rs
+// kernel/src/net/runtime/command_handler/control.rs - ランタイム / コマンドハンドラ / 制御処理
 // ============================================================================
 //! RuntimeCommandHandler 制御系メソッド
 use crate::net::l4::tcp::tcb_table;

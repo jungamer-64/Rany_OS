@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/payload.rs - Packet payload ownership model
+// ============================================================================
+
 use crate::net::l3::ipv4::IpProtocol;
 use alloc::vec::Vec;
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;

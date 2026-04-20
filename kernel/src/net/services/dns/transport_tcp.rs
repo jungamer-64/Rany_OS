@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/dns/transport_tcp.rs - サービス / DNS / TCPトランスポート
+// ============================================================================
+
 use super::*;
 use crate::net::l4::udp::UdpAddr;
 use crate::task::{self, TimeoutResult};

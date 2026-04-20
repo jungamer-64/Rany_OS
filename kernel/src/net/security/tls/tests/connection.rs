@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/tests/connection.rs - セキュリティ / TLS / テスト / 接続
+// ============================================================================
+
 use super::super::protocol::ContentType;
 use super::super::{
     TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState,

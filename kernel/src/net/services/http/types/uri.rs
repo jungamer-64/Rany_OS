@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/http/types/uri.rs - サービス / HTTP / 型定義 / uri
+// ============================================================================
+
 use super::{HttpPort, HttpScheme};
 use alloc::string::{String, ToString};
 use core::fmt;

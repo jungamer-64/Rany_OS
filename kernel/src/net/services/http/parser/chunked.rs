@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/http/parser/chunked.rs - サービス / HTTP / パーサ / chunked
+// ============================================================================
+
 use super::{HttpBodyView, HttpParseError, HttpParser, MAX_CONTENT_LENGTH};
 use crate::net::payload::{PayloadRange, PayloadSpanRef};
 

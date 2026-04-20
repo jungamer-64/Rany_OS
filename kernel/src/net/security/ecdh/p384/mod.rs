@@ -1,4 +1,7 @@
-// Building block: P-384 field arithmetic
+// ============================================================================
+// kernel/src/net/security/ecdh/p384/mod.rs - P-384 field arithmetic
+// ============================================================================
+
 #![allow(dead_code)]
 
 use super::*;

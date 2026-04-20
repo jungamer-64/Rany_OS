@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/lifecycle.rs
+// kernel/src/net/runtime/command_handler/lifecycle.rs - ランタイム / コマンドハンドラ / ライフサイクル処理
 // ============================================================================
 //! RuntimeCommandHandler ソケット制御/ライフサイクル系メソッド
 

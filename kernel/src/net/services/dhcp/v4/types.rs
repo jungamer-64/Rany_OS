@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/dhcp/v4/types.rs - サービス / DHCP / v4 / 型定義
+// ============================================================================
+
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::payload::{PayloadRange, PayloadSpanRef};

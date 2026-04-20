@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l3/ipv4/processor_runtime_impl.rs - L3 / IPv4 / ランタイム処理
+// ============================================================================
+
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 
@@ -56,7 +60,7 @@ impl Ipv4Processor {
 
     #[inline]
     fn normalize_time(current_time: u64) -> u64 {
-        // Security: Ensure we have a valid timestamp for fragment timeout handling.
+        // SECURITY: fragment timeout 処理のため valid timestamp を保証する。
         // If 0 is provided, fall back to the system uptime.
         if current_time == 0 {
             crate::time::get_uptime_ms()

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l4/tcp/connection.rs - L4 / TCP / 接続
+// ============================================================================
+
 use super::*;
 use crate::net::l4::socket::{Socket, TcpSocketState};
 use crate::net::l4::tcp::tcb::tcb_table;

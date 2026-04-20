@@ -1,5 +1,5 @@
 // ============================================================================
-// src/net/adaptive_polling.rs - Adaptive Polling Network Driver
+// kernel/src/net/datapath/adaptive_polling/mod.rs - Adaptive Polling Network Driver
 // ============================================================================
 //!
 //! # 適応的ポーリングネットワークドライバ
@@ -85,7 +85,7 @@ impl PacketBuffer {
             data,
             capacity,
             len: 0,
-            headroom: 64.min(capacity), // Security: Ensure headroom fits in capacity
+            headroom: 64.min(capacity), // SECURITY: headroom を capacity 内に収める。
             pool_id,
         }
     }
@@ -102,7 +102,7 @@ impl PacketBuffer {
 
     /// データ長を設定
     pub fn set_len(&mut self, len: usize) {
-        // Security: Avoid underflow and clamp to capacity
+        // SECURITY: underflow を避け、capacity へ clamp する。
         let max_len = self.capacity.saturating_sub(self.headroom);
         self.len = len.min(max_len);
     }
@@ -161,7 +161,7 @@ impl<T> RingBuffer<T> {
 
     /// アイテムを追加（プロデューサ側、&selfで呼び出し可能）
     ///
-    /// # Safety contract
+    /// # Safety
     /// SPSC: 同時に1つのプロデューサのみが `push` を呼び出すこと。
     pub fn push(&self, item: T) -> Result<(), T> {
         let tail = self.tail.load(Ordering::Relaxed);
@@ -183,7 +183,7 @@ impl<T> RingBuffer<T> {
 
     /// アイテムを取得（コンシューマ側、&selfで呼び出し可能）
     ///
-    /// # Safety contract
+    /// # Safety
     /// SPSC: 同時に1つのコンシューマのみが `pop` を呼び出すこと。
     pub fn pop(&self) -> Option<T> {
         let head = self.head.load(Ordering::Relaxed);

@@ -1,5 +1,5 @@
 // ============================================================================
-// src/net/tls.rs - TLS/SSL Protocol Support (Module Root)
+// kernel/src/net/security/tls/mod.rs - TLS/SSL Protocol Support (Module Root)
 // ============================================================================
 //!
 //! # TLS プロトコルサポート

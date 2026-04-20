@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/connection/client_hello.rs - セキュリティ / TLS / 接続 / ClientHello処理
+// ============================================================================
+
 use super::{
     CipherSuite, ContentType, HandshakeType, PacketPayload, PacketPayloadBuilder,
     PacketPayloadView, SessionId, TlsBytes, TlsConnection, TlsState, TlsVersion, append_payload,

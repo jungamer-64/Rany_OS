@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/dns/parser.rs - サービス / DNS / パーサ
+// ============================================================================
+
 use super::*;
 use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder, PayloadSpanRef};
 

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/dhcp/v6/client.rs - サービス / DHCP / v6 / クライアント
+// ============================================================================
+
 use super::*;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv6::Ipv6Address;
@@ -656,7 +660,7 @@ impl DhcpV6Client {
             return Err("not an advertise/reply");
         }
 
-        // Security Fix: Verify Transaction ID (XID) (RFC 8415 Section 7.1)
+        // SECURITY: Transaction ID (XID) を検証する（RFC 8415 Section 7.1）。
         // XID is 3 bytes starting at offset 1.
         let xid = u32::from_be_bytes([0, data[1], data[2], data[3]]);
         if xid != self.xid.load(Ordering::SeqCst) {

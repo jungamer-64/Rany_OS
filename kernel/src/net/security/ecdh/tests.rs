@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/ecdh/tests.rs - セキュリティ / ECDH / テスト
+// ============================================================================
+
 use super::*;
 
 /// X25519 鍵交換対称性テスト
@@ -95,7 +99,7 @@ fn test_x25519_rfc7748_vector() {
     let sk = X25519SecretKey::new(scalar_bytes);
     let pk = X25519PublicKey::from_slice(&u_bytes).expect("valid u-coordinate");
 
-    // Note: dh() applies clamping internally, so this tests the clamped result.
+    // dh() applies clamping internally, so this tests the clamped result.
     // The RFC test vector input is already valid for the clamped computation.
     let result = pk.dh(&sk);
     assert!(result.is_ok(), "DH computation should succeed");

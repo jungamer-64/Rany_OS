@@ -1,9 +1,11 @@
-// tls/crypto/chacha20.rs - ChaCha20-Poly1305 AEAD (RFC 8439)
+// ============================================================================
+// kernel/src/net/security/tls/crypto/chacha20.rs - ChaCha20-Poly1305 AEAD (RFC 8439)
+// ============================================================================
 
-/// Security: Constant-time 16-byte tag comparison.
+/// SECURITY: 16-byte tag を定時間で比較する。
 /// Uses read_volatile and #[inline(never)] to prevent compiler optimizations
 /// that could introduce timing side-channels.
-/// Security: Constant-time 16-byte tag comparison to prevent timing side-channels.
+/// SECURITY: timing side-channel を防ぐため 16-byte tag を定時間で比較する。
 /// Always iterates through 16 bytes and uses bitwise logic for equality check.
 #[inline(never)]
 fn ct_eq_tag(a: &[u8], b: &[u8]) -> bool {
@@ -482,8 +484,8 @@ pub fn chacha20_poly1305_decrypt_in_place(
     // Compute expected authentication tag
     let expected_tag = poly1305_aead_tag(&poly_key, aad, data);
 
-    // Security: Constant-time tag comparison using read_volatile to prevent
-    // compiler optimizations that could introduce timing side-channels.
+    // SECURITY: read_volatile による定時間 tag comparison で、timing side-channel を
+    // 生む compiler optimization を防ぐ。
     if !ct_eq_tag(tag, &expected_tag) {
         return Err(()); // Authentication failed
     }

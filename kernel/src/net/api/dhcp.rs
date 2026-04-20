@@ -52,11 +52,6 @@ pub struct InterfaceDhcpState {
 }
 
 /// DHCPディスカバー（イベントキュー経由）
-///
-// 旧同期API (dhcp_discover, dhcp_request, dhcp_release, dhcp_last_declined,
-// dhcp_last_released, dhcp_renew) は削除済み。
-// 非同期版 (dhcp_discover, dhcp_release, dhcp_renew,
-// dhcp_last_declined, dhcp_last_released) を使用すること。
 
 pub fn dhcp_v4_state_name(state: dhcp::DhcpState) -> &'static str {
     match state {
@@ -339,8 +334,6 @@ pub(crate) fn dhcp_state_snapshot_in(runtime: NetRuntimeHandle) -> DhcpRuntimeSt
 
     out
 }
-
-// 旧同期 dhcp_renew は削除済み（dhcp_renew を使用すること）
 
 pub async fn get_dhcp_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
     let (result_slot, waker, command_future) =

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/obs/trace.rs - obs / trace
+// ============================================================================
+
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;

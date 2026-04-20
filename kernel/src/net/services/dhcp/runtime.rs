@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/dhcp/runtime.rs - サービス / DHCP / ランタイム
+// ============================================================================
+
 use super::v4::{DhcpAckResult, DhcpClient, DhcpResponseResult, DHCP_CLIENT_PORT};
 use super::v6::{DhcpV6Client, DHCPV6_CLIENT_PORT};
 use crate::net::l2::ethernet::MacAddress;

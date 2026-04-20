@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/runtime/device/mod.rs - ランタイム / device モジュール
+// ============================================================================
 //! Shared network port runtime.
 //!
 //! This layer owns port registration, interface binding, TX queuing, ISR-safe

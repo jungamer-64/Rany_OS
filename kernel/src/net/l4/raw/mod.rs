@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/raw/mod.rs
+// kernel/src/net/l4/raw/mod.rs - L4 / Raw モジュール
 // ============================================================================
 //! Raw IP facade backed by the internal socket registry.
 

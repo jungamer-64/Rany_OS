@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l3/ipv6/mod.rs
+// kernel/src/net/l3/ipv6/mod.rs - L3 / IPv6 モジュール
 // ============================================================================
 //! IPv6 Protocol Implementation for ExoRust
 //!
@@ -131,7 +131,7 @@ impl Ipv6Address {
         addr[0..8].copy_from_slice(&p[0..8]);
         addr[8..16].copy_from_slice(&rand[0..8]);
 
-        // Security: Ensure the "universal/local" bit is set to 0 (local)
+        // SECURITY: universal/local bit が local を示す 0 であることを保証する。
         // per RFC 4941, although many implementations just use full randomness.
         addr[8] &= !0x02;
 
@@ -541,7 +541,7 @@ impl<'a> Ipv6Packet<'a> {
     pub fn as_bytes(&self) -> &'a [u8] {
         let payload_len = self.header().payload_length() as usize;
         let total = IPV6_HEADER_SIZE + payload_len;
-        // Security: Ensure we don't panic on packets with invalid payload length
+        // SECURITY: invalid payload length の packet で panic しないようにする。
         &self.data[..core::cmp::min(total, self.data.len())]
     }
 
@@ -658,13 +658,13 @@ impl<'a> Ipv6PacketMut<'a> {
             .map(|h| h.payload_length() as usize)
             .unwrap_or(0);
         let total_len = IPV6_HEADER_SIZE + payload_len;
-        // Security: Clamp to physical buffer size to prevent panic
+        // SECURITY: panic を防ぐため physical buffer size へ clamp する。
         &self.data[..core::cmp::min(total_len, self.data.len())]
     }
 
     /// Finalize packet (set payload length based on actual data written)
     pub fn finalize(&mut self, payload_len: usize) {
-        // Security: Clamp payload length to physical buffer size and u16 limit (65535)
+        // SECURITY: payload length を physical buffer size と u16 limit (65535) へ clamp する。
         let max_payload = self.data.len().saturating_sub(IPV6_HEADER_SIZE).min(65535);
         let actual_payload = payload_len.min(max_payload);
 
@@ -707,7 +707,7 @@ pub fn skip_extension_headers<'a>(
     loop {
         headers_seen += 1;
         if headers_seen > MAX_EXTENSION_HEADERS {
-            // Safety: stop traversal after too many headers
+            // SAFETY: stop traversal after too many headers
             return (next_header, data);
         }
 
@@ -720,7 +720,7 @@ pub fn skip_extension_headers<'a>(
                     return (next_header, data);
                 }
 
-                // Security (RFC 5095): Reject Routing Header Type 0
+                // SECURITY: RFC 5095 に従い Routing Header Type 0 を拒否する。
                 if nh == EXT_HEADER_ROUTING && data.len() >= 3 && data[2] == 0 {
                     log::warn!(
                         "[NET-IPV6] Dropping packet with deprecated Routing Header Type 0 (RFC 5095)"
@@ -803,7 +803,7 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
                     return false;
                 }
 
-                // Security (RFC 5095): Reject Routing Header Type 0
+                // SECURITY: RFC 5095 に従い Routing Header Type 0 を拒否する。
                 if next_header == EXT_HEADER_ROUTING && data[2] == 0 {
                     return false;
                 }
@@ -905,7 +905,7 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                     );
                 }
 
-                // Security (RFC 5095): Reject Routing Header Type 0
+                // SECURITY: RFC 5095 に従い Routing Header Type 0 を拒否する。
                 if next_header == EXT_HEADER_ROUTING
                     && offset + 3 <= raw_packet.len()
                     && raw_packet[offset + 2] == 0
@@ -952,7 +952,7 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                         continue;
                     }
 
-                    // Security (RFC 8200): Nested fragmentation check.
+                    // SECURITY: RFC 8200 に従い nested fragmentation を検査する。
                     // If the Fragment Header's Next Header is also 44 (Fragment),
                     // it MUST be discarded.
                     if frag.next_header == EXT_HEADER_FRAGMENT {

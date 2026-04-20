@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/runtime/stack/core_impl/receive.rs - ランタイム / スタック / コア実装 / 受信処理
+// ============================================================================
+
 // =============================================================================
 // Receive Path — IPv4/IPv6 incoming packet processing
 //
@@ -44,7 +48,7 @@ impl NetworkStack {
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
-                // Security: multicast ICMP is accepted only for joined groups.
+                // SECURITY: multicast ICMP は joined group だけで受理する。
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
                     self.stats.record_dropped();
                     return;
@@ -90,7 +94,7 @@ impl NetworkStack {
                 self.process_igmp_payload(&igmp_payload, src_ip, ttl);
             }
             Ipv4ProcessResult::Udp(_payload, _src_ip, dst_ip, _orig) => {
-                // Security: multicast UDP is accepted only for joined groups.
+                // SECURITY: multicast UDP は joined group だけで受理する。
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
                     self.stats.record_dropped();
                     return;
@@ -108,7 +112,7 @@ impl NetworkStack {
                 }
             }
             Ipv4ProcessResult::Tcp(_payload, _src_ip, dst_ip, _orig) => {
-                // Security: TCP over multicast/broadcast is rejected (RFC 793 / RFC 1122).
+                // SECURITY: multicast / broadcast 上の TCP は拒否する（RFC 793 / RFC 1122）。
                 if dst_ip.is_multicast()
                     || dst_ip.is_broadcast()
                     || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
@@ -575,7 +579,7 @@ impl NetworkStack {
                 sequence,
                 data: echo_data,
             } => {
-                // Security (RFC 4443): SHOULD NOT respond to multicast Echo Requests
+                // SECURITY: RFC 4443 に従い multicast Echo Request へ応答しない。
                 if dst.is_multicast() {
                     return;
                 }
@@ -660,8 +664,8 @@ impl NetworkStack {
                 mtu,
                 quoted_packet,
             } => {
-                // Security check (RFC 8201 / RFC 5927): Verify that the ICMPv6 message quotes
-                // a packet that we actually sent and corresponds to an active connection.
+                // SECURITY: RFC 8201 / RFC 5927 に従い、ICMPv6 message が
+                // 自スタックの送信済み packet と active connection を引用していることを検証する。
                 let mut is_our_packet = false;
                 if let Some(if_id) = if_id {
                     if let Some(config) = self
@@ -834,7 +838,7 @@ impl NetworkStack {
         hop_limit: u8,
         current_time: u64,
     ) {
-        // Security (RFC 4861 Section 6.1.1): The IP Hop Limit field MUST have a value of 255.
+        // SECURITY: RFC 4861 Section 6.1.1 に従い、IP Hop Limit は 255 でなければならない。
         // This ensures the packet was not forwarded by a router.
         if hop_limit != 255 {
             log::warn!("NDP: Dropping packet with invalid hop limit {}", hop_limit);
@@ -1184,7 +1188,7 @@ impl NetworkStack {
                 target,
                 destination,
             } => {
-                // Security check 0: Is Redirect handling enabled globally?
+                // SECURITY: check 0: Redirect handling が global に有効か確認する。
                 if !self.config.icmpv6_redirect_enabled {
                     log::warn!(
                         "NDP: Ignoring Redirect for {} to target router {} (Security: disabled by default)",

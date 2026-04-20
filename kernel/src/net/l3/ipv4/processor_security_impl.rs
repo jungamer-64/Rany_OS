@@ -1,8 +1,12 @@
+// ============================================================================
+// kernel/src/net/l3/ipv4/processor_security_impl.rs - L3 / IPv4 / セキュリティ処理
+// ============================================================================
+
 use super::*;
 
 impl Ipv4Processor {
     pub(super) fn should_drop_src_dst_pair(&mut self, src: Ipv4Address, dst: Ipv4Address) -> bool {
-        // Security: Land Attack prevention (src == dst)
+        // SECURITY: src == dst の Land Attack を防止する。
         // Discard packets where source and destination addresses are the same.
         if src == dst && !src.is_any() && !src.is_loopback() {
             self.stats.rx_dropped += 1;
@@ -17,7 +21,7 @@ impl Ipv4Processor {
     }
 
     pub(super) fn should_drop_martian_source(&mut self, src: Ipv4Address) -> bool {
-        // Security: Prevent Source IP spoofing (Martian packets)
+        // SECURITY: Martian packet による Source IP spoofing を防止する。
         // RFC 1812: Source IP must not be a multicast or broadcast address.
         // RFC 6890: Filter other reserved/special-purpose ranges.
         if src.is_broadcast() || src.is_multicast() || src.is_martian() {
@@ -33,7 +37,7 @@ impl Ipv4Processor {
     }
 
     pub(super) fn should_drop_forbidden_options(&mut self, data: &[u8], header_len: usize) -> bool {
-        // Security: IPv4 Options Filtering
+        // SECURITY: IPv4 option をフィルタリングする。
         // RFC 7126: Source routing (LSRR/SSRR) is a major security risk and should be dropped.
         if header_len <= 20 {
             return false;

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/runtime/bridge/nat.rs - ランタイム / ブリッジ / NAT処理
+// ============================================================================
+
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::{self, NetIfId};

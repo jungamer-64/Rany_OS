@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/http/server/index_html.rs - サービス / HTTP / サーバ / index html
+// ============================================================================
+
 pub(super) const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <html>
 <head>

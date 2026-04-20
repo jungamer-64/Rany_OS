@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler.rs
+// kernel/src/net/runtime/command_handler.rs - RuntimeCommandHandler - ネットワークイベントハンドラ
 // ============================================================================
 //! # RuntimeCommandHandler - ネットワークイベントハンドラ
 //!
@@ -782,7 +782,7 @@ impl Default for RuntimeCommandHandler {
 pub fn init_network_event_handler() {
     // イベントキューは既に初期化済み（NETWORK_EVENT_QUEUE）
     // タスクスケジューラにruntime_command_taskを登録する
-    // Note: runtime_command_taskはasync関数なので、per_core_executor経由でspawnする
+    // runtime_command_taskはasync関数なので、per_core_executor経由でspawnする
     // ネットワークイベント処理はCPU 0で実行（ネットワーク割り込みと同じコア）
     log::info!("Network: Event handler initialized");
 

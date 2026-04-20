@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/runtime/manager/mod.rs - ランタイム / manager モジュール
+// ============================================================================
+
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::runtime::NetRuntimeHandle;

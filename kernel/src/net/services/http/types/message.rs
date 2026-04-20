@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/http/types/message.rs - サービス / HTTP / 型定義 / message
+// ============================================================================
+
 use super::{
     ConnectionDirective, HttpHeader, HttpHeaderName, HttpHeaderValue, HttpMethod, HttpRequestUri,
     HttpStatusCode, HttpVersion,

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/udp.rs
+// kernel/src/net/runtime/command_handler/udp.rs - ランタイム / コマンドハンドラ / UDP
 // ============================================================================
 //! RuntimeCommandHandler UDP系メソッド
 

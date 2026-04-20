@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/datapath/mempool/pool_impl.rs - データパス / メモリプール / プール実装
+// ============================================================================
+
 use super::*;
 use crate::sync::PoisonLock;
 
@@ -19,7 +23,7 @@ impl PacketPool {
 
     /// Return a buffer to the pool
     pub fn free(&self, mut buffer: Vec<u8>) {
-        // Security: Zero out the buffer content
+        // SECURITY: buffer content をゼロクリアする。
         unsafe {
             let cap = buffer.capacity();
             let ptr = buffer.as_mut_ptr();
@@ -60,7 +64,7 @@ impl PacketPool {
     pub fn free_batch(&self, batch: Vec<Vec<u8>>) {
         let mut buffers = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
         for mut buffer in batch {
-            // Security: Zero out buffer content
+            // SECURITY: buffer content をゼロクリアする。
             unsafe {
                 let cap = buffer.capacity();
                 let ptr = buffer.as_mut_ptr();
@@ -119,7 +123,7 @@ impl PerCoreTxCache {
 
     /// バッファを返却（ローカルキャッシュ優先）
     pub fn free(&self, mut buffer: Vec<u8>) {
-        // Security: Zero out buffer content
+        // SECURITY: buffer content をゼロクリアする。
         unsafe {
             let cap = buffer.capacity();
             let ptr = buffer.as_mut_ptr();

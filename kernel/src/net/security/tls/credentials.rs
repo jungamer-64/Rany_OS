@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/credentials.rs - TLS credential and key material types
+// kernel/src/net/security/tls/credentials.rs - TLS credential and key material types
 // ============================================================================
 
 use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder};

@@ -1,7 +1,6 @@
 // ============================================================================
-// Network Stack Integration for ExoRust
+// kernel/src/net/runtime/stack/mod.rs - ランタイム / スタック モジュール
 // ============================================================================
-
 //! Network Stack Integration for ExoRust
 //!
 //! This module integrates all network protocol layers into
@@ -59,7 +58,7 @@ pub const MTU: usize = 1500;
 
 /// Network interface configuration
 ///
-/// Note: 全フィールドが Copy 型のため、Copy を実装。
+/// 全フィールドが Copy 型のため、Copy を実装。
 /// clone() 呼び出しが単純なビットコピーに最適化される。
 #[derive(Debug, Clone, Copy)]
 pub struct NetworkConfig {

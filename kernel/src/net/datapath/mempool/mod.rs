@@ -1,4 +1,8 @@
 // ============================================================================
+// kernel/src/net/datapath/mempool/mod.rs - Zero-Copy Network Buffer Pool
+// ============================================================================
+
+// ============================================================================
 // src/net/mempool.rs - Zero-Copy Network Buffer Pool
 // 設計書 6.2: Mempool によるゼロコピーネットワークバッファ管理
 // ============================================================================
@@ -611,7 +615,7 @@ impl Mempool {
             .unwrap_or_else(|e| e.into_inner())
             .pop()?;
         unsafe {
-            // Security: Clear the entire buffer to prevent information leaks from previous packets.
+            // SECURITY: previous packet からの information leak を防ぐため buffer 全体をクリアする。
             // Previously we only cleared up to prev_len, which failed if an offset was used.
             core::ptr::write_bytes(
                 buffer.as_ref().data.as_ptr() as *mut u8,
@@ -700,7 +704,7 @@ impl PerCoreMempoolCache {
         buffer: NonNull<PacketBuffer>,
         pool: &'static Mempool,
     ) -> PacketRef {
-        // Security: Clear the entire buffer to prevent information leaks from previous packets.
+        // SECURITY: previous packet からの information leak を防ぐため buffer 全体をクリアする。
         core::ptr::write_bytes(
             buffer.as_ref().data.as_ptr() as *mut u8,
             0,

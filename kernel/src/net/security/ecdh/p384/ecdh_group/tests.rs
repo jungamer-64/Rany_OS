@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/ecdh/p384/ecdh_group/tests.rs - セキュリティ / ECDH / P-384 / ECDHグループ / テスト
+// ============================================================================
+
 use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/ingress.rs
+// kernel/src/net/runtime/command_handler/ingress.rs - ランタイム / コマンドハンドラ / 受信処理
 // ============================================================================
 //! RuntimeCommandHandler Ingress系メソッド
 
@@ -150,7 +150,7 @@ impl RuntimeCommandHandler {
                             0
                         };
 
-                        // Security Fix: Use full IPv6 addresses for firewall check
+                        // SECURITY: firewall check には完全な IPv6 address を使う。
                         if !crate::net::security::firewall::check_ingress(
                             crate::net::security::firewall::IpAddress::V6(src_ip),
                             crate::net::security::firewall::IpAddress::V6(dst_ip),

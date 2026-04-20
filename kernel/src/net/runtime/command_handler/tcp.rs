@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/tcp.rs
+// kernel/src/net/runtime/command_handler/tcp.rs - ランタイム / コマンドハンドラ / TCP
 // ============================================================================
 //! RuntimeCommandHandler TCP系メソッド
 

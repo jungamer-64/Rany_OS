@@ -1,4 +1,6 @@
-// tls/crypto/hkdf.rs - HKDF and TLS 1.3 Key Schedule (RFC 5869 / RFC 8446)
+// ============================================================================
+// kernel/src/net/security/tls/crypto/hkdf.rs - HKDF and TLS 1.3 Key Schedule (RFC 5869 / RFC 8446)
+// ============================================================================
 
 use super::hmac::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, hmac_sha256, hmac_sha256_parts, hmac_sha384,

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/services/ntp/mod.rs
+// kernel/src/net/services/ntp/mod.rs - サービス / NTP モジュール
 // ============================================================================
 //! NTP (Network Time Protocol) / SNTP Client Implementation (RFC 4330)
 

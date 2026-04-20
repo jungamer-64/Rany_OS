@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/crypto/mod.rs - Cryptographic Primitives for TLS
+// kernel/src/net/security/tls/crypto/mod.rs - Cryptographic Primitives for TLS
 // ============================================================================
 
 pub mod aes_cbc;

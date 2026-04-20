@@ -1,7 +1,6 @@
 // ============================================================================
-// IGMP (Internet Group Management Protocol) for ExoRust
+// kernel/src/net/l3/igmp/mod.rs - IGMP multicast group management
 // ============================================================================
-
 //! IGMP Protocol Implementation (RFC 2236 - IGMPv2, RFC 3376 - IGMPv3)
 //!
 //! This module implements IGMP for multicast group management.

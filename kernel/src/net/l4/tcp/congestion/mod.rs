@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/congestion/mod.rs
+// kernel/src/net/l4/tcp/congestion/mod.rs - TCP Congestion Control - 輻輳制御
 // ============================================================================
+
 // 輻輳制御の内部統計フィールドはデバッグ及びチューニング用に保持。
 //! # TCP Congestion Control - 輻輳制御
 //!

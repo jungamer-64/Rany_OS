@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l3/ipv4/processor_packet_path_impl.rs - L3 / IPv4 / パケット経路処理
+// ============================================================================
+
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::payload::{PacketPayloadBuilder, split_payload_prefix_owned};

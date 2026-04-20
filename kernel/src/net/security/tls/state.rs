@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/state.rs - TLS connection state machine labels
+// kernel/src/net/security/tls/state.rs - TLS connection state machine labels
 // ============================================================================
 
 /// TLS接続状態

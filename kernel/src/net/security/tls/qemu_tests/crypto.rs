@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/qemu_tests/crypto.rs - セキュリティ / TLS / QEMUテスト / 暗号
+// ============================================================================
+
 use super::super::crypto::{
     derive_key_block as derive_key_block_into, derive_master_secret, generate_random,
     hkdf_expand_label as hkdf_expand_label_into, hmac_sha256, hmac_sha384,

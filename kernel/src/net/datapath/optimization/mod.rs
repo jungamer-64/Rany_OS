@@ -1,4 +1,8 @@
 // ============================================================================
+// kernel/src/net/datapath/optimization/mod.rs - Network Performance Optimization
+// ============================================================================
+
+// ============================================================================
 // src/net/optimization.rs - Network Performance Optimization
 // 設計書 6章: 高性能ネットワーク最適化
 // ============================================================================
@@ -813,7 +817,7 @@ pub struct GroSegment {
     pub timestamp: u64,
 }
 
-// Safety: GroSegmentはunsafe操作でのみアクセスされ、適切に同期される
+// SAFETY: GroSegmentはunsafe操作でのみアクセスされ、適切に同期される
 unsafe impl Send for GroSegment {}
 unsafe impl Sync for GroSegment {}
 

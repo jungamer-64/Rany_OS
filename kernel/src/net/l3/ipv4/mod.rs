@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l3/ipv4/mod.rs
+// kernel/src/net/l3/ipv4/mod.rs - L3 / IPv4 モジュール
 // ============================================================================
 //! IPv4 Protocol Implementation for ExoRust
 //!
@@ -103,7 +103,7 @@ pub struct Ipv4PacketMut<'a> {
 
 /// IPv4 network configuration
 ///
-/// Note: 全フィールドが Copy 型のため、Copy を実装。
+/// 全フィールドが Copy 型のため、Copy を実装。
 /// clone() のコストが実質的にゼロになる。
 #[derive(Debug, Clone, Copy)]
 pub struct Ipv4Config {

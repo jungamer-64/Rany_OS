@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/nat.rs
+// kernel/src/net/runtime/command_handler/nat.rs - ランタイム / コマンドハンドラ / NAT処理
 // ============================================================================
 //! RuntimeCommandHandler NATイベント系メソッド
 

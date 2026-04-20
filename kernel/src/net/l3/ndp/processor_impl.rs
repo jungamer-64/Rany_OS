@@ -1,4 +1,6 @@
-// Building block: NDP helper functions retained for IPv6 multicast
+// ============================================================================
+// kernel/src/net/l3/ndp/processor_impl.rs - NDP helper functions retained for IPv6 multicast
+// ============================================================================
 
 use super::*;
 use crate::net::l2::ethernet::MacAddress;
@@ -148,7 +150,7 @@ impl NdpProcessor {
                 mac,
             } = opt
             {
-                // Security: Verify that the Source Link-Layer Address option matches
+                // SECURITY: Source Link-Layer Address option の一致を検証する。
                 // the source MAC address in the Ethernet header.
                 if *mac != src_mac {
                     log::warn!(
@@ -289,7 +291,7 @@ impl NdpProcessor {
         target_bytes.copy_from_slice(&data[8..24]);
         let target = Ipv6Address::new(target_bytes);
 
-        // Security (RFC 4861 Section 7.1.2): Target address MUST NOT be a multicast address.
+        // SECURITY: RFC 4861 Section 7.1.2 に従い、target address は multicast address であってはならない。
         if target.is_multicast() {
             log::warn!(
                 "[NET-NDP] Dropping NA with multicast target address {}",
@@ -312,7 +314,7 @@ impl NdpProcessor {
                 mac,
             } = opt
             {
-                // Security: Verify that the Target Link-Layer Address option matches
+                // SECURITY: Target Link-Layer Address option の一致を検証する。
                 // the source MAC address in the Ethernet header.
                 if *mac != src_mac {
                     log::warn!(
@@ -454,7 +456,7 @@ impl NdpProcessor {
         _dst: Ipv6Address,
         current_time: u64,
     ) -> NdpResult {
-        // Security (RFC 4861 Section 6.1.2): Source address MUST be a link-local address.
+        // SECURITY: RFC 4861 Section 6.1.2 に従い、source address は link-local address でなければならない。
         if !src.is_link_local() {
             log::warn!("NDP: Dropping RA from non-link-local address {}", src);
             return NdpResult::Error;
@@ -566,7 +568,7 @@ impl NdpProcessor {
         _dst: Ipv6Address,
         current_time: u64,
     ) -> NdpResult {
-        // Security (RFC 4861 Section 8.1):
+        // SECURITY: RFC 4861 Section 8.1 に従って検証する。
         // 1. Source address MUST be a link-local address.
         if !src.is_link_local() {
             log::warn!("NDP: Dropping Redirect from non-link-local address {}", src);
@@ -589,7 +591,7 @@ impl NdpProcessor {
         dest_bytes.copy_from_slice(&data[24..40]);
         let destination = Ipv6Address::new(dest_bytes);
 
-        // Security (RFC 4861 Section 8.1):
+        // SECURITY: RFC 4861 Section 8.1 に従って検証する。
         // 3. The ICMP Code MUST be 0.
         if data[1] != 0 {
             return NdpResult::Error;

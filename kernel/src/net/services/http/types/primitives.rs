@@ -1,11 +1,14 @@
+// ============================================================================
+// kernel/src/net/services/http/types/primitives.rs - サービス / HTTP / 型定義 / プリミティブ型
+// ============================================================================
+
 use crate::net::payload::PayloadSpanRef;
 use core::fmt;
 use core::str::FromStr;
 
 /// HTTPメソッド
 ///
-/// NOTE:
-/// - カーネル内蔵 HTTP サービスの公開面を最小化するため、
+/// /// - カーネル内蔵 HTTP サービスの公開面を最小化するため、
 ///   現時点では TRACE / CONNECT はサポートしない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpMethod {

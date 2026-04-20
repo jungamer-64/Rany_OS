@@ -1,5 +1,5 @@
 // ============================================================================
-// ICMP-related NetworkStack impl methods
+// kernel/src/net/runtime/stack/core_impl/protocol_impl/icmp.rs - ランタイム / スタック / コア実装 / プロトコル実装 / ICMP
 // ============================================================================
 //! ICMP packet processing, error message construction, PMTUD handling,
 //! ICMP Redirect processing, and ICMP echo request/reply.
@@ -459,7 +459,7 @@ impl NetworkStack {
         let current_time = self.current_time();
         let original_packet = crate::net::payload::PacketPayloadView::new(original_packet);
 
-        // Security: RFC 4443 compliance check (e.g. no errors for multicast)
+        // SECURITY: multicast などへ error を返さないことを含め、RFC 4443 への準拠を検査する。
         if !self.should_send_icmp_v6_error(
             &original_packet,
             dst_v6,
@@ -509,7 +509,7 @@ impl NetworkStack {
         let original_packet = crate::net::payload::PacketPayloadView::new(&original_packet);
         let current_time = self.current_time();
 
-        // Security: RFC 4443 compliance check
+        // SECURITY: RFC 4443 への準拠を検査する。
         if !self.should_send_icmp_v6_error(
             &original_packet,
             dst_v6,
@@ -715,10 +715,10 @@ impl NetworkStack {
     /// exists for a destination. The host should update its routing table
     /// to use the new gateway for future packets to that destination.
     ///
-    /// Security considerations:
-    /// - Only accept redirects from the current first-hop router
-    /// - Validate that the new gateway is on a directly connected network
-    /// - Ignore redirects for destinations not matching current routes
+    /// # セキュリティ上の制約
+    /// - 現在の first-hop router からの Redirect だけを受理する。
+    /// - 新しい gateway が直接接続ネットワーク上にあることを検証する。
+    /// - 現在の経路と一致しない宛先の Redirect は無視する。
     pub(crate) fn handle_icmp_redirect(
         &mut self,
         code: RedirectCode,
@@ -726,7 +726,7 @@ impl NetworkStack {
         destination: Ipv4Address,
         redirect_source: Ipv4Address,
     ) {
-        // Security check 0: Is Redirect handling enabled globally?
+        // SECURITY: check 0: Redirect handling が global に有効か確認する。
         if !self.config.icmp_redirect_enabled {
             log::warn!(
                 "[NET] ICMP: Ignoring Redirect from {} to {} via {} (Security: disabled by default)",
@@ -737,14 +737,14 @@ impl NetworkStack {
             return;
         }
 
-        // Security check 1: Only accept redirects from our current gateway
+        // SECURITY: check 1: 現在の gateway からの Redirect だけを受理する。
         let current_gateway = self.config.ipv4.gateway;
         if redirect_source != current_gateway {
             // Ignore redirects from non-gateway sources (potential attack)
             return;
         }
 
-        // Security check 2: Ensure the new gateway is on a directly connected network
+        // SECURITY: check 2: 新しい gateway が直接接続 network 上にあることを保証する。
         // (same subnet as the host)
         let local_ip = self.config.ipv4.address;
         let local_mask = self.config.ipv4.subnet_mask;
@@ -756,12 +756,12 @@ impl NetworkStack {
             return;
         }
 
-        // Security check 3: Don't redirect to ourselves
+        // SECURITY: check 3: 自分自身への Redirect を拒否する。
         if gateway == local_ip {
             return;
         }
 
-        // Security check 4: Validate redirect code and destination
+        // SECURITY: check 4: redirect code と destination を検証する。
         match code {
             RedirectCode::Network | RedirectCode::Host => {
                 // Standard redirects - proceed

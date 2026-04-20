@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/datapath/scatter_gather.rs
+// kernel/src/net/datapath/scatter_gather.rs - Scatter-Gather I/O
 // ============================================================================
 //! # Scatter-Gather I/O
 //!

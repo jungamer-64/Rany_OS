@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/raw.rs
+// kernel/src/net/runtime/command_handler/raw.rs - ランタイム / コマンドハンドラ / Raw
 // ============================================================================
 //! RuntimeCommandHandler Raw送信系メソッド
 

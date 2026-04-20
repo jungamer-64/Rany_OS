@@ -1,6 +1,6 @@
 // ============================================================================
-// kernel/src/net/endpoint/flow_control.rs
-// ===========================================================================
+// kernel/src/net/l4/tcp/flow_control.rs - TCP Flow Control - フロー制御
+// ============================================================================
 //! # TCP Flow Control - フロー制御
 //!
 //! 受信ウィンドウ管理とゼロウィンドウ処理
@@ -174,9 +174,8 @@ impl FlowController {
             self.advertised_window = 0;
             self.state = FlowControlState::ZeroWindow;
         } else {
-            // Note: 本来は RightEdge を維持すべきだが、既存実装との互換性のため
-            // available が十分大きい場合は更新する。
-            // on_consume 側で詳細な制御を行っている。
+            // RightEdge の詳細制御は on_consume 側へ集約し、
+            // ここでは十分な受信余裕が戻った場合だけ広告値を更新する。
             if available >= self.advertised_window + max(MIN_ADVERTISE_WINDOW, self.buffer_size / 2)
             {
                 self.advertised_window = available;

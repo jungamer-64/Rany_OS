@@ -199,7 +199,7 @@ impl FirewallEngine {
         }
 
         // 統計を更新（&self なのでここでは更新しない — evaluate_mut を使用）
-        // Note: evaluate は &self で呼ばれるため統計更新はできない
+        // evaluate は &self で呼ばれるため統計更新はできない
         // グローバルAPI側で統計を別途記録するか、evaluate_mut を使用する
 
         // ルールを優先度順に走査

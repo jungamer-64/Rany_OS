@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/services/mdns/mod.rs
+// kernel/src/net/services/mdns/mod.rs - サービス / mDNS モジュール
 // ============================================================================
 //! mDNS (Multicast DNS) プロトコル実装 (RFC 6762)
 //!
@@ -192,7 +192,7 @@ impl MdnsService {
             crate::task::sleep_ms(100).await;
         }
 
-        // Security (RFC 6762 Section 11): mDNS packets MUST have IP TTL 255.
+        // SECURITY: RFC 6762 Section 11 に従い、mDNS packet の IP TTL は 255 でなければならない。
         socket.set_ttl(255);
         // mDNSマルチキャストグループに参加（非同期・イベントキュー経由）
         if !socket.join_multicast_group(MDNS_MULTICAST_GROUP).await {
@@ -209,9 +209,8 @@ impl MdnsService {
             if let Some((_if_id, src, ttl, packet)) = socket.recv().await {
                 let now = crate::task::current_tick() / 1000;
 
-                // Security: RFC 6762 Section 11 - Multicast DNS implementations MUST silently
-                // discard any Multicast DNS queries that arrive with an IP TTL (or Hop Limit)
-                // other than 255.
+                // SECURITY: RFC 6762 Section 11 に従い、IP TTL / Hop Limit が
+                // 255 以外の Multicast DNS query を破棄する。
                 let is_loopback = match src {
                     UdpAddr::V4 { ip, .. } => ip.is_loopback(),
                     UdpAddr::V6 { ip, .. } => ip.is_loopback(),

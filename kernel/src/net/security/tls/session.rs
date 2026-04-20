@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/session.rs - TLS session identifiers and caches
+// kernel/src/net/security/tls/session.rs - TLS session identifiers and caches
 // ============================================================================
 
 use arrayvec::{ArrayString, ArrayVec};

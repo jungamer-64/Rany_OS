@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/qemu_tests/connection.rs - セキュリティ / TLS / QEMUテスト / 接続
+// ============================================================================
+
 use super::super::protocol::ContentType;
 use super::super::{
     TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState,

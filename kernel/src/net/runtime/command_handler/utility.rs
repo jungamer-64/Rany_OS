@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/utility.rs
+// kernel/src/net/runtime/command_handler/utility.rs - ランタイム / コマンドハンドラ / 補助処理
 // ============================================================================
 //! RuntimeCommandHandler Utility/Config/Firewall系メソッド
 

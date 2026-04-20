@@ -1,6 +1,7 @@
 // ============================================================================
-// tls/crypto/aes_core.rs - AES Core Primitives (AES-128/AES-256)
+// kernel/src/net/security/tls/crypto/aes_core.rs - AES Core Primitives (AES-128/AES-256)
 // ============================================================================
+
 // AES暗号プリミティブ。全関数が直接呼び出されるわけではないが、
 // AES-CBC/AES-GCM等のモード実装で必要となるビルディングブロック。
 
@@ -29,7 +30,7 @@ const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x
 
 /// AES-128キー展開 (Legacy — テスト用途)
 ///
-/// NOTE: 新規コードでは `aes_expand_key_schedule()` を使用してください。
+/// 新規コードでは `aes_expand_key_schedule()` を使用してください。
 /// この関数はAES-128のみ対応しています。AES-128/256の両方に対応する
 /// 統合実装は `aes_expand_key_schedule()` です。
 pub(crate) fn aes_key_expansion(key: &[u8; 16]) -> [[u8; 16]; 11] {

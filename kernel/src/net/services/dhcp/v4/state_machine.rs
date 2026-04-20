@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/dhcp/v4/state_machine.rs - サービス / DHCP / v4 / 状態機械
+// ============================================================================
+
 use super::{
     DhcpClient, DhcpHeader, DhcpLease, DhcpMessageType, DhcpOperation, DhcpOption,
     DhcpResponseResult, DhcpState, DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE,

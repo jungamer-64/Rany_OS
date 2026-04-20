@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/l4/socket/state.rs - L4 / ソケット / 状態
+// ============================================================================
 //! Internal socket state and protocol-specific entries.
 
 use alloc::collections::VecDeque;

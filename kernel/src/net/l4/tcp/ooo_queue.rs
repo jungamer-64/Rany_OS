@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/ooo_queue.rs
+// kernel/src/net/l4/tcp/ooo_queue.rs - TCP Out-of-Order (OOO) 受信キュー
 // ============================================================================
 //! # TCP Out-of-Order (OOO) 受信キュー
 //!
@@ -60,7 +60,7 @@ impl ConnectionOooQueue {
         let fragment_len = data.total_len() as u32;
         let fragment_end = seq.wrapping_add(fragment_len);
 
-        // Security: Check for overlapping segments in the OOO queue.
+        // SECURITY: OOO queue 内の重複 segment を検出する。
         // RFC 5722 (for IPv6) and general security best practices recommend
         // discarding overlapping fragments to prevent IDS evasion and state
         // inconsistency. We apply this policy here to the OOO queue.
@@ -127,7 +127,7 @@ impl ConnectionOooQueue {
                         continue;
                     }
                     to_reinsert.push((rcv_nxt, packet));
-                    // Note: GLOBAL_OOO_COUNT remains the same because this segment is
+                    // GLOBAL_OOO_COUNT remains the same because this segment is
                     // essentially replaced by a trimmed version.
                 } else {
                     // 完全に受信済み、または重複部分のみだった

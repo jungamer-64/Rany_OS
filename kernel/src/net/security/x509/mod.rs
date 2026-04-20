@@ -1,5 +1,5 @@
 // ============================================================================
-// src/net/x509.rs - X.509 Certificate Parser
+// kernel/src/net/security/x509/mod.rs - X.509 Certificate Parser
 // ============================================================================
 //!
 //! # X.509証明書パーサー
@@ -807,7 +807,7 @@ fn verify_chain_links(certs: &[Option<X509Certificate<'_>>], chain_len: usize) -
         let current = certs[i].as_ref()?;
         let issuer = certs[i + 1].as_ref()?;
 
-        // Security: The issuer must be a CA to sign other certificates.
+        // SECURITY: ほかの証明書へ署名する issuer は CA でなければならない。
         if !issuer.is_ca {
             return None;
         }
@@ -860,7 +860,7 @@ pub fn validate_certificate_chain<'a>(
 
     let leaf = certs[0].as_ref()?;
 
-    // Security: Secure hostname verification (CN and SAN matching with wildcards)
+    // SECURITY: CN / SAN と wildcard を含めて hostname を検証する。
     if let Some(name) = server_name {
         if !match_hostname(leaf, name) {
             return None;
@@ -870,12 +870,12 @@ pub fn validate_certificate_chain<'a>(
     if chain.len() > 1 {
         verify_chain_links(&certs, chain.len())?;
 
-        // Security: Verify CA constraints for intermediate/root certificates
-        // certificates[0] is leaf, [1..] are intermediates/root
+        // SECURITY: intermediate / root certificate の CA 制約を検証する。
+        // certificates[0] は leaf、[1..] は intermediate / root を表す。
         let mut max_path_len = u32::MAX;
         for i in 1..chain.len() {
             if let Some(ref cert) = certs[i] {
-                // All intermediate certificates must be CAs
+                // intermediate certificate はすべて CA でなければならない。
                 if !cert.is_ca {
                     return None;
                 }
@@ -885,15 +885,15 @@ pub fn validate_certificate_chain<'a>(
                     max_path_len = core::cmp::min(max_path_len, constraint);
                 }
 
-                // Current path length (number of non-self-issued intermediate certs below this one)
-                // Simplified check: i-1 is the number of certs below certs[i]
+                // 現在の path length は、この certificate より下にある non-self-issued intermediate cert の数。
+                // 簡易検証として、certs[i] より下の certificate 数を i - 1 とする。
                 if (i - 1) as u32 > max_path_len {
                     return None;
                 }
             }
         }
 
-        // Security: The root of the chain (last cert) must be issued by a trusted anchor,
+        // SECURITY: chain 末尾の root certificate は trusted anchor から発行されていなければならない。
         // or be a trusted anchor itself.
         let chain_tip = certs[chain.len() - 1].as_ref()?;
 
@@ -925,7 +925,7 @@ pub fn validate_certificate_chain<'a>(
             return None;
         }
     } else {
-        // Security: Single certificate must be directly trusted or issued by a trust anchor
+        // SECURITY: 単独 certificate は直接信頼済み、または trust anchor から発行済みでなければならない。
         let leaf = certs[0].as_ref()?;
         let mut trusted = false;
         for &trust_der in trusted_roots {
@@ -1006,12 +1006,12 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
     }
 
     // Handle *.domain.com (RFC 6125)
-    // A wildcard is only allowed as the left-most label.
+    // wildcard は左端 label にだけ許可する。
     if pattern.starts_with(b"*.") && pattern.len() > 2 {
         let suffix = &pattern[1..]; // ".domain.com"
 
-        // Security: Prevent wildcard matches on top-level domains (e.g. *.com)
-        // or broad public suffixes (e.g. *.co.jp).
+        // SECURITY: top-level domain への wildcard match を拒否する（例: *.com）。
+        // 広すぎる public suffix も拒否する（例: *.co.jp）。
         let Ok(suffix_str) = core::str::from_utf8(&suffix[1..]) else {
             return false;
         };
@@ -1023,8 +1023,8 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
             return false; // Rejects *.com
         }
 
-        // Security: Reject common public suffixes.
-        // This list includes common multi-label TLDs and public suffixes.
+        // SECURITY: 代表的な public suffix を拒否する。
+        // このリストには一般的な multi-label TLD と public suffix を含める。
         if labels_count == 2 {
             let s0 = labels.next().unwrap_or("");
             let s1 = labels.next().unwrap_or("");

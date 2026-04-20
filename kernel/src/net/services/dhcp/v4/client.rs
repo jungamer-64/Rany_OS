@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/dhcp/v4/client.rs - サービス / DHCP / v4 / クライアント
+// ============================================================================
+
 use super::{
     DhcpClient, DhcpHeader, DhcpLease, DhcpMessageType, DhcpOperation, DhcpOption,
     DhcpResponseResult, DhcpState, ParsedOptions, DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE,

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/drivers/virtio_runtime.rs - ドライバ / VirtIOランタイム
+// ============================================================================
+
 use alloc::sync::Arc;
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};

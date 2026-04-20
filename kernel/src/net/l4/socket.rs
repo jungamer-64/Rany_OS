@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/l4/socket.rs - L4 / ソケット
+// ============================================================================
 //! Generic L4 socket substrate shared by transport facades and runtime glue.
 
 mod entry;

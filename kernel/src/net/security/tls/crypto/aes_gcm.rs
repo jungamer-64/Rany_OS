@@ -1,4 +1,6 @@
-// tls/crypto/aes_gcm.rs - AES-GCM AEAD
+// ============================================================================
+// kernel/src/net/security/tls/crypto/aes_gcm.rs - AES-GCM AEAD
+// ============================================================================
 
 use super::aes_core::{
     AesRoundKeySchedule, aes_encrypt_block_with_schedule, aes_expand_key_schedule,
@@ -12,11 +14,11 @@ use core::ptr;
 fn ct_eq_16(a: &[u8; 16], b: &[u8; 16]) -> bool {
     let mut diff: u8 = 0;
     for i in 0..16 {
-        // Security: XOR all bytes to accumulate differences without branching.
+        // SECURITY: 分岐せず全 byte の差分を XOR で集約する。
         diff |= a[i] ^ b[i];
     }
 
-    // Security: Constant-time check if diff == 0.
+    // SECURITY: diff == 0 の判定を定時間で行う。
     // If diff is 0, (diff-1) will have the high bit set (underflow).
     // If diff is > 0, (diff-1) will NOT have the high bit set.
     // We use u32 to ensure we have enough bits for the shift.
@@ -58,7 +60,7 @@ impl AesGcmKey {
             return Err(());
         }
         // CTR encrypt
-        // Security: avoid heap allocation in the data path
+        // SECURITY: data path での heap allocation を避ける。
         ciphertext_out[..plaintext.len()].copy_from_slice(plaintext);
         super::aes_core::aes_ctr_with_schedule_in_place(
             &self.schedule,
@@ -106,7 +108,7 @@ impl AesGcmKey {
         }
 
         // perform decryption now that tag has been verified
-        // Security: avoid heap allocation in the data path
+        // SECURITY: data path での heap allocation を避ける。
         plaintext_out[..ciphertext.len()].copy_from_slice(ciphertext);
         super::aes_core::aes_ctr_with_schedule_in_place(
             &self.schedule,
@@ -143,7 +145,7 @@ fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
     }
 
     // Process length block
-    // Security: use saturating or checked math to avoid overflow in length block (RFC 5116)
+    // SECURITY: length block の overflow を避けるため saturating / checked math を使う（RFC 5116）。
     // NIST SP 800-38D: length of AAD and Ciphertext in bits.
     let aad_bits = (aad.len() as u64).saturating_mul(8);
     let ct_bits = (ciphertext.len() as u64).saturating_mul(8);

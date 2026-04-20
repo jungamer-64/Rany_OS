@@ -1,5 +1,5 @@
 // ============================================================================
-// ARP-related NetworkStack impl methods
+// kernel/src/net/runtime/stack/core_impl/protocol_impl/arp.rs - ランタイム / スタック / コア実装 / プロトコル実装 / ARP
 // ============================================================================
 //! ARP packet processing, ARP reply/request/probe sending, and ARP cache access.
 

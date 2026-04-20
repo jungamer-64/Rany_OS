@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l3/ipv6/fragment.rs
+// kernel/src/net/l3/ipv6/fragment.rs - L3 / IPv6 / フラグメント
 // ============================================================================
 //! IPv6 Fragment Reassembly (RFC 8200 Section 4.5)
 //!
@@ -224,7 +224,7 @@ impl Ipv6FragmentBuffer {
         }
 
         // RFC 8200: Sum of Fragment Offset and Payload Length > 65535
-        // (Note: This refers to the offset from the beginning of the fragmentable part)
+        // fragmentable part の先頭から見たオフセットで判定する。
         if end > 65535 {
             log::warn!("[NET-IPV6] Fragment offset + length exceeds 65535, discarding (RFC 8200)");
             return Err(Ipv6ReassemblyError::PacketTooLarge);
@@ -450,7 +450,7 @@ impl Ipv6FragmentBuffer {
             } else {
                 // Walk extension headers inside unfragmentable part
                 let mut ext_offset = 40usize;
-                // Security: limit iterations to prevent infinite loop on malformed headers
+                // SECURITY: malformed header による infinite loop を防ぐため反復回数を制限する。
                 for _ in 0..16 {
                     if ext_offset + 2 > unfrag_len {
                         break;

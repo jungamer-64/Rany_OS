@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/datapath/optimization/gro_impl.rs - データパス / 最適化 / GRO実装
+// ============================================================================
+
 use super::*;
 
 pub(crate) const GRO_TABLE_SIZE: usize = 16;
@@ -129,7 +133,7 @@ pub struct TsoContext {
     pub segments_sent: u32,
 }
 
-// Safety: TsoContextはunsafe操作でのみアクセスされ、適切に同期される
+// SAFETY: TsoContextはunsafe操作でのみアクセスされ、適切に同期される
 unsafe impl Send for TsoContext {}
 unsafe impl Sync for TsoContext {}
 
@@ -513,7 +517,7 @@ pub(crate) static NETWORK_METRICS: NetworkMetrics = NetworkMetrics::new();
 
 /// ネットワーク最適化を初期化
 ///
-/// # Note
+/// # 使用上の注意
 /// この関数は起動時に1回だけ呼ばれるため、unwrap()のコストは許容される。
 /// ただし、expect()で明示的なエラーメッセージを提供。
 pub fn init() {

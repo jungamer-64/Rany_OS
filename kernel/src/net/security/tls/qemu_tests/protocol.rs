@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/qemu_tests/protocol.rs - セキュリティ / TLS / QEMUテスト / プロトコル
+// ============================================================================
+
 use super::super::credentials::base64_decode_payload;
 use super::super::{CipherSuite, SessionCache, TlsConfig, TlsVersion};
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/datapath/checksum_offload.rs
+// kernel/src/net/datapath/checksum_offload.rs - Checksum Offload Framework
 // ============================================================================
 //! # Checksum Offload Framework
 //!

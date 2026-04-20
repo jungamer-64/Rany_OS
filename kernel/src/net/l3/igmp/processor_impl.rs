@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l3/igmp/processor_impl.rs - L3 / IGMP / プロセッサ実装
+// ============================================================================
+
 use super::*;
 use crate::net::payload::PacketPayloadView;
 use alloc::vec::Vec;
@@ -358,7 +362,7 @@ impl IgmpProcessor {
             return;
         }
 
-        // Security: Generate better random delay to avoid synchronized multicast storms.
+        // SECURITY: synchronized multicast storm を避けるため random delay を生成する。
         let random_bytes = crate::net::security::tls::crypto::random::generate_random();
         let rand_val = u32::from_le_bytes([
             random_bytes[0],

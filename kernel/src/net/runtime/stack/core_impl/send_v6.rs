@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/runtime/stack/core_impl/send_v6.rs - ランタイム / スタック / コア実装 / IPv6送信処理
+// ============================================================================
+
 // =============================================================================
 // kernel/src/net/runtime/stack/core_impl/send_v6.rs Send Path — IPv6 / ICMPv6 / NDP outgoing packet construction & transmission
 //
@@ -277,7 +281,7 @@ impl NetworkStack {
         if let Some(ref mut ipv6_proc) = self.ipv6 {
             let our_addr = ipv6_proc.config().link_local;
 
-            // Security: RFC 4443 compliance check
+            // SECURITY: RFC 4443 への準拠を検査する。
             if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::PacketTooBig, 0)
             {
                 return false;
@@ -317,7 +321,7 @@ impl NetworkStack {
         if let Some(ref mut ipv6_proc) = self.ipv6 {
             let our_addr = ipv6_proc.config().link_local;
 
-            // Security: RFC 4443 compliance check (no errors for multicast etc)
+            // SECURITY: multicast などへ error を返さないことを含め、RFC 4443 への準拠を検査する。
             if !self.should_send_icmp_v6_error(
                 original_packet,
                 dst_v6,
@@ -327,7 +331,7 @@ impl NetworkStack {
                 return false;
             }
 
-            // Security: Rate limit ICMPv6 error messages (RFC 4443)
+            // SECURITY: ICMPv6 error message を rate limit する（RFC 4443）。
             let current_time = self.current_time();
             if let Some(ref icmpv6) = self.icmpv6 {
                 if !icmpv6.check_tx_rate_limit(current_time) {

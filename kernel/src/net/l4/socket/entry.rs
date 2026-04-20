@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/l4/socket/entry.rs - L4 / ソケット / エントリ
+// ============================================================================
 //! Shared socket handle backed by `Arc<PoisonLock<SocketState>>`.
 
 use alloc::sync::Arc;

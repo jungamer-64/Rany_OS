@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/tests/qemu/peripheral_tests.rs - Network QEMU peripheral smoke tests
+// ============================================================================
+
 use super::*;
 
 macro_rules! run_case {
@@ -133,9 +137,7 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
         .unwrap_or(true)
 }
 
-// smoke test exercising DHCP last_declined/last_released via dhcp_state_in(default_runtime())
-// 旧同期API (dhcp_last_declined, dhcp_last_released, dhcp_release) は削除済み。
-// dhcp_state_in(default_runtime()) のスナップショットで同等のフィールドを検証する。
+// DHCP ランタイムスナップショットで last_declined / last_released を検証する。
 pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
     use crate::net::runtime::stack;
 

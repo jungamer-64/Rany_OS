@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/connection/record.rs - セキュリティ / TLS / 接続 / レコード処理
+// ============================================================================
+
 use super::{
     AlertDescription, AlertLevel, CipherSuite, ContentType, OwnedPayloadRange, PacketPayload,
     PacketPayloadView, PayloadSpanRef, SessionTicket, TlsBytes, TlsConnection, TlsError,
@@ -492,7 +496,7 @@ impl TlsConnection {
         let ciphertext = &ciphertext_with_tag[0..ciphertext_len];
         let auth_tag = &ciphertext_with_tag[ciphertext_len..];
 
-        // Security: Fail securely if keys are not configured.
+        // SECURITY: key 未設定時は安全側に倒して失敗させる。
         // Returning ciphertext as plaintext allows injection attacks!
         if self.record.read_key.is_empty() || self.record.read_iv.len() < 4 {
             return Err(TlsError::DecryptError);

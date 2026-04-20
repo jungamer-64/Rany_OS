@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/query.rs
+// kernel/src/net/runtime/command_handler/query.rs - ランタイム / コマンドハンドラ / 問い合わせ処理
 // ============================================================================
 //! RuntimeCommandHandler DHCP/TCPクエリ系メソッド
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/connection/mod.rs - TLS Connection public boundary
+// kernel/src/net/security/tls/connection/mod.rs - TLS Connection public boundary
 // ============================================================================
 
 pub(crate) use super::error::{TlsError, TlsResult};
@@ -32,7 +32,7 @@ const TLS_EXTENSION_SCRATCH_CAPACITY: usize = 2048;
 
 /// TLS接続
 ///
-/// # NOTE
+/// # 使用上の注意
 /// この構造体は多数のフィールドを持ち、スタック上で数KBを消費します。
 /// スタックオーバーフローを避けるため、`Box<TlsConnection>` での
 /// ヒープ確保を推奨します。

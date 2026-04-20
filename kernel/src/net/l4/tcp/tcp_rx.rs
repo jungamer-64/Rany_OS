@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/tcp/tcp_rx.rs
+// kernel/src/net/l4/tcp/tcp_rx.rs - TCP受信処理 - 3ウェイハンドシェイク・データ受信
 // ============================================================================
 //! # TCP受信処理 - 3ウェイハンドシェイク・データ受信
 //!
@@ -877,7 +877,7 @@ fn handle_synchronized_segment(
 
     // 2. Check SYN bit (RFC 5961 Section 4.2)
     // Synchronized states: ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT
-    // (Note: SynReceived is handled separately if needed, but here we assume synchronized)
+    // SynReceived は必要に応じて別経路で扱い、ここでは同期済み状態だけを対象にする。
     if is_syn {
         log::warn!(
             "[TCP] SYN in synchronized state {:?} from {} (seq={}), sending Challenge ACK (RFC 5961)",
@@ -984,7 +984,7 @@ fn handle_data_received_with_delayed_ack(
             // rcv_nxt past the accepted data.
             if (pushed as u32) < payload_len {
                 // Buffer full, some data dropped.
-                // Note: we don't process OOO or FIN if we couldn't take all data.
+                // we don't process OOO or FIN if we couldn't take all data.
                 tcb_table().update(tcb.local, tcb.remote, |entry| {
                     entry.rcv_nxt = new_rcv_nxt;
                 });
@@ -1483,7 +1483,7 @@ fn process_tcp_new_connection(
     };
 
     // TCB作成
-    // Security: SYN Flood 対策として SYN Cookie を使用
+    // SECURITY: SYN Flood 対策として SYN Cookie を使用
     // SYN キューが半分以上埋まっている場合に発動
     let use_syncookies = tcb_table().syn_recv_count() > 2048;
 

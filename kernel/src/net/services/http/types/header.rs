@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/http/types/header.rs - サービス / HTTP / 型定義 / header
+// ============================================================================
+
 use crate::net::payload::{PayloadRange, PayloadSpanRef};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

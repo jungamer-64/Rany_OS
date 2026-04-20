@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l2/ethernet/mod.rs
+// kernel/src/net/l2/ethernet/mod.rs - L2 / Ethernet モジュール
 // ============================================================================
 //! Ethernet frame processing for ExoRust
 //!
@@ -300,7 +300,7 @@ impl<'a> EthernetFrameMut<'a> {
     pub fn pad_to_minimum(&mut self) {
         let current_len = self.total_len();
         if current_len < EthernetFrame::MIN_SIZE {
-            // Security: Ensure we don't write past the end of our actual buffer
+            // SECURITY: 実 buffer 末尾を越えて書き込まないことを保証する。
             let pad_end = EthernetFrame::MIN_SIZE.min(self.data.len());
             // Zero out padding
             for byte in &mut self.data[current_len..pad_end] {
@@ -644,7 +644,7 @@ impl<'a> VlanEthernetFrameMut<'a> {
         let min_size = 64; // 802.1Q minimum frame size
         let current_len = self.total_len();
         if current_len < min_size {
-            // Security: Ensure we don't write past the end of our actual buffer
+            // SECURITY: 実 buffer 末尾を越えて書き込まないことを保証する。
             let pad_end = min_size.min(self.data.len());
             for byte in &mut self.data[current_len..pad_end] {
                 *byte = 0;

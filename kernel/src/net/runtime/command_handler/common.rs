@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/handler/common.rs
+// kernel/src/net/runtime/command_handler/common.rs - ランタイム / コマンドハンドラ / 共通処理
 // ============================================================================
 //! RuntimeCommandHandler 共通型/ヘルパー
 

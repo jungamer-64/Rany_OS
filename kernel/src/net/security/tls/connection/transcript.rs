@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/connection/transcript.rs - TLS transcript hash state
+// kernel/src/net/security/tls/connection/transcript.rs - TLS transcript hash state
 // ============================================================================
 
 use crate::net::security::tls::HandshakeType;

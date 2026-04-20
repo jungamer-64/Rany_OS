@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/services/http/server/connection.rs - サービス / HTTP / サーバ / 接続
+// ============================================================================
+
 use core::sync::atomic::Ordering;
 
 use crate::net::l4::tcp::TcpConnection;

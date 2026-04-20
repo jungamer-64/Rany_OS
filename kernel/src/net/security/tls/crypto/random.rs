@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/crypto/random.rs - Random Generation (RDRAND Hardware RNG)
+// kernel/src/net/security/tls/crypto/random.rs - Random Generation (RDRAND Hardware RNG)
 // ============================================================================
 
 #[cfg(feature = "qemu-test-export")]

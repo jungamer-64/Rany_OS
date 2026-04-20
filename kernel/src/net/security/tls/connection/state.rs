@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/connection/state.rs - Grouped TLS connection state
+// kernel/src/net/security/tls/connection/state.rs - Grouped TLS connection state
 // ============================================================================
 
 use arrayvec::ArrayString;

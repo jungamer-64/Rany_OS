@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/buffer.rs - Fixed-capacity TLS byte buffers
+// kernel/src/net/security/tls/buffer.rs - Fixed-capacity TLS byte buffers
 // ============================================================================
 
 #[derive(Clone, Debug, PartialEq, Eq)]

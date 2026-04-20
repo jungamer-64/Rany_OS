@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/connection/handshake/mod.rs - Handshake frame dispatch
+// kernel/src/net/security/tls/connection/handshake/mod.rs - Handshake frame dispatch
 // ============================================================================
 
 use super::super::TlsConnection;

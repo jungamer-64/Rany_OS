@@ -1,4 +1,6 @@
-// Building block: RSA-PSS verification
+// ============================================================================
+// kernel/src/net/security/rsa/pss_verify.rs - RSA-PSS verification
+// ============================================================================
 
 use super::*;
 
@@ -11,7 +13,7 @@ pub fn rsa_pss_verify(
     let k = key.modulus.len();
     let h_len = hash_alg.digest_len();
 
-    // Security: Limit modulus size to prevent DoS via large allocations.
+    // SECURITY: large allocation による DoS を防ぐため modulus size を制限する。
     if k > 1024 || signature.len() != k {
         return Err(RsaError::InvalidSignatureLength);
     }

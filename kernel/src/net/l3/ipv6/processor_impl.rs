@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l3/ipv6/processor_impl.rs - L3 / IPv6 / プロセッサ実装
+// ============================================================================
+
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
@@ -68,7 +72,7 @@ impl Ipv6Processor {
 
         let src = packet.source();
 
-        // Security: Drop Martian packets
+        // SECURITY: Martian packet を破棄する。
         // 1. Source IP cannot be multicast (RFC 4291 Section 2.7)
         // 2. Source IP cannot be the loopback address unless it's truly a loopback packet
         if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
@@ -297,7 +301,7 @@ impl Ipv6Processor {
             return true;
         }
 
-        // Security (RFC 4291): Loopback address (::1) must only be accepted
+        // SECURITY: RFC 4291 に従い、loopback address (::1) の受理範囲を制限する。
         // if the interface itself is the loopback interface.
         if addr.is_loopback() {
             return self.config.link_local.is_loopback();

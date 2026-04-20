@@ -1,4 +1,8 @@
 // ============================================================================
+// kernel/src/net/security/tls/crypto/aes_cbc.rs - AES-CBC Implementation (NIST SP 800-38A)
+// ============================================================================
+
+// ============================================================================
 // tls/crypto/aes_cbc.rs - AES-CBC Implementation (NIST SP 800-38A)
 // TLS 1.0/1.1/1.2 CBC暗号スイートに必要
 // ============================================================================
@@ -191,8 +195,8 @@ pub(crate) fn tls_verify_padding(data: &[u8]) -> Option<usize> {
     let last_byte = data[data.len() - 1];
     let pad_len = (last_byte as usize).wrapping_add(1);
 
-    // Security (Lucky13/POODLE mitigation):
-    // Use bitwise operations to avoid branching on secret padding data.
+    // SECURITY: Lucky13 / POODLE 対策として bitwise operation を使い、
+    // secret padding data による分岐を避ける。
     let mut bad = 0usize;
 
     // Check if padding length is valid (1..=data.len() and <= 256 for TLS)
@@ -213,7 +217,7 @@ pub(crate) fn tls_verify_padding(data: &[u8]) -> Option<usize> {
     }
 
     // Constant-time check: if bad is 0, return Some(data.len() - pad_len), else None.
-    // Note: Option returning is still a branch, but we've mitigated the timing of the
+    // Option returning is still a branch, but we've mitigated the timing of the
     // internal verification logic which is the primary leak in Lucky 13.
     if bad == 0 {
         Some(data.len() - pad_len)

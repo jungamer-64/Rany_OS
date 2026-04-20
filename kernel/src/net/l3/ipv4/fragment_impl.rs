@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/l3/ipv4/fragment_impl.rs - L3 / IPv4 / フラグメント実装
+// ============================================================================
+
 use super::*;
 use crate::net::payload::{append_payload, PacketPayloadView};
 use kernel_api::resource::net::PacketPayload;
@@ -144,7 +148,7 @@ impl FragmentBuffer {
 
         self.last_update = current_time;
 
-        // Security: Check for 'Tiny Fragments' (RFC 1858, RFC 3128)
+        // SECURITY: Tiny Fragment を検出する（RFC 1858, RFC 3128）。
         // The first fragment (offset 0) must be large enough to contain the critical
         // parts of the transport header to allow for stateful inspection and filtering.
         if fragment_offset == 0 && header.more_fragments() {
@@ -173,7 +177,7 @@ impl FragmentBuffer {
             return false;
         }
 
-        // Security: Check for consistent total length (RFC 791)
+        // SECURITY: total length の一貫性を検証する（RFC 791）。
         if !header.more_fragments() {
             if let Some(existing_total) = self.total_len {
                 if existing_total != fragment_end {
@@ -197,9 +201,9 @@ impl FragmentBuffer {
             }
         }
 
-        // Note: first header storage is now handled in process_fragment for consistency
+        // first header storage is now handled in process_fragment for consistency
 
-        // Security: Check for overlapping fragments.
+        // SECURITY: 重複 fragment を検出する。
         // We detect overlap by checking if the fragment range [offset, end)
         // covers any byte that is not currently in a hole.
         let mut covered_hole_bytes: u32 = 0;

@@ -1,5 +1,5 @@
 // ============================================================================
-// src/net/rsa.rs - RSA PKCS#1 v1.5 Signature Verification
+// kernel/src/net/security/rsa/mod.rs - RSA PKCS#1 v1.5 Signature Verification
 // ============================================================================
 //!
 //! # RSA PKCS#1 v1.5 署名検証
@@ -483,7 +483,7 @@ pub fn rsa_pkcs1_verify(
     signature: &[u8],
 ) -> Result<(), RsaError> {
     let k = key.modulus.len();
-    // Security: Limit modulus size to prevent DoS via large allocations.
+    // SECURITY: large allocation による DoS を防ぐため modulus size を制限する。
     if k > 1024 {
         return Err(RsaError::ModulusTooSmall); // Or a new error variant
     }
@@ -519,7 +519,7 @@ pub fn rsa_pkcs1_encrypt_into(
     ciphertext_out: &mut [u8],
 ) -> Result<usize, RsaError> {
     let k = key.modulus.len();
-    // Security: Limit modulus size to prevent DoS via large allocations.
+    // SECURITY: large allocation による DoS を防ぐため modulus size を制限する。
     if k > RSA_MAX_BYTES || ciphertext_out.len() < k {
         return Err(RsaError::ModulusTooSmall);
     }
@@ -601,8 +601,8 @@ fn constant_time_hash_eq(a: &[u8], b: &[u8]) -> Result<(), RsaError> {
     }
     let mut diff = 0u8;
     for i in 0..a.len() {
-        // Security: read_volatile prevents the compiler from optimizing
-        // this loop into an early-exit comparison (timing side-channel).
+        // SECURITY: read_volatile により、この loop が early-exit comparison へ
+        // 最適化されて timing side-channel を生むことを防ぐ。
         diff |=
             unsafe { core::ptr::read_volatile(&a[i]) } ^ unsafe { core::ptr::read_volatile(&b[i]) };
     }

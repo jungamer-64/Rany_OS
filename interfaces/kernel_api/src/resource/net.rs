@@ -1,3 +1,7 @@
+// ============================================================================
+// interfaces/kernel_api/src/resource/net.rs - Network resource ABI
+// ============================================================================
+
 use crate::KapiResult;
 use crate::service::kernel;
 

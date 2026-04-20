@@ -1,4 +1,6 @@
-// tls/crypto/legacy.rs - Legacy Hash (MD5, SHA-1), HMAC, and TLS 1.0 PRF
+// ============================================================================
+// kernel/src/net/security/tls/crypto/legacy.rs - Legacy Hash (MD5, SHA-1), HMAC, and TLS 1.0 PRF
+// ============================================================================
 
 use super::hmac::hmac_sha256_parts;
 use crate::net::security::tls::TlsVersion;

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/runtime/timeouts.rs
+// kernel/src/net/runtime/timeouts.rs - Network Stack Timeout Helpers
 // ============================================================================
 //! # Network Stack Timeout Helpers
 //!

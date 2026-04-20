@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel_api/src/netdev.rs - Network device discovery and runtime traits
+// interfaces/kernel_api/src/netdev.rs - Network device discovery and runtime traits
 // ============================================================================
 
 extern crate alloc;

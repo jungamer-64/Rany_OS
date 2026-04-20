@@ -1,5 +1,5 @@
 // ============================================================================
-// tls/config.rs - TLS configuration types
+// kernel/src/net/security/tls/config.rs - TLS configuration types
 // ============================================================================
 
 use arrayvec::{ArrayString, ArrayVec};

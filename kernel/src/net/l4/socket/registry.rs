@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/net/l4/socket/registry.rs - L4 / ソケット / レジストリ
+// ============================================================================
 //! Socket registry indexed by protocol-specific lookup tables.
 
 use alloc::collections::BTreeMap;

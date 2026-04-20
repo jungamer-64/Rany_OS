@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/datapath/zero_copy/send_future.rs
+// kernel/src/net/datapath/zero_copy/send_future.rs - データパス / ゼロコピー / 送信Future
 // ============================================================================
 
 // Building block: Zero-copy send future

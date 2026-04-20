@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/security/tls/connection/handshake/server_hello.rs - セキュリティ / TLS / 接続 / ハンドシェイク / ServerHello処理
+// ============================================================================
+
 use super::super::{
     CipherSuite, OwnedPayloadRange, PacketPayload, SessionId, TlsConnection, TlsState, TlsVersion,
 };
@@ -38,7 +42,7 @@ impl TlsConnection {
 
         self.negotiation.negotiated_version = Some(actual_version);
 
-        // Security: TLSダウングレード攻撃防止 (RFC 8446 Section 4.1.3)
+        // SECURITY: TLSダウングレード攻撃防止 (RFC 8446 Section 4.1.3)
         // TLS 1.3対応サーバーがTLS 1.2以下にネゴシエーションした場合、
         // ServerHello.randomの末尾8バイトにセンチネル値が含まれるか検証する。
         Self::check_downgrade_sentinel(&self.negotiation.server_random, actual_version)?;

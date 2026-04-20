@@ -1,5 +1,5 @@
 // ============================================================================
-// UDP transmit and MAC resolution — NetworkStack impl methods
+// kernel/src/net/runtime/stack/core_impl/protocol_impl/udp_tx.rs - ランタイム / スタック / コア実装 / プロトコル実装 / udp tx
 // ============================================================================
 //! UDP raw send helpers (IPv4), MAC address resolution via ARP/IGMP multicast,
 //! zero-copy UDP send, and UdpAddr-based send.

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/net/runtime/stack/core_impl/mod.rs - ランタイム / スタック / コア実装 モジュール
+// ============================================================================
+
 use super::NetIfId;
 use super::*;
 use crate::net::payload::PacketPayloadView;
@@ -464,7 +468,7 @@ impl NetworkStack {
         let ip = config.ipv4.address;
         let dad_link_local = config.ipv6.as_ref().map(|cfg| cfg.link_local);
 
-        // Note: ipv4.clone() は Ipv4Config が小さい構造体のため
+        // ipv4.clone() は Ipv4Config が小さい構造体のため
         // アセンブリでは memcpy やレジスタコピーに展開される
         let (ipv6_proc, icmpv6_proc, ndp_proc) = if let Some(ref ipv6_config) = config.ipv6 {
             let mac_bytes = mac.as_bytes();

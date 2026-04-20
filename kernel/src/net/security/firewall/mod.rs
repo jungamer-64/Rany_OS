@@ -83,7 +83,7 @@ pub fn check_ingress(
             ) == FirewallVerdict::Allow
         }
         Err(_) => {
-            // Security Fix: PoisonLock がポイズンされた場合はフェイルクローズ（拒否）
+            // SECURITY: PoisonLock がポイズンされた場合はフェイルクローズ（拒否）
             // ポイズン状態 = 以前の評価中にパニックが発生したことを意味し、
             // エンジンの状態が不整合である可能性があるため、安全側に倒す。
             log::error!("[FIREWALL] lock poisoned — fail-closed (SECURITY)");

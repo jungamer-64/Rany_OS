@@ -1,5 +1,5 @@
 // ============================================================================
-// src/net/runtime/bridge/mlx5_bridge.rs - ConnectX Family <-> NetworkStack Bridge
+// kernel/src/net/runtime/bridge/mlx5_bridge.rs - ConnectX Family <-> NetworkStack Bridge
 // ============================================================================
 //!
 //! ConnectX ファミリ (mlx5) ドライバと NetworkStack を接続する stack glue モジュール。
@@ -1468,7 +1468,7 @@ fn submit_mlx5_tx_submission(
     .unwrap_or(false)
 }
 
-/// mlx5 送信コールバック（互換ラッパ）
+/// mlx5 送信コールバック
 pub fn mlx5_transmit(
     if_id: Option<NetIfId>,
     data: &[u8],
@@ -1925,7 +1925,7 @@ pub async fn mlx5_poll_task(index: u8) {
         }
         refresh_mlx5_link_state(&state, refresh_hw);
 
-        // Safety: デバイスが初期化済みであること
+        // SAFETY: デバイスが初期化済みであること
         let processed = unsafe { mlx5_poll_rx(&state) };
 
         // 適応的ポーリング: 処理があった場合は即座に再ポーリング、
@@ -1998,7 +1998,7 @@ fn prefill_rx_buffers(state: &Arc<Mlx5BridgeState>) {
 
                     bufs_guard[rq_idx][i as usize] = Some(pkt);
 
-                    // Safety: バッファは有効
+                    // SAFETY: バッファは有効
                     match unsafe { device.post_receive(rq_idx, buf_device, buf_virt, buf_size) } {
                         Ok(_) => filled += 1,
                         Err(_) => {

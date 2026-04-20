@@ -1,6 +1,7 @@
 // ============================================================================
-// kernel/src/net/l2/arp/processor_impl.rs
+// kernel/src/net/l2/arp/processor_impl.rs - L2 / ARP / プロセッサ実装
 // ============================================================================
+
 use super::*;
 
 // ============================================================================
@@ -91,7 +92,7 @@ impl ArpProcessor {
 
         let sender_mac = packet.sender_mac();
 
-        // Security: Verify that the sender MAC address in the ARP packet matches
+        // SECURITY: ARP packet 内の sender MAC address が一致することを検証する。
         // the source MAC address in the Ethernet header. If they don't match,
         // it's a strong indicator of ARP spoofing/poisoning.
         if sender_mac != src_mac {
@@ -106,7 +107,7 @@ impl ArpProcessor {
         let sender_ip = packet.sender_ip();
         let target_ip = packet.target_ip();
 
-        // Security: Reject ARP packets where sender_ip claims to be our own IP.
+        // SECURITY: sender_ip が自 IP を名乗る ARP packet を拒否する。
         // RFC 5227: If we detect another host claiming our IP, we should defend it
         // by broadcasting a gratuitous ARP or log a conflict error.
         if sender_ip == self.local_ip && sender_mac != self.local_mac {
@@ -127,7 +128,7 @@ impl ArpProcessor {
         if !sender_ip.is_any() && !sender_mac.is_broadcast() {
             // Rule 1: Always update if entry already exists (standard compliance)
             if self.cache.has_entry(sender_ip) {
-                // Security: Log if MAC changed (indicator of spoofing or migration)
+                // SECURITY: spoofing または migration の兆候として MAC 変更を記録する。
                 if let Some(existing_mac) = self.cache.lookup(sender_ip, current_time) {
                     if existing_mac != sender_mac {
                         if check_arp_flap_log_rate(current_time) {
