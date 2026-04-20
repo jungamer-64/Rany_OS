@@ -28,14 +28,25 @@ impl MacAddress {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct NetPortId(pub u64);
+
+impl NetPortId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum NetPortKind {
+pub enum PrimaryPortPolicy {
     #[default]
-    Unknown = 0,
-    Virtio = 1,
-    Mlx5 = 2,
-    Other = 255,
+    Auto,
+    Prefer,
+    Never,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,9 +168,8 @@ pub const NETDEV_FLAG_LINK_UP: u32 = 1 << 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetDeviceInfo {
-    pub port_id: u64,
+    pub port_id: NetPortId,
     pub if_id: Option<u16>,
-    pub kind: NetPortKind,
     pub driver_name: &'static str,
     pub queue_pairs: u16,
     pub mtu: u32,
@@ -170,9 +180,8 @@ pub struct NetDeviceInfo {
 impl Default for NetDeviceInfo {
     fn default() -> Self {
         Self {
-            port_id: 0,
+            port_id: NetPortId::new(0),
             if_id: None,
-            kind: NetPortKind::Unknown,
             driver_name: "unknown",
             queue_pairs: 1,
             mtu: 1500,
@@ -218,6 +227,27 @@ pub trait NetDevicePort: Send + Sync {
     fn stats(&self) -> NetPortStats;
 
     fn stop(&self);
+}
+
+#[derive(Clone)]
+pub struct NetPortRegistration {
+    pub info: NetDeviceInfo,
+    pub driver: Arc<dyn NetDevicePort>,
+    pub primary_policy: PrimaryPortPolicy,
+}
+
+impl NetPortRegistration {
+    pub const fn new(
+        info: NetDeviceInfo,
+        driver: Arc<dyn NetDevicePort>,
+        primary_policy: PrimaryPortPolicy,
+    ) -> Self {
+        Self {
+            info,
+            driver,
+            primary_policy,
+        }
+    }
 }
 
 pub trait NetDeviceServices: Send + Sync {
@@ -313,12 +343,12 @@ mod tests {
     #[test]
     fn primary_device_prefers_primary_flag_over_bound_port() {
         let bound = NetDeviceInfo {
-            port_id: 1,
+            port_id: NetPortId::new(1),
             flags: NETDEV_FLAG_BOUND_PORT,
             ..NetDeviceInfo::default()
         };
         let primary = NetDeviceInfo {
-            port_id: 2,
+            port_id: NetPortId::new(2),
             flags: NETDEV_FLAG_PRIMARY,
             ..NetDeviceInfo::default()
         };
@@ -333,8 +363,7 @@ mod tests {
     fn net_device_port_trait_object_reports_info_and_stats() {
         let port: Arc<dyn NetDevicePort> = Arc::new(FakePort {
             info: NetDeviceInfo {
-                port_id: 99,
-                kind: NetPortKind::Virtio,
+                port_id: NetPortId::new(99),
                 driver_name: "fake-port",
                 queue_pairs: 2,
                 flags: NETDEV_FLAG_HEALTHY,
@@ -348,7 +377,7 @@ mod tests {
             },
         });
 
-        assert_eq!(port.info().port_id, 99);
+        assert_eq!(port.info().port_id, NetPortId::new(99));
         assert_eq!(port.stats().rx_packets, 4);
         assert!(port.stats().initialized);
     }

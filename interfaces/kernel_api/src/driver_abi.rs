@@ -638,15 +638,6 @@ impl AbiNvmeNamespaceRegistration {
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiNetPortKind {
-    Unknown = 0,
-    Virtio = 1,
-    Mlx5 = 2,
-    Other = 255,
-}
-
-#[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AbiNetDriverEventKind {
     Interrupt = 1,
     QueueWake = 2,
@@ -713,9 +704,8 @@ pub struct AbiNetPortStats {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AbiNetPortInfo {
     pub port_id: u64,
-    pub kind: u32,
     pub queue_pairs: u16,
-    pub port_index: u16,
+    pub reserved_queue: u16,
     pub mtu: u32,
     pub flags: u32,
     pub mac: [u8; 6],
@@ -855,7 +845,7 @@ impl AbiNetPortRuntimeV3 {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AbiNetPortRegistrationV4 {
+pub struct AbiNetPortRegistrationV5 {
     pub abi_size: u64,
     pub info: AbiNetPortInfo,
     pub opaque: u64,
@@ -875,7 +865,7 @@ pub struct AbiNetPortRegistrationV4 {
 }
 
 #[derive(Clone, Copy)]
-pub struct AbiNetPortOpsV4 {
+pub struct AbiNetPortOpsV5 {
     pub start: extern "C" fn(u64, *const AbiNetPortRuntimeV3) -> i32,
     pub bind: extern "C" fn(u64, u16) -> i32,
     pub submit_tx_chain: extern "C" fn(u64, *const AbiNetTxSubmissionV4, AbiNetTxMeta) -> i32,
@@ -886,8 +876,8 @@ pub struct AbiNetPortOpsV4 {
     pub set_interrupts_enabled: extern "C" fn(u64, bool) -> i32,
 }
 
-impl AbiNetPortRegistrationV4 {
-    pub const fn new(info: AbiNetPortInfo, opaque: u64, ops: AbiNetPortOpsV4) -> Self {
+impl AbiNetPortRegistrationV5 {
+    pub const fn new(info: AbiNetPortInfo, opaque: u64, ops: AbiNetPortOpsV5) -> Self {
         Self {
             abi_size: core::mem::size_of::<Self>() as u64,
             info,
@@ -1225,7 +1215,7 @@ pub struct KernelApiV4 {
     pub unregister_nvme_namespace: extern "C" fn(handle: u64) -> i32,
 
     pub register_netdev_port:
-        extern "C" fn(registration: *const AbiNetPortRegistrationV4, out_handle: *mut u64) -> i32,
+        extern "C" fn(registration: *const AbiNetPortRegistrationV5, out_handle: *mut u64) -> i32,
     pub unregister_netdev_port: extern "C" fn(handle: u64) -> i32,
 
     pub reserved: [u64; 2],
