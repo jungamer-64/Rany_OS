@@ -6,11 +6,17 @@ use alloc::sync::Arc;
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::error::{KapiError, KapiResult};
-use kernel_api::netdev::NetDevicePort;
+use kernel_api::netdev::{NetPortId, NetPortRegistration};
 use kernel_api::resource::net::PacketRef;
 
 use crate::io::iommu::api::unmap_for_device;
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
+
+const VIRTIO_PORT_ID_BASE: u64 = 0x0001_0000;
+
+fn virtio_port_id(index: u8) -> NetPortId {
+    NetPortId::new(VIRTIO_PORT_ID_BASE | index as u64)
+}
 
 struct KernelVirtioNetRuntime {
     device_index: u8,
@@ -113,9 +119,9 @@ impl virtio_driver::net::NetRuntime for KernelVirtioNetRuntime {
         header_len: usize,
         payload_len: usize,
     ) {
-        if let Some(if_id) = crate::net::runtime::manager::lookup_if_by_virtio_index_in(
+        if let Some(if_id) = crate::net::runtime::device::lookup_if_by_port_id_in(
             crate::net::runtime::default_runtime(),
-            self.device_index,
+            virtio_port_id(self.device_index),
         ) {
             crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface_in(
                 crate::net::runtime::default_runtime(),
@@ -147,7 +153,7 @@ impl virtio_driver::net::NetRuntime for KernelVirtioNetRuntime {
 
     fn schedule_wake(&self, queue_index: u16) {
         let _ = crate::net::runtime::device::enqueue_event(
-            crate::net::runtime::device::NetDeviceKey::Virtio(self.device_index),
+            virtio_port_id(self.device_index),
             kernel_api::service::netdev::NetDriverEvent::QueueWake { queue_index },
         );
     }
@@ -169,14 +175,9 @@ pub fn kernel_virtio_net_runtime_for_pci(
 
 pub fn register_kernel_virtio_net_port(
     index: u8,
-    adapter: Arc<dyn NetDevicePort>,
+    registration: NetPortRegistration,
 ) -> KapiResult<()> {
-    let if_id = crate::net::runtime::device::register_port_with_default_config(
-        crate::net::runtime::device::NetDeviceKey::Virtio(index),
-        adapter,
-        true,
-    )
-    .map_err(|err| {
+    let if_id = crate::net::runtime::device::register_port(registration).map_err(|err| {
         log::error!(
             target: "net",
             "Failed to register VirtIO-Net port {}: {}",
@@ -189,9 +190,7 @@ pub fn register_kernel_virtio_net_port(
     crate::net::runtime::bridge::register_stack_glue_interface_in(
         crate::net::runtime::default_runtime(),
         if_id,
-        Some(index),
     );
-    crate::net::runtime::bridge::set_rx_csum_hw_verified(true);
     crate::io::io_scheduler::virtio_net::register_virtio_net_with_io_scheduler(index);
     Ok(())
 }

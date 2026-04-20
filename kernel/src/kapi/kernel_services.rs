@@ -11,7 +11,7 @@ use crate::kapi::net::{
     stack_scope, tcp_error_to_kapi,
 };
 use kernel_api::abi::driver::{
-    AbiBlockDeviceRegistration, AbiNetPortRegistrationV4, AbiNvmeNamespaceRegistration, AbiRRefRaw,
+    AbiBlockDeviceRegistration, AbiNetPortRegistrationV5, AbiNvmeNamespaceRegistration, AbiRRefRaw,
     PackedPciLocation,
 };
 use kernel_api::msix::MsixVectorInfo;
@@ -151,7 +151,7 @@ impl KernelServices for ExoKernel {
 
     fn register_netdev_port(
         &self,
-        registration: &AbiNetPortRegistrationV4,
+        registration: &AbiNetPortRegistrationV5,
     ) -> Result<u64, KapiError> {
         register_netdev_port_for_current_subject(registration)
     }

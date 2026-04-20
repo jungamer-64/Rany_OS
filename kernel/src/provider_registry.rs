@@ -426,7 +426,7 @@ mod tests {
     use core::task::Waker;
     use kernel_api::service::netdev::{
         MacAddress, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDeviceServices,
-        NetPortKind,
+        NetPortId,
     };
     use kernel_api::service::platform::{
         BdfAddress, ClassCode, DeviceId, IoApicInfo, LocalApicInfo, PciDeviceInfo, VendorId,
@@ -586,9 +586,8 @@ mod tests {
     impl NetDeviceServices for FakeNetdev {
         fn devices(&self) -> Vec<NetDeviceInfo> {
             vec![NetDeviceInfo {
-                port_id: 7,
+                port_id: NetPortId::new(7),
                 if_id: Some(3),
-                kind: NetPortKind::Virtio,
                 driver_name: "fake-net",
                 queue_pairs: 1,
                 mtu: 1500,

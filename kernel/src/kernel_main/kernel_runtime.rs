@@ -661,17 +661,15 @@ pub(crate) fn start_async_boot_runtime(context: KernelBootContext) -> ! {
 /// 非同期で走る。このタスクは状態が Bound になるのを待ってから ping で
 /// 接続性を確認する。
 fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
-    let keys = crate::net::runtime::device::list_port_keys_in(
-        crate::net::runtime::default_runtime(),
-        None,
-    );
+    let port_ids =
+        crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime());
     let mut rx_packets = 0u64;
     let mut tx_packets = 0u64;
     let mut tx_errors = 0u64;
     let mut rx_errors = 0u64;
 
-    for key in &keys {
-        if let Some(stats) = crate::net::runtime::device::port_stats(*key) {
+    for port_id in &port_ids {
+        if let Some(stats) = crate::net::runtime::device::port_stats(*port_id) {
             rx_packets = rx_packets.saturating_add(stats.rx_packets);
             tx_packets = tx_packets.saturating_add(stats.tx_packets);
             tx_errors = tx_errors.saturating_add(stats.tx_errors);
@@ -679,55 +677,39 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
         }
     }
 
-    (keys.len(), rx_packets, tx_packets, tx_errors, rx_errors)
+    (port_ids.len(), rx_packets, tx_packets, tx_errors, rx_errors)
 }
 
-fn log_mlx5_boot_snapshot(stage: &str) {
-    let key = crate::net::runtime::device::NetDeviceKey::Mlx5(0);
-    let Some(info) = crate::net::runtime::device::port_info(key) else {
-        return;
-    };
-
-    let runtime_stats = crate::net::runtime::device::port_stats(key).unwrap_or_default();
+fn log_network_port_snapshot(stage: &str) {
     let stack_stats = crate::net::runtime::bridge::get_stack_glue_stats();
-    let link_up = info.flags & kernel_api::service::netdev::NETDEV_FLAG_LINK_UP != 0;
-    let healthy = info.flags & kernel_api::service::netdev::NETDEV_FLAG_HEALTHY != 0;
-    let mac = info.mac.as_bytes();
-    info!(
-        target: "net_boot",
-        "mlx5 boot snapshot [{}]: runtime_init={} link_up={} healthy={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} stack_init={} stack_rx={} stack_tx={} runtime_rx={} runtime_tx={} runtime_tx_err={} runtime_rx_err={}",
-        stage,
-        runtime_stats.initialized,
-        link_up,
-        healthy,
-        mac[0],
-        mac[1],
-        mac[2],
-        mac[3],
-        mac[4],
-        mac[5],
-        stack_stats.initialized,
-        stack_stats.rx_packets,
-        stack_stats.tx_packets,
-        runtime_stats.rx_packets,
-        runtime_stats.tx_packets,
-        runtime_stats.tx_errors,
-        runtime_stats.rx_errors,
-    );
-
-    if let Some(stats) = crate::net::runtime::bridge::mlx5_bridge::get_mlx5_port_stats(0, 0) {
+    for info in crate::net::runtime::device::list_port_infos() {
+        let runtime_stats =
+            crate::net::runtime::device::port_stats(info.port_id).unwrap_or_default();
+        let link_up = info.flags & kernel_api::service::netdev::NETDEV_FLAG_LINK_UP != 0;
+        let healthy = info.flags & kernel_api::service::netdev::NETDEV_FLAG_HEALTHY != 0;
+        let mac = info.mac.as_bytes();
         info!(
             target: "net_boot",
-            "mlx5 hw stats [{}]: rx_pkts={} rx_bytes={} rx_err={} rx_drop={} tx_pkts={} tx_bytes={} tx_err={} tx_drop={}",
+            "network port snapshot [{}]: port={} driver={} runtime_init={} link_up={} healthy={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} stack_init={} stack_rx={} stack_tx={} runtime_rx={} runtime_tx={} runtime_tx_err={} runtime_rx_err={}",
             stage,
-            stats.rx_packets,
-            stats.rx_bytes,
-            stats.rx_errors,
-            stats.rx_dropped,
-            stats.tx_packets,
-            stats.tx_bytes,
-            stats.tx_errors,
-            stats.tx_dropped
+            info.port_id.as_u64(),
+            info.driver_name,
+            runtime_stats.initialized,
+            link_up,
+            healthy,
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5],
+            stack_stats.initialized,
+            stack_stats.rx_packets,
+            stack_stats.tx_packets,
+            runtime_stats.rx_packets,
+            runtime_stats.tx_packets,
+            runtime_stats.tx_errors,
+            runtime_stats.rx_errors,
         );
     }
 }
@@ -735,138 +717,18 @@ fn log_mlx5_boot_snapshot(stage: &str) {
 async fn network_bootstrap_task() {
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
-    let virtio_net_present = virtio_driver::net::virtio_net_driver_adapter(0)
-        .info()
-        .flags
-        != 0;
-    if virtio_net_present {
-        let virtio_port_registered = crate::net::runtime::device::port_info(
-            crate::net::runtime::device::NetDeviceKey::Virtio(0),
-        )
-        .is_some();
-        if virtio_port_registered {
-            info!(
-                target: "net_boot",
-                "VirtIO-Net port already registered; skipping startup"
-            );
-        } else {
-            // VirtIO-Net ドライバ登録と port runtime への接続。
-            info!(target: "net_boot", "Registering VirtIO-Net driver via DriverRegistry");
-            {
-                use alloc::boxed::Box;
-                use driver_registry::register_driver;
-                use virtio_driver::net::driver::VirtioNetDriver;
-
-                let hooks = crate::net::drivers::virtio_runtime::kernel_virtio_net_driver_hooks();
-                let net_handle = register_driver(Box::new(VirtioNetDriver::new(0, hooks)));
-                if let Err(e) = driver_registry::driver_registry()
-                    .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
-                {
-                    warn!(target: "net_boot", "VirtIO-Net driver init failed: {:?}", e);
-                } else {
-                    info!(target: "net_boot", "VirtIO-Net driver initialized via DriverRegistry");
-                }
-            }
-        }
-    } else {
-        info!(
-            target: "net_boot",
-            "VirtIO-Net device not present; continuing with non-VirtIO probes (mlx5)"
-        );
-    }
-
-    // ConnectX ファミリ (mlx5) ドライバのPCI検出・登録
-    let staged_mlx5_started = {
-        let mut started = false;
-        for &(_vendor_id, device_id) in crate::net::drivers::mlx5_registry::SUPPORTED_DEVICE_IDS {
-            let pci_devices = crate::drivers::pci::find_by_id(
-                crate::net::drivers::mlx5_registry::MELLANOX_VENDOR_ID,
-                device_id,
-            );
-            let Some(native_dev) = pci_devices.first().cloned() else {
-                continue;
-            };
-            let dev = crate::platform::pci::from_native_device(native_dev);
-            let Some(bar0) = dev.bars[0] else {
-                continue;
-            };
-
-            let mut ctx = kernel_api::abi::driver::DriverContext::for_pci(
-                bar0.base(),
-                dev.interrupt_line as u32,
-                dev.vendor_id.0,
-                dev.device_id.0,
-                ((dev.class_code.class as u32) << 16)
-                    | ((dev.class_code.subclass as u32) << 8)
-                    | dev.class_code.prog_if as u32,
-                dev.packed_locator(),
-            );
-            ctx.device_address_secondary = 0;
-
-            match crate::loader::staged_pci::try_start_for_device(&dev, ctx) {
-                crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
-                | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
-                    info!(
-                        target: "net_boot",
-                        "ConnectX (mlx5) initialized via staged standalone driver"
-                    );
-                    started = true;
-                    break;
-                }
-                crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
-                    warn!(target: "net_boot", "{}; falling back to built-in mlx5 path", reason);
-                    break;
-                }
-                crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
-            }
-        }
-        started
-    };
-    if !staged_mlx5_started {
-        use crate::net::drivers::mlx5_registry::Mlx5ConnectXDriver;
-        use alloc::boxed::Box;
-        use driver_registry::register_driver;
-
-        info!(target: "net_boot", "Probing ConnectX (mlx5) via DriverRegistry");
-        let mlx5_handle = register_driver(Box::new(Mlx5ConnectXDriver::new()));
-        match mlx5_handle {
-            Ok(handle) => {
-                match driver_registry::driver_registry().probe_and_start(handle) {
-                    Ok(()) => {
-                        info!(target: "net_boot", "ConnectX (mlx5) driver initialized via DriverRegistry");
-                    }
-                    Err(e) => {
-                        // ConnectX NIC が実機に接続されていない場合はNotFoundが返るので
-                        // 警告レベルで報告のみ（起動失敗にはしない）
-                        info!(target: "net_boot", "ConnectX (mlx5) not found or init failed: {:?}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(target: "net_boot", "Failed to register mlx5 driver: {:?}", e);
-            }
-        }
-    }
+    crate::net::drivers::start_network_driver_class();
 
     // Yield して tx_worker / DHCPクライアント等のバックグラウンドタスクに実行機会を与える
     task::yield_now().await;
 
     // VirtIO / mlx5 probe 後に有効なポートがなければ DHCP 待機は行わない。
-    let virtio_port_ready = crate::net::runtime::device::port_info(
-        crate::net::runtime::device::NetDeviceKey::Virtio(0),
-    )
-    .is_some();
-    let mlx5_port_ready =
-        crate::net::runtime::device::port_info(crate::net::runtime::device::NetDeviceKey::Mlx5(0))
-            .is_some();
     let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
     if port_count == 0 {
         info!(
             target: "net_boot",
-            "No active network ports after driver probes; skipping DHCP/connectivity checks (stack_init={} virtio_port={} mlx5_port={} ports={} rx={} tx={} tx_err={} rx_err={})",
+            "No active network ports after driver probes; skipping DHCP/connectivity checks (stack_init={} ports={} rx={} tx={} tx_err={} rx_err={})",
             crate::net::runtime::device::is_initialized(),
-            virtio_port_ready,
-            mlx5_port_ready,
             port_count,
             rx_packets,
             tx_packets,
@@ -898,7 +760,7 @@ async fn network_bootstrap_task() {
                     state.state.v4_assigned_ip
                 );
             }
-            log_mlx5_boot_snapshot("dhcp-bound");
+            log_network_port_snapshot("dhcp-bound");
             dhcp_bound = true;
             break;
         }
@@ -906,7 +768,7 @@ async fn network_bootstrap_task() {
 
     if !dhcp_bound {
         warn!(target: "net_boot", "DHCP did not reach Bound state within timeout; using default config");
-        log_mlx5_boot_snapshot("dhcp-timeout");
+        log_network_port_snapshot("dhcp-timeout");
     }
 
     // 非同期ping: ゲートウェイへの接続性確認
@@ -928,7 +790,7 @@ async fn network_bootstrap_task() {
 
     if ping_targets.is_empty() {
         warn!(target: "net_boot", "No gateway available (DHCP not bound); skipping connectivity check");
-        log_mlx5_boot_snapshot("no-gateway");
+        log_network_port_snapshot("no-gateway");
         let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) =
             aggregate_port_runtime_stats();
         info!(
@@ -971,7 +833,7 @@ async fn network_bootstrap_task() {
 
     if dhcp_bound {
         task::sleep_ms(250).await;
-        log_mlx5_boot_snapshot("post-http-watch");
+        log_network_port_snapshot("post-http-watch");
     }
 
     let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();

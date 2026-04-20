@@ -29,8 +29,8 @@ use kernel_api::resource::net::{PacketPayload, PacketRef};
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
-    NetLogLevel, NetPortKind, NetPortRuntime, NetPortStats, NetRxMeta, NetTxCompletionPolicy,
-    NetTxMeta, NetTxSegment, TxLeaseId, TxSubmission,
+    NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntime, NetPortStats, NetRxMeta,
+    NetTxCompletionPolicy, NetTxMeta, NetTxSegment, PrimaryPortPolicy, TxLeaseId, TxSubmission,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
@@ -112,34 +112,10 @@ fn device_manager_in(runtime: NetRuntimeHandle) -> &'static PoisonRwLock<NetDevi
     &runtime_context_for(runtime).device_manager
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum NetDeviceKey {
-    Virtio(u8),
-    Mlx5(u8),
-}
-
-impl NetDeviceKey {
-    pub const fn port_id(self) -> u64 {
-        match self {
-            Self::Virtio(index) => 0x_0001_0000 | index as u64,
-            Self::Mlx5(index) => 0x_0002_0000 | index as u64,
-        }
-    }
-
-    pub const fn kind(self) -> NetPortKind {
-        match self {
-            Self::Virtio(_) => NetPortKind::Virtio,
-            Self::Mlx5(_) => NetPortKind::Mlx5,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetDeviceBinding {
-    pub key: NetDeviceKey,
+    pub port_id: NetPortId,
     pub if_id: NetIfId,
-    pub kind: NetPortKind,
-    pub virtio_index: Option<u8>,
 }
 
 #[derive(Debug)]
@@ -164,7 +140,7 @@ impl NetTxQueue {
         }
     }
 
-    pub fn push(&self, request: TxRequest) -> bool {
+    fn push(&self, request: TxRequest) -> bool {
         match self.queue.push(request) {
             Ok(()) => {
                 self.waker.wake();
@@ -400,15 +376,15 @@ pub fn complete_tx_lease_in(
 }
 
 struct PortRuntimeHandle {
-    key: NetDeviceKey,
+    port_id: NetPortId,
     if_id: AtomicU16,
     context: &'static NetRuntimeContext,
 }
 
 impl PortRuntimeHandle {
-    fn new(key: NetDeviceKey, if_id: NetIfId, context: &'static NetRuntimeContext) -> Self {
+    fn new(port_id: NetPortId, if_id: NetIfId, context: &'static NetRuntimeContext) -> Self {
         Self {
-            key,
+            port_id,
             if_id: AtomicU16::new(if_id.0),
             context,
         }
@@ -421,20 +397,11 @@ impl PortRuntimeHandle {
     fn set_if_id(&self, if_id: NetIfId) {
         self.if_id.store(if_id.0, Ordering::Release);
     }
-
-    fn alloc_packet_for_current_interface(&self) -> Option<PacketRef> {
-        match self.key {
-            NetDeviceKey::Mlx5(index) => {
-                crate::net::runtime::bridge::mlx5_bridge::alloc_packet_for_index(index)
-            }
-            _ => crate::net::datapath::mempool::alloc_packet(),
-        }
-    }
 }
 
 impl NetPortRuntime for PortRuntimeHandle {
     fn alloc_packet(&self) -> Option<PacketRef> {
-        self.alloc_packet_for_current_interface()
+        crate::net::datapath::mempool::alloc_packet()
     }
 
     fn submit_rx(&self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
@@ -450,9 +417,9 @@ impl NetPortRuntime for PortRuntimeHandle {
 
     fn schedule_event(&self, event: NetDriverEvent) -> Result<(), &'static str> {
         let queued = if in_interrupt_context() {
-            enqueue_event_from_isr(self.key, event)
+            enqueue_event_from_isr(self.port_id, event)
         } else {
-            enqueue_event(self.key, event)
+            enqueue_event(self.port_id, event)
         };
         if queued {
             Ok(())
@@ -481,23 +448,23 @@ impl NetPortRuntime for PortRuntimeHandle {
             if primary_if_in(default_runtime()) == Some(if_id) {
                 log::info!(
                     target: "net::device",
-                    "[NET] link_up: key={:?} if{} role=primary",
-                    self.key,
+                    "[NET] link_up: port={} if{} role=primary",
+                    self.port_id.as_u64(),
                     if_id.0
                 );
             } else {
                 log::info!(
                     target: "net::device",
-                    "[NET] secondary_rejoined: key={:?} if{}",
-                    self.key,
+                    "[NET] secondary_rejoined: port={} if{}",
+                    self.port_id.as_u64(),
                     if_id.0
                 );
             }
         } else {
             log::warn!(
                 target: "net::device",
-                "[NET] link_down: key={:?} if{}",
-                self.key,
+                "[NET] link_down: port={} if{}",
+                self.port_id.as_u64(),
                 if_id.0
             );
             handle_interface_departure(if_id, FailoverReason::LinkDown);
@@ -536,7 +503,7 @@ impl NetDeviceHandle {
     ) -> Arc<Self> {
         Arc::new(Self {
             driver,
-            runtime: Arc::new(PortRuntimeHandle::new(binding.key, binding.if_id, context)),
+            runtime: Arc::new(PortRuntimeHandle::new(binding.port_id, binding.if_id, context)),
             binding: PoisonLock::new(binding),
             tx_queue: Arc::new(NetTxQueue::new()),
             event_sink: Arc::new(NetEventSink::new()),
@@ -561,9 +528,8 @@ impl NetDeviceHandle {
         let binding = self.binding();
         let mut info = self.driver.info();
         let stats = self.driver.stats();
-        info.port_id = binding.key.port_id();
+        info.port_id = binding.port_id;
         info.if_id = Some(binding.if_id.0);
-        info.kind = binding.kind;
         info.flags |= NETDEV_FLAG_BOUND_PORT;
         if stats.initialized {
             info.flags |= NETDEV_FLAG_LINK_UP;
@@ -651,8 +617,8 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
                 let _ = complete_tx_lease_in(default_runtime(), request.lease_id, Err(err));
                 log::warn!(
                     target: "net::device",
-                    "device {:?} TX submission failed: {}",
-                    handle.binding().key,
+                    "device port={} TX submission failed: {}",
+                    handle.binding().port_id.as_u64(),
                     err
                 );
             } else if completion_policy == NetTxCompletionPolicy::QueueAcceptance {
@@ -688,8 +654,8 @@ async fn event_worker(handle: Arc<NetDeviceHandle>) {
             if let Err(err) = result {
                 log::warn!(
                     target: "net::device",
-                    "device {:?} event {:?} failed: {}",
-                    handle.binding().key,
+                    "device port={} event {:?} failed: {}",
+                    handle.binding().port_id.as_u64(),
                     event,
                     err
                 );
@@ -702,7 +668,7 @@ async fn event_worker(handle: Arc<NetDeviceHandle>) {
 #[derive(Default)]
 pub struct NetDeviceManager {
     handles: BTreeMap<NetIfId, Arc<NetDeviceHandle>>,
-    key_map: BTreeMap<NetDeviceKey, NetIfId>,
+    port_map: BTreeMap<NetPortId, NetIfId>,
     primary: Option<NetIfId>,
 }
 
@@ -710,7 +676,7 @@ impl NetDeviceManager {
     pub const fn new() -> Self {
         Self {
             handles: BTreeMap::new(),
-            key_map: BTreeMap::new(),
+            port_map: BTreeMap::new(),
             primary: None,
         }
     }
@@ -969,28 +935,20 @@ pub fn is_initialized() -> bool {
     runtime_context().stack_initialized.load(Ordering::Acquire)
 }
 
-fn interface_for_key(
-    key: NetDeviceKey,
+fn interface_for_port(
+    port_id: NetPortId,
     config: NetworkConfig,
     port_name: &'static str,
 ) -> Result<NetIfId, &'static str> {
     let runtime = default_runtime();
-    let if_id = match key {
-        NetDeviceKey::Virtio(index) => {
-            manager::register_virtio_port_in(runtime, index, Some(config))
-                .map_err(|_| "failed to register virtio interface")?
-        }
-        NetDeviceKey::Mlx5(_) => {
-            if let Some(existing) = lookup_if_by_key_in(runtime, key) {
-                let _ = manager::set_interface_config_in(runtime, existing, config);
-                existing
-            } else {
-                let if_id = manager::register_interface_in(runtime, port_name)
-                    .map_err(|_| "failed to register network interface")?;
-                let _ = manager::set_interface_config_in(runtime, if_id, config);
-                if_id
-            }
-        }
+    let if_id = if let Some(existing) = lookup_if_by_port_id_in(runtime, port_id) {
+        let _ = manager::set_interface_config_in(runtime, existing, config);
+        existing
+    } else {
+        let if_id = manager::register_interface_in(runtime, port_name)
+            .map_err(|_| "failed to register network interface")?;
+        let _ = manager::set_interface_config_in(runtime, if_id, config);
+        if_id
     };
 
     if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
@@ -1009,63 +967,66 @@ fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
         info.mac
     };
     let mac = StackMacAddress::new(*mac_bytes.as_bytes());
-    let ipv6 = if info.kind == NetPortKind::Mlx5 {
-        None
-    } else {
-        Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes()))
-    };
 
     NetworkConfig {
         mac,
         ipv4: Ipv4Config::default(),
-        ipv6,
+        ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
         icmp_echo_enabled: true,
         icmp_redirect_enabled: false,
         icmpv6_redirect_enabled: false,
     }
 }
 
-pub fn register_port(
-    key: NetDeviceKey,
-    driver: Arc<dyn NetDevicePort>,
-    config: NetworkConfig,
-    make_primary: bool,
-) -> Result<NetIfId, &'static str> {
+fn should_select_as_primary(
+    current_primary: Option<NetIfId>,
+    policy: PrimaryPortPolicy,
+    info: NetDeviceInfo,
+) -> bool {
+    match policy {
+        PrimaryPortPolicy::Prefer => true,
+        PrimaryPortPolicy::Auto => {
+            current_primary.is_none() && info.flags & NETDEV_FLAG_HEALTHY != 0
+        }
+        PrimaryPortPolicy::Never => false,
+    }
+}
+
+pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'static str> {
+    let driver = registration.driver;
+    let info = registration.info;
+    let config = default_config_for_port(info);
     ensure_stack_initialized(config.clone())?;
 
-    if let Some(existing) = lookup_if_by_key_in(default_runtime(), key) {
-        if make_primary {
+    if let Some(existing) = lookup_if_by_port_id_in(default_runtime(), info.port_id) {
+        if registration.primary_policy == PrimaryPortPolicy::Prefer {
             set_primary_interface_in(default_runtime(), existing);
         }
         return Ok(existing);
     }
 
     let base = driver.info();
-    let if_id = interface_for_key(key, config.clone(), base.driver_name)?;
+    let if_id = interface_for_port(info.port_id, config.clone(), base.driver_name)?;
     let binding = NetDeviceBinding {
-        key,
+        port_id: info.port_id,
         if_id,
-        kind: key.kind(),
-        virtio_index: match key {
-            NetDeviceKey::Virtio(index) => Some(index),
-            NetDeviceKey::Mlx5(_) => None,
-        },
     };
     let handle = NetDeviceHandle::new(driver.clone(), binding, runtime_context());
     driver.bind(if_id.0)?;
     driver.start(handle.runtime.clone())?;
     handle.start_workers();
 
-    let mut selected_as_primary = false;
-    {
+    let selected_as_primary = {
         let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
-        guard.key_map.insert(key, if_id);
+        let selected_as_primary =
+            should_select_as_primary(guard.primary, registration.primary_policy, info);
+        guard.port_map.insert(info.port_id, if_id);
         guard.handles.insert(if_id, handle);
-        if guard.primary.is_none() || make_primary {
+        if selected_as_primary {
             guard.primary = Some(if_id);
-            selected_as_primary = true;
         }
-    }
+        selected_as_primary
+    };
 
     if selected_as_primary {
         apply_runtime_network_config(&config);
@@ -1088,41 +1049,30 @@ pub fn register_port(
     Ok(if_id)
 }
 
-pub fn register_port_with_default_config(
-    key: NetDeviceKey,
-    driver: Arc<dyn NetDevicePort>,
-    make_primary: bool,
-) -> Result<NetIfId, &'static str> {
-    let config = default_config_for_port(driver.info());
-    register_port(key, driver, config, make_primary)
-}
-
-pub fn bind_port_interface(key: NetDeviceKey, if_id: NetIfId) -> Result<(), &'static str> {
+pub fn bind_port_interface(port_id: NetPortId, if_id: NetIfId) -> Result<(), &'static str> {
     let handle = {
         let guard = device_manager().read().unwrap_or_else(|e| e.into_inner());
-        let Some(bound_if_id) = guard.key_map.get(&key).copied() else {
-            return Err("device key not registered");
+        let Some(bound_if_id) = guard.port_map.get(&port_id).copied() else {
+            return Err("device port not registered");
         };
         guard.handles.get(&bound_if_id).cloned()
     }
     .ok_or("device handle missing")?;
 
     let binding = NetDeviceBinding {
-        key,
+        port_id,
         if_id,
-        kind: handle.binding().kind,
-        virtio_index: handle.binding().virtio_index,
     };
     handle.rebind(binding)?;
 
     let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
-    guard.key_map.insert(key, if_id);
+    guard.port_map.insert(port_id, if_id);
     guard.handles.insert(if_id, handle.clone());
     if let Some(previous) = guard
         .handles
         .iter()
         .find_map(|(current_if, current_handle)| {
-            if *current_if != if_id && current_handle.binding().key == key {
+            if *current_if != if_id && current_handle.binding().port_id == port_id {
                 Some(*current_if)
             } else {
                 None
@@ -1139,7 +1089,7 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
         let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
         let handle = guard.handles.remove(&if_id);
         if let Some(handle) = handle.as_ref() {
-            guard.key_map.remove(&handle.binding().key);
+            guard.port_map.remove(&handle.binding().port_id);
         }
         handle
     };
@@ -1160,12 +1110,12 @@ pub fn unregister_port(if_id: NetIfId) -> bool {
     }
 }
 
-pub fn lookup_if_by_key_in(runtime: NetRuntimeHandle, key: NetDeviceKey) -> Option<NetIfId> {
+pub fn lookup_if_by_port_id_in(runtime: NetRuntimeHandle, port_id: NetPortId) -> Option<NetIfId> {
     device_manager_in(runtime)
         .read()
         .unwrap_or_else(|e| e.into_inner())
-        .key_map
-        .get(&key)
+        .port_map
+        .get(&port_id)
         .copied()
 }
 
@@ -1195,29 +1145,25 @@ pub fn list_port_infos() -> Vec<NetDeviceInfo> {
         .collect()
 }
 
-pub fn port_info(key: NetDeviceKey) -> Option<NetDeviceInfo> {
-    let if_id = lookup_if_by_key_in(default_runtime(), key)?;
+pub fn port_info(port_id: NetPortId) -> Option<NetDeviceInfo> {
+    let if_id = lookup_if_by_port_id_in(default_runtime(), port_id)?;
     let handle = lookup_port_in(default_runtime(), if_id)?;
     Some(handle.info())
 }
 
-pub fn port_stats(key: NetDeviceKey) -> Option<NetPortStats> {
-    let if_id = lookup_if_by_key_in(default_runtime(), key)?;
+pub fn port_stats(port_id: NetPortId) -> Option<NetPortStats> {
+    let if_id = lookup_if_by_port_id_in(default_runtime(), port_id)?;
     let handle = lookup_port_in(default_runtime(), if_id)?;
     Some(handle.driver().stats())
 }
 
-pub fn list_port_keys_in(
-    runtime: NetRuntimeHandle,
-    kind: Option<NetPortKind>,
-) -> Vec<NetDeviceKey> {
+pub fn list_port_ids_in(runtime: NetRuntimeHandle) -> Vec<NetPortId> {
     device_manager_in(runtime)
         .read()
         .unwrap_or_else(|e| e.into_inner())
-        .key_map
+        .port_map
         .keys()
         .copied()
-        .filter(|key| kind.is_none_or(|expected| key.kind() == expected))
         .collect()
 }
 
@@ -1366,8 +1312,8 @@ pub(crate) fn transmit_bytes_with_meta_internal(
     }
 }
 
-pub fn enqueue_event(key: NetDeviceKey, event: NetDriverEvent) -> bool {
-    let Some(if_id) = lookup_if_by_key_in(default_runtime(), key) else {
+pub fn enqueue_event(port_id: NetPortId, event: NetDriverEvent) -> bool {
+    let Some(if_id) = lookup_if_by_port_id_in(default_runtime(), port_id) else {
         return false;
     };
     let Some(handle) = lookup_port_in(default_runtime(), if_id) else {
@@ -1376,8 +1322,8 @@ pub fn enqueue_event(key: NetDeviceKey, event: NetDriverEvent) -> bool {
     handle.enqueue_event(event)
 }
 
-pub fn enqueue_event_from_isr(key: NetDeviceKey, event: NetDriverEvent) -> bool {
-    let Some(if_id) = lookup_if_by_key_in(default_runtime(), key) else {
+pub fn enqueue_event_from_isr(port_id: NetPortId, event: NetDriverEvent) -> bool {
+    let Some(if_id) = lookup_if_by_port_id_in(default_runtime(), port_id) else {
         return false;
     };
     let Some(handle) = lookup_port_in(default_runtime(), if_id) else {
@@ -1428,9 +1374,8 @@ mod tests {
     impl NetDevicePort for FakeDriver {
         fn info(&self) -> NetDeviceInfo {
             NetDeviceInfo {
-                port_id: NetDeviceKey::Virtio(9).port_id(),
+                port_id: NetPortId::new(0x9009),
                 if_id: None,
-                kind: NetPortKind::Virtio,
                 driver_name: "fake",
                 queue_pairs: 1,
                 mtu: stack::MTU as u32,
@@ -1502,15 +1447,40 @@ mod tests {
         }
     }
 
+    fn test_port_id(index: u16) -> NetPortId {
+        NetPortId::new(0x9000 + u64::from(index))
+    }
+
+    fn register_test_port(
+        index: u16,
+        driver: Arc<dyn NetDevicePort>,
+        primary_policy: PrimaryPortPolicy,
+    ) -> Result<NetIfId, &'static str> {
+        let info = NetDeviceInfo {
+            port_id: test_port_id(index),
+            driver_name: "fake",
+            queue_pairs: 1,
+            mtu: stack::MTU as u32,
+            mac: MacAddress::from_octets(0, 1, 2, 3, 4, index as u8),
+            flags: NETDEV_FLAG_HEALTHY,
+            ..NetDeviceInfo::default()
+        };
+        register_port(NetPortRegistration::new(info, driver, primary_policy))
+    }
+
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_queue_roundtrip_smoke() {
         let _ = crate::net::datapath::mempool::init_net_mempool(16);
         let queue = NetTxQueue::new();
-        let packet = crate::net::datapath::mempool::alloc_packet().expect("packet");
+        let request = TxRequest {
+            lease_id: 1,
+            descriptors: alloc::vec![NetTxSegment::new(core::ptr::null(), 0, 1)],
+            meta: NetTxMeta::default(),
+        };
         assert_eq!(queue.capacity(), NetTxQueue::CAPACITY);
         assert_eq!(queue.len(), 0);
-        assert!(queue.push(packet, NetTxMeta::default()));
+        assert!(queue.push(request));
         assert_eq!(queue.len(), 1);
         assert!(queue.pop().is_some());
         assert!(queue.pop().is_none());
@@ -1523,7 +1493,7 @@ mod tests {
         let sink = NetEventSink::new();
         assert_eq!(sink.capacity(), NetEventSink::CAPACITY);
         assert_eq!(sink.len(), 0);
-        assert!(sink.push_from_isr(NetDriverEvent::QueueWake { queue_index: 7 }));
+        assert!(sink.push(NetDriverEvent::QueueWake { queue_index: 7 }));
         assert_eq!(sink.len(), 1);
         assert_eq!(
             sink.pop(),
@@ -1541,7 +1511,7 @@ mod tests {
         }
 
         let driver = Arc::new(FakeDriver::new());
-        let if_id = register_port_with_default_config(NetDeviceKey::Virtio(89), driver, false)
+        let if_id = register_test_port(89, driver, PrimaryPortPolicy::Never)
             .expect("register port");
         let handle = lookup_port_in(default_runtime(), if_id).expect("handle");
 
@@ -1567,20 +1537,16 @@ mod tests {
         let handle = NetDeviceHandle::new(
             driver.clone(),
             NetDeviceBinding {
-                key: NetDeviceKey::Virtio(9),
+                port_id: test_port_id(9),
                 if_id: NetIfId(1),
-                kind: NetPortKind::Virtio,
-                virtio_index: Some(9),
             },
             runtime_context(),
         );
 
         handle
             .rebind(NetDeviceBinding {
-                key: NetDeviceKey::Virtio(9),
+                port_id: test_port_id(9),
                 if_id: NetIfId(22),
-                kind: NetPortKind::Virtio,
-                virtio_index: Some(9),
             })
             .expect("rebind");
 
@@ -1591,29 +1557,25 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn register_port_with_default_config_exposes_snapshot_smoke() {
+    fn register_port_exposes_snapshot_smoke() {
         let driver = Arc::new(FakeDriver::new());
         driver.set_stats(11, 7, true);
 
-        let if_id =
-            register_port_with_default_config(NetDeviceKey::Virtio(90), driver.clone(), false)
-                .expect("register port");
+        let if_id = register_test_port(90, driver.clone(), PrimaryPortPolicy::Never)
+            .expect("register port");
 
-        let info = port_info(NetDeviceKey::Virtio(90)).expect("port info");
-        let stats = port_stats(NetDeviceKey::Virtio(90)).expect("port stats");
+        let info = port_info(test_port_id(90)).expect("port info");
+        let stats = port_stats(test_port_id(90)).expect("port stats");
 
         assert_eq!(
-            lookup_if_by_key_in(default_runtime(), NetDeviceKey::Virtio(90)),
+            lookup_if_by_port_id_in(default_runtime(), test_port_id(90)),
             Some(if_id)
         );
-        assert_eq!(info.port_id, NetDeviceKey::Virtio(90).port_id());
+        assert_eq!(info.port_id, test_port_id(90));
         assert_eq!(info.if_id, Some(if_id.0));
         assert_eq!(stats.tx_packets, 11);
         assert_eq!(stats.rx_packets, 7);
-        assert!(
-            list_port_keys_in(default_runtime(), Some(NetPortKind::Virtio))
-                .contains(&NetDeviceKey::Virtio(90))
-        );
+        assert!(list_port_ids_in(default_runtime()).contains(&test_port_id(90)));
 
         assert!(unregister_port(if_id));
         assert_eq!(driver.stop_calls.load(Ordering::Relaxed), 1);
@@ -1621,18 +1583,18 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn register_port_make_primary_updates_primary_selection_smoke() {
+    fn register_port_prefer_primary_updates_primary_selection_smoke() {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(91), driver_a, false)
+        let if_a = register_test_port(91, driver_a, PrimaryPortPolicy::Auto)
             .expect("register first port");
-        let if_b = register_port_with_default_config(NetDeviceKey::Virtio(92), driver_b, true)
+        let if_b = register_test_port(92, driver_b, PrimaryPortPolicy::Prefer)
             .expect("register second port");
 
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
         assert!(
-            port_info(NetDeviceKey::Virtio(92))
+            port_info(test_port_id(92))
                 .expect("primary info")
                 .flags
                 & NETDEV_FLAG_PRIMARY
@@ -1650,9 +1612,9 @@ mod tests {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(93), driver_a, false)
+        let if_a = register_test_port(93, driver_a, PrimaryPortPolicy::Auto)
             .expect("register first port");
-        let if_b = register_port_with_default_config(NetDeviceKey::Virtio(94), driver_b, false)
+        let if_b = register_test_port(94, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
         let lease_a = sample_lease(10);
@@ -1711,7 +1673,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn unregister_primary_without_survivor_clears_primary_runtime() {
         let driver = Arc::new(FakeDriver::new());
-        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(95), driver, false)
+        let if_a = register_test_port(95, driver, PrimaryPortPolicy::Auto)
             .expect("register port");
 
         let lease_a = sample_lease(30);
@@ -1739,9 +1701,9 @@ mod tests {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(96), driver_a, false)
+        let if_a = register_test_port(96, driver_a, PrimaryPortPolicy::Auto)
             .expect("register first port");
-        let if_b = register_port_with_default_config(NetDeviceKey::Virtio(97), driver_b, false)
+        let if_b = register_test_port(97, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
         let lease_a = sample_lease(40);
@@ -1781,9 +1743,9 @@ mod tests {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_port_with_default_config(NetDeviceKey::Virtio(98), driver_a, false)
+        let if_a = register_test_port(98, driver_a, PrimaryPortPolicy::Auto)
             .expect("register first port");
-        let if_b = register_port_with_default_config(NetDeviceKey::Virtio(99), driver_b, false)
+        let if_b = register_test_port(99, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
         let mut test_stack = stack::NetworkStack::new(NetworkConfig::default());

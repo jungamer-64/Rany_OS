@@ -2,27 +2,27 @@ use alloc::sync::Arc;
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
-use kernel_api::netdev::NetDevicePort;
+use kernel_api::netdev::{NetPortRegistration, PrimaryPortPolicy};
 
 use super::{NetRuntime, init_virtio_net_for_device_at_index, virtio_net_driver_adapter};
 
 pub type VirtioNetRuntimeFactory = fn(u8, PackedPciLocation) -> KapiResult<Arc<dyn NetRuntime>>;
-pub type VirtioNetPostProbe = fn(u8, Arc<dyn NetDevicePort>) -> KapiResult<()>;
+pub type VirtioNetPortRegistrar = fn(u8, NetPortRegistration) -> KapiResult<()>;
 
 #[derive(Clone, Copy)]
 pub struct VirtioNetDriverHooks {
     pub runtime_factory: VirtioNetRuntimeFactory,
-    pub post_probe: VirtioNetPostProbe,
+    pub register_port: VirtioNetPortRegistrar,
 }
 
 impl VirtioNetDriverHooks {
     pub const fn new(
         runtime_factory: VirtioNetRuntimeFactory,
-        post_probe: VirtioNetPostProbe,
+        register_port: VirtioNetPortRegistrar,
     ) -> Self {
         Self {
             runtime_factory,
-            post_probe,
+            register_port,
         }
     }
 }
@@ -118,7 +118,9 @@ impl Driver for VirtioNetDriver {
             return Err(KapiError::NotFound);
         }
 
-        (self.hooks.post_probe)(self.index, adapter)?;
+        let registration =
+            NetPortRegistration::new(adapter.info(), adapter, PrimaryPortPolicy::Auto);
+        (self.hooks.register_port)(self.index, registration)?;
         self.initialized = true;
         Ok(())
     }

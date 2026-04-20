@@ -18,9 +18,9 @@ use kernel_api::abi::driver::AbiDmaSlice;
 use kernel_api::abi::driver::{AbiBlockDeviceRegistration, AbiNvmeNamespaceRegistration};
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
-    AbiNetPortKind, AbiNetPortOpsV4, AbiNetPortRegistrationV4, AbiNetPortRuntimeV3,
-    AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSegmentV4, AbiNetTxSubmissionV4,
-    AbiPacketRefRaw, DriverContext, KernelApiV4, PackedPciLocation,
+    AbiNetPortOpsV5, AbiNetPortRegistrationV5, AbiNetPortRuntimeV3, AbiNetPortStats, AbiNetRxMeta,
+    AbiNetTxMeta, AbiNetTxSegmentV4, AbiNetTxSubmissionV4, AbiPacketRefRaw, DriverContext,
+    KernelApiV4, PackedPciLocation,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
@@ -119,7 +119,7 @@ extern "C" fn test_kernel_unregister_nvme_namespace(_handle: u64) -> i32 {
 
 #[cfg(test)]
 extern "C" fn test_kernel_register_netdev_port(
-    _reg: *const AbiNetPortRegistrationV4,
+    _reg: *const AbiNetPortRegistrationV5,
     _out: *mut u64,
 ) -> i32 {
     -1
@@ -1011,13 +1011,12 @@ extern "C" fn mlx5_netdev_set_interrupts_enabled(_opaque: u64, _enabled: bool) -
     AbiError::Success as i32
 }
 
-fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistrationV4 {
-    AbiNetPortRegistrationV4::new(
+fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistrationV5 {
+    AbiNetPortRegistrationV5::new(
         AbiNetPortInfo {
             port_id: 0x0002_0000,
-            kind: AbiNetPortKind::Mlx5 as u32,
             queue_pairs: cmp::max(state.device.num_rqs(), state.device.num_sqs()) as u16,
-            port_index: 0,
+            reserved_queue: 0,
             mtu: state.device.port(0).map(|port| port.mtu()).unwrap_or(1500),
             flags: port_flags(&state.device),
             mac: reported_mac(&state.device),
@@ -1026,7 +1025,7 @@ fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistrationV4 
             name_len: mlx5_driver_name().len(),
         },
         0,
-        AbiNetPortOpsV4 {
+        AbiNetPortOpsV5 {
             start: mlx5_netdev_start,
             bind: mlx5_netdev_bind,
             submit_tx_chain: mlx5_netdev_submit_tx_chain,

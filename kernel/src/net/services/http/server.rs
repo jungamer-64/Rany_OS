@@ -94,8 +94,8 @@ fn enqueue_runtime_poll_events() -> usize {
     let runtime = crate::net::runtime::default_runtime();
     let mut queued = 0usize;
 
-    for key in crate::net::runtime::device::list_port_keys_in(runtime, None) {
-        if crate::net::runtime::device::enqueue_event(key, NetDriverEvent::Poll) {
+    for port_id in crate::net::runtime::device::list_port_ids_in(runtime) {
+        if crate::net::runtime::device::enqueue_event(port_id, NetDriverEvent::Poll) {
             queued = queued.saturating_add(1);
         }
     }

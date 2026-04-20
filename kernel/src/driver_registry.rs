@@ -33,7 +33,7 @@ use core::fmt;
 use core::sync::atomic::AtomicBool;
 use kernel_api::abi::driver::{
     AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType, AbiError as AbiErrorCode,
-    AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistrationV4, AbiNvmeNamespaceRegistration,
+    AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistrationV5, AbiNvmeNamespaceRegistration,
     AbiRRefRaw, DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
     DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
     DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV4, PackedPciLocation,
@@ -1030,7 +1030,7 @@ extern "C" fn kapi_unregister_nvme_namespace(handle: u64) -> i32 {
 }
 
 extern "C" fn kapi_register_netdev_port(
-    registration: *const AbiNetPortRegistrationV4,
+    registration: *const AbiNetPortRegistrationV5,
     out_handle: *mut u64,
 ) -> i32 {
     if registration.is_null() || out_handle.is_null() {

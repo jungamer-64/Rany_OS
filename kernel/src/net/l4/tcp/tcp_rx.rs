@@ -614,9 +614,7 @@ pub fn process_tcp_segment_v6_payload_on(
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     segment: PacketPayload,
 ) {
-    if !crate::net::runtime::bridge::rx_csum_hw_verified()
-        && !verify_tcp_checksum_v6(&segment, src_ip, dst_ip)
-    {
+    if !verify_tcp_checksum_v6(&segment, src_ip, dst_ip) {
         log::warn!("[TCP] IPv6 Checksum verification failed, dropping segment");
         return;
     }
@@ -644,9 +642,7 @@ pub fn process_tcp_segment_payload_on(
     dst_ip: [u8; 4],
     segment: PacketPayload,
 ) {
-    if !crate::net::runtime::bridge::rx_csum_hw_verified()
-        && !verify_tcp_checksum(&segment, src_ip, dst_ip)
-    {
+    if !verify_tcp_checksum(&segment, src_ip, dst_ip) {
         log::warn!("[TCP] Checksum verification failed, dropping segment");
         return;
     }

@@ -159,9 +159,8 @@ pub(crate) fn init_network_infra() {
     crate::net::l4::tcp::tcb::tcb_table().init_syncookies();
 
     let stack_initialized = crate::net::runtime::device::is_initialized();
-    let port_runtime_initialized = !crate::net::runtime::device::list_port_keys_in(
+    let port_runtime_initialized = !crate::net::runtime::device::list_port_ids_in(
         crate::net::runtime::default_runtime(),
-        None,
     )
     .is_empty();
     let endpoint_manager_initialized = crate::net::l4::socket::socket_registry_initialized();
@@ -202,9 +201,8 @@ pub(crate) fn init_network_infra() {
     }
 
     let stack_initialized = crate::net::runtime::device::is_initialized();
-    let port_runtime_initialized = !crate::net::runtime::device::list_port_keys_in(
+    let port_runtime_initialized = !crate::net::runtime::device::list_port_ids_in(
         crate::net::runtime::default_runtime(),
-        None,
     )
     .is_empty();
     let endpoint_manager_initialized = crate::net::l4::socket::socket_registry_initialized();
@@ -222,11 +220,7 @@ pub(crate) fn init_network_infra() {
     crate::net::l4::tcp::retransmit::init_timer_wheel();
     info!(target: "init", "OOO queues and retransmit timer wheel initialized");
 
-    let virtio_net_present = virtio_driver::net::virtio_net_driver_adapter(0)
-        .info()
-        .flags
-        != 0;
-    info!(target: "init", "Global VirtIO-Net device present: {} (driver init deferred to async)", virtio_net_present);
+    info!(target: "init", "Network driver class init deferred to async bootstrap");
 }
 
 // ============================================================================

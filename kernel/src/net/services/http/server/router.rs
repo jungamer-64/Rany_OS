@@ -107,17 +107,15 @@ pub(super) fn build_request_response_or_fallback(request: &HttpInboundRequest) -
 }
 
 fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
-    let keys = crate::net::runtime::device::list_port_keys_in(
-        crate::net::runtime::default_runtime(),
-        None,
-    );
+    let port_ids =
+        crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime());
     let mut rx_packets = 0u64;
     let mut tx_packets = 0u64;
     let mut tx_errors = 0u64;
     let mut rx_errors = 0u64;
 
-    for key in &keys {
-        if let Some(stats) = crate::net::runtime::device::port_stats(*key) {
+    for port_id in &port_ids {
+        if let Some(stats) = crate::net::runtime::device::port_stats(*port_id) {
             rx_packets = rx_packets.saturating_add(stats.rx_packets);
             tx_packets = tx_packets.saturating_add(stats.tx_packets);
             tx_errors = tx_errors.saturating_add(stats.tx_errors);
@@ -125,7 +123,7 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
         }
     }
 
-    (keys.len(), rx_packets, tx_packets, tx_errors, rx_errors)
+    (port_ids.len(), rx_packets, tx_packets, tx_errors, rx_errors)
 }
 
 fn build_health_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {

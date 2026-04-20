@@ -756,12 +756,11 @@ pub fn poll_timer_events() {
         if VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
             && VIRTIO_NET_IRQ_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
         {
-            for key in crate::net::runtime::device::list_port_keys_in(
+            for port_id in crate::net::runtime::device::list_port_ids_in(
                 crate::net::runtime::default_runtime(),
-                Some(kernel_api::service::netdev::NetPortKind::Virtio),
             ) {
                 let _ = crate::net::runtime::device::enqueue_event(
-                    key,
+                    port_id,
                     kernel_api::service::netdev::NetDriverEvent::Poll,
                 );
             }

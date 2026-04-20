@@ -18,7 +18,6 @@ use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 mod nat;
 use nat::*;
-pub mod mlx5_bridge;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -36,7 +35,6 @@ pub struct StackGlueInterfaceStats {
     pub tx_packets: u64,
     pub rx_packets: u64,
     pub initialized: bool,
-    pub virtio_index: Option<u8>,
 }
 
 struct DeferredRxPacket {
@@ -48,7 +46,6 @@ struct DeferredRxPacket {
 
 pub(crate) struct NetBridgeRuntimeState {
     stack_glue_initialized: AtomicBool,
-    rx_csum_hw_verified: AtomicBool,
     tx_packets: AtomicU64,
     rx_packets: AtomicU64,
     _rx_buffer: PoisonLock<[u8; 2048]>,
@@ -65,7 +62,6 @@ impl NetBridgeRuntimeState {
     pub const fn new() -> Self {
         Self {
             stack_glue_initialized: AtomicBool::new(false),
-            rx_csum_hw_verified: AtomicBool::new(false),
             tx_packets: AtomicU64::new(0),
             rx_packets: AtomicU64::new(0),
             _rx_buffer: PoisonLock::new([0u8; 2048]),
@@ -103,12 +99,12 @@ fn primary_stack_glue_if_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
     }
 }
 
-fn set_primary_stack_glue_if_in(runtime: NetRuntimeHandle, if_id: NetIfId, virtio_index: u8) {
+fn set_primary_stack_glue_if_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     let mut primary = runtime_state_for(runtime)
         .primary_if
         .write()
         .unwrap_or_else(|e| e.into_inner());
-    if primary.is_none() || virtio_index == 0 {
+    if primary.is_none() {
         *primary = Some(if_id);
     }
     if runtime.id() == default_runtime().id() {
@@ -161,11 +157,7 @@ fn is_local_ipv4_in(runtime: NetRuntimeHandle, addr: Ipv4Address) -> bool {
     false
 }
 
-fn ensure_stack_glue_if_state_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    virtio_index: Option<u8>,
-) {
+fn ensure_stack_glue_if_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     let mut stats = runtime_state_for(runtime)
         .if_stats
         .write()
@@ -175,11 +167,7 @@ fn ensure_stack_glue_if_state_in(
         tx_packets: 0,
         rx_packets: 0,
         initialized: false,
-        virtio_index,
     });
-    if entry.virtio_index.is_none() {
-        entry.virtio_index = virtio_index;
-    }
     entry.initialized = true;
 }
 
@@ -193,7 +181,6 @@ fn record_stack_glue_if_tx_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
         tx_packets: 0,
         rx_packets: 0,
         initialized: true,
-        virtio_index: None,
     });
     entry.tx_packets = entry.tx_packets.saturating_add(1);
     entry.initialized = true;
@@ -209,7 +196,6 @@ fn record_stack_glue_if_rx_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
         tx_packets: 0,
         rx_packets: 0,
         initialized: true,
-        virtio_index: None,
     });
     entry.rx_packets = entry.rx_packets.saturating_add(1);
     entry.initialized = true;
@@ -218,12 +204,9 @@ fn record_stack_glue_if_rx_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
 pub fn register_stack_glue_interface_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
-    virtio_index: Option<u8>,
 ) {
-    ensure_stack_glue_if_state_in(runtime, if_id, virtio_index);
-    if let Some(virtio_index) = virtio_index {
-        set_primary_stack_glue_if_in(runtime, if_id, virtio_index);
-    }
+    ensure_stack_glue_if_state_in(runtime, if_id);
+    set_primary_stack_glue_if_in(runtime, if_id);
     runtime_state_for(runtime)
         .stack_glue_initialized
         .store(true, Ordering::Release);
@@ -345,7 +328,7 @@ pub fn process_received_packet_zero_copy_for_interface_in(
         return;
     }
 
-    ensure_stack_glue_if_state_in(runtime, if_id, None);
+    ensure_stack_glue_if_state_in(runtime, if_id);
     let rx_count = state
         .rx_packets
         .fetch_add(1, Ordering::Relaxed)
@@ -384,17 +367,6 @@ fn compute_and_set_flow_hash(_packet: &mut crate::net::datapath::mempool::Packet
     // 以前はここで一律に csum_verified をセットしていましたが、
     // 現在はドライバ（VirtioNetDevice::complete_rx_packetref 等）が
     // パケット毎のフラグを確認してセットするため、ここでは何もしません。
-}
-
-#[inline]
-pub fn rx_csum_hw_verified() -> bool {
-    runtime_state().rx_csum_hw_verified.load(Ordering::Relaxed)
-}
-
-pub fn set_rx_csum_hw_verified(verified: bool) {
-    runtime_state()
-        .rx_csum_hw_verified
-        .store(verified, Ordering::Release);
 }
 
 pub fn check_batch_timeout_in(runtime: NetRuntimeHandle, current_tsc: u64, tsc_freq: u64) {

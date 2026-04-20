@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use exorust_sync::PoisonRwLock;
 use kernel_api::netdev::{
-    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
+    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRuntime,
     NetPortStats, NetTxMeta, TxSubmission,
 };
 
@@ -33,8 +33,8 @@ fn registry_state() -> &'static VirtioNetRegistryState {
     &VIRTIO_NET_REGISTRY
 }
 
-fn virtio_port_id(index: u8) -> u64 {
-    VIRTIO_PORT_ID_BASE | index as u64
+fn virtio_port_id(index: u8) -> NetPortId {
+    NetPortId::new(VIRTIO_PORT_ID_BASE | index as u64)
 }
 
 pub(crate) fn virtio_net_runtime(index: u8) -> Option<Arc<dyn NetPortRuntime>> {
@@ -130,7 +130,6 @@ impl VirtioNetDriverAdapter {
         NetDeviceInfo {
             port_id: virtio_port_id(self.index),
             if_id: None,
-            kind: NetPortKind::Virtio,
             driver_name: "virtio-net",
             queue_pairs: 1,
             mtu: 1500,
@@ -417,8 +416,7 @@ mod tests {
         clear_virtio_net_devices_for_tests();
 
         let info = virtio_net_driver_adapter(9).info();
-        assert_eq!(info.port_id, VIRTIO_PORT_ID_BASE | 9);
-        assert_eq!(info.kind, NetPortKind::Virtio);
+        assert_eq!(info.port_id, NetPortId::new(VIRTIO_PORT_ID_BASE | 9));
         assert_eq!(info.flags, 0);
     }
 }

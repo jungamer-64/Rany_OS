@@ -13,21 +13,22 @@ use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, DeviceOps, IoCommand, IoError, IoRequest, IoRequestId, IoResult,
     PollHandler, hybrid_coordinator, io_scheduler,
 };
-use crate::net::runtime::device::{self as net_device_runtime, NetDeviceKey};
+use crate::net::runtime::device::{self as net_device_runtime};
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::{PoisonLock, PoisonRwLock};
 #[cfg(test)]
-use kernel_api::abi::driver::AbiNetPortOpsV4;
+use kernel_api::abi::driver::AbiNetPortOpsV5;
 use kernel_api::abi::driver::{
     AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
     AbiError as AbiErrorCode, AbiIoCompletion, AbiNetDriverEvent, AbiNetDriverEventKind,
-    AbiNetPortInfo, AbiNetPortKind, AbiNetPortRegistrationV4, AbiNetPortRuntimeV3, AbiNetPortStats,
+    AbiNetPortInfo, AbiNetPortRegistrationV5, AbiNetPortRuntimeV3, AbiNetPortStats,
     AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSegmentV4, AbiNetTxSubmissionV4, AbiNvmeNamespaceInfo,
     AbiNvmeNamespaceRegistration, AbiPacketRefRaw,
 };
 use kernel_api::service::netdev::{
-    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortKind, NetPortRuntime,
-    NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, TxSubmission,
+    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRegistration,
+    NetPortRuntime, NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, PrimaryPortPolicy,
+    TxSubmission,
 };
 use kernel_api::service::storage::{StorageDeviceInfo, StorageTransport};
 
@@ -498,7 +499,7 @@ extern "C" fn runtime_log(runtime_cookie: u64, level: u32, msg_ptr: *const u8, m
 }
 
 struct NetdevPortAdapter {
-    registration: AbiNetPortRegistrationV4,
+    registration: AbiNetPortRegistrationV5,
     driver_name: &'static str,
     runtime_state: PoisonLock<Option<Box<NetRuntimeState>>>,
 }
@@ -508,7 +509,7 @@ unsafe impl Sync for NetdevPortAdapter {}
 
 impl NetdevPortAdapter {
     fn new(
-        registration: &AbiNetPortRegistrationV4,
+        registration: &AbiNetPortRegistrationV5,
         driver_name: &'static str,
     ) -> Result<Self, AbiErrorCode> {
         Ok(Self {
@@ -523,13 +524,8 @@ impl NetDevicePort for NetdevPortAdapter {
     fn info(&self) -> NetDeviceInfo {
         let info = self.registration.info;
         NetDeviceInfo {
-            port_id: info.port_id,
+            port_id: NetPortId::new(info.port_id),
             if_id: None,
-            kind: match info.kind {
-                x if x == AbiNetPortKind::Virtio as u32 => NetPortKind::Virtio,
-                x if x == AbiNetPortKind::Mlx5 as u32 => NetPortKind::Mlx5,
-                _ => NetPortKind::Other,
-            },
             driver_name: self.driver_name,
             queue_pairs: info.queue_pairs,
             mtu: info.mtu,
@@ -702,21 +698,17 @@ impl NetdevBridgeRegistry {
     fn register(
         &self,
         owner: DomainId,
-        registration: &AbiNetPortRegistrationV4,
+        registration: &AbiNetPortRegistrationV5,
     ) -> Result<u64, AbiErrorCode> {
-        let key = match registration.info.kind {
-            x if x == AbiNetPortKind::Virtio as u32 => {
-                NetDeviceKey::Virtio(registration.info.port_index as u8)
-            }
-            x if x == AbiNetPortKind::Mlx5 as u32 => {
-                NetDeviceKey::Mlx5(registration.info.port_index as u8)
-            }
-            _ => return Err(AbiErrorCode::NotSupported),
-        };
         let name = leak_driver_name(&registration.info);
         let adapter: Arc<dyn NetDevicePort> = Arc::new(NetdevPortAdapter::new(registration, name)?);
-        let if_id = net_device_runtime::register_port_with_default_config(key, adapter, true)
-            .map_err(|_| AbiErrorCode::IoError)?;
+        let info = adapter.info();
+        let if_id = net_device_runtime::register_port(NetPortRegistration::new(
+            info,
+            adapter,
+            PrimaryPortPolicy::Auto,
+        ))
+        .map_err(|_| AbiErrorCode::IoError)?;
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         self.entries
             .write()
@@ -875,12 +867,11 @@ mod tests {
         AbiErrorCode::Success as i32
     }
 
-    fn test_net_info(kind: AbiNetPortKind, port_index: u16) -> AbiNetPortInfo {
+    fn test_net_info(port_index: u16) -> AbiNetPortInfo {
         AbiNetPortInfo {
             port_id: 0x9000 + port_index as u64,
-            kind: kind as u32,
             queue_pairs: 1,
-            port_index,
+            reserved_queue: 0,
             mtu: 1500,
             flags: 0,
             mac: [0x02, 0, 0, 0, 0, port_index as u8],
@@ -890,11 +881,11 @@ mod tests {
         }
     }
 
-    fn test_net_registration(port_index: u16) -> AbiNetPortRegistrationV4 {
-        AbiNetPortRegistrationV4::new(
-            test_net_info(AbiNetPortKind::Virtio, port_index),
+    fn test_net_registration(port_index: u16) -> AbiNetPortRegistrationV5 {
+        AbiNetPortRegistrationV5::new(
+            test_net_info(port_index),
             0,
-            AbiNetPortOpsV4 {
+            AbiNetPortOpsV5 {
                 start: test_net_start,
                 bind: test_net_bind,
                 submit_tx_chain: test_net_submit_tx,

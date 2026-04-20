@@ -378,12 +378,11 @@ impl VirtioNetDevice {
         }
     }
 
-    pub fn info_snapshot(&self, port_id: u64) -> NetDeviceInfo {
+    pub fn info_snapshot(&self, port_id: kernel_api::netdev::NetPortId) -> NetDeviceInfo {
         let mac = self.mac_address();
         NetDeviceInfo {
             port_id,
             if_id: self.net_if_id(),
-            kind: kernel_api::netdev::NetPortKind::Virtio,
             driver_name: "virtio-net",
             queue_pairs: self.queue_pairs(),
             mtu: self.mtu(),

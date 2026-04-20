@@ -65,16 +65,14 @@ impl SystemIntegration {
 
         // Diagnostic: print network port runtime and stack configuration/stats
         // NOTE: ブートストラップ時はエグゼキュータ未起動のため同期版を使用（許容）
-        let port_keys = crate::net::runtime::device::list_port_keys_in(
-            crate::net::runtime::default_runtime(),
-            None,
-        );
+        let port_ids =
+            crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime());
         let mut rx_packets = 0u64;
         let mut tx_packets = 0u64;
         let mut tx_errors = 0u64;
         let mut rx_errors = 0u64;
-        for key in &port_keys {
-            if let Some(stats) = crate::net::runtime::device::port_stats(*key) {
+        for port_id in &port_ids {
+            if let Some(stats) = crate::net::runtime::device::port_stats(*port_id) {
                 rx_packets = rx_packets.saturating_add(stats.rx_packets);
                 tx_packets = tx_packets.saturating_add(stats.tx_packets);
                 tx_errors = tx_errors.saturating_add(stats.tx_errors);
@@ -84,7 +82,7 @@ impl SystemIntegration {
         self.log(&alloc::format!(
             "  Net port runtime: stack_init={} ports={} rx={} tx={} tx_err={} rx_err={}",
             crate::net::runtime::device::is_initialized(),
-            port_keys.len(),
+            port_ids.len(),
             rx_packets,
             tx_packets,
             tx_errors,
