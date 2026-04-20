@@ -717,8 +717,6 @@ fn log_network_port_snapshot(stage: &str) {
 async fn network_bootstrap_task() {
     info!(target: "net_boot", "Network bootstrap task started (async)");
 
-    crate::net::drivers::start_network_driver_class();
-
     // Yield して tx_worker / DHCPクライアント等のバックグラウンドタスクに実行機会を与える
     task::yield_now().await;
 

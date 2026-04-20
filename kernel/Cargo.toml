@@ -36,7 +36,6 @@ ahci_driver = { path = "../drivers/ahci" }
 nvme_driver = { path = "../drivers/nvme" }
 usb_driver = { path = "../drivers/usb" }
 hid_driver = { path = "../drivers/hid" }
-virtio_driver = { path = "../drivers/virtio" }
 acpi_driver = { path = "../drivers/acpi" }
 ide_driver = { path = "../drivers/ide" }
 serial_driver = { path = "../drivers/serial" }
