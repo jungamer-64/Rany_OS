@@ -221,7 +221,7 @@ impl TcpSegmentBuilder {
         }
     }
 
-    #[cfg(any(test, feature = "qemu-test-export"))]
+    #[cfg(test)]
     pub fn build(mut self) -> alloc::vec::Vec<u8> {
         self.pad_options();
         let options_len = self.options_len.min(self.options.len());
@@ -582,7 +582,7 @@ pub fn send_tcp_segment_packet(
 // テスト
 // =====================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
@@ -729,96 +729,5 @@ pub mod tests {
             .build();
 
         let _ = send_test_segment(local, remote, segment);
-    }
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    use super::*;
-
-    pub fn tcp_segment_builder_smoke() -> bool {
-        let segment = TcpSegmentBuilder::new(12345, 80)
-            .seq(1000)
-            .syn()
-            .window(65535)
-            .build();
-
-        if segment.len() != 20 {
-            return false;
-        }
-
-        if u16::from_be_bytes([segment[0], segment[1]]) != 12345 {
-            return false;
-        }
-        if u16::from_be_bytes([segment[2], segment[3]]) != 80 {
-            return false;
-        }
-        if u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]) != 1000 {
-            return false;
-        }
-
-        let data_offset_flags = u16::from_be_bytes([segment[12], segment[13]]);
-        let flags = (data_offset_flags & 0x3F) as u8;
-        (flags & tcp_flags::SYN) == tcp_flags::SYN
-    }
-
-    pub fn tcp_segment_with_data_smoke() -> bool {
-        let data = alloc::vec![0x48, 0x65, 0x6C, 0x6C, 0x6F];
-        let segment = TcpSegmentBuilder::new(8080, 80)
-            .seq(2000)
-            .ack(3000)
-            .ack_flag()
-            .payload_packet(test_payload_bytes(&data))
-            .build();
-
-        segment.len() == 25 && &segment[20..] == b"Hello"
-    }
-
-    pub fn tcp_segment_with_options_smoke() -> bool {
-        let segment = TcpSegmentBuilder::new(12345, 80)
-            .seq(1000)
-            .syn()
-            .window(65535)
-            .syn_options(1460, Some(7), true, None)
-            .build();
-
-        if segment.len() != 32 {
-            return false;
-        }
-
-        let data_offset_flags = u16::from_be_bytes([segment[12], segment[13]]);
-        let data_offset = ((data_offset_flags >> 12) & 0xF) as u8;
-        if data_offset != 8 {
-            return false;
-        }
-
-        if segment[20] != 2 || segment[21] != 4 {
-            return false;
-        }
-        if u16::from_be_bytes([segment[22], segment[23]]) != 1460 {
-            return false;
-        }
-        if segment[24] != 3 || segment[25] != 3 || segment[26] != 7 {
-            return false;
-        }
-        if segment[27] != 4 || segment[28] != 2 {
-            return false;
-        }
-
-        segment[29] == 1 && segment[30] == 1 && segment[31] == 1
-    }
-
-    pub fn tcp_message_length_field_for_checksum_smoke() -> bool {
-        let mut segment = TcpSegmentBuilder::new(12345, 80)
-            .seq(1)
-            .ack(1)
-            .ack_flag()
-            .payload_packet(test_payload_bytes(b"abc"))
-            .build();
-
-        TcpSegmentBuilder::calculate_checksum(&mut segment, [192, 168, 1, 10], [192, 168, 1, 20]);
-
-        let checksum = u16::from_be_bytes([segment[16], segment[17]]);
-        checksum != 0
     }
 }

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/tcb.rs
+// kernel/src/net/l4/tcp/tcb.rs
 // ============================================================================
 //! # TCP Control Block - 接続状態管理
 //!
@@ -13,8 +13,8 @@ use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
 use super::flow_control::FlowController;
 use super::retransmit::check_retransmit_timeouts;
-use crate::net::l4::types::{EndpointAddr, EndpointError, EndpointFd, conn_key_hash, seq_after};
 use super::window_scale::WindowScaleOption;
+use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, conn_key_hash, seq_after};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 
@@ -35,7 +35,7 @@ pub use crate::net::l4::tcp::TcpState as TcpConnectionState;
 /// TCP制御ブロック（RFC 5681/7323準拠）
 #[derive(Debug)]
 pub struct TcpControlBlockEntry {
-    pub fd: EndpointFd,
+    pub socket_id: SocketId,
     pub local: EndpointAddr,
     pub remote: EndpointAddr,
     pub scope: InterfaceScope,
@@ -70,7 +70,7 @@ pub struct TcpControlBlockEntry {
 
 #[derive(Debug, Clone, Copy)]
 pub struct TcpControlBlockSnapshot {
-    pub fd: EndpointFd,
+    pub socket_id: SocketId,
     pub local: EndpointAddr,
     pub remote: EndpointAddr,
     pub scope: InterfaceScope,
@@ -104,7 +104,7 @@ pub struct TcpControlBlockSnapshot {
 impl From<&TcpControlBlockEntry> for TcpControlBlockSnapshot {
     fn from(value: &TcpControlBlockEntry) -> Self {
         Self {
-            fd: value.fd,
+            socket_id: value.socket_id,
             local: value.local,
             remote: value.remote,
             scope: value.scope,
@@ -179,18 +179,18 @@ impl TcpControlBlockSnapshot {
 }
 
 impl TcpControlBlockEntry {
-    pub fn new(fd: EndpointFd, local: EndpointAddr, remote: EndpointAddr) -> Self {
-        Self::with_algorithm(fd, local, remote, CongestionAlgorithm::NewReno)
+    pub fn new(socket_id: SocketId, local: EndpointAddr, remote: EndpointAddr) -> Self {
+        Self::with_algorithm(socket_id, local, remote, CongestionAlgorithm::NewReno)
     }
 
     pub fn with_algorithm(
-        fd: EndpointFd,
+        socket_id: SocketId,
         local: EndpointAddr,
         remote: EndpointAddr,
         algorithm: CongestionAlgorithm,
     ) -> Self {
         Self {
-            fd,
+            socket_id,
             local,
             remote,
             scope: InterfaceScope::Any,
@@ -594,9 +594,9 @@ impl TcbTable {
     }
 
     fn check_zero_window_probes(&self, current_tick: u64) {
-        use crate::net::l4::socket::lookup_endpoint;
         use super::retransmit::retransmit_queue_push;
         use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
+        use crate::net::l4::socket::lookup_socket;
         for shard in &self.shards {
             let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
             for (key, entry) in entries.iter_mut() {
@@ -605,19 +605,20 @@ impl TcbTable {
                         continue;
                     }
                     if entry.flow_control.should_send_probe(current_tick) {
-                        if let Some(socket) = lookup_endpoint(entry.fd) {
+                        if let Some(socket) = lookup_socket(entry.socket_id) {
                             let mut inner =
                                 socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                             if let Some(probe_payload) = inner.take_send_payload_prefix(1) {
                                 drop(inner);
                                 let seq = entry.snd_nxt;
-                                let mut builder = TcpSegmentBuilder::new(key.0.port(), key.1.port())
-                                    .seq(seq)
-                                    .ack(entry.rcv_nxt)
-                                    .ack_flag()
-                                    .psh()
-                                    .window(entry.advertised_recv_window())
-                                    .payload_packet(probe_payload);
+                                let mut builder =
+                                    TcpSegmentBuilder::new(key.0.port(), key.1.port())
+                                        .seq(seq)
+                                        .ack(entry.rcv_nxt)
+                                        .ack_flag()
+                                        .psh()
+                                        .window(entry.advertised_recv_window())
+                                        .payload_packet(probe_payload);
                                 if entry.ts_enabled {
                                     let ts_val = (current_tick / 10) as u32;
                                     builder = builder.nop().nop().timestamp(ts_val, entry.ts_ecr);
@@ -631,13 +632,7 @@ impl TcbTable {
                                     continue;
                                 };
                                 if send_tcp_segment_payload(key.0, key.1, segment) {
-                                    retransmit_queue_push(
-                                        key.0,
-                                        key.1,
-                                        seq,
-                                        1,
-                                        retransmit_segment,
-                                    );
+                                    retransmit_queue_push(key.0, key.1, seq, 1, retransmit_segment);
                                     entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
                                     entry.flow_control.on_probe_sent(current_tick);
                                 } else {
@@ -808,23 +803,26 @@ impl TcbTable {
         }
     }
 
-    pub fn read_by_fd<R, F>(&self, fd: EndpointFd, f: F) -> Option<R>
+    pub fn read_by_socket_id<R, F>(&self, socket_id: SocketId, f: F) -> Option<R>
     where
         F: FnOnce(&TcpControlBlockEntry) -> R,
     {
         for shard in &self.shards {
             let guard = shard.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(entry) = guard.values().find(|e| e.fd == fd) {
+            if let Some(entry) = guard.values().find(|entry| entry.socket_id == socket_id) {
                 return Some(f(entry));
             }
         }
         None
     }
 
-    pub fn remove_by_fd(&self, fd: EndpointFd) -> Option<TcpControlBlockEntry> {
+    pub fn remove_by_socket_id(&self, socket_id: SocketId) -> Option<TcpControlBlockEntry> {
         for shard in &self.shards {
             let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
-            let key = guard.iter().find(|(_, e)| e.fd == fd).map(|(k, _)| *k);
+            let key = guard
+                .iter()
+                .find(|(_, entry)| entry.socket_id == socket_id)
+                .map(|(key, _)| *key);
             if let Some(k) = key {
                 if let Some(entry) = guard.remove(&k) {
                     self.total_count.fetch_sub(1, Ordering::Relaxed);
@@ -875,7 +873,9 @@ impl TcbTable {
         remote: EndpointAddr,
         seq: u32,
     ) -> bool {
-        if let Some(snapshot) = self.read(local, remote, |entry| TcpControlBlockSnapshot::from(entry)) {
+        if let Some(snapshot) =
+            self.read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
+        {
             if snapshot.state == TcpConnectionState::SynSent {
                 return seq == snapshot.snd_una;
             }
@@ -925,7 +925,7 @@ pub fn tcb_table() -> &'static TcbTable {
     &TCB_TABLE
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
@@ -939,10 +939,10 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_control_block_entry() {
-        let fd = EndpointFd::from_raw(1);
+        let socket_id = SocketId::from_raw(1);
         let local = EndpointAddr::new([192, 168, 1, 1], 12345);
         let remote = EndpointAddr::new([192, 168, 1, 2], 80);
-        let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
+        let mut tcb = TcpControlBlockEntry::new(socket_id, local, remote);
         assert_eq!(tcb.state, TcpConnectionState::Closed);
         tcb.initialize_seq(1000);
         assert_eq!(tcb.snd_nxt, 1000);
@@ -958,36 +958,5 @@ pub mod tests {
         assert_eq!(tcp_flags::ACK, 0x10);
         let syn_ack = tcp_flags::SYN | tcp_flags::ACK;
         assert_eq!(syn_ack, 0x12);
-    }
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    use super::*;
-    pub fn tcp_connection_state_smoke() -> bool {
-        let state = TcpConnectionState::Closed;
-        if !matches!(state, TcpConnectionState::Closed) {
-            return false;
-        }
-        let state = TcpConnectionState::Established;
-        matches!(state, TcpConnectionState::Established)
-    }
-    pub fn tcp_control_block_entry_smoke() -> bool {
-        let fd = EndpointFd::from_raw(1);
-        let local = EndpointAddr::new([192, 168, 1, 1], 12345);
-        let remote = EndpointAddr::new([192, 168, 1, 2], 80);
-        let mut tcb = TcpControlBlockEntry::new(fd, local, remote);
-        if tcb.state != TcpConnectionState::Closed {
-            return false;
-        }
-        tcb.initialize_seq(1000);
-        tcb.snd_nxt == 1000 && tcb.snd_una == 1000
-    }
-    pub fn tcp_flags_smoke() -> bool {
-        if tcp_flags::FIN != 0x01 || tcp_flags::SYN != 0x02 {
-            return false;
-        }
-        let syn_ack = tcp_flags::SYN | tcp_flags::ACK;
-        syn_ack == 0x12
     }
 }

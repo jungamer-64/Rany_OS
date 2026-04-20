@@ -12,7 +12,7 @@ pub(crate) fn stack_scope(
 }
 
 pub(crate) fn apply_endpoint_scope(
-    endpoint: &crate::net::l4::socket::Endpoint,
+    endpoint: &crate::net::l4::socket::Socket,
     scope: kernel_api::resource::net::InterfaceScope,
 ) {
     let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
@@ -35,8 +35,9 @@ pub(crate) fn endpoint_addr_from_kapi(
 pub(crate) fn endpoint_error_to_kapi(error: crate::net::l4::EndpointError) -> KapiError {
     match error {
         crate::net::l4::EndpointError::Timeout => KapiError::Timeout,
-        crate::net::l4::EndpointError::PortInUse
-        | crate::net::l4::EndpointError::AddressInUse => KapiError::ResourceExhausted,
+        crate::net::l4::EndpointError::PortInUse | crate::net::l4::EndpointError::AddressInUse => {
+            KapiError::ResourceExhausted
+        }
         crate::net::l4::EndpointError::PermissionDenied => KapiError::PermissionDenied,
         crate::net::l4::EndpointError::NotFound => KapiError::InvalidHandle,
         _ => KapiError::IoError,
@@ -68,18 +69,16 @@ pub(crate) fn network_error_to_kapi(error: crate::net::types::NetworkError) -> K
     }
 }
 
-pub(crate) fn lookup_endpoint(
-    fd: crate::net::l4::types::EndpointFd,
-) -> Result<crate::net::l4::socket::Endpoint, KapiError> {
-    crate::net::l4::socket::lookup_endpoint(fd).ok_or(KapiError::InvalidHandle)
+pub(crate) fn lookup_socket(
+    fd: crate::net::l4::types::SocketId,
+) -> Result<crate::net::l4::socket::Socket, KapiError> {
+    crate::net::l4::socket::lookup_socket(fd).ok_or(KapiError::InvalidHandle)
 }
 
-pub(crate) fn close_endpoint_handle(
-    fd: crate::net::l4::types::EndpointFd,
-) -> Result<(), KapiError> {
-    let socket = lookup_endpoint(fd)?;
+pub(crate) fn close_socket_handle(fd: crate::net::l4::types::SocketId) -> Result<(), KapiError> {
+    let socket = lookup_socket(fd)?;
     socket.close_immediate().map_err(endpoint_error_to_kapi)?;
-    let _ = crate::net::l4::socket::unregister_endpoint(fd);
+    let _ = crate::net::l4::socket::unregister_socket(fd);
 
     Ok(())
 }

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/net/l4/endpoint/tcp_rx.rs
+// kernel/src/net/l4/tcp/tcp_rx.rs
 // ============================================================================
 //! # TCP受信処理 - 3ウェイハンドシェイク・データ受信
 //!
@@ -15,10 +15,6 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::net::l4::socket::{
-    Endpoint, SocketFamily, find_endpoint_by_port, find_listening_tcp_socket,
-    generate_endpoint_fd, lookup_endpoint,
-};
 use super::ooo_queue;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
@@ -27,10 +23,11 @@ use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
 use super::tcb::{
     TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot, tcb_table, tcp_flags,
 };
-use crate::net::l4::types::{
-    AcceptedConnection, EndpointAddr, EndpointError, EndpointFd, EndpointState, EndpointType,
-};
 use super::window_scale::TcpOptionParser;
+use crate::net::l4::socket::{
+    Socket, TcpSocketState, find_listening_tcp_socket, generate_socket_id, lookup_socket,
+};
+use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketId};
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::manager::NetIfId;
 use kernel_api::resource::net::PacketPayload;
@@ -405,7 +402,8 @@ fn process_parsed_tcp_segment(
         entry.ingress_if_id = Some(ingress_if_id)
     });
 
-    if let Some(tcb) = tcb_table().read(local, remote, |entry| TcpControlBlockSnapshot::from(entry)) {
+    if let Some(tcb) = tcb_table().read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
+    {
         tcb_table().update(local, remote, |entry| {
             entry.update_peer_window(header.window);
         });
@@ -490,7 +488,7 @@ fn process_parsed_tcp_segment(
                     _ => 64,
                 };
 
-                let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
+                let mut tcb = TcpControlBlockEntry::new(socket.socket_id(), local, remote);
                 tcb.snd_una = header.ack_num.wrapping_sub(1);
                 tcb.snd_nxt = header.ack_num;
                 tcb.rcv_nxt = header.seq_num;
@@ -560,7 +558,7 @@ fn try_fast_path(
         retransmit_queue_ack(tcb.local, tcb.remote, ack_num);
     }
 
-    if let Some(socket) = get_socket_by_fd(tcb.fd) {
+    if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
         let can_accept = {
             let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner
@@ -769,11 +767,7 @@ fn handle_syn_sent_segment(
 }
 
 /// 同時オープン(Simultaneous Open)時のSYN受信処理
-fn handle_simultaneous_syn_received(
-    tcb: TcpControlBlockSnapshot,
-    seq_num: u32,
-    options: &[u8],
-) {
+fn handle_simultaneous_syn_received(tcb: TcpControlBlockSnapshot, seq_num: u32, options: &[u8]) {
     // TCPオプション解析
     let (peer_ts, sack_permitted) = if !options.is_empty() {
         let mut parser = TcpOptionParser::new(options);
@@ -981,7 +975,7 @@ fn handle_data_received_with_delayed_ack(
     let mut fin_encountered = false;
 
     // ソケットの受信バッファにデータ追加
-    if let Some(socket) = get_socket_by_fd(tcb.fd) {
+    if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
         if payload_len > 0 {
             let (pushed, _remainder) = socket.push_payload_with_remainder(data_payload);
             new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
@@ -1036,7 +1030,9 @@ fn handle_data_received_with_delayed_ack(
         true
     } else {
         tcb_table()
-            .read(tcb.local, tcb.remote, |entry| entry.delayed_ack_pending >= DELAYED_ACK_SEGMENTS)
+            .read(tcb.local, tcb.remote, |entry| {
+                entry.delayed_ack_pending >= DELAYED_ACK_SEGMENTS
+            })
             .unwrap_or(true)
     };
 
@@ -1116,8 +1112,10 @@ fn process_tcp_with_tcb(
                     });
 
                     // Continue processing in Established state
-                    if let Some(established_tcb) = tcb_table()
-                        .read(tcb.local, tcb.remote, |entry| TcpControlBlockSnapshot::from(entry))
+                    if let Some(established_tcb) =
+                        tcb_table().read(tcb.local, tcb.remote, |entry| {
+                            TcpControlBlockSnapshot::from(entry)
+                        })
                     {
                         handle_synchronized_segment(
                             established_tcb,
@@ -1186,7 +1184,7 @@ pub fn handle_icmp_error(
     };
 
     let mut should_close = false;
-    let mut fd = None;
+    let mut socket_id = None;
 
     tcb_table().update(local, remote, |entry| {
         // RFC 1122 Section 4.2.3.9: ICMP error handling
@@ -1198,7 +1196,7 @@ pub fn handle_icmp_error(
                 EndpointError::ConnectionRefused | EndpointError::ProtocolUnreachable => {
                     // Hard errors: close the connection (RFC 1122)
                     should_close = true;
-                    fd = Some(entry.fd);
+                    socket_id = Some(entry.socket_id);
                 }
                 _ => {
                     // Soft errors (Host/Network unreachable): keep connection open,
@@ -1216,8 +1214,8 @@ pub fn handle_icmp_error(
             "[TCP] Connection failed due to ICMP error ({:?}) in SYN-SENT",
             error
         );
-        if let Some(f) = fd {
-            if let Some(socket) = get_socket_by_fd(f) {
+        if let Some(id) = socket_id {
+            if let Some(socket) = get_socket_by_socket_id(id) {
                 let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                 inner.last_error = Some(error);
                 if let Some(waker) = inner.connect_waker.take() {
@@ -1250,7 +1248,7 @@ pub fn handle_icmpv6_error(
     };
 
     let mut should_close = false;
-    let mut fd = None;
+    let mut socket_id = None;
 
     tcb_table().update(local, remote, |entry| {
         // RFC 4443 Section 2.4 / RFC 1122 Section 4.2.3.9
@@ -1258,7 +1256,7 @@ pub fn handle_icmpv6_error(
             match error {
                 EndpointError::ConnectionRefused | EndpointError::ProtocolUnreachable => {
                     should_close = true;
-                    fd = Some(entry.fd);
+                    socket_id = Some(entry.socket_id);
                 }
                 _ => {}
             }
@@ -1271,8 +1269,8 @@ pub fn handle_icmpv6_error(
             "[TCP-V6] Connection failed due to ICMPv6 error ({:?}) in SYN-SENT",
             error
         );
-        if let Some(f) = fd {
-            if let Some(socket) = get_socket_by_fd(f) {
+        if let Some(id) = socket_id {
+            if let Some(socket) = get_socket_by_socket_id(id) {
                 let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                 inner.last_error = Some(error);
                 if let Some(waker) = inner.connect_waker.take() {
@@ -1372,15 +1370,15 @@ fn handle_syn_ack_received(
 }
 
 /// Helper to get a socket by its file descriptor.
-fn get_socket_by_fd(fd: EndpointFd) -> Option<Endpoint> {
-    lookup_endpoint(fd)
+fn get_socket_by_socket_id(socket_id: SocketId) -> Option<Socket> {
+    lookup_socket(socket_id)
 }
 
 /// Helper to notify a socket that it is connected.
-fn notify_socket_connected(fd: EndpointFd) {
-    if let Some(socket) = get_socket_by_fd(fd) {
+fn notify_socket_connected(socket_id: SocketId) {
+    if let Some(socket) = get_socket_by_socket_id(socket_id) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.state = EndpointState::Connected;
+        let _ = inner.set_tcp_state(TcpSocketState::Connected);
         if let Some(waker) = inner.connect_waker.take() {
             waker.wake();
         }
@@ -1410,12 +1408,7 @@ fn process_tcp_new_connection(
     }
 
     // リッスン中のソケットを探す
-    let socket = find_endpoint_by_port(
-        EndpointType::Tcp,
-        SocketFamily::from_addr(local),
-        local.port(),
-        Some(ingress_if_id),
-    );
+    let socket = find_listening_tcp_socket(local, Some(ingress_if_id));
 
     // リッスン中のソケットがない場合、または SYN 以外を受信した場合
     if socket.is_none() || !is_syn {
@@ -1465,9 +1458,11 @@ fn process_tcp_new_connection(
         return;
     }
 
-    let socket = socket.unwrap();
+    let Some(socket) = socket else {
+        return;
+    };
     let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-    if inner.state != EndpointState::Listening {
+    if !inner.is_tcp_listening() {
         return;
     }
     let nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を取得
@@ -1504,7 +1499,7 @@ fn process_tcp_new_connection(
         tcb_table().generate_isn(local, remote)
     };
 
-    let mut tcb = TcpControlBlockEntry::new(socket.fd(), local, remote);
+    let mut tcb = TcpControlBlockEntry::new(socket.socket_id(), local, remote);
     tcb.initialize_seq(isn);
     tcb.set_nodelay(nodelay);
     tcb.set_priority(priority); // 設定を反映
@@ -1595,7 +1590,7 @@ fn handle_rst_received(tcb: TcpControlBlockSnapshot, seq_num: u32) {
         });
 
         // ソケットにエラー通知
-        if let Some(socket) = get_socket_by_fd(tcb.fd) {
+        if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
             let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.last_error = Some(EndpointError::ConnectionRefused);
             if let Some(waker) = inner.connect_waker.take() {
@@ -1728,18 +1723,18 @@ fn create_accepted_socket(
     ingress_if_id: NetIfId,
 ) -> Option<AcceptedConnection> {
     // 新しいFDを割り当て
-    let new_fd = generate_endpoint_fd()?;
+    let new_socket_id = generate_socket_id()?;
 
     // TCB情報を更新してFDを紐付け
     tcb_table().update(local, remote, |entry| {
-        entry.fd = new_fd;
+        entry.socket_id = new_socket_id;
     });
 
     // 再送キューを作成
     get_or_create_retransmit_queue(local, remote);
 
     Some(AcceptedConnection::new(
-        new_fd,
+        new_socket_id,
         local,
         remote,
         ingress_if_id,
@@ -1757,7 +1752,7 @@ fn push_to_accept_queue(
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
 
         // Listening状態でなければスキップ
-        if inner.state != EndpointState::Listening {
+        if !inner.is_tcp_listening() {
             return false;
         }
 
@@ -1850,15 +1845,15 @@ fn handle_fin_in_order(tcb: TcpControlBlockSnapshot, rcv_nxt_at_fin: u32) {
 
     // ソケットに接続相手のクローズを通知
     // recv_wakerを起こして、readがEOFを返せるようにする
-    notify_socket_peer_fin(tcb.fd);
+    notify_socket_peer_fin(tcb.socket_id);
 }
 
 /// ソケットに相手側FIN受信を通知
 ///
 /// recv_wakerを起こすことで、アプリケーション側のread操作が
 /// EOF (0バイト読み取り) を返せるようにする。
-fn notify_socket_peer_fin(fd: EndpointFd) {
-    if let Some(socket) = lookup_endpoint(fd) {
+fn notify_socket_peer_fin(socket_id: SocketId) {
+    if let Some(socket) = lookup_socket(socket_id) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         // recv_wakerを起こしてEOFを通知
         if let Some(waker) = inner.recv_waker.take() {
@@ -1878,14 +1873,14 @@ fn handle_urgent_received(tcb: TcpControlBlockSnapshot, seq_num: u32, urgent_ptr
 
         if has_new_urgent {
             // ソケットにurgent dataの存在を通知
-            notify_socket_urgent(entry.fd);
+            notify_socket_urgent(entry.socket_id);
         }
     });
 }
 
 /// ソケットにurgent data到着を通知
-fn notify_socket_urgent(fd: EndpointFd) {
-    if let Some(socket) = lookup_endpoint(fd) {
+fn notify_socket_urgent(socket_id: SocketId) {
+    if let Some(socket) = lookup_socket(socket_id) {
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
         // urgent flagを設定
         inner.set_urgent_pending(true);

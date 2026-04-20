@@ -536,7 +536,7 @@ impl Default for TcpOptionBuilder {
 // テスト
 // =====================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
@@ -595,48 +595,5 @@ pub mod tests {
         let mut parser = TcpOptionParser::new(&options);
         assert_eq!(parser.find_mss(), Some(1460));
         assert_eq!(parser.find_window_scale(), Some(7));
-    }
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    use super::*;
-
-    pub fn window_scale_disabled_smoke() -> bool {
-        let ws = WindowScaleOption::new();
-        !ws.enabled && ws.scale_snd_window(65535) == 65535 && ws.scale_rcv_window(65535) == 65535
-    }
-
-    pub fn window_scale_enabled_smoke() -> bool {
-        let mut ws = WindowScaleOption::with_scale(7);
-        if !ws.enabled {
-            return false;
-        }
-        ws.set_snd_scale(7);
-
-        ws.scale_snd_window(1000) == 128000 && ws.scale_rcv_window(1000) == 128000
-    }
-
-    pub fn advertised_window_smoke() -> bool {
-        let ws = WindowScaleOption::with_scale(7);
-        ws.advertised_window(128000) == 1000 && ws.advertised_window(u32::MAX) == 65535
-    }
-
-    pub fn option_builder_smoke() -> bool {
-        let mut builder = TcpOptionBuilder::new();
-        builder
-            .add_mss(1460)
-            .add_window_scale(7)
-            .add_sack_permitted();
-
-        let options = builder.finalize();
-        !options.is_empty() && options.len() % 4 == 0
-    }
-
-    pub fn option_parser_smoke() -> bool {
-        let options = [2, 4, 0x05, 0xB4, 1, 3, 3, 7];
-
-        let mut parser = TcpOptionParser::new(&options);
-        parser.find_mss() == Some(1460) && parser.find_window_scale() == Some(7)
     }
 }

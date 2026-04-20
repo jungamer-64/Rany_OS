@@ -1,21 +1,21 @@
 // ============================================================================
 // kernel/src/net/l4/raw/mod.rs
 // ============================================================================
-//! Raw IP facade backed by the internal endpoint registry.
+//! Raw IP facade backed by the internal socket registry.
 
 use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use crate::net::l4::socket::{Endpoint, register_raw_scope, unregister_endpoint};
-use crate::net::l4::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
-use crate::net::runtime::manager::NetIfId;
+use crate::net::l4::socket::{Socket, register_raw_scope, unregister_socket};
+use crate::net::l4::types::{EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::manager::NetIfId;
 use crate::net::types::{InterfaceScope, NetworkError};
 use kernel_api::resource::net::PacketPayload;
 
-fn network_error_to_endpoint(error: NetworkError) -> EndpointError {
+fn network_error_to_socket(error: NetworkError) -> EndpointError {
     match error {
         NetworkError::PermissionDenied => EndpointError::PermissionDenied,
         NetworkError::Timeout => EndpointError::Timeout,
@@ -33,103 +33,104 @@ fn network_error_to_endpoint(error: NetworkError) -> EndpointError {
 
 #[derive(Clone)]
 pub struct RawEndpoint {
-    endpoint: Endpoint,
+    socket: Socket,
     registered: bool,
 }
 
 impl core::fmt::Debug for RawEndpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let scope = self
-            .endpoint
+            .socket
             .inner()
             .lock()
             .map(|inner| inner.scope)
             .unwrap_or(InterfaceScope::Any);
         f.debug_struct("RawEndpoint")
-            .field("fd", &self.endpoint.fd().raw())
+            .field("socket_id", &self.socket.socket_id().raw())
             .field("scope", &scope)
             .finish()
     }
 }
 
 impl RawEndpoint {
-    pub fn open_in(runtime: NetRuntimeHandle, scope: InterfaceScope) -> Result<Self, EndpointError> {
-        let endpoint = Endpoint::new_registered_in(EndpointType::Raw, runtime);
+    pub fn open_in(
+        runtime: NetRuntimeHandle,
+        scope: InterfaceScope,
+    ) -> Result<Self, EndpointError> {
+        let socket = Socket::new_registered_raw_in(runtime);
         {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
             inner.scope = scope;
-            inner.ensure_raw();
-            inner.transition_to(EndpointState::Bound)?;
         }
 
-        register_raw_scope(scope, endpoint.fd())?;
+        register_raw_scope(scope, socket.socket_id())?;
 
         Ok(Self {
-            endpoint,
+            socket,
             registered: true,
         })
     }
 
-    pub(crate) fn from_retained_endpoint(endpoint: Endpoint) -> Self {
+    pub(crate) fn from_retained_socket(socket: Socket) -> Self {
         Self {
-            endpoint,
+            socket,
             registered: false,
         }
     }
 
-    pub(crate) fn from_registered_endpoint(endpoint: Endpoint) -> Self {
+    pub(crate) fn from_registered_socket(socket: Socket) -> Self {
         Self {
-            endpoint,
+            socket,
             registered: true,
         }
     }
 
-    pub(crate) fn into_retained_handle(mut self) -> EndpointFd {
+    pub(crate) fn into_retained_handle(mut self) -> SocketId {
         self.registered = false;
-        self.endpoint.fd()
+        self.socket.socket_id()
     }
 
     pub fn runtime(&self) -> NetRuntimeHandle {
-        self.endpoint.runtime()
+        self.socket.runtime()
     }
 
     pub(crate) fn set_scope(&self, scope: InterfaceScope) {
-        if let Ok(mut inner) = self.endpoint.inner().lock() {
+        if let Ok(mut inner) = self.socket.inner().lock() {
             inner.scope = scope;
         }
     }
 
     pub fn recv_payload(&self) -> RawRecvFuture {
         RawRecvFuture {
-            endpoint: self.endpoint.clone(),
+            socket: self.socket.clone(),
         }
     }
 
     pub fn try_recv_payload(&self) -> Result<(PacketPayload, NetIfId), EndpointError> {
-        self.endpoint.try_recv_raw_payload()
+        self.socket.try_recv_raw_payload()
     }
 
     pub async fn send_payload(&self, payload: PacketPayload) -> Result<(), EndpointError> {
         let scope = self
-            .endpoint
+            .socket
             .inner()
             .lock()
             .map(|inner| inner.scope)
             .map_err(|_| EndpointError::Internal)?;
-        let runtime = self.endpoint.runtime();
+        let runtime = self.socket.runtime();
         let mut guard = crate::net::runtime::stack::stack_in(runtime)
             .lock()
             .map_err(|_| EndpointError::Internal)?;
         let stack = guard.as_mut().ok_or(EndpointError::NotFound)?;
         stack
             .send_raw_ip_payload_scoped(scope, payload)
-            .map_err(network_error_to_endpoint)
+            .map_err(network_error_to_socket)
     }
 
     pub fn close(&self) -> Result<(), EndpointError> {
-        self.endpoint.close_immediate()?;
+        self.socket.close_immediate()?;
         if self.registered {
-            let _ = unregister_endpoint(self.endpoint.fd());
+            let _ = unregister_socket(self.socket.socket_id());
         }
         Ok(())
     }
@@ -138,7 +139,7 @@ impl RawEndpoint {
 impl Drop for RawEndpoint {
     fn drop(&mut self) {
         let threshold = if self.registered { 2 } else { 1 };
-        if Arc::strong_count(self.endpoint.inner()) > threshold {
+        if Arc::strong_count(self.socket.inner()) > threshold {
             return;
         }
 
@@ -147,17 +148,17 @@ impl Drop for RawEndpoint {
 }
 
 pub struct RawRecvFuture {
-    endpoint: Endpoint,
+    socket: Socket,
 }
 
 impl Future for RawRecvFuture {
     type Output = Result<(PacketPayload, NetIfId), EndpointError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.endpoint.try_recv_raw_payload() {
+        match self.socket.try_recv_raw_payload() {
             Ok(result) => Poll::Ready(Ok(result)),
             Err(EndpointError::Timeout) => {
-                self.endpoint.register_recv_waker(cx.waker().clone());
+                self.socket.register_recv_waker(cx.waker().clone());
                 Poll::Pending
             }
             Err(error) => Poll::Ready(Err(error)),

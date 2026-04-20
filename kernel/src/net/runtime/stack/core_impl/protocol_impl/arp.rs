@@ -441,8 +441,9 @@ impl NetworkStack {
                     } else {
                         crate::net::types::InterfaceScope::Any
                     };
-                    let _ =
-                        self.send_tcp_raw_scoped_with_ttl_payload(scope, pkt.src, pkt.dst, segment, ttl);
+                    let _ = self.send_tcp_raw_scoped_with_ttl_payload(
+                        scope, pkt.src, pkt.dst, segment, ttl,
+                    );
                 }
                 crate::net::runtime::stack::PendingIpv4Payload::Raw {
                     protocol,

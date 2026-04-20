@@ -5,16 +5,16 @@
 //!
 //! RuntimeCommandHandler, EventHandleResult
 
-// Building block: Endpoint handler implementation
+// Building block: Socket handler implementation
 
 use alloc::vec::Vec;
 
-use crate::net::l4::tcp::tcb_table;
-use crate::net::l4::types::{EndpointAddr, EndpointError, EndpointFd};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
-use crate::net::runtime::command::RuntimeCommand;
+use crate::net::l4::tcp::tcb_table;
+use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::RuntimeCommand;
 use crate::net::runtime::manager::NetIfId;
 use kernel_api::resource::net::PacketPayload;
 
@@ -76,24 +76,42 @@ impl RuntimeCommandHandler {
             // スタック非依存のイベント（そのまま処理可能）
             // ============================================================
             RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::TcpDataReady { fd },
-            ) => self.handle_data_ready(fd),
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TxAvailable) => self.handle_tx_available(),
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket { fd }) => self.handle_close(fd),
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::UdpSendTo { .. }) => {
-                EventHandleResult::ProtocolError(EndpointError::ResourceExhausted)
-            }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::SetTcpNoDelay { fd, nodelay }) => self.handle_set_nodelay(fd, nodelay),
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::SetSocketPriority { fd, priority }) => self.handle_set_priority(fd, priority),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoReply {
-                source,
-                sequence,
-                rtt_us,
-            }) => {
+                crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
+            ) => self.handle_data_ready(socket_id),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TxAvailable,
+            ) => self.handle_tx_available(),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::CloseSocket { socket_id },
+            ) => self.handle_close(socket_id),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::UdpSendTo { .. },
+            ) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::SetTcpNoDelay {
+                    socket_id,
+                    nodelay,
+                },
+            ) => self.handle_set_nodelay(socket_id, nodelay),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::SetSocketPriority {
+                    socket_id,
+                    priority,
+                },
+            ) => self.handle_set_priority(socket_id, priority),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::IcmpEchoReply {
+                    source,
+                    sequence,
+                    rtt_us,
+                },
+            ) => {
                 crate::net::api::icmp::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac },
+            ) => {
                 crate::net::l2::arp::notify_arp_resolved(ip, mac);
                 EventHandleResult::Success
             }
@@ -101,36 +119,48 @@ impl RuntimeCommandHandler {
             // ============================================================
             // 非同期Futureイベント: スタック不可時はエラーで完了（デッドロック防止）
             // ============================================================
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpDial {
-                result_slot, waker, ..
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpDial {
+                    result_slot, waker, ..
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Err(crate::net::l4::tcp::TcpError::InvalidState));
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpBind {
-                result_slot, waker, ..
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpBind {
+                    result_slot, waker, ..
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Err(crate::net::l4::tcp::TcpError::InvalidState));
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastJoin {
-                result_slot, waker, ..
-            }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::MulticastJoin {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(false);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastLeave {
-                result_slot, waker, ..
-            }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::MulticastLeave {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(false);
                 }
@@ -138,7 +168,9 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEcho {
-                result_slot, waker, ..
+                result_slot,
+                waker,
+                ..
             }) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Err(()));
@@ -146,37 +178,63 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolveCheck {
-                result_slot, waker, ..
-            }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpResolveCheck {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(None);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetLinkLocal { result_slot, waker }) => {
-                finish_command(result_slot, waker, None)
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { result_slot, waker }) => {
-                finish_command(result_slot, waker, None)
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetInterfaceConfig {
-                result_slot, waker, ..
-            }) => finish_command(result_slot, waker, None),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { result_slot, waker }) => {
-                finish_command(result_slot, waker, Vec::new())
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetInterfaceStats {
-                result_slot, waker, ..
-            }) => finish_command(result_slot, waker, None),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaceStats { result_slot, waker }) => {
-                finish_command(result_slot, waker, Vec::new())
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaces { result_slot, waker }) => {
-                finish_command(result_slot, waker, Vec::new())
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { result_slot, waker }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetLinkLocal { result_slot, waker },
+            ) => finish_command(result_slot, waker, None),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig {
+                    result_slot,
+                    waker,
+                },
+            ) => finish_command(result_slot, waker, None),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetInterfaceConfig {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => finish_command(result_slot, waker, None),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListInterfaceConfigs {
+                    result_slot,
+                    waker,
+                },
+            ) => finish_command(result_slot, waker, Vec::new()),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetInterfaceStats {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => finish_command(result_slot, waker, None),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListInterfaceStats {
+                    result_slot,
+                    waker,
+                },
+            ) => finish_command(result_slot, waker, Vec::new()),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListInterfaces { result_slot, waker },
+            ) => finish_command(result_slot, waker, Vec::new()),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetNetworkSnapshot {
+                    result_slot,
+                    waker,
+                },
+            ) => finish_command(
                 result_slot,
                 waker,
                 crate::net::obs::NetSnapshot {
@@ -190,71 +248,113 @@ impl RuntimeCommandHandler {
                     recent_events: Vec::new(),
                 },
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents {
-                result_slot, waker, ..
-            }) => finish_command(result_slot, waker, Vec::new()),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallEnable { result_slot, waker }) => {
-                finish_command(result_slot, waker, Err("Stack unavailable"))
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallDisable { result_slot, waker }) => {
-                finish_command(result_slot, waker, Err("Stack unavailable"))
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallStatus { result_slot, waker }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => finish_command(result_slot, waker, Vec::new()),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallEnable { result_slot, waker },
+            ) => finish_command(result_slot, waker, Err("Stack unavailable")),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallDisable {
+                    result_slot,
+                    waker,
+                },
+            ) => finish_command(result_slot, waker, Err("Stack unavailable")),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallStatus { result_slot, waker },
+            ) => finish_command(
                 result_slot,
                 waker,
                 alloc::string::String::from("Stack unavailable"),
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallListRules { result_slot, waker }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallListRules {
+                    result_slot,
+                    waker,
+                },
+            ) => finish_command(
                 result_slot,
                 waker,
                 alloc::string::String::from("Stack unavailable"),
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallStats { result_slot, waker }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallStats { result_slot, waker },
+            ) => finish_command(
                 result_slot,
                 waker,
                 alloc::string::String::from("Stack unavailable"),
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallAddRule {
-                result_slot, waker, ..
-            }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallAddRule {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => finish_command(
                 result_slot,
                 waker,
                 Err(alloc::string::String::from("Stack unavailable")),
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallRemoveRule {
-                result_slot, waker, ..
-            }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallRemoveRule {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => finish_command(
                 result_slot,
                 waker,
                 Err(alloc::string::String::from("Stack unavailable")),
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallClearRules { result_slot, waker }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallClearRules {
+                    result_slot,
+                    waker,
+                },
+            ) => finish_command(
                 result_slot,
                 waker,
                 Err(alloc::string::String::from("Stack unavailable")),
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallSetDefaultPolicy {
-                result_slot, waker, ..
-            }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallSetDefaultPolicy {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => finish_command(
                 result_slot,
                 waker,
                 Err(alloc::string::String::from("Stack unavailable")),
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetArpCache { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetArpCache { result_slot, waker },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Vec::new());
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetUdpEndpoints { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetUdpEndpoints {
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Vec::new());
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ProcessTimeouts) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ProcessTimeouts,
+            ) => {
                 // タイムアウト処理（スタック依存部分はスキップ）
                 // しかし、独立した TCB テーブルのメンテナンスは実行する
                 tcb_table().tick();
@@ -268,109 +368,154 @@ impl RuntimeCommandHandler {
             // ============================================================
             // DHCP/TCP 非同期クエリ: スタック不可時はデフォルト値で完了
             // ============================================================
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetDhcpState {
-                result_slot, waker, ..
-            }) => finish_command(result_slot, waker, stackless_dhcp_state_unavailable()),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListDhcpStates { result_slot, waker }) => {
-                finish_command(result_slot, waker, Vec::new())
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetDhcpState {
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => finish_command(result_slot, waker, stackless_dhcp_state_unavailable()),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListDhcpStates { result_slot, waker },
+            ) => finish_command(result_slot, waker, Vec::new()),
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew {
+                result_slot,
+                waker,
+            }) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Err(alloc::string::String::from("Stack unavailable")));
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRelease { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpRelease { result_slot, waker },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(false);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpDiscover { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpDiscover { result_slot, waker },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(None);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform { result_slot, waker }) => {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform {
+                result_slot,
+                waker,
+            }) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Err(alloc::string::String::from("Stack unavailable")));
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastDeclined { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLastDeclined {
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(None);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastReleased { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLastReleased {
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(None);
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetTcpConnections { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetTcpConnections {
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(Vec::new());
                 }
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSend {
-                completion_id,
-                result_slot,
-                waker,
-                ..
-            })
-            | RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSend {
-                completion_id,
-                result_slot,
-                waker,
-                ..
-            })
-            | RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6Send {
-                completion_id,
-                result_slot,
-                waker,
-                ..
-            })
-            | RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6Send {
-                completion_id,
-                result_slot,
-                waker,
-                ..
-            })
-            | RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSendOn {
-                completion_id,
-                result_slot,
-                waker,
-                ..
-            })
-            | RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSendOn {
-                completion_id,
-                result_slot,
-                waker,
-                ..
-            })
-            | RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
-                completion_id,
-                result_slot,
-                waker,
-                ..
-            })
-            | RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
-                completion_id,
-                result_slot,
-                waker,
-                ..
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpSend {
+                    completion_id,
+                    result_slot,
+                    waker,
+                    ..
+                },
+            )
+            | RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpSend {
+                    completion_id,
+                    result_slot,
+                    waker,
+                    ..
+                },
+            )
+            | RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpV6Send {
+                    completion_id,
+                    result_slot,
+                    waker,
+                    ..
+                },
+            )
+            | RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpV6Send {
+                    completion_id,
+                    result_slot,
+                    waker,
+                    ..
+                },
+            )
+            | RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpSendOn {
+                    completion_id,
+                    result_slot,
+                    waker,
+                    ..
+                },
+            )
+            | RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpSendOn {
+                    completion_id,
+                    result_slot,
+                    waker,
+                    ..
+                },
+            )
+            | RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
+                    completion_id,
+                    result_slot,
+                    waker,
+                    ..
+                },
+            )
+            | RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
+                    completion_id,
+                    result_slot,
+                    waker,
+                    ..
+                },
+            ) => {
                 if let Some(completion_id) = completion_id {
                     let _ = crate::net::runtime::device::complete_tx_request_in(
                         runtime,
@@ -402,196 +547,218 @@ impl RuntimeCommandHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         match event {
-            RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet { if_id, packet }) => {
-                self.handle_ingress_packet_with_stack(runtime, if_id, packet, stack)
-            }
-            RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Batch { if_id, packets }) => {
-                self.handle_ingress_batch_with_stack(runtime, if_id, packets, stack)
-            }
-            RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Reassembled { if_id, payload }) => {
-                self.handle_reassembled_packet_with_stack(runtime, if_id, payload, stack)
-            }
+            RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
+                if_id,
+                packet,
+            }) => self.handle_ingress_packet_with_stack(runtime, if_id, packet, stack),
+            RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Batch {
+                if_id,
+                packets,
+            }) => self.handle_ingress_batch_with_stack(runtime, if_id, packets, stack),
+            RuntimeCommand::Ingress(
+                crate::net::runtime::command::IngressCommand::Reassembled { if_id, payload },
+            ) => self.handle_reassembled_packet_with_stack(runtime, if_id, payload, stack),
             RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::TcpDataReady { fd },
-            ) => self.handle_tcp_data_ready_with_stack(fd, stack),
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::UdpSendTo {
-                fd,
-                payload,
-                remote,
-            }) => self.handle_send_to_with_stack(fd, remote, payload, stack),
-            raw_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSend { .. }) => {
-                self.handle_raw_event_with_stack(runtime, raw_event, stack)
-            }
-            raw_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSend { .. }) => {
-                self.handle_raw_event_with_stack(runtime, raw_event, stack)
-            }
-            raw_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6Send { .. }) => {
-                self.handle_raw_event_with_stack(runtime, raw_event, stack)
-            }
-            raw_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6Send { .. }) => {
-                self.handle_raw_event_with_stack(runtime, raw_event, stack)
-            }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoRequest { target, sequence }) => {
+                crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
+            ) => self.handle_tcp_data_ready_with_stack(socket_id, stack),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::UdpSendTo {
+                    socket_id,
+                    payload,
+                    remote,
+                },
+            ) => self.handle_send_to_with_stack(socket_id, remote, payload, stack),
+            raw_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpSend { .. },
+            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
+            raw_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpSend { .. },
+            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
+            raw_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpV6Send { .. },
+            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
+            raw_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpV6Send { .. },
+            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::IcmpEchoRequest { target, sequence },
+            ) => {
                 let target_ip = crate::net::l3::ipv4::Ipv4Address::new(target);
                 match stack.send_icmp_echo_request(target_ip, sequence) {
                     Ok(_send_time) => EventHandleResult::Success,
                     Err(_) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
                 }
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoReply {
-                source,
-                sequence,
-                rtt_us,
-            }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::IcmpEchoReply {
+                    source,
+                    sequence,
+                    rtt_us,
+                },
+            ) => {
                 // ICMP応答をFutureレジストリに通知（スタックロック保持版）
                 crate::net::api::icmp::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
-            lifecycle_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolveRequest { .. })
-            | lifecycle_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::NdpResolveRequest { .. })
-            | lifecycle_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolved { .. })
-            | lifecycle_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpDial { .. })
-            | lifecycle_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastJoin { .. })
-            | lifecycle_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastLeave { .. })
-            | lifecycle_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpBind { .. })
-            | lifecycle_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ProcessTimeouts) => {
-                self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack)
-            }
-            raw_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSendOn { .. }) => {
-                self.handle_raw_event_with_stack(runtime, raw_event, stack)
-            }
-            raw_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSendOn { .. }) => {
-                self.handle_raw_event_with_stack(runtime, raw_event, stack)
-            }
-            raw_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6SendOn { .. }) => {
-                self.handle_raw_event_with_stack(runtime, raw_event, stack)
-            }
-            raw_event @ RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6SendOn { .. }) => {
-                self.handle_raw_event_with_stack(runtime, raw_event, stack)
-            }
+            lifecycle_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpResolveRequest { .. },
+            )
+            | lifecycle_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::NdpResolveRequest { .. },
+            )
+            | lifecycle_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpResolved { .. },
+            )
+            | lifecycle_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpDial { .. },
+            )
+            | lifecycle_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::MulticastJoin { .. },
+            )
+            | lifecycle_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::MulticastLeave { .. },
+            )
+            | lifecycle_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpBind { .. },
+            )
+            | lifecycle_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ProcessTimeouts,
+            ) => self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack),
+            raw_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpSendOn { .. },
+            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
+            raw_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpSendOn { .. },
+            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
+            raw_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpV6SendOn { .. },
+            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
+            raw_event @ RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpV6SendOn { .. },
+            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
 
             // ================================================================
             // NAT forwarding events (with stack)
             // ================================================================
-            nat_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::NatForwardUdp { .. }) => {
-                self.handle_nat_event_with_stack(nat_event, stack)
-            }
-            nat_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::NatForwardTcp { .. }) => {
-                self.handle_nat_event_with_stack(nat_event, stack)
-            }
+            nat_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::NatForwardUdp { .. },
+            ) => self.handle_nat_event_with_stack(nat_event, stack),
+            nat_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::NatForwardTcp { .. },
+            ) => self.handle_nat_event_with_stack(nat_event, stack),
 
             // ================================================================
             // Async utility events (with stack)
             // ================================================================
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEcho { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolveCheck { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpApplyLease { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetLinkLocal { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetInterfaceConfig { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetInterfaceStats { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaceStats { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaces { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallEnable { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallDisable { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallStatus { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallListRules { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallStats { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallAddRule { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallRemoveRule { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallClearRules { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::FirewallSetDefaultPolicy { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetArpCache { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpInsert { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
-            utility_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetUdpEndpoints { .. }) => {
-                self.handle_utility_event_with_stack(runtime, utility_event, stack)
-            }
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::IcmpEcho { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpProbe { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpResolveCheck { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpApplyLease { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetLinkLocal { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetInterfaceConfig { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetInterfaceStats { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListInterfaceStats { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListInterfaces { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallEnable { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallDisable { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallStatus { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallListRules { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallStats { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallAddRule { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallRemoveRule { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallClearRules { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::FirewallSetDefaultPolicy { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetArpCache { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpInsert { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetUdpEndpoints { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
 
             // ============================================================
             // 非同期DHCP/TCP クエリ（スタックロック保持中に処理）
             // ============================================================
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetDhcpState { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListDhcpStates { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRelease { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpDiscover { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastDeclined { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastReleased { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
-            query_event @ RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetTcpConnections { .. }) => {
-                self.handle_query_event_with_stack(runtime, query_event)
-            }
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetDhcpState { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListDhcpStates { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpRenew { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpRelease { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpDiscover { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpInform { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLastDeclined { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLastReleased { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetTcpConnections { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
 
             // その他のイベントはスタック非依存（再帰的ロック取得を回避）
             other => self.handle_event_stackless_in(runtime, other),

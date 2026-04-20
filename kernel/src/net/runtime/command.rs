@@ -13,8 +13,8 @@ use core::pin::Pin;
 use core::sync::atomic::Ordering;
 use core::task::{Context, Poll};
 
-use crate::net::l4::types::{EndpointAddr, EndpointError, EndpointFd};
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
@@ -45,23 +45,23 @@ pub(crate) enum IngressCommand {
 #[derive(Debug)]
 pub(crate) enum TransportCommand {
     TcpDataReady {
-        fd: EndpointFd,
+        socket_id: SocketId,
     },
     TxAvailable,
     CloseSocket {
-        fd: EndpointFd,
+        socket_id: SocketId,
     },
     UdpSendTo {
-        fd: EndpointFd,
+        socket_id: SocketId,
         payload: PacketPayload,
         remote: EndpointAddr,
     },
     SetTcpNoDelay {
-        fd: EndpointFd,
+        socket_id: SocketId,
         nodelay: bool,
     },
     SetSocketPriority {
-        fd: EndpointFd,
+        socket_id: SocketId,
         priority: u8,
     },
     RawUdpSend {
@@ -883,13 +883,18 @@ pub(crate) fn enqueue_ingress_batch_on_in(
         // 1パケットなら通常パスを使用（Vec のオーバーヘッド回避）
         let mut packets = packets;
         if let Some(p) = packets.pop() {
-            let _ = command_queue_in(runtime)
-                .send(RuntimeCommand::Ingress(IngressCommand::Packet { if_id, packet: p }));
+            let _ =
+                command_queue_in(runtime).send(RuntimeCommand::Ingress(IngressCommand::Packet {
+                    if_id,
+                    packet: p,
+                }));
         }
         return;
     }
-    let _ = command_queue_in(runtime)
-        .send(RuntimeCommand::Ingress(IngressCommand::Batch { if_id, packets }));
+    let _ = command_queue_in(runtime).send(RuntimeCommand::Ingress(IngressCommand::Batch {
+        if_id,
+        packets,
+    }));
 }
 
 #[inline]
@@ -934,7 +939,9 @@ mod tests {
         mark_command_task_running();
 
         for _ in 0..RuntimeCommandQueue::CAPACITY {
-            assert!(enqueue_command(RuntimeCommand::Transport(TransportCommand::TxAvailable)).is_ok());
+            assert!(
+                enqueue_command(RuntimeCommand::Transport(TransportCommand::TxAvailable)).is_ok()
+            );
         }
 
         let waker = noop_waker();

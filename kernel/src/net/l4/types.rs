@@ -1,9 +1,9 @@
 // ============================================================================
 // kernel/src/net/l4/types.rs
 // ============================================================================
-//! # 基本型定義 - エンドポイントAPI用の型
+//! # 基本型定義 - L4 公開型と internal socket id
 //!
-//! EndpointFd, EndpointType, EndpointState, EndpointError, EndpointAddr, AcceptedConnection等
+//! SocketId, EndpointError, EndpointAddr, AcceptedConnection 等
 
 use core::sync::atomic::AtomicU32;
 
@@ -12,9 +12,9 @@ use crate::net::runtime::manager::NetIfId;
 /// エンドポイントファイルディスクリプタ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub(crate) struct EndpointFd(u32);
+pub(crate) struct SocketId(u32);
 
-impl EndpointFd {
+impl SocketId {
     /// 無効なファイルディスクリプタ
     pub const INVALID: Self = Self(u32::MAX);
 
@@ -38,69 +38,7 @@ impl EndpointFd {
 }
 
 /// 次のファイルディスクリプタ
-pub(crate) static NEXT_FD: AtomicU32 = AtomicU32::new(0);
-
-/// エンドポイントタイプ
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EndpointType {
-    /// TCPストリームエンドポイント
-    Tcp,
-    /// UDPデータグラムエンドポイント
-    Udp,
-    /// RAWエンドポイント（直接IP層アクセス）
-    Raw,
-}
-
-/// エンドポイント状態
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EndpointState {
-    /// 作成直後
-    Created,
-    /// バインド済み
-    Bound,
-    /// リスニング中（TCP only）
-    Listening,
-    /// 接続中（TCP only）
-    Connecting,
-    /// 接続済み
-    Connected,
-    /// クローズ中
-    Closing,
-    /// クローズ済み
-    Closed,
-}
-
-impl EndpointState {
-    /// 送信可能な状態か
-    #[inline(always)]
-    pub const fn can_send(self) -> bool {
-        matches!(self, Self::Connected | Self::Bound)
-    }
-
-    /// 受信可能な状態か
-    #[inline(always)]
-    pub const fn can_receive(self) -> bool {
-        matches!(self, Self::Connected | Self::Bound | Self::Listening)
-    }
-
-    /// バインド可能な状態か
-    #[inline(always)]
-    pub const fn can_bind(self) -> bool {
-        matches!(self, Self::Created)
-    }
-
-    /// 接続可能な状態か
-    #[inline(always)]
-    pub const fn can_connect(self) -> bool {
-        matches!(self, Self::Created | Self::Bound)
-    }
-
-    /// リッスン可能な状態か
-    #[inline(always)]
-    pub const fn can_listen(self) -> bool {
-        matches!(self, Self::Bound)
-    }
-}
+pub(crate) static NEXT_SOCKET_ID: AtomicU32 = AtomicU32::new(0);
 
 /// エンドポイントエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,7 +84,7 @@ pub enum EndpointError {
 impl core::fmt::Display for EndpointError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NotFound => write!(f, "Endpoint not found"),
+            Self::NotFound => write!(f, "Socket not found"),
             Self::InvalidArgument => write!(f, "Invalid argument"),
             Self::AlreadyBound => write!(f, "Already bound"),
             Self::AlreadyConnected => write!(f, "Already connected"),
@@ -186,8 +124,8 @@ impl EndpointError {
     }
 }
 
-/// エンドポイント結果型
-pub(crate) type EndpointResult<T> = Result<T, EndpointError>;
+/// internal socket 結果型
+pub(crate) type SocketResult<T> = Result<T, EndpointError>;
 
 /// エンドポイントアドレス（IPv4 / IPv6 - unified）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -405,7 +343,7 @@ impl core::fmt::Display for EndpointAddr {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AcceptedConnection {
     /// 新規作成されたエンドポイントFD
-    pub fd: EndpointFd,
+    pub socket_id: SocketId,
     /// ローカルアドレス
     pub local_addr: EndpointAddr,
     /// リモートアドレス
@@ -417,13 +355,13 @@ pub(crate) struct AcceptedConnection {
 impl AcceptedConnection {
     /// 新規作成
     pub fn new(
-        fd: EndpointFd,
+        socket_id: SocketId,
         local_addr: EndpointAddr,
         remote_addr: EndpointAddr,
         if_id: NetIfId,
     ) -> Self {
         Self {
-            fd,
+            socket_id,
             local_addr,
             remote_addr,
             if_id,
@@ -535,16 +473,16 @@ pub(crate) fn seq_geq(a: u32, b: u32) -> bool {
 // テスト
 // =====================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
     fn endpoint_fd_impl() {
-        let fd1 = EndpointFd::from_raw(1);
-        let fd2 = EndpointFd::from_raw(2);
+        let fd1 = SocketId::from_raw(1);
+        let fd2 = SocketId::from_raw(2);
 
         assert!(fd1.is_valid());
-        assert!(!EndpointFd::INVALID.is_valid());
+        assert!(!SocketId::INVALID.is_valid());
         assert!(fd1 < fd2);
     }
 
@@ -566,27 +504,5 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_addr() {
         endpoint_addr_impl();
-    }
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    use super::*;
-
-    pub fn endpoint_fd_smoke() -> bool {
-        let fd1 = EndpointFd::from_raw(1);
-        let fd2 = EndpointFd::from_raw(2);
-
-        fd1.is_valid() && !EndpointFd::INVALID.is_valid() && fd1 < fd2
-    }
-
-    pub fn endpoint_addr_smoke() -> bool {
-        let addr = EndpointAddr::new([192, 168, 1, 1], 8080);
-        if addr.as_ipv4().unwrap() != [192, 168, 1, 1] || addr.port() != 8080 {
-            return false;
-        }
-
-        let localhost = EndpointAddr::LOCALHOST.with_port(3000);
-        localhost.as_ipv4().unwrap() == [127, 0, 0, 1] && localhost.port() == 3000
     }
 }

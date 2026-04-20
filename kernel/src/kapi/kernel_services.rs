@@ -7,7 +7,7 @@ use crate::kapi::device_registration::{
 };
 use crate::kapi::memory::release_dma_buffer;
 use crate::kapi::net::{
-    close_endpoint_handle, endpoint_addr_from_kapi, endpoint_error_to_kapi, lookup_endpoint,
+    close_socket_handle, endpoint_addr_from_kapi, endpoint_error_to_kapi, lookup_socket,
     stack_scope, tcp_error_to_kapi,
 };
 use kernel_api::abi::driver::{
@@ -219,9 +219,9 @@ impl KernelServices for ExoKernel {
     {
         let default_scope = listener.default_scope();
         Box::pin(async move {
-            let fd = crate::net::l4::types::EndpointFd::from_raw(listener.id() as u32);
-            let socket = lookup_endpoint(fd)?;
-            let acceptor = crate::net::l4::tcp::TcpAcceptor::from_retained_endpoint(socket);
+            let fd = crate::net::l4::types::SocketId::from_raw(listener.id() as u32);
+            let socket = lookup_socket(fd)?;
+            let acceptor = crate::net::l4::tcp::TcpAcceptor::from_retained_socket(socket);
             let (connection, _addr) = acceptor
                 .next_connection()
                 .await
@@ -238,17 +238,15 @@ impl KernelServices for ExoKernel {
         &self,
         stream: kernel_api::resource::net::TcpConnection,
     ) -> Result<(), KapiError> {
-        close_endpoint_handle(crate::net::l4::types::EndpointFd::from_raw(
-            stream.id() as u32
-        ))
+        close_socket_handle(crate::net::l4::types::SocketId::from_raw(stream.id() as u32))
     }
 
     fn net_tcp_acceptor_close(
         &self,
         listener: kernel_api::resource::net::TcpAcceptor,
     ) -> Result<(), KapiError> {
-        close_endpoint_handle(crate::net::l4::types::EndpointFd::from_raw(
-            listener.id() as u32,
+        close_socket_handle(crate::net::l4::types::SocketId::from_raw(
+            listener.id() as u32
         ))
     }
 
@@ -258,9 +256,9 @@ impl KernelServices for ExoKernel {
     ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::PacketPayload>> + Send>>
     {
         Box::pin(async move {
-            let fd = crate::net::l4::types::EndpointFd::from_raw(stream.id() as u32);
-            let socket = lookup_endpoint(fd)?;
-            let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_endpoint(socket);
+            let fd = crate::net::l4::types::SocketId::from_raw(stream.id() as u32);
+            let socket = lookup_socket(fd)?;
+            let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_socket(socket);
             match connection.recv_payload().await {
                 Some(payload) => Ok(payload),
                 None => Ok(kernel_api::resource::net::PacketPayload::default()),
@@ -274,9 +272,9 @@ impl KernelServices for ExoKernel {
         payload: kernel_api::resource::net::PacketPayload,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         Box::pin(async move {
-            let fd = crate::net::l4::types::EndpointFd::from_raw(stream.id() as u32);
-            let socket = lookup_endpoint(fd)?;
-            let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_endpoint(socket);
+            let fd = crate::net::l4::types::SocketId::from_raw(stream.id() as u32);
+            let socket = lookup_socket(fd)?;
+            let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_socket(socket);
             connection
                 .send_payload(payload)
                 .await
@@ -317,9 +315,9 @@ impl KernelServices for ExoKernel {
         &self,
         endpoint: kernel_api::resource::net::RawEndpoint,
     ) -> Result<(), KapiError> {
-        let fd = crate::net::l4::types::EndpointFd::from_raw(endpoint.id() as u32);
-        let socket = lookup_endpoint(fd)?;
-        crate::net::l4::raw::RawEndpoint::from_registered_endpoint(socket)
+        let fd = crate::net::l4::types::SocketId::from_raw(endpoint.id() as u32);
+        let socket = lookup_socket(fd)?;
+        crate::net::l4::raw::RawEndpoint::from_registered_socket(socket)
             .close()
             .map_err(endpoint_error_to_kapi)
     }
@@ -342,9 +340,9 @@ impl KernelServices for ExoKernel {
         }
 
         Box::pin(async move {
-            let fd = crate::net::l4::types::EndpointFd::from_raw(endpoint.id() as u32);
-            let socket = lookup_endpoint(fd)?;
-            let raw = crate::net::l4::raw::RawEndpoint::from_retained_endpoint(socket);
+            let fd = crate::net::l4::types::SocketId::from_raw(endpoint.id() as u32);
+            let socket = lookup_socket(fd)?;
+            let raw = crate::net::l4::raw::RawEndpoint::from_retained_socket(socket);
             raw.recv_payload()
                 .await
                 .map(|(payload, _if_id)| payload)
@@ -371,11 +369,13 @@ impl KernelServices for ExoKernel {
 
         Box::pin(async move {
             let resolved_scope = endpoint.default_scope();
-            let fd = crate::net::l4::types::EndpointFd::from_raw(endpoint.id() as u32);
-            let socket = lookup_endpoint(fd)?;
-            let raw = crate::net::l4::raw::RawEndpoint::from_retained_endpoint(socket);
+            let fd = crate::net::l4::types::SocketId::from_raw(endpoint.id() as u32);
+            let socket = lookup_socket(fd)?;
+            let raw = crate::net::l4::raw::RawEndpoint::from_retained_socket(socket);
             raw.set_scope(stack_scope(resolved_scope));
-            raw.send_payload(payload).await.map_err(endpoint_error_to_kapi)
+            raw.send_payload(payload)
+                .await
+                .map_err(endpoint_error_to_kapi)
         })
     }
 

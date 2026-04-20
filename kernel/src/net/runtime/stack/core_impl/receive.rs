@@ -98,10 +98,12 @@ impl NetworkStack {
                 // Offload transport handling to endpoint event path.
                 if let Some(packet_ref) = packet.take() {
                     crate::net::runtime::command::enqueue_command_ignore(
-                        crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
-                            if_id: None,
-                            packet: packet_ref,
-                        }),
+                        crate::net::runtime::command::RuntimeCommand::Ingress(
+                            crate::net::runtime::command::IngressCommand::Packet {
+                                if_id: None,
+                                packet: packet_ref,
+                            },
+                        ),
                     );
                 }
             }
@@ -118,10 +120,12 @@ impl NetworkStack {
                 // Offload transport handling to endpoint event path.
                 if let Some(packet_ref) = packet.take() {
                     crate::net::runtime::command::enqueue_command_ignore(
-                        crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
-                            if_id: None,
-                            packet: packet_ref,
-                        }),
+                        crate::net::runtime::command::RuntimeCommand::Ingress(
+                            crate::net::runtime::command::IngressCommand::Packet {
+                                if_id: None,
+                                packet: packet_ref,
+                            },
+                        ),
                     );
                 }
             }
@@ -142,10 +146,12 @@ impl NetworkStack {
                     }
                 }
                 crate::net::runtime::command::enqueue_command_ignore(
-                    crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Reassembled {
-                        if_id: None,
-                        payload,
-                    }),
+                    crate::net::runtime::command::RuntimeCommand::Ingress(
+                        crate::net::runtime::command::IngressCommand::Reassembled {
+                            if_id: None,
+                            payload,
+                        },
+                    ),
                 );
             }
             Ipv4ProcessResult::FragmentPending => {
@@ -232,11 +238,13 @@ impl NetworkStack {
                 let rtt_us = 0;
                 crate::net::api::icmp::notify_icmp_echo_reply(*src_ip.as_bytes(), sequence, rtt_us);
                 crate::net::runtime::command::enqueue_command_ignore(
-                    crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoReply {
-                        source: *src_ip.as_bytes(),
-                        sequence,
-                        rtt_us,
-                    }),
+                    crate::net::runtime::command::RuntimeCommand::Control(
+                        crate::net::runtime::command::ControlCommand::IcmpEchoReply {
+                            source: *src_ip.as_bytes(),
+                            sequence,
+                            rtt_us,
+                        },
+                    ),
                 );
             }
             IcmpResult::Error { icmp_type, code } => {
@@ -283,7 +291,7 @@ impl NetworkStack {
     ) {
         let mut ip_packet = Some(ip_packet);
         let ingress_if_id = self.resolve_ingress_if(if_id);
-        let raw_endpoint = crate::net::l4::socket::find_raw_endpoint(ingress_if_id);
+        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope(ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
                 let _ = endpoint.deliver_raw_payload(
@@ -453,10 +461,12 @@ impl NetworkStack {
             Ipv6ProcessResult::Reassembled(payload) => {
                 // Reassembled IPv6 payload is offloaded to endpoint async path.
                 crate::net::runtime::command::enqueue_command_ignore(
-                    crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Reassembled {
-                        if_id,
-                        payload,
-                    }),
+                    crate::net::runtime::command::RuntimeCommand::Ingress(
+                        crate::net::runtime::command::IngressCommand::Reassembled {
+                            if_id,
+                            payload,
+                        },
+                    ),
                 );
             }
             Ipv6ProcessResult::FragmentPending => {
@@ -696,9 +706,11 @@ impl NetworkStack {
                                     let remote_addr =
                                         TcpEndpointAddr::new_v6(dst.octets(), dst_port);
 
-                                    if !crate::net::l4::tcp::tcb_table()
-                                        .validate_icmp_sequence(local_addr, remote_addr, seq_num)
-                                    {
+                                    if !crate::net::l4::tcp::tcb_table().validate_icmp_sequence(
+                                        local_addr,
+                                        remote_addr,
+                                        seq_num,
+                                    ) {
                                         log::warn!(
                                             "[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq",
                                             dst

@@ -70,7 +70,8 @@ impl NetworkStack {
                     .set_ttl(64);
 
                 let ip_payload = ip_packet.payload_mut();
-                if let Some(mut icmp_builder) = crate::net::l3::icmp::IcmpEchoBuilder::new(ip_payload)
+                if let Some(mut icmp_builder) =
+                    crate::net::l3::icmp::IcmpEchoBuilder::new(ip_payload)
                 {
                     icmp_builder.build_reply(identifier, sequence);
                     icmp_builder.write_payload_span_ref(echo_data);
@@ -155,12 +156,9 @@ impl NetworkStack {
                     .set_ttl(64);
 
                 let ip_payload = ip_packet.payload_mut();
-                if let Some(len) = IcmpProcessor::build_dest_unreachable(
-                    ip_payload,
-                    code,
-                    next_hop_mtu,
-                    &view,
-                ) {
+                if let Some(len) =
+                    IcmpProcessor::build_dest_unreachable(ip_payload, code, next_hop_mtu, &view)
+                {
                     ip_packet.finalize(len);
                     let ip_len = ip_packet.total_len();
                     drop(ip_packet);

@@ -3,12 +3,12 @@
 // ============================================================================
 //! RuntimeCommandHandler DHCP/TCPクエリ系メソッド
 
-use crate::net::runtime::command::RuntimeCommand;
-use crate::net::runtime::command_handler::common::finish_command;
-use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::l4::tcp::tcb::{TcpConnectionState, tcb_table};
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command_handler::common::finish_command;
+use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::manager::NetIfId;
 
 impl RuntimeCommandHandler {
@@ -18,11 +18,13 @@ impl RuntimeCommandHandler {
         event: RuntimeCommand,
     ) -> EventHandleResult {
         match event {
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetDhcpState {
-                if_id,
-                result_slot,
-                waker,
-            }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetDhcpState {
+                    if_id,
+                    result_slot,
+                    waker,
+                },
+            ) => finish_command(
                 result_slot,
                 waker,
                 if let Some(if_id) = if_id {
@@ -31,12 +33,17 @@ impl RuntimeCommandHandler {
                     crate::net::api::dhcp::dhcp_state_snapshot_in(runtime)
                 },
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListDhcpStates { result_slot, waker }) => finish_command(
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListDhcpStates { result_slot, waker },
+            ) => finish_command(
                 result_slot,
                 waker,
                 crate::net::api::dhcp::list_dhcp_states_snapshot_in(runtime),
             ),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew { result_slot, waker }) => {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew {
+                result_slot,
+                waker,
+            }) => {
                 use crate::net::services::dhcp;
 
                 let now = tcb_table().get_current_tick();
@@ -74,7 +81,9 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRelease { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpRelease { result_slot, waker },
+            ) => {
                 use crate::net::services::dhcp;
 
                 let mut released = false;
@@ -95,7 +104,9 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpDiscover { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpDiscover { result_slot, waker },
+            ) => {
                 use crate::net::services::dhcp;
 
                 let now = tcb_table().get_current_tick();
@@ -117,7 +128,10 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform { result_slot, waker }) => {
+            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform {
+                result_slot,
+                waker,
+            }) => {
                 use crate::net::services::dhcp;
 
                 let now = tcb_table().get_current_tick();
@@ -141,7 +155,12 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastDeclined { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLastDeclined {
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 use crate::net::services::dhcp;
 
                 let mut ip = None;
@@ -155,7 +174,12 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastReleased { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLastReleased {
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 use crate::net::services::dhcp;
 
                 let mut ip = None;
@@ -169,7 +193,12 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetTcpConnections { result_slot, waker }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetTcpConnections {
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let snapshots = tcb_table().list_connections();
                 let connections: alloc::vec::Vec<_> = snapshots
                     .into_iter()

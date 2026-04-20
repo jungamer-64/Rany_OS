@@ -1,15 +1,15 @@
 // ============================================================================
 // kernel/src/net/l4/endpoint/event_loop.rs
 // ============================================================================
-//! # Endpoint Event Loop
+//! # Socket Event Loop
 //!
 //! endpoint 共通のイベント待機・バッチ処理タスクを提供する。
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::command::command_queue_in;
-use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::l4::tcp::tcb_table;
+use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 /// ネットワークイベント処理タスク（完全非同期版）

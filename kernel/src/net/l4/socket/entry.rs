@@ -1,45 +1,39 @@
-// ============================================================================
-// kernel/src/net/l4/socket/entry.rs
-// ============================================================================
-//! # Socket - Arc<PoisonLock<EndpointInner>>ラッパー
-//!
-//! Socket と関連ヘルパー関数
+//! Shared socket handle backed by `Arc<PoisonLock<SocketState>>`.
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::l4::types::{EndpointAddr, EndpointError, NEXT_SOCKET_ID, SocketId, SocketResult};
+use crate::net::payload::split_payload_prefix_owned;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::{
+    RuntimeCommand, TransportCommand, enqueue_command_ignore_in, enqueue_command_in,
+};
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::poison_lock::PoisonLock;
 use kernel_api::resource::net::PacketPayload;
 
-use crate::net::runtime::command::{RuntimeCommand, enqueue_command_ignore_in, enqueue_command_in};
 use super::registry::SOCKET_REGISTRY;
-use super::state::EndpointInner;
-use crate::net::l4::types::{
-    EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointState, EndpointType, NEXT_FD,
-};
+use super::state::{SocketState, TcpSocketState};
 
-fn register_endpoint(endpoint: &Endpoint) {
-    if let Some(ref manager) = *SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner()) {
-        manager.register(endpoint.clone());
+fn register_socket(socket: &Socket) {
+    if let Some(registry) = &*SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner()) {
+        registry.register(socket.clone());
     }
 }
 
-/// ソケット構造体（細粒度ロック対応）
-pub struct Endpoint {
-    /// ファイルディスクリプタ
-    fd: EndpointFd,
-    /// エンドポイントタイプ（不変）
-    endpoint_type: EndpointType,
-    /// 所属するネットワークランタイム
+pub struct Socket {
+    socket_id: SocketId,
     runtime: NetRuntimeHandle,
-    /// 内部状態（Arc<PoisonLock>で保護 — 設計書 8.4準拠）
-    inner: Arc<PoisonLock<EndpointInner>>,
+    inner: Arc<PoisonLock<SocketState>>,
 }
 
-impl Endpoint {
+impl Socket {
+    fn next_socket_id() -> SocketId {
+        SocketId::from_raw(NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
     fn notify_tcb_data_received(
         local: Option<EndpointAddr>,
         remote: Option<EndpointAddr>,
@@ -57,7 +51,7 @@ impl Endpoint {
     }
 
     fn split_and_queue_payload(
-        inner: &mut EndpointInner,
+        inner: &mut SocketState,
         payload: PacketPayload,
     ) -> (usize, Option<PacketPayload>) {
         let available = inner
@@ -69,9 +63,7 @@ impl Endpoint {
 
         let payload_len = payload.total_len();
         let (queued, remainder) = if payload_len > available {
-            let Some((queued, remainder)) =
-                crate::net::payload::split_payload_prefix_owned(payload, available)
-            else {
+            let Some((queued, remainder)) = split_payload_prefix_owned(payload, available) else {
                 return (0, None);
             };
             (queued, (!remainder.is_empty()).then_some(remainder))
@@ -81,10 +73,12 @@ impl Endpoint {
 
         let pushed = queued.total_len();
         if pushed > 0 {
-            let tcp = inner.ensure_tcp();
+            let Some(tcp) = inner.tcp_mut() else {
+                return (0, Some(queued));
+            };
             tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_add(pushed);
             tcp.recv_payload_queue.push_back(queued);
-            while matches!(tcp.recv_payload_queue.front(), Some(payload) if payload.is_empty()) {
+            while matches!(tcp.recv_payload_queue.front(), Some(segment) if segment.is_empty()) {
                 tcp.recv_payload_queue.pop_front();
             }
         }
@@ -92,66 +86,99 @@ impl Endpoint {
         (pushed, remainder)
     }
 
-    /// 指定ランタイムの新規エンドポイント作成
-    pub fn new_in(endpoint_type: EndpointType, runtime: NetRuntimeHandle) -> Self {
-        let fd = EndpointFd::from_raw(NEXT_FD.fetch_add(1, Ordering::Relaxed));
+    pub fn new_tcp_in(runtime: NetRuntimeHandle, state: TcpSocketState) -> Self {
         Self {
-            fd,
-            endpoint_type,
+            socket_id: Self::next_socket_id(),
             runtime,
-            inner: Arc::new(PoisonLock::new(EndpointInner::new())),
+            inner: Arc::new(PoisonLock::new(SocketState::new_tcp(state))),
         }
     }
 
-    /// EndpointManager に登録済みの新規エンドポイント作成
-    pub(crate) fn new_registered_in(
-        endpoint_type: EndpointType,
-        runtime: NetRuntimeHandle,
-    ) -> Self {
-        let endpoint = Self::new_in(endpoint_type, runtime);
-        register_endpoint(&endpoint);
-        endpoint
+    pub(crate) fn new_registered_tcp_in(runtime: NetRuntimeHandle, state: TcpSocketState) -> Self {
+        let socket = Self::new_tcp_in(runtime, state);
+        register_socket(&socket);
+        socket
     }
 
-    /// 指定FD・ランタイムでエンドポイント作成（Accept用）
-    pub fn new_with_fd_in(
-        endpoint_type: EndpointType,
-        fd: EndpointFd,
+    pub fn new_tcp_with_socket_id_in(
+        socket_id: SocketId,
         runtime: NetRuntimeHandle,
+        state: TcpSocketState,
     ) -> Self {
         Self {
-            fd,
-            endpoint_type,
+            socket_id,
             runtime,
-            inner: Arc::new(PoisonLock::new(EndpointInner::new())),
+            inner: Arc::new(PoisonLock::new(SocketState::new_tcp(state))),
         }
     }
 
-    /// ファイルディスクリプタ取得
-    #[inline(always)]
-    pub const fn fd(&self) -> EndpointFd {
-        self.fd
+    pub fn new_udp_in(runtime: NetRuntimeHandle) -> Self {
+        Self {
+            socket_id: Self::next_socket_id(),
+            runtime,
+            inner: Arc::new(PoisonLock::new(SocketState::new_udp())),
+        }
     }
 
-    /// ソケットタイプ取得
-    #[inline(always)]
-    pub const fn socket_type(&self) -> EndpointType {
-        self.endpoint_type
+    pub(crate) fn new_registered_udp_in(runtime: NetRuntimeHandle) -> Self {
+        let socket = Self::new_udp_in(runtime);
+        register_socket(&socket);
+        socket
     }
 
-    /// 所属ランタイム取得
+    pub fn new_raw_in(runtime: NetRuntimeHandle) -> Self {
+        Self {
+            socket_id: Self::next_socket_id(),
+            runtime,
+            inner: Arc::new(PoisonLock::new(SocketState::new_raw())),
+        }
+    }
+
+    pub(crate) fn new_registered_raw_in(runtime: NetRuntimeHandle) -> Self {
+        let socket = Self::new_raw_in(runtime);
+        register_socket(&socket);
+        socket
+    }
+
+    #[inline(always)]
+    pub const fn socket_id(&self) -> SocketId {
+        self.socket_id
+    }
+
     #[inline(always)]
     pub const fn runtime(&self) -> NetRuntimeHandle {
         self.runtime
     }
 
-    /// 現在の状態取得
     #[inline]
-    pub fn state(&self) -> EndpointState {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).state
+    pub fn inner(&self) -> &Arc<PoisonLock<SocketState>> {
+        &self.inner
     }
 
-    /// ローカルアドレス取得
+    #[inline]
+    pub fn is_tcp(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_tcp()
+    }
+
+    #[inline]
+    pub fn is_udp(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_udp()
+    }
+
+    #[inline]
+    pub fn is_raw(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_raw()
+    }
+
     #[inline]
     pub fn local_addr(&self) -> Option<EndpointAddr> {
         self.inner
@@ -160,7 +187,6 @@ impl Endpoint {
             .local_addr
     }
 
-    /// リモートアドレス取得
     #[inline]
     pub fn remote_addr(&self) -> Option<EndpointAddr> {
         self.inner
@@ -169,73 +195,57 @@ impl Endpoint {
             .remote_addr
     }
 
-    /// 内部状態への参照取得（高度な操作用）
-    #[inline]
-    pub fn inner(&self) -> &Arc<PoisonLock<EndpointInner>> {
-        &self.inner
-    }
-
-    /// 次の接続を取得（同期バッファ読み取り）
-    ///
-    /// Acceptキューから接続を取得する。NETWORK_STACKロックは使用しない。
-    /// 空の場合はTimeoutを返す。`TcpAcceptor::next_connection()` が内部で使用する。
-    pub fn try_next_incoming(&self) -> EndpointResult<(Endpoint, EndpointAddr, NetIfId)> {
-        if self.endpoint_type != EndpointType::Tcp {
-            return Err(EndpointError::InvalidArgument);
-        }
-
+    pub fn try_next_incoming(&self) -> SocketResult<(Socket, EndpointAddr, NetIfId)> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-        if inner.state != EndpointState::Listening {
+        if !inner.is_tcp_listening() {
             return Err(EndpointError::InvalidStateTransition);
         }
 
-        // Acceptキューから接続を取得
-        if let Some(conn) = inner.tcp_mut().and_then(|t| t.accept_queue.pop_front()) {
-            // 新しい接続エンドポイントを作成
-            let new_endpoint = Endpoint::new_with_fd_in(EndpointType::Tcp, conn.fd, self.runtime);
+        if let Some(conn) = inner.tcp_mut().and_then(|tcp| tcp.accept_queue.pop_front()) {
+            let socket = Self::new_tcp_with_socket_id_in(
+                conn.socket_id,
+                self.runtime,
+                TcpSocketState::Connected,
+            );
             {
-                let mut new_inner = new_endpoint.inner.lock().unwrap_or_else(|e| e.into_inner());
+                let mut new_inner = socket.inner.lock().unwrap_or_else(|e| e.into_inner());
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 new_inner.scope = crate::net::types::InterfaceScope::Pinned(conn.if_id);
                 new_inner.last_ingress_if_id = Some(conn.if_id);
-                new_inner.ensure_tcp().nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を引き継ぐ
-                new_inner.priority = inner.priority; // 優先度を引き継ぐ
-                let _ = new_inner.transition_to(EndpointState::Connected);
+                if let Some(new_tcp) = new_inner.tcp_mut() {
+                    new_tcp.nodelay = inner.tcp().is_some_and(|tcp| tcp.nodelay);
+                }
+                new_inner.priority = inner.priority;
             }
 
-            // エンドポイントマネージャに登録
-            register_endpoint(&new_endpoint);
-
-            log::info!("TCP: Accepted connection from {}", conn.remote_addr);
-
-            return Ok((new_endpoint, conn.remote_addr, conn.if_id));
+            register_socket(&socket);
+            return Ok((socket, conn.remote_addr, conn.if_id));
         }
 
-        // キューが空の場合はPending（Timeout）を返す
         Err(EndpointError::Timeout)
     }
 
-    /// Accept用Wakerを登録（非同期用）
     pub fn register_accept_waker(&self, waker: core::task::Waker) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.accept_waker = Some(waker);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .accept_waker = Some(waker);
     }
 
-    /// 受信待ちWakerを登録（非同期用）
     pub fn register_recv_waker(&self, waker: core::task::Waker) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.recv_waker = Some(waker);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recv_waker = Some(waker);
     }
 
-    /// データ受信（同期バッファ読み取り）
-    ///
-    /// 内部バッファから読み取るのみ。ネットワークスタックロックは使用しない。
-    pub fn try_recv(&self, buf: &mut [u8]) -> EndpointResult<usize> {
+    pub fn try_recv(&self, buf: &mut [u8]) -> SocketResult<usize> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-        if !inner.state.can_receive() {
+        if !matches!(
+            inner.tcp_state(),
+            Some(TcpSocketState::Connected | TcpSocketState::Closing)
+        ) {
             return Err(EndpointError::NotConnected);
         }
 
@@ -247,9 +257,6 @@ impl Endpoint {
         }
     }
 
-    /// 受信バッファにデータ追加（内部用）
-    /// プロトコルスタックから呼ばれる
-    /// 実際にバッファに追加されたバイト数を返す。
     pub fn push_payload(&self, payload: PacketPayload) -> usize {
         let (pushed, local, remote, waker) = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -261,24 +268,16 @@ impl Endpoint {
                     tcp.stats.record_rx_segment(pushed);
                 }
             }
-            // 待機中のタスクを起こす準備 (push_recv_payloadがwakeする場合もあるが、
-            // ここでwakerを取り出すのは古いコードとの互換性/安全策)
             (pushed, local, remote, inner.recv_waker.take())
         };
 
         Self::notify_tcb_data_received(local, remote, pushed);
-
-        // ロック外でWakerを起こす（デッドロック回避）
-        if let Some(w) = waker {
-            w.wake();
+        if let Some(waker) = waker {
+            waker.wake();
         }
         pushed
     }
 
-    /// 受信バッファへ追加し、未受理データ（あれば）を返す。
-    ///
-    /// OOOドレイン時に `clone()` を避けるため、
-    /// 受理分はキューへ移送し、未受理分のみ `PacketPayload` として返却する。
     pub fn push_payload_with_remainder(
         &self,
         payload: PacketPayload,
@@ -296,25 +295,20 @@ impl Endpoint {
         };
 
         Self::notify_tcb_data_received(local, remote, pushed);
-
-        if let Some(w) = waker {
-            w.wake();
+        if let Some(waker) = waker {
+            waker.wake();
         }
 
         (pushed, remainder)
     }
 
-    /// UDPパケット追加（ゼロコピー内部キュー優先）
-    ///
-    /// 内部UDPソケットがある場合は `PacketRef` の所有権をそのまま移動し、
-    /// 呼び出し側が `recv_from*()` を使う場合のみコピーする。
     pub fn deliver_udp_packet(
         &self,
         if_id: NetIfId,
         addr: EndpointAddr,
         ttl: u8,
         packet: PacketRef,
-    ) -> EndpointResult<()> {
+    ) -> SocketResult<()> {
         self.deliver_udp_payload(if_id, addr, ttl, PacketPayload::single(packet))
     }
 
@@ -324,15 +318,16 @@ impl Endpoint {
         addr: EndpointAddr,
         ttl: u8,
         payload: PacketPayload,
-    ) -> EndpointResult<()> {
-        if self.endpoint_type != EndpointType::Udp {
-            return Err(EndpointError::InvalidArgument);
-        }
-
+    ) -> SocketResult<()> {
         let recv_waker = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if !inner.is_udp_bound() {
+                return Err(EndpointError::NotConnected);
+            }
             inner.last_ingress_if_id = Some(if_id);
-            let udp = inner.ensure_udp();
+            let Some(udp) = inner.udp_mut() else {
+                return Err(EndpointError::InvalidArgument);
+            };
             udp.ttl = ttl;
             udp.pending_packets.push_back((if_id, addr, ttl, payload));
             inner.recv_waker.take()
@@ -341,17 +336,12 @@ impl Endpoint {
         if let Some(waker) = recv_waker {
             waker.wake();
         }
-
         Ok(())
     }
 
-    pub fn try_recv_raw_payload(&self) -> EndpointResult<(PacketPayload, NetIfId)> {
-        if self.endpoint_type != EndpointType::Raw {
-            return Err(EndpointError::InvalidArgument);
-        }
-
+    pub fn try_recv_raw_payload(&self) -> SocketResult<(PacketPayload, NetIfId)> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if !inner.state.can_receive() {
+        if !inner.is_raw_open() {
             return Err(EndpointError::NotConnected);
         }
 
@@ -366,42 +356,29 @@ impl Endpoint {
         Err(EndpointError::Timeout)
     }
 
-    pub fn deliver_raw_payload(
-        &self,
-        if_id: NetIfId,
-        payload: PacketPayload,
-    ) -> EndpointResult<()> {
-        if self.endpoint_type != EndpointType::Raw {
-            return Err(EndpointError::InvalidArgument);
-        }
-
+    pub fn deliver_raw_payload(&self, if_id: NetIfId, payload: PacketPayload) -> SocketResult<()> {
         let recv_waker = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if !inner.is_raw_open() {
+                return Err(EndpointError::NotConnected);
+            }
             inner.last_ingress_if_id = Some(if_id);
-            inner
-                .ensure_raw()
-                .pending_payloads
-                .push_back((if_id, payload));
+            let Some(raw) = inner.raw_mut() else {
+                return Err(EndpointError::InvalidArgument);
+            };
+            raw.pending_payloads.push_back((if_id, payload));
             inner.recv_waker.take()
         };
 
         if let Some(waker) = recv_waker {
             waker.wake();
         }
-
         Ok(())
     }
 
-    pub fn try_recv_udp_payload(
-        &self,
-    ) -> EndpointResult<(NetIfId, EndpointAddr, u8, PacketPayload)> {
-        if self.endpoint_type != EndpointType::Udp {
-            return Err(EndpointError::InvalidArgument);
-        }
-
+    pub fn try_recv_udp_payload(&self) -> SocketResult<(NetIfId, EndpointAddr, u8, PacketPayload)> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-
-        if !inner.state.can_receive() {
+        if !inner.is_udp_bound() {
             return Err(EndpointError::NotConnected);
         }
 
@@ -416,16 +393,11 @@ impl Endpoint {
         Err(EndpointError::Timeout)
     }
 
-    /// クローズ
-    pub(crate) fn close_immediate(&self) -> EndpointResult<()> {
+    pub(crate) fn close_immediate(&self) -> SocketResult<()> {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.mark_closed();
 
-            // プロトコル状態のクリーンアップ
-            inner.clear_tcp_payload_queues();
-            inner.clear_protocol();
-
-            // 待機中のタスクを起こす
             if let Some(waker) = inner.recv_waker.take() {
                 waker.wake();
             }
@@ -435,95 +407,80 @@ impl Endpoint {
             if let Some(waker) = inner.connect_waker.take() {
                 waker.wake();
             }
-
-            inner.transition_to(EndpointState::Closed)?;
+            if let Some(waker) = inner.accept_waker.take() {
+                waker.wake();
+            }
         }
 
-        // ネットワークスタックにクローズを通知（エラーは無視 - クローズは必ず進める）
-        enqueue_command_ignore_in(self.runtime, RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket { fd: self.fd }));
-
+        enqueue_command_ignore_in(
+            self.runtime,
+            RuntimeCommand::Transport(TransportCommand::CloseSocket {
+                socket_id: self.socket_id,
+            }),
+        );
         Ok(())
     }
 
-    /// TCP_NODELAY (Nagleアルゴリズム無効化) を設定
-    pub fn set_nodelay(&self, nodelay: bool) -> EndpointResult<()> {
-        if self.endpoint_type != EndpointType::Tcp {
-            return Err(EndpointError::InvalidArgument);
-        }
-
+    pub fn set_nodelay(&self, nodelay: bool) -> SocketResult<()> {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.ensure_tcp().nodelay = nodelay;
+            let Some(tcp) = inner.tcp_mut() else {
+                return Err(EndpointError::InvalidArgument);
+            };
+            tcp.nodelay = nodelay;
         }
 
-        // ネットワークスタックに通知（接続済みの場合、TCBに反映させる）
         enqueue_command_in(
             self.runtime,
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::SetTcpNoDelay {
-                fd: self.fd,
+            RuntimeCommand::Transport(TransportCommand::SetTcpNoDelay {
+                socket_id: self.socket_id,
                 nodelay,
             }),
         )
     }
 
-    /// QoS優先度 (DSCP) を設定
-    pub fn set_priority(&self, priority: u8) -> EndpointResult<()> {
+    pub fn set_priority(&self, priority: u8) -> SocketResult<()> {
         {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            inner.priority = priority & 0x3F; // DSCPは6ビット
+            inner.priority = priority & 0x3F;
         }
 
-        // ネットワークスタックに通知
         enqueue_command_in(
             self.runtime,
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::SetSocketPriority {
-                fd: self.fd,
+            RuntimeCommand::Transport(TransportCommand::SetSocketPriority {
+                socket_id: self.socket_id,
                 priority: priority & 0x3F,
             }),
         )
     }
 }
 
-impl Clone for Endpoint {
+impl Clone for Socket {
     fn clone(&self) -> Self {
         Self {
-            fd: self.fd,
-            endpoint_type: self.endpoint_type,
+            socket_id: self.socket_id,
             runtime: self.runtime,
             inner: Arc::clone(&self.inner),
         }
     }
 }
 
-// =====================================================
-// テスト
-// =====================================================
-
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::net::l4::socket::registry::init_socket_registry;
+    use crate::net::runtime::default_runtime;
 
     #[cfg_attr(test, test_case)]
-    pub fn test_new_registered_endpoint_registers_socket() {
-        crate::net::l4::socket::registry::init_socket_registry();
-        let endpoint = Endpoint::new_registered_in(EndpointType::Tcp, default_runtime());
-        let manager = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
-        let manager = manager.as_ref().expect("endpoint manager");
-        assert!(manager.get(endpoint.fd()).is_some());
-    }
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    use super::*;
-
-    pub fn registered_endpoint_smoke() -> bool {
-        crate::net::l4::socket::registry::init_socket_registry();
-        let endpoint = Endpoint::new_registered_in(EndpointType::Tcp, default_runtime());
-        let manager = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
-        manager
-            .as_ref()
-            .and_then(|mgr| mgr.get(endpoint.fd()))
-            .is_some()
+    pub fn test_new_registered_tcp_socket_registers_socket() {
+        init_socket_registry();
+        let socket = Socket::new_registered_tcp_in(default_runtime(), TcpSocketState::Connected);
+        let registry = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            registry
+                .as_ref()
+                .and_then(|it| it.get(socket.socket_id()))
+                .is_some()
+        );
     }
 }

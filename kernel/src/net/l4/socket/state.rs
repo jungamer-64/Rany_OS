@@ -1,63 +1,94 @@
-// ============================================================================
-// kernel/src/net/l4/endpoint/inner.rs
-// ============================================================================
-//! # EndpointInner - 細粒度ロック用の内部状態
-//!
-//! ソケットの可変状態（Mutex保護対象）
-//!
-//! ## プロトコル分離
-//!
-//! TCP固有・UDP固有のフィールドは [`ProtocolState`] enumで分離し、
-//! 不可能な状態（TCP + UDPが同時に存在）を型レベルで排除する。
+//! Internal socket state and protocol-specific entries.
 
 use alloc::collections::VecDeque;
+use core::ops::{Deref, DerefMut};
 
 use crate::net::l4::tcp::TcpStats;
+use crate::net::l4::tcp::congestion::CongestionAlgorithm;
+use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketResult};
 use crate::net::payload::{PacketPayloadView, append_payload};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
 
-use crate::net::l4::tcp::congestion::CongestionAlgorithm;
-use crate::net::l4::types::{
-    AcceptedConnection, EndpointAddr, EndpointError, EndpointResult, EndpointState,
-};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TcpSocketState {
+    Listening,
+    Connecting,
+    Connected,
+    Closing,
+    Closed,
+}
 
-// ============================================================================
-// プロトコル固有の状態
-// ============================================================================
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UdpSocketState {
+    Bound,
+    Closed,
+}
 
-/// TCP固有のプロトコル状態
-pub struct TcpProtocolState {
-    /// Acceptキュー: ハンドシェイク完了済みの接続
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawSocketState {
+    Open,
+    Closed,
+}
+
+pub(crate) struct SocketCommon {
+    pub local_addr: Option<EndpointAddr>,
+    pub remote_addr: Option<EndpointAddr>,
+    pub scope: InterfaceScope,
+    pub last_ingress_if_id: Option<NetIfId>,
+    pub recv_buffer_limit: usize,
+    pub send_buffer_limit: usize,
+    pub last_error: Option<EndpointError>,
+    pub recv_waker: Option<core::task::Waker>,
+    pub send_waker: Option<core::task::Waker>,
+    pub connect_waker: Option<core::task::Waker>,
+    pub accept_waker: Option<core::task::Waker>,
+    pub priority: u8,
+}
+
+impl SocketCommon {
+    pub const DEFAULT_BUFFER_SIZE: usize = 8192;
+    pub const MAX_BUFFER_SIZE: usize = 65536;
+
+    fn new() -> Self {
+        Self {
+            local_addr: None,
+            remote_addr: None,
+            scope: InterfaceScope::Any,
+            last_ingress_if_id: None,
+            recv_buffer_limit: Self::MAX_BUFFER_SIZE,
+            send_buffer_limit: Self::MAX_BUFFER_SIZE,
+            last_error: None,
+            recv_waker: None,
+            send_waker: None,
+            connect_waker: None,
+            accept_waker: None,
+            priority: 0,
+        }
+    }
+}
+
+pub(crate) struct TcpSocketEntry {
+    pub state: TcpSocketState,
     pub accept_queue: VecDeque<AcceptedConnection>,
-    /// Acceptキューのバックログサイズ
     pub accept_backlog: usize,
-    /// Packet-backed receive queue owned by the endpoint.
     pub recv_payload_queue: VecDeque<PacketPayload>,
-    /// Total queued bytes in `recv_payload_queue`.
     pub recv_payload_bytes: usize,
-    /// Packet-backed send queue owned by the endpoint.
     pub send_payload_queue: VecDeque<PacketPayload>,
-    /// Total queued bytes in `send_payload_queue`.
     pub send_payload_bytes: usize,
-    /// TCP_NODELAY (Nagleアルゴリズム無効化)
     pub nodelay: bool,
-    /// Urgent data pending flag (TCP OOB data)
     pub urgent_pending: bool,
-    /// 輻輳制御アルゴリズム選択（TCB作成時に使用）
     pub congestion_algorithm: Option<CongestionAlgorithm>,
-    /// TCP statistics snapshot for the endpoint-backed connection API.
     pub stats: TcpStats,
 }
 
-impl TcpProtocolState {
-    /// デフォルトのAcceptバックログサイズ
+impl TcpSocketEntry {
     pub const DEFAULT_BACKLOG: usize = 128;
 
-    /// 新規作成
-    pub fn new() -> Self {
+    pub fn new(state: TcpSocketState) -> Self {
         Self {
+            state,
             accept_queue: VecDeque::with_capacity(Self::DEFAULT_BACKLOG),
             accept_backlog: Self::DEFAULT_BACKLOG,
             recv_payload_queue: VecDeque::new(),
@@ -72,26 +103,17 @@ impl TcpProtocolState {
     }
 }
 
-impl Default for TcpProtocolState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// UDP固有のプロトコル状態
-pub struct UdpProtocolState {
-    /// 保留中のパケット
+pub(crate) struct UdpSocketEntry {
+    pub state: UdpSocketState,
     pub pending_packets: VecDeque<(NetIfId, EndpointAddr, u8, PacketPayload)>,
-    /// 送信時に使うデフォルト TTL / Hop Limit
     pub ttl: u8,
-    /// この bind に関連付けられた capability token
     pub token: Option<u64>,
 }
 
-impl UdpProtocolState {
-    /// 新規作成
-    pub fn new() -> Self {
+impl UdpSocketEntry {
+    pub fn new(state: UdpSocketState) -> Self {
         Self {
+            state,
             pending_packets: VecDeque::with_capacity(16),
             ttl: 64,
             token: None,
@@ -99,215 +121,228 @@ impl UdpProtocolState {
     }
 }
 
-impl Default for UdpProtocolState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// RAW固有のプロトコル状態
-pub struct RawProtocolState {
-    /// 保留中のIPパケット
+pub(crate) struct RawSocketEntry {
+    pub state: RawSocketState,
     pub pending_payloads: VecDeque<(NetIfId, PacketPayload)>,
 }
 
-impl RawProtocolState {
-    pub fn new() -> Self {
+impl RawSocketEntry {
+    pub fn new(state: RawSocketState) -> Self {
         Self {
+            state,
             pending_payloads: VecDeque::with_capacity(16),
         }
     }
 }
 
-impl Default for RawProtocolState {
-    fn default() -> Self {
-        Self::new()
+pub(crate) enum SocketEntry {
+    Tcp(TcpSocketEntry),
+    Udp(UdpSocketEntry),
+    Raw(RawSocketEntry),
+}
+
+pub(crate) struct SocketState {
+    pub common: SocketCommon,
+    pub entry: SocketEntry,
+}
+
+impl Deref for SocketState {
+    type Target = SocketCommon;
+
+    fn deref(&self) -> &Self::Target {
+        &self.common
     }
 }
 
-/// プロトコル固有の内部状態
-///
-/// TCP/UDPの状態を排他的に保持し、
-/// 不可能な状態（例: TCP + UDPが同時にアクティブ）を型レベルで防ぐ。
-pub enum ProtocolState {
-    /// プロトコル未確定（作成直後）
-    Unset,
-    /// TCP接続/リスナー
-    Tcp(TcpProtocolState),
-    /// UDPソケット
-    Udp(UdpProtocolState),
-    /// RAW IPソケット
-    Raw(RawProtocolState),
-}
-
-impl Default for ProtocolState {
-    fn default() -> Self {
-        Self::Unset
+impl DerefMut for SocketState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.common
     }
 }
 
-// ============================================================================
-// EndpointInner
-// ============================================================================
+impl SocketState {
+    pub const DEFAULT_BUFFER_SIZE: usize = SocketCommon::DEFAULT_BUFFER_SIZE;
+    pub const MAX_BUFFER_SIZE: usize = SocketCommon::MAX_BUFFER_SIZE;
+    pub const DEFAULT_BACKLOG: usize = TcpSocketEntry::DEFAULT_BACKLOG;
 
-/// ソケットの可変状態（Mutex保護対象）
-pub struct EndpointInner {
-    /// 現在の状態
-    pub state: EndpointState,
-    /// ローカルアドレス
-    pub local_addr: Option<EndpointAddr>,
-    /// リモートアドレス
-    pub remote_addr: Option<EndpointAddr>,
-    /// このソケットに適用されたインターフェース選択ポリシー
-    pub scope: InterfaceScope,
-    /// 直近の ingress/accept インターフェース
-    pub last_ingress_if_id: Option<NetIfId>,
-    /// 受信バッファ上限
-    pub recv_buffer_limit: usize,
-    /// 送信バッファ上限
-    pub send_buffer_limit: usize,
-    /// プロトコル固有の状態（TCP / UDP / 未確定）
-    pub protocol: ProtocolState,
-    /// エラー状態
-    pub last_error: Option<EndpointError>,
-    /// 受信待ちWaker（非同期通知用）
-    pub recv_waker: Option<core::task::Waker>,
-    /// 送信待ちWaker（非同期通知用）
-    pub send_waker: Option<core::task::Waker>,
-    /// 接続待ちWaker（非同期通知用）
-    pub connect_waker: Option<core::task::Waker>,
-    /// Accept待ちWaker（非同期通知用）
-    pub accept_waker: Option<core::task::Waker>,
-    /// QoS優先度 (DSCP値, 6ビット)
-    pub priority: u8,
-}
-
-impl EndpointInner {
-    /// デフォルトバッファサイズ
-    pub const DEFAULT_BUFFER_SIZE: usize = 8192;
-    /// 最大バッファサイズ
-    pub const MAX_BUFFER_SIZE: usize = 65536;
-    /// デフォルトの Accept バックログサイズ
-    pub const DEFAULT_BACKLOG: usize = TcpProtocolState::DEFAULT_BACKLOG;
-
-    /// 新規作成
-    pub fn new() -> Self {
+    pub fn new_tcp(state: TcpSocketState) -> Self {
         Self {
-            state: EndpointState::Created,
-            local_addr: None,
-            remote_addr: None,
-            scope: InterfaceScope::Any,
-            last_ingress_if_id: None,
-            recv_buffer_limit: Self::MAX_BUFFER_SIZE,
-            send_buffer_limit: Self::MAX_BUFFER_SIZE,
-            protocol: ProtocolState::Unset,
-            last_error: None,
-            recv_waker: None,
-            send_waker: None,
-            connect_waker: None,
-            accept_waker: None,
-            priority: 0,
+            common: SocketCommon::new(),
+            entry: SocketEntry::Tcp(TcpSocketEntry::new(state)),
         }
     }
 
-    // ================================================================
-    // プロトコル状態アクセサ
-    // ================================================================
+    pub fn new_udp() -> Self {
+        Self {
+            common: SocketCommon::new(),
+            entry: SocketEntry::Udp(UdpSocketEntry::new(UdpSocketState::Bound)),
+        }
+    }
 
-    /// TCP状態の読み取り参照を取得
+    pub fn new_raw() -> Self {
+        Self {
+            common: SocketCommon::new(),
+            entry: SocketEntry::Raw(RawSocketEntry::new(RawSocketState::Open)),
+        }
+    }
+
     #[inline]
-    pub fn tcp(&self) -> Option<&TcpProtocolState> {
-        match &self.protocol {
-            ProtocolState::Tcp(tcp) => Some(tcp),
+    pub fn is_tcp(&self) -> bool {
+        matches!(self.entry, SocketEntry::Tcp(_))
+    }
+
+    #[inline]
+    pub fn is_udp(&self) -> bool {
+        matches!(self.entry, SocketEntry::Udp(_))
+    }
+
+    #[inline]
+    pub fn is_raw(&self) -> bool {
+        matches!(self.entry, SocketEntry::Raw(_))
+    }
+
+    #[inline]
+    pub fn tcp(&self) -> Option<&TcpSocketEntry> {
+        match &self.entry {
+            SocketEntry::Tcp(tcp) => Some(tcp),
             _ => None,
         }
     }
 
-    /// TCP状態の可変参照を取得
     #[inline]
-    pub fn tcp_mut(&mut self) -> Option<&mut TcpProtocolState> {
-        match &mut self.protocol {
-            ProtocolState::Tcp(tcp) => Some(tcp),
+    pub fn tcp_mut(&mut self) -> Option<&mut TcpSocketEntry> {
+        match &mut self.entry {
+            SocketEntry::Tcp(tcp) => Some(tcp),
             _ => None,
         }
     }
 
-    /// TCP状態を保証して可変参照を返す（未設定なら初期化）
     #[inline]
-    pub fn ensure_tcp(&mut self) -> &mut TcpProtocolState {
-        if !matches!(self.protocol, ProtocolState::Tcp(_)) {
-            self.protocol = ProtocolState::Tcp(TcpProtocolState::new());
-        }
-        match &mut self.protocol {
-            ProtocolState::Tcp(tcp) => tcp,
-            _ => unreachable!(),
-        }
-    }
-
-    /// UDP状態の読み取り参照を取得
-    #[inline]
-    pub fn udp(&self) -> Option<&UdpProtocolState> {
-        match &self.protocol {
-            ProtocolState::Udp(udp) => Some(udp),
+    pub fn udp(&self) -> Option<&UdpSocketEntry> {
+        match &self.entry {
+            SocketEntry::Udp(udp) => Some(udp),
             _ => None,
         }
     }
 
-    /// UDP状態の可変参照を取得
     #[inline]
-    pub fn udp_mut(&mut self) -> Option<&mut UdpProtocolState> {
-        match &mut self.protocol {
-            ProtocolState::Udp(udp) => Some(udp),
+    pub fn udp_mut(&mut self) -> Option<&mut UdpSocketEntry> {
+        match &mut self.entry {
+            SocketEntry::Udp(udp) => Some(udp),
             _ => None,
         }
     }
 
-    /// UDP状態を保証して可変参照を返す（未設定なら初期化）
     #[inline]
-    pub fn ensure_udp(&mut self) -> &mut UdpProtocolState {
-        if !matches!(self.protocol, ProtocolState::Udp(_)) {
-            self.protocol = ProtocolState::Udp(UdpProtocolState::new());
-        }
-        match &mut self.protocol {
-            ProtocolState::Udp(udp) => udp,
-            _ => unreachable!(),
-        }
-    }
-
-    /// RAW状態の読み取り参照を取得
-    #[inline]
-    pub fn raw(&self) -> Option<&RawProtocolState> {
-        match &self.protocol {
-            ProtocolState::Raw(raw) => Some(raw),
+    pub fn raw(&self) -> Option<&RawSocketEntry> {
+        match &self.entry {
+            SocketEntry::Raw(raw) => Some(raw),
             _ => None,
         }
     }
 
-    /// RAW状態の可変参照を取得
     #[inline]
-    pub fn raw_mut(&mut self) -> Option<&mut RawProtocolState> {
-        match &mut self.protocol {
-            ProtocolState::Raw(raw) => Some(raw),
+    pub fn raw_mut(&mut self) -> Option<&mut RawSocketEntry> {
+        match &mut self.entry {
+            SocketEntry::Raw(raw) => Some(raw),
             _ => None,
         }
     }
 
-    /// RAW状態を保証して可変参照を返す（未設定なら初期化）
     #[inline]
-    pub fn ensure_raw(&mut self) -> &mut RawProtocolState {
-        if !matches!(self.protocol, ProtocolState::Raw(_)) {
-            self.protocol = ProtocolState::Raw(RawProtocolState::new());
-        }
-        match &mut self.protocol {
-            ProtocolState::Raw(raw) => raw,
-            _ => unreachable!(),
-        }
+    pub fn tcp_state(&self) -> Option<TcpSocketState> {
+        self.tcp().map(|tcp| tcp.state)
     }
 
-    /// プロトコル状態をリセット（close時）
     #[inline]
-    pub fn clear_protocol(&mut self) {
-        self.protocol = ProtocolState::Unset;
+    pub fn udp_state(&self) -> Option<UdpSocketState> {
+        self.udp().map(|udp| udp.state)
+    }
+
+    #[inline]
+    pub fn raw_state(&self) -> Option<RawSocketState> {
+        self.raw().map(|raw| raw.state)
+    }
+
+    #[inline]
+    pub fn set_tcp_state(&mut self, state: TcpSocketState) -> SocketResult<()> {
+        let Some(tcp) = self.tcp_mut() else {
+            return Err(EndpointError::InvalidArgument);
+        };
+        tcp.state = state;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn set_udp_state(&mut self, state: UdpSocketState) -> SocketResult<()> {
+        let Some(udp) = self.udp_mut() else {
+            return Err(EndpointError::InvalidArgument);
+        };
+        udp.state = state;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn set_raw_state(&mut self, state: RawSocketState) -> SocketResult<()> {
+        let Some(raw) = self.raw_mut() else {
+            return Err(EndpointError::InvalidArgument);
+        };
+        raw.state = state;
+        Ok(())
+    }
+
+    #[inline]
+    pub fn is_tcp_listening(&self) -> bool {
+        matches!(self.tcp_state(), Some(TcpSocketState::Listening))
+    }
+
+    #[inline]
+    pub fn is_tcp_connecting(&self) -> bool {
+        matches!(self.tcp_state(), Some(TcpSocketState::Connecting))
+    }
+
+    #[inline]
+    pub fn is_tcp_connected(&self) -> bool {
+        matches!(self.tcp_state(), Some(TcpSocketState::Connected))
+    }
+
+    #[inline]
+    pub fn is_tcp_closing_or_closed(&self) -> bool {
+        matches!(
+            self.tcp_state(),
+            Some(TcpSocketState::Closing | TcpSocketState::Closed)
+        )
+    }
+
+    #[inline]
+    pub fn is_udp_bound(&self) -> bool {
+        matches!(self.udp_state(), Some(UdpSocketState::Bound))
+    }
+
+    #[inline]
+    pub fn is_raw_open(&self) -> bool {
+        matches!(self.raw_state(), Some(RawSocketState::Open))
+    }
+
+    #[inline]
+    pub fn mark_closed(&mut self) {
+        match &mut self.entry {
+            SocketEntry::Tcp(tcp) => {
+                tcp.state = TcpSocketState::Closed;
+                tcp.recv_payload_queue.clear();
+                tcp.recv_payload_bytes = 0;
+                tcp.send_payload_queue.clear();
+                tcp.send_payload_bytes = 0;
+            }
+            SocketEntry::Udp(udp) => {
+                udp.state = UdpSocketState::Closed;
+                udp.pending_packets.clear();
+            }
+            SocketEntry::Raw(raw) => {
+                raw.state = RawSocketState::Closed;
+                raw.pending_payloads.clear();
+            }
+        }
     }
 
     #[inline]
@@ -334,7 +369,8 @@ impl EndpointInner {
                 continue;
             }
 
-            let (prefix, remainder) = crate::net::payload::split_payload_prefix_owned(front, remaining)?;
+            let (prefix, remainder) =
+                crate::net::payload::split_payload_prefix_owned(front, remaining)?;
             append_payload(&mut taken, prefix);
             if !remainder.is_empty() {
                 queue.push_front(remainder);
@@ -345,11 +381,6 @@ impl EndpointInner {
         Some(taken)
     }
 
-    // ================================================================
-    // TCP専用状態ヘルパー
-    // ================================================================
-
-    /// Set urgent data pending flag
     #[inline]
     pub fn set_urgent_pending(&mut self, pending: bool) {
         if let Some(tcp) = self.tcp_mut() {
@@ -357,57 +388,19 @@ impl EndpointInner {
         }
     }
 
-    /// Check if urgent data is pending
     #[inline]
     pub fn has_urgent_pending(&self) -> bool {
-        self.tcp().map_or(false, |t| t.urgent_pending)
-    }
-
-    /// 状態遷移（ガード付き）
-    #[inline]
-    pub fn transition_to(&mut self, new_state: EndpointState) -> EndpointResult<()> {
-        let valid = match (self.state, new_state) {
-            // Created からの遷移
-            (EndpointState::Created, EndpointState::Bound) => true,
-            (EndpointState::Created, EndpointState::Connecting) => true,
-            (EndpointState::Created, EndpointState::Closed) => true,
-            // Bound からの遷移
-            (EndpointState::Bound, EndpointState::Listening) => true,
-            (EndpointState::Bound, EndpointState::Connecting) => true,
-            (EndpointState::Bound, EndpointState::Connected) => true, // UDP
-            (EndpointState::Bound, EndpointState::Closed) => true,
-            // Listening からの遷移
-            (EndpointState::Listening, EndpointState::Closing) => true,
-            (EndpointState::Listening, EndpointState::Closed) => true,
-            // Connecting からの遷移
-            (EndpointState::Connecting, EndpointState::Connected) => true,
-            (EndpointState::Connecting, EndpointState::Closed) => true,
-            // Connected からの遷移
-            (EndpointState::Connected, EndpointState::Closing) => true,
-            (EndpointState::Connected, EndpointState::Closed) => true,
-            // Closing からの遷移
-            (EndpointState::Closing, EndpointState::Closed) => true,
-            // 同じ状態への遷移は許可
-            (s1, s2) if s1 == s2 => true,
-            _ => false,
-        };
-
-        if valid {
-            self.state = new_state;
-            Ok(())
-        } else {
-            Err(EndpointError::InvalidStateTransition)
-        }
+        self.tcp().is_some_and(|tcp| tcp.urgent_pending)
     }
 
     #[inline]
     pub fn recv_payload_bytes(&self) -> usize {
-        self.tcp().map(|tcp| tcp.recv_payload_bytes).unwrap_or(0)
+        self.tcp().map_or(0, |tcp| tcp.recv_payload_bytes)
     }
 
     #[inline]
     pub fn send_payload_bytes(&self) -> usize {
-        self.tcp().map(|tcp| tcp.send_payload_bytes).unwrap_or(0)
+        self.tcp().map_or(0, |tcp| tcp.send_payload_bytes)
     }
 
     #[inline]
@@ -420,7 +413,6 @@ impl EndpointInner {
         self.send_payload_bytes() > 0
     }
 
-    /// 受信キューからデータ取得
     #[inline]
     pub fn recv_from_buffer(&mut self, buf: &mut [u8]) -> usize {
         let Some(tcp) = self.tcp_mut() else {
@@ -440,7 +432,6 @@ impl EndpointInner {
         Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
 
         if len > 0 {
-            // キューに空きができたので送信待ちを起こす
             if let Some(waker) = self.send_waker.take() {
                 waker.wake();
             }
@@ -481,7 +472,7 @@ impl EndpointInner {
     }
 
     #[inline]
-    pub fn send_payload(&mut self, payload: PacketPayload) -> EndpointResult<usize> {
+    pub fn send_payload(&mut self, payload: PacketPayload) -> SocketResult<usize> {
         let available = self
             .send_buffer_limit
             .saturating_sub(self.send_payload_bytes());
@@ -499,7 +490,9 @@ impl EndpointInner {
         };
 
         let len = queued.total_len();
-        let tcp = self.ensure_tcp();
+        let Some(tcp) = self.tcp_mut() else {
+            return Err(EndpointError::InvalidArgument);
+        };
         tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_add(len);
         tcp.send_payload_queue.push_back(queued);
         Ok(len)
@@ -507,9 +500,7 @@ impl EndpointInner {
 
     #[inline]
     pub fn take_send_payload_prefix(&mut self, len: usize) -> Option<PacketPayload> {
-        let Some(tcp) = self.tcp_mut() else {
-            return None;
-        };
+        let tcp = self.tcp_mut()?;
         let taken = Self::drain_send_prefix(&mut tcp.send_payload_queue, len)?;
         tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_sub(taken.total_len());
         Self::trim_empty_payloads(&mut tcp.send_payload_queue);
@@ -519,9 +510,10 @@ impl EndpointInner {
     #[inline]
     pub fn push_send_payload_front(&mut self, payload: PacketPayload) {
         let len = payload.total_len();
-        let tcp = self.ensure_tcp();
-        tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_add(len);
-        tcp.send_payload_queue.push_front(payload);
+        if let Some(tcp) = self.tcp_mut() {
+            tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_add(len);
+            tcp.send_payload_queue.push_front(payload);
+        }
     }
 
     #[inline]
@@ -541,8 +533,6 @@ impl EndpointInner {
         }
     }
 
-    /// 受信キューにデータ追加（内部用 - カーネル/ドライバから呼ばれる）
-    /// 実際にキューに追加されたバイト数を返す。
     #[inline]
     pub fn push_recv_payload(&mut self, payload: PacketPayload) -> usize {
         let available = self
@@ -563,12 +553,13 @@ impl EndpointInner {
 
         let len = queued.total_len();
         if len > 0 {
-            let tcp = self.ensure_tcp();
+            let Some(tcp) = self.tcp_mut() else {
+                return 0;
+            };
             tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_add(len);
             tcp.recv_payload_queue.push_back(queued);
             Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
 
-            // データが到着したので受信待ちを起こす
             if let Some(waker) = self.recv_waker.take() {
                 waker.wake();
             }
@@ -576,7 +567,6 @@ impl EndpointInner {
         len
     }
 
-    /// 接続完了通知（内部用 - TCPスタックから呼ばれる）
     #[inline]
     pub fn notify_connected(&mut self) {
         if let Some(waker) = self.connect_waker.take() {
@@ -584,13 +574,3 @@ impl EndpointInner {
         }
     }
 }
-
-impl Default for EndpointInner {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// =====================================================
-// テスト
-// =====================================================

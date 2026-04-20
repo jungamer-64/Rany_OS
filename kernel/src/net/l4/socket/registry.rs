@@ -1,24 +1,19 @@
-// ============================================================================
-// kernel/src/net/l4/endpoint/manager.rs
-// ============================================================================
-//! # SocketRegistry - RwLockによる読み取り並列化
-//!
-//! ソケット管理マネージャ
+//! Socket registry indexed by protocol-specific lookup tables.
 
-use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::net::l4::socket::Endpoint;
-use crate::net::l4::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult, EndpointType};
+use crate::net::l4::socket::Socket;
+use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
+use crate::sync::PoisonRwLock;
 
 const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SocketFamily {
+pub(crate) enum SocketFamily {
     Ipv4,
     Ipv6,
 }
@@ -57,145 +52,173 @@ fn scopes_conflict(lhs: InterfaceScope, rhs: InterfaceScope) -> bool {
     }
 }
 
-pub struct SocketRegistry {
-    endpoints: PoisonRwLock<BTreeMap<EndpointFd, Endpoint>>,
-    tcp_ports: PoisonRwLock<BTreeMap<PortBindingKey, EndpointFd>>,
-    udp_ports: PoisonRwLock<BTreeMap<PortBindingKey, EndpointFd>>,
-    raw_endpoints: PoisonRwLock<BTreeMap<InterfaceScope, EndpointFd>>,
+fn random_ephemeral_start() -> u16 {
+    let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+    let random_start = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
+    let range_size = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
+    EPHEMERAL_PORT_START + (random_start % range_size)
+}
+
+fn allocate_ephemeral_port_from(
+    ports: &PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
+    next_ephemeral_port: &AtomicU32,
+) -> Option<u16> {
+    let range_size = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
+    let start_port = random_ephemeral_start();
+    let ports_guard = ports.read().unwrap_or_else(|e| e.into_inner());
+    for offset in 0..range_size {
+        let port = EPHEMERAL_PORT_START
+            + ((start_port
+                .wrapping_sub(EPHEMERAL_PORT_START)
+                .wrapping_add(offset))
+                % range_size);
+        let conflict = ports_guard
+            .keys()
+            .any(|key| key.port == port && matches!(key.scope, InterfaceScope::Any));
+        if !conflict {
+            next_ephemeral_port.store(port.wrapping_add(1) as u32, Ordering::Relaxed);
+            return Some(port);
+        }
+    }
+    None
+}
+
+fn bind_port(
+    ports: &PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
+    family: SocketFamily,
+    port: u16,
+    scope: InterfaceScope,
+    socket_id: SocketId,
+) -> SocketResult<()> {
+    let mut guard = ports.write().unwrap_or_else(|e| e.into_inner());
+    if guard
+        .keys()
+        .any(|key| key.family == family && key.port == port && scopes_conflict(key.scope, scope))
+    {
+        return Err(EndpointError::PortInUse);
+    }
+    guard.insert(PortBindingKey::new(family, port, scope), socket_id);
+    Ok(())
+}
+
+fn find_socket_by_port(
+    ports: &PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
+    sockets: &PoisonRwLock<BTreeMap<SocketId, Socket>>,
+    family: SocketFamily,
+    port: u16,
+    ingress_if_id: Option<NetIfId>,
+) -> Option<Socket> {
+    let guard = ports.read().unwrap_or_else(|e| e.into_inner());
+    let socket_id = ingress_if_id
+        .map(|if_id| PortBindingKey::new(family, port, InterfaceScope::Pinned(if_id)))
+        .and_then(|key| guard.get(&key).copied())
+        .or_else(|| {
+            guard
+                .get(&PortBindingKey::new(family, port, InterfaceScope::Any))
+                .copied()
+        })?;
+    drop(guard);
+    sockets
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&socket_id)
+        .cloned()
+}
+
+pub(crate) struct SocketRegistry {
+    sockets: PoisonRwLock<BTreeMap<SocketId, Socket>>,
+    tcp_ports: PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
+    udp_ports: PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
+    raw_scopes: PoisonRwLock<BTreeMap<InterfaceScope, SocketId>>,
     next_ephemeral_port: AtomicU32,
 }
 
 impl SocketRegistry {
     pub const fn new() -> Self {
         Self {
-            endpoints: PoisonRwLock::new(BTreeMap::new()),
+            sockets: PoisonRwLock::new(BTreeMap::new()),
             tcp_ports: PoisonRwLock::new(BTreeMap::new()),
             udp_ports: PoisonRwLock::new(BTreeMap::new()),
-            raw_endpoints: PoisonRwLock::new(BTreeMap::new()),
+            raw_scopes: PoisonRwLock::new(BTreeMap::new()),
             next_ephemeral_port: AtomicU32::new(EPHEMERAL_PORT_START as u32),
         }
     }
 
-    pub fn allocate_ephemeral_port(&self, endpoint_type: EndpointType) -> Option<u16> {
-        let ports = match endpoint_type {
-            EndpointType::Tcp => &self.tcp_ports,
-            EndpointType::Udp => &self.udp_ports,
-            _ => return Some(0),
-        };
-
-        // RFC 6056: Use a random starting point for port selection to prevent prediction attacks.
-        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
-        let random_start = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
-
-        let range_size = (EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1) as u16;
-        let start_port = EPHEMERAL_PORT_START + (random_start % range_size);
-
-        let ports_guard = ports.read().unwrap_or_else(|e| e.into_inner());
-        for i in 0..range_size {
-            let port = EPHEMERAL_PORT_START
-                + ((start_port
-                    .wrapping_sub(EPHEMERAL_PORT_START)
-                    .wrapping_add(i))
-                    % range_size);
-            let conflict = ports_guard
-                .keys()
-                .any(|key| key.port == port && matches!(key.scope, InterfaceScope::Any));
-            if !conflict {
-                // Update the counter for the next sequential-ish attempt (if we still want it)
-                // but since we randomized the start above, the counter is less critical.
-                self.next_ephemeral_port
-                    .store(port.wrapping_add(1) as u32, Ordering::Relaxed);
-                return Some(port);
-            }
-        }
-        None
+    pub fn allocate_tcp_ephemeral_port(&self) -> Option<u16> {
+        allocate_ephemeral_port_from(&self.tcp_ports, &self.next_ephemeral_port)
     }
 
-    pub fn register(&self, endpoint: Endpoint) {
-        self.endpoints
+    pub fn allocate_udp_ephemeral_port(&self) -> Option<u16> {
+        allocate_ephemeral_port_from(&self.udp_ports, &self.next_ephemeral_port)
+    }
+
+    pub fn register(&self, socket: Socket) {
+        self.sockets
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(endpoint.fd(), endpoint);
+            .insert(socket.socket_id(), socket);
     }
 
-    pub fn unregister(&self, fd: EndpointFd) -> Option<Endpoint> {
+    pub fn unregister(&self, socket_id: SocketId) -> Option<Socket> {
         let removed = self
-            .endpoints
+            .sockets
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&fd);
-        if let Some(ref s) = removed {
-            match s.socket_type() {
-                EndpointType::Tcp => {
-                    self.tcp_ports
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .retain(|_, bound_fd| *bound_fd != fd);
+            .remove(&socket_id);
+        if let Some(socket) = removed.as_ref() {
+            if socket.is_tcp() {
+                self.tcp_ports
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|_, bound_socket_id| *bound_socket_id != socket_id);
+            } else if socket.is_udp() {
+                self.udp_ports
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|_, bound_socket_id| *bound_socket_id != socket_id);
+                if let Some(token) = socket
+                    .inner()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .udp_mut()
+                    .and_then(|udp| udp.token.take())
+                {
+                    let _ = crate::security::capability::manager().decrement_in_flight(token);
                 }
-                EndpointType::Udp => {
-                    self.udp_ports
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .retain(|_, bound_fd| *bound_fd != fd);
-                    if let Some(token) = s
-                        .inner()
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .udp_mut()
-                        .and_then(|udp| udp.token.take())
-                    {
-                        let _ = crate::security::capability::manager().decrement_in_flight(token);
-                    }
-                }
-                EndpointType::Raw => {
-                    self.raw_endpoints
-                        .write()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .retain(|_, bound_fd| *bound_fd != fd);
-                }
+            } else if socket.is_raw() {
+                self.raw_scopes
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|_, bound_socket_id| *bound_socket_id != socket_id);
             }
         }
         removed
     }
 
-    pub fn get(&self, fd: EndpointFd) -> Option<Endpoint> {
-        self.endpoints
+    pub fn get(&self, socket_id: SocketId) -> Option<Socket> {
+        self.sockets
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&fd)
+            .get(&socket_id)
             .cloned()
     }
 
-    pub fn bind_port(
+    pub fn bind_tcp_port(
         &self,
-        endpoint_type: EndpointType,
         family: SocketFamily,
         port: u16,
         scope: InterfaceScope,
-        fd: EndpointFd,
-    ) -> EndpointResult<()> {
-        let ports = match endpoint_type {
-            EndpointType::Tcp => &self.tcp_ports,
-            EndpointType::Udp => &self.udp_ports,
-            _ => return Ok(()),
-        };
-
-        let mut guard = ports.write().unwrap_or_else(|e| e.into_inner());
-        if guard.keys().any(|key| {
-            key.family == family && key.port == port && scopes_conflict(key.scope, scope)
-        }) {
-            return Err(EndpointError::PortInUse);
-        }
-        guard.insert(PortBindingKey::new(family, port, scope), fd);
-        Ok(())
+        socket_id: SocketId,
+    ) -> SocketResult<()> {
+        bind_port(&self.tcp_ports, family, port, scope, socket_id)
     }
 
     pub fn bind_udp_dual_stack(
         &self,
         port: u16,
         scope: InterfaceScope,
-        fd: EndpointFd,
-    ) -> EndpointResult<()> {
+        socket_id: SocketId,
+    ) -> SocketResult<()> {
         let mut guard = self.udp_ports.write().unwrap_or_else(|e| e.into_inner());
         let ipv4 = PortBindingKey::new(SocketFamily::Ipv4, port, scope);
         let ipv6 = PortBindingKey::new(SocketFamily::Ipv6, port, scope);
@@ -212,105 +235,74 @@ impl SocketRegistry {
         if ipv4_conflict || ipv6_conflict {
             return Err(EndpointError::PortInUse);
         }
-        guard.insert(ipv4, fd);
-        guard.insert(ipv6, fd);
+        guard.insert(ipv4, socket_id);
+        guard.insert(ipv6, socket_id);
         Ok(())
     }
 
-    pub fn register_raw_scope(&self, scope: InterfaceScope, fd: EndpointFd) -> EndpointResult<()> {
-        let mut guard = self
-            .raw_endpoints
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
+    pub fn register_raw_scope(
+        &self,
+        scope: InterfaceScope,
+        socket_id: SocketId,
+    ) -> SocketResult<()> {
+        let mut guard = self.raw_scopes.write().unwrap_or_else(|e| e.into_inner());
         if guard.contains_key(&scope) {
             return Err(EndpointError::ResourceExhausted);
         }
-        guard.insert(scope, fd);
+        guard.insert(scope, socket_id);
         Ok(())
     }
 
-    pub fn find_raw_endpoint(&self, ingress_if_id: NetIfId) -> Option<Endpoint> {
-        let fd = {
-            let guard = self.raw_endpoints.read().unwrap_or_else(|e| e.into_inner());
+    pub fn find_tcp_by_port(
+        &self,
+        family: SocketFamily,
+        port: u16,
+        ingress_if_id: Option<NetIfId>,
+    ) -> Option<Socket> {
+        find_socket_by_port(&self.tcp_ports, &self.sockets, family, port, ingress_if_id)
+    }
+
+    pub fn find_udp_by_port(
+        &self,
+        family: SocketFamily,
+        port: u16,
+        ingress_if_id: Option<NetIfId>,
+    ) -> Option<Socket> {
+        find_socket_by_port(&self.udp_ports, &self.sockets, family, port, ingress_if_id)
+    }
+
+    pub fn find_raw_by_scope(&self, ingress_if_id: NetIfId) -> Option<Socket> {
+        let socket_id = {
+            let guard = self.raw_scopes.read().unwrap_or_else(|e| e.into_inner());
             guard
                 .get(&InterfaceScope::Pinned(ingress_if_id))
                 .copied()
                 .or_else(|| guard.get(&InterfaceScope::Any).copied())
         }?;
-        self.get(fd)
-    }
-
-    pub fn find_by_port(
-        &self,
-        endpoint_type: EndpointType,
-        family: SocketFamily,
-        port: u16,
-        ingress_if_id: Option<NetIfId>,
-    ) -> Option<Endpoint> {
-        if endpoint_type == EndpointType::Udp {
-            let guard = self.udp_ports.read().unwrap_or_else(|e| e.into_inner());
-            let fd = ingress_if_id
-                .map(|if_id| PortBindingKey::new(family, port, InterfaceScope::Pinned(if_id)))
-                .and_then(|key| guard.get(&key).copied())
-                .or_else(|| {
-                    guard
-                        .get(&PortBindingKey::new(family, port, InterfaceScope::Any))
-                        .copied()
-                })?;
-            drop(guard);
-            return self.get(fd);
-        }
-
-        let endpoints = self.endpoints.read().unwrap_or_else(|e| e.into_inner());
-        let mut wildcard = None;
-        for endpoint in endpoints.values() {
-            if endpoint.socket_type() != endpoint_type {
-                continue;
-            }
-            let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-            let Some(local_addr) = inner.local_addr else {
-                continue;
-            };
-            if SocketFamily::from_addr(local_addr) != family || local_addr.port() != port {
-                continue;
-            }
-
-            match (inner.scope, ingress_if_id) {
-                (InterfaceScope::Pinned(bound_if), Some(ingress_if)) if bound_if == ingress_if => {
-                    return Some(endpoint.clone());
-                }
-                (InterfaceScope::Any, _) => wildcard = Some(endpoint.clone()),
-                _ => {}
-            }
-        }
-        wildcard
+        self.get(socket_id)
     }
 
     pub fn has_udp_port(&self, port: u16) -> bool {
-        let guard = self.udp_ports.read().unwrap_or_else(|e| e.into_inner());
-        guard.keys().any(|key| key.port == port)
-    }
-
-    pub fn endpoint_count(&self) -> usize {
-        self.endpoints
+        self.udp_ports
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .len()
+            .keys()
+            .any(|key| key.port == port)
     }
 
     pub fn for_each<F>(&self, mut f: F)
     where
-        F: FnMut(&Endpoint),
+        F: FnMut(&Socket),
     {
-        let endpoints = self.endpoints.read().unwrap_or_else(|e| e.into_inner());
-        for ep in endpoints.values() {
-            f(ep);
+        let sockets = self.sockets.read().unwrap_or_else(|e| e.into_inner());
+        for socket in sockets.values() {
+            f(socket);
         }
     }
 
-    pub fn generate_fd(&self) -> EndpointFd {
-        static FD_COUNTER: AtomicU32 = AtomicU32::new(1);
-        EndpointFd::from_raw(FD_COUNTER.fetch_add(1, Ordering::Relaxed))
+    pub fn generate_socket_id(&self) -> SocketId {
+        static SOCKET_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
+        SocketId::from_raw(SOCKET_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -320,28 +312,20 @@ impl Default for SocketRegistry {
     }
 }
 
-pub static SOCKET_REGISTRY: PoisonRwLock<Option<SocketRegistry>> = PoisonRwLock::new(None);
+pub(crate) static SOCKET_REGISTRY: PoisonRwLock<Option<SocketRegistry>> = PoisonRwLock::new(None);
 
-pub fn init_socket_registry() {
+pub(crate) fn init_socket_registry() {
     *SOCKET_REGISTRY.write().unwrap_or_else(|e| e.into_inner()) = Some(SocketRegistry::new());
 }
 
-pub fn find_listening_tcp_socket(
+pub(crate) fn find_listening_tcp_socket(
     local: EndpointAddr,
     ingress_if_id: Option<NetIfId>,
-) -> Option<Endpoint> {
-    let manager = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
-    let mgr = manager.as_ref()?;
-    let socket = mgr.find_by_port(
-        EndpointType::Tcp,
-        SocketFamily::from_addr(local),
-        local.port(),
-        ingress_if_id,
-    )?;
+) -> Option<Socket> {
+    let registry_guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
+    let registry = registry_guard.as_ref()?;
+    let socket =
+        registry.find_tcp_by_port(SocketFamily::from_addr(local), local.port(), ingress_if_id)?;
     let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-    if inner.state == crate::net::l4::types::EndpointState::Listening {
-        Some(socket.clone())
-    } else {
-        None
-    }
+    inner.is_tcp_listening().then_some(socket.clone())
 }

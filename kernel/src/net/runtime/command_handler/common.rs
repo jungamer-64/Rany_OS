@@ -4,9 +4,9 @@
 //! RuntimeCommandHandler 共通型/ヘルパー
 
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::runtime::command::RuntimeCommand;
-use crate::net::l4::types::{EndpointAddr, EndpointError, EndpointFd, EndpointResult};
+use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::RuntimeCommand;
 use crate::net::runtime::manager::NetIfId;
 use kernel_api::resource::net::PacketPayload;
 
@@ -21,7 +21,7 @@ pub enum EventHandleResult {
         packet: PacketRef,
     },
     /// ソケットが見つからない
-    SocketNotFound(EndpointFd),
+    SocketNotFound(SocketId),
     /// プロトコルエラー
     ProtocolError(EndpointError),
     /// 再試行が必要
@@ -69,7 +69,7 @@ pub(super) fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize
 
 #[inline]
 pub(super) fn deliver_raw_payload_if_registered(if_id: NetIfId, payload: PacketPayload) -> bool {
-    let Some(endpoint) = crate::net::l4::socket::find_raw_endpoint(if_id) else {
+    let Some(endpoint) = crate::net::l4::socket::find_raw_by_scope(if_id) else {
         return false;
     };
     endpoint.deliver_raw_payload(if_id, payload).is_ok()
@@ -132,7 +132,7 @@ pub(super) fn apply_tcp_checksum_for_addrs(
     segment: &mut [u8],
     local: EndpointAddr,
     remote: EndpointAddr,
-) -> EndpointResult<()> {
+) -> SocketResult<()> {
     if let Some((lv4, rv4)) = endpoint_ipv4_pair(local, remote) {
         crate::net::l4::tcp::segment::TcpSegmentBuilder::calculate_checksum_bytes(
             segment, lv4, rv4,

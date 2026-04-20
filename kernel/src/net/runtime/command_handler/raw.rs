@@ -3,10 +3,10 @@
 // ============================================================================
 //! RuntimeCommandHandler Raw送信系メソッド
 
-use crate::net::runtime::command::RuntimeCommand;
-use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
 
 impl RuntimeCommandHandler {
@@ -17,17 +17,19 @@ impl RuntimeCommandHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         match event {
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSend {
-                src_port,
-                src_ip,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-                completion_id,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpSend {
+                    src_port,
+                    src_ip,
+                    dst_ip,
+                    dst_port,
+                    payload,
+                    ttl,
+                    completion_id,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let mut payload = Some(payload);
                 let tx_meta = completion_id.map(|completion_id| NetTxMeta {
@@ -96,14 +98,16 @@ impl RuntimeCommandHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSend {
-                src_ip,
-                dst_ip,
-                payload,
-                completion_id,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpSend {
+                    src_ip,
+                    dst_ip,
+                    payload,
+                    completion_id,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let mut payload = Some(payload);
@@ -147,17 +151,19 @@ impl RuntimeCommandHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6Send {
-                src_port,
-                src_ip,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-                completion_id,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpV6Send {
+                    src_port,
+                    src_ip,
+                    dst_ip,
+                    dst_port,
+                    payload,
+                    ttl,
+                    completion_id,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let mut payload = Some(payload);
@@ -213,14 +219,16 @@ impl RuntimeCommandHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6Send {
-                src_ip,
-                dst_ip,
-                payload,
-                completion_id,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpV6Send {
+                    src_ip,
+                    dst_ip,
+                    payload,
+                    completion_id,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let mut payload = Some(payload);
@@ -268,18 +276,20 @@ impl RuntimeCommandHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSendOn {
-                if_id,
-                src_port,
-                src_ip,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-                completion_id,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpSendOn {
+                    if_id,
+                    src_port,
+                    src_ip,
+                    dst_ip,
+                    dst_port,
+                    payload,
+                    ttl,
+                    completion_id,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
                 let mut payload = Some(payload);
@@ -357,15 +367,17 @@ impl RuntimeCommandHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSendOn {
-                if_id,
-                src_ip,
-                dst_ip,
-                payload,
-                completion_id,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpSendOn {
+                    if_id,
+                    src_ip,
+                    dst_ip,
+                    payload,
+                    completion_id,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
@@ -416,18 +428,20 @@ impl RuntimeCommandHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
-                if_id,
-                src_port,
-                src_ip,
-                dst_ip,
-                dst_port,
-                payload,
-                ttl,
-                completion_id,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
+                    if_id,
+                    src_port,
+                    src_ip,
+                    dst_ip,
+                    dst_port,
+                    payload,
+                    ttl,
+                    completion_id,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);
@@ -488,15 +502,17 @@ impl RuntimeCommandHandler {
                     Err(err) => EventHandleResult::ProtocolError(err),
                 }
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
-                if_id,
-                src_ip,
-                dst_ip,
-                payload,
-                completion_id,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
+                    if_id,
+                    src_ip,
+                    dst_ip,
+                    payload,
+                    completion_id,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
                 let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
                 let net_if = crate::net::runtime::manager::NetIfId(if_id);

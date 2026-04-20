@@ -1,6 +1,6 @@
 use super::*;
-use crate::net::runtime::command::{new_detached_command_channel, poll_command_result};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::{new_detached_command_channel, poll_command_result};
 use crate::net::runtime::context::default_runtime;
 
 /// Initialize a runtime-local network stack
@@ -26,7 +26,9 @@ pub(crate) fn receive_batch_on_in(
     for pkt in batch.into_iter() {
         crate::net::runtime::command::enqueue_command_ignore_in(
             runtime,
-            crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet { if_id, packet: pkt }),
+            crate::net::runtime::command::RuntimeCommand::Ingress(
+                crate::net::runtime::command::IngressCommand::Packet { if_id, packet: pkt },
+            ),
         );
     }
 }
@@ -49,17 +51,19 @@ pub(crate) fn enqueue_udp_send_scoped_with_src_in(
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSend {
-            src_port,
-            src_ip: Some(*src_ip.as_bytes()),
-            dst_ip: *dst_ip.as_bytes(),
-            dst_port,
-            payload,
-            ttl,
-            completion_id: None,
-            result_slot,
-            waker,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::RawUdpSend {
+                src_port,
+                src_ip: Some(*src_ip.as_bytes()),
+                dst_ip: *dst_ip.as_bytes(),
+                dst_port,
+                payload,
+                ttl,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+        ),
     );
     true
 }
@@ -82,17 +86,19 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6Send {
-            src_port,
-            src_ip: src_ip.octets(),
-            dst_ip: dst_ip.octets(),
-            dst_port,
-            payload,
-            ttl,
-            completion_id: None,
-            result_slot,
-            waker,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::RawUdpV6Send {
+                src_port,
+                src_ip: src_ip.octets(),
+                dst_ip: dst_ip.octets(),
+                dst_port,
+                payload,
+                ttl,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+        ),
     );
     true
 }
@@ -106,14 +112,16 @@ pub(crate) fn enqueue_tcp_send_in(
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSend {
-            src_ip: *src_ip.as_bytes(),
-            dst_ip: *dst_ip.as_bytes(),
-            payload,
-            completion_id: None,
-            result_slot,
-            waker,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::RawTcpSend {
+                src_ip: *src_ip.as_bytes(),
+                dst_ip: *dst_ip.as_bytes(),
+                payload,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+        ),
     );
     true
 }
@@ -127,14 +135,16 @@ pub(crate) fn enqueue_tcp_v6_send_in(
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6Send {
-            src_ip: src_ip.octets(),
-            dst_ip: dst_ip.octets(),
-            payload,
-            completion_id: None,
-            result_slot,
-            waker,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::RawTcpV6Send {
+                src_ip: src_ip.octets(),
+                dst_ip: dst_ip.octets(),
+                payload,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+        ),
     );
     true
 }
@@ -168,7 +178,9 @@ async fn timeout_task_in(runtime: NetRuntimeHandle) {
         // asyncタスク内での同期ロック取得を回避
         crate::net::runtime::command::enqueue_command_ignore_in(
             runtime,
-            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ProcessTimeouts),
+            crate::net::runtime::command::RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ProcessTimeouts,
+            ),
         );
     }
 }
@@ -196,11 +208,13 @@ impl core::future::Future for MulticastJoinFuture {
         if !self.sent {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 self.runtime,
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastJoin {
-                    group: *self.group.as_bytes(),
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                }),
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::MulticastJoin {
+                        group: *self.group.as_bytes(),
+                        result_slot: self.result_slot.clone(),
+                        waker: self.waker.clone(),
+                    },
+                ),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 core::task::Poll::Ready(Ok(())) => {
@@ -234,11 +248,13 @@ impl core::future::Future for MulticastLeaveFuture {
         if !self.sent {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 self.runtime,
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastLeave {
-                    group: *self.group.as_bytes(),
-                    result_slot: self.result_slot.clone(),
-                    waker: self.waker.clone(),
-                }),
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::MulticastLeave {
+                        group: *self.group.as_bytes(),
+                        result_slot: self.result_slot.clone(),
+                        waker: self.waker.clone(),
+                    },
+                ),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 core::task::Poll::Ready(Ok(())) => {
@@ -296,18 +312,20 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpSendOn {
-            if_id: if_id.0,
-            src_port,
-            src_ip: Some(*src_ip.as_bytes()),
-            dst_ip: *dst_ip.as_bytes(),
-            dst_port,
-            payload,
-            ttl,
-            completion_id: None,
-            result_slot,
-            waker,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::RawUdpSendOn {
+                if_id: if_id.0,
+                src_port,
+                src_ip: Some(*src_ip.as_bytes()),
+                dst_ip: *dst_ip.as_bytes(),
+                dst_port,
+                payload,
+                ttl,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+        ),
     );
     true
 }
@@ -322,15 +340,17 @@ pub(crate) fn enqueue_tcp_send_on_in(
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpSendOn {
-            if_id: if_id.0,
-            src_ip: *src_ip.as_bytes(),
-            dst_ip: *dst_ip.as_bytes(),
-            payload,
-            completion_id: None,
-            result_slot,
-            waker,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::RawTcpSendOn {
+                if_id: if_id.0,
+                src_ip: *src_ip.as_bytes(),
+                dst_ip: *dst_ip.as_bytes(),
+                payload,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+        ),
     );
     true
 }
@@ -348,18 +368,20 @@ fn enqueue_udp_v6_send_on_in(
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
-            if_id: if_id.0,
-            src_port,
-            src_ip: src_ip.octets(),
-            dst_ip: dst_ip.octets(),
-            dst_port,
-            payload,
-            ttl,
-            completion_id: None,
-            result_slot,
-            waker,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
+                if_id: if_id.0,
+                src_port,
+                src_ip: src_ip.octets(),
+                dst_ip: dst_ip.octets(),
+                dst_port,
+                payload,
+                ttl,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+        ),
     );
     true
 }
@@ -374,15 +396,17 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
-            if_id: if_id.0,
-            src_ip: src_ip.octets(),
-            dst_ip: dst_ip.octets(),
-            payload,
-            completion_id: None,
-            result_slot,
-            waker,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
+                if_id: if_id.0,
+                src_ip: src_ip.octets(),
+                dst_ip: dst_ip.octets(),
+                payload,
+                completion_id: None,
+                result_slot,
+                waker,
+            },
+        ),
     );
     true
 }

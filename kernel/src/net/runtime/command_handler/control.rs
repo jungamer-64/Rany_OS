@@ -2,17 +2,20 @@
 // kernel/src/net/l4/endpoint/handler/control.rs
 // ============================================================================
 //! RuntimeCommandHandler 制御系メソッド
-use crate::net::l4::types::{EndpointFd, EndpointType};
+use crate::net::l4::tcp::tcb_table;
+use crate::net::l4::types::SocketId;
 use crate::net::runtime::command_handler::EventHandleResult;
 use crate::net::runtime::command_handler::RuntimeCommandHandler;
-use crate::net::l4::tcp::tcb_table;
-use crate::net::l4::types::EndpointState;
 
 impl RuntimeCommandHandler {
     /// SetPriorityイベント処理
-    pub(super) fn handle_set_priority(&self, fd: EndpointFd, priority: u8) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
-            return EventHandleResult::SocketNotFound(fd);
+    pub(super) fn handle_set_priority(
+        &self,
+        socket_id: SocketId,
+        priority: u8,
+    ) -> EventHandleResult {
+        let Some(socket) = crate::net::l4::socket::lookup_socket(socket_id) else {
+            return EventHandleResult::SocketNotFound(socket_id);
         };
 
         let (local, remote) = {
@@ -37,9 +40,13 @@ impl RuntimeCommandHandler {
     }
 
     /// SetNoDelayイベント処理
-    pub(super) fn handle_set_nodelay(&self, fd: EndpointFd, nodelay: bool) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
-            return EventHandleResult::SocketNotFound(fd);
+    pub(super) fn handle_set_nodelay(
+        &self,
+        socket_id: SocketId,
+        nodelay: bool,
+    ) -> EventHandleResult {
+        let Some(socket) = crate::net::l4::socket::lookup_socket(socket_id) else {
+            return EventHandleResult::SocketNotFound(socket_id);
         };
 
         let (local, remote) = {
@@ -67,17 +74,17 @@ impl RuntimeCommandHandler {
     pub(super) fn handle_tx_available(&self) -> EventHandleResult {
         // 送信待ちのソケットに DataReady イベントを再送して再試行を促す（TCP）
         // また、イベントキュー満杯で待機していた UDP ソケットの send_waker も起床させる
-        crate::net::l4::socket::for_each_endpoint(|socket| {
+        crate::net::l4::socket::for_each_socket(|socket| {
             let pending = {
                 let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
                 inner.has_send_data()
             };
-            if pending && socket.socket_type() == EndpointType::Tcp {
+            if pending && socket.is_tcp() {
                 crate::net::runtime::command::enqueue_command_ignore_in(
                     socket.runtime(),
                     crate::net::runtime::command::RuntimeCommand::Transport(
                         crate::net::runtime::command::TransportCommand::TcpDataReady {
-                            fd: socket.fd(),
+                            socket_id: socket.socket_id(),
                         },
                     ),
                 );
@@ -95,18 +102,17 @@ impl RuntimeCommandHandler {
         EventHandleResult::Success
     }
 
-    pub(super) fn unregister_endpoint(&self, fd: EndpointFd) {
-        let _ = crate::net::l4::socket::unregister_endpoint(fd);
+    pub(super) fn unregister_socket(&self, socket_id: SocketId) {
+        let _ = crate::net::l4::socket::unregister_socket(socket_id);
     }
 
-    pub(super) fn close_endpoint_now(&self, fd: EndpointFd) {
-        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
+    pub(super) fn close_socket_now(&self, socket_id: SocketId) {
+        let Some(socket) = crate::net::l4::socket::lookup_socket(socket_id) else {
             return;
         };
 
         let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.clear_protocol();
-        inner.clear_tcp_payload_queues();
+        inner.mark_closed();
         if let Some(waker) = inner.recv_waker.take() {
             waker.wake();
         }
@@ -119,10 +125,9 @@ impl RuntimeCommandHandler {
         if let Some(waker) = inner.accept_waker.take() {
             waker.wake();
         }
-        let _ = inner.transition_to(EndpointState::Closed);
         drop(inner);
 
-        let _ = crate::net::l4::socket::unregister_endpoint(fd);
+        let _ = crate::net::l4::socket::unregister_socket(socket_id);
     }
 
     /// ICMP Echo Requestイベント処理（イベントキュー経由で非同期処理）

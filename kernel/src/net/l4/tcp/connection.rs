@@ -1,9 +1,9 @@
 use super::*;
-use crate::net::l4::socket::Endpoint;
-use crate::net::runtime::command::{RuntimeCommand, enqueue_command_ignore_in, send_command_in};
+use crate::net::l4::socket::{Socket, TcpSocketState};
 use crate::net::l4::tcp::tcb::tcb_table;
-use crate::net::l4::types::{EndpointError, EndpointFd, EndpointState, EndpointType};
+use crate::net::l4::types::{EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::{RuntimeCommand, enqueue_command_ignore_in, send_command_in};
 use crate::net::types::InterfaceScope;
 use crate::sync::PoisonLock;
 use core::future::Future;
@@ -24,7 +24,7 @@ pub enum TcpError {
     PermissionDenied,
 }
 
-fn tcp_error_from_endpoint(error: EndpointError) -> TcpError {
+fn tcp_error_from_socket(error: EndpointError) -> TcpError {
     match error {
         EndpointError::NotConnected => TcpError::ConnectionClosed,
         EndpointError::ConnectionRefused => TcpError::ConnectionRefused,
@@ -37,7 +37,7 @@ fn tcp_error_from_endpoint(error: EndpointError) -> TcpError {
     }
 }
 
-fn endpoint_send_budget(
+fn socket_send_budget(
     local: Option<EndpointAddr>,
     remote: Option<EndpointAddr>,
     queued_bytes: usize,
@@ -62,8 +62,8 @@ fn on_recv_progress(local: Option<EndpointAddr>, remote: Option<EndpointAddr>, l
     }
 }
 
-fn endpoint_inner_stats(endpoint: &Endpoint) -> TcpStats {
-    endpoint
+fn socket_inner_stats(socket: &Socket) -> TcpStats {
+    socket
         .inner()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -166,13 +166,14 @@ impl Future for TcpDialDispatchFuture {
         let scope = self.scope;
         let result_slot = self.result_slot.clone();
         let waker = self.waker.clone();
-        let event = RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpDial {
-            local,
-            remote,
-            scope,
-            result_slot: result_slot.clone(),
-            waker: waker.clone(),
-        });
+        let event =
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpDial {
+                local,
+                remote,
+                scope,
+                result_slot: result_slot.clone(),
+                waker: waker.clone(),
+            });
         let sent = &mut self.sent;
         poll_tcp_dispatch(runtime, sent, &result_slot, &waker, cx, event)
     }
@@ -218,13 +219,14 @@ impl Future for TcpAcceptorBindDispatchFuture {
         let backlog = self.backlog;
         let result_slot = self.result_slot.clone();
         let waker = self.waker.clone();
-        let event = RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpBind {
-            local: addr,
-            scope,
-            backlog,
-            result_slot: result_slot.clone(),
-            waker: waker.clone(),
-        });
+        let event =
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpBind {
+                local: addr,
+                scope,
+                backlog,
+                result_slot: result_slot.clone(),
+                waker: waker.clone(),
+            });
 
         let sent = &mut self.sent;
         poll_tcp_dispatch(runtime, sent, &result_slot, &waker, cx, event)
@@ -233,7 +235,7 @@ impl Future for TcpAcceptorBindDispatchFuture {
 
 #[derive(Clone)]
 pub struct TcpConnection {
-    endpoint: Endpoint,
+    socket: Socket,
     runtime: NetRuntimeHandle,
     close_on_drop: bool,
 }
@@ -241,43 +243,43 @@ pub struct TcpConnection {
 impl core::fmt::Debug for TcpConnection {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TcpConnection")
-            .field("fd", &self.endpoint.fd().raw())
-            .field("local_addr", &self.endpoint.local_addr())
-            .field("peer_addr", &self.endpoint.remote_addr())
+            .field("socket_id", &self.socket.socket_id().raw())
+            .field("local_addr", &self.socket.local_addr())
+            .field("peer_addr", &self.socket.remote_addr())
             .finish()
     }
 }
 
 impl TcpConnection {
-    pub(crate) fn from_endpoint(endpoint: Endpoint) -> Self {
-        debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
+    pub(crate) fn from_socket(socket: Socket) -> Self {
+        debug_assert!(socket.is_tcp());
         Self {
-            runtime: endpoint.runtime(),
-            endpoint,
+            runtime: socket.runtime(),
+            socket,
             close_on_drop: true,
         }
     }
 
-    pub(crate) fn from_retained_endpoint(endpoint: Endpoint) -> Self {
-        debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
+    pub(crate) fn from_retained_socket(socket: Socket) -> Self {
+        debug_assert!(socket.is_tcp());
         Self {
-            runtime: endpoint.runtime(),
-            endpoint,
+            runtime: socket.runtime(),
+            socket,
             close_on_drop: false,
         }
     }
 
-    pub(crate) fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
+    pub(crate) fn socket(&self) -> &Socket {
+        &self.socket
     }
 
-    pub(crate) fn fd(&self) -> EndpointFd {
-        self.endpoint.fd()
+    pub(crate) fn socket_id(&self) -> SocketId {
+        self.socket.socket_id()
     }
 
-    pub(crate) fn into_retained_handle(mut self) -> EndpointFd {
+    pub(crate) fn into_retained_handle(mut self) -> SocketId {
         self.close_on_drop = false;
-        self.endpoint.fd()
+        self.socket.socket_id()
     }
 
     pub async fn dial_in(runtime: NetRuntimeHandle, addr: EndpointAddr) -> Result<Self, TcpError> {
@@ -330,17 +332,17 @@ impl TcpConnection {
     }
 
     pub fn local_addr(&self) -> EndpointAddr {
-        self.endpoint
+        self.socket
             .local_addr()
             .unwrap_or_else(|| EndpointAddr::new([0, 0, 0, 0], 0))
     }
 
     pub fn peer_addr(&self) -> Option<EndpointAddr> {
-        self.endpoint.remote_addr()
+        self.socket.remote_addr()
     }
 
     pub fn stats(&self) -> TcpStats {
-        endpoint_inner_stats(&self.endpoint)
+        socket_inner_stats(&self.socket)
     }
 
     pub async fn recv_payload(&mut self) -> Option<PacketPayload> {
@@ -349,14 +351,14 @@ impl TcpConnection {
 
     pub fn poll_recv_payload(&self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
         let mut inner = self
-            .endpoint
+            .socket
             .inner()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
         if let Some(err) = inner.last_error.take() {
             log::warn!(
-                "[NET][tcp] payload receive observed endpoint error: {:?}",
+                "[NET][tcp] payload receive observed socket error: {:?}",
                 err
             );
         }
@@ -377,7 +379,7 @@ impl TcpConnection {
             return Poll::Ready(Some(payload));
         }
 
-        if matches!(inner.state, EndpointState::Closed | EndpointState::Closing) {
+        if inner.is_tcp_closing_or_closed() {
             return Poll::Ready(None);
         }
 
@@ -399,15 +401,15 @@ impl TcpConnection {
 
     pub fn close(&mut self) -> Result<(), TcpError> {
         let mut inner = self
-            .endpoint
+            .socket
             .inner()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
-        match inner.state {
-            EndpointState::Closed | EndpointState::Closing => return Ok(()),
-            EndpointState::Connected | EndpointState::Connecting => {
-                let _ = inner.transition_to(EndpointState::Closing);
+        match inner.tcp_state() {
+            Some(TcpSocketState::Closed | TcpSocketState::Closing) => return Ok(()),
+            Some(TcpSocketState::Connected | TcpSocketState::Connecting) => {
+                let _ = inner.set_tcp_state(TcpSocketState::Closing);
             }
             _ => return Err(TcpError::InvalidState),
         }
@@ -415,9 +417,11 @@ impl TcpConnection {
 
         enqueue_command_ignore_in(
             self.runtime,
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket {
-                fd: self.endpoint.fd(),
-            }),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::CloseSocket {
+                    socket_id: self.socket.socket_id(),
+                },
+            ),
         );
         Ok(())
     }
@@ -429,22 +433,24 @@ impl Drop for TcpConnection {
             return;
         }
 
-        if alloc::sync::Arc::strong_count(self.endpoint.inner()) > 2 {
+        if alloc::sync::Arc::strong_count(self.socket.inner()) > 2 {
             return;
         }
 
         enqueue_command_ignore_in(
             self.runtime,
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket {
-                fd: self.endpoint.fd(),
-            }),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::CloseSocket {
+                    socket_id: self.socket.socket_id(),
+                },
+            ),
         );
     }
 }
 
 #[derive(Clone)]
 pub struct TcpAcceptor {
-    endpoint: Endpoint,
+    socket: Socket,
     runtime: NetRuntimeHandle,
     close_on_drop: bool,
 }
@@ -452,38 +458,38 @@ pub struct TcpAcceptor {
 impl core::fmt::Debug for TcpAcceptor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TcpAcceptor")
-            .field("fd", &self.endpoint.fd().raw())
-            .field("local_addr", &self.endpoint.local_addr())
+            .field("socket_id", &self.socket.socket_id().raw())
+            .field("local_addr", &self.socket.local_addr())
             .finish()
     }
 }
 
 impl TcpAcceptor {
-    pub(crate) fn from_endpoint(endpoint: Endpoint) -> Self {
-        debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
+    pub(crate) fn from_socket(socket: Socket) -> Self {
+        debug_assert!(socket.is_tcp());
         Self {
-            runtime: endpoint.runtime(),
-            endpoint,
+            runtime: socket.runtime(),
+            socket,
             close_on_drop: true,
         }
     }
 
-    pub(crate) fn from_retained_endpoint(endpoint: Endpoint) -> Self {
-        debug_assert_eq!(endpoint.socket_type(), EndpointType::Tcp);
+    pub(crate) fn from_retained_socket(socket: Socket) -> Self {
+        debug_assert!(socket.is_tcp());
         Self {
-            runtime: endpoint.runtime(),
-            endpoint,
+            runtime: socket.runtime(),
+            socket,
             close_on_drop: false,
         }
     }
 
-    pub(crate) fn endpoint(&self) -> &Endpoint {
-        &self.endpoint
+    pub(crate) fn socket(&self) -> &Socket {
+        &self.socket
     }
 
-    pub(crate) fn into_retained_handle(mut self) -> EndpointFd {
+    pub(crate) fn into_retained_handle(mut self) -> SocketId {
         self.close_on_drop = false;
-        self.endpoint.fd()
+        self.socket.socket_id()
     }
 
     pub async fn bind_in(runtime: NetRuntimeHandle, addr: EndpointAddr) -> Result<Self, TcpError> {
@@ -506,7 +512,7 @@ impl TcpAcceptor {
     }
 
     pub fn local_addr(&self) -> EndpointAddr {
-        self.endpoint
+        self.socket
             .local_addr()
             .unwrap_or_else(|| EndpointAddr::new([0, 0, 0, 0], 0))
     }
@@ -526,15 +532,17 @@ impl Drop for TcpAcceptor {
             return;
         }
 
-        if alloc::sync::Arc::strong_count(self.endpoint.inner()) > 2 {
+        if alloc::sync::Arc::strong_count(self.socket.inner()) > 2 {
             return;
         }
 
         enqueue_command_ignore_in(
             self.runtime,
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket {
-                fd: self.endpoint.fd(),
-            }),
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::CloseSocket {
+                    socket_id: self.socket.socket_id(),
+                },
+            ),
         );
     }
 }
@@ -550,21 +558,21 @@ impl Future for ConnectFuture {
         let this = self.get_mut();
         let mut inner = this
             .connection
-            .endpoint
+            .socket
             .inner()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
         if let Some(err) = inner.last_error.take() {
-            return Poll::Ready(Err(tcp_error_from_endpoint(err)));
+            return Poll::Ready(Err(tcp_error_from_socket(err)));
         }
 
-        match inner.state {
-            EndpointState::Connected => Poll::Ready(Ok(())),
-            EndpointState::Closed | EndpointState::Closing => {
+        match inner.tcp_state() {
+            Some(TcpSocketState::Connected) => Poll::Ready(Ok(())),
+            Some(TcpSocketState::Closed | TcpSocketState::Closing) => {
                 Poll::Ready(Err(TcpError::ConnectionRefused))
             }
-            EndpointState::Connecting => {
+            Some(TcpSocketState::Connecting) => {
                 inner.connect_waker = Some(cx.waker().clone());
                 Poll::Pending
             }
@@ -586,29 +594,31 @@ impl Future for ConnectTimeoutFuture {
         let this = self.get_mut();
         let mut inner = this
             .connection
-            .endpoint
+            .socket
             .inner()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
         if let Some(err) = inner.last_error.take() {
-            return Poll::Ready(Err(tcp_error_from_endpoint(err)));
+            return Poll::Ready(Err(tcp_error_from_socket(err)));
         }
 
-        match inner.state {
-            EndpointState::Connected => Poll::Ready(Ok(())),
-            EndpointState::Closed | EndpointState::Closing => {
+        match inner.tcp_state() {
+            Some(TcpSocketState::Connected) => Poll::Ready(Ok(())),
+            Some(TcpSocketState::Closed | TcpSocketState::Closing) => {
                 Poll::Ready(Err(TcpError::ConnectionRefused))
             }
-            EndpointState::Connecting => {
+            Some(TcpSocketState::Connecting) => {
                 let now = crate::time::precise_time_nanos() / 1000;
                 if now.saturating_sub(this.start_us) >= this.timeout_us {
                     drop(inner);
                     enqueue_command_ignore_in(
                         this.connection.runtime,
-                        RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::CloseSocket {
-                            fd: this.connection.endpoint.fd(),
-                        }),
+                        RuntimeCommand::Transport(
+                            crate::net::runtime::command::TransportCommand::CloseSocket {
+                                socket_id: this.connection.socket.socket_id(),
+                            },
+                        ),
                     );
                     return Poll::Ready(Err(TcpError::Timeout));
                 }
@@ -628,17 +638,17 @@ impl<'a> Future for AcceptFuture<'a> {
     type Output = Result<(TcpConnection, EndpointAddr), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.acceptor.endpoint.try_next_incoming() {
-            Ok((endpoint, addr, _if_id)) => {
-                Poll::Ready(Ok((TcpConnection::from_endpoint(endpoint), addr)))
+        match self.acceptor.socket.try_next_incoming() {
+            Ok((socket, addr, _if_id)) => {
+                Poll::Ready(Ok((TcpConnection::from_socket(socket), addr)))
             }
             Err(EndpointError::Timeout) => {
                 self.acceptor
-                    .endpoint
+                    .socket
                     .register_accept_waker(cx.waker().clone());
                 Poll::Pending
             }
-            Err(err) => Poll::Ready(Err(tcp_error_from_endpoint(err))),
+            Err(err) => Poll::Ready(Err(tcp_error_from_socket(err))),
         }
     }
 }
@@ -675,21 +685,21 @@ impl<'a> Future for SendPayloadFuture<'a> {
 
         let mut inner = this
             .connection
-            .endpoint
+            .socket
             .inner()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
         if let Some(err) = inner.last_error.take() {
             this.payload = Some(payload);
-            return Poll::Ready(Err(tcp_error_from_endpoint(err)));
+            return Poll::Ready(Err(tcp_error_from_socket(err)));
         }
 
-        if matches!(inner.state, EndpointState::Closed | EndpointState::Closing) {
+        if inner.is_tcp_closing_or_closed() {
             return Poll::Ready(Err(TcpError::ConnectionClosed));
         }
 
-        if !inner.state.can_send() {
+        if !matches!(inner.tcp_state(), Some(TcpSocketState::Connected)) {
             return Poll::Ready(Err(TcpError::InvalidState));
         }
 
@@ -702,7 +712,7 @@ impl<'a> Future for SendPayloadFuture<'a> {
             inner
                 .send_buffer_limit
                 .saturating_sub(queued_bytes)
-                .min(endpoint_send_budget(
+                .min(socket_send_budget(
                     inner.local_addr,
                     inner.remote_addr,
                     queued_bytes,
@@ -717,7 +727,7 @@ impl<'a> Future for SendPayloadFuture<'a> {
                     this.connection.runtime,
                     RuntimeCommand::Transport(
                         crate::net::runtime::command::TransportCommand::TcpDataReady {
-                            fd: this.connection.endpoint.fd(),
+                            socket_id: this.connection.socket.socket_id(),
                         },
                     ),
                 );
@@ -732,7 +742,7 @@ impl<'a> Future for SendPayloadFuture<'a> {
                     tcp.stats.record_tx_enqueued(queued);
                 }
             }
-            Err(err) => return Poll::Ready(Err(tcp_error_from_endpoint(err))),
+            Err(err) => return Poll::Ready(Err(tcp_error_from_socket(err))),
         }
         drop(inner);
 
@@ -740,7 +750,7 @@ impl<'a> Future for SendPayloadFuture<'a> {
             this.connection.runtime,
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::TcpDataReady {
-                    fd: this.connection.endpoint.fd(),
+                    socket_id: this.connection.socket.socket_id(),
                 },
             ),
         );
@@ -760,13 +770,13 @@ impl<'a> Future for DrainTxFuture<'a> {
         let this = self.get_mut();
         let mut inner = this
             .connection
-            .endpoint
+            .socket
             .inner()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
         if let Some(err) = inner.last_error.take() {
-            return Poll::Ready(Err(tcp_error_from_endpoint(err)));
+            return Poll::Ready(Err(tcp_error_from_socket(err)));
         }
 
         if !inner.has_send_data() {
@@ -780,7 +790,7 @@ impl<'a> Future for DrainTxFuture<'a> {
             this.connection.runtime,
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::TcpDataReady {
-                    fd: this.connection.endpoint.fd(),
+                    socket_id: this.connection.socket.socket_id(),
                 },
             ),
         );

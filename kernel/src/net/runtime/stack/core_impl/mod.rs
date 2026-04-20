@@ -321,8 +321,10 @@ impl NetworkStack {
         let frame_len = frame.as_bytes().len();
         drop(frame);
         packet.set_len(frame_len);
-        if self.transmit_packet_on(if_id, kernel_api::resource::net::PacketPayload::single(packet))
-        {
+        if self.transmit_packet_on(
+            if_id,
+            kernel_api::resource::net::PacketPayload::single(packet),
+        ) {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -442,8 +444,10 @@ impl NetworkStack {
         let frame_len = frame.as_bytes().len();
         drop(frame);
         packet.set_len(frame_len);
-        if self.transmit_packet_on(if_id, kernel_api::resource::net::PacketPayload::single(packet))
-        {
+        if self.transmit_packet_on(
+            if_id,
+            kernel_api::resource::net::PacketPayload::single(packet),
+        ) {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -950,7 +954,7 @@ impl NetworkStack {
         self.expire_arp_pending();
         self.expire_ndp_pending();
 
-        // Endpoint-owned TCP timers/retransmits are driven from the endpoint event
+        // Socket-owned TCP timers/retransmits are driven from the endpoint event
         // task via `tcb_table().tick()`. The integrated stack keeps only generic
         // timeout-wheel work here.
         let expired = self.timeout_wheel.tick(now);

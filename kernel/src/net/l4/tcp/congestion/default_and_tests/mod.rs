@@ -11,7 +11,7 @@ impl Default for CongestionControllerVariant {
 // CUBIC テスト
 // =====================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod cubic_tests {
     use super::*;
 
@@ -670,7 +670,7 @@ pub struct BbrDebugInfo {
 // BBR テスト
 // =====================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod bbr_tests {
     use super::*;
 
@@ -748,7 +748,7 @@ pub mod bbr_tests {
     }
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 fn bbr_startup_growth_check() -> bool {
     let mut bbr = BbrController::with_mss(1000);
     let initial_cwnd = bbr.cwnd();
@@ -759,216 +759,4 @@ fn bbr_startup_growth_check() -> bool {
     }
 
     bbr.btl_bw() > 0 && bbr.cwnd() >= initial_cwnd && bbr.round_count > 0
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    use super::*;
-
-    pub fn cubic_initial_state_smoke() -> bool {
-        let cc = CubicController::new();
-        cc.state() == CongestionState::SlowStart && cc.cwnd() == INITIAL_WINDOW * DEFAULT_MSS
-    }
-
-    pub fn cubic_slow_start_smoke() -> bool {
-        let mut cc = CubicController::with_mss(1000);
-        let initial = cc.cwnd();
-
-        cc.on_ack(1000, false, 1000, 0);
-        cc.cwnd() > initial && cc.state() == CongestionState::SlowStart
-    }
-
-    pub fn cubic_root_smoke() -> bool {
-        CubicController::cubic_root(0) == 0
-            && CubicController::cubic_root(1) == 1
-            && CubicController::cubic_root(8) == 2
-            && CubicController::cubic_root(27) == 3
-            && CubicController::cubic_root(1000) == 10
-    }
-
-    pub fn cubic_fast_recovery_smoke() -> bool {
-        let mut cc = CubicController::with_mss(1000);
-        cc.base.cwnd = 50000;
-        cc.base.bytes_in_flight = 40000;
-
-        cc.on_ack(0, true, 1000, 100);
-        cc.on_ack(0, true, 1000, 100);
-        cc.on_ack(0, true, 1000, 100);
-
-        cc.state() == CongestionState::FastRecovery
-            && cc.base.ssthresh == 35000
-            && cc.w_max == 50000
-    }
-
-    pub fn bbr_initial_state_smoke() -> bool {
-        let bbr = BbrController::new();
-        bbr.state() == BbrState::Startup && bbr.cwnd() == INITIAL_WINDOW * DEFAULT_MSS
-    }
-
-    pub fn bbr_startup_growth_smoke() -> bool {
-        bbr_startup_growth_check()
-    }
-
-    pub fn bbr_rt_prop_tracking_smoke() -> bool {
-        let mut bbr = BbrController::with_mss(1000);
-
-        bbr.on_ack(1000, 100, 100);
-        if bbr.rt_prop() != 100 {
-            return false;
-        }
-
-        bbr.on_ack(1000, 80, 200);
-        if bbr.rt_prop() != 80 {
-            return false;
-        }
-
-        bbr.on_ack(1000, 120, 300);
-        bbr.rt_prop() == 80
-    }
-
-    pub fn bbr_available_window_smoke() -> bool {
-        let mut bbr = BbrController::with_mss(1000);
-        bbr.cwnd = 10000;
-
-        bbr.on_send(3000, 0);
-        bbr.available_window() == 7000 && bbr.can_send(5000) && !bbr.can_send(8000)
-    }
-
-    pub fn bbr_bdp_calculation_smoke() -> bool {
-        let mut bbr = BbrController::with_mss(1000);
-        bbr.btl_bw = 100;
-        bbr.rt_prop = 50;
-
-        bbr.bdp() == 5000
-    }
-
-    pub fn bbr_startup_to_drain_smoke() -> bool {
-        let mut bbr = BbrController::with_mss(1000);
-        bbr.full_bw = 1000;
-        bbr.btl_bw = 1000;
-        bbr.round_start = true;
-
-        bbr.check_full_bw_reached();
-        bbr.round_start = true;
-        bbr.check_full_bw_reached();
-        bbr.round_start = true;
-        bbr.check_full_bw_reached();
-
-        if !bbr.full_bw_reached {
-            return false;
-        }
-
-        bbr.update_startup();
-        bbr.state() == BbrState::Drain
-    }
-
-    pub fn variant_from_algorithm_smoke() -> bool {
-        let nr = CongestionControllerVariant::from_algorithm(CongestionAlgorithm::NewReno);
-        if nr.algorithm() != CongestionAlgorithm::NewReno
-            || nr.cwnd() != INITIAL_WINDOW * DEFAULT_MSS
-        {
-            return false;
-        }
-
-        let cubic = CongestionControllerVariant::from_algorithm(CongestionAlgorithm::Cubic);
-        if cubic.algorithm() != CongestionAlgorithm::Cubic
-            || cubic.cwnd() != INITIAL_WINDOW * DEFAULT_MSS
-        {
-            return false;
-        }
-
-        let bbr = CongestionControllerVariant::from_algorithm(CongestionAlgorithm::Bbr);
-        bbr.algorithm() == CongestionAlgorithm::Bbr && bbr.cwnd() == INITIAL_WINDOW * DEFAULT_MSS
-    }
-
-    pub fn variant_with_mss_smoke() -> bool {
-        let v =
-            CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
-        v.mss() == 1000 && v.cwnd() == INITIAL_WINDOW * 1000
-    }
-
-    pub fn variant_newreno_ack_delegation_smoke() -> bool {
-        let mut v = CongestionControllerVariant::from_algorithm_with_mss(
-            CongestionAlgorithm::NewReno,
-            1000,
-        );
-        let initial_cwnd = v.cwnd();
-
-        v.on_ack(1000, false, 1000, 0, 0);
-        v.cwnd() > initial_cwnd && v.congestion_state() == CongestionState::SlowStart
-    }
-
-    pub fn variant_cubic_ack_delegation_smoke() -> bool {
-        let mut v =
-            CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
-        let initial_cwnd = v.cwnd();
-
-        v.on_ack(1000, false, 1000, 100, 0);
-        v.cwnd() > initial_cwnd && v.congestion_state() == CongestionState::SlowStart
-    }
-
-    pub fn variant_bbr_ack_delegation_smoke() -> bool {
-        let mut v =
-            CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Bbr, 1000);
-
-        v.on_send(1000, 0);
-        v.on_ack(1000, false, 0, 50, 50);
-
-        v.congestion_state() == CongestionState::CongestionAvoidance
-    }
-
-    pub fn variant_timeout_delegation_smoke() -> bool {
-        let mut v = CongestionControllerVariant::from_algorithm_with_mss(
-            CongestionAlgorithm::NewReno,
-            1000,
-        );
-
-        v.on_send(5000, 0);
-        v.on_timeout(100);
-
-        v.congestion_state() == CongestionState::SlowStart && v.cwnd() == 1000
-    }
-
-    pub fn variant_reset_delegation_smoke() -> bool {
-        let mut v =
-            CongestionControllerVariant::from_algorithm_with_mss(CongestionAlgorithm::Cubic, 1000);
-
-        v.on_send(5000, 0);
-        v.on_timeout(100);
-        if v.congestion_state() != CongestionState::SlowStart || v.cwnd() == INITIAL_WINDOW * 1000 {
-            return false;
-        }
-
-        v.reset();
-        v.cwnd() == INITIAL_WINDOW * 1000 && v.congestion_state() == CongestionState::SlowStart
-    }
-
-    pub fn variant_available_window_smoke() -> bool {
-        let mut v = CongestionControllerVariant::from_algorithm_with_mss(
-            CongestionAlgorithm::NewReno,
-            1000,
-        );
-
-        v.on_send(3000, 0);
-        v.available_window(20000) == 7000 && v.available_window(5000) == 2000
-    }
-
-    pub fn variant_fast_retransmit_newreno_smoke() -> bool {
-        let mut v = CongestionControllerVariant::from_algorithm_with_mss(
-            CongestionAlgorithm::NewReno,
-            1000,
-        );
-
-        v.on_send(10000, 0);
-        v.on_ack(0, true, 1000, 0, 0);
-        v.on_ack(0, true, 1000, 0, 0);
-        v.on_ack(0, true, 1000, 0, 0);
-
-        v.congestion_state() == CongestionState::FastRecovery
-    }
-
-    pub fn variant_default_smoke() -> bool {
-        let v = CongestionControllerVariant::default();
-        v.algorithm() == CongestionAlgorithm::NewReno
-    }
 }

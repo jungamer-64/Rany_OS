@@ -1,5 +1,5 @@
 use super::*;
-use crate::net::l4::socket::{SocketFamily, find_endpoint_by_port};
+use crate::net::l4::socket::{SocketFamily, find_udp_by_port};
 
 fn resolve_ingress_if_id(if_id: Option<NetIfId>) -> NetIfId {
     if let Some(if_id) = if_id {
@@ -60,12 +60,7 @@ impl UdpProcessor {
             SocketFamily::Ipv4
         };
 
-        let Some(endpoint) = find_endpoint_by_port(
-            crate::net::l4::types::EndpointType::Udp,
-            family,
-            dst_port,
-            Some(if_id),
-        ) else {
+        let Some(endpoint) = find_udp_by_port(family, dst_port, Some(if_id)) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         };
@@ -82,28 +77,15 @@ impl UdpProcessor {
         }
     }
 
-    fn lookup_endpoint(
-        &self,
-        if_id: NetIfId,
-        family: SocketFamily,
-        dst_port: u16,
-    ) -> Option<Endpoint> {
-        let endpoint = find_endpoint_by_port(
-            crate::net::l4::types::EndpointType::Udp,
-            family,
-            dst_port,
-            Some(if_id),
-        );
+    fn lookup_socket(&self, if_id: NetIfId, family: SocketFamily, dst_port: u16) -> Option<Socket> {
+        let endpoint = find_udp_by_port(family, dst_port, Some(if_id));
         if endpoint.is_none() {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
         }
         endpoint
     }
 
-    fn payload_span_checksum(
-        span: crate::net::payload::PayloadSpanRef<'_>,
-        initial: u32,
-    ) -> u16 {
+    fn payload_span_checksum(span: crate::net::payload::PayloadSpanRef<'_>, initial: u32) -> u16 {
         let mut sum = initial;
         let mut trailing = None;
 
@@ -123,7 +105,8 @@ impl UdpProcessor {
             }
 
             while index + 1 < chunk.len() {
-                sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
+                sum =
+                    sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
                 index += 2;
             }
             if index < chunk.len() {
@@ -175,7 +158,9 @@ impl UdpProcessor {
             return Err((UdpResult::Invalid, packet));
         };
         let length = u16::from_be_bytes([header[4], header[5]]) as usize;
-        if !(UdpHeader::SIZE..=segment.total_len()).contains(&length) || length != segment.total_len() {
+        if !(UdpHeader::SIZE..=segment.total_len()).contains(&length)
+            || length != segment.total_len()
+        {
             return Err((UdpResult::Invalid, packet));
         }
 
@@ -191,11 +176,13 @@ impl UdpProcessor {
             }
         }
 
-        let src =
-            crate::net::l4::EndpointAddr::new(src_ip.octets(), u16::from_be_bytes([header[0], header[1]]));
+        let src = crate::net::l4::EndpointAddr::new(
+            src_ip.octets(),
+            u16::from_be_bytes([header[0], header[1]]),
+        );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
         let family = SocketFamily::Ipv4;
-        let Some(endpoint) = self.lookup_endpoint(if_id, family, dst_port) else {
+        let Some(endpoint) = self.lookup_socket(if_id, family, dst_port) else {
             return Err((UdpResult::NoEndpoint, packet));
         };
 
@@ -208,7 +195,10 @@ impl UdpProcessor {
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
 
-        if endpoint.deliver_udp_payload(if_id, src, ttl, udp_payload).is_ok() {
+        if endpoint
+            .deliver_udp_payload(if_id, src, ttl, udp_payload)
+            .is_ok()
+        {
             self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
             Ok(())
         } else {
@@ -251,7 +241,9 @@ impl UdpProcessor {
             return Err((UdpResult::Invalid, packet));
         };
         let length = u16::from_be_bytes([header[4], header[5]]) as usize;
-        if !(UdpHeader::SIZE..=segment.total_len()).contains(&length) || length != segment.total_len() {
+        if !(UdpHeader::SIZE..=segment.total_len()).contains(&length)
+            || length != segment.total_len()
+        {
             return Err((UdpResult::Invalid, packet));
         }
 
@@ -261,8 +253,7 @@ impl UdpProcessor {
             return Err((UdpResult::ChecksumError, packet));
         }
 
-        let pseudo =
-            ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Udp, length as u32);
+        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Udp, length as u32);
         let Some(checksum_span) = segment.slice(0, length) else {
             return Err((UdpResult::Invalid, packet));
         };
@@ -277,7 +268,7 @@ impl UdpProcessor {
         );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
         let family = SocketFamily::Ipv6;
-        let Some(endpoint) = self.lookup_endpoint(if_id, family, dst_port) else {
+        let Some(endpoint) = self.lookup_socket(if_id, family, dst_port) else {
             return Err((UdpResult::NoEndpoint, packet));
         };
 
@@ -290,7 +281,10 @@ impl UdpProcessor {
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
 
-        if endpoint.deliver_udp_payload(if_id, src, ttl, udp_payload).is_ok() {
+        if endpoint
+            .deliver_udp_payload(if_id, src, ttl, udp_payload)
+            .is_ok()
+        {
             self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
             Ok(())
         } else {
@@ -346,8 +340,7 @@ impl UdpProcessor {
             let buf = pkt_ref.data_mut();
             buf[..payload.len()].copy_from_slice(payload);
 
-            let src =
-                crate::net::l4::EndpointAddr::new(src_ip.octets(), packet.src_port());
+            let src = crate::net::l4::EndpointAddr::new(src_ip.octets(), packet.src_port());
             let dst_port = packet.dst_port();
 
             if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(pkt_ref)) {
@@ -405,8 +398,7 @@ impl UdpProcessor {
             let buf = pkt_ref.data_mut();
             buf[..payload.len()].copy_from_slice(payload);
 
-            let src =
-                crate::net::l4::EndpointAddr::new_v6(src_ip.octets(), packet.src_port());
+            let src = crate::net::l4::EndpointAddr::new_v6(src_ip.octets(), packet.src_port());
             let dst_port = packet.dst_port();
 
             if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(pkt_ref)) {
@@ -463,8 +455,7 @@ impl UdpProcessor {
         packet.advance(UdpHeader::SIZE);
         packet.set_len(payload_len);
 
-        let src =
-            crate::net::l4::EndpointAddr::new(src_ip.octets(), packet_view.src_port());
+        let src = crate::net::l4::EndpointAddr::new(src_ip.octets(), packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
         if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(packet)) {
@@ -579,8 +570,7 @@ impl UdpProcessor {
         packet.advance(UdpHeader::SIZE);
         packet.set_len(payload_len);
 
-        let src =
-            crate::net::l4::EndpointAddr::new_v6(src_ip.octets(), packet_view.src_port());
+        let src = crate::net::l4::EndpointAddr::new_v6(src_ip.octets(), packet_view.src_port());
         let dst_port = packet_view.dst_port();
 
         if self.deliver_payload(if_id, src, dst_port, ttl, PacketPayload::single(packet)) {

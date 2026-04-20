@@ -298,7 +298,7 @@ pub struct FlowControlDebugInfo {
 // テスト
 // =====================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
@@ -382,82 +382,5 @@ pub mod tests {
         // Next probe uses exponential backoff (x2 after first probe).
         assert!(!fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 2));
         assert!(fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 3));
-    }
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    use super::*;
-
-    pub fn initial_state_smoke() -> bool {
-        let fc = FlowController::new();
-        fc.state() == FlowControlState::Normal
-            && fc.advertised_window() == DEFAULT_RECV_BUFFER_SIZE
-            && fc.buffer_utilization() == 0
-    }
-
-    pub fn receive_data_smoke() -> bool {
-        let mut fc = FlowController::with_buffer_size(10000);
-        fc.on_receive(3000);
-        fc.available_buffer() == 7000 && fc.advertised_window() == 7000
-    }
-
-    pub fn consume_data_smoke() -> bool {
-        let mut fc = FlowController::with_buffer_size(10000);
-        fc.on_receive(5000);
-        fc.on_consume(3000);
-        fc.available_buffer() == 8000 && fc.advertised_window() == 8000
-    }
-
-    pub fn zero_window_smoke() -> bool {
-        let mut fc = FlowController::with_buffer_size(1000);
-
-        fc.on_receive(1000);
-        if fc.state() != FlowControlState::ZeroWindow || fc.advertised_window() != 0 {
-            return false;
-        }
-
-        fc.on_consume(500);
-        fc.state() == FlowControlState::Normal && fc.advertised_window() > 0
-    }
-
-    pub fn sws_avoidance_smoke() -> bool {
-        let mut fc = FlowController::with_buffer_size(10000);
-        fc.on_receive(9800);
-        fc.advertised_window() == 0
-    }
-
-    pub fn peer_zero_window_smoke() -> bool {
-        let mut fc = FlowController::new();
-
-        fc.update_peer_window(0);
-        if fc.state() != FlowControlState::ZeroWindowProbe {
-            return false;
-        }
-        if fc.can_send() && fc.state != FlowControlState::ZeroWindowProbe {
-            return false;
-        }
-
-        fc.update_peer_window(5000);
-        fc.state() == FlowControlState::Normal
-    }
-
-    pub fn probe_timing_smoke() -> bool {
-        let mut fc = FlowController::new();
-        fc.update_peer_window(0);
-
-        if fc.should_send_probe(0) {
-            return false;
-        }
-        if !fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS) {
-            return false;
-        }
-        fc.on_probe_sent(ZERO_WINDOW_PROBE_INTERVAL_MS);
-
-        if fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 2) {
-            return false;
-        }
-
-        fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 3)
     }
 }

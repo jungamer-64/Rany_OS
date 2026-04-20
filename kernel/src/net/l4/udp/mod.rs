@@ -11,12 +11,12 @@ use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 use crate::net::l4::EndpointAddr;
 use crate::net::l4::socket::{
-    Endpoint, allocate_ephemeral_port, bind_udp_dual_stack, register_endpoint, unregister_endpoint,
+    Socket, allocate_udp_ephemeral_port, bind_udp_dual_stack, register_socket, unregister_socket,
 };
-use crate::net::l4::types::{EndpointError, EndpointState, EndpointType};
+use crate::net::l4::types::EndpointError;
 use crate::net::payload::PacketPayloadView;
-use crate::net::runtime::command::CommandDispatch;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::CommandDispatch;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::net::types::NetworkError;
@@ -81,7 +81,7 @@ fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
 /// UDP header
 mod types;
 pub use types::*;
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod tests;
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
@@ -358,7 +358,7 @@ impl<'a> UdpPacketMut<'a> {
     }
 }
 
-/// UDP endpoint address
+/// UDP socket address
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UdpAddr {
     /// IPv4 address + port
@@ -403,21 +403,21 @@ impl UdpAddr {
     }
 }
 
-fn udp_addr_from_endpoint(addr: EndpointAddr) -> UdpAddr {
+fn udp_addr_from_socket(addr: EndpointAddr) -> UdpAddr {
     match addr {
         EndpointAddr::V4 { ip, port } => UdpAddr::new(Ipv4Address::new(ip), port),
         EndpointAddr::V6 { ip, port } => UdpAddr::new_v6(Ipv6Address::new(ip), port),
     }
 }
 
-fn endpoint_addr_from_udp(addr: UdpAddr) -> EndpointAddr {
+fn socket_addr_from_udp(addr: UdpAddr) -> EndpointAddr {
     match addr {
         UdpAddr::V4 { ip, port } => EndpointAddr::new(ip.octets(), port),
         UdpAddr::V6 { ip, port } => EndpointAddr::new_v6(ip.octets(), port),
     }
 }
 
-fn endpoint_error_to_network(err: EndpointError) -> NetworkError {
+fn socket_error_to_network(err: EndpointError) -> NetworkError {
     match err {
         EndpointError::PermissionDenied => NetworkError::PermissionDenied,
         EndpointError::PortInUse | EndpointError::AddressInUse | EndpointError::AlreadyBound => {
@@ -466,30 +466,30 @@ fn validate_udp_bind_permission(port: u16, token: Option<u64>) -> Result<(), Net
     Err(NetworkError::PermissionDenied)
 }
 
-fn configure_udp_endpoint(
-    endpoint: &Endpoint,
+fn configure_udp_socket(
+    socket: &Socket,
     scope: InterfaceScope,
     port: u16,
     token: Option<u64>,
 ) -> Result<(), NetworkError> {
-    let mut inner = endpoint
+    let mut inner = socket
         .inner()
         .lock()
         .map_err(|_| NetworkError::LockPoisoned)?;
     inner.local_addr = Some(EndpointAddr::new_v6([0; 16], port));
     inner.scope = scope;
     inner.last_ingress_if_id = None;
-    let udp = inner.ensure_udp();
+    let Some(udp) = inner.udp_mut() else {
+        return Err(NetworkError::InvalidAddress);
+    };
     udp.ttl = 64;
     udp.token = token;
-    inner
-        .transition_to(EndpointState::Bound)
-        .map_err(endpoint_error_to_network)
+    Ok(())
 }
 
 #[derive(Clone)]
 pub struct UdpEndpoint {
-    endpoint: Endpoint,
+    socket: Socket,
     runtime: NetRuntimeHandle,
     registered: bool,
 }
@@ -497,14 +497,14 @@ pub struct UdpEndpoint {
 impl core::fmt::Debug for UdpEndpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let scope = self
-            .endpoint
+            .socket
             .inner()
             .lock()
             .map(|inner| inner.scope)
             .unwrap_or(InterfaceScope::Any);
         f.debug_struct("UdpEndpoint")
-            .field("fd", &self.endpoint.fd().raw())
-            .field("local_addr", &self.endpoint.local_addr())
+            .field("socket_id", &self.socket.socket_id().raw())
+            .field("local_addr", &self.socket.local_addr())
             .field("scope", &scope)
             .finish()
     }
@@ -520,7 +520,7 @@ impl UdpEndpoint {
         validate_udp_bind_permission(port, token)?;
 
         let local_port = if port == 0 {
-            allocate_ephemeral_port(EndpointType::Udp).ok_or(NetworkError::PortInUse)?
+            allocate_udp_ephemeral_port().ok_or(NetworkError::PortInUse)?
         } else {
             port
         };
@@ -531,51 +531,53 @@ impl UdpEndpoint {
                 .map_err(|_| NetworkError::PermissionDenied)?;
         }
 
-        let endpoint = Endpoint::new_in(EndpointType::Udp, runtime);
-        if let Err(error) = configure_udp_endpoint(&endpoint, scope, local_port, token) {
+        let socket = Socket::new_udp_in(runtime);
+        if let Err(error) = configure_udp_socket(&socket, scope, local_port, token) {
             if let Some(token) = token {
                 let _ = crate::security::capability::manager().decrement_in_flight(token);
             }
             return Err(error);
         }
 
-        register_endpoint(endpoint.clone());
-        if let Err(error) = bind_udp_dual_stack(local_port, scope, endpoint.fd()) {
-            let _ = unregister_endpoint(endpoint.fd());
-            return Err(endpoint_error_to_network(error));
+        register_socket(socket.clone());
+        if let Err(error) = bind_udp_dual_stack(local_port, scope, socket.socket_id()) {
+            let _ = unregister_socket(socket.socket_id());
+            return Err(socket_error_to_network(error));
         }
 
         Ok(Self {
-            endpoint,
+            socket,
             runtime,
             registered: true,
         })
     }
 
     fn close_internal(&self) {
-        let _ = self.endpoint.close_immediate();
+        let _ = self.socket.close_immediate();
         if self.registered {
-            let _ = unregister_endpoint(self.endpoint.fd());
+            let _ = unregister_socket(self.socket.socket_id());
         }
     }
 
     pub fn set_ttl(&self, ttl: u8) {
-        if let Ok(mut inner) = self.endpoint.inner().lock() {
-            inner.ensure_udp().ttl = ttl;
+        if let Ok(mut inner) = self.socket.inner().lock() {
+            if let Some(udp) = inner.udp_mut() {
+                udp.ttl = ttl;
+            }
         }
     }
 
     pub fn recv(&self) -> UdpRecvFuture {
         UdpRecvFuture {
-            endpoint: self.endpoint.clone(),
+            socket: self.socket.clone(),
         }
     }
 
     pub fn try_recv(&self) -> Option<(NetIfId, UdpAddr, u8, PacketPayload)> {
-        self.endpoint
+        self.socket
             .try_recv_udp_payload()
             .ok()
-            .map(|(if_id, addr, ttl, payload)| (if_id, udp_addr_from_endpoint(addr), ttl, payload))
+            .map(|(if_id, addr, ttl, payload)| (if_id, udp_addr_from_socket(addr), ttl, payload))
     }
 
     pub fn join_multicast_group(&self, group: Ipv4Address) -> impl Future<Output = bool> {
@@ -589,10 +591,10 @@ impl UdpEndpoint {
     pub fn send(&self, payload: PacketPayload, dst: UdpAddr) -> UdpSendFuture {
         let payload_len = payload.total_len();
         UdpSendFuture {
-            endpoint: self.endpoint.clone(),
+            socket: self.socket.clone(),
             payload: Some(payload),
             payload_len,
-            dst: endpoint_addr_from_udp(dst),
+            dst: socket_addr_from_udp(dst),
             dispatch: CommandDispatch::new_in(self.runtime),
         }
     }
@@ -601,7 +603,7 @@ impl UdpEndpoint {
 impl Drop for UdpEndpoint {
     fn drop(&mut self) {
         let threshold = if self.registered { 2 } else { 1 };
-        if Arc::strong_count(self.endpoint.inner()) > threshold {
+        if Arc::strong_count(self.socket.inner()) > threshold {
             return;
         }
 
@@ -610,19 +612,19 @@ impl Drop for UdpEndpoint {
 }
 
 pub struct UdpRecvFuture {
-    endpoint: Endpoint,
+    socket: Socket,
 }
 
 impl Future for UdpRecvFuture {
     type Output = Option<(NetIfId, UdpAddr, u8, PacketPayload)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.endpoint.try_recv_udp_payload() {
+        match self.socket.try_recv_udp_payload() {
             Ok((if_id, addr, ttl, payload)) => {
-                Poll::Ready(Some((if_id, udp_addr_from_endpoint(addr), ttl, payload)))
+                Poll::Ready(Some((if_id, udp_addr_from_socket(addr), ttl, payload)))
             }
             Err(EndpointError::Timeout) => {
-                self.endpoint.register_recv_waker(cx.waker().clone());
+                self.socket.register_recv_waker(cx.waker().clone());
                 Poll::Pending
             }
             Err(
@@ -636,7 +638,7 @@ impl Future for UdpRecvFuture {
 }
 
 pub struct UdpSendFuture {
-    endpoint: Endpoint,
+    socket: Socket,
     payload: Option<PacketPayload>,
     payload_len: usize,
     dst: EndpointAddr,
@@ -651,27 +653,29 @@ impl Future for UdpSendFuture {
 
         {
             let inner = this
-                .endpoint
+                .socket
                 .inner()
                 .lock()
                 .map_err(|_| NetworkError::LockPoisoned)?;
-            if !matches!(inner.state, EndpointState::Bound | EndpointState::Connected) {
+            if !inner.is_udp_bound() {
                 return Poll::Ready(Err(NetworkError::ConnectionClosed));
             }
         }
 
         match this.dispatch.poll(cx, || {
-            crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::UdpSendTo {
-                fd: this.endpoint.fd(),
-                payload: this
-                    .payload
-                    .take()
-                    .expect("UdpSendFuture payload already dispatched"),
-                remote: this.dst,
-            })
+            crate::net::runtime::command::RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::UdpSendTo {
+                    socket_id: this.socket.socket_id(),
+                    payload: this
+                        .payload
+                        .take()
+                        .expect("UdpSendFuture payload already dispatched"),
+                    remote: this.dst,
+                },
+            )
         }) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(this.payload_len)),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(endpoint_error_to_network(err))),
+            Poll::Ready(Err(err)) => Poll::Ready(Err(socket_error_to_network(err))),
             Poll::Pending => Poll::Pending,
         }
     }

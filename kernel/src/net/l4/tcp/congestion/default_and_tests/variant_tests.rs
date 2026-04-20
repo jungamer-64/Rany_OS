@@ -2,7 +2,7 @@
 // CongestionControllerVariant テスト
 // =====================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod variant_tests {
     use crate::net::l4::tcp::congestion::{
         CongestionAlgorithm, CongestionControllerVariant, CongestionState, DEFAULT_MSS,

@@ -138,7 +138,7 @@ impl TimingWheel {
 // テスト
 // =====================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub mod tests {
     use super::*;
 
@@ -216,43 +216,5 @@ pub mod tests {
         assert_eq!(expired.len(), 1); // (c, d) のみ
 
         assert!(wheel.is_empty());
-    }
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests {
-    use super::*;
-
-    pub fn timing_wheel_basic_smoke() -> bool {
-        let mut wheel = TimingWheel::new();
-        let local = EndpointAddr::new([10, 0, 0, 1], 1000);
-        let remote = EndpointAddr::new([10, 0, 0, 2], 2000);
-
-        wheel.schedule(local, remote, 100);
-        if wheel.len() != 1 {
-            return false;
-        }
-
-        let expired = wheel.advance(50);
-        if !expired.is_empty() {
-            return false;
-        }
-
-        let expired = wheel.advance(100);
-        if expired.len() != 1 {
-            return false;
-        }
-
-        wheel.is_empty()
-    }
-
-    pub fn timing_wheel_cancel_smoke() -> bool {
-        let mut wheel = TimingWheel::new();
-        let local = EndpointAddr::new([10, 0, 0, 1], 1000);
-        let remote = EndpointAddr::new([10, 0, 0, 2], 2000);
-
-        wheel.schedule(local, remote, 200);
-        wheel.cancel(&local, &remote);
-        wheel.is_empty()
     }
 }

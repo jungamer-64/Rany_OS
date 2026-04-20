@@ -49,12 +49,12 @@ impl RuntimeCommandHandler {
     /// SendToイベント処理 (UDP)
     pub(super) fn handle_send_to_with_stack(
         &self,
-        fd: EndpointFd,
+        fd: SocketId,
         remote: EndpointAddr,
         payload: PacketPayload,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_endpoint(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
@@ -95,9 +95,7 @@ impl RuntimeCommandHandler {
                             local_port,
                             dst_ip,
                             remote.port(),
-                            outbound_payload
-                                .take()
-                                .expect("UDP payload must exist"),
+                            outbound_payload.take().expect("UDP payload must exist"),
                             64,
                         )
                     } else {
@@ -106,9 +104,7 @@ impl RuntimeCommandHandler {
                             local_port,
                             dst_ip,
                             remote.port(),
-                            outbound_payload
-                                .take()
-                                .expect("UDP payload must exist"),
+                            outbound_payload.take().expect("UDP payload must exist"),
                             64,
                         )
                     }
@@ -121,9 +117,7 @@ impl RuntimeCommandHandler {
                             local_port,
                             dst_ip,
                             remote.port(),
-                            outbound_payload
-                                .take()
-                                .expect("UDP payload must exist"),
+                            outbound_payload.take().expect("UDP payload must exist"),
                             64,
                         )
                     } else {
@@ -132,9 +126,7 @@ impl RuntimeCommandHandler {
                             local_port,
                             dst_ip,
                             remote.port(),
-                            outbound_payload
-                                .take()
-                                .expect("UDP payload must exist"),
+                            outbound_payload.take().expect("UDP payload must exist"),
                             64,
                         )
                     }

@@ -3,11 +3,11 @@
 // ============================================================================
 //! RuntimeCommandHandler ソケット制御/ライフサイクル系メソッド
 
-use crate::net::runtime::command::RuntimeCommand;
-use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::l4::tcp::tcb::tcb_table;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 
 impl RuntimeCommandHandler {
     pub(super) fn handle_lifecycle_event_with_stack(
@@ -17,7 +17,9 @@ impl RuntimeCommandHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         match event {
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolveRequest { target_ip }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpResolveRequest { target_ip },
+            ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
                 let current_time = stack.current_time();
                 if let Some(mac) = stack.arp.resolve(ip, current_time) {
@@ -27,7 +29,12 @@ impl RuntimeCommandHandler {
                 }
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::NdpResolveRequest { if_id, target_ip }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::NdpResolveRequest {
+                    if_id,
+                    target_ip,
+                },
+            ) => {
                 let ip = crate::net::l3::ipv6::Ipv6Address::new(target_ip);
 
                 if ip.is_multicast() {
@@ -54,17 +61,21 @@ impl RuntimeCommandHandler {
                 }
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac },
+            ) => {
                 crate::net::l2::arp::notify_arp_resolved(ip, mac);
                 EventHandleResult::Success
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpDial {
-                local,
-                remote,
-                scope,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpDial {
+                    local,
+                    remote,
+                    scope,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let result =
                     self.make_tcp_connection_with_stack(runtime, local, remote, scope, stack);
                 if let Ok(mut slot) = result_slot.lock() {
@@ -73,11 +84,13 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastJoin {
-                group,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::MulticastJoin {
+                    group,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
                 let success = stack.join_multicast_group(ip).is_ok();
                 if let Ok(mut slot) = result_slot.lock() {
@@ -86,11 +99,13 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::MulticastLeave {
-                group,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::MulticastLeave {
+                    group,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
                 let success = stack.leave_multicast_group(ip).is_ok();
                 if let Ok(mut slot) = result_slot.lock() {
@@ -99,13 +114,15 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpBind {
-                local,
-                scope,
-                backlog,
-                result_slot,
-                waker,
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpBind {
+                    local,
+                    scope,
+                    backlog,
+                    result_slot,
+                    waker,
+                },
+            ) => {
                 let result = self.make_tcp_acceptor_with_stack(runtime, local, scope, backlog);
                 if let Ok(mut slot) = result_slot.lock() {
                     *slot = Some(result);
@@ -113,7 +130,9 @@ impl RuntimeCommandHandler {
                 waker.wake();
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ProcessTimeouts) => {
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ProcessTimeouts,
+            ) => {
                 // NetworkStack内部タイマーの基準時刻を同期する。
                 // IGMP/ARP/NDP等が `NetworkStack::current_time()` を参照するため、
                 // timeoutイベントごとに必ず更新しておく。
