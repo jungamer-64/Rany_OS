@@ -133,12 +133,6 @@ impl TlsConnection {
         Ok((actual_version, server_key_share))
     }
 
-    pub(super) fn payload_span_from_slice(data: &[u8]) -> TlsResult<OwnedPayloadRange> {
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder.push_bytes(data).ok_or(TlsError::DecodeError)?;
-        Ok(OwnedPayloadRange::from_payload(builder.build()))
-    }
-
     pub(crate) fn apply_server_hello_extension(
         data: &[u8],
         offset: usize,

@@ -52,6 +52,14 @@ if rg -n "packet_payload_from_slice\\(|packet_payload_from_parts\\(" \
   fail "found removed TLS packet payload builder helper"
 fi
 
+if rg -n "\\bOwnedPayloadRange\\b" "${network_tree[@]}" >/dev/null; then
+  fail "found removed owned payload range abstraction"
+fi
+
+if rg -n "\\bpayload_span_from_slice\\(" "${network_tree[@]}" >/dev/null; then
+  fail "found removed TLS slice-to-owned-payload helper"
+fi
+
 if rg -n "payload_preview_bytes\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed mlx5 payload preview linearization"
 fi
