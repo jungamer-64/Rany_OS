@@ -30,9 +30,9 @@ impl DnsClient {
 
     fn push_dns_name_payload(
         builder: &mut crate::net::payload::PacketPayloadBuilder,
-        labels: &[OwnedPayloadRange],
+        name: &DnsNameOwned,
     ) -> Result<(), &'static str> {
-        for label in labels {
+        for label in name.labels() {
             let len = label.total_len();
             if len > 63 {
                 return Err("Label too long");
@@ -40,9 +40,18 @@ impl DnsClient {
             builder
                 .push_bytes(&[len as u8])
                 .ok_or("Failed to allocate DNS label")?;
-            builder
-                .push_span_ref(label.span())
-                .ok_or("Failed to allocate DNS label payload")?;
+            let span = label
+                .span(name.payload())
+                .ok_or("Invalid DNS label payload range")?;
+            let mut pushed = true;
+            span.for_each_chunk(|chunk| {
+                if pushed && builder.push_bytes(chunk).is_none() {
+                    pushed = false;
+                }
+            });
+            if !pushed {
+                return Err("Failed to allocate DNS label payload");
+            }
         }
         builder
             .push_bytes(&[0])
@@ -96,7 +105,7 @@ impl DnsClient {
             .push_bytes(&1u16.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
 
-        Self::push_dns_name_payload(&mut builder, name.labels())?;
+        Self::push_dns_name_payload(&mut builder, name)?;
         builder
             .push_bytes(&(qtype as u16).to_be_bytes())
             .ok_or("Failed to allocate DNS qtype")?;

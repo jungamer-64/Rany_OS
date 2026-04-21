@@ -106,7 +106,7 @@ pub async fn resolve_ipv6(name: &str) -> Option<Ipv6Address> {
 }
 
 /// 非同期でTXTレコードを解決 (Global API)
-pub async fn resolve_txt(name: &str) -> Option<Vec<DnsTxtView>> {
+pub async fn resolve_txt(name: &str) -> Option<Vec<alloc::string::String>> {
     let client = match super::shared_client_lock().lock() {
         Ok(g) => g.as_ref().cloned(),
         Err(_) => None,
@@ -136,7 +136,7 @@ pub async fn resolve_mx(name: &str) -> Option<Vec<DnsMxRecord>> {
 }
 
 /// 非同期でIPv4逆引き（PTR）を解決 (Global API)
-pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<DnsNameView> {
+pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<alloc::string::String> {
     let client = match super::shared_client_lock().lock() {
         Ok(g) => g.as_ref().cloned(),
         Err(_) => None,
@@ -146,7 +146,7 @@ pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<DnsNameView> {
 }
 
 /// 非同期でIPv6逆引き（PTR）を解決 (Global API)
-pub async fn resolve_ptr_ipv6(ip: Ipv6Address) -> Option<DnsNameView> {
+pub async fn resolve_ptr_ipv6(ip: Ipv6Address) -> Option<alloc::string::String> {
     let client = match super::shared_client_lock().lock() {
         Ok(g) => g.as_ref().cloned(),
         Err(_) => None,

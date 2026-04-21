@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::OwnedPayloadRange;
+use crate::net::payload::PayloadRange;
 
 struct DnsSectionCounts {
     qcount: usize,
@@ -35,12 +35,12 @@ struct DnsRecordHeader {
 impl DnsClient {
     pub fn parse_response_payload_for_name(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         current_tick: u64,
         expected_name: &DnsNameOwned,
         expected_type: DnsQueryType,
     ) -> Option<Result<DnsResponseView, DnsResponseCode>> {
-        if self.needs_tcp_fallback_payload(payload) {
+        if self.needs_tcp_fallback_payload(&payload) {
             None
         } else {
             Some(self.parse_response_payload_chained(
@@ -191,7 +191,7 @@ impl DnsClient {
                 return Err(DnsResponseCode::FormatError);
             }
 
-            if compare_dns_name_labels(parsed_name.name.labels(), expected_name.labels())
+            if compare_dns_name_view_to_owned(payload, &parsed_name.name, expected_name)
                 == core::cmp::Ordering::Equal
                 && qtype == expected_type as u16
             {
@@ -238,12 +238,12 @@ impl DnsClient {
 
     fn parse_response_payload_chained(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         current_tick: u64,
         expected_name: &DnsNameOwned,
         expected_type: DnsQueryType,
     ) -> Result<DnsResponseView, DnsResponseCode> {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let view = crate::net::payload::PacketPayloadView::new(&payload);
         let flags = self.parse_and_validate_response_header_payload(&view)?;
         self.consume_pending_response_id_payload(&view)?;
         self.handle_response_code_payload(flags, expected_name, current_tick)?;
@@ -251,7 +251,7 @@ impl DnsClient {
         let counts = self.parse_section_counts_payload(&view)?;
         let mut offset = DnsHeader::SIZE;
         self.validate_question_section_payload(
-            payload,
+            &payload,
             &view,
             &mut offset,
             counts.qcount,
@@ -260,16 +260,16 @@ impl DnsClient {
         )?;
 
         let records =
-            self.parse_answer_section_payload(payload, &view, &mut offset, counts.acount)?;
+            self.parse_answer_section_payload(&payload, &view, &mut offset, counts.acount)?;
         self.skip_authority_section_payload(&view, &mut offset, counts.nscount)?;
-        let _ = self.parse_answer_section_payload(payload, &view, &mut offset, counts.arcount)?;
+        let _ = self.parse_answer_section_payload(&payload, &view, &mut offset, counts.arcount)?;
 
         Ok(self.finalize_response_payload(payload, expected_name, current_tick, records))
     }
 
     pub fn parse_response_payload(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         current_tick: u64,
         expected_name: &str,
         expected_type: DnsQueryType,
@@ -307,12 +307,15 @@ impl DnsClient {
         payload: &kernel_api::resource::net::PacketPayload,
         offset: usize,
         len: u8,
-    ) -> Result<OwnedPayloadRange, DnsResponseCode> {
+    ) -> Result<PayloadRange, DnsResponseCode> {
         if len > 63 {
             return Err(DnsResponseCode::FormatError);
         }
 
-        self.copied_owned_range(payload, offset + 1, len as usize)
+        let range = PayloadRange::new(offset + 1, len as usize);
+        range
+            .span(payload)
+            .map(|_| range)
             .ok_or(DnsResponseCode::FormatError)
     }
 
@@ -336,7 +339,7 @@ impl DnsClient {
             if len == 0 {
                 let next_offset = pointer_end.unwrap_or(current + 1);
                 return Ok(ParsedDnsName {
-                    name: DnsNameView { labels, text_len },
+                    name: DnsNameView::from_parsed_labels(labels, text_len),
                     next_offset,
                 });
             }
@@ -378,39 +381,35 @@ impl DnsClient {
 
         while offset < end {
             let Some(len) = view.read_u8(offset).map(usize::from) else {
-                return self.raw_record_span(payload, rdata_offset, rdlength);
+                return DnsRecordData::Raw(PayloadRange::new(rdata_offset, rdlength));
             };
             offset = offset.saturating_add(1);
             if offset.saturating_add(len) > end {
-                return self.raw_record_span(payload, rdata_offset, rdlength);
+                return DnsRecordData::Raw(PayloadRange::new(rdata_offset, rdlength));
             }
-            let Some(span) = self.copied_owned_range(payload, offset, len) else {
-                return self.raw_record_span(payload, rdata_offset, rdlength);
+            let span = PayloadRange::new(offset, len);
+            if span.span(payload).is_none() {
+                return DnsRecordData::Raw(PayloadRange::new(rdata_offset, rdlength));
             };
-            text_len = text_len.saturating_add(span.total_len());
+            text_len = text_len.saturating_add(len);
             spans.push(span);
             offset = offset.saturating_add(len);
         }
 
-        DnsRecordData::TXT(DnsTxtView { spans, text_len })
+        DnsRecordData::TXT(DnsTxtView::from_ranges(spans, text_len))
     }
 
     fn finalize_response_payload(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         _expected_name: &DnsNameOwned,
         _current_tick: u64,
         records: Vec<DnsRecordMeta>,
     ) -> DnsResponseView {
-        self.stats.responses_received.fetch_add(1, Ordering::Relaxed);
-        let response_payload = self
-            .copied_owned_range(payload, 0, payload.total_len())
-            .and_then(OwnedPayloadRange::into_payload)
-            .unwrap_or_default();
-        DnsResponseView {
-            payload: response_payload,
-            records,
-        }
+        self.stats
+            .responses_received
+            .fetch_add(1, Ordering::Relaxed);
+        DnsResponseView { payload, records }
     }
 
     fn skip_name_payload(

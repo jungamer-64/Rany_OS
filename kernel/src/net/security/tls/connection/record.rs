@@ -4,8 +4,8 @@
 
 use super::{
     AlertDescription, AlertLevel, CipherSuite, ContentType, OwnedPayloadRange, PacketPayload,
-    PacketPayloadView, PayloadSpanRef, SessionTicket, TlsBytes, TlsConnection, TlsError,
-    TlsResult, TlsState, append_payload,
+    PacketPayloadView, PayloadSpanRef, SessionTicket, TlsBytes, TlsConnection, TlsError, TlsResult,
+    TlsState, append_payload,
 };
 use crate::net::security::tls::crypto::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, aes_gcm_decrypt_into, aes_gcm_encrypt_into,
@@ -14,7 +14,10 @@ use crate::net::security::tls::crypto::{
 };
 
 impl TlsConnection {
-    pub(super) fn set_tls_bytes<const N: usize>(slot: &mut TlsBytes<N>, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn set_tls_bytes<const N: usize>(
+        slot: &mut TlsBytes<N>,
+        data: &[u8],
+    ) -> TlsResult<()> {
         slot.set(data).ok_or(TlsError::DecodeError)
     }
 
@@ -177,7 +180,10 @@ impl TlsConnection {
     }
 
     /// Decrypt a TLS 1.3 record body (ciphertext || tag) and advance read sequence.
-    pub(super) fn decrypt_tls13_record_payload(&mut self, payload: &PacketPayload) -> TlsResult<PacketPayload> {
+    pub(super) fn decrypt_tls13_record_payload(
+        &mut self,
+        payload: &PacketPayload,
+    ) -> TlsResult<PacketPayload> {
         let cipher = self
             .negotiation
             .negotiated_cipher
@@ -188,9 +194,19 @@ impl TlsConnection {
         }
 
         let (key, iv, seq, is_handshake) = if self.tls13_reads_handshake_records() {
-            (&self.tls13.hs_read_key, &self.tls13.hs_read_iv, self.tls13.hs_read_seq, true)
+            (
+                &self.tls13.hs_read_key,
+                &self.tls13.hs_read_iv,
+                self.tls13.hs_read_seq,
+                true,
+            )
         } else {
-            (&self.record.read_key, &self.record.read_iv, self.record.read_seq, false)
+            (
+                &self.record.read_key,
+                &self.record.read_iv,
+                self.record.read_seq,
+                false,
+            )
         };
         if key.is_empty() || iv.len() < 12 {
             return Err(TlsError::CryptoError);
@@ -224,7 +240,9 @@ impl TlsConnection {
         plaintext: &mut PacketPayload,
     ) -> TlsResult<()> {
         let record_span = PayloadSpanRef::from_payload(&record);
-        let header = record_span.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+        let header = record_span
+            .read_array::<5>(0)
+            .ok_or(TlsError::DecodeError)?;
         let content_type = header[0];
         let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
         let _body_range = record_span
@@ -248,12 +266,14 @@ impl TlsConnection {
             Some(ContentType::ApplicationData) if self.negotiation.is_tls13 => {
                 // TLS 1.3: encrypted inner content is further dispatched by inner type.
                 let decrypted = self.decrypt_tls13_record_payload(&body)?;
-                self.dispatch_tls13_inner_content(&decrypted, plaintext)?;
+                self.dispatch_tls13_inner_content(decrypted, plaintext)?;
             }
             Some(ContentType::ApplicationData) => {
                 // TLS 1.2: decrypt and append plaintext application payload.
                 let bytes = Self::contiguous_payload_bytes(&body).ok_or(TlsError::DecodeError)?;
-                let decrypted = if self.negotiation.negotiated_cipher
+                let decrypted = if self
+                    .negotiation
+                    .negotiated_cipher
                     .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256)
                     .is_chacha20_poly1305()
                 {
@@ -316,19 +336,21 @@ impl TlsConnection {
     /// TLS 1.3復号後の内部コンテントタイプを処理する
     pub(super) fn dispatch_tls13_inner_content(
         &mut self,
-        decrypted: &kernel_api::resource::net::PacketPayload,
+        decrypted: kernel_api::resource::net::PacketPayload,
         plaintext: &mut kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<()> {
-        if let Some((inner_ct, inner_data)) = Self::tls13_split_content_type_payload(decrypted) {
+        if let Some((inner_ct, inner_len)) = Self::tls13_split_content_type_payload(&decrypted) {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
-                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    builder
-                        .push_span_ref(inner_data)
-                        .ok_or(TlsError::DecodeError)?;
-                    crate::net::payload::append_payload(plaintext, builder.build());
+                    let inner_payload =
+                        crate::net::payload::retain_payload_window_owned(decrypted, 0, inner_len)
+                            .ok_or(TlsError::DecodeError)?;
+                    crate::net::payload::append_payload(plaintext, inner_payload);
                 }
                 Some(ContentType::Handshake) => {
+                    let inner_data =
+                        crate::net::payload::PayloadSpanRef::from_range(&decrypted, 0, inner_len)
+                            .ok_or(TlsError::DecodeError)?;
                     // Post-handshake: NewSessionTicket, KeyUpdate
                     self.tls13_process_post_handshake(
                         inner_data
@@ -337,11 +359,10 @@ impl TlsConnection {
                     )?;
                 }
                 Some(ContentType::Alert) => {
-                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    builder
-                        .push_span_ref(inner_data)
-                        .ok_or(TlsError::DecodeError)?;
-                    self.handle_alert_payload(&builder.build())?;
+                    let inner_payload =
+                        crate::net::payload::retain_payload_window_owned(decrypted, 0, inner_len)
+                            .ok_or(TlsError::DecodeError)?;
+                    self.handle_alert_payload(&inner_payload)?;
                 }
                 _ => {}
             }
@@ -392,13 +413,23 @@ impl TlsConnection {
         inner_plaintext: &[u8],
         is_handshake: bool,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
 
         let (key, iv, seq) = if is_handshake {
-            (&self.tls13.hs_write_key, &self.tls13.hs_write_iv, self.tls13.hs_write_seq)
+            (
+                &self.tls13.hs_write_key,
+                &self.tls13.hs_write_iv,
+                self.tls13.hs_write_seq,
+            )
         } else {
-            (&self.record.write_key, &self.record.write_iv, self.record.write_seq)
+            (
+                &self.record.write_key,
+                &self.record.write_iv,
+                self.record.write_seq,
+            )
         };
 
         if key.is_empty() || iv.len() < 12 {
@@ -472,7 +503,9 @@ impl TlsConnection {
         data: &[u8],
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         // レコード構造:
         // - explicit_nonce (8 bytes, TLS 1.2)
@@ -542,7 +575,9 @@ impl TlsConnection {
         data: &[u8],
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256);
         if data.len() < 16 {
             // Minimum: tag(16), no ciphertext is allowed (empty message)
@@ -554,7 +589,10 @@ impl TlsConnection {
         let auth_tag = &data[ciphertext_len..];
 
         // Keys not set — return error (decryption requires valid keys)
-        if self.record.read_key.is_empty() || self.record.read_key.len() < 32 || self.record.read_iv.len() < 12 {
+        if self.record.read_key.is_empty()
+            || self.record.read_key.len() < 32
+            || self.record.read_iv.len() < 12
+        {
             return Err(TlsError::CryptoError);
         }
 
@@ -596,7 +634,9 @@ impl TlsConnection {
     pub fn encrypt(&mut self, data: &[u8]) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // TLS 1.3: inner content type付きでAEAD暗号化
         if self.negotiation.is_tls13 {
-            if self.negotiation.state != TlsState::Established && self.negotiation.state != TlsState::Handshaking {
+            if self.negotiation.state != TlsState::Established
+                && self.negotiation.state != TlsState::Handshaking
+            {
                 return Err(TlsError::NotConnected);
             }
             let mut inner_plaintext = TlsBytes::<16384>::new();
@@ -614,7 +654,9 @@ impl TlsConnection {
             return Err(TlsError::NotConnected);
         }
 
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         if cipher.is_chacha20_poly1305() {
@@ -639,21 +681,30 @@ impl TlsConnection {
         let explicit_nonce = self.record.write_seq.to_be_bytes();
 
         // Keys not set — return error (encryption requires valid keys)
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
-        let (ciphertext, auth_tag) = if self.record.write_key.is_empty() || self.record.write_iv.len() < 4 {
-            return Err(TlsError::CryptoError);
-        } else {
-            // 12-byte nonce: implicit_iv(4) || explicit_nonce(8)
-            let mut nonce = [0u8; 12];
-            nonce[0..4].copy_from_slice(&self.record.write_iv.as_slice()[0..4]);
-            nonce[4..12].copy_from_slice(&explicit_nonce);
+        let (ciphertext, auth_tag) =
+            if self.record.write_key.is_empty() || self.record.write_iv.len() < 4 {
+                return Err(TlsError::CryptoError);
+            } else {
+                // 12-byte nonce: implicit_iv(4) || explicit_nonce(8)
+                let mut nonce = [0u8; 12];
+                nonce[0..4].copy_from_slice(&self.record.write_iv.as_slice()[0..4]);
+                nonce[4..12].copy_from_slice(&explicit_nonce);
 
-            // AAD: seq_num(8) || type(1) || version(2) || length(2)
-            let aad = Self::tls12_aad(self.record.write_seq, content_type, data.len());
+                // AAD: seq_num(8) || type(1) || version(2) || length(2)
+                let aad = Self::tls12_aad(self.record.write_seq, content_type, data.len());
 
-            Self::encrypt_aead_payload(cipher, self.record.write_key.as_slice(), &nonce, &aad, data)?
-        };
+                Self::encrypt_aead_payload(
+                    cipher,
+                    self.record.write_key.as_slice(),
+                    &nonce,
+                    &aad,
+                    data,
+                )?
+            };
 
         // Record length: nonce(8) + ciphertext + tag(16)
         let record_len = 8 + ciphertext.total_len() + 16;
@@ -693,25 +744,35 @@ impl TlsConnection {
         content_type: u8,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
         // Keys not set — return error (encryption requires valid keys)
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256);
-        let (ciphertext, auth_tag) =
-            if self.record.write_key.is_empty() || self.record.write_key.len() < 32 || self.record.write_iv.len() < 12 {
-                return Err(TlsError::CryptoError);
-            } else {
-                // Construct 12-byte nonce: IV XOR (zero-padded sequence number)
-                let mut nonce = [0u8; 12];
-                nonce.copy_from_slice(&self.record.write_iv.as_slice()[0..12]);
-                let seq_bytes = self.record.write_seq.to_be_bytes();
-                for i in 0..8 {
-                    nonce[4 + i] ^= seq_bytes[i];
-                }
+        let (ciphertext, auth_tag) = if self.record.write_key.is_empty()
+            || self.record.write_key.len() < 32
+            || self.record.write_iv.len() < 12
+        {
+            return Err(TlsError::CryptoError);
+        } else {
+            // Construct 12-byte nonce: IV XOR (zero-padded sequence number)
+            let mut nonce = [0u8; 12];
+            nonce.copy_from_slice(&self.record.write_iv.as_slice()[0..12]);
+            let seq_bytes = self.record.write_seq.to_be_bytes();
+            for i in 0..8 {
+                nonce[4 + i] ^= seq_bytes[i];
+            }
 
-                // AAD: seq_num(8) || type(1) || version(2) || length(2)
-                let aad = Self::tls12_aad(self.record.write_seq, content_type, data.len());
+            // AAD: seq_num(8) || type(1) || version(2) || length(2)
+            let aad = Self::tls12_aad(self.record.write_seq, content_type, data.len());
 
-                Self::encrypt_aead_payload(cipher, self.record.write_key.as_slice(), &nonce, &aad, data)?
-            };
+            Self::encrypt_aead_payload(
+                cipher,
+                self.record.write_key.as_slice(),
+                &nonce,
+                &aad,
+                data,
+            )?
+        };
 
         // Record length: ciphertext + tag(16) — no explicit nonce for ChaCha20-Poly1305
         let record_len = ciphertext.total_len() + 16;
@@ -762,13 +823,12 @@ impl TlsConnection {
 
     pub(crate) fn tls13_split_content_type_payload(
         decrypted: &kernel_api::resource::net::PacketPayload,
-    ) -> Option<(u8, crate::net::payload::PayloadSpanRef<'_>)> {
+    ) -> Option<(u8, usize)> {
         let span = crate::net::payload::PayloadSpanRef::from_payload(decrypted);
         for i in (0..span.total_len()).rev() {
             let byte = span.byte_at(i)?;
             if byte != 0 {
-                return crate::net::payload::PayloadSpanRef::from_range(decrypted, 0, i)
-                .map(|inner| (byte, inner));
+                return Some((byte, i));
             }
         }
         None
@@ -922,20 +982,25 @@ impl TlsConnection {
         if self.resumption.resumption_master_secret.is_empty() {
             return None;
         }
-        let use_384 = self.negotiation.negotiated_cipher.map_or(false, |c| c.uses_sha384());
+        let use_384 = self
+            .negotiation
+            .negotiated_cipher
+            .map_or(false, |c| c.uses_sha384());
         let hash_len = if use_384 { 48 } else { 32 };
 
         let psk = if use_384 {
             let mut rms = [0u8; 48];
             let copy_len = self.resumption.resumption_master_secret.len().min(48);
-            rms[..copy_len].copy_from_slice(&self.resumption.resumption_master_secret.as_slice()[..copy_len]);
+            rms[..copy_len]
+                .copy_from_slice(&self.resumption.resumption_master_secret.as_slice()[..copy_len]);
             let mut derived = [0u8; 48];
             hkdf_expand_label_sha384(&rms, b"resumption", ticket_nonce, &mut derived[..hash_len]);
             TlsBytes::from_slice(&derived[..hash_len])?
         } else {
             let mut rms = [0u8; 32];
             let copy_len = self.resumption.resumption_master_secret.len().min(32);
-            rms[..copy_len].copy_from_slice(&self.resumption.resumption_master_secret.as_slice()[..copy_len]);
+            rms[..copy_len]
+                .copy_from_slice(&self.resumption.resumption_master_secret.as_slice()[..copy_len]);
             let mut derived = [0u8; 32];
             hkdf_expand_label(&rms, b"resumption", ticket_nonce, &mut derived[..hash_len]);
             TlsBytes::from_slice(&derived[..hash_len])?
@@ -956,7 +1021,9 @@ impl TlsConnection {
 
         let request_update = data[0];
 
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
         let use_384 = cipher.uses_sha384();

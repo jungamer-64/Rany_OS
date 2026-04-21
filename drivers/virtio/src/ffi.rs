@@ -429,11 +429,7 @@ extern "C" fn netdev_poll(_opaque: u64, _if_id: u16) -> i32 {
     }
 }
 
-extern "C" fn netdev_handle_event(
-    opaque: u64,
-    if_id: u16,
-    _event: AbiNetDriverEvent,
-) -> i32 {
+extern "C" fn netdev_handle_event(opaque: u64, if_id: u16, _event: AbiNetDriverEvent) -> i32 {
     netdev_poll(opaque, if_id)
 }
 
@@ -667,8 +663,9 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
             init.map(|_| Some(runtime)).map_err(|_| ())
         }
         VirtioStandaloneKind::Block => {
-            let init =
-                unsafe { init_virtio_blk_with_transport_at_index(PORT_INDEX, transport, pci_locator) };
+            let init = unsafe {
+                init_virtio_blk_with_transport_at_index(PORT_INDEX, transport, pci_locator)
+            };
             init.map(|_| None).map_err(|_| ())
         }
         VirtioStandaloneKind::Unsupported => Err(()),

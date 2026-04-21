@@ -485,6 +485,15 @@ pub fn send_tcp_segment_payload(
     remote: EndpointAddr,
     segment: PacketPayload,
 ) -> bool {
+    send_tcp_segment_payload_with_completion(local, remote, segment, None)
+}
+
+pub fn send_tcp_segment_payload_with_completion(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    segment: PacketPayload,
+    completion_id: Option<u64>,
+) -> bool {
     let (scope, ingress_if) = super::tcb::tcb_table()
         .read(local, remote, |tcb| (tcb.scope, tcb.ingress_if_id))
         .unwrap_or((crate::net::types::InterfaceScope::Any, None));
@@ -502,12 +511,14 @@ pub fn send_tcp_segment_payload(
                 src_ip,
                 dst_ip,
                 segment,
+                completion_id,
             ),
             None => crate::net::runtime::stack::enqueue_tcp_send_in(
                 crate::net::runtime::default_runtime(),
                 src_ip,
                 dst_ip,
                 segment,
+                completion_id,
             ),
         };
         if ok {
@@ -533,12 +544,14 @@ pub fn send_tcp_segment_payload(
                 src_v6,
                 dst_v6,
                 segment,
+                completion_id,
             ),
             None => crate::net::runtime::stack::enqueue_tcp_v6_send_in(
                 crate::net::runtime::default_runtime(),
                 src_v6,
                 dst_v6,
                 segment,
+                completion_id,
             ),
         };
         if ok {

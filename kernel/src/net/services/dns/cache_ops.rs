@@ -3,6 +3,36 @@
 // ============================================================================
 
 use super::*;
+use alloc::string::String;
+
+fn payload_span_to_string(span: crate::net::payload::PayloadSpanRef<'_>) -> String {
+    let mut out = String::with_capacity(span.total_len());
+    for index in 0..span.total_len() {
+        if let Some(byte) = span.byte_at(index) {
+            out.push(byte as char);
+        }
+    }
+    out
+}
+
+fn dns_name_view_to_string(payload: &PacketPayload, name: &DnsNameView) -> Option<String> {
+    let mut out = String::with_capacity(name.text_len());
+    for (index, label) in name.labels().iter().enumerate() {
+        if index > 0 {
+            out.push('.');
+        }
+        out.push_str(&payload_span_to_string(label.span(payload)?));
+    }
+    Some(out)
+}
+
+fn dns_txt_view_to_string(payload: &PacketPayload, txt: &DnsTxtView) -> Option<String> {
+    let mut out = String::with_capacity(txt.text_len());
+    for span in txt.spans() {
+        out.push_str(&payload_span_to_string(span.span(payload)?));
+    }
+    Some(out)
+}
 
 enum Ipv4CacheLookup {
     Hit(Ipv4Address),
@@ -27,7 +57,8 @@ impl DnsClient {
         if entry.negative {
             return Ipv4CacheLookup::Negative;
         }
-        entry.records
+        entry
+            .records
             .iter()
             .find_map(|record| match record.data {
                 DnsRecordData::A(addr) => Some(Ipv4CacheLookup::Hit(addr)),
@@ -46,7 +77,8 @@ impl DnsClient {
         if entry.negative {
             return Ipv6CacheLookup::Negative;
         }
-        entry.records
+        entry
+            .records
             .iter()
             .find_map(|record| match record.data {
                 DnsRecordData::AAAA(addr) => Some(Ipv6CacheLookup::Hit(addr)),
@@ -87,10 +119,13 @@ impl DnsClient {
         }
 
         let response = self.query_internal_name(name, DnsQueryType::A).await.ok()?;
-        response.records.iter().find_map(|record| match record.data {
-            DnsRecordData::A(addr) => Some(addr),
-            _ => None,
-        })
+        response
+            .records
+            .iter()
+            .find_map(|record| match record.data {
+                DnsRecordData::A(addr) => Some(addr),
+                _ => None,
+            })
     }
 
     pub async fn resolve_ipv6(&self, name: &str) -> Option<Ipv6Address> {
@@ -110,21 +145,31 @@ impl DnsClient {
             }
         }
 
-        let response = self.query_internal_name(name, DnsQueryType::AAAA).await.ok()?;
-        response.records.iter().find_map(|record| match record.data {
-            DnsRecordData::AAAA(addr) => Some(addr),
-            _ => None,
-        })
+        let response = self
+            .query_internal_name(name, DnsQueryType::AAAA)
+            .await
+            .ok()?;
+        response
+            .records
+            .iter()
+            .find_map(|record| match record.data {
+                DnsRecordData::AAAA(addr) => Some(addr),
+                _ => None,
+            })
     }
 
-    pub async fn resolve_txt(&self, name: &str) -> Option<Vec<DnsTxtView>> {
+    pub async fn resolve_txt(&self, name: &str) -> Option<Vec<String>> {
         let name = DnsNameOwned::parse_ascii(name).ok()?;
-        let response = self.query_internal_name(name, DnsQueryType::TXT).await.ok()?;
+        let response = self
+            .query_internal_name(name, DnsQueryType::TXT)
+            .await
+            .ok()?;
+        let payload = &response.payload;
         let records = response
             .records
-            .into_iter()
-            .filter_map(|record| match record.data {
-                DnsRecordData::TXT(value) => Some(value),
+            .iter()
+            .filter_map(|record| match &record.data {
+                DnsRecordData::TXT(value) => dns_txt_view_to_string(payload, value),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -133,21 +178,25 @@ impl DnsClient {
 
     pub async fn resolve_srv(&self, name: &str) -> Option<Vec<DnsSrvRecord>> {
         let name = DnsNameOwned::parse_ascii(name).ok()?;
-        let response = self.query_internal_name(name, DnsQueryType::SRV).await.ok()?;
+        let response = self
+            .query_internal_name(name, DnsQueryType::SRV)
+            .await
+            .ok()?;
+        let payload = &response.payload;
         let records = response
             .records
-            .into_iter()
-            .filter_map(|record| match record.data {
+            .iter()
+            .filter_map(|record| match &record.data {
                 DnsRecordData::SRV {
                     priority,
                     weight,
                     port,
                     target,
                 } => Some(DnsSrvRecord {
-                    priority,
-                    weight,
-                    port,
-                    target,
+                    priority: *priority,
+                    weight: *weight,
+                    port: *port,
+                    target: dns_name_view_to_string(payload, target)?,
                 }),
                 _ => None,
             })
@@ -157,14 +206,18 @@ impl DnsClient {
 
     pub async fn resolve_mx(&self, name: &str) -> Option<Vec<DnsMxRecord>> {
         let name = DnsNameOwned::parse_ascii(name).ok()?;
-        let response = self.query_internal_name(name, DnsQueryType::MX).await.ok()?;
+        let response = self
+            .query_internal_name(name, DnsQueryType::MX)
+            .await
+            .ok()?;
+        let payload = &response.payload;
         let records = response
             .records
-            .into_iter()
-            .filter_map(|record| match record.data {
+            .iter()
+            .filter_map(|record| match &record.data {
                 DnsRecordData::MX(preference, exchange) => Some(DnsMxRecord {
-                    preference,
-                    exchange,
+                    preference: *preference,
+                    exchange: dns_name_view_to_string(payload, exchange)?,
                 }),
                 _ => None,
             })
@@ -172,21 +225,31 @@ impl DnsClient {
         (!records.is_empty()).then_some(records)
     }
 
-    pub async fn resolve_ptr_ipv4(&self, ip: Ipv4Address) -> Option<DnsNameView> {
+    pub async fn resolve_ptr_ipv4(&self, ip: Ipv4Address) -> Option<String> {
         let octets = ip.octets();
         let query = alloc::format!(
             "{}.{}.{}.{}.in-addr.arpa",
-            octets[3], octets[2], octets[1], octets[0]
+            octets[3],
+            octets[2],
+            octets[1],
+            octets[0]
         );
         let name = DnsNameOwned::parse_ascii(&query).ok()?;
-        let response = self.query_internal_name(name, DnsQueryType::PTR).await.ok()?;
-        response.records.into_iter().find_map(|record| match record.data {
-            DnsRecordData::Name(name) => Some(name),
-            _ => None,
-        })
+        let response = self
+            .query_internal_name(name, DnsQueryType::PTR)
+            .await
+            .ok()?;
+        let payload = &response.payload;
+        response
+            .records
+            .iter()
+            .find_map(|record| match &record.data {
+                DnsRecordData::Name(name) => dns_name_view_to_string(payload, name),
+                _ => None,
+            })
     }
 
-    pub async fn resolve_ptr_ipv6(&self, ip: Ipv6Address) -> Option<DnsNameView> {
+    pub async fn resolve_ptr_ipv6(&self, ip: Ipv6Address) -> Option<String> {
         let octets = ip.octets();
         let mut query = alloc::string::String::new();
         for byte in octets.iter().rev() {
@@ -195,11 +258,18 @@ impl DnsClient {
         }
         query.push_str("ip6.arpa");
         let name = DnsNameOwned::parse_ascii(&query).ok()?;
-        let response = self.query_internal_name(name, DnsQueryType::PTR).await.ok()?;
-        response.records.into_iter().find_map(|record| match record.data {
-            DnsRecordData::Name(name) => Some(name),
-            _ => None,
-        })
+        let response = self
+            .query_internal_name(name, DnsQueryType::PTR)
+            .await
+            .ok()?;
+        let payload = &response.payload;
+        response
+            .records
+            .iter()
+            .find_map(|record| match &record.data {
+                DnsRecordData::Name(name) => dns_name_view_to_string(payload, name),
+                _ => None,
+            })
     }
 
     /// DNSクライアントのメインループ（非同期）

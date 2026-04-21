@@ -595,7 +595,7 @@ impl TcbTable {
 
     fn check_zero_window_probes(&self, current_tick: u64) {
         use super::retransmit::retransmit_queue_push;
-        use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
+        use super::segment::TcpSegmentBuilder;
         use crate::net::l4::socket::lookup_socket;
         for shard in &self.shards {
             let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
@@ -626,27 +626,18 @@ impl TcbTable {
                                 let Ok(segment) = builder.build_checked_packet(key.0, key.1) else {
                                     continue;
                                 };
-                                let Some(retransmit_segment) =
-                                    super::retransmit::materialize_retransmit_copy(&segment)
-                                else {
-                                    continue;
-                                };
-                                if send_tcp_segment_payload(key.0, key.1, segment) {
-                                    retransmit_queue_push(key.0, key.1, seq, 1, retransmit_segment);
+                                retransmit_queue_push(key.0, key.1, seq, 1, segment);
+                                if super::retransmit::retransmit_queue_transmit_ready(
+                                    key.0, key.1, seq,
+                                ) {
                                     entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
                                     entry.flow_control.on_probe_sent(current_tick);
                                 } else {
-                                    let mut inner =
-                                        socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                                    if let Some(probe_body) =
-                                        crate::net::payload::retain_payload_window_owned(
-                                            retransmit_segment,
-                                            crate::net::l4::tcp::TcpHeader::MIN_HEADER_LEN,
-                                            1,
-                                        )
-                                    {
-                                        inner.push_send_payload_front(probe_body);
-                                    }
+                                    log::warn!(
+                                        "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
+                                        key.0,
+                                        key.1
+                                    );
                                 }
                             }
                         }

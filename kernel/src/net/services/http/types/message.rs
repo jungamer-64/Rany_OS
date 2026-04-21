@@ -142,7 +142,15 @@ impl HttpBodyView {
     pub fn to_payload(&self, payload: &PacketPayload) -> Option<PacketPayload> {
         let mut builder = PacketPayloadBuilder::new();
         for span in self.spans(payload) {
-            builder.push_span_ref(span)?;
+            let mut pushed = true;
+            span.for_each_chunk(|chunk| {
+                if pushed && builder.push_bytes(chunk).is_none() {
+                    pushed = false;
+                }
+            });
+            if !pushed {
+                return None;
+            }
         }
         Some(builder.build())
     }
@@ -197,7 +205,9 @@ impl HttpInboundRequest {
     }
 
     pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body.as_ref().and_then(|body| body.to_payload(&self.payload))
+        self.body
+            .as_ref()
+            .and_then(|body| body.to_payload(&self.payload))
     }
 }
 
@@ -286,6 +296,8 @@ impl HttpInboundResponse {
     }
 
     pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body.as_ref().and_then(|body| body.to_payload(&self.payload))
+        self.body
+            .as_ref()
+            .and_then(|body| body.to_payload(&self.payload))
     }
 }

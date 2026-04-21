@@ -439,9 +439,15 @@ fn write_content_type_header(
     match content_type {
         HeaderValue::Text(value) => push_builder_str(builder, &value)?,
         HeaderValue::PayloadOrDefault(Some(value)) => {
-            builder
-                .push_span_ref(value)
-                .ok_or(HttpResponseBuildError::InvalidPayloadSpan)?;
+            let mut pushed = true;
+            value.for_each_chunk(|chunk| {
+                if pushed && builder.push_bytes(chunk).is_none() {
+                    pushed = false;
+                }
+            });
+            if !pushed {
+                return Err(HttpResponseBuildError::InvalidPayloadSpan);
+            }
         }
         HeaderValue::PayloadOrDefault(None) => {
             push_builder_str(builder, "application/octet-stream")?;

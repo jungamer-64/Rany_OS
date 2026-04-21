@@ -129,7 +129,6 @@ impl ClassCode {
     pub fn is_nvme(&self) -> bool {
         self.class == 0x01 && self.subclass == 0x08 && self.prog_if == 0x02
     }
-
 }
 
 impl fmt::Display for ClassCode {

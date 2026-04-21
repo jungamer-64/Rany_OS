@@ -6,10 +6,11 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
-use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder};
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadRange, PayloadSpanRef};
 use crate::net::runtime::context::default_runtime_context;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -233,25 +234,32 @@ impl DnsHeader {
 
 #[derive(Debug)]
 pub struct DnsNameView {
-    labels: Vec<OwnedPayloadRange>,
+    labels: Vec<PayloadRange>,
     text_len: usize,
 }
 
 impl DnsNameView {
-    pub fn eq_ignore_ascii_case(&self, name: &str) -> bool {
+    pub fn from_parsed_labels(labels: Vec<PayloadRange>, text_len: usize) -> Self {
+        Self { labels, text_len }
+    }
+
+    pub fn eq_ignore_ascii_case_in(&self, payload: &PacketPayload, name: &str) -> bool {
         let mut parts = name.split('.');
         for label in &self.labels {
             let Some(part) = parts.next() else {
                 return false;
             };
-            if !label.eq_ignore_ascii_case(part.as_bytes()) {
+            let Some(span) = label.span(payload) else {
+                return false;
+            };
+            if !span.eq_ignore_ascii_case(part.as_bytes()) {
                 return false;
             }
         }
         parts.next().is_none()
     }
 
-    pub fn labels(&self) -> &[OwnedPayloadRange] {
+    pub fn labels(&self) -> &[PayloadRange] {
         &self.labels
     }
 
@@ -271,13 +279,52 @@ pub enum DnsNameError {
 
 #[derive(Debug)]
 pub struct DnsNameOwned {
-    labels: Vec<OwnedPayloadRange>,
+    payload: PacketPayload,
+    labels: Vec<PayloadRange>,
     text_len: usize,
 }
 
 impl DnsNameOwned {
-    pub(crate) fn from_parsed_labels(labels: Vec<OwnedPayloadRange>, text_len: usize) -> Self {
-        Self { labels, text_len }
+    pub(crate) fn from_payload_labels(
+        payload: PacketPayload,
+        labels: Vec<PayloadRange>,
+        text_len: usize,
+    ) -> Self {
+        Self {
+            payload,
+            labels,
+            text_len,
+        }
+    }
+
+    pub(crate) fn from_payload_ranges(
+        payload: &PacketPayload,
+        labels: &[PayloadRange],
+        text_len: usize,
+    ) -> Option<Self> {
+        let mut builder = PacketPayloadBuilder::new();
+        let mut owned_labels = Vec::new();
+        let mut offset = 0usize;
+        for label in labels {
+            let span = label.span(payload)?;
+            let len = span.total_len();
+            let mut pushed = true;
+            span.for_each_chunk(|chunk| {
+                if pushed && builder.push_bytes(chunk).is_none() {
+                    pushed = false;
+                }
+            });
+            if !pushed {
+                return None;
+            }
+            owned_labels.push(PayloadRange::new(offset, len));
+            offset = offset.saturating_add(len);
+        }
+        Some(Self::from_payload_labels(
+            builder.build(),
+            owned_labels,
+            text_len,
+        ))
     }
 
     pub fn parse_ascii(name: &str) -> Result<Self, DnsNameError> {
@@ -286,8 +333,10 @@ impl DnsNameOwned {
             return Err(DnsNameError::EmptyName);
         }
 
+        let mut builder = PacketPayloadBuilder::new();
         let mut labels = Vec::new();
         let mut text_len = 0usize;
+        let mut payload_offset = 0usize;
         for (index, label) in trimmed.split('.').enumerate() {
             if label.is_empty() {
                 return Err(DnsNameError::EmptyLabel);
@@ -301,22 +350,36 @@ impl DnsNameOwned {
                 return Err(DnsNameError::NonAsciiLabel);
             }
 
-            let mut builder = PacketPayloadBuilder::new();
             builder
                 .push_bytes(bytes)
                 .ok_or(DnsNameError::AllocationFailed)?;
-            labels.push(OwnedPayloadRange::from_payload(builder.build()));
+            labels.push(PayloadRange::new(payload_offset, bytes.len()));
+            payload_offset = payload_offset.saturating_add(bytes.len());
             text_len = text_len.saturating_add(bytes.len());
             if index > 0 {
                 text_len = text_len.saturating_add(1);
             }
         }
 
-        Ok(Self::from_parsed_labels(labels, text_len))
+        Ok(Self::from_payload_labels(builder.build(), labels, text_len))
     }
 
-    pub fn labels(&self) -> &[OwnedPayloadRange] {
+    pub fn labels(&self) -> &[PayloadRange] {
         &self.labels
+    }
+
+    pub fn payload(&self) -> &PacketPayload {
+        &self.payload
+    }
+
+    pub fn label_span(&self, index: usize) -> Option<PayloadSpanRef<'_>> {
+        self.labels.get(index)?.span(&self.payload)
+    }
+
+    pub fn label_eq_ignore_ascii_case(&self, index: usize, bytes: &[u8]) -> bool {
+        self.label_span(index)
+            .map(|span| span.eq_ignore_ascii_case(bytes))
+            .unwrap_or(false)
     }
 
     pub fn text_len(&self) -> usize {
@@ -326,7 +389,7 @@ impl DnsNameOwned {
 
 impl PartialEq for DnsNameOwned {
     fn eq(&self, other: &Self) -> bool {
-        compare_dns_name_labels(&self.labels, &other.labels) == CmpOrdering::Equal
+        compare_dns_name_owned(self, other) == CmpOrdering::Equal
     }
 }
 
@@ -340,18 +403,22 @@ impl PartialOrd for DnsNameOwned {
 
 impl Ord for DnsNameOwned {
     fn cmp(&self, other: &Self) -> CmpOrdering {
-        compare_dns_name_labels(&self.labels, &other.labels)
+        compare_dns_name_owned(self, other)
     }
 }
 
 #[derive(Debug)]
 pub struct DnsTxtView {
-    spans: Vec<OwnedPayloadRange>,
+    spans: Vec<PayloadRange>,
     text_len: usize,
 }
 
 impl DnsTxtView {
-    pub fn spans(&self) -> &[OwnedPayloadRange] {
+    pub fn from_ranges(spans: Vec<PayloadRange>, text_len: usize) -> Self {
+        Self { spans, text_len }
+    }
+
+    pub fn spans(&self) -> &[PayloadRange] {
         &self.spans
     }
 
@@ -385,7 +452,7 @@ pub struct DnsSrvRecord {
     /// ポート
     pub port: u16,
     /// ターゲット
-    pub target: DnsNameView,
+    pub target: String,
 }
 
 /// MX resolve API の出力型。
@@ -394,7 +461,7 @@ pub struct DnsMxRecord {
     /// 優先度（小さいほど優先）
     pub preference: u16,
     /// 交換サーバー名
-    pub exchange: DnsNameView,
+    pub exchange: String,
 }
 
 /// DNS 応答 view。
@@ -427,7 +494,7 @@ pub enum DnsRecordData {
         target: DnsNameView,
     },
     /// その他/未解析
-    Raw(OwnedPayloadRange),
+    Raw(PayloadRange),
 }
 
 /// DNSキャッシュエントリ
@@ -485,11 +552,16 @@ impl DnsCache {
             .filter(|entry| !entry.is_expired(current_tick, self.tick_rate))
     }
 
-    pub fn lookup_view(&self, name: &DnsNameView, current_tick: u64) -> Option<&DnsCacheEntry> {
+    pub fn lookup_view(
+        &self,
+        payload: &PacketPayload,
+        name: &DnsNameView,
+        current_tick: u64,
+    ) -> Option<&DnsCacheEntry> {
         self.entries.iter().find_map(|(key, entry)| {
-            (compare_dns_name_labels(key.labels(), name.labels()) == CmpOrdering::Equal
+            (compare_dns_name_view_to_owned(payload, name, key) == CmpOrdering::Equal
                 && !entry.is_expired(current_tick, self.tick_rate))
-                .then_some(entry)
+            .then_some(entry)
         })
     }
 
@@ -574,40 +646,75 @@ impl DnsCache {
     }
 }
 
-pub(crate) fn compare_dns_name_labels(
-    lhs: &[OwnedPayloadRange],
-    rhs: &[OwnedPayloadRange],
+fn compare_dns_label_ranges(
+    lhs_payload: &PacketPayload,
+    lhs: PayloadRange,
+    rhs_payload: &PacketPayload,
+    rhs: PayloadRange,
+) -> CmpOrdering {
+    let Some(left) = lhs.span(lhs_payload) else {
+        return CmpOrdering::Less;
+    };
+    let Some(right) = rhs.span(rhs_payload) else {
+        return CmpOrdering::Greater;
+    };
+    let shared = left.total_len().min(right.total_len());
+    for byte_index in 0..shared {
+        let Some(left_byte) = left
+            .byte_at(byte_index)
+            .map(|byte| byte.to_ascii_lowercase())
+        else {
+            return CmpOrdering::Less;
+        };
+        let Some(right_byte) = right
+            .byte_at(byte_index)
+            .map(|byte| byte.to_ascii_lowercase())
+        else {
+            return CmpOrdering::Greater;
+        };
+        match left_byte.cmp(&right_byte) {
+            CmpOrdering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    left.total_len().cmp(&right.total_len())
+}
+
+fn compare_dns_name_ranges(
+    lhs_payload: &PacketPayload,
+    lhs: &[PayloadRange],
+    rhs_payload: &PacketPayload,
+    rhs: &[PayloadRange],
 ) -> CmpOrdering {
     let mut index = 0usize;
     while index < lhs.len() && index < rhs.len() {
-        let left = &lhs[index];
-        let right = &rhs[index];
-        let shared = left.total_len().min(right.total_len());
-        for byte_index in 0..shared {
-            let Some(left_byte) = left
-                .byte_at(byte_index)
-                .map(|byte| byte.to_ascii_lowercase())
-            else {
-                return CmpOrdering::Less;
-            };
-            let Some(right_byte) = right
-                .byte_at(byte_index)
-                .map(|byte| byte.to_ascii_lowercase())
-            else {
-                return CmpOrdering::Greater;
-            };
-            match left_byte.cmp(&right_byte) {
-                CmpOrdering::Equal => {}
-                ordering => return ordering,
-            }
-        }
-        match left.total_len().cmp(&right.total_len()) {
+        match compare_dns_label_ranges(lhs_payload, lhs[index], rhs_payload, rhs[index]) {
             CmpOrdering::Equal => {}
             ordering => return ordering,
         }
         index += 1;
     }
     lhs.len().cmp(&rhs.len())
+}
+
+pub(crate) fn compare_dns_name_owned(lhs: &DnsNameOwned, rhs: &DnsNameOwned) -> CmpOrdering {
+    compare_dns_name_ranges(lhs.payload(), lhs.labels(), rhs.payload(), rhs.labels())
+}
+
+pub(crate) fn compare_dns_name_view_to_owned(
+    view_payload: &PacketPayload,
+    view: &DnsNameView,
+    owned: &DnsNameOwned,
+) -> CmpOrdering {
+    compare_dns_name_ranges(view_payload, view.labels(), owned.payload(), owned.labels())
+}
+
+pub(crate) fn dns_name_owned_from_view(
+    view: &PacketPayloadView<'_>,
+    labels: &[PayloadRange],
+    text_len: usize,
+) -> Option<DnsNameOwned> {
+    DnsNameOwned::from_payload_ranges(view.payload(), labels, text_len)
 }
 
 /// DNSクライアント

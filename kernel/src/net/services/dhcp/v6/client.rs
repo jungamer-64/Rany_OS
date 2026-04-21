@@ -5,7 +5,7 @@
 use super::*;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv6::Ipv6Address;
-use crate::net::payload::PacketPayloadBuilder;
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadRange};
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonLock;
 use crate::task::{self, TimeoutResult};
@@ -104,7 +104,8 @@ impl DhcpV6Client {
         }
         buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
         buf[*offset + 2..*offset + 4].copy_from_slice(&(view.total_len() as u16).to_be_bytes());
-        if view.copy_range(0, &mut buf[*offset + 4..*offset + 4 + view.total_len()]) != view.total_len()
+        if view.copy_range(0, &mut buf[*offset + 4..*offset + 4 + view.total_len()])
+            != view.total_len()
         {
             return Err("Buffer overflow during option writing");
         }
@@ -944,12 +945,7 @@ impl DhcpV6Client {
                     }
                 }
                 24 => {
-                    let Some(domain_data) =
-                        crate::net::payload::PayloadSpanRef::from_range(&payload, off, len)
-                    else {
-                        return Err("packet too small");
-                    };
-                    Self::parse_domain_search_list_ref(domain_data, &mut domain_search);
+                    Self::parse_domain_search_list_payload(&payload, off, len, &mut domain_search);
                 }
                 _ => {}
             }
@@ -1025,7 +1021,8 @@ impl DhcpV6Client {
             if code == 1 {
                 // Client Identifier (Option 1)
                 if off + len <= view.total_len() {
-                    let Some(duid) = crate::net::payload::PayloadSpanRef::from_range(payload, off, len)
+                    let Some(duid) =
+                        crate::net::payload::PayloadSpanRef::from_range(payload, off, len)
                     else {
                         return false;
                     };
@@ -1097,10 +1094,12 @@ impl DhcpV6Client {
                 // Apply IPv6 lease info to the running NetworkStack (fire-and-forget via event queue)
                 crate::net::runtime::command::enqueue_command_ignore_in(
                     self.runtime,
-                    crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
-                        if_id: if_id.map(|id| id.0),
-                        config: outcome.applied,
-                    }),
+                    crate::net::runtime::command::RuntimeCommand::Control(
+                        crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
+                            if_id: if_id.map(|id| id.0),
+                            config: outcome.applied,
+                        },
+                    ),
                 );
 
                 // Accept lease: configure IPv6 address + NDP
@@ -1169,10 +1168,12 @@ impl DhcpV6Client {
 
             crate::net::runtime::command::enqueue_command_ignore_in(
                 self.runtime,
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
-                    if_id: None,
-                    config: outcome.applied,
-                }),
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
+                        if_id: None,
+                        config: outcome.applied,
+                    },
+                ),
             );
 
             if let Ok(mut g) = self.lease.lock() {
@@ -1188,28 +1189,96 @@ impl DhcpV6Client {
         }
     }
 
-    fn parse_domain_search_list_ref(
-        domain_data: crate::net::payload::PayloadSpanRef<'_>,
+    fn parse_domain_search_name_payload(
+        view: &PacketPayloadView<'_>,
+        base: usize,
+        end: usize,
+        offset: usize,
+    ) -> Option<(crate::net::services::dns::DnsNameOwned, usize)> {
+        let mut labels = Vec::new();
+        let mut text_len = 0usize;
+        let mut current = offset;
+        let mut final_offset = offset;
+        let mut jumped = false;
+        let mut jump_count = 0usize;
+
+        loop {
+            if current >= end {
+                return None;
+            }
+            let len_byte = view.read_u8(current)?;
+            if len_byte == 0 {
+                if !jumped {
+                    final_offset = current + 1;
+                }
+                break;
+            }
+            if len_byte & 0xC0 == 0xC0 {
+                let second = view.read_u8(current + 1)?;
+                if !jumped {
+                    final_offset = current + 2;
+                }
+                let pointer = ((len_byte as usize & 0x3F) << 8) | second as usize;
+                current = base.checked_add(pointer)?;
+                if current >= end {
+                    return None;
+                }
+                jumped = true;
+                jump_count += 1;
+                if jump_count > 128 {
+                    return None;
+                }
+                continue;
+            }
+
+            let label_len = len_byte as usize;
+            if label_len > 63 {
+                return None;
+            }
+            current += 1;
+            if current.checked_add(label_len)? > end {
+                return None;
+            }
+            let label = PayloadRange::new(current, label_len);
+            label.span(view.payload())?;
+            if !labels.is_empty() {
+                text_len = text_len.saturating_add(1);
+            }
+            text_len = text_len.saturating_add(label_len);
+            labels.push(label);
+            current += label_len;
+        }
+
+        crate::net::services::dns::dns_name_owned_from_view(view, &labels, text_len)
+            .map(|name| (name, final_offset))
+    }
+
+    fn parse_domain_search_list_payload(
+        payload: &kernel_api::resource::net::PacketPayload,
+        offset: usize,
+        len: usize,
         domain_search: &mut Vec<crate::net::services::dns::DnsNameOwned>,
     ) {
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        if builder.push_span_ref(domain_data).is_none() {
+        let end = match offset.checked_add(len) {
+            Some(end) => end,
+            None => return,
+        };
+        let view = PacketPayloadView::new(payload);
+        if end > view.total_len() {
             return;
         }
-        let domain_payload = builder.build();
-        let view = crate::net::payload::PacketPayloadView::new(&domain_payload);
-        let mut offset = 0usize;
-        while offset < view.total_len() {
+        let mut cursor = offset;
+        while cursor < end {
             let Some((name, next_offset)) =
-                crate::net::services::mdns::decode_dns_name_owned_view(&view, offset)
+                Self::parse_domain_search_name_payload(&view, offset, end, cursor)
             else {
                 break;
             };
-            if next_offset <= offset {
+            if next_offset <= cursor {
                 break;
             }
             domain_search.push(name);
-            offset = next_offset;
+            cursor = next_offset;
         }
     }
 
@@ -2122,5 +2191,4 @@ pub(crate) mod tests {
         let parsed = client.parse_reply(&pkt, 100).unwrap();
         assert!(parsed.is_none(), "Non-zero status code should return None");
     }
-
 }

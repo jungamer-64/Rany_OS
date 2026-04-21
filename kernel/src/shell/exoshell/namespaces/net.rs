@@ -1188,7 +1188,7 @@ impl NetNamespace {
         ExoValue::Array(
             records
                 .into_iter()
-                .map(|record| ExoValue::String(Cow::Owned(Self::dns_txt_to_string(&record))))
+                .map(|record| ExoValue::String(Cow::Owned(record)))
                 .collect(),
         )
     }
@@ -1212,7 +1212,7 @@ impl NetNamespace {
                     );
                     map.insert(
                         String::from("exchange"),
-                        ExoValue::String(Cow::Owned(Self::dns_name_to_string(&record.exchange))),
+                        ExoValue::String(Cow::Owned(record.exchange)),
                     );
                     ExoValue::Map(map)
                 })
@@ -1241,7 +1241,7 @@ impl NetNamespace {
                     map.insert(String::from("port"), ExoValue::Int(record.port as i64));
                     map.insert(
                         String::from("target"),
-                        ExoValue::String(Cow::Owned(Self::dns_name_to_string(&record.target))),
+                        ExoValue::String(Cow::Owned(record.target)),
                     );
                     ExoValue::Map(map)
                 })
@@ -1257,12 +1257,12 @@ impl NetNamespace {
             },
             None => return ExoValue::Error(String::from("usage: net.dns_ptr(ipv4)")),
         };
-        match crate::net::services::dns::resolve_ptr_ipv4(
-            crate::net::l3::ipv4::Ipv4Address::new(octets),
-        )
+        match crate::net::services::dns::resolve_ptr_ipv4(crate::net::l3::ipv4::Ipv4Address::new(
+            octets,
+        ))
         .await
         {
-            Some(name) => ExoValue::String(Cow::Owned(Self::dns_name_to_string(&name))),
+            Some(name) => ExoValue::String(Cow::Owned(name)),
             None => ExoValue::Nil,
         }
     }
@@ -1275,12 +1275,12 @@ impl NetNamespace {
             },
             None => return ExoValue::Error(String::from("usage: net.dns_ptr6(ipv6)")),
         };
-        match crate::net::services::dns::resolve_ptr_ipv6(
-            crate::net::l3::ipv6::Ipv6Address::new(octets),
-        )
+        match crate::net::services::dns::resolve_ptr_ipv6(crate::net::l3::ipv6::Ipv6Address::new(
+            octets,
+        ))
         .await
         {
-            Some(name) => ExoValue::String(Cow::Owned(Self::dns_name_to_string(&name))),
+            Some(name) => ExoValue::String(Cow::Owned(name)),
             None => ExoValue::Nil,
         }
     }
@@ -1288,35 +1288,6 @@ impl NetNamespace {
     // ================================================================
     // ヘルパー
     // ================================================================
-
-    fn payload_span_to_string(span: crate::net::payload::PayloadSpanRef<'_>) -> String {
-        let mut out = String::with_capacity(span.total_len());
-        for index in 0..span.total_len() {
-            if let Some(byte) = span.byte_at(index) {
-                out.push(byte as char);
-            }
-        }
-        out
-    }
-
-    fn dns_name_to_string(name: &crate::net::services::dns::DnsNameView) -> String {
-        let mut out = String::with_capacity(name.text_len());
-        for (index, label) in name.labels().iter().enumerate() {
-            if index > 0 {
-                out.push('.');
-            }
-            out.push_str(&Self::payload_span_to_string(label.span()));
-        }
-        out
-    }
-
-    fn dns_txt_to_string(txt: &crate::net::services::dns::DnsTxtView) -> String {
-        let mut out = String::with_capacity(txt.text_len());
-        for span in txt.spans() {
-            out.push_str(&Self::payload_span_to_string(span.span()));
-        }
-        out
-    }
 
     /// ExoValueからIPv4アドレスをパースするヘルパー
     fn parse_ipv4_arg(val: &ExoValue<'_>) -> Result<[u8; 4], String> {

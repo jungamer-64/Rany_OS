@@ -9,14 +9,20 @@ use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-use kernel_api::resource::net::PacketPayload;
+use kernel_api::resource::net::{PacketChain, PacketPayload, PacketRef};
 
-use super::segment::send_tcp_segment_payload;
+use super::segment::send_tcp_segment_payload_with_completion;
 use super::tcb::tcb_table;
 use super::timer_wheel::TimingWheel;
 use crate::net::l4::types::{
     EndpointAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn,
 };
+
+#[derive(Debug)]
+pub enum RetransmitPayloadState {
+    Ready(PacketPayload),
+    InFlight { completion_id: u64, acked: bool },
+}
 
 /// 未確認セグメント（再送用）
 #[derive(Debug)]
@@ -26,7 +32,7 @@ pub struct UnackedSegment {
     /// TCP sequence space consumed by this segment body/control flags.
     pub seq_len: u32,
     /// セグメントデータ（ヘッダ含む）
-    pub data: PacketPayload,
+    pub data: RetransmitPayloadState,
     /// 送信時刻（tick）
     pub send_tick: u64,
     /// 再送回数
@@ -139,7 +145,7 @@ impl RetransmitQueue {
         self.unacked.push_back(UnackedSegment {
             seq,
             seq_len,
-            data,
+            data: RetransmitPayloadState::Ready(data),
             send_tick: current_tick,
             retransmit_count: 0,
             is_retransmit: false,
@@ -152,11 +158,15 @@ impl RetransmitQueue {
     pub fn ack_received(&mut self, ack_num: u32, current_tick: u64) {
         // 累積ACKによって完全に確認されたセグメントを全て削除
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(seg) = self.unacked.front() {
+        while let Some(seg) = self.unacked.front_mut() {
             let seg_end = seg.seq.wrapping_add(seg.seq_len);
 
             // セグメントの末尾まで確認されているか？
             if Self::seq_leq(seg_end, ack_num) {
+                if let RetransmitPayloadState::InFlight { acked, .. } = &mut seg.data {
+                    *acked = true;
+                    break;
+                }
                 let seg = self.unacked.pop_front().unwrap();
                 // 再送でないセグメントのみRTTサンプルとして使用（Karnのアルゴリズム）
                 if !seg.is_retransmit {
@@ -178,30 +188,121 @@ impl RetransmitQueue {
         self.unacked
             .iter()
             .find(|seg| !seg.is_sacked)
+            .filter(|seg| matches!(seg.data, RetransmitPayloadState::Ready(_)))
             .filter(|seg| {
                 let elapsed = current_tick.saturating_sub(seg.send_tick);
                 elapsed >= self.rto_calc.get_rto()
             })
     }
 
+    pub fn transmit_ready(&mut self, local: EndpointAddr, remote: EndpointAddr, seq: u32) -> bool {
+        let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
+        self.transmit_ready_inner(local, remote, seq, current_tick, false)
+    }
+
+    fn transmit_ready_inner(
+        &mut self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        seq: u32,
+        current_tick: u64,
+        is_retransmit: bool,
+    ) -> bool {
+        let Some(seg) = self.unacked.iter_mut().find(|seg| seg.seq == seq) else {
+            return false;
+        };
+        let (completion_id, _completion) = crate::net::runtime::device::register_tx_completion_in(
+            crate::net::runtime::default_runtime(),
+        );
+        register_tcp_tx_return_target(completion_id, local, remote);
+        let state = core::mem::replace(
+            &mut seg.data,
+            RetransmitPayloadState::InFlight {
+                completion_id,
+                acked: false,
+            },
+        );
+        let data = match state {
+            RetransmitPayloadState::Ready(data) => data,
+            other => {
+                unregister_tcp_tx_return_target(completion_id);
+                seg.data = other;
+                return false;
+            }
+        };
+        seg.send_tick = current_tick;
+        seg.is_retransmit = is_retransmit;
+        send_tcp_segment_payload_with_completion(local, remote, data, Some(completion_id))
+    }
+
     /// 再送処理
     /// 戻り値: 再送するセグメントデータ、Noneの場合は最大再送回数超過
-    pub fn retransmit(&mut self, current_tick: u64) -> Option<PacketPayload> {
+    pub fn retransmit(
+        &mut self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        current_tick: u64,
+    ) -> RetransmitAttempt {
         // SACKされていない最古のセグメントを探す
-        if let Some(seg) = self.unacked.iter_mut().find(|s| !s.is_sacked) {
+        if let Some(seg) = self
+            .unacked
+            .iter_mut()
+            .find(|s| !s.is_sacked && matches!(s.data, RetransmitPayloadState::Ready(_)))
+        {
             if seg.retransmit_count >= self.max_retries {
                 // 最大再送回数超過
-                return None;
+                return RetransmitAttempt::MaxRetriesExceeded;
             }
 
             seg.retransmit_count += 1;
-            seg.send_tick = current_tick;
-            seg.is_retransmit = true;
+            let seq = seg.seq;
             self.rto_calc.backoff();
 
-            return materialize_retransmit_copy(&seg.data);
+            return if self.transmit_ready_inner(local, remote, seq, current_tick, true) {
+                RetransmitAttempt::Sent
+            } else {
+                RetransmitAttempt::NoReadySegment
+            };
         }
-        None
+        RetransmitAttempt::NoReadySegment
+    }
+
+    fn complete_inflight(
+        &mut self,
+        completion_id: u64,
+        payload: PacketPayload,
+        result: Result<(), &'static str>,
+        current_tick: u64,
+    ) {
+        let Some(index) = self.unacked.iter().position(|seg| {
+            matches!(
+                seg.data,
+                RetransmitPayloadState::InFlight {
+                    completion_id: in_flight_id,
+                    ..
+                } if in_flight_id == completion_id
+            )
+        }) else {
+            return;
+        };
+        let acked = matches!(
+            self.unacked[index].data,
+            RetransmitPayloadState::InFlight { acked: true, .. }
+        );
+        if result.is_ok() && acked {
+            let seg = self
+                .unacked
+                .remove(index)
+                .expect("in-flight segment index disappeared");
+            if !seg.is_retransmit {
+                let rtt = current_tick.saturating_sub(seg.send_tick);
+                if rtt > 0 {
+                    self.rto_calc.update(rtt);
+                }
+            }
+            return;
+        }
+        self.unacked[index].data = RetransmitPayloadState::Ready(payload);
     }
 
     /// キューが空かどうか
@@ -224,6 +325,12 @@ impl RetransmitQueue {
     pub fn seq_leq(a: u32, b: u32) -> bool {
         seq_leq_fn(a, b)
     }
+}
+
+pub enum RetransmitAttempt {
+    Sent,
+    NoReadySegment,
+    MaxRetriesExceeded,
 }
 
 impl Default for RetransmitQueue {
@@ -250,8 +357,33 @@ static RETRANSMIT_SHARDS: [PoisonLock<BTreeMap<(EndpointAddr, EndpointAddr), Ret
     [EMPTY; RETRANSMIT_SHARD_COUNT]
 };
 
+static TCP_TX_RETURN_TARGETS: PoisonLock<BTreeMap<u64, (EndpointAddr, EndpointAddr)>> =
+    PoisonLock::new(BTreeMap::new());
+
 /// グローバルタイミングホイール
 static TIMER_WHEEL: PoisonLock<Option<TimingWheel>> = PoisonLock::new(None);
+
+fn build_payload_from_segments(mut segments: Vec<PacketRef>) -> PacketPayload {
+    match segments.len() {
+        0 => PacketPayload::default(),
+        1 => PacketPayload::single(segments.remove(0)),
+        _ => PacketPayload::chain(PacketChain::from_segments(segments)),
+    }
+}
+
+fn register_tcp_tx_return_target(completion_id: u64, local: EndpointAddr, remote: EndpointAddr) {
+    TCP_TX_RETURN_TARGETS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(completion_id, (local, remote));
+}
+
+fn unregister_tcp_tx_return_target(completion_id: u64) -> Option<(EndpointAddr, EndpointAddr)> {
+    TCP_TX_RETURN_TARGETS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&completion_id)
+}
 
 /// タイミングホイールを初期化する
 pub fn init_timer_wheel() {
@@ -308,6 +440,48 @@ pub fn retransmit_queue_push(
             schedule_retransmit_timer(local, remote, deadline);
         }
     }
+}
+
+pub fn retransmit_queue_transmit_ready(
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    seq: u32,
+) -> bool {
+    let idx = retransmit_shard_index(&local, &remote);
+    let mut queues = RETRANSMIT_SHARDS[idx]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    queues
+        .get_mut(&(local, remote))
+        .is_some_and(|queue| queue.transmit_ready(local, remote, seq))
+}
+
+pub(crate) fn complete_tx_owner(
+    completion_id: u64,
+    keepalive: Vec<PacketRef>,
+    result: Result<(), &'static str>,
+) -> bool {
+    let Some((local, remote)) = unregister_tcp_tx_return_target(completion_id) else {
+        return false;
+    };
+    let payload = build_payload_from_segments(keepalive);
+    let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
+    let idx = retransmit_shard_index(&local, &remote);
+    let mut queues = RETRANSMIT_SHARDS[idx]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(queue) = queues.get_mut(&(local, remote)) {
+        queue.complete_inflight(completion_id, payload, result, current_tick);
+        if queue.is_empty() {
+            queues.remove(&(local, remote));
+            cancel_retransmit_timer(&local, &remote);
+        } else {
+            let deadline = current_tick + queue.get_rto();
+            schedule_retransmit_timer(local, remote, deadline);
+        }
+        return true;
+    }
+    false
 }
 
 /// ACK受信時の再送キュー更新
@@ -393,18 +567,21 @@ pub fn check_retransmit_timeouts() {
 
         if let Some(queue) = queues.get_mut(&(local, remote)) {
             if queue.check_timeout(current_tick).is_some() {
-                if let Some(segment_data) = queue.retransmit(current_tick) {
-                    send_tcp_segment_payload(local, remote, segment_data);
-                    let deadline = current_tick + queue.get_rto();
-                    schedule_retransmit_timer(local, remote, deadline);
-                } else {
-                    log::info!(
-                        "TCP: Max retransmit exceeded for {:?} -> {:?}",
-                        local,
-                        remote
-                    );
-                    queues.remove(&(local, remote));
-                    tcb_table().remove(local, remote);
+                match queue.retransmit(local, remote, current_tick) {
+                    RetransmitAttempt::Sent => {
+                        let deadline = current_tick + queue.get_rto();
+                        schedule_retransmit_timer(local, remote, deadline);
+                    }
+                    RetransmitAttempt::NoReadySegment => {}
+                    RetransmitAttempt::MaxRetriesExceeded => {
+                        log::info!(
+                            "TCP: Max retransmit exceeded for {:?} -> {:?}",
+                            local,
+                            remote
+                        );
+                        queues.remove(&(local, remote));
+                        tcb_table().remove(local, remote);
+                    }
                 }
             } else if !queue.is_empty() {
                 let deadline = current_tick + queue.get_rto();

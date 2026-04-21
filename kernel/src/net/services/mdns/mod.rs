@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
-use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder, PacketPayloadView};
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadRange};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::services::dns::DnsNameOwned;
 use crate::sync::PoisonLock;
@@ -319,10 +319,10 @@ impl MdnsService {
         ttl: u32,
         current_time: u64,
     ) -> bool {
-        let Some(last_label) = name.labels().last() else {
+        let Some(last_label_index) = name.labels().len().checked_sub(1) else {
             return false;
         };
-        if !last_label.eq_ignore_ascii_case(b"local") {
+        if !name.label_eq_ignore_ascii_case(last_label_index, b"local") {
             log::warn!("[NET] mDNS: Ignoring non-local name");
             return false;
         }
@@ -500,8 +500,8 @@ impl MdnsService {
     fn matches_local_name(&self, name: &DnsNameOwned) -> bool {
         let labels = name.labels();
         labels.len() == 2
-            && labels[0].eq_ignore_ascii_case(self.hostname.as_bytes())
-            && labels[1].eq_ignore_ascii_case(b"local")
+            && name.label_eq_ignore_ascii_case(0, self.hostname.as_bytes())
+            && name.label_eq_ignore_ascii_case(1, b"local")
     }
 }
 
@@ -563,7 +563,16 @@ fn push_dns_name_payload(builder: &mut PacketPayloadBuilder, name: &DnsNameOwned
             return None;
         }
         builder.push_bytes(&[len as u8])?;
-        builder.push_span_ref(label.span())?;
+        let span = label.span(name.payload())?;
+        let mut pushed = true;
+        span.for_each_chunk(|chunk| {
+            if pushed && builder.push_bytes(chunk).is_none() {
+                pushed = false;
+            }
+        });
+        if !pushed {
+            return None;
+        }
     }
     builder.push_bytes(&[0])
 }
@@ -576,7 +585,6 @@ fn push_dns_name_payload(builder: &mut PacketPayloadBuilder, name: &DnsNameOwned
 /// Handle a DNS compression pointer. Returns `Some(new_current)` on success,
 /// or `None` if the pointer is invalid or jump limit exceeded.
 /// Updates `final_offset` and `jumped` on the first jump.
-#[inline]
 #[inline]
 fn handle_compression_pointer_view(
     view: &PacketPayloadView<'_>,
@@ -677,6 +685,7 @@ pub fn decode_dns_name_owned_view(
     offset: usize,
 ) -> Option<(DnsNameOwned, usize)> {
     let mut labels = Vec::new();
+    let mut text_len = 0usize;
     let mut current = offset;
     let mut jumped = false;
     let mut final_offset = offset;
@@ -719,19 +728,18 @@ pub fn decode_dns_name_owned_view(
             return None;
         }
 
-        let span = crate::net::payload::PayloadSpanRef::from_range(view.payload(), current, label_len)?;
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder.push_span_ref(span)?;
-        labels.push(OwnedPayloadRange::from_payload(builder.build()));
+        let label_range = PayloadRange::new(current, label_len);
+        label_range.span(view.payload())?;
+        if !labels.is_empty() {
+            text_len = text_len.saturating_add(1);
+        }
+        text_len = text_len.saturating_add(label_len);
+        labels.push(label_range);
         current += label_len;
     }
 
-    let text_len = labels
-        .iter()
-        .map(OwnedPayloadRange::total_len)
-        .sum::<usize>()
-        .saturating_add(labels.len().saturating_sub(1));
-    Some((DnsNameOwned::from_parsed_labels(labels, text_len), final_offset))
+    crate::net::services::dns::dns_name_owned_from_view(view, &labels, text_len)
+        .map(|name| (name, final_offset))
 }
 
 /// mDNSマルチキャストMACアドレスを取得
@@ -757,19 +765,6 @@ fn names_equal(a: &str, b: &str) -> bool {
     a.bytes()
         .zip(b.bytes())
         .all(|(ca, cb)| ca.to_ascii_lowercase() == cb.to_ascii_lowercase())
-}
-
-/// DNS質問セクションをスキップし、新しいオフセットを返す
-fn skip_dns_questions(data: &[u8], mut offset: usize, qdcount: u16) -> Option<usize> {
-    for _ in 0..qdcount {
-        let (_, new_offset) = decode_dns_name(data, offset)?;
-        offset = new_offset;
-        if offset + 4 > data.len() {
-            return None;
-        }
-        offset += 4;
-    }
-    Some(offset)
 }
 
 fn skip_dns_questions_view(

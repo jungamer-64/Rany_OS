@@ -92,52 +92,25 @@ impl RuntimeCommandHandler {
                 Ok(segment) => segment,
                 Err(error) => return EventHandleResult::ProtocolError(error),
             };
-            let retransmit_segment =
-                match crate::net::l4::tcp::retransmit::materialize_retransmit_copy(&segment) {
-                    Some(segment) => segment,
-                    None => {
-                        return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                    }
-                };
+            crate::net::l4::tcp::retransmit::retransmit_queue_push(
+                local, remote, seq, data_len, segment,
+            );
 
-            match self.send_tcp_segment(local, remote, segment) {
-                Ok(()) => {
-                    {
-                        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(waker) = inner.send_waker.take() {
-                            waker.wake();
-                        }
+            if crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(local, remote, seq)
+            {
+                {
+                    let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(waker) = inner.send_waker.take() {
+                        waker.wake();
                     }
+                }
 
-                    tcb_table().lookup_mut(local, remote, |tcb| {
-                        tcb.on_send(data_len);
-                        crate::net::l4::tcp::retransmit::retransmit_queue_push(
-                            local,
-                            remote,
-                            tcb.snd_nxt,
-                            data_len,
-                            retransmit_segment,
-                        );
-                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
-                    });
-                }
-                Err(_) => {
-                    if let Some(body) = crate::net::payload::retain_payload_window_owned(
-                        retransmit_segment,
-                        crate::net::l4::tcp::TcpHeader::MIN_HEADER_LEN,
-                        data_len as usize,
-                    ) {
-                        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                        inner.push_send_payload_front(body);
-                    }
-                    return EventHandleResult::Retry(
-                        crate::net::runtime::command::RuntimeCommand::Transport(
-                            crate::net::runtime::command::TransportCommand::TcpDataReady {
-                                socket_id: fd,
-                            },
-                        ),
-                    );
-                }
+                tcb_table().lookup_mut(local, remote, |tcb| {
+                    tcb.on_send(data_len);
+                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
+                });
+            } else {
+                return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
             }
         }
 

@@ -112,6 +112,7 @@ pub(crate) fn enqueue_tcp_send_in(
     src_ip: Ipv4Address,
     dst_ip: Ipv4Address,
     payload: kernel_api::resource::net::PacketPayload,
+    completion_id: Option<u64>,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
@@ -121,7 +122,7 @@ pub(crate) fn enqueue_tcp_send_in(
                 src_ip: *src_ip.as_bytes(),
                 dst_ip: *dst_ip.as_bytes(),
                 payload,
-                completion_id: None,
+                completion_id,
                 result_slot,
                 waker,
             },
@@ -135,6 +136,7 @@ pub(crate) fn enqueue_tcp_v6_send_in(
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     payload: kernel_api::resource::net::PacketPayload,
+    completion_id: Option<u64>,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
@@ -144,7 +146,7 @@ pub(crate) fn enqueue_tcp_v6_send_in(
                 src_ip: src_ip.octets(),
                 dst_ip: dst_ip.octets(),
                 payload,
-                completion_id: None,
+                completion_id,
                 result_slot,
                 waker,
             },
@@ -340,6 +342,7 @@ pub(crate) fn enqueue_tcp_send_on_in(
     src_ip: Ipv4Address,
     dst_ip: Ipv4Address,
     payload: kernel_api::resource::net::PacketPayload,
+    completion_id: Option<u64>,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
@@ -350,7 +353,7 @@ pub(crate) fn enqueue_tcp_send_on_in(
                 src_ip: *src_ip.as_bytes(),
                 dst_ip: *dst_ip.as_bytes(),
                 payload,
-                completion_id: None,
+                completion_id,
                 result_slot,
                 waker,
             },
@@ -396,6 +399,7 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     payload: kernel_api::resource::net::PacketPayload,
+    completion_id: Option<u64>,
 ) -> bool {
     let (result_slot, waker) = new_detached_command_channel();
     crate::net::runtime::command::enqueue_command_ignore_in(
@@ -406,7 +410,7 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
                 src_ip: src_ip.octets(),
                 dst_ip: dst_ip.octets(),
                 payload,
-                completion_id: None,
+                completion_id,
                 result_slot,
                 waker,
             },

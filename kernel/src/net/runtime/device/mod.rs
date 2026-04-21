@@ -367,7 +367,13 @@ pub fn complete_tx_lease_in(
         .remove(&lease_id);
     if let Some(lease) = lease {
         if let Some(completion_id) = lease.completion_id {
+            let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
+                completion_id,
+                lease.keepalive,
+                result.clone(),
+            );
             let _ = complete_tx_request_in(runtime, completion_id, result);
+            return true;
         }
         true
     } else {
@@ -503,7 +509,11 @@ impl NetDeviceHandle {
     ) -> Arc<Self> {
         Arc::new(Self {
             driver,
-            runtime: Arc::new(PortRuntimeHandle::new(binding.port_id, binding.if_id, context)),
+            runtime: Arc::new(PortRuntimeHandle::new(
+                binding.port_id,
+                binding.if_id,
+                context,
+            )),
             binding: PoisonLock::new(binding),
             tx_queue: Arc::new(NetTxQueue::new()),
             event_sink: Arc::new(NetEventSink::new()),
@@ -1059,10 +1069,7 @@ pub fn bind_port_interface(port_id: NetPortId, if_id: NetIfId) -> Result<(), &'s
     }
     .ok_or("device handle missing")?;
 
-    let binding = NetDeviceBinding {
-        port_id,
-        if_id,
-    };
+    let binding = NetDeviceBinding { port_id, if_id };
     handle.rebind(binding)?;
 
     let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
@@ -1511,8 +1518,8 @@ mod tests {
         }
 
         let driver = Arc::new(FakeDriver::new());
-        let if_id = register_test_port(89, driver, PrimaryPortPolicy::Never)
-            .expect("register port");
+        let if_id =
+            register_test_port(89, driver, PrimaryPortPolicy::Never).expect("register port");
         let handle = lookup_port_in(default_runtime(), if_id).expect("handle");
 
         crate::per_cpu::enter_interrupt();
@@ -1587,18 +1594,14 @@ mod tests {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_test_port(91, driver_a, PrimaryPortPolicy::Auto)
-            .expect("register first port");
+        let if_a =
+            register_test_port(91, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
         let if_b = register_test_port(92, driver_b, PrimaryPortPolicy::Prefer)
             .expect("register second port");
 
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
         assert!(
-            port_info(test_port_id(92))
-                .expect("primary info")
-                .flags
-                & NETDEV_FLAG_PRIMARY
-                != 0
+            port_info(test_port_id(92)).expect("primary info").flags & NETDEV_FLAG_PRIMARY != 0
         );
 
         assert!(unregister_port(if_b));
@@ -1612,8 +1615,8 @@ mod tests {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_test_port(93, driver_a, PrimaryPortPolicy::Auto)
-            .expect("register first port");
+        let if_a =
+            register_test_port(93, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
         let if_b = register_test_port(94, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
@@ -1673,8 +1676,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn unregister_primary_without_survivor_clears_primary_runtime() {
         let driver = Arc::new(FakeDriver::new());
-        let if_a = register_test_port(95, driver, PrimaryPortPolicy::Auto)
-            .expect("register port");
+        let if_a = register_test_port(95, driver, PrimaryPortPolicy::Auto).expect("register port");
 
         let lease_a = sample_lease(30);
         crate::net::services::dhcp::interface_v4_client(if_a)
@@ -1701,8 +1703,8 @@ mod tests {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_test_port(96, driver_a, PrimaryPortPolicy::Auto)
-            .expect("register first port");
+        let if_a =
+            register_test_port(96, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
         let if_b = register_test_port(97, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
@@ -1743,8 +1745,8 @@ mod tests {
         let driver_a = Arc::new(FakeDriver::new());
         let driver_b = Arc::new(FakeDriver::new());
 
-        let if_a = register_test_port(98, driver_a, PrimaryPortPolicy::Auto)
-            .expect("register first port");
+        let if_a =
+            register_test_port(98, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
         let if_b = register_test_port(99, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
