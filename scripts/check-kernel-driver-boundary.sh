@@ -7,7 +7,6 @@ cd "$(dirname "$0")/.."
 # - kernel-owned I/O framework code under kernel/src/io
 # - provider/bootstrap adapters outside the driver boundary
 # - driver boundary shims that still intentionally centralize non-VirtIO drivers
-# - direct `virtio_driver::*` references are canonical and intentionally allowed
 exclude=(
   '-g' '!target'
   '-g' '!kernel/src/io/**'
@@ -16,6 +15,7 @@ exclude=(
   '-g' '!kernel/src/drivers.rs'
   '-g' '!kernel/src/drivers/time.rs'
   '-g' '!kernel/src/time/**'
+  '-g' '!kernel/src/host_support/**'
   '-g' '!kernel/src/lib.rs'
   '-g' '!kernel/src/net/drivers/mlx5_registry.rs'
   '-g' '!kernel/src/net/runtime/bridge/mlx5_bridge.rs'
@@ -25,7 +25,7 @@ exclude=(
   '-g' '!scripts/check-kernel-driver-boundary.sh'
 )
 
-pattern='\b(acpi|apic|ahci|gpu|hda|hid|ide|mlx5|nvme|pci|rtc|serial|time|usb)_driver::'
+pattern='\b(acpi|apic|ahci|gpu|hda|hid|ide|mlx5|nvme|pci|rtc|serial|time|usb|virtio)_driver::'
 
 if matches=$(rg -n "${exclude[@]}" -- "$pattern" kernel/src); then
   echo "ERROR: direct *_driver crate references remain outside the kernel provider boundary allowlist:"

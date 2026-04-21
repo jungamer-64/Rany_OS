@@ -725,7 +725,6 @@ dependencies = [
  "time_driver",
  "uart_16550",
  "usb_driver",
- "virtio_driver",
  "x86_64",
 ]
 
@@ -908,6 +907,7 @@ dependencies = [
  "mlx5_driver",
  "nvme_driver",
  "usb_driver",
+ "virtio_driver",
 ]
 
 [[package]]

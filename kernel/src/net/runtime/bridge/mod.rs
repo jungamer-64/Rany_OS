@@ -365,7 +365,7 @@ pub fn process_received_packet_zero_copy_for_interface_in(
 fn compute_and_set_flow_hash(_packet: &mut crate::net::datapath::mempool::PacketRef) {
     // 解析ロジック...
     // 以前はここで一律に csum_verified をセットしていましたが、
-    // 現在はドライバ（VirtioNetDevice::complete_rx_packetref 等）が
+    // 現在はドライバの RX completion path が
     // パケット毎のフラグを確認してセットするため、ここでは何もしません。
 }
 

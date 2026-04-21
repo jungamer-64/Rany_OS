@@ -192,8 +192,6 @@ pub static NETWORK_RUNTIME_CASES: &[(&str, fn() -> bool)] = &[
     ("net_peripheral_mdns_process_query_for_our_hostname_smoke", crate::qemu_tests::net_peripheral_mdns_process_query_for_our_hostname_smoke),
     ("net_peripheral_mdns_process_response_updates_cache_smoke", crate::qemu_tests::net_peripheral_mdns_process_response_updates_cache_smoke),
     ("net_peripheral_mdns_roundtrip_query_response_smoke", crate::qemu_tests::net_peripheral_mdns_roundtrip_query_response_smoke),
-    ("net_peripheral_port_runtime_register_virtio_port_is_idempotent_and_records_mapping_smoke", crate::qemu_tests::net_peripheral_port_runtime_register_virtio_port_is_idempotent_and_records_mapping_smoke),
-    ("net_peripheral_port_runtime_register_virtio_port_prefers_vnet0_as_primary_smoke", crate::qemu_tests::net_peripheral_port_runtime_register_virtio_port_prefers_vnet0_as_primary_smoke),
     ("net_peripheral_port_runtime_transmit_interface_argument_smoke", crate::qemu_tests::net_peripheral_port_runtime_transmit_interface_argument_smoke),
     ("net_peripheral_stack_glue_nat_gc_expires_idle_entries_smoke", crate::qemu_tests::net_peripheral_stack_glue_nat_gc_expires_idle_entries_smoke),
     ("net_peripheral_stack_glue_nat_inbound_roundtrip_is_protocol_scoped_smoke", crate::qemu_tests::net_peripheral_stack_glue_nat_inbound_roundtrip_is_protocol_scoped_smoke),

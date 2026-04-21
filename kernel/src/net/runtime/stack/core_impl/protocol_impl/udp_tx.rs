@@ -356,7 +356,8 @@ impl NetworkStack {
         drop(frame);
         packet.set_len(total_len);
 
-        if let Ok(()) = crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(packet)
+        if let Ok(()) =
+            crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_net_device(packet)
         {
             self.stats.record_tx(total_len);
             return Some(Ok(()));

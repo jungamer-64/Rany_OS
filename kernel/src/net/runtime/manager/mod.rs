@@ -56,7 +56,6 @@ pub struct NetworkInterfaceInfo {
     pub if_id: NetIfId,
     pub name: String,
     pub admin_up: bool,
-    pub virtio_index: Option<u8>,
     pub config: Option<NetworkConfig>,
 }
 
@@ -96,7 +95,6 @@ pub type RouteLookupResultV6 = Option<Ipv6Route>;
 #[derive(Debug, Default)]
 pub(crate) struct NetworkManager {
     interfaces: BTreeMap<NetIfId, NetworkInterfaceInfo>,
-    virtio_if_map: BTreeMap<u8, NetIfId>,
     routes_v4: Vec<Ipv4Route>,
     routes_v6: Vec<Ipv6Route>,
     next_if_id: u16,
@@ -116,42 +114,10 @@ impl NetworkManager {
                 if_id,
                 name,
                 admin_up: true,
-                virtio_index: None,
                 config: None,
             },
         );
         if_id
-    }
-
-    /// Register or return an existing VirtIO-backed interface mapping.
-    fn register_virtio_port(
-        &mut self,
-        virtio_index: u8,
-        initial_config: Option<NetworkConfig>,
-    ) -> NetIfId {
-        if let Some(existing) = self.virtio_if_map.get(&virtio_index).copied() {
-            if let Some(cfg) = initial_config {
-                let _ = self.set_interface_config(existing, cfg);
-            }
-            return existing;
-        }
-
-        let if_id = self.register_interface(alloc::format!("vnet{}", virtio_index));
-        if let Some(iface) = self.interfaces.get_mut(&if_id) {
-            iface.virtio_index = Some(virtio_index);
-            iface.config = initial_config;
-        }
-        self.virtio_if_map.insert(virtio_index, if_id);
-
-        if let Some(cfg) = initial_config {
-            let _ = self.set_interface_config(if_id, cfg);
-        }
-
-        if_id
-    }
-
-    fn lookup_if_by_virtio_index(&self, virtio_index: u8) -> Option<NetIfId> {
-        self.virtio_if_map.get(&virtio_index).copied()
     }
 
     fn list_interfaces(&self) -> Vec<NetworkInterfaceInfo> {
@@ -541,26 +507,6 @@ pub fn register_interface_in(
     name: &str,
 ) -> Result<NetIfId, NetworkError> {
     with_manager_mut_in(runtime, |m| m.register_interface(String::from(name)))
-}
-
-pub fn register_virtio_port_in(
-    runtime: NetRuntimeHandle,
-    virtio_index: u8,
-    initial_config: Option<NetworkConfig>,
-) -> Result<NetIfId, NetworkError> {
-    with_manager_mut_in(runtime, |m| {
-        m.register_virtio_port(virtio_index, initial_config)
-    })
-}
-
-/// Resolve a VirtIO index into a network interface id.
-pub fn lookup_if_by_virtio_index_in(
-    runtime: NetRuntimeHandle,
-    virtio_index: u8,
-) -> Option<NetIfId> {
-    with_manager_in(runtime, |m| m.lookup_if_by_virtio_index(virtio_index))
-        .ok()
-        .flatten()
 }
 
 pub fn list_interfaces_in(

@@ -2,7 +2,6 @@
 //!
 //! Comprehensive tests for all kernel subsystems including:
 //! - PCI/PCIe device detection
-//! - VirtIO drivers
 //! - NVMe driver
 //! - USB subsystem
 //! - Network stack
@@ -251,85 +250,8 @@ pub fn test_network() -> IntegrationTestSuite {
 }
 
 // ============================================================================
-// Storage Test Suite (VirtIO-blk Zero-Copy E2E)
+// Storage Test Suite
 // ============================================================================
-
-use crate::fs::page_cluster_buffer::PageClusterBuffer;
-use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
-use crate::mm::types::PAGE_SIZE_4K;
-use crate::task::block_on;
-use alloc::sync::Arc as StdArc;
-use kernel_api::block_io::{
-    BlockDeviceInfo, BlockError, BlockResult, IoBuffer, IoBufferMut, ZcFuture, ZeroCopyBlockDevice,
-};
-
-struct VirtioPageAdapter {
-    device: StdArc<virtio_driver::blk::VirtioBlkDevice>,
-}
-
-impl VirtioPageAdapter {
-    fn new(device: StdArc<virtio_driver::blk::VirtioBlkDevice>) -> Self {
-        Self { device }
-    }
-}
-
-impl ZeroCopyBlockDevice for VirtioPageAdapter {
-    type Buffer = PageClusterBuffer;
-
-    fn info(&self) -> BlockDeviceInfo {
-        self.device.info()
-    }
-
-    fn flush(&self) -> BlockResult<()> {
-        self.device.flush()
-    }
-
-    fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
-        PageClusterBuffer::allocate(size).ok_or(BlockError::NotReady)
-    }
-
-    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
-        let device = StdArc::clone(&self.device);
-        Box::pin(async move {
-            let block_size = device.info().block_size as usize;
-            let size = block_size
-                .checked_mul(count as usize)
-                .ok_or(BlockError::InvalidBufferSize)?;
-            let mut buf = PageClusterBuffer::allocate(size).ok_or(BlockError::NotReady)?;
-            // Use underlying device borrowed API to do zero-copy read
-            device.read_into_buf(block, &mut buf).await.map_err(|e| e)?;
-            Ok(buf)
-        })
-    }
-
-    fn write_async(
-        &self,
-        block: u64,
-        buffer: Self::Buffer,
-    ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
-        let device = StdArc::clone(&self.device);
-        Box::pin(async move {
-            device.write_from_buf(block, &buffer).await.map_err(|e| e)?;
-            Ok(buffer)
-        })
-    }
-
-    fn read_into_buf<'a>(
-        &'a self,
-        block: u64,
-        dst: &'a mut dyn IoBufferMut,
-    ) -> ZcFuture<'a, BlockResult<()>> {
-        self.device.read_into_buf(block, dst)
-    }
-
-    fn write_from_buf<'a>(
-        &'a self,
-        block: u64,
-        src: &'a dyn IoBuffer,
-    ) -> ZcFuture<'a, BlockResult<()>> {
-        self.device.write_from_buf(block, src)
-    }
-}
 
 // ============================================================================
 // Storage Test
@@ -337,65 +259,6 @@ impl ZeroCopyBlockDevice for VirtioPageAdapter {
 
 pub fn test_storage() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("Storage");
-
-    suite.add_result(run_test("virtio_blk_zero_copy_mount", || {
-        // fullboot required profiles often run with qemu_no_if=1, which keeps IRQs
-        // disabled to avoid unrelated flakes. In that mode, async mount futures can
-        // stall forever because completion wakeups are interrupt-driven.
-        if !crate::interrupts::are_interrupts_enabled() {
-            return if let Some(dev) =
-                virtio_driver::blk::get_virtio_blk_device_at_index(0)
-            {
-                let info = dev.info();
-                if info.block_size > 0 && info.total_blocks > 0 {
-                    Ok(alloc::format!(
-                        "IRQ disabled; mount skipped (virtio-blk present: {} blocks x {} bytes)",
-                        info.total_blocks, info.block_size
-                    ))
-                } else {
-                    Err(String::from(
-                        "IRQ disabled and virtio-blk info invalid (block_size or total_blocks is zero)",
-                    ))
-                }
-            } else {
-                Err(String::from(
-                    "IRQ disabled but virtio-blk device is not initialized",
-                ))
-            };
-        }
-
-        if let Some(dev) = virtio_driver::blk::get_virtio_blk_device_at_index(0) {
-            // Wrap the global virtio device with a Page-backed adapter and mount
-            let adapter = StdArc::new(VirtioPageAdapter::new(StdArc::clone(&dev)));
-
-            // Reset IOMMU mapping counters for a clean test
-            crate::io::iommu::api::reset_map_unmap_counts();
-
-            match block_on(adapter.read_async(0, 1)) {
-                Ok(buf) => {
-                    let info = buf.dma_info().ok_or_else(|| String::from("dma_info missing"))?;
-                    if info.len < 512 {
-                        return Err(String::from("virtio-blk returned undersized DMA buffer"));
-                    }
-                    if !crate::io::iommu::api::is_iommu_enabled() {
-                        Err(String::from(
-                            "IOMMU is mandatory but storage path ran without translated DMA",
-                        ))
-                    } else {
-                        let maps = crate::io::iommu::api::get_map_count();
-                        if maps == 0 {
-                            Err(String::from("IOMMU enabled but no map calls recorded"))
-                        } else {
-                            Ok(String::from("virtio zero-copy read OK (translated DMA)"))
-                        }
-                    }
-                }
-                Err(e) => Err(alloc::format!("virtio zero-copy read failed: {:?}", e)),
-            }
-        } else {
-            Err(String::from("No VirtIO-blk device found"))
-        }
-    }));
 
     suite.add_result(run_test("nvme_polling_basic", || {
         let active = crate::drivers::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
@@ -454,43 +317,6 @@ pub fn test_iommu() -> IntegrationTestSuite {
         // Test basic mapping through the public API
         let phys_addr = 0x2000_0000; // Assume this is safe in QEMU
         let size = 0x1000;
-        let virtio_blk = crate::drivers::pci::find_virtio_devices()
-            .into_iter()
-            .find(|dev| matches!(dev.device_id.0, 0x1001 | 0x1042));
-
-        if let Some(dev) = virtio_blk {
-            let device_id =
-                DeviceId::new(dev.segment, dev.bdf.bus(), dev.bdf.device(), dev.bdf.function());
-            return match unsafe {
-                crate::io::iommu::api::map_for_device(&device_id, PhysAddr::new(phys_addr), size)
-            } {
-                Ok(mapped_iova) => {
-                    let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
-                    if mapped_iova == phys_addr {
-                        return Err(String::from(
-                            "device DMA map unexpectedly returned an identity-mapped address",
-                        ));
-                    }
-                    Ok(alloc::format!(
-                        "Successfully mapped/unmapped required virtio-blk {:04x}:{:02x}:{:02x}.{} at IOVA 0x{:x}",
-                        device_id.segment,
-                        device_id.bus,
-                        device_id.device,
-                        device_id.function,
-                        mapped_iova
-                    ))
-                }
-                Err(e) => Err(alloc::format!(
-                    "IOMMU mapping failed for required virtio-blk {:04x}:{:02x}:{:02x}.{}: {:?}",
-                    device_id.segment,
-                    device_id.bus,
-                    device_id.device,
-                    device_id.function,
-                    e
-                )),
-            };
-        }
-
         let candidates = [
             DeviceId::new(0, 0, 31, 2), // AHCI
             DeviceId::new(0, 0, 0, 0),  // host bridge

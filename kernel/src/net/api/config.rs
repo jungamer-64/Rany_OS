@@ -14,7 +14,6 @@ pub struct InterfaceConfigSnapshot {
     pub if_id: u16,
     pub name: alloc::string::String,
     pub admin_up: bool,
-    pub virtio_index: Option<u8>,
     pub ip: [u8; 4],
     pub netmask: [u8; 4],
     pub gateway: [u8; 4],
@@ -40,7 +39,6 @@ pub struct InterfaceSnapshot {
     pub if_id: u16,
     pub name: alloc::string::String,
     pub admin_up: bool,
-    pub virtio_index: Option<u8>,
     pub ip: Option<[u8; 4]>,
     pub mac: Option<[u8; 6]>,
 }
@@ -53,7 +51,6 @@ pub(crate) fn interface_config_snapshot(
         if_id: iface.if_id.0,
         name: iface.name,
         admin_up: iface.admin_up,
-        virtio_index: iface.virtio_index,
         ip: *config.ipv4.address.as_bytes(),
         netmask: *config.ipv4.subnet_mask.as_bytes(),
         gateway: *config.ipv4.gateway.as_bytes(),
@@ -121,7 +118,6 @@ pub(crate) fn interface_summary_snapshot(iface: NetworkInterfaceInfo) -> Interfa
         if_id: iface.if_id.0,
         name: iface.name,
         admin_up: iface.admin_up,
-        virtio_index: iface.virtio_index,
         ip,
         mac,
     }

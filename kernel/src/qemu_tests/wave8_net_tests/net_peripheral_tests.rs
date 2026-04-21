@@ -333,15 +333,6 @@ pub fn net_peripheral_stack_glue_per_interface_stats_are_separated_smoke() -> bo
     crate::net::qemu_tests::stack_glue_per_interface_stats_are_separated_smoke()
 }
 
-pub fn net_peripheral_port_runtime_register_virtio_port_is_idempotent_and_records_mapping_smoke()
--> bool {
-    crate::net::qemu_tests::port_runtime_register_virtio_port_is_idempotent_and_records_mapping_smoke()
-}
-
-pub fn net_peripheral_port_runtime_register_virtio_port_prefers_vnet0_as_primary_smoke() -> bool {
-    crate::net::qemu_tests::port_runtime_register_virtio_port_prefers_vnet0_as_primary_smoke()
-}
-
 pub fn net_peripheral_port_runtime_transmit_interface_argument_smoke() -> bool {
     crate::net::qemu_tests::port_runtime_transmit_interface_argument_smoke()
 }

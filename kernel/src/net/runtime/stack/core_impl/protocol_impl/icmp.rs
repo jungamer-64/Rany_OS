@@ -902,7 +902,7 @@ impl NetworkStack {
                         drop(frame);
                         packet.set_len(total_len);
 
-                        if crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_virtio(
+                        if crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_net_device(
                             packet,
                         )
                         .is_ok()

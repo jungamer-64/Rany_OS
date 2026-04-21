@@ -23,8 +23,8 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
                 packet.data_mut()[..copy_len].copy_from_slice(&data[..copy_len]);
                 packet.set_len(copy_len);
 
-                // VirtIO ゼロコピー送信を試行
-                match ZeroCopyWriter::enqueue_via_virtio(packet) {
+                // 登録済みネットワークデバイスへゼロコピー送信を試行
+                match ZeroCopyWriter::enqueue_via_net_device(packet) {
                     Ok(()) => {
                         return Poll::Ready(Ok(()));
                     }
@@ -33,7 +33,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
                         crate::net::runtime::command::enqueue_command_ignore(
                             crate::net::runtime::command::RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TxAvailable),
                         );
-                        return Poll::Ready(Err("VirtIO enqueue failed, packet dropped"));
+                        return Poll::Ready(Err("net device enqueue failed, packet dropped"));
                     }
                 }
             } else {

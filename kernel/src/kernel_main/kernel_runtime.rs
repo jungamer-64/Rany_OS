@@ -653,7 +653,7 @@ pub(crate) fn start_async_boot_runtime(context: KernelBootContext) -> ! {
 
 /// ネットワークブートストラップ（完全非同期）
 ///
-/// Executor起動後にスポーンされ、VirtIO-Net/mlx5 ドライバの port registration・
+/// Executor起動後にスポーンされ、ドライバ側の port registration・
 /// DHCP完了待機・接続性確認をすべてasyncコンテキストで実行する。
 /// 設計書 §3「Async-First」原則に準拠し、同期ブロッキングI/Oを排除する。
 /// `net::runtime::device` が `init_dhcp_runtime()` 経由で DHCPv4/v6 クライアント
@@ -720,7 +720,7 @@ async fn network_bootstrap_task() {
     // Yield して tx_worker / DHCPクライアント等のバックグラウンドタスクに実行機会を与える
     task::yield_now().await;
 
-    // VirtIO / mlx5 probe 後に有効なポートがなければ DHCP 待機は行わない。
+    // ドライバ probe 後に有効なポートがなければ DHCP 待機は行わない。
     let (port_count, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
     if port_count == 0 {
         info!(

@@ -156,6 +156,19 @@ MLX5_DEVICE_IDS=(
     "0x1021"
     "0x1022"
 )
+VIRTIO_VENDOR_ID="0x1af4"
+VIRTIO_DEVICE_IDS=(
+    "0x1000"
+    "0x1041"
+    "0x1001"
+    "0x1042"
+    "0x1003"
+    "0x1043"
+    "0x1005"
+    "0x1045"
+    "0x1050"
+    "0x1052"
+)
 
 build_wrapper_cell "driver-ahci" "ahci_driver.raw.cell"
 build_driver_pack \
@@ -184,15 +197,6 @@ build_driver_pack \
     --pci-subclass 0x03 \
     --pci-prog-if 0x30
 
-build_wrapper_cell "driver-hda" "hda_driver.raw.cell"
-build_driver_pack \
-    "hda_driver" \
-    "hda_driver.raw.cell" \
-    "hda_driver.cell" \
-    --pci-class 0x04 \
-    --pci-subclass 0x03 \
-    --pci-prog-if 0x00
-
 build_wrapper_cell "driver-mlx5" "mlx5_driver.raw.cell"
 for device_id in "${MLX5_DEVICE_IDS[@]}"; do
     normalized_id="${device_id#0x}"
@@ -201,6 +205,17 @@ for device_id in "${MLX5_DEVICE_IDS[@]}"; do
         "mlx5_driver.raw.cell" \
         "mlx5_driver_${normalized_id}.cell" \
         --pci-vendor-id "$MLX5_VENDOR_ID" \
+        --pci-device-id "$device_id"
+done
+
+build_wrapper_cell "driver-virtio" "virtio_driver.raw.cell"
+for device_id in "${VIRTIO_DEVICE_IDS[@]}"; do
+    normalized_id="${device_id#0x}"
+    build_driver_pack \
+        "virtio_driver_${normalized_id}" \
+        "virtio_driver.raw.cell" \
+        "virtio_driver_${normalized_id}.cell" \
+        --pci-vendor-id "$VIRTIO_VENDOR_ID" \
         --pci-device-id "$device_id"
 done
 

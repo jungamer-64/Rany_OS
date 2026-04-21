@@ -14,9 +14,9 @@ use kernel_api::service::platform::PciDeviceInfo;
 /// Device type classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceType {
-    /// Storage device (NVMe, AHCI, VirtIO-Blk)
+    /// Storage device (NVMe, AHCI, block controller)
     Storage,
-    /// Network device (VirtIO-Net, Intel NIC)
+    /// Network device
     Network,
     /// Display device (GPU, VGA)
     Display,
@@ -118,19 +118,6 @@ impl DeviceInfo {
 
     /// Classify PCI device type
     fn classify_pci_device(dev: &PciDeviceInfo) -> DeviceType {
-        // Check for VirtIO devices first
-        if dev.vendor_id.0 == 0x1AF4 {
-            return match dev.device_id.0 {
-                0x1000 | 0x1041 => DeviceType::Network, // VirtIO Network
-                0x1001 | 0x1042 => DeviceType::Storage, // VirtIO Block
-                0x1003 | 0x1043 => DeviceType::Serial,  // VirtIO Console
-                0x1005 | 0x1045 => DeviceType::Unknown, // VirtIO Balloon (no dedicated type)
-                0x1050 => DeviceType::Display,          // VirtIO GPU
-                0x1052 => DeviceType::Input,            // VirtIO Input
-                _ => DeviceType::Unknown,
-            };
-        }
-
         // Classify by PCI class code
         match dev.class_code.class {
             0x01 => DeviceType::Storage, // Mass Storage

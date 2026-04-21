@@ -54,9 +54,6 @@ pub mod window;
 pub use graphic_types::image;
 pub use graphic_types::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 
-// Re-exports from virtio GPU support
-pub use virtio_driver::gpu::{DamagedRegion, DisplayMode, GpuError, GpuResult, colors};
-
 // 型の再エクスポート
 #[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub use console::TextConsole;

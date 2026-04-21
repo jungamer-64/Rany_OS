@@ -556,14 +556,6 @@ pub fn stack_glue_per_interface_stats_are_separated_smoke() -> bool {
     run_case!(stack_glue::tests::test_per_interface_bridge_stats_are_separated)
 }
 
-pub fn port_runtime_register_virtio_port_is_idempotent_and_records_mapping_smoke() -> bool {
-    run_case!(stack_glue::tests::test_register_virtio_port_is_idempotent_and_records_mapping)
-}
-
-pub fn port_runtime_register_virtio_port_prefers_vnet0_as_primary_smoke() -> bool {
-    run_case!(stack_glue::tests::test_register_virtio_port_prefers_vnet0_as_primary)
-}
-
 pub fn port_runtime_transmit_interface_argument_smoke() -> bool {
     run_case!(stack_glue::tests::test_transmit_from_stack_interface_argument)
 }

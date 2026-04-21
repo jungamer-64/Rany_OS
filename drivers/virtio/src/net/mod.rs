@@ -8,7 +8,6 @@ use kernel_api::netdev::{NetTxSegment, TxLeaseId};
 use kernel_api::resource::net::PacketRef;
 
 pub mod device;
-pub mod driver;
 pub mod features;
 mod global_init;
 pub mod inflight;

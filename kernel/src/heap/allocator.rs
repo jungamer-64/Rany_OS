@@ -720,7 +720,7 @@ pub use crate::ALLOCATOR;
 /// ヒープのサイズ
 ///
 /// PF passthrough with VT-d now builds substantially larger IOMMU metadata and
-/// firmware-page working sets than the original VirtIO-only boot path.
+/// firmware-page working sets than the original single-driver boot path.
 pub const HEAP_SIZE: usize = 256 * 1024 * 1024; // 256 MiB
 
 /// Exchange Heap のサイズ

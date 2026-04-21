@@ -18,6 +18,7 @@ pub mod console;
 pub mod core;
 pub mod defs;
 pub mod dma;
+pub mod ffi;
 pub mod gpu;
 pub mod input;
 pub mod net;

@@ -6,7 +6,7 @@
 //! ハードウェア/ソフトウェアチェックサムオフロードの統合管理。
 //!
 //! ## 設計方針
-//! - VirtIO-Netの`VIRTIO_NET_F_CSUM`フィーチャに対応
+//! - ドライバ報告のTX/RX checksum featureに対応
 //! - ハードウェアオフロード不可時はソフトウェアフォールバック
 //! - 受信側: HWが検証済みならスキップ (RX offload)
 //! - 送信側: HWに委譲可能ならプレースホルダのみ書き込み (TX offload)
@@ -55,18 +55,15 @@ impl ChecksumCapabilities {
         rx_udp: true,
     };
 
-    /// VirtIO-Net CSUM featureからの能力検出
-    ///
-    /// `csum`: VIRTIO_NET_F_CSUM が有効
-    /// `guest_csum`: VIRTIO_NET_F_GUEST_CSUM が有効
-    pub fn from_virtio(csum: bool, guest_csum: bool) -> Self {
+    /// Driver-reported TX/RX checksum feature flags.
+    pub fn from_driver_flags(tx_checksum: bool, rx_checksum: bool) -> Self {
         Self {
-            tx_ipv4: csum,
-            tx_tcp: csum,
-            tx_udp: csum,
-            rx_ipv4: guest_csum,
-            rx_tcp: guest_csum,
-            rx_udp: guest_csum,
+            tx_ipv4: tx_checksum,
+            tx_tcp: tx_checksum,
+            tx_udp: tx_checksum,
+            rx_ipv4: rx_checksum,
+            rx_tcp: rx_checksum,
+            rx_udp: rx_checksum,
         }
     }
 
@@ -439,7 +436,7 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
 /// 疑似ヘッダの部分和 (HWオフロード用)
 ///
 /// HWチェックサムオフロード時、チェックサムフィールドに
-/// 疑似ヘッダの部分和をセットしておく (VirtIO CSUM方式)。
+/// 疑似ヘッダの部分和をセットしておく。
 pub fn pseudo_header_partial_sum(
     src_ip: &[u8; 4],
     dst_ip: &[u8; 4],
@@ -576,8 +573,8 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_capabilities_virtio() {
-        let caps = ChecksumCapabilities::from_virtio(true, true);
+    fn test_capabilities_from_driver_flags() {
+        let caps = ChecksumCapabilities::from_driver_flags(true, true);
         assert!(caps.any_tx());
         assert!(caps.any_rx());
         assert!(caps.tx_tcp);

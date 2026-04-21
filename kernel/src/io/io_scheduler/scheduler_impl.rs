@@ -34,7 +34,7 @@ impl IoScheduler {
 
     /// デバイス操作ハンドラを登録（依存逆転）
     ///
-    /// 具体デバイス（NVMe, VirtIO等）は起動時にこのメソッドで登録し、
+    /// 具体デバイスは起動時にこのメソッドで登録し、
     /// スケジューラはDeviceOps経由でのみデバイスと対話する。
     pub fn register_device_ops(&self, device: DeviceId, ops: Arc<dyn DeviceOps>) {
         self.device_ops

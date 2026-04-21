@@ -28,8 +28,6 @@ use core::task::{Context, Poll, Waker};
 /// I/O操作の種類
 mod scheduler_impl;
 pub use scheduler_impl::*;
-pub mod virtio_blk;
-pub mod virtio_net;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoOperationType {
     /// 読み取り
@@ -102,10 +100,6 @@ impl IoRequestId {
 pub enum DeviceId {
     /// NVMe デバイス
     Nvme { controller: u8, namespace: u32 },
-    /// VirtIO ブロック
-    VirtioBlk { index: u8 },
-    /// VirtIO ネットワーク
-    VirtioNet { index: u8 },
     /// AHCI/SATA
     Ahci { port: u8 },
     /// USB

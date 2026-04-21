@@ -150,13 +150,6 @@ impl PciServices for BuiltinPciProvider {
             .collect()
     }
 
-    fn find_virtio_devices(&self) -> Vec<PciDeviceInfo> {
-        crate::drivers::pci::find_virtio_devices()
-            .into_iter()
-            .map(from_native_device)
-            .collect()
-    }
-
     fn set_bus_master(&self, bdf: BdfAddress, enabled: bool) -> kernel_api::KapiResult<()> {
         update_command_bit(bdf, crate::drivers::pci::command_bits::BUS_MASTER, enabled);
         Ok(())
@@ -206,12 +199,6 @@ pub fn find_by_class(class: u8, subclass: u8) -> Vec<PciDeviceInfo> {
     kplatform::try_pci()
         .map(|svc| svc.find_by_class(class, subclass))
         .unwrap_or_else(|| BUILTIN_PCI_PROVIDER.find_by_class(class, subclass))
-}
-
-pub fn find_virtio_devices() -> Vec<PciDeviceInfo> {
-    kplatform::try_pci()
-        .map(PciServices::find_virtio_devices)
-        .unwrap_or_else(|| BUILTIN_PCI_PROVIDER.find_virtio_devices())
 }
 
 pub fn disable_intx(device: &PciDeviceInfo) -> kernel_api::KapiResult<()> {

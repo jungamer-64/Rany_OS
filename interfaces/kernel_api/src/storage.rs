@@ -11,7 +11,6 @@ use alloc::vec::Vec;
 pub enum StorageTransport {
     Nvme,
     Ahci,
-    VirtioBlock,
     Other,
 }
 

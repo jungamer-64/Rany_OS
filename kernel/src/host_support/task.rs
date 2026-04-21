@@ -484,8 +484,6 @@ pub mod io {
 pub mod interrupt_waker {
     #[derive(Clone, Copy)]
     pub enum InterruptSource {
-        VirtioBlk(u8),
-        VirtioNet(u8),
         Other(u8),
     }
 

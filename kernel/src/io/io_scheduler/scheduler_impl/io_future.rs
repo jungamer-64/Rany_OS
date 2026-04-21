@@ -149,8 +149,6 @@ pub fn process_deferred_completions_local() -> usize {
 
 pub(crate) fn encode_device_id(device: DeviceId) -> u64 {
     const KIND_NVME: u64 = 1;
-    const KIND_VIRTIO_BLK: u64 = 2;
-    const KIND_VIRTIO_NET: u64 = 3;
     const KIND_AHCI: u64 = 4;
     const KIND_USB: u64 = 5;
     const KIND_CUSTOM: u64 = 6;
@@ -160,8 +158,6 @@ pub(crate) fn encode_device_id(device: DeviceId) -> u64 {
             controller,
             namespace,
         } => (KIND_NVME << KIND_SHIFT) | ((controller as u64) << 48) | (namespace as u64),
-        DeviceId::VirtioBlk { index } => (KIND_VIRTIO_BLK << KIND_SHIFT) | ((index as u64) << 48),
-        DeviceId::VirtioNet { index } => (KIND_VIRTIO_NET << KIND_SHIFT) | ((index as u64) << 48),
         DeviceId::Ahci { port } => (KIND_AHCI << KIND_SHIFT) | ((port as u64) << 48),
         DeviceId::Usb { bus, device } => {
             (KIND_USB << KIND_SHIFT) | ((bus as u64) << 48) | ((device as u64) << 40)
@@ -179,12 +175,6 @@ pub(crate) fn decode_device_id(raw: u64) -> Option<DeviceId> {
         1 => Some(DeviceId::Nvme {
             controller: ((raw >> 48) & 0xFF) as u8,
             namespace: (raw & 0xFFFF_FFFF) as u32,
-        }),
-        2 => Some(DeviceId::VirtioBlk {
-            index: ((raw >> 48) & 0xFF) as u8,
-        }),
-        3 => Some(DeviceId::VirtioNet {
-            index: ((raw >> 48) & 0xFF) as u8,
         }),
         4 => Some(DeviceId::Ahci {
             port: ((raw >> 48) & 0xFF) as u8,

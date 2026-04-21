@@ -85,7 +85,6 @@ pub use iommu::types::{DeviceId, IommuError};
 //
 // Driver paths:
 // - NVMe:        `use crate::drivers::nvme::{NvmePollingDriver, ...};`
-// - VirtIO:      `use virtio_driver::{blk, net, console, input, balloon, gpu};`
 // - PCI:         `use crate::drivers::pci::{PciDeviceInfo, Bar, ...};`
 // - ACPI:        `use crate::drivers::acpi::{AcpiParser, ...};`
 // - I/O Sched:   `use crate::io::io_scheduler::{IoScheduler, ...};`

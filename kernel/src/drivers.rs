@@ -1,8 +1,7 @@
 //! Kernel/driver boundary namespace.
 //!
 //! New kernel code should access device-facing functionality through
-//! `crate::drivers::*` or the owning driver crate (for example
-//! `virtio_driver::*`).
+//! `crate::drivers::*` or generic service registries.
 //!
 //! `crate::io::*` remains the home of kernel-owned I/O infrastructure:
 //! DMA/IOMMU services, interrupt routing, logging, and HAL convenience
@@ -10,7 +9,7 @@
 //!
 //! Ownership split:
 //! - `crate::drivers::*`: kernel-owned driver boundary shims and integration
-//! - external `*_driver` crates: device-family implementations such as VirtIO
+//! - external `*_driver` crates: device-family implementations outside kernel
 //! - `crate::io::*`: shared I/O runtime owned by the kernel framework
 
 pub mod acpi {

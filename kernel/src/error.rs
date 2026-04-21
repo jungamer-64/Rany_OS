@@ -151,8 +151,6 @@ pub enum IoError {
     WriteError,
     /// DMAエラー
     DmaError,
-    /// VirtIOエラー
-    VirtIoError,
     /// NVMeエラー
     NvmeError,
     /// AHCIエラー
@@ -284,7 +282,6 @@ impl fmt::Display for IoError {
             IoError::ReadError => write!(f, "read error"),
             IoError::WriteError => write!(f, "write error"),
             IoError::DmaError => write!(f, "DMA error"),
-            IoError::VirtIoError => write!(f, "VirtIO error"),
             IoError::NvmeError => write!(f, "NVMe error"),
             IoError::AhciError => write!(f, "AHCI error"),
             IoError::UsbError => write!(f, "USB error"),
@@ -548,27 +545,6 @@ impl From<crate::drivers::usb::UsbError> for IoError {
 // io::usb::UsbError から KernelError への変換
 impl From<crate::drivers::usb::UsbError> for KernelError {
     fn from(e: crate::drivers::usb::UsbError) -> Self {
-        KernelError::Io(e.into())
-    }
-}
-
-// io::virtio::net::VirtioNetError からの変換
-impl From<virtio_driver::net::VirtioNetError> for IoError {
-    fn from(e: virtio_driver::net::VirtioNetError) -> Self {
-        use virtio_driver::net::VirtioNetError as VE;
-        match e {
-            VE::NotInitialized => IoError::DeviceNotFound,
-            VE::QueueFull => IoError::NoResources,
-            VE::BufferTooSmall => IoError::InvalidParameter,
-            VE::DeviceError => IoError::VirtIoError,
-            VE::Timeout => IoError::Timeout,
-        }
-    }
-}
-
-// io::virtio::net::VirtioNetError から KernelError への変換
-impl From<virtio_driver::net::VirtioNetError> for KernelError {
-    fn from(e: virtio_driver::net::VirtioNetError) -> Self {
         KernelError::Io(e.into())
     }
 }

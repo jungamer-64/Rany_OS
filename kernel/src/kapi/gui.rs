@@ -26,7 +26,6 @@ const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
 const STORAGE_FLAG_READ_ONLY: u32 = 1 << 1;
 
 const STORAGE_KIND_NVME: u8 = 1;
-const STORAGE_KIND_VIRTIO_BLK: u8 = 2;
 const STORAGE_KIND_AHCI: u8 = 3;
 
 fn provider_device_id(kind: u8, index: u64) -> u64 {
@@ -99,32 +98,6 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
             flags: STORAGE_FLAG_ACTIVE,
         })
     }) {
-        if !devices
-            .iter()
-            .any(|existing| existing.device_id == info.device_id)
-        {
-            devices.push(info);
-        }
-    }
-
-    if let Some(device) = virtio_driver::blk::get_virtio_blk_device_at_index(0) {
-        let config = device.config();
-        let mut flags = 0;
-        if device.is_ready() {
-            flags |= STORAGE_FLAG_ACTIVE;
-        }
-        if (config.features & virtio_driver::blk::features::VIRTIO_BLK_F_RO) != 0 {
-            flags |= STORAGE_FLAG_READ_ONLY;
-        }
-
-        let info = StorageDeviceInfo {
-            device_id: provider_device_id(STORAGE_KIND_VIRTIO_BLK, 0),
-            namespace_id: 0,
-            block_size: config.block_size,
-            max_transfer_blocks: 0,
-            transport: StorageTransport::VirtioBlock,
-            flags,
-        };
         if !devices
             .iter()
             .any(|existing| existing.device_id == info.device_id)

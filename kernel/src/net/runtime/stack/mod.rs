@@ -160,7 +160,7 @@ impl NetworkStats {
 /// packet should be emitted on.  `None` is used when the stack has no
 /// particular interface preference or when the caller elected not to specify
 /// an interface. This extra metadata allows
-/// the bridge layer to support multiple VirtIO ports and other multi‑NIC
+/// the bridge layer to support multiple ports and other multi-NIC
 /// configurations without racing for a single global transmit function.
 ///
 /// The callback should return `true` if the packet was successfully queued

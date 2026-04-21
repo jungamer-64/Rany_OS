@@ -65,12 +65,6 @@ impl NetNamespace {
                 map.insert(String::from("if_id"), ExoValue::Int(cfg.if_id as i64));
                 map.insert(String::from("name"), ExoValue::String(Cow::Owned(cfg.name)));
                 map.insert(String::from("admin_up"), ExoValue::Bool(cfg.admin_up));
-                if let Some(virtio_index) = cfg.virtio_index {
-                    map.insert(
-                        String::from("virtio_index"),
-                        ExoValue::Int(virtio_index as i64),
-                    );
-                }
                 map.insert(
                     String::from("ip"),
                     ExoValue::String(Cow::Owned(format!(
@@ -576,12 +570,6 @@ impl NetNamespace {
                                 "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
                             ))),
-                        );
-                    }
-                    if let Some(virtio_index) = iface.virtio_index {
-                        map.insert(
-                            String::from("virtio_index"),
-                            ExoValue::Int(virtio_index as i64),
                         );
                     }
                     ExoValue::Map(map)

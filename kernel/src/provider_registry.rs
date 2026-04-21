@@ -501,10 +501,6 @@ mod tests {
             self.scan_all_devices()
         }
 
-        fn find_virtio_devices(&self) -> Vec<PciDeviceInfo> {
-            self.scan_all_devices()
-        }
-
         fn set_bus_master(&self, _bdf: BdfAddress, _enabled: bool) -> kernel_api::KapiResult<()> {
             Ok(())
         }

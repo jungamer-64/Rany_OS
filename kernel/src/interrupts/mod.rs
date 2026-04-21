@@ -38,10 +38,10 @@ macro_rules! handler_to_x86 {
 
 /// IDT初期化完了フラグ
 static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
-/// VirtIO-Net completion fallback gate (enabled after bridge initialization).
-static VIRTIO_NET_IRQ_FALLBACK_ENABLED: AtomicBool = AtomicBool::new(false);
-/// Pending flag for deferred VirtIO-Net completion fallback (handled outside ISR).
-static VIRTIO_NET_IRQ_FALLBACK_PENDING: AtomicBool = AtomicBool::new(false);
+/// Network driver poll fallback gate (enabled after bridge initialization).
+static NET_DRIVER_POLL_FALLBACK_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Pending flag for deferred network driver polling (handled outside ISR).
+static NET_DRIVER_POLL_FALLBACK_PENDING: AtomicBool = AtomicBool::new(false);
 static LAST_INTERRUPT_VECTOR: [AtomicU8; crate::per_cpu::MAX_CPUS] = {
     const INIT: AtomicU8 = AtomicU8::new(0);
     [INIT; crate::per_cpu::MAX_CPUS]
@@ -499,8 +499,8 @@ fn init_pic() {
         crate::io::outb(PIC1_DATA, 0b11101000); // Timer(0), Keyboard(1), Cascade(2), COM1(4) を有効
 
         // PIC2: keep legacy PCI IRQ9/10/11 masked.
-        // Shared INTx ISR paths can re-enter VirtIO locks and deadlock with task-context
-        // DMA/TX paths. VirtIO completion is handled by deferred polling.
+        // Shared INTx ISR paths can re-enter driver locks and deadlock with task-context
+        // DMA/TX paths. Completion is handled by deferred polling.
         crate::io::outb(PIC2_DATA, 0b11111111);
     }
 }
@@ -706,9 +706,9 @@ fn handle_timer_interrupt_common() {
     // IRQが届かない環境向けのcompletionフォールバック:
     if is_global_tick_cpu
         && (global_tick & 0x3) == 0
-        && VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
+        && NET_DRIVER_POLL_FALLBACK_ENABLED.load(Ordering::Acquire)
     {
-        VIRTIO_NET_IRQ_FALLBACK_PENDING.store(true, Ordering::Release);
+        NET_DRIVER_POLL_FALLBACK_PENDING.store(true, Ordering::Release);
     }
 
     // 5. プリエンプションフラグのみ設定（実際のyieldは遅延）
@@ -750,11 +750,11 @@ pub fn poll_timer_events() {
         // Interrupt-Wakerブリッジの処理
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
 
-        // Deferred VirtIO-Net completion fallback (non-ISR context).
-        // Queue a generic poll event for each registered VirtIO port so the
+        // Deferred network driver completion fallback (non-ISR context).
+        // Queue a generic poll event for each registered port so the
         // executor-side worker drains queues outside interrupt context.
-        if VIRTIO_NET_IRQ_FALLBACK_ENABLED.load(Ordering::Acquire)
-            && VIRTIO_NET_IRQ_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
+        if NET_DRIVER_POLL_FALLBACK_ENABLED.load(Ordering::Acquire)
+            && NET_DRIVER_POLL_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
         {
             for port_id in crate::net::runtime::device::list_port_ids_in(
                 crate::net::runtime::default_runtime(),
@@ -976,7 +976,7 @@ define_interrupt!(
 ///
 /// 同じ IRQ を共有する可能性のある複数のデバイスをチェックする
 fn dispatch_pci_interrupt(_irq: u8) {
-    // VirtIO shared IRQ work is deferred to non-ISR context to avoid lock inversion
+    // Shared PCI driver work is deferred to non-ISR context to avoid lock inversion
     // with driver paths that may hold allocator/device locks while interrupts fire.
     dispatch_shared_pci_handlers();
 
@@ -984,15 +984,15 @@ fn dispatch_pci_interrupt(_irq: u8) {
     // 例: NVMe, ネットワークカードなど
 }
 
-/// 共有PCIデバイス割り込み処理（VirtIO-Net / VirtIO-Blk）
+/// 共有PCIデバイス割り込み処理
 pub fn dispatch_shared_pci_handlers() {
-    // Keep ISR path lock-free and defer shared VirtIO work.
-    VIRTIO_NET_IRQ_FALLBACK_PENDING.store(true, Ordering::Release);
+    // Keep ISR path lock-free and defer shared driver work.
+    NET_DRIVER_POLL_FALLBACK_PENDING.store(true, Ordering::Release);
 }
 
-/// Enable timer-driven VirtIO-Net interrupt fallback processing.
-pub fn enable_virtio_net_irq_fallback() {
-    VIRTIO_NET_IRQ_FALLBACK_ENABLED.store(true, Ordering::Release);
+/// Enable timer-driven network driver interrupt fallback processing.
+pub fn enable_net_driver_poll_fallback() {
+    NET_DRIVER_POLL_FALLBACK_ENABLED.store(true, Ordering::Release);
 }
 
 /// 現在のタイマーティック数を取得

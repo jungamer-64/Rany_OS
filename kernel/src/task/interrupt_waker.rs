@@ -30,18 +30,6 @@ pub enum InterruptSource {
 
     /// シリアルポート (COM1)
     Serial,
-    /// VirtIO ネットワーク
-    VirtioNet(u8), // queue index
-    /// VirtIO ブロック
-    VirtioBlk(u8), // queue index
-    /// VirtIO コンソール
-    VirtioConsole(u8), // queue index
-    /// VirtIO 入力
-    VirtioInput(u8), // queue index
-    /// VirtIO バルーン
-    VirtioBalloon(u8), // queue index
-    /// VirtIO GPU
-    VirtioGpu(u8), // queue index
     /// NVMe
     Nvme(u16), // queue ID
     /// 汎用IRQ
@@ -56,8 +44,6 @@ impl InterruptSource {
             0x21 => Some(InterruptSource::Keyboard),
             0x24 => Some(InterruptSource::Serial), // COM1 = IRQ4 = 0x20 + 4
 
-            0x30..=0x3F => Some(InterruptSource::VirtioNet((vector - 0x30) as u8)),
-            0x40..=0x4F => Some(InterruptSource::VirtioBlk((vector - 0x40) as u8)),
             0x50..=0x5F => Some(InterruptSource::Nvme((vector - 0x50) as u16)),
             _ => Some(InterruptSource::Irq(vector)),
         }
@@ -70,12 +56,6 @@ impl InterruptSource {
             InterruptSource::Keyboard => 1,
 
             InterruptSource::Serial => 3,
-            InterruptSource::VirtioNet(idx) => 16 + (*idx as usize),
-            InterruptSource::VirtioBlk(idx) => 16 + 32 + (*idx as usize),
-            InterruptSource::VirtioConsole(idx) => 16 + 32 + 32 + (*idx as usize),
-            InterruptSource::VirtioInput(idx) => 16 + 32 + 32 + 16 + (*idx as usize),
-            InterruptSource::VirtioBalloon(idx) => 16 + 32 + 32 + 16 + 16 + (*idx as usize),
-            InterruptSource::VirtioGpu(idx) => 16 + 32 + 32 + 16 + 16 + 16 + (*idx as usize),
             InterruptSource::Nvme(id) => 16 + 32 + 32 + 16 + 16 + 16 + 16 + (*id as usize),
             InterruptSource::Irq(irq) => 16 + 32 + 32 + 16 + 16 + 16 + 16 + 256 + (*irq as usize),
         }
@@ -355,7 +335,7 @@ pub fn pending_interrupt_events() -> usize {
 ///
 /// 使用例:
 /// ```ignore
-/// let data = wait_for_interrupt(InterruptSource::VirtioNet(0)).await;
+/// let data = wait_for_interrupt(InterruptSource::Irq(0x60)).await;
 /// ```
 pub fn wait_for_interrupt(source: InterruptSource) -> InterruptFuture {
     InterruptFuture {
@@ -451,7 +431,7 @@ mod tests {
         );
         assert_eq!(
             InterruptSource::from_vector(0x30),
-            Some(InterruptSource::VirtioNet(0))
+            Some(InterruptSource::Irq(0x30))
         );
     }
 

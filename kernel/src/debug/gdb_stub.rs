@@ -3,6 +3,7 @@
 //! Supported packets: `? g G m M c s Z0 z0`
 #![allow(dead_code)]
 use crate::sync::PoisonLock;
+#[cfg(test)]
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
@@ -380,47 +381,6 @@ impl GdbTransport for SerialCom1Transport {
     fn write_bytes(&self, bytes: &[u8]) {
         for b in bytes {
             crate::drivers::serial::write_byte(*b);
-        }
-    }
-}
-
-pub struct VirtioConsoleTransport {
-    staged_rx: PoisonLock<VecDeque<u8>>,
-}
-
-impl VirtioConsoleTransport {
-    pub fn new() -> Self {
-        Self {
-            staged_rx: PoisonLock::new(VecDeque::new()),
-        }
-    }
-}
-
-impl GdbTransport for VirtioConsoleTransport {
-    fn try_read_byte(&self) -> Option<u8> {
-        {
-            let mut staged = self.staged_rx.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(b) = staged.pop_front() {
-                return Some(b);
-            }
-        }
-
-        let dev = virtio_driver::console::get_virtio_console_device_at_index(0)?;
-        let bytes = dev.read_bytes()?;
-        if bytes.is_empty() {
-            return None;
-        }
-
-        let mut staged = self.staged_rx.lock().unwrap_or_else(|e| e.into_inner());
-        for b in bytes {
-            staged.push_back(b);
-        }
-        staged.pop_front()
-    }
-
-    fn write_bytes(&self, bytes: &[u8]) {
-        if let Some(dev) = virtio_driver::console::get_virtio_console_device_at_index(0) {
-            let _ = dev.write_bytes(bytes);
         }
     }
 }

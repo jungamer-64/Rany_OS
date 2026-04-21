@@ -144,8 +144,8 @@ pub(crate) fn init_hid_and_serial_drivers() {
 /// ネットワークインフラストラクチャの早期初期化（Executor不要）
 ///
 /// NetworkStack、EndpointManager、OOOキュー、再送タイマーの初期化のみを行う。
-/// VirtIO-Netドライバの登録・DHCP・pingは `network_bootstrap_task()` で
-/// Executor起動後に完全非同期で実行される。
+/// ドライバ登録・DHCP・pingは `network_bootstrap_task()` で
+/// Executor起動後に完全非同期で確認される。
 pub(crate) fn init_network_infra() {
     info!(target: "init", "Initializing network infrastructure (pre-executor)");
 
@@ -898,7 +898,6 @@ fn init_durability_and_kgdb(context: &KernelBootContext) {
             .and_then(|c| util::get_cmdline_option(c, "kgdb_transport"))
             .unwrap_or("both");
         let use_serial = transport_mode == "serial" || transport_mode == "both";
-        let use_virtio = transport_mode == "virtio" || transport_mode == "both";
         let serial_exclusive = context
             .cmdline
             .and_then(|c| util::get_cmdline_option(c, "kgdb_serial_exclusive"))
@@ -910,11 +909,6 @@ fn init_durability_and_kgdb(context: &KernelBootContext) {
         if use_serial {
             let _ = debug::gdb_stub::register_transport(alloc::sync::Arc::new(
                 debug::gdb_stub::SerialCom1Transport::new(),
-            ));
-        }
-        if use_virtio {
-            let _ = debug::gdb_stub::register_transport(alloc::sync::Arc::new(
-                debug::gdb_stub::VirtioConsoleTransport::new(),
             ));
         }
         if serial_exclusive && use_serial {

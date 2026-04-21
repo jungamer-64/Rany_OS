@@ -130,9 +130,6 @@ impl ClassCode {
         self.class == 0x01 && self.subclass == 0x08 && self.prog_if == 0x02
     }
 
-    pub fn is_virtio_class(&self) -> bool {
-        self.class == 0xFF
-    }
 }
 
 impl fmt::Display for ClassCode {
@@ -253,10 +250,6 @@ impl PciDeviceInfo {
         self.pcie_cap_offset.is_some()
     }
 
-    pub fn is_virtio(&self) -> bool {
-        self.vendor_id.0 == 0x1AF4 && (0x1000..=0x107F).contains(&self.device_id.0)
-    }
-
     pub fn enable_bus_master(&self) {
         if let Some(pci) = try_pci() {
             let _ = pci.set_bus_master(self.bdf, true);
@@ -315,7 +308,6 @@ pub trait AcpiServices: Send + Sync {
 pub trait PciServices: Send + Sync {
     fn scan_all_devices(&self) -> Vec<PciDeviceInfo>;
     fn find_by_class(&self, class: u8, subclass: u8) -> Vec<PciDeviceInfo>;
-    fn find_virtio_devices(&self) -> Vec<PciDeviceInfo>;
     fn set_bus_master(&self, bdf: BdfAddress, enabled: bool) -> KapiResult<()>;
     fn set_memory_space(&self, bdf: BdfAddress, enabled: bool) -> KapiResult<()>;
     fn set_io_space(&self, bdf: BdfAddress, enabled: bool) -> KapiResult<()>;
@@ -380,31 +372,5 @@ mod tests {
     fn pci_bdf_roundtrip() {
         let bdf = BdfAddress::new(0x12, 0x03, 0x04);
         assert_eq!(BdfAddress::from_u16(bdf.to_u16()), bdf);
-    }
-
-    #[test]
-    fn pci_device_virtio_detection() {
-        let device = PciDeviceInfo {
-            segment: 0,
-            bdf: BdfAddress::new(0, 1, 0),
-            vendor_id: VendorId(0x1AF4),
-            device_id: DeviceId(0x1041),
-            revision_id: 0,
-            class_code: ClassCode::new(0xFF, 0, 0),
-            header_type: 0,
-            subsystem_vendor_id: 0,
-            subsystem_id: 0,
-            interrupt_line: 0,
-            interrupt_pin: 0,
-            bars: [None, None, None, None, None, None],
-            capabilities: Vec::new(),
-            msi_cap_offset: None,
-            msix_cap_offset: None,
-            pcie_cap_offset: None,
-            iommu_domain_id: None,
-        };
-
-        assert!(device.is_virtio());
-        assert!(device.class_code.is_virtio_class());
     }
 }

@@ -67,7 +67,6 @@ pub use pci_driver::{
     ext_cap_id,
     find_by_class,
     find_by_id,
-    find_virtio_devices,
     init,
     init_pcie_ext,
     pcie_ext_config,

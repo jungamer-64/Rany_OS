@@ -1056,12 +1056,12 @@ impl ZeroCopyWriter {
         .await
     }
 
-    /// Enqueue a `PacketRef` for true zero-copy transmit via the VirtIO device.
+    /// Enqueue a `PacketRef` for true zero-copy transmit via the registered net device.
     ///
     /// Returns Ok(()) if the packet was successfully queued. This performs no
     /// completion wait — completion and cleanup occurs in the device interrupt
     /// handler which will return the buffer to the mempool.
-    pub fn enqueue_via_virtio(
+    pub fn enqueue_via_net_device(
         packet: crate::net::datapath::mempool::PacketRef,
     ) -> Result<(), &'static str> {
         if crate::net::runtime::device::transmit_packet(

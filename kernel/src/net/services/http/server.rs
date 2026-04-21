@@ -159,7 +159,7 @@ pub fn start_once() {
 /// 低負荷時は10msスリープで省電力、高負荷時は1msに短縮して
 /// レスポンスレイテンシを低減する。
 ///
-/// VirtIO-Net割り込み処理はISR + runtime_command_task で非同期に
+/// ネットワークドライバ処理はISR + runtime_command_task で非同期に
 /// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
 async fn run_net_poller() {
     let mut consecutive_idle: u32 = 0;
@@ -415,7 +415,6 @@ mod tests {
             if_id: 0,
             name: alloc::string::String::from("eth0"),
             admin_up: true,
-            virtio_index: Some(0),
             ip: [0, 0, 0, 0],
             netmask: [0, 0, 0, 0],
             gateway: [0, 0, 0, 0],
@@ -425,7 +424,6 @@ mod tests {
             if_id: 0,
             name: alloc::string::String::from("eth0"),
             admin_up: true,
-            virtio_index: Some(0),
             ip: [192, 168, 1, 10],
             netmask: [255, 255, 255, 0],
             gateway: [192, 168, 1, 1],
