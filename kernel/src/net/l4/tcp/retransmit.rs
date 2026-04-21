@@ -353,22 +353,6 @@ pub fn retransmit_queue_process_sack(
     }
 }
 
-pub(crate) fn materialize_retransmit_copy(payload: &PacketPayload) -> Option<PacketPayload> {
-    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-    let view = crate::net::payload::PacketPayloadView::new(payload);
-    let mut copied = 0usize;
-    let total_len = view.total_len();
-    view.for_each_chunk(|chunk| {
-        if copied >= total_len {
-            return;
-        }
-        if !chunk.is_empty() && builder.push_bytes(chunk).is_some() {
-            copied += chunk.len();
-        }
-    });
-    (copied == total_len).then(|| builder.build())
-}
-
 /// 再送キュー削除
 pub fn retransmit_queue_remove(local: EndpointAddr, remote: EndpointAddr) {
     let idx = retransmit_shard_index(&local, &remote);

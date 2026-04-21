@@ -577,32 +577,6 @@ fn push_dns_name_payload(builder: &mut PacketPayloadBuilder, name: &DnsNameOwned
 /// or `None` if the pointer is invalid or jump limit exceeded.
 /// Updates `final_offset` and `jumped` on the first jump.
 #[inline]
-fn handle_compression_pointer(
-    data: &[u8],
-    current: usize,
-    final_offset: &mut usize,
-    jumped: &mut bool,
-    jump_count: &mut usize,
-    max_jumps: usize,
-) -> Option<usize> {
-    if current + 1 >= data.len() {
-        return None;
-    }
-    if !*jumped {
-        *final_offset = current + 2;
-    }
-    let pointer = ((data[current] as usize & 0x3F) << 8) | data[current + 1] as usize;
-    if pointer >= data.len() {
-        return None;
-    }
-    *jump_count += 1;
-    if *jump_count > max_jumps {
-        return None;
-    }
-    *jumped = true;
-    Some(pointer)
-}
-
 #[inline]
 fn handle_compression_pointer_view(
     view: &PacketPayloadView<'_>,
@@ -627,83 +601,6 @@ fn handle_compression_pointer_view(
     }
     *jumped = true;
     Some(pointer)
-}
-
-/// DNS名をデコードする（圧縮ポインタにも対応）
-///
-/// # Arguments
-/// - `data` - パケット全体のバイト列
-/// - `offset` - 名前の開始位置
-///
-/// # Returns
-/// (デコードされた名前, 次のフィールドのオフセット) のタプル。
-/// パースに失敗した場合はNone。
-pub fn decode_dns_name(data: &[u8], offset: usize) -> Option<(String, usize)> {
-    let mut name = String::new();
-    let mut current = offset;
-    let mut jumped = false;
-    let mut final_offset = offset;
-    let mut jump_count = 0;
-    let max_jumps = 128;
-
-    loop {
-        if current >= data.len() {
-            return None;
-        }
-
-        let len_byte = data[current];
-
-        // Null terminator: end of name
-        if len_byte == 0 {
-            if !jumped {
-                final_offset = current + 1;
-            }
-            break;
-        }
-
-        // Compression pointer (top 2 bits set = 0xC0)
-        if len_byte & DNS_COMPRESSION_MASK == DNS_COMPRESSION_MASK {
-            current = handle_compression_pointer(
-                data,
-                current,
-                &mut final_offset,
-                &mut jumped,
-                &mut jump_count,
-                max_jumps,
-            )?;
-            continue;
-        }
-
-        // Normal label
-        let label_len = len_byte as usize;
-        // RFC 1035: Label length max is 63 bytes
-        if label_len > 63 {
-            return None;
-        }
-        current += 1;
-
-        if current + label_len > data.len() {
-            return None;
-        }
-
-        if !name.is_empty() {
-            name.push('.');
-        }
-
-        // RFC 1035: Total name length max is 255 bytes (including null)
-        if name.len() + label_len > 255 {
-            return None;
-        }
-
-        let label_bytes = &data[current..current + label_len];
-        for &b in label_bytes {
-            name.push(b as char);
-        }
-
-        current += label_len;
-    }
-
-    Some((name, final_offset))
 }
 
 pub fn decode_dns_name_view(
@@ -893,46 +790,6 @@ fn skip_dns_questions_view(
 
 /// DNS応答レコードをパースする
 /// 返り値: (rtype, rclass_masked, rdlength, next_offset, rdata_start, name, ttl)
-fn parse_dns_answer_record(
-    data: &[u8],
-    offset: usize,
-) -> Option<(u16, u16, usize, usize, usize, String, u32)> {
-    let (name, new_offset) = decode_dns_name(data, offset)?;
-    let mut offset = new_offset;
-
-    if offset + 10 > data.len() {
-        return None;
-    }
-
-    let rtype = u16::from_be_bytes([data[offset], data[offset + 1]]);
-    let rclass = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
-    let ttl = u32::from_be_bytes([
-        data[offset + 4],
-        data[offset + 5],
-        data[offset + 6],
-        data[offset + 7],
-    ]);
-    let rdlength = u16::from_be_bytes([data[offset + 8], data[offset + 9]]) as usize;
-    offset += 10;
-
-    if offset + rdlength > data.len() {
-        return None;
-    }
-
-    let rdata_start = offset;
-    let rclass_masked = rclass & 0x7FFF;
-
-    Some((
-        rtype,
-        rclass_masked,
-        rdlength,
-        offset + rdlength,
-        rdata_start,
-        name,
-        ttl,
-    ))
-}
-
 fn parse_dns_answer_record_view(
     view: &PacketPayloadView<'_>,
     offset: usize,

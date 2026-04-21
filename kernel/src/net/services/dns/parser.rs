@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::{OwnedPayloadRange, PacketPayloadBuilder, PayloadSpanRef};
+use crate::net::payload::OwnedPayloadRange;
 
 struct DnsSectionCounts {
     qcount: usize,
@@ -33,31 +33,6 @@ struct DnsRecordHeader {
 }
 
 impl DnsClient {
-    fn copied_owned_range(
-        &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        offset: usize,
-        len: usize,
-    ) -> Option<OwnedPayloadRange> {
-        let span = PayloadSpanRef::from_range(payload, offset, len)?;
-        let mut builder = PacketPayloadBuilder::new();
-        builder.push_span_ref(span)?;
-        Some(OwnedPayloadRange::from_payload(builder.build()))
-    }
-
-    pub(crate) fn raw_record_span(
-        &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        offset: usize,
-        len: usize,
-    ) -> DnsRecordData {
-        DnsRecordData::Raw(
-            self.copied_owned_range(payload, offset, len).unwrap_or_else(|| {
-                OwnedPayloadRange::from_payload(kernel_api::resource::net::PacketPayload::default())
-            }),
-        )
-    }
-
     pub fn parse_response_payload_for_name(
         &self,
         payload: &kernel_api::resource::net::PacketPayload,

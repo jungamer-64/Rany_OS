@@ -459,18 +459,6 @@ impl PacketPayloadBuilder {
         self.push_bytes(data.as_bytes())
     }
 
-    pub fn push_span_ref(&mut self, span: PayloadSpanRef<'_>) -> Option<()> {
-        if span.is_empty() {
-            return Some(());
-        }
-        let mut bytes = Vec::new();
-        bytes.resize(span.total_len(), 0);
-        if span.copy_into(&mut bytes) != bytes.len() {
-            return None;
-        }
-        self.push_bytes(&bytes)
-    }
-
     pub fn push_payload(&mut self, payload: PacketPayload) {
         self.segments.extend(payload.into_segments());
     }
