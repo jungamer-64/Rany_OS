@@ -69,9 +69,7 @@ pub(crate) fn test_base64_decode() {
     let Some(result) = result else {
         return;
     };
-    let mut bytes = [0u8; 5];
-    assert_eq!(result.copy_into(&mut bytes), 5);
-    assert_eq!(&bytes, b"Hello");
+    assert!(crate::net::payload::PayloadSpanRef::from_payload(&result).eq_bytes(b"Hello"));
 
     let empty = base64_decode_payload("");
     assert!(matches!(empty, Some(ref payload) if payload.is_empty()));

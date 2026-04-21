@@ -335,7 +335,15 @@ impl FragmentBuffer {
         if header_len > header_bytes.len() {
             return None;
         }
-        let copied = PacketPayloadView::new(&header_payload).copy_range(0, &mut header_bytes[..header_len]);
+        let mut copied = 0usize;
+        PacketPayloadView::new(&header_payload).for_each_chunk(|chunk| {
+            if copied == header_len {
+                return;
+            }
+            let take = chunk.len().min(header_len - copied);
+            header_bytes[copied..copied + take].copy_from_slice(&chunk[..take]);
+            copied += take;
+        });
         if copied != header_len {
             return None;
         }

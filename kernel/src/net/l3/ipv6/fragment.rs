@@ -320,7 +320,16 @@ impl Ipv6FragmentBuffer {
             let payload_view = PacketPayloadView::new(&payload_packet);
             let mut header_chain = [0u8; 64];
             let chain_len = payload_view.total_len().min(header_chain.len());
-            if payload_view.copy_range(0, &mut header_chain[..chain_len]) != chain_len
+            let mut copied = 0usize;
+            payload_view.for_each_chunk(|chunk| {
+                if copied == chain_len {
+                    return;
+                }
+                let take = chunk.len().min(chain_len - copied);
+                header_chain[copied..copied + take].copy_from_slice(&chunk[..take]);
+                copied += take;
+            });
+            if copied != chain_len
                 || !super::is_header_chain_complete(frag.next_header, &header_chain[..chain_len])
             {
                 log::warn!(

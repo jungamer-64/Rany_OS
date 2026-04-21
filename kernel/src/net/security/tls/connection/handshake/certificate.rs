@@ -24,20 +24,13 @@ impl TlsConnection {
     ) -> TlsResult<()> {
         self.handshake_secrets.server_public_key = Some(match spki {
             crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
-                ServerPublicKey::Rsa {
-                    modulus: Self::payload_span_from_slice(modulus)?,
-                    exponent: Self::payload_span_from_slice(exponent)?,
-                }
+                ServerPublicKey::rsa(modulus, exponent).ok_or(TlsError::DecodeError)?
             }
             crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
-                ServerPublicKey::EcdsaP256 {
-                    point: Self::payload_span_from_slice(public_key)?,
-                }
+                ServerPublicKey::ecdsa_p256(public_key).ok_or(TlsError::DecodeError)?
             }
             crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
-                ServerPublicKey::EcdsaP384 {
-                    point: Self::payload_span_from_slice(public_key)?,
-                }
+                ServerPublicKey::ecdsa_p384(public_key).ok_or(TlsError::DecodeError)?
             }
             crate::net::security::x509::SubjectPublicKeyInfo::Unknown(_) => {
                 return Err(TlsError::UnsupportedCipherSuite);
@@ -94,7 +87,7 @@ impl TlsConnection {
             let validated_spki = {
                 let mut ca_ders = ArrayVec::<&[u8], TLS_CA_CERTS_CAPACITY>::new();
                 for cert in &self.config.ca_certs {
-                    if let Some(der) = cert.der.as_contiguous_slice() {
+                    if let Some(der) = cert.der_contiguous_slice() {
                         ca_ders
                             .try_push(der)
                             .map_err(|_| TlsError::CertificateError)?;
@@ -133,18 +126,15 @@ impl TlsConnection {
         signature: &[u8],
         alg_selector: u8,
     ) -> TlsResult<()> {
-        let pubkey = match &self.handshake_secrets.server_public_key {
-            Some(ServerPublicKey::Rsa { modulus, exponent }) => {
-                let modulus = modulus
-                    .as_contiguous_slice()
-                    .ok_or(TlsError::CertificateError)?;
-                let exponent = exponent
-                    .as_contiguous_slice()
-                    .ok_or(TlsError::CertificateError)?;
-                crate::net::security::rsa::RsaPublicKey { modulus, exponent }
-            }
-            _ => return Err(TlsError::CertificateError),
-        };
+        let server_public_key = self
+            .handshake_secrets
+            .server_public_key
+            .as_ref()
+            .ok_or(TlsError::CertificateError)?;
+        let (modulus, exponent) = server_public_key
+            .rsa_components()
+            .ok_or(TlsError::CertificateError)?;
+        let pubkey = crate::net::security::rsa::RsaPublicKey { modulus, exponent };
 
         match alg_selector {
             2 => {
@@ -186,8 +176,8 @@ impl TlsConnection {
         signature: &[u8],
     ) -> TlsResult<()> {
         let pubkey_bytes = match &self.handshake_secrets.server_public_key {
-            Some(ServerPublicKey::EcdsaP256 { point }) => point
-                .as_contiguous_slice()
+            Some(server_public_key) => server_public_key
+                .ecdsa_p256_point()
                 .ok_or(TlsError::CertificateError)?,
             _ => return Err(TlsError::CertificateError),
         };

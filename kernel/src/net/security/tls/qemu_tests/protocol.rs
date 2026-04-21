@@ -44,9 +44,8 @@ pub fn wave8_tls_cipher_suite_helpers_smoke() -> bool {
 pub fn wave8_tls_base64_decode_smoke() -> bool {
     let result = base64_decode_payload("SGVsbG8=");
     let empty = base64_decode_payload("");
-    let hello_ok = if let Some(span) = result {
-        let mut bytes = [0u8; 5];
-        span.copy_into(&mut bytes) == 5 && &bytes == b"Hello"
+    let hello_ok = if let Some(payload) = result {
+        crate::net::payload::PayloadSpanRef::from_payload(&payload).eq_bytes(b"Hello")
     } else {
         false
     };

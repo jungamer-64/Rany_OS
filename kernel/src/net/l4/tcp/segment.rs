@@ -54,7 +54,15 @@ impl TcpSegmentPayload {
             Self::Empty => {}
             Self::Packet(payload) => {
                 let view = PacketPayloadView::new(payload);
-                let copied = view.copy_range(0, dst);
+                let mut copied = 0usize;
+                view.for_each_chunk(|chunk| {
+                    if copied == dst.len() {
+                        return;
+                    }
+                    let take = chunk.len().min(dst.len() - copied);
+                    dst[copied..copied + take].copy_from_slice(&chunk[..take]);
+                    copied += take;
+                });
                 debug_assert_eq!(copied, view.total_len());
             }
         }

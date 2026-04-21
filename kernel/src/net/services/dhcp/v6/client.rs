@@ -1791,7 +1791,7 @@ pub(crate) mod tests {
             let stored = g.as_ref().unwrap();
             let view = crate::net::payload::PacketPayloadView::new(stored);
             let mut actual = alloc::vec![0u8; view.total_len()];
-            assert_eq!(view.copy_all_into(&mut actual), server_duid.len());
+            assert_eq!(view.copy_range(0, &mut actual), server_duid.len());
             assert_eq!(actual.as_slice(), &server_duid);
         } else {
             panic!("server_duid lock poisoned");
@@ -1831,7 +1831,7 @@ pub(crate) mod tests {
             let stored = g.as_ref().unwrap();
             let view = crate::net::payload::PacketPayloadView::new(stored);
             let mut actual = alloc::vec![0u8; view.total_len()];
-            assert_eq!(view.copy_all_into(&mut actual), server_duid.len());
+            assert_eq!(view.copy_range(0, &mut actual), server_duid.len());
             assert_eq!(actual.as_slice(), &server_duid);
         }
     }

@@ -5,6 +5,19 @@
 use super::*;
 use crate::net::payload::PacketPayloadView;
 
+fn copy_payload_prefix(view: &PacketPayloadView<'_>, dst: &mut [u8]) -> usize {
+    let mut copied = 0usize;
+    view.for_each_chunk(|chunk| {
+        if copied == dst.len() {
+            return;
+        }
+        let take = chunk.len().min(dst.len() - copied);
+        dst[copied..copied + take].copy_from_slice(&chunk[..take]);
+        copied += take;
+    });
+    copied
+}
+
 impl IcmpProcessor {
     /// Build an echo reply packet
     pub fn build_echo_reply(
@@ -62,7 +75,7 @@ impl IcmpProcessor {
         // RFC 1122 / RFC 1812: Include the full IP header + at least 8 octets of the data.
         // MUST NOT exceed 576 bytes total (IP header 20 + ICMP header 8 + payload 4 + copy_len <= 576 -> copy_len <= 544).
         let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
-        if original_packet.copy_range(0, &mut payload[4..4 + copy_len]) != copy_len {
+        if copy_payload_prefix(original_packet, &mut payload[4..4 + copy_len]) != copy_len {
             return None;
         }
 
@@ -90,7 +103,7 @@ impl IcmpProcessor {
 
         // RFC 1122 / RFC 1812: MUST NOT exceed 576 bytes total.
         let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
-        if original_packet.copy_range(0, &mut payload[4..4 + copy_len]) != copy_len {
+        if copy_payload_prefix(original_packet, &mut payload[4..4 + copy_len]) != copy_len {
             return None;
         }
 
@@ -117,7 +130,7 @@ impl IcmpProcessor {
 
         // RFC 1122 / RFC 1812: MUST NOT exceed 576 bytes total.
         let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
-        if original_packet.copy_range(0, &mut payload[4..4 + copy_len]) != copy_len {
+        if copy_payload_prefix(original_packet, &mut payload[4..4 + copy_len]) != copy_len {
             return None;
         }
 

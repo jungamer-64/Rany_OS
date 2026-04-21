@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{PacketPayloadBuilder, split_payload_prefix_owned};
+use crate::net::payload::{PacketPayloadBuilder, PayloadSpanRef, split_payload_prefix_owned};
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv4Processor {
@@ -20,54 +20,57 @@ impl Ipv4Processor {
         current_time: u64,
     ) -> Ipv4ProcessResult<'static> {
         let original = PacketPayload::single(packet_ref);
-        let view = crate::net::payload::PacketPayloadView::new(&original);
-        let total_len = view.total_len();
-        let mut header_buf = [0u8; 60];
-        let copied = view.copy_range(0, &mut header_buf);
-        if copied < 20 {
-            self.stats.rx_errors += 1;
-            return Ipv4ProcessResult::Error;
-        }
-
-        let ihl_words = (header_buf[0] & 0x0f) as usize;
-        let header_len = ihl_words.saturating_mul(4);
-        if header_len < 20 || header_len > copied || total_len < header_len {
-            self.stats.rx_errors += 1;
-            return Ipv4ProcessResult::Error;
-        }
-
-        let packet = match Ipv4Packet::parse(&header_buf[..header_len]) {
-            Some(packet) => packet,
-            None => {
+        let (total_len, header_len, header, protocol) = {
+            let Some(packet_bytes) = PayloadSpanRef::from_payload(&original).as_contiguous_slice()
+            else {
+                self.stats.rx_errors += 1;
+                return Ipv4ProcessResult::Error;
+            };
+            let total_len = packet_bytes.len();
+            if total_len < 20 {
                 self.stats.rx_errors += 1;
                 return Ipv4ProcessResult::Error;
             }
+
+            let ihl_words = (packet_bytes[0] & 0x0f) as usize;
+            let header_len = ihl_words.saturating_mul(4);
+            if header_len < 20 || total_len < header_len {
+                self.stats.rx_errors += 1;
+                return Ipv4ProcessResult::Error;
+            }
+
+            let packet = match Ipv4Packet::parse(&packet_bytes[..header_len]) {
+                Some(packet) => packet,
+                None => {
+                    self.stats.rx_errors += 1;
+                    return Ipv4ProcessResult::Error;
+                }
+            };
+
+            if !packet.verify_checksum() {
+                self.stats.checksum_errors += 1;
+                return Ipv4ProcessResult::Error;
+            }
+
+            let dst = packet.destination();
+            if !self.is_for_us(&dst) {
+                self.stats.rx_dropped += 1;
+                return Ipv4ProcessResult::Dropped;
+            }
+
+            self.stats.rx_packets += 1;
+
+            let src = packet.source();
+            if self.should_drop_src_dst_pair(src, dst) || self.should_drop_martian_source(src) {
+                return Ipv4ProcessResult::Dropped;
+            }
+
+            if self.should_drop_forbidden_options(&packet_bytes[..header_len], header_len) {
+                return Ipv4ProcessResult::Dropped;
+            }
+
+            (total_len, header_len, *packet.header(), packet.protocol())
         };
-
-        if !packet.verify_checksum() {
-            self.stats.checksum_errors += 1;
-            return Ipv4ProcessResult::Error;
-        }
-
-        let dst = packet.destination();
-        if !self.is_for_us(&dst) {
-            self.stats.rx_dropped += 1;
-            return Ipv4ProcessResult::Dropped;
-        }
-
-        self.stats.rx_packets += 1;
-
-        let src = packet.source();
-        if self.should_drop_src_dst_pair(src, dst) || self.should_drop_martian_source(src) {
-            return Ipv4ProcessResult::Dropped;
-        }
-
-        if self.should_drop_forbidden_options(&header_buf[..header_len], header_len) {
-            return Ipv4ProcessResult::Dropped;
-        }
-
-        let header = packet.header();
-        let protocol = packet.protocol();
         if protocol == IpProtocol::Tcp || protocol == IpProtocol::Udp {
             let fragment_offset = header.fragment_offset();
             let payload_len = total_len.saturating_sub(header_len);
@@ -99,7 +102,7 @@ impl Ipv4Processor {
 
         let (reassembled, expired) =
             self.reassembler
-                .process_fragment(header, header_packet, payload_packet, current_time);
+                .process_fragment(&header, header_packet, payload_packet, current_time);
 
         if let Some(data) = reassembled {
             Ipv4ProcessResult::Reassembled(data)

@@ -14,11 +14,27 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
     bytes
         .set_filled_len(view.total_len())
         .expect("test payload fits fixed TLS buffer");
-    let copied = view.copy_range(0, bytes.as_mut_slice());
+    let mut copied = 0usize;
+    view.for_each_chunk(|chunk| {
+        if copied == view.total_len() {
+            return;
+        }
+        let take = chunk.len().min(view.total_len() - copied);
+        bytes.as_mut_slice()[copied..copied + take].copy_from_slice(&chunk[..take]);
+        copied += take;
+    });
     bytes
         .set_filled_len(copied)
         .expect("copied test payload length stays in bounds");
     bytes
+}
+
+fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
+    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+    builder
+        .push_bytes(data)
+        .expect("test handshake payload allocation succeeds");
+    builder.build()
 }
 
 /// Find a TLS extension (0x00, ext_lo) in a ClientHello record.
@@ -41,7 +57,7 @@ pub(crate) fn test_process_handshake_truncated_header() {
     let mut conn = TlsConnection::new(config);
 
     let data = [2u8, 0, 0];
-    let result = conn.process_handshake(&data);
+    let result = conn.process_handshake(handshake_payload(&data));
     assert!(matches!(result, Err(TlsError::DecodeError)));
 }
 
@@ -90,7 +106,7 @@ pub(crate) fn test_process_handshake_multiple_messages() {
     let mut conn = TlsConnection::new(config);
 
     let data = tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished();
-    let result = conn.process_handshake(&data);
+    let result = conn.process_handshake(handshake_payload(&data));
     assert!(result.is_ok());
     assert_eq!(conn.state(), TlsState::Established);
     assert_eq!(conn.handshake_transcript_len(), data.len());
@@ -104,7 +120,7 @@ pub(crate) fn test_process_handshake_finished_without_verify_data_rejected() {
     let mut conn = TlsConnection::new(config);
 
     let data = [20u8, 0, 0, 0];
-    let result = conn.process_handshake(&data);
+    let result = conn.process_handshake(handshake_payload(&data));
     assert!(matches!(result, Err(TlsError::DecodeError)));
 }
 

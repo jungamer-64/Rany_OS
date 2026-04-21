@@ -499,10 +499,6 @@ impl<'a> PacketPayloadView<'a> {
         self.read_array::<4>(offset).map(u32::from_be_bytes)
     }
 
-    pub fn copy_all_into(&self, dst: &mut [u8]) -> usize {
-        self.copy_range(0, dst)
-    }
-
     pub fn cursor(&self) -> PacketPayloadCursor<'_> {
         PacketPayloadCursor {
             view: PacketPayloadView::new(self.payload),

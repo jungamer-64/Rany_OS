@@ -3,9 +3,10 @@
 // ============================================================================
 
 use super::super::{
-    CipherSuite, ContentType, HandshakeType, ServerPublicKey, TlsBytes, TlsConnection, TlsError,
-    TlsResult, TlsState, TlsVersion, ecdh,
+    CipherSuite, ContentType, HandshakeType, TlsBytes, TlsConnection, TlsError, TlsResult, TlsState,
+    TlsVersion, ecdh,
 };
+use alloc::vec::Vec;
 use crate::net::security::tls::crypto::{
     aes_cbc_encrypt_in_place, compute_tls_mac_into, derive_key_block, derive_key_block_sha384,
     derive_master_secret, derive_master_secret_sha384, derive_master_secret_tls10,
@@ -690,13 +691,7 @@ impl TlsConnection {
         let server_pk = self.handshake_secrets.server_public_key.as_ref()?;
 
         // RSA公開鍵を取得 (ServerPublicKeyからモジュラスと指数を取得)
-        let (modulus, exponent) = match server_pk {
-            ServerPublicKey::Rsa { modulus, exponent } => (
-                modulus.as_contiguous_slice()?,
-                exponent.as_contiguous_slice()?,
-            ),
-            _ => return None, // ECDSA鍵ではRSA鍵転送できない
-        };
+        let (modulus, exponent) = server_pk.rsa_components()?;
 
         // 48バイトのPMSを生成: version(2) || random(46)
         let version = self.negotiation.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
@@ -761,13 +756,15 @@ impl TlsConnection {
         &mut self,
         payload: &kernel_api::resource::net::PacketPayload,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
-        let mut packet = crate::net::payload::alloc_packet_with_headroom(view.total_len(), 0)
-            .ok_or(TlsError::DecodeError)?;
-        if view.copy_range(0, &mut packet.data_mut()[..view.total_len()]) != view.total_len() {
-            return Err(TlsError::DecodeError);
-        }
-        let data = &packet.data()[..view.total_len()];
+        let mut flattened = Vec::new();
+        let data = if let Some(bytes) = Self::contiguous_payload_bytes(payload) {
+            bytes
+        } else {
+            let view = crate::net::payload::PacketPayloadView::new(payload);
+            flattened.reserve(view.total_len());
+            view.for_each_chunk(|chunk| flattened.extend_from_slice(chunk));
+            flattened.as_slice()
+        };
         let cipher = self.negotiation.negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 

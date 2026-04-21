@@ -60,6 +60,10 @@ if rg -n "\\bpayload_span_from_slice\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed TLS slice-to-owned-payload helper"
 fi
 
+if rg -n "\\bcopy_all_into\\(" "${network_tree[@]}" >/dev/null; then
+  fail "found removed full-payload copy helper"
+fi
+
 if rg -n "payload_preview_bytes\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed mlx5 payload preview linearization"
 fi

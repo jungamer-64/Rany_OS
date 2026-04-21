@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::PacketPayloadView;
+use crate::net::payload::{PacketPayloadView, PayloadSpanRef};
 use alloc::vec::Vec;
 
 impl IgmpProcessor {
@@ -147,22 +147,25 @@ impl IgmpProcessor {
         payload: &kernel_api::resource::net::PacketPayload,
         src_ip: Ipv4Address,
     ) -> IgmpResult {
-        let view = PacketPayloadView::new(payload);
-        let total_len = view.total_len();
+        let total_len = payload.total_len();
         if total_len < IGMP_HEADER_LEN {
             return IgmpResult::InvalidPacket;
         }
 
-        let mut bytes = Vec::with_capacity(total_len);
-        bytes.resize(total_len, 0);
-        if view.copy_range(0, &mut bytes) != total_len {
-            return IgmpResult::InvalidPacket;
-        }
-        if compute_igmp_checksum(&bytes) != 0 {
+        let mut flattened = Vec::new();
+        let bytes = if let Some(bytes) = PayloadSpanRef::from_payload(payload).as_contiguous_slice() {
+            bytes
+        } else {
+            let view = PacketPayloadView::new(payload);
+            flattened.reserve(view.total_len());
+            view.for_each_chunk(|chunk| flattened.extend_from_slice(chunk));
+            flattened.as_slice()
+        };
+        if compute_igmp_checksum(bytes) != 0 {
             return IgmpResult::InvalidChecksum;
         }
 
-        self.process_verified_message(&bytes, src_ip)
+        self.process_verified_message(bytes, src_ip)
     }
 
     fn process_verified_message(&mut self, data: &[u8], src_ip: Ipv4Address) -> IgmpResult {

@@ -7,7 +7,16 @@ use super::*;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec![0u8; payload.total_len()];
-    let copied = crate::net::payload::PacketPayloadView::new(payload).copy_all_into(&mut out);
+    let view = crate::net::payload::PacketPayloadView::new(payload);
+    let mut copied = 0usize;
+    view.for_each_chunk(|chunk| {
+        if copied == out.len() {
+            return;
+        }
+        let take = chunk.len().min(out.len() - copied);
+        out[copied..copied + take].copy_from_slice(&chunk[..take]);
+        copied += take;
+    });
     out.truncate(copied);
     out
 }

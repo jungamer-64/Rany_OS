@@ -2,9 +2,7 @@
 // kernel/src/net/security/tls/connection/handshake/server_hello.rs - セキュリティ / TLS / 接続 / ハンドシェイク / ServerHello処理
 // ============================================================================
 
-use super::super::{
-    CipherSuite, OwnedPayloadRange, PacketPayload, SessionId, TlsConnection, TlsState, TlsVersion,
-};
+use super::super::{CipherSuite, PacketPayload, SessionId, TlsConnection, TlsState, TlsVersion};
 use crate::net::security::ecdh;
 use crate::net::security::tls::error::{TlsError, TlsResult};
 
@@ -94,9 +92,9 @@ impl TlsConnection {
         default_version: TlsVersion,
         tls13_using_psk: &mut bool,
         has_psk: bool,
-    ) -> TlsResult<(TlsVersion, Option<(u16, OwnedPayloadRange)>)> {
+    ) -> TlsResult<(TlsVersion, Option<(u16, PacketPayload)>)> {
         let mut actual_version = default_version;
-        let mut server_key_share: Option<(u16, OwnedPayloadRange)> = None;
+        let mut server_key_share: Option<(u16, PacketPayload)> = None;
 
         if ext_offset + 2 > data.len() {
             return Ok((actual_version, server_key_share));
@@ -133,13 +131,22 @@ impl TlsConnection {
         Ok((actual_version, server_key_share))
     }
 
+    fn server_key_share_payload(data: &[u8]) -> TlsResult<PacketPayload> {
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(data.len(), 0)
+            .ok_or(TlsError::DecodeError)?;
+        if !data.is_empty() {
+            packet.data_mut().copy_from_slice(data);
+        }
+        Ok(PacketPayload::single(packet))
+    }
+
     pub(crate) fn apply_server_hello_extension(
         data: &[u8],
         offset: usize,
         ext_type: u16,
         ext_len: usize,
         actual_version: &mut TlsVersion,
-        server_key_share: &mut Option<(u16, OwnedPayloadRange)>,
+        server_key_share: &mut Option<(u16, PacketPayload)>,
         tls13_using_psk: &mut bool,
         has_psk: bool,
     ) -> TlsResult<()> {
@@ -157,7 +164,7 @@ impl TlsConnection {
                 if ext_len == 2 {
                     *server_key_share = Some((
                         group,
-                        OwnedPayloadRange::from_payload(PacketPayload::default()),
+                        PacketPayload::default(),
                     ));
                 } else {
                     if ext_len < 4 {
@@ -168,8 +175,9 @@ impl TlsConnection {
                     if 4 + key_len > ext_len {
                         return Err(TlsError::DecodeError);
                     }
-                    let key_share =
-                        Self::payload_span_from_slice(&data[offset + 4..offset + 4 + key_len])?;
+                    let key_share = Self::server_key_share_payload(
+                        &data[offset + 4..offset + 4 + key_len],
+                    )?;
                     *server_key_share = Some((group, key_share));
                 }
             }
@@ -186,7 +194,7 @@ impl TlsConnection {
     pub(super) fn handle_tls13_hello(
         &mut self,
         cipher: CipherSuite,
-        server_key_share: Option<(u16, OwnedPayloadRange)>,
+        server_key_share: Option<(u16, PacketPayload)>,
     ) -> TlsResult<()> {
         self.negotiation.is_tls13 = true;
 
@@ -213,11 +221,10 @@ impl TlsConnection {
             return Err(TlsError::HandshakeFailure);
         }
 
-        let server_pubkey = server_pubkey
-            .as_contiguous_slice()
-            .ok_or(TlsError::DecodeError)?;
+        let server_pubkey =
+            Self::contiguous_payload_bytes(&server_pubkey).ok_or(TlsError::DecodeError)?;
         let shared_secret = local_keypair
-            .shared_secret(&server_pubkey)
+            .shared_secret(server_pubkey)
             .map_err(|_| TlsError::CryptoError)?;
 
         Self::set_tls_bytes(&mut self.handshake_secrets.pre_master_secret, shared_secret.as_slice())?;
@@ -258,7 +265,7 @@ impl TlsConnection {
     pub(super) fn process_hello_retry_request(
         &mut self,
         cipher: CipherSuite,
-        _server_key_share: &Option<(u16, OwnedPayloadRange)>,
+        _server_key_share: &Option<(u16, PacketPayload)>,
     ) -> TlsResult<()> {
         // RFC 8446 Section 4.4.1: synthetic message_hash に置き換え
         // MessageHash = Handshake(254, Hash(messages_so_far))

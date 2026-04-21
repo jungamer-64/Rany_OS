@@ -6,7 +6,8 @@ use arrayvec::{ArrayString, ArrayVec};
 
 use super::config::{TLS_SERVER_NAME_CAPACITY, TLS_SESSION_CACHE_CAPACITY};
 use super::protocol::{CipherSuite, TlsVersion};
-use crate::net::payload::OwnedPayloadRange;
+use crate::net::payload::{PayloadRange, PayloadSpanRef};
+use kernel_api::resource::net::PacketPayload;
 
 /// セッションID
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -27,8 +28,19 @@ impl SessionId {
 pub struct SessionTicket {
     pub lifetime: u32,
     pub age_add: u32,
-    pub nonce: OwnedPayloadRange,
-    pub ticket: OwnedPayloadRange,
+    pub payload: PacketPayload,
+    pub nonce: PayloadRange,
+    pub ticket: PayloadRange,
+}
+
+impl SessionTicket {
+    pub fn nonce_span(&self) -> Option<PayloadSpanRef<'_>> {
+        self.nonce.span(&self.payload)
+    }
+
+    pub fn ticket_span(&self) -> Option<PayloadSpanRef<'_>> {
+        self.ticket.span(&self.payload)
+    }
 }
 
 /// セッションキャッシュエントリ

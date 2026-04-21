@@ -9,7 +9,7 @@ pub(crate) use super::{
     TLS_CERT_CHAIN_CAPACITY, TlsBytes, TlsConfig, TlsState, TlsVersion,
 };
 pub(crate) use crate::net::payload::{
-    OwnedPayloadRange, PacketPayloadBuilder, PacketPayloadView, PayloadSpanRef, append_payload,
+    PacketPayloadBuilder, PacketPayloadView, PayloadRange, PayloadSpanRef, append_payload,
 };
 pub(crate) use crate::net::security::ecdh;
 pub(crate) use kernel_api::resource::net::PacketPayload;
@@ -21,8 +21,8 @@ mod state;
 mod transcript;
 
 use state::{
-    EarlyDataState, HandshakeSecrets, NegotiationState, RecordProtectionState, ResumptionState,
-    Tls13State,
+    CertificateRequestContext, EarlyDataState, HandshakeSecrets, NegotiationState,
+    RecordProtectionState, ResumptionState, Tls13State,
 };
 use super::crypto::{generate_random, has_secure_random};
 use transcript::TranscriptState;

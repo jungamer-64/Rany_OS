@@ -9,7 +9,7 @@ use super::super::{
     CipherSuite, ServerPublicKey, SessionCache, SessionId, SessionTicket, TLS_SERVER_NAME_CAPACITY,
     TlsBytes, TlsState, TlsVersion,
 };
-use crate::net::payload::OwnedPayloadRange;
+use crate::net::payload::{PayloadRange, PayloadSpanRef};
 use crate::net::security::ecdh;
 
 pub(super) struct NegotiationState {
@@ -113,7 +113,7 @@ pub(super) struct Tls13State {
     pub(super) session_ticket: Option<SessionTicket>,
     pub(super) pending_key_update_response: bool,
     pub(super) client_auth_requested: bool,
-    pub(super) certificate_request_context: Option<OwnedPayloadRange>,
+    pub(super) certificate_request_context: Option<CertificateRequestContext>,
 }
 
 impl Default for Tls13State {
@@ -142,7 +142,6 @@ pub(super) struct ResumptionState {
     pub(super) resuming_session: bool,
     pub(super) resumption_master_secret: TlsBytes<48>,
     pub(super) tls13_psk: Option<TlsBytes<48>>,
-    pub(super) tls13_psk_identity: Option<OwnedPayloadRange>,
     pub(super) tls13_ticket_age_add: u32,
     pub(super) tls13_using_psk: bool,
     pub(super) tls13_psk_cipher: Option<CipherSuite>,
@@ -155,11 +154,25 @@ impl Default for ResumptionState {
             resuming_session: false,
             resumption_master_secret: TlsBytes::new(),
             tls13_psk: None,
-            tls13_psk_identity: None,
             tls13_ticket_age_add: 0,
             tls13_using_psk: false,
             tls13_psk_cipher: None,
         }
+    }
+}
+
+pub(super) struct CertificateRequestContext {
+    pub(super) payload: PacketPayload,
+    pub(super) range: PayloadRange,
+}
+
+impl CertificateRequestContext {
+    pub(super) fn new(payload: PacketPayload, range: PayloadRange) -> Self {
+        Self { payload, range }
+    }
+
+    pub(super) fn span(&self) -> Option<PayloadSpanRef<'_>> {
+        self.range.span(&self.payload)
     }
 }
 

@@ -3,7 +3,9 @@
 // ============================================================================
 
 use super::super::TlsConnection;
+use crate::net::payload::PayloadSpanRef;
 use crate::net::security::tls::error::{TlsError, TlsResult};
+use kernel_api::resource::net::PacketPayload;
 
 mod certificate;
 mod server_hello;
@@ -14,8 +16,11 @@ impl TlsConnection {
     pub(super) fn dispatch_handshake_message(
         &mut self,
         msg_type: u8,
-        payload: &[u8],
+        payload: PayloadSpanRef<'_>,
     ) -> TlsResult<()> {
+        let payload = payload
+            .as_contiguous_slice()
+            .ok_or(TlsError::DecodeError)?;
         match msg_type {
             2 => self.process_server_hello(payload),
             11 => self.process_certificate(payload),
@@ -28,36 +33,37 @@ impl TlsConnection {
 
     pub(super) fn record_and_update_handshake(
         &mut self,
-        msg_data: &[u8],
+        msg_data: PayloadSpanRef<'_>,
         msg_type: u8,
     ) -> TlsResult<()> {
         const MAX_HANDSHAKE_ACCUMULATOR: usize = 262_144;
-        if self.transcript_len() + msg_data.len() > MAX_HANDSHAKE_ACCUMULATOR {
+        if self.transcript_len() + msg_data.total_len() > MAX_HANDSHAKE_ACCUMULATOR {
             return Err(TlsError::DecodeError);
         }
 
-        self.append_transcript_bytes(msg_data)?;
+        self.append_transcript_span(msg_data)?;
         if msg_type == 2 && self.negotiation.is_tls13 {
             self.tls13_derive_handshake_keys()?;
         }
         Ok(())
     }
 
-    pub(crate) fn process_handshake(&mut self, data: &[u8]) -> TlsResult<()> {
-        if data.is_empty() {
+    pub(crate) fn process_handshake(&mut self, data: PacketPayload) -> TlsResult<()> {
+        let handshake = PayloadSpanRef::from_payload(&data);
+        if handshake.is_empty() {
             return Err(TlsError::DecodeError);
         }
 
         let mut offset = 0usize;
-        while offset < data.len() {
-            if data.len() - offset < 4 {
+        while offset < handshake.total_len() {
+            if handshake.total_len() - offset < 4 {
                 return Err(TlsError::DecodeError);
             }
 
-            let msg_type = data[offset];
-            let length = ((data[offset + 1] as usize) << 16)
-                | ((data[offset + 2] as usize) << 8)
-                | data[offset + 3] as usize;
+            let msg_type = handshake.read_u8(offset).ok_or(TlsError::DecodeError)?;
+            let length = handshake
+                .read_u24_be(offset + 1)
+                .ok_or(TlsError::DecodeError)? as usize;
 
             if length > 131_072 {
                 return Err(TlsError::DecodeError);
@@ -65,13 +71,18 @@ impl TlsConnection {
 
             let body_start = offset + 4;
             let body_end = body_start + length;
-            if body_end > data.len() {
+            if body_end > handshake.total_len() {
                 return Err(TlsError::DecodeError);
             }
 
-            let payload = &data[body_start..body_end];
+            let payload = handshake
+                .slice(body_start, length)
+                .ok_or(TlsError::DecodeError)?;
+            let full_msg = handshake
+                .slice(offset, body_end - offset)
+                .ok_or(TlsError::DecodeError)?;
             self.dispatch_handshake_message(msg_type, payload)?;
-            self.record_and_update_handshake(&data[offset..body_end], msg_type)?;
+            self.record_and_update_handshake(full_msg, msg_type)?;
             offset = body_end;
         }
 

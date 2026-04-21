@@ -3,8 +3,8 @@
 // ============================================================================
 
 use super::{
-    AlertDescription, AlertLevel, CipherSuite, ContentType, OwnedPayloadRange, PacketPayload,
-    PacketPayloadView, PayloadSpanRef, SessionTicket, TlsBytes, TlsConnection, TlsError, TlsResult,
+    AlertDescription, AlertLevel, CipherSuite, ContentType, PacketPayload, PacketPayloadView,
+    PayloadRange, PayloadSpanRef, SessionTicket, TlsBytes, TlsConnection, TlsError, TlsResult,
     TlsState, append_payload,
 };
 use crate::net::security::tls::crypto::{
@@ -136,6 +136,11 @@ impl TlsConnection {
         Ok(())
     }
 
+    pub(super) fn append_transcript_span(&mut self, data: PayloadSpanRef<'_>) -> TlsResult<()> {
+        data.for_each_chunk(|chunk| self.transcript.update(chunk));
+        Ok(())
+    }
+
     pub(super) fn append_transcript_parts(&mut self, parts: &[&[u8]]) -> TlsResult<()> {
         for part in parts {
             if !part.is_empty() {
@@ -253,8 +258,7 @@ impl TlsConnection {
 
         match ContentType::from_u8(content_type) {
             Some(ContentType::Handshake) => {
-                let bytes = Self::contiguous_payload_bytes(&body).ok_or(TlsError::DecodeError)?;
-                self.process_handshake(bytes)?;
+                self.process_handshake(body)?;
             }
             Some(ContentType::Alert) => {
                 self.handle_alert_payload(&body)?;
@@ -352,11 +356,7 @@ impl TlsConnection {
                         crate::net::payload::PayloadSpanRef::from_range(&decrypted, 0, inner_len)
                             .ok_or(TlsError::DecodeError)?;
                     // Post-handshake: NewSessionTicket, KeyUpdate
-                    self.tls13_process_post_handshake(
-                        inner_data
-                            .as_contiguous_slice()
-                            .ok_or(TlsError::DecodeError)?,
-                    )?;
+                    self.tls13_process_post_handshake(inner_data)?;
                 }
                 Some(ContentType::Alert) => {
                     let inner_payload =
@@ -488,9 +488,13 @@ impl TlsConnection {
         let mut inner =
             crate::net::payload::alloc_packet_with_headroom(payload_view.total_len() + 1, 0)
                 .ok_or(TlsError::DecodeError)?;
-        if payload_view.copy_range(0, &mut inner.data_mut()[..payload_view.total_len()])
-            != payload_view.total_len()
-        {
+        let mut copied = 0usize;
+        payload_view.for_each_chunk(|chunk| {
+            let take = chunk.len().min(payload_view.total_len() - copied);
+            inner.data_mut()[copied..copied + take].copy_from_slice(&chunk[..take]);
+            copied += take;
+        });
+        if copied != payload_view.total_len() {
             return Err(TlsError::DecodeError);
         }
         inner.data_mut()[payload_view.total_len()] = ContentType::ApplicationData as u8;
@@ -839,33 +843,44 @@ impl TlsConnection {
     /// RFC 8446 Section 4.6: Post-Handshake Messages
     /// - NewSessionTicket (type 4)
     /// - KeyUpdate (type 24)
-    pub(crate) fn tls13_process_post_handshake(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(crate) fn tls13_process_post_handshake(
+        &mut self,
+        data: PayloadSpanRef<'_>,
+    ) -> TlsResult<()> {
         let mut offset = 0;
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while offset < data.len() {
-            if data.len() - offset < 4 {
+        while offset < data.total_len() {
+            if data.total_len() - offset < 4 {
                 return Err(TlsError::DecodeError);
             }
 
-            let msg_type = data[offset];
-            let length = ((data[offset + 1] as usize) << 16)
-                | ((data[offset + 2] as usize) << 8)
-                | data[offset + 3] as usize;
+            let msg_type = data.read_u8(offset).ok_or(TlsError::DecodeError)?;
+            let length = data
+                .read_u24_be(offset + 1)
+                .ok_or(TlsError::DecodeError)? as usize;
             let body_start = offset + 4;
             let body_end = body_start + length;
-            if body_end > data.len() {
+            if body_end > data.total_len() {
                 return Err(TlsError::DecodeError);
             }
 
-            let payload = &data[body_start..body_end];
+            let payload = data
+                .slice(body_start, length)
+                .ok_or(TlsError::DecodeError)?;
 
             match msg_type {
                 4 => {
                     // NewSessionTicket (RFC 8446 Section 4.6.1)
+                    let payload = payload
+                        .as_contiguous_slice()
+                        .ok_or(TlsError::DecodeError)?;
                     self.tls13_process_new_session_ticket(payload)?;
                 }
                 24 => {
                     // KeyUpdate (RFC 8446 Section 4.6.3)
+                    let payload = payload
+                        .as_contiguous_slice()
+                        .ok_or(TlsError::DecodeError)?;
                     self.tls13_process_key_update(payload)?;
                 }
                 _ => {
@@ -942,30 +957,23 @@ impl TlsConnection {
 
         let max_early_data_size = Self::parse_ticket_extensions(data, ticket_end);
 
-        let mut nonce_builder = crate::net::payload::PacketPayloadBuilder::new();
-        nonce_builder
-            .push_bytes(&data[nonce_start..nonce_end])
+        let material_len = nonce_len
+            .checked_add(ticket_len)
             .ok_or(TlsError::DecodeError)?;
-        let nonce = OwnedPayloadRange::from_payload(nonce_builder.build());
-
-        let mut ticket_builder = crate::net::payload::PacketPayloadBuilder::new();
-        ticket_builder
-            .push_bytes(&data[ticket_start..ticket_end])
+        let mut material = crate::net::payload::alloc_packet_with_headroom(material_len, 0)
             .ok_or(TlsError::DecodeError)?;
-        let ticket = OwnedPayloadRange::from_payload(ticket_builder.build());
-
-        let mut identity_builder = crate::net::payload::PacketPayloadBuilder::new();
-        identity_builder
-            .push_bytes(&data[ticket_start..ticket_end])
-            .ok_or(TlsError::DecodeError)?;
-        let psk_identity = OwnedPayloadRange::from_payload(identity_builder.build());
+        material.data_mut()[..nonce_len].copy_from_slice(&data[nonce_start..nonce_end]);
+        material.data_mut()[nonce_len..material_len]
+            .copy_from_slice(&data[ticket_start..ticket_end]);
+        let nonce = PayloadRange::new(0, nonce_len);
+        let ticket = PayloadRange::new(nonce_len, ticket_len);
 
         self.resumption.tls13_ticket_age_add = age_add;
         self.early_data.max_early_data_size = max_early_data_size;
-        self.resumption.tls13_psk_identity = Some(psk_identity);
         self.tls13.session_ticket = Some(SessionTicket {
             lifetime,
             age_add,
+            payload: PacketPayload::single(material),
             nonce,
             ticket,
         });

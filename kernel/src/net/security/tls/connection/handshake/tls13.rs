@@ -5,9 +5,9 @@
 use arrayvec::ArrayVec;
 
 use super::super::{
-    CipherSuite, ContentType, OwnedPayloadRange, ServerPublicKey, SessionCache,
-    SessionCacheEntry, TlsBytes, TlsConnection, TlsError, TlsResult, TlsState, TlsVersion,
-    TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, ecdh,
+    CertificateRequestContext, CipherSuite, ContentType, PacketPayload, PayloadRange,
+    PayloadSpanRef, SessionCache, SessionCacheEntry, TlsBytes, TlsConnection, TlsError,
+    TlsResult, TlsState, TlsVersion, TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, ecdh,
 };
 use crate::net::security::tls::crypto::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, tls13_derive_secret, tls13_derive_secret_sha384,
@@ -217,30 +217,35 @@ impl TlsConnection {
     }
 
     /// TLS 1.3: 暗号化ハンドシェイク内の複数メッセージを処理
-    pub(super) fn tls13_process_handshake_messages(&mut self, data: &[u8]) -> TlsResult<()> {
+    pub(super) fn tls13_process_handshake_messages(&mut self, data: PacketPayload) -> TlsResult<()> {
+        let messages = PayloadSpanRef::from_payload(&data);
         let mut offset = 0usize;
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while offset < data.len() {
-            if data.len() - offset < 4 {
+        while offset < messages.total_len() {
+            if messages.total_len() - offset < 4 {
                 return Err(TlsError::DecodeError);
             }
 
-            let msg_type = data[offset];
-            let length = ((data[offset + 1] as usize) << 16)
-                | ((data[offset + 2] as usize) << 8)
-                | data[offset + 3] as usize;
+            let msg_type = messages.read_u8(offset).ok_or(TlsError::DecodeError)?;
+            let length = messages
+                .read_u24_be(offset + 1)
+                .ok_or(TlsError::DecodeError)? as usize;
             let body_start = offset + 4;
             let body_end = body_start + length;
-            if body_end > data.len() {
+            if body_end > messages.total_len() {
                 return Err(TlsError::DecodeError);
             }
 
-            let payload = &data[body_start..body_end];
-            let full_msg = &data[offset..body_end];
+            let payload = messages
+                .slice(body_start, length)
+                .ok_or(TlsError::DecodeError)?;
+            let full_msg = messages
+                .slice(offset, body_end - offset)
+                .ok_or(TlsError::DecodeError)?;
 
             self.tls13_dispatch_handshake_msg(msg_type, payload)?;
 
-            self.append_transcript_bytes(full_msg)?;
+            self.append_transcript_span(full_msg)?;
 
             if msg_type == 20 {
                 self.transcript.snapshot_server_finished();
@@ -255,8 +260,11 @@ impl TlsConnection {
     pub(super) fn tls13_dispatch_handshake_msg(
         &mut self,
         msg_type: u8,
-        payload: &[u8],
+        payload: PayloadSpanRef<'_>,
     ) -> TlsResult<()> {
+        let payload = payload
+            .as_contiguous_slice()
+            .ok_or(TlsError::DecodeError)?;
         match msg_type {
             8 => {
                 // EncryptedExtensions
@@ -371,11 +379,15 @@ impl TlsConnection {
         self.tls13.certificate_request_context = if context_len == 0 {
             None
         } else {
-            let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-            builder
-                .push_bytes(&data[1..1 + context_len])
+            let mut packet = crate::net::payload::alloc_packet_with_headroom(context_len, 0)
                 .ok_or(TlsError::DecodeError)?;
-            Some(OwnedPayloadRange::from_payload(builder.build()))
+            packet
+                .data_mut()
+                .copy_from_slice(&data[1..1 + context_len]);
+            Some(CertificateRequestContext::new(
+                kernel_api::resource::net::PacketPayload::single(packet),
+                PayloadRange::new(0, context_len),
+            ))
         };
         self.tls13_skip_cert_request_extensions(data, ext_start)?;
         Ok(())
@@ -460,7 +472,7 @@ impl TlsConnection {
             let validated_spki = {
                 let mut ca_ders = ArrayVec::<&[u8], TLS_CA_CERTS_CAPACITY>::new();
                 for cert in &self.config.ca_certs {
-                    if let Some(der) = cert.der.as_contiguous_slice() {
+                    if let Some(der) = cert.der_contiguous_slice() {
                         ca_ders
                             .try_push(der)
                             .map_err(|_| TlsError::CertificateError)?;
@@ -586,18 +598,15 @@ impl TlsConnection {
         signature: &[u8],
         hash_alg: crate::net::security::rsa::HashAlgorithm,
     ) -> TlsResult<()> {
-        let pubkey = match &self.handshake_secrets.server_public_key {
-            Some(ServerPublicKey::Rsa { modulus, exponent }) => {
-                let modulus = modulus
-                    .as_contiguous_slice()
-                    .ok_or(TlsError::CertificateError)?;
-                let exponent = exponent
-                    .as_contiguous_slice()
-                    .ok_or(TlsError::CertificateError)?;
-                crate::net::security::rsa::RsaPublicKey { modulus, exponent }
-            }
-            _ => return Err(TlsError::CertificateError),
-        };
+        let server_public_key = self
+            .handshake_secrets
+            .server_public_key
+            .as_ref()
+            .ok_or(TlsError::CertificateError)?;
+        let (modulus, exponent) = server_public_key
+            .rsa_components()
+            .ok_or(TlsError::CertificateError)?;
+        let pubkey = crate::net::security::rsa::RsaPublicKey { modulus, exponent };
 
         match hash_alg {
             crate::net::security::rsa::HashAlgorithm::Sha256 => {
@@ -627,8 +636,8 @@ impl TlsConnection {
         signature: &[u8],
     ) -> TlsResult<()> {
         let pubkey_bytes = match &self.handshake_secrets.server_public_key {
-            Some(ServerPublicKey::EcdsaP256 { point }) => point
-                .as_contiguous_slice()
+            Some(server_public_key) => server_public_key
+                .ecdsa_p256_point()
                 .ok_or(TlsError::CertificateError)?,
             _ => return Err(TlsError::CertificateError),
         };
@@ -648,8 +657,8 @@ impl TlsConnection {
         signature: &[u8],
     ) -> TlsResult<()> {
         let pubkey_bytes = match &self.handshake_secrets.server_public_key {
-            Some(ServerPublicKey::EcdsaP384 { point }) => point
-                .as_contiguous_slice()
+            Some(server_public_key) => server_public_key
+                .ecdsa_p384_point()
                 .ok_or(TlsError::CertificateError)?,
             _ => return Err(TlsError::CertificateError),
         };
@@ -779,6 +788,7 @@ impl TlsConnection {
 
         let ctx = self.tls13.certificate_request_context
             .as_ref()
+            .and_then(CertificateRequestContext::span)
             .and_then(|span| span.as_contiguous_slice())
             .unwrap_or(&[]);
         let ctx_len = ctx.len();

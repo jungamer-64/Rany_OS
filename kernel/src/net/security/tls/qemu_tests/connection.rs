@@ -14,11 +14,27 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
     bytes
         .set_filled_len(view.total_len())
         .expect("qemu TLS payload fits fixed test buffer");
-    let copied = view.copy_range(0, bytes.as_mut_slice());
+    let mut copied = 0usize;
+    view.for_each_chunk(|chunk| {
+        if copied == view.total_len() {
+            return;
+        }
+        let take = chunk.len().min(view.total_len() - copied);
+        bytes.as_mut_slice()[copied..copied + take].copy_from_slice(&chunk[..take]);
+        copied += take;
+    });
     bytes
         .set_filled_len(copied)
         .expect("copied qemu TLS payload length stays in bounds");
     bytes
+}
+
+fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
+    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
+    if builder.push_bytes(data).is_none() {
+        return kernel_api::resource::net::PacketPayload::default();
+    }
+    builder.build()
 }
 
 fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
@@ -61,7 +77,7 @@ pub fn wave8_tls_process_handshake_multiple_messages_smoke() -> bool {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
     let data = tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished();
-    conn.process_handshake(&data).is_ok()
+    conn.process_handshake(handshake_payload(&data)).is_ok()
         && conn.state() == TlsState::Established
         && conn.handshake_transcript_len() == data.len()
 }
@@ -70,7 +86,10 @@ pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
     let data = [2u8, 0, 0];
-    matches!(conn.process_handshake(&data), Err(TlsError::DecodeError))
+    matches!(
+        conn.process_handshake(handshake_payload(&data)),
+        Err(TlsError::DecodeError)
+    )
 }
 
 pub fn wave8_tls_tls13_initial_state_smoke() -> bool {

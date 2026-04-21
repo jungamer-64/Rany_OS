@@ -66,7 +66,7 @@ impl TlsConnection {
         let Some(psk) = self.resumption.tls13_psk.as_ref() else {
             return;
         };
-        if self.resumption.tls13_psk_identity.is_none() {
+        if self.tls13.session_ticket.is_none() {
             return;
         }
         let use_384 = self.resumption.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
@@ -263,9 +263,13 @@ impl TlsConnection {
             Some(packet) => packet,
             None => return PacketPayload::default(),
         };
-        if payload_view.copy_range(0, &mut inner_plaintext.data_mut()[..payload_view.total_len()])
-            != payload_view.total_len()
-        {
+        let mut copied = 0usize;
+        payload_view.for_each_chunk(|chunk| {
+            let take = chunk.len().min(payload_view.total_len() - copied);
+            inner_plaintext.data_mut()[copied..copied + take].copy_from_slice(&chunk[..take]);
+            copied += take;
+        });
+        if copied != payload_view.total_len() {
             return PacketPayload::default();
         }
         inner_plaintext.data_mut()[payload_view.total_len()] = ContentType::ApplicationData as u8;
@@ -392,11 +396,14 @@ impl TlsConnection {
         }
 
         // pre_shared_key (RFC 8446 Section 4.2.11) - MUST be last extension
-        if let Some(ref psk_identity) = self.resumption.tls13_psk_identity {
+        if let Some(ref session_ticket) = self.tls13.session_ticket {
             let use_384 = self.resumption.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
             let hash_len = if use_384 { 48 } else { 32 };
             let obfuscated_age: u32 = self.resumption.tls13_ticket_age_add;
-            let Some(identity_bytes) = psk_identity.as_contiguous_slice() else {
+            let Some(identity_bytes) = session_ticket
+                .ticket_span()
+                .and_then(|span| span.as_contiguous_slice())
+            else {
                 return None;
             };
             let identity_len = identity_bytes.len();
