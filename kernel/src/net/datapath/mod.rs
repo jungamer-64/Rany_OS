@@ -13,4 +13,3 @@ pub mod mempool;
 pub mod optimization;
 pub mod per_cpu_batch;
 pub mod scatter_gather;
-pub mod zero_copy;

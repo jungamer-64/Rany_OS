@@ -122,4 +122,22 @@ if rg -n "packet\\.clone\\(|payload\\.clone\\(|PacketPayload::single\\(packet\\.
   fail "found retained clone root in network/security tree"
 fi
 
+if rg -n "\\bZeroCopyBuffer\\b|\\bZeroCopyWriter\\b|\\bSgList\\b|\\bDmaSgEntry\\b|datapath::zero_copy|mod zero_copy|pub mod zero_copy" \
+  kernel/src/net interfaces/kernel_api/src \
+  >/dev/null; then
+  fail "found removed zero_copy buffer facade"
+fi
+
+if rg -n "\\btransmit_bytes_internal\\b|\\btransmit_bytes_with_meta_internal\\b" \
+  kernel/src/net \
+  >/dev/null; then
+  fail "found removed byte-slice TX runtime surface"
+fi
+
+if rg -n "PacketRef::from_vec|PacketPayload::from_vec|PacketPayload::into_vec|\\.to_vec\\(\\)" \
+  kernel/src/net interfaces/kernel_api/src \
+  >/dev/null; then
+  fail "found removed test-only packet materializer"
+fi
+
 echo "check-network-zero-copy-guard: ok"
