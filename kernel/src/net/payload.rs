@@ -130,21 +130,6 @@ impl<'a> PayloadSpanRef<'a> {
         self.read_array::<4>(index).map(u32::from_be_bytes)
     }
 
-    pub fn as_contiguous_slice(&self) -> Option<&'a [u8]> {
-        match self.payload {
-            PacketPayload::Single(packet) => {
-                let end = self.offset.checked_add(self.len)?;
-                packet.data().get(self.offset..end)
-            }
-            PacketPayload::Chain(_) => None,
-        }
-    }
-
-    pub fn copy_into(&self, dst: &mut [u8]) -> usize {
-        let len = self.len.min(dst.len());
-        PacketPayloadView::new(self.payload).copy_range(self.offset, &mut dst[..len])
-    }
-
     pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
         let span_start = self.offset;
         let span_end = self.offset.saturating_add(self.len);
@@ -430,53 +415,6 @@ impl<'a> PacketPayloadView<'a> {
         }
     }
 
-    pub fn copy_range(&self, offset: usize, dst: &mut [u8]) -> usize {
-        if dst.is_empty() || offset >= self.total_len() {
-            return 0;
-        }
-
-        let mut copied = 0usize;
-        let mut cursor = 0usize;
-        match self.payload {
-            PacketPayload::Single(packet) => {
-                let data = packet.data();
-                let start = offset.min(data.len());
-                let len = dst.len().min(data.len().saturating_sub(start));
-                dst[..len].copy_from_slice(&data[start..start + len]);
-                len
-            }
-            PacketPayload::Chain(chain) => {
-                for segment in chain.segments() {
-                    let data = segment.data();
-                    if data.is_empty() {
-                        continue;
-                    }
-                    let seg_start = cursor;
-                    let seg_end = cursor.saturating_add(data.len());
-                    cursor = seg_end;
-
-                    if offset >= seg_end {
-                        continue;
-                    }
-
-                    let local_offset = offset.saturating_sub(seg_start);
-                    let available = data.len().saturating_sub(local_offset);
-                    let take = available.min(dst.len().saturating_sub(copied));
-                    if take == 0 {
-                        break;
-                    }
-                    dst[copied..copied + take]
-                        .copy_from_slice(&data[local_offset..local_offset + take]);
-                    copied += take;
-                    if copied == dst.len() {
-                        break;
-                    }
-                }
-                copied
-            }
-        }
-    }
-
     pub fn read_array<const N: usize>(&self, offset: usize) -> Option<[u8; N]> {
         let mut out = [0u8; N];
         (self.copy_range(offset, &mut out) == N).then_some(out)
@@ -552,12 +490,6 @@ impl<'a> PacketPayloadCursor<'a> {
     pub fn read_u24_be(&mut self) -> Option<u32> {
         self.read_array::<3>()
             .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
-    }
-
-    pub fn copy_into(&mut self, dst: &mut [u8]) -> usize {
-        let copied = self.view.copy_range(self.offset, dst);
-        self.offset = self.offset.saturating_add(copied);
-        copied
     }
 
     pub fn take_span(&mut self, len: usize) -> Option<PayloadSpanRef<'a>> {

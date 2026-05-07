@@ -64,6 +64,12 @@ if rg -n "\\bcopy_all_into\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed full-payload copy helper"
 fi
 
+if rg -n "pub fn (copy_into|copy_range|as_contiguous_slice)\\(" \
+  kernel/src/net/payload.rs interfaces/kernel_api/src/types.rs \
+  >/dev/null; then
+  fail "found removed generic payload linearization surface"
+fi
+
 if rg -n "payload_preview_bytes\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed mlx5 payload preview linearization"
 fi

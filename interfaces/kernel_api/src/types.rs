@@ -528,29 +528,6 @@ impl PacketChain {
         self.total_len == 0
     }
 
-    pub fn copy_into(&mut self, dst: &mut [u8]) -> usize {
-        let mut written = 0usize;
-        while written < dst.len() {
-            let Some(front) = self.segments.first_mut() else {
-                break;
-            };
-            if front.is_empty() {
-                self.segments.remove(0);
-                continue;
-            }
-
-            let take = front.len().min(dst.len() - written);
-            dst[written..written + take].copy_from_slice(&front.data()[..take]);
-            front.advance(take);
-            self.total_len = self.total_len.saturating_sub(take);
-            written += take;
-
-            if front.is_empty() {
-                self.segments.remove(0);
-            }
-        }
-        written
-    }
 }
 
 #[derive(Debug)]
@@ -611,18 +588,6 @@ impl PacketPayload {
 
     pub fn is_empty(&self) -> bool {
         self.total_len() == 0
-    }
-
-    pub fn copy_into(&mut self, dst: &mut [u8]) -> usize {
-        match self {
-            Self::Single(packet) => {
-                let len = packet.len().min(dst.len());
-                dst[..len].copy_from_slice(&packet.data()[..len]);
-                packet.advance(len);
-                len
-            }
-            Self::Chain(chain) => chain.copy_into(dst),
-        }
     }
 
     pub fn into_segments(self) -> Vec<PacketRef> {
