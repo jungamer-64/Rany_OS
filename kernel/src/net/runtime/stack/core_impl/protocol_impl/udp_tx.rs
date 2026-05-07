@@ -177,8 +177,6 @@ impl NetworkStack {
         if let Some(first) = udp_payload.segments_mut().first_mut() {
             first.data_mut()[6..8].copy_from_slice(&final_checksum.to_be_bytes());
         }
-        let udp_payload = PacketPayloadView::new(&udp_payload);
-
         self.send_ipv4_l4_payload_with_pmtu(
             if_id,
             config.mac,
@@ -187,7 +185,7 @@ impl NetworkStack {
             dst_ip,
             IpProtocol::Udp,
             ttl,
-            &udp_payload,
+            udp_payload,
             path_mtu,
         )
         .is_ok()

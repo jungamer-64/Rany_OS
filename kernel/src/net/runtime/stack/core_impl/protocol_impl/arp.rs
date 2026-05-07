@@ -450,7 +450,6 @@ impl NetworkStack {
                     ttl,
                     payload,
                 } => {
-                    let payload_view = crate::net::payload::PacketPayloadView::new(&payload);
                     let src_mac = if let Some(if_id) = if_id {
                         self.interface_config_or_runtime(if_id)
                             .map(|c| c.mac)
@@ -466,7 +465,7 @@ impl NetworkStack {
                         pkt.dst,
                         protocol,
                         ttl,
-                        &payload_view,
+                        payload,
                         1500, // Default MTU
                     );
                 }
