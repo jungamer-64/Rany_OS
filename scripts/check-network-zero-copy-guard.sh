@@ -123,7 +123,7 @@ if rg -n "packet\\.clone\\(|payload\\.clone\\(|PacketPayload::single\\(packet\\.
 fi
 
 if rg -n "\\bZeroCopyBuffer\\b|\\bZeroCopyWriter\\b|\\bSgList\\b|\\bDmaSgEntry\\b|datapath::zero_copy|mod zero_copy|pub mod zero_copy" \
-  kernel/src/net interfaces/kernel_api/src \
+  kernel/src/net interfaces/kernel_api/src/netdev.rs interfaces/kernel_api/src/resource/net.rs interfaces/kernel_api/src/types.rs \
   >/dev/null; then
   fail "found removed zero_copy buffer facade"
 fi

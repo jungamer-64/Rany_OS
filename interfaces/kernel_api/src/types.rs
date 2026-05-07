@@ -337,10 +337,6 @@ impl PacketRef {
         self.meta_cache = meta;
     }
 
-    #[cfg(any(test, feature = "net-test-helpers"))]
-    pub fn to_vec(&self) -> Vec<u8> {
-        self.data().to_vec()
-    }
 }
 
 impl Drop for PacketRef {
@@ -480,24 +476,6 @@ static HEAP_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     drop_storage: heap_drop,
 };
 
-impl PacketRef {
-    #[cfg(any(test, feature = "net-test-helpers"))]
-    pub fn from_vec(data: Vec<u8>) -> Self {
-        let mut backing = alloc::vec![0u8; DEFAULT_PACKET_HEADROOM + data.len()].into_boxed_slice();
-        backing[DEFAULT_PACKET_HEADROOM..DEFAULT_PACKET_HEADROOM + data.len()]
-            .copy_from_slice(&data);
-        let state = HeapPacketState {
-            backing: Arc::new(HeapPacketBacking {
-                data: backing,
-                base_addr: 0,
-            }),
-            offset: DEFAULT_PACKET_HEADROOM,
-            len: data.len(),
-        };
-        unsafe { Self::from_opaque_parts(PacketRefStorage::from_state(state), &HEAP_PACKET_VTABLE) }
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct PacketChain {
     segments: Vec<PacketRef>,
@@ -612,11 +590,6 @@ impl PacketPayload {
         Self::Chain(chain)
     }
 
-    #[cfg(any(test, feature = "net-test-helpers"))]
-    pub fn from_vec(data: Vec<u8>) -> Self {
-        Self::Single(PacketRef::from_vec(data))
-    }
-
     pub fn prepend(self, packet: PacketRef) -> Self {
         match self {
             Self::Single(existing) => {
@@ -659,19 +632,6 @@ impl PacketPayload {
         }
     }
 
-    #[cfg(any(test, feature = "net-test-helpers"))]
-    pub fn into_vec(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.total_len());
-        match self {
-            Self::Single(packet) => out.extend_from_slice(packet.data()),
-            Self::Chain(chain) => {
-                for packet in chain.into_segments() {
-                    out.extend_from_slice(packet.data());
-                }
-            }
-        }
-        out
-    }
 }
 
 /// System information

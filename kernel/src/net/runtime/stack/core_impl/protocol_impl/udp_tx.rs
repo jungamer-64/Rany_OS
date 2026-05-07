@@ -356,10 +356,10 @@ impl NetworkStack {
         drop(frame);
         packet.set_len(total_len);
 
-        if let Ok(()) =
-            crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_net_device(packet)
-        {
-            self.stats.record_tx(total_len);
+        if self.transmit_packet_on(
+            None,
+            kernel_api::resource::net::PacketPayload::single(packet),
+        ) {
             return Some(Ok(()));
         }
         // Fall back to copy-based path on failure

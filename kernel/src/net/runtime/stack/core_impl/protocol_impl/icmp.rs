@@ -902,12 +902,10 @@ impl NetworkStack {
                         drop(frame);
                         packet.set_len(total_len);
 
-                        if crate::net::datapath::zero_copy::ZeroCopyWriter::enqueue_via_net_device(
-                            packet,
-                        )
-                        .is_ok()
-                        {
-                            self.stats.record_tx(total_len);
+                        if self.transmit_packet_on(
+                            None,
+                            kernel_api::resource::net::PacketPayload::single(packet),
+                        ) {
                             log::info!(
                                 "[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}",
                                 target.as_bytes()[0],
