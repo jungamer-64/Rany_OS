@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::{PacketPayloadView, PayloadSpanRef};
+use crate::net::payload::PayloadSpanRef;
 use alloc::vec::Vec;
 
 impl IgmpProcessor {
@@ -152,25 +152,64 @@ impl IgmpProcessor {
             return IgmpResult::InvalidPacket;
         }
 
-        let mut flattened = Vec::new();
-        let bytes = if let Some(bytes) = PayloadSpanRef::from_payload(payload).as_contiguous_slice() {
-            bytes
-        } else {
-            let view = PacketPayloadView::new(payload);
-            flattened.reserve(view.total_len());
-            view.for_each_chunk(|chunk| flattened.extend_from_slice(chunk));
-            flattened.as_slice()
-        };
-        if compute_igmp_checksum(bytes) != 0 {
+        let span = PayloadSpanRef::from_payload(payload);
+        if Self::payload_checksum(span) != 0 {
             return IgmpResult::InvalidChecksum;
         }
 
-        self.process_verified_message(bytes, src_ip)
+        self.process_verified_message(span, src_ip)
     }
 
-    fn process_verified_message(&mut self, data: &[u8], src_ip: Ipv4Address) -> IgmpResult {
-        let msg_type = data[0];
-        let group_addr = Ipv4Address::new([data[4], data[5], data[6], data[7]]);
+    fn payload_checksum(span: PayloadSpanRef<'_>) -> u16 {
+        let mut sum = 0u32;
+        let mut trailing = None;
+
+        span.for_each_chunk(|chunk| {
+            let mut index = 0usize;
+            if let Some(prev) = trailing.take() {
+                if let Some((&first, _)) = chunk.split_first() {
+                    sum = sum.saturating_add(u16::from_be_bytes([prev, first]) as u32);
+                    index = 1;
+                } else {
+                    trailing = Some(prev);
+                    return;
+                }
+            }
+
+            while index + 1 < chunk.len() {
+                sum =
+                    sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
+                index += 2;
+            }
+
+            if index < chunk.len() {
+                trailing = Some(chunk[index]);
+            }
+        });
+
+        if let Some(last) = trailing {
+            sum = sum.saturating_add((last as u32) << 8);
+        }
+
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+
+        !sum as u16
+    }
+
+    fn process_verified_message(
+        &mut self,
+        data: PayloadSpanRef<'_>,
+        src_ip: Ipv4Address,
+    ) -> IgmpResult {
+        let Some(msg_type) = data.byte_at(0) else {
+            return IgmpResult::InvalidPacket;
+        };
+        let Some(group_bytes) = data.read_array::<4>(4) else {
+            return IgmpResult::InvalidPacket;
+        };
+        let group_addr = Ipv4Address::new(group_bytes);
 
         match IgmpType::from_u8(msg_type) {
             Some(IgmpType::MembershipQuery) => self.handle_query(data, src_ip),
@@ -201,17 +240,18 @@ impl IgmpProcessor {
         Self::decode_floating_code(qqic)
     }
 
-    fn parse_membership_query(data: &[u8]) -> Option<ParsedIgmpQuery> {
-        if data.len() == IGMP_HEADER_LEN {
-            let group_addr = Ipv4Address::new([data[4], data[5], data[6], data[7]]);
-            let delay_ms = if data[1] == 0 {
+    fn parse_membership_query(data: PayloadSpanRef<'_>) -> Option<ParsedIgmpQuery> {
+        if data.total_len() == IGMP_HEADER_LEN {
+            let group_addr = Ipv4Address::new(data.read_array::<4>(4)?);
+            let max_resp = data.byte_at(1)?;
+            let delay_ms = if max_resp == 0 {
                 (DEFAULT_QUERY_RESPONSE_INTERVAL as u64) * 100
             } else {
-                Self::decode_max_resp_code_ms(data[1])
+                Self::decode_max_resp_code_ms(max_resp)
             };
             return Some(ParsedIgmpQuery {
                 group_addr,
-                max_resp_code: data[1],
+                max_resp_code: max_resp,
                 max_resp_delay_ms: delay_ms,
                 version: IgmpReportVersion::V2,
                 num_sources: 0,
@@ -220,15 +260,15 @@ impl IgmpProcessor {
             });
         }
 
-        if data.len() < 12 {
+        if data.total_len() < 12 {
             return None;
         }
 
-        let group_addr = Ipv4Address::new([data[4], data[5], data[6], data[7]]);
-        let num_sources = u16::from_be_bytes([data[10], data[11]]);
+        let group_addr = Ipv4Address::new(data.read_array::<4>(4)?);
+        let num_sources = data.read_u16_be(10)?;
         let source_bytes = (num_sources as usize).checked_mul(4)?;
         let expected_len = 12usize.checked_add(source_bytes)?;
-        if expected_len != data.len() {
+        if expected_len != data.total_len() {
             return None;
         }
 
@@ -237,13 +277,14 @@ impl IgmpProcessor {
             return None;
         }
 
-        let qrv = data[8] & 0x07;
-        let qqic = data[9];
+        let max_resp = data.byte_at(1)?;
+        let qrv = data.byte_at(8)? & 0x07;
+        let qqic = data.byte_at(9)?;
 
         Some(ParsedIgmpQuery {
             group_addr,
-            max_resp_code: data[1],
-            max_resp_delay_ms: Self::decode_max_resp_code_ms(data[1]),
+            max_resp_code: max_resp,
+            max_resp_delay_ms: Self::decode_max_resp_code_ms(max_resp),
             version: IgmpReportVersion::V3,
             num_sources,
             qrv: (qrv != 0).then_some(qrv),
@@ -251,29 +292,24 @@ impl IgmpProcessor {
         })
     }
 
-    fn parse_v3_membership_report(data: &[u8]) -> Option<Vec<IgmpV3GroupRecord>> {
-        if data.len() < IGMP_HEADER_LEN {
+    fn parse_v3_membership_report(data: PayloadSpanRef<'_>) -> Option<Vec<IgmpV3GroupRecord>> {
+        if data.total_len() < IGMP_HEADER_LEN {
             return None;
         }
 
-        let group_records = u16::from_be_bytes([data[6], data[7]]) as usize;
+        let group_records = data.read_u16_be(6)? as usize;
         let mut offset = IGMP_HEADER_LEN;
         let mut records = Vec::with_capacity(group_records.min(16));
 
         for _ in 0..group_records {
-            if offset + 8 > data.len() {
+            if offset + 8 > data.total_len() {
                 return None;
             }
 
-            let record_type = IgmpV3GroupRecordType::from_u8(data[offset])?;
-            let aux_words = data[offset + 1] as usize;
-            let num_sources = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
-            let multicast_group = Ipv4Address::new([
-                data[offset + 4],
-                data[offset + 5],
-                data[offset + 6],
-                data[offset + 7],
-            ]);
+            let record_type = IgmpV3GroupRecordType::from_u8(data.byte_at(offset)?)?;
+            let aux_words = data.byte_at(offset + 1)? as usize;
+            let num_sources = data.read_u16_be(offset + 2)? as usize;
+            let multicast_group = Ipv4Address::new(data.read_array::<4>(offset + 4)?);
 
             let source_bytes = num_sources.checked_mul(4)?;
             let aux_bytes = aux_words.checked_mul(4)?;
@@ -281,19 +317,14 @@ impl IgmpProcessor {
             let sources_start = offset + 8;
             let sources_end = sources_start.checked_add(source_bytes)?;
             let next_offset = offset.checked_add(record_len)?;
-            if next_offset > data.len() || sources_end > data.len() {
+            if next_offset > data.total_len() || sources_end > data.total_len() {
                 return None;
             }
 
             let mut source_addresses = Vec::with_capacity(num_sources);
             let mut src_offset = sources_start;
             while src_offset < sources_end {
-                source_addresses.push(Ipv4Address::new([
-                    data[src_offset],
-                    data[src_offset + 1],
-                    data[src_offset + 2],
-                    data[src_offset + 3],
-                ]));
+                source_addresses.push(Ipv4Address::new(data.read_array::<4>(src_offset)?));
                 src_offset += 4;
             }
 
@@ -305,16 +336,16 @@ impl IgmpProcessor {
             offset = next_offset;
         }
 
-        (offset == data.len()).then_some(records)
+        (offset == data.total_len()).then_some(records)
     }
 
     /// Validate IGMPv3 Membership Report (RFC 3376) layout.
-    fn validate_v3_membership_report(data: &[u8]) -> bool {
+    fn validate_v3_membership_report(data: PayloadSpanRef<'_>) -> bool {
         Self::parse_v3_membership_report(data).is_some()
     }
 
     /// Handle a Membership Query
-    fn handle_query(&mut self, data: &[u8], _src_ip: Ipv4Address) -> IgmpResult {
+    fn handle_query(&mut self, data: PayloadSpanRef<'_>, _src_ip: Ipv4Address) -> IgmpResult {
         let Some(query) = Self::parse_membership_query(data) else {
             return IgmpResult::InvalidPacket;
         };
@@ -397,7 +428,11 @@ impl IgmpProcessor {
         }
     }
 
-    fn handle_v3_membership_report(&mut self, data: &[u8], _src_ip: Ipv4Address) -> IgmpResult {
+    fn handle_v3_membership_report(
+        &mut self,
+        data: PayloadSpanRef<'_>,
+        _src_ip: Ipv4Address,
+    ) -> IgmpResult {
         let Some(records) = Self::parse_v3_membership_report(data) else {
             return IgmpResult::InvalidPacket;
         };

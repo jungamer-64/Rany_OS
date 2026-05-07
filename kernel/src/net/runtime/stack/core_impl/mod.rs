@@ -203,10 +203,9 @@ impl NetworkStack {
         payload: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
         let payload_view = PacketPayloadView::new(&payload);
-        let mut fixed = [0u8; 60];
-        if payload_view.copy_range(0, &mut fixed[..20]) < 20 {
+        let Some(fixed) = payload_view.read_array::<20>(0) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
+        };
         if (fixed[0] >> 4) != 4 {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
@@ -216,10 +215,10 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
-        let mut header = [0u8; 60];
-        if payload_view.copy_range(0, &mut header[..ihl]) < ihl {
+        let Some(header_storage) = payload_view.read_prefix::<60>(0, ihl) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
+        };
+        let header = header_storage.as_slice();
 
         let total_len = u16::from_be_bytes([header[2], header[3]]) as usize;
         if total_len < ihl || total_len != payload_view.total_len() {
@@ -320,10 +319,9 @@ impl NetworkStack {
         payload: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
         let payload_view = PacketPayloadView::new(&payload);
-        let mut header = [0u8; 40];
-        if payload_view.copy_range(0, &mut header) < 40 {
+        let Some(header) = payload_view.read_array::<40>(0) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
+        };
         if (header[0] >> 4) != 6 {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }

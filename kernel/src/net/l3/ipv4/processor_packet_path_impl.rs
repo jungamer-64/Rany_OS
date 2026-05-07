@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{PacketPayloadBuilder, PayloadSpanRef, split_payload_prefix_owned};
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, split_payload_prefix_owned};
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv4Processor {
@@ -21,25 +21,31 @@ impl Ipv4Processor {
     ) -> Ipv4ProcessResult<'static> {
         let original = PacketPayload::single(packet_ref);
         let (total_len, header_len, header, protocol) = {
-            let Some(packet_bytes) = PayloadSpanRef::from_payload(&original).as_contiguous_slice()
-            else {
-                self.stats.rx_errors += 1;
-                return Ipv4ProcessResult::Error;
-            };
-            let total_len = packet_bytes.len();
+            let view = PacketPayloadView::new(&original);
+            let total_len = view.total_len();
             if total_len < 20 {
                 self.stats.rx_errors += 1;
                 return Ipv4ProcessResult::Error;
             }
 
-            let ihl_words = (packet_bytes[0] & 0x0f) as usize;
+            let Some(fixed) = view.read_array::<20>(0) else {
+                self.stats.rx_errors += 1;
+                return Ipv4ProcessResult::Error;
+            };
+
+            let ihl_words = (fixed[0] & 0x0f) as usize;
             let header_len = ihl_words.saturating_mul(4);
             if header_len < 20 || total_len < header_len {
                 self.stats.rx_errors += 1;
                 return Ipv4ProcessResult::Error;
             }
+            let Some(header_prefix) = view.read_prefix::<60>(0, header_len) else {
+                self.stats.rx_errors += 1;
+                return Ipv4ProcessResult::Error;
+            };
+            let header_bytes = header_prefix.as_slice();
 
-            let packet = match Ipv4Packet::parse(&packet_bytes[..header_len]) {
+            let packet = match Ipv4Packet::parse(header_bytes) {
                 Some(packet) => packet,
                 None => {
                     self.stats.rx_errors += 1;
@@ -65,7 +71,7 @@ impl Ipv4Processor {
                 return Ipv4ProcessResult::Dropped;
             }
 
-            if self.should_drop_forbidden_options(&packet_bytes[..header_len], header_len) {
+            if self.should_drop_forbidden_options(header_bytes, header_len) {
                 return Ipv4ProcessResult::Dropped;
             }
 

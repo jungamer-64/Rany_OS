@@ -666,11 +666,8 @@ pub fn decode_dns_name_view(
             return None;
         }
 
-        let mut label = [0u8; DNS_LABEL_MAX_LEN];
-        if view.copy_range(current, &mut label[..label_len]) != label_len {
-            return None;
-        }
-        for &byte in &label[..label_len] {
+        let label = view.read_prefix::<DNS_LABEL_MAX_LEN>(current, label_len)?;
+        for &byte in label.as_slice() {
             name.push(byte as char);
         }
 

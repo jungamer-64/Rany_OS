@@ -297,18 +297,19 @@ impl NetworkStack {
     ) -> bool {
         let config = self.config.clone();
         let total_len = original_packet.total_len();
-        let mut header_buf = [0u8; 60];
-        let copied = original_packet.copy_range(0, &mut header_buf);
-
-        if copied < 20 {
+        let Some(fixed) = original_packet.read_array::<20>(0) else {
             return false;
-        }
+        };
 
-        let ihl_words = (header_buf[0] & 0x0f) as usize;
+        let ihl_words = (fixed[0] & 0x0f) as usize;
         let header_len = ihl_words.saturating_mul(4);
-        if header_len < 20 || header_len > copied || total_len < header_len {
+        if header_len < 20 || total_len < header_len {
             return false;
         }
+        let Some(header_storage) = original_packet.read_prefix::<60>(0, header_len) else {
+            return false;
+        };
+        let header_buf = header_storage.as_slice();
 
         let Some(ip) = Ipv4Packet::parse(&header_buf[..header_len]) else {
             return false;

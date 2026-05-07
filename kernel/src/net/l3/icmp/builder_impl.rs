@@ -126,10 +126,16 @@ impl<'a> IcmpEchoBuilder<'a> {
     ) -> usize {
         let max = self.buffer.len() - IcmpEchoHeader::SIZE;
         let len = view.total_len().min(max);
-        let copied = view.copy_range(
-            0,
-            &mut self.buffer[IcmpEchoHeader::SIZE..IcmpEchoHeader::SIZE + len],
-        );
+        let mut copied = 0usize;
+        view.for_each_chunk(|chunk| {
+            if copied == len {
+                return;
+            }
+            let take = chunk.len().min(len - copied);
+            self.buffer[IcmpEchoHeader::SIZE + copied..IcmpEchoHeader::SIZE + copied + take]
+                .copy_from_slice(&chunk[..take]);
+            copied += take;
+        });
         self.data_len = copied;
         copied
     }
@@ -140,7 +146,16 @@ impl<'a> IcmpEchoBuilder<'a> {
     ) -> usize {
         let max = self.buffer.len() - IcmpEchoHeader::SIZE;
         let len = span.total_len().min(max);
-        let copied = span.copy_into(&mut self.buffer[IcmpEchoHeader::SIZE..IcmpEchoHeader::SIZE + len]);
+        let mut copied = 0usize;
+        span.for_each_chunk(|chunk| {
+            if copied == len {
+                return;
+            }
+            let take = chunk.len().min(len - copied);
+            self.buffer[IcmpEchoHeader::SIZE + copied..IcmpEchoHeader::SIZE + copied + take]
+                .copy_from_slice(&chunk[..take]);
+            copied += take;
+        });
         self.data_len = copied;
         copied
     }

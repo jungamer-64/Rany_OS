@@ -336,7 +336,6 @@ impl PacketRef {
     pub fn set_meta(&mut self, meta: PacketMeta) {
         self.meta_cache = meta;
     }
-
 }
 
 impl Drop for PacketRef {
@@ -527,7 +526,6 @@ impl PacketChain {
     pub fn is_empty(&self) -> bool {
         self.total_len == 0
     }
-
 }
 
 #[derive(Debug)]
@@ -596,7 +594,6 @@ impl PacketPayload {
             Self::Chain(chain) => chain.into_segments(),
         }
     }
-
 }
 
 /// System information

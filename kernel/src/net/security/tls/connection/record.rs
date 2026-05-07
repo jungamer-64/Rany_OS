@@ -855,9 +855,7 @@ impl TlsConnection {
             }
 
             let msg_type = data.read_u8(offset).ok_or(TlsError::DecodeError)?;
-            let length = data
-                .read_u24_be(offset + 1)
-                .ok_or(TlsError::DecodeError)? as usize;
+            let length = data.read_u24_be(offset + 1).ok_or(TlsError::DecodeError)? as usize;
             let body_start = offset + 4;
             let body_end = body_start + length;
             if body_end > data.total_len() {
@@ -871,16 +869,12 @@ impl TlsConnection {
             match msg_type {
                 4 => {
                     // NewSessionTicket (RFC 8446 Section 4.6.1)
-                    let payload = payload
-                        .as_contiguous_slice()
-                        .ok_or(TlsError::DecodeError)?;
+                    let payload = payload.single_chunk().ok_or(TlsError::DecodeError)?;
                     self.tls13_process_new_session_ticket(payload)?;
                 }
                 24 => {
                     // KeyUpdate (RFC 8446 Section 4.6.3)
-                    let payload = payload
-                        .as_contiguous_slice()
-                        .ok_or(TlsError::DecodeError)?;
+                    let payload = payload.single_chunk().ok_or(TlsError::DecodeError)?;
                     self.tls13_process_key_update(payload)?;
                 }
                 _ => {

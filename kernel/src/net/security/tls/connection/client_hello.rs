@@ -4,8 +4,9 @@
 
 use super::{
     CipherSuite, ContentType, HandshakeType, PacketPayload, PacketPayloadBuilder,
-    PacketPayloadView, SessionId, TlsBytes, TlsConnection, TlsState, TlsVersion, append_payload,
-    ecdh, TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY,
+    PacketPayloadView, SessionId, TLS_CLIENT_HELLO_SCRATCH_CAPACITY,
+    TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, TlsConnection, TlsState, TlsVersion, append_payload,
+    ecdh,
 };
 use crate::net::security::tls::crypto::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, hmac_sha256, hmac_sha384, tls13_derive_secret,
@@ -15,7 +16,11 @@ use crate::net::security::tls::crypto::{
 
 impl TlsConnection {
     pub(super) fn hash_len(&self) -> usize {
-        if self.negotiation.negotiated_cipher.map_or(false, |c| c.uses_sha384()) {
+        if self
+            .negotiation
+            .negotiated_cipher
+            .map_or(false, |c| c.uses_sha384())
+        {
             SHA384_OUTPUT_SIZE
         } else {
             SHA256_OUTPUT_SIZE
@@ -25,7 +30,9 @@ impl TlsConnection {
     /// ClientHelloを構築
     /// TLS 1.3 用のECDH一時鍵を事前生成する
     fn prepare_tls13_ecdh_keypair(&mut self) {
-        if self.config.max_version != TlsVersion::TLS_1_3 || self.handshake_secrets.local_ecdh_keypair.is_some() {
+        if self.config.max_version != TlsVersion::TLS_1_3
+            || self.handshake_secrets.local_ecdh_keypair.is_some()
+        {
             return;
         }
         if let Ok(keypair) = ecdh::EcdhKeyPair::generate(ecdh::EcdhGroup::X25519) {
@@ -69,7 +76,10 @@ impl TlsConnection {
         if self.tls13.session_ticket.is_none() {
             return;
         }
-        let use_384 = self.resumption.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
+        let use_384 = self
+            .resumption
+            .tls13_psk_cipher
+            .map_or(false, |c| c.uses_sha384());
         let hash_len = if use_384 { 48 } else { 32 };
         let binders_total = 2 + 1 + hash_len;
 
@@ -112,8 +122,13 @@ impl TlsConnection {
             return;
         }
         let psk = self.resumption.tls13_psk.as_ref().unwrap();
-        let use_384 = self.resumption.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
-        let cipher = self.resumption.tls13_psk_cipher
+        let use_384 = self
+            .resumption
+            .tls13_psk_cipher
+            .map_or(false, |c| c.uses_sha384());
+        let cipher = self
+            .resumption
+            .tls13_psk_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
 
@@ -124,10 +139,12 @@ impl TlsConnection {
             let mut ew_iv = [0u8; 12];
             let ew_key = &mut self.early_data.early_write_key.as_mut_storage()[..key_len];
             tls13_derive_traffic_keys_sha384(&cets, ew_key, &mut ew_iv);
-            self.early_data.early_write_key
+            self.early_data
+                .early_write_key
                 .set_filled_len(key_len)
                 .expect("early write key length");
-            Self::set_tls_bytes(&mut self.early_data.early_write_iv, &ew_iv).expect("early write iv length");
+            Self::set_tls_bytes(&mut self.early_data.early_write_iv, &ew_iv)
+                .expect("early write iv length");
         } else {
             let early_secret = tls13_early_secret(Some(psk.as_slice()));
             let ch_hash = self.transcript_hash_sha256();
@@ -135,10 +152,12 @@ impl TlsConnection {
             let mut ew_iv = [0u8; 12];
             let ew_key = &mut self.early_data.early_write_key.as_mut_storage()[..key_len];
             tls13_derive_traffic_keys(&cets, ew_key, &mut ew_iv);
-            self.early_data.early_write_key
+            self.early_data
+                .early_write_key
                 .set_filled_len(key_len)
                 .expect("early write key length");
-            Self::set_tls_bytes(&mut self.early_data.early_write_iv, &ew_iv).expect("early write iv length");
+            Self::set_tls_bytes(&mut self.early_data.early_write_iv, &ew_iv)
+                .expect("early write iv length");
         }
         self.early_data.early_write_seq = 0;
     }
@@ -156,7 +175,10 @@ impl TlsConnection {
         }
 
         // クライアントランダム
-        if hello.append_slice(&self.negotiation.client_random).is_none() {
+        if hello
+            .append_slice(&self.negotiation.client_random)
+            .is_none()
+        {
             return PacketPayload::default();
         }
 
@@ -253,7 +275,9 @@ impl TlsConnection {
 
         let payload_view = PacketPayloadView::new(payload);
 
-        let cipher = self.resumption.tls13_psk_cipher
+        let cipher = self
+            .resumption
+            .tls13_psk_cipher
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
 
         let mut inner_plaintext = match crate::net::payload::alloc_packet_with_headroom(
@@ -322,7 +346,9 @@ impl TlsConnection {
 
     pub fn send_early_data_payload(&mut self, payload: PacketPayload) -> PacketPayload {
         let total = self.early_data.early_data_buffer.total_len() + payload.total_len();
-        if self.early_data.max_early_data_size > 0 && total > self.early_data.max_early_data_size as usize {
+        if self.early_data.max_early_data_size > 0
+            && total > self.early_data.max_early_data_size as usize
+        {
             return PacketPayload::default();
         }
         let record = self.send_early_data_record_payload(&payload);
@@ -397,12 +423,15 @@ impl TlsConnection {
 
         // pre_shared_key (RFC 8446 Section 4.2.11) - MUST be last extension
         if let Some(ref session_ticket) = self.tls13.session_ticket {
-            let use_384 = self.resumption.tls13_psk_cipher.map_or(false, |c| c.uses_sha384());
+            let use_384 = self
+                .resumption
+                .tls13_psk_cipher
+                .map_or(false, |c| c.uses_sha384());
             let hash_len = if use_384 { 48 } else { 32 };
             let obfuscated_age: u32 = self.resumption.tls13_ticket_age_add;
             let Some(identity_bytes) = session_ticket
                 .ticket_span()
-                .and_then(|span| span.as_contiguous_slice())
+                .and_then(|span| span.single_chunk())
             else {
                 return None;
             };

@@ -162,22 +162,17 @@ impl TlsConnection {
             51 if ext_len >= 2 => {
                 let group = u16::from_be_bytes([data[offset], data[offset + 1]]);
                 if ext_len == 2 {
-                    *server_key_share = Some((
-                        group,
-                        PacketPayload::default(),
-                    ));
+                    *server_key_share = Some((group, PacketPayload::default()));
                 } else {
                     if ext_len < 4 {
                         return Err(TlsError::DecodeError);
                     }
-                    let key_len =
-                        u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
+                    let key_len = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
                     if 4 + key_len > ext_len {
                         return Err(TlsError::DecodeError);
                     }
-                    let key_share = Self::server_key_share_payload(
-                        &data[offset + 4..offset + 4 + key_len],
-                    )?;
+                    let key_share =
+                        Self::server_key_share_payload(&data[offset + 4..offset + 4 + key_len])?;
                     *server_key_share = Some((group, key_share));
                 }
             }
@@ -213,7 +208,9 @@ impl TlsConnection {
         let group =
             ecdh::EcdhGroup::from_named_group(group_id).ok_or(TlsError::UnsupportedCipherSuite)?;
 
-        let local_keypair = self.handshake_secrets.local_ecdh_keypair
+        let local_keypair = self
+            .handshake_secrets
+            .local_ecdh_keypair
             .as_ref()
             .ok_or(TlsError::HandshakeFailure)?;
 
@@ -227,7 +224,10 @@ impl TlsConnection {
             .shared_secret(server_pubkey)
             .map_err(|_| TlsError::CryptoError)?;
 
-        Self::set_tls_bytes(&mut self.handshake_secrets.pre_master_secret, shared_secret.as_slice())?;
+        Self::set_tls_bytes(
+            &mut self.handshake_secrets.pre_master_secret,
+            shared_secret.as_slice(),
+        )?;
         self.negotiation.state = TlsState::ServerHelloReceived;
         Ok(())
     }

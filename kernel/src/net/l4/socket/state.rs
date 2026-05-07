@@ -423,15 +423,31 @@ impl SocketState {
         };
 
         Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
-        let Some(front) = tcp.recv_payload_queue.front_mut() else {
+        let Some(front) = tcp.recv_payload_queue.pop_front() else {
             return 0;
         };
 
-        let len = front.copy_into(buf);
-        tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_sub(len);
-        if front.is_empty() {
-            tcp.recv_payload_queue.pop_front();
+        let take = front.total_len().min(buf.len());
+        let Some((taken, remainder)) = crate::net::payload::split_payload_prefix_owned(front, take)
+        else {
+            return 0;
+        };
+
+        let view = PacketPayloadView::new(&taken);
+        let mut len = 0usize;
+        view.for_each_chunk(|chunk| {
+            if len == take {
+                return;
+            }
+            let chunk_len = chunk.len().min(take - len);
+            buf[len..len + chunk_len].copy_from_slice(&chunk[..chunk_len]);
+            len += chunk_len;
+        });
+
+        if !remainder.is_empty() {
+            tcp.recv_payload_queue.push_front(remainder);
         }
+        tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_sub(len);
         Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
 
         if len > 0 {

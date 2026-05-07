@@ -3,9 +3,8 @@
 // ============================================================================
 
 use super::{
-    DhcpClient, DhcpHeader, DhcpLease, DhcpMessageType, DhcpOperation, DhcpOption,
-    DhcpResponseResult, DhcpState, ParsedOptions, DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE,
-    DHCP_MAX_MESSAGE_SIZE,
+    DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE, DhcpClient, DhcpHeader, DhcpLease,
+    DhcpMessageType, DhcpOperation, DhcpOption, DhcpResponseResult, DhcpState, ParsedOptions,
 };
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
@@ -80,10 +79,12 @@ impl DhcpClient {
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
                             crate::net::runtime::command::enqueue_command_ignore_in(
                                 self.runtime,
-                                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpApplyLease {
-                                    if_id: None,
-                                    config: applied,
-                                }),
+                                crate::net::runtime::command::RuntimeCommand::Control(
+                                    crate::net::runtime::command::ControlCommand::DhcpApplyLease {
+                                        if_id: None,
+                                        config: applied,
+                                    },
+                                ),
                             );
                             // mDNS のローカル IP を更新
                             if let Ok(mut guard) =
@@ -656,10 +657,7 @@ impl DhcpClient {
         if opt_data.total_len() != 4 {
             return None;
         }
-        let mut bytes = [0u8; 4];
-        if opt_data.copy_into(&mut bytes) != 4 {
-            return None;
-        }
+        let bytes = opt_data.read_array::<4>(0)?;
         Some(Ipv4Address::new(bytes))
     }
 
@@ -669,10 +667,7 @@ impl DhcpClient {
         if opt_data.total_len() != 4 {
             return None;
         }
-        let mut bytes = [0u8; 4];
-        if opt_data.copy_into(&mut bytes) != 4 {
-            return None;
-        }
+        let bytes = opt_data.read_array::<4>(0)?;
         Some(u32::from_be_bytes(bytes))
     }
 
@@ -787,10 +782,9 @@ impl DhcpClient {
                     let Some(chunk) = opt_data.slice(index * 4, 4) else {
                         break;
                     };
-                    let mut bytes = [0u8; 4];
-                    if chunk.copy_into(&mut bytes) != 4 {
+                    let Some(bytes) = chunk.read_array::<4>(0) else {
                         break;
-                    }
+                    };
                     opts.dns_servers.push(Ipv4Address::new(bytes));
                 }
             }
@@ -941,11 +935,8 @@ impl DhcpClient {
                 break;
             }
 
-            let Some(opt_data) = crate::net::payload::PayloadSpanRef::from_range(
-                &payload,
-                offset + 2,
-                len,
-            )
+            let Some(opt_data) =
+                crate::net::payload::PayloadSpanRef::from_range(&payload, offset + 2, len)
             else {
                 break;
             };

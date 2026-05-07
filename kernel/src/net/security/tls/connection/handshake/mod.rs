@@ -18,9 +18,7 @@ impl TlsConnection {
         msg_type: u8,
         payload: PayloadSpanRef<'_>,
     ) -> TlsResult<()> {
-        let payload = payload
-            .as_contiguous_slice()
-            .ok_or(TlsError::DecodeError)?;
+        let payload = payload.single_chunk().ok_or(TlsError::DecodeError)?;
         match msg_type {
             2 => self.process_server_hello(payload),
             11 => self.process_certificate(payload),

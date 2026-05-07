@@ -10,10 +10,8 @@ use kernel_api::resource::net::PacketPayload;
 
 fn payload_span_to_string(span: PayloadSpanRef<'_>) -> Option<String> {
     let mut bytes = Vec::new();
-    bytes.resize(span.total_len(), 0);
-    if span.copy_into(&mut bytes) != bytes.len() {
-        return None;
-    }
+    bytes.reserve(span.total_len());
+    span.for_each_chunk(|chunk| bytes.extend_from_slice(chunk));
     let text = core::str::from_utf8(&bytes).ok()?;
     Some(String::from(text))
 }

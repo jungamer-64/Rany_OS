@@ -40,8 +40,8 @@ impl TlsConnection {
     }
 
     pub(crate) fn set_server_public_key_from_cert(&mut self, cert_der: &[u8]) -> TlsResult<()> {
-        let cert = crate::net::security::x509::parse_x509(cert_der)
-            .ok_or(TlsError::CertificateError)?;
+        let cert =
+            crate::net::security::x509::parse_x509(cert_der).ok_or(TlsError::CertificateError)?;
         self.extract_server_public_key(&cert)
     }
 
@@ -95,7 +95,10 @@ impl TlsConnection {
                 }
                 crate::net::security::x509::validate_certificate_chain(
                     &certs,
-                    self.negotiation.server_name.as_ref().map(|name| name.as_str()),
+                    self.negotiation
+                        .server_name
+                        .as_ref()
+                        .map(|name| name.as_str()),
                     &ca_ders,
                 )
             };

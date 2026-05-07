@@ -68,7 +68,7 @@ impl Certificate {
     }
 
     pub(crate) fn der_contiguous_slice(&self) -> Option<&[u8]> {
-        self.der_span().as_contiguous_slice()
+        self.der_span().single_chunk()
     }
 }
 
@@ -186,8 +186,8 @@ impl ServerPublicKey {
                 modulus,
                 exponent,
             } => Some((
-                modulus.span(material)?.as_contiguous_slice()?,
-                exponent.span(material)?.as_contiguous_slice()?,
+                modulus.span(material)?.single_chunk()?,
+                exponent.span(material)?.single_chunk()?,
             )),
             _ => None,
         }
@@ -195,14 +195,14 @@ impl ServerPublicKey {
 
     pub(crate) fn ecdsa_p256_point(&self) -> Option<&[u8]> {
         match self {
-            Self::EcdsaP256 { material, point } => point.span(material)?.as_contiguous_slice(),
+            Self::EcdsaP256 { material, point } => point.span(material)?.single_chunk(),
             _ => None,
         }
     }
 
     pub(crate) fn ecdsa_p384_point(&self) -> Option<&[u8]> {
         match self {
-            Self::EcdsaP384 { material, point } => point.span(material)?.as_contiguous_slice(),
+            Self::EcdsaP384 { material, point } => point.span(material)?.single_chunk(),
             _ => None,
         }
     }

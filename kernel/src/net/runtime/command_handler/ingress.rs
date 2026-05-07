@@ -210,17 +210,17 @@ impl RuntimeCommandHandler {
         let view = crate::net::payload::PacketPayloadView::new(&payload);
 
         if view.total_len() >= 20 && view.first_byte().map(|byte| byte >> 4) == Some(4) {
-            let mut header = [0u8; 60];
-            if view.copy_range(0, &mut header[..20]) < 20 {
+            let Some(fixed) = view.read_array::<20>(0) else {
+                return EventHandleResult::Success;
+            };
+            let header_len = ((fixed[0] & 0x0f) as usize) * 4;
+            if header_len < 20 || header_len > 60 {
                 return EventHandleResult::Success;
             }
-            let header_len = ((header[0] & 0x0f) as usize) * 4;
-            if header_len < 20
-                || header_len > 60
-                || view.copy_range(0, &mut header[..header_len]) < header_len
-            {
+            let Some(header_prefix) = view.read_prefix::<60>(0, header_len) else {
                 return EventHandleResult::Success;
-            }
+            };
+            let header = header_prefix.as_slice();
 
             let src_ip = crate::net::l3::ipv4::Ipv4Address::new([
                 header[12], header[13], header[14], header[15],
@@ -231,9 +231,10 @@ impl RuntimeCommandHandler {
             let protocol = crate::net::l3::ipv4::IpProtocol::from(header[9]);
             let transport_len = view.total_len().saturating_sub(header_len);
             let prefix_len = transport_len.min(20);
-            let mut prefix = [0u8; 20];
-            let copied = view.copy_range(header_len, &mut prefix[..prefix_len]);
-            let prefix = &prefix[..copied];
+            let Some(prefix_storage) = view.read_prefix::<20>(header_len, prefix_len) else {
+                return EventHandleResult::Success;
+            };
+            let prefix = prefix_storage.as_slice();
             let ttl = header[8];
 
             let (src_port, dst_port, tcp_flags) = match protocol {
@@ -336,10 +337,9 @@ impl RuntimeCommandHandler {
         }
 
         if view.total_len() >= 40 && view.first_byte().map(|byte| byte >> 4) == Some(6) {
-            let mut header = [0u8; 40];
-            if view.copy_range(0, &mut header) < 40 {
+            let Some(header) = view.read_array::<40>(0) else {
                 return EventHandleResult::Success;
-            }
+            };
             let src = crate::net::l3::ipv6::Ipv6Address::new([
                 header[8], header[9], header[10], header[11], header[12], header[13], header[14],
                 header[15], header[16], header[17], header[18], header[19], header[20], header[21],
@@ -357,9 +357,10 @@ impl RuntimeCommandHandler {
             let payload_offset = header.len();
             let transport_len = view.total_len().saturating_sub(payload_offset);
             let prefix_len = transport_len.min(20);
-            let mut prefix = [0u8; 20];
-            let copied = view.copy_range(payload_offset, &mut prefix[..prefix_len]);
-            let prefix = &prefix[..copied];
+            let Some(prefix_storage) = view.read_prefix::<20>(payload_offset, prefix_len) else {
+                return EventHandleResult::Success;
+            };
+            let prefix = prefix_storage.as_slice();
             let hop_limit = header[7];
 
             let (src_port, dst_port, tcp_flags) = match protocol {

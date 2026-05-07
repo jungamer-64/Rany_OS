@@ -3,16 +3,15 @@
 // ============================================================================
 
 use super::super::{
-    CipherSuite, ContentType, HandshakeType, TlsBytes, TlsConnection, TlsError, TlsResult, TlsState,
-    TlsVersion, ecdh,
+    CipherSuite, ContentType, HandshakeType, TlsBytes, TlsConnection, TlsError, TlsResult,
+    TlsState, TlsVersion, ecdh,
 };
-use alloc::vec::Vec;
 use crate::net::security::tls::crypto::{
     aes_cbc_encrypt_in_place, compute_tls_mac_into, derive_key_block, derive_key_block_sha384,
-    derive_master_secret, derive_master_secret_sha384, derive_master_secret_tls10,
-    generate_random, tls10_prf, tls12_prf, tls12_prf_sha384, tls_add_padding_in_place,
-    tls_verify_padding,
+    derive_master_secret, derive_master_secret_sha384, derive_master_secret_tls10, generate_random,
+    tls_add_padding_in_place, tls_verify_padding, tls10_prf, tls12_prf, tls12_prf_sha384,
 };
+use alloc::vec::Vec;
 
 impl TlsConnection {
     /// NamedGroup値をEcdhGroupに変換する
@@ -170,8 +169,13 @@ impl TlsConnection {
         if self.handshake_secrets.pre_master_secret.is_empty() {
             return;
         }
-        let version = self.negotiation.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
-        let cipher = self.negotiation.negotiated_cipher
+        let version = self
+            .negotiation
+            .negotiated_version
+            .unwrap_or(TlsVersion::TLS_1_2);
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         self.handshake_secrets.master_secret = if version <= TlsVersion::TLS_1_1 {
             derive_master_secret_tls10(
@@ -196,8 +200,13 @@ impl TlsConnection {
 
     /// TLS 1.2のverify_dataを計算する共通ヘルパー
     pub(super) fn compute_tls12_verify_data(&self, label: &[u8]) -> [u8; 12] {
-        let version = self.negotiation.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
-        let cipher = self.negotiation.negotiated_cipher
+        let version = self
+            .negotiation
+            .negotiated_version
+            .unwrap_or(TlsVersion::TLS_1_2);
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         let mut verify_data = [0u8; 12];
@@ -253,7 +262,9 @@ impl TlsConnection {
         &mut self,
         finished_msg: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         if cipher.is_cbc() {
             self.encrypt_cbc_handshake(finished_msg)
@@ -298,7 +309,9 @@ impl TlsConnection {
     /// RFC 5246 Section 6.3 に基づき、master_secretからread/writeの
     /// 暗号鍵とIVを導出する。
     pub(super) fn derive_tls12_keys(&mut self) -> TlsResult<()> {
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
         let iv_len = cipher.iv_len();
@@ -313,7 +326,10 @@ impl TlsConnection {
         let key_material_len = 2 * mac_key_len + 2 * key_len + 2 * iv_len;
 
         // バージョンに応じたPRFを使用
-        let version = self.negotiation.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let version = self
+            .negotiation
+            .negotiated_version
+            .unwrap_or(TlsVersion::TLS_1_2);
         let use_sha384 = cipher.uses_sha384();
 
         let mut key_block_storage = [0u8; 256];
@@ -326,7 +342,12 @@ impl TlsConnection {
             let mut seed = [0u8; 64];
             seed[..32].copy_from_slice(&self.negotiation.server_random);
             seed[32..].copy_from_slice(&self.negotiation.client_random);
-            tls10_prf(&self.handshake_secrets.master_secret, b"key expansion", &seed, key_block);
+            tls10_prf(
+                &self.handshake_secrets.master_secret,
+                b"key expansion",
+                &seed,
+                key_block,
+            );
         } else if use_sha384 {
             derive_key_block_sha384(
                 &self.handshake_secrets.master_secret,
@@ -359,21 +380,35 @@ impl TlsConnection {
             offset += mac_key_len;
         }
 
-        Self::set_tls_bytes(&mut self.record.write_key, &key_block[offset..offset + key_len])?;
+        Self::set_tls_bytes(
+            &mut self.record.write_key,
+            &key_block[offset..offset + key_len],
+        )?;
         offset += key_len;
-        Self::set_tls_bytes(&mut self.record.read_key, &key_block[offset..offset + key_len])?;
+        Self::set_tls_bytes(
+            &mut self.record.read_key,
+            &key_block[offset..offset + key_len],
+        )?;
         offset += key_len;
 
         if cipher.is_cbc() && iv_len == 16 {
-            self.record.write_cbc_iv
+            self.record
+                .write_cbc_iv
                 .copy_from_slice(&key_block[offset..offset + 16]);
             offset += 16;
-            self.record.read_cbc_iv
+            self.record
+                .read_cbc_iv
                 .copy_from_slice(&key_block[offset..offset + 16]);
         } else {
-            Self::set_tls_bytes(&mut self.record.write_iv, &key_block[offset..offset + iv_len])?;
+            Self::set_tls_bytes(
+                &mut self.record.write_iv,
+                &key_block[offset..offset + iv_len],
+            )?;
             offset += iv_len;
-            Self::set_tls_bytes(&mut self.record.read_iv, &key_block[offset..offset + iv_len])?;
+            Self::set_tls_bytes(
+                &mut self.record.read_iv,
+                &key_block[offset..offset + iv_len],
+            )?;
         }
         let _ = offset;
 
@@ -388,7 +423,9 @@ impl TlsConnection {
         &mut self,
         data: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
         let explicit_nonce = self.record.write_seq.to_be_bytes();
 
@@ -400,10 +437,19 @@ impl TlsConnection {
         nonce[0..4].copy_from_slice(&self.record.write_iv.as_slice()[0..4]);
         nonce[4..12].copy_from_slice(&explicit_nonce);
 
-        let aad = Self::tls12_aad(self.record.write_seq, ContentType::Handshake as u8, data.len());
+        let aad = Self::tls12_aad(
+            self.record.write_seq,
+            ContentType::Handshake as u8,
+            data.len(),
+        );
 
-        let (ciphertext, auth_tag) =
-            Self::encrypt_aead_payload(cipher, self.record.write_key.as_slice(), &nonce, &aad, data)?;
+        let (ciphertext, auth_tag) = Self::encrypt_aead_payload(
+            cipher,
+            self.record.write_key.as_slice(),
+            &nonce,
+            &aad,
+            data,
+        )?;
 
         let record_len = 8 + ciphertext.total_len() + 16;
         let record_header = [
@@ -432,9 +478,14 @@ impl TlsConnection {
         &mut self,
         data: &[u8],
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256);
-        if self.record.write_key.is_empty() || self.record.write_key.len() < 32 || self.record.write_iv.len() < 12 {
+        if self.record.write_key.is_empty()
+            || self.record.write_key.len() < 32
+            || self.record.write_iv.len() < 12
+        {
             return Err(TlsError::CryptoError);
         }
 
@@ -445,13 +496,22 @@ impl TlsConnection {
             nonce[4 + i] ^= seq_bytes[i];
         }
 
-        let aad = Self::tls12_aad(self.record.write_seq, ContentType::Handshake as u8, data.len());
+        let aad = Self::tls12_aad(
+            self.record.write_seq,
+            ContentType::Handshake as u8,
+            data.len(),
+        );
 
         let mut key = [0u8; 32];
         key.copy_from_slice(&self.record.write_key.as_slice()[0..32]);
 
-        let (ciphertext, auth_tag) =
-            Self::encrypt_aead_payload(cipher, self.record.write_key.as_slice(), &nonce, &aad, data)?;
+        let (ciphertext, auth_tag) = Self::encrypt_aead_payload(
+            cipher,
+            self.record.write_key.as_slice(),
+            &nonce,
+            &aad,
+            data,
+        )?;
 
         let record_len = ciphertext.total_len() + 16;
         let record_header = [
@@ -499,8 +559,13 @@ impl TlsConnection {
             return Err(TlsError::CryptoError);
         }
 
-        let version = self.negotiation.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
-        let cipher = self.negotiation.negotiated_cipher
+        let version = self
+            .negotiation
+            .negotiated_version
+            .unwrap_or(TlsVersion::TLS_1_2);
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA);
         let use_sha1 = cipher.uses_sha1_mac();
 
@@ -532,7 +597,8 @@ impl TlsConnection {
             explicit_iv
         } else {
             // TLS 1.0: 暗黙IV（前レコードの最終暗号文ブロック or 初期IV）
-            self.record.last_write_ciphertext_block
+            self.record
+                .last_write_ciphertext_block
                 .unwrap_or(self.record.write_cbc_iv)
         };
 
@@ -591,7 +657,10 @@ impl TlsConnection {
             iv.copy_from_slice(&data[..16]);
             Ok((iv, &data[16..]))
         } else {
-            let iv = self.record.last_read_ciphertext_block.unwrap_or(self.record.read_cbc_iv);
+            let iv = self
+                .record
+                .last_read_ciphertext_block
+                .unwrap_or(self.record.read_cbc_iv);
             Ok((iv, data))
         }
     }
@@ -694,7 +763,10 @@ impl TlsConnection {
         let (modulus, exponent) = server_pk.rsa_components()?;
 
         // 48バイトのPMSを生成: version(2) || random(46)
-        let version = self.negotiation.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let version = self
+            .negotiation
+            .negotiated_version
+            .unwrap_or(TlsVersion::TLS_1_2);
         let version_bytes = version.to_bytes();
         let mut pms = [0u8; 48];
         pms[0] = version_bytes[0];
@@ -731,7 +803,10 @@ impl TlsConnection {
             .expect("rsa client key exchange transcript append");
 
         // TLSレコードヘッダ
-        let version_rec = self.negotiation.negotiated_version.unwrap_or(TlsVersion::TLS_1_2);
+        let version_rec = self
+            .negotiation
+            .negotiated_version
+            .unwrap_or(TlsVersion::TLS_1_2);
         let vb = version_rec.to_bytes();
         let record_header = [
             ContentType::Handshake as u8,
@@ -765,7 +840,9 @@ impl TlsConnection {
             view.for_each_chunk(|chunk| flattened.extend_from_slice(chunk));
             flattened.as_slice()
         };
-        let cipher = self.negotiation.negotiated_cipher
+        let cipher = self
+            .negotiation
+            .negotiated_cipher
             .unwrap_or(CipherSuite::TLS_RSA_WITH_AES_128_GCM_SHA256);
 
         if self.negotiation.is_tls13 {

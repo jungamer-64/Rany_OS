@@ -64,10 +64,16 @@ if rg -n "\\bcopy_all_into\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed full-payload copy helper"
 fi
 
-if rg -n "pub fn (copy_into|copy_range|as_contiguous_slice)\\(" \
+if rg -n "\\b(copy_into|copy_range|as_contiguous_slice)\\(" \
   kernel/src/net/payload.rs interfaces/kernel_api/src/types.rs \
   >/dev/null; then
   fail "found removed generic payload linearization surface"
+fi
+
+if rg -n "\\.(copy_into|copy_range|as_contiguous_slice)\\(" \
+  "${network_tree[@]}" \
+  >/dev/null; then
+  fail "found retained generic payload linearization call"
 fi
 
 if rg -n "payload_preview_bytes\\(" "${network_tree[@]}" >/dev/null; then

@@ -49,7 +49,7 @@ impl TcpSegmentPayload {
         }
     }
 
-    fn copy_into(&self, dst: &mut [u8]) {
+    fn write_to(&self, dst: &mut [u8]) {
         match self {
             Self::Empty => {}
             Self::Packet(payload) => {
@@ -239,7 +239,7 @@ impl TcpSegmentBuilder {
         let mut segment = alloc::vec![0u8; total_len];
         self.write_header_bytes(&mut segment, header_len, data_offset, options_len);
         if self.data.len() > 0 {
-            self.data.copy_into(&mut segment[header_len..]);
+            self.data.write_to(&mut segment[header_len..]);
         }
         segment
     }

@@ -361,9 +361,9 @@ impl TcpOptionsScratch {
             len: options_len,
             bytes: [0u8; 40],
         };
-        if options_len > 0 && view.copy_range(20, &mut scratch.bytes[..options_len]) != options_len
-        {
-            return None;
+        if options_len > 0 {
+            let options = view.read_prefix::<40>(20, options_len)?;
+            scratch.bytes[..options_len].copy_from_slice(options.as_slice());
         }
 
         let payload_len = view.total_len().saturating_sub(data_offset);

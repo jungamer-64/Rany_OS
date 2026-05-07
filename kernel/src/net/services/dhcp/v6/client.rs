@@ -104,9 +104,17 @@ impl DhcpV6Client {
         }
         buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
         buf[*offset + 2..*offset + 4].copy_from_slice(&(view.total_len() as u16).to_be_bytes());
-        if view.copy_range(0, &mut buf[*offset + 4..*offset + 4 + view.total_len()])
-            != view.total_len()
-        {
+        let mut written = 0usize;
+        view.for_each_chunk(|chunk| {
+            if written == view.total_len() {
+                return;
+            }
+            let take = chunk.len().min(view.total_len() - written);
+            let dst_start = *offset + 4 + written;
+            buf[dst_start..dst_start + take].copy_from_slice(&chunk[..take]);
+            written += take;
+        });
+        if written != view.total_len() {
             return Err("Buffer overflow during option writing");
         }
         *offset += 4 + view.total_len();
@@ -1791,7 +1799,13 @@ pub(crate) mod tests {
             let stored = g.as_ref().unwrap();
             let view = crate::net::payload::PacketPayloadView::new(stored);
             let mut actual = alloc::vec![0u8; view.total_len()];
-            assert_eq!(view.copy_range(0, &mut actual), server_duid.len());
+            let mut copied = 0usize;
+            view.for_each_chunk(|chunk| {
+                let take = chunk.len().min(actual.len().saturating_sub(copied));
+                actual[copied..copied + take].copy_from_slice(&chunk[..take]);
+                copied += take;
+            });
+            assert_eq!(copied, server_duid.len());
             assert_eq!(actual.as_slice(), &server_duid);
         } else {
             panic!("server_duid lock poisoned");
@@ -1831,7 +1845,13 @@ pub(crate) mod tests {
             let stored = g.as_ref().unwrap();
             let view = crate::net::payload::PacketPayloadView::new(stored);
             let mut actual = alloc::vec![0u8; view.total_len()];
-            assert_eq!(view.copy_range(0, &mut actual), server_duid.len());
+            let mut copied = 0usize;
+            view.for_each_chunk(|chunk| {
+                let take = chunk.len().min(actual.len().saturating_sub(copied));
+                actual[copied..copied + take].copy_from_slice(&chunk[..take]);
+                copied += take;
+            });
+            assert_eq!(copied, server_duid.len());
             assert_eq!(actual.as_slice(), &server_duid);
         }
     }
