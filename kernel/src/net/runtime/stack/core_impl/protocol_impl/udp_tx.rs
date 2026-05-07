@@ -2,7 +2,7 @@
 // kernel/src/net/runtime/stack/core_impl/protocol_impl/udp_tx.rs - ランタイム / スタック / コア実装 / プロトコル実装 / udp tx
 // ============================================================================
 //! UDP raw send helpers (IPv4), MAC address resolution via ARP/IGMP multicast,
-//! zero-copy UDP send, and UdpAddr-based send.
+//! packet-native UDP TX, and UdpAddr-based send.
 
 use super::*;
 use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
@@ -306,9 +306,8 @@ impl NetworkStack {
         }
     }
 
-    /// Send a UDP datagram (UdpAddr-based variant)
-    /// ゼロコピーUDP送信を試行する
-    pub(crate) fn try_send_udp_zero_copy(
+    /// Send a UDP datagram through the packet-native IPv4 TX path.
+    pub(crate) fn try_send_udp_packet_path(
         &mut self,
         config: &NetworkConfig,
         src_ip: Ipv4Address,
@@ -360,7 +359,7 @@ impl NetworkStack {
         ) {
             return Some(Ok(()));
         }
-        // Fall back to copy-based path on failure
+        // Fall back to payload-owned path on failure.
         None
     }
 
@@ -404,9 +403,9 @@ impl NetworkStack {
                     .checked_add(8)
                     .is_some_and(|udp_len| udp_len <= path_mtu.saturating_sub(20));
 
-                // Try zero-copy first
+                // Try the packet-native path first.
                 if if_id.is_none() && !d_ip.is_loopback() && can_send_unfragmented {
-                    if let Some(result) = self.try_send_udp_zero_copy(
+                    if let Some(result) = self.try_send_udp_packet_path(
                         &config, src_ip, s_port, d_ip, dst_mac, d_port, data,
                     ) {
                         return result;

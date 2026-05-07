@@ -65,6 +65,8 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - NIC は事前に確保された packet pool / DMA buffer へ直接読み書きする。
 - protocol 層は `Vec<u8>` flatten を前提にせず、packet-backed payload を運ぶ。
 - packet の drop / recycle は pool 回収と結び付け、再利用可能な ownership cycle を維持する。
+- network TX の正規所有権単位は `PacketPayload` であり、旧 `datapath::zero_copy`
+  facade や byte-slice TX surface を再導入しない。
 
 ### 3.2 Normative: adaptive polling は baseline の一部
 

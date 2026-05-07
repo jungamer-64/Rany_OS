@@ -6,7 +6,7 @@
 //!
 //!   - `arp.rs`      — ARP packet processing, request/reply/probe sending, ARP cache
 //!   - `icmp.rs`     — ICMP processing, error messages, PMTUD, echo request/reply
-//!   - `udp_tx.rs`   — UDP raw send, zero-copy send, MAC resolution
+//!   - `udp_tx.rs`   — UDP raw send, packet-native TX, MAC resolution
 //!   - (this file)   — IGMP leave, DHCP lease, TCP/UDP data processing,
 //!                      transmit wrapper, configuration, periodic maintenance
 

@@ -869,7 +869,7 @@ impl NetworkStack {
             }
         };
 
-        // Try zero-copy path first
+        // Build directly into a packet-backed frame.
         if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
             // 新規割り当てのPacketRefはlen=0なので、書き込み前にcapacityまで拡張する
             let cap = packet.capacity();
