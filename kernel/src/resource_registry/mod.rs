@@ -21,8 +21,8 @@ use kernel_api::abi::driver::AbiNetPortOpsV5;
 use kernel_api::abi::driver::{
     AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
     AbiError as AbiErrorCode, AbiIoCompletion, AbiNetDriverEvent, AbiNetDriverEventKind,
-    AbiNetPortInfo, AbiNetPortRegistrationV5, AbiNetPortRuntimeV3, AbiNetPortStats,
-    AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSegmentV4, AbiNetTxSubmissionV4, AbiNvmeNamespaceInfo,
+    AbiNetPortInfo, AbiNetPortRegistrationV5, AbiNetPortRuntimeV3, AbiNetPortStats, AbiNetRxMeta,
+    AbiNetTxMeta, AbiNetTxSegmentV4, AbiNetTxSubmissionV4, AbiNvmeNamespaceInfo,
     AbiNvmeNamespaceRegistration, AbiPacketRefRaw,
 };
 use kernel_api::service::netdev::{

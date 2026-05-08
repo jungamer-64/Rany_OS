@@ -792,12 +792,18 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
                         err
                     );
                 }
-                Some((_, Ok(()))) if completion_policy == NetTxCompletionPolicy::QueueAcceptance => {
+                Some((_, Ok(())))
+                    if completion_policy == NetTxCompletionPolicy::QueueAcceptance =>
+                {
                     let _ = complete_tx_lease_in(runtime, request.lease_id, Ok(()));
                 }
                 Some((_, Ok(()))) => {}
                 None => {
-                    let _ = complete_tx_lease_in(runtime, request.lease_id, Err("device handle missing"));
+                    let _ = complete_tx_lease_in(
+                        runtime,
+                        request.lease_id,
+                        Err("device handle missing"),
+                    );
                     return;
                 }
             }
@@ -1219,9 +1225,9 @@ pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'sta
         selected_as_primary
     };
 
-    if let Some(start_result) =
-        with_port_handle_in(default_runtime(), if_id, |handle| handle.driver.start(runtime_handle))
-    {
+    if let Some(start_result) = with_port_handle_in(default_runtime(), if_id, |handle| {
+        handle.driver.start(runtime_handle)
+    }) {
         start_result?;
     } else {
         return Err("device handle missing after registration");
@@ -1458,8 +1464,10 @@ fn enqueue_event_from_isr_in(
     let Some(if_id) = lookup_if_by_port_id_in(runtime, port_id) else {
         return false;
     };
-    with_port_handle_in(runtime, if_id, |handle| handle.enqueue_event_from_isr(event))
-        .unwrap_or(false)
+    with_port_handle_in(runtime, if_id, |handle| {
+        handle.enqueue_event_from_isr(event)
+    })
+    .unwrap_or(false)
 }
 
 pub fn enqueue_event_from_isr(port_id: NetPortId, event: NetDriverEvent) -> bool {
@@ -1714,8 +1722,8 @@ mod tests {
         let (state, driver) = fake_driver();
         state.set_stats(11, 7, true);
 
-        let if_id = register_test_port(90, driver, PrimaryPortPolicy::Never)
-            .expect("register port");
+        let if_id =
+            register_test_port(90, driver, PrimaryPortPolicy::Never).expect("register port");
 
         let info = port_info(test_port_id(90)).expect("port info");
         let stats = port_stats(test_port_id(90)).expect("port stats");

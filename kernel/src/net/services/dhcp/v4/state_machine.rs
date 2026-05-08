@@ -271,18 +271,20 @@ impl DhcpClient {
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
                 let mut builder = PacketPayloadBuilder::new();
-                builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-                    send_dhcpv4_packet_on(
-                        self.runtime,
-                        if_id,
-                        Ipv4Address::new([0, 0, 0, 0]),
-                        DHCP_CLIENT_PORT,
-                        dst,
-                        DHCP_SERVER_PORT,
-                        builder.build(),
-                        64,
-                    )
-                })
+                builder
+                    .append_generated_bytes(&buf[..len])
+                    .is_some_and(|()| {
+                        send_dhcpv4_packet_on(
+                            self.runtime,
+                            if_id,
+                            Ipv4Address::new([0, 0, 0, 0]),
+                            DHCP_CLIENT_PORT,
+                            dst,
+                            DHCP_SERVER_PORT,
+                            builder.build(),
+                            64,
+                        )
+                    })
             }
             Err(_) => false,
         }
@@ -375,18 +377,20 @@ impl DhcpClient {
             // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
             Ok(len) => {
                 let mut builder = PacketPayloadBuilder::new();
-                builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-                    send_dhcpv4_packet_on(
-                        self.runtime,
-                        if_id,
-                        lease.ip_address,
-                        DHCP_CLIENT_PORT,
-                        lease.server_ip,
-                        DHCP_SERVER_PORT,
-                        builder.build(),
-                        64,
-                    )
-                })
+                builder
+                    .append_generated_bytes(&buf[..len])
+                    .is_some_and(|()| {
+                        send_dhcpv4_packet_on(
+                            self.runtime,
+                            if_id,
+                            lease.ip_address,
+                            DHCP_CLIENT_PORT,
+                            lease.server_ip,
+                            DHCP_SERVER_PORT,
+                            builder.build(),
+                            64,
+                        )
+                    })
             }
             Err(_) => false,
         }
@@ -433,18 +437,20 @@ impl DhcpClient {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-            send_dhcpv4_packet_on(
-                self.runtime,
-                if_id,
-                Ipv4Address::new([0, 0, 0, 0]),
-                DHCP_CLIENT_PORT,
-                Ipv4Address::new([255, 255, 255, 255]),
-                DHCP_SERVER_PORT,
-                builder.build(),
-                64,
-            )
-        }))
+        Ok(builder
+            .append_generated_bytes(&buf[..len])
+            .is_some_and(|()| {
+                send_dhcpv4_packet_on(
+                    self.runtime,
+                    if_id,
+                    Ipv4Address::new([0, 0, 0, 0]),
+                    DHCP_CLIENT_PORT,
+                    Ipv4Address::new([255, 255, 255, 255]),
+                    DHCP_SERVER_PORT,
+                    builder.build(),
+                    64,
+                )
+            }))
     }
 
     /// Resolve DHCPREQUEST destination address from current state.
@@ -493,18 +499,20 @@ impl DhcpClient {
             Ipv4Address::new([0, 0, 0, 0])
         };
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-            send_dhcpv4_packet_on(
-                self.runtime,
-                if_id,
-                src_ip,
-                DHCP_CLIENT_PORT,
-                dst,
-                DHCP_SERVER_PORT,
-                builder.build(),
-                64,
-            )
-        }))
+        Ok(builder
+            .append_generated_bytes(&buf[..len])
+            .is_some_and(|()| {
+                send_dhcpv4_packet_on(
+                    self.runtime,
+                    if_id,
+                    src_ip,
+                    DHCP_CLIENT_PORT,
+                    dst,
+                    DHCP_SERVER_PORT,
+                    builder.build(),
+                    64,
+                )
+            }))
     }
 
     /// Send a DHCPINFORM packet.
@@ -527,18 +535,20 @@ impl DhcpClient {
         };
 
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-            send_dhcpv4_packet_on(
-                self.runtime,
-                if_id,
-                lease.ip_address,
-                DHCP_CLIENT_PORT,
-                dst,
-                DHCP_SERVER_PORT,
-                builder.build(),
-                64,
-            )
-        }))
+        Ok(builder
+            .append_generated_bytes(&buf[..len])
+            .is_some_and(|()| {
+                send_dhcpv4_packet_on(
+                    self.runtime,
+                    if_id,
+                    lease.ip_address,
+                    DHCP_CLIENT_PORT,
+                    dst,
+                    DHCP_SERVER_PORT,
+                    builder.build(),
+                    64,
+                )
+            }))
     }
 
     /// DHCPINFORM を開始する（即時送信 + Informing 遷移）

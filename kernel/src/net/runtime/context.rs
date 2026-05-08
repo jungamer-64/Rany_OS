@@ -227,7 +227,9 @@ mod tests {
             runtime_a
                 .context()
                 .command_queue
-                .send(RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TxAvailable))
+                .send(RuntimeCommand::Transport(
+                    crate::net::runtime::command::TransportCommand::TxAvailable
+                ))
         );
         assert!(runtime_a.context().command_queue.has_events());
         assert!(runtime_b.context().command_queue.is_empty());

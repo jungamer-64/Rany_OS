@@ -302,7 +302,10 @@ unsafe fn dma_device_address(storage: &PacketRefStorage) -> u64 {
 }
 unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) {
     let state = dma_state_mut(storage);
-    state.offset = state.offset.saturating_add(size).min(state.buf.as_ref().size);
+    state.offset = state
+        .offset
+        .saturating_add(size)
+        .min(state.buf.as_ref().size);
     state.len = state.len.saturating_sub(size);
 }
 unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {

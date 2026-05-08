@@ -39,10 +39,10 @@ pub struct ArpCacheEntry {
 // 非同期API（推奨）
 // ============================================================================
 
+use crate::net::runtime::command::{CommandFuture, CommandReplyTicket, new_command_channel_in};
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use crate::net::runtime::command::{CommandFuture, CommandReplyTicket, new_command_channel_in};
 
 /// 非同期ARPキャッシュ取得Future
 pub struct GetArpCacheFuture {
@@ -73,9 +73,9 @@ impl Future for GetArpCacheFuture {
         if !this.sent {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetArpCache {
-                    reply: this.reply,
-                }),
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::GetArpCache { reply: this.reply },
+                ),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -95,10 +95,12 @@ pub fn get_arp_cache_in(runtime: NetRuntimeHandle) -> GetArpCacheFuture {
 pub fn enqueue_arp_cache_insert_in(runtime: NetRuntimeHandle, ip: Ipv4Address, mac: MacAddress) {
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpInsert {
-            ip: *ip.as_bytes(),
-            mac: *mac.as_bytes(),
-        }),
+        crate::net::runtime::command::RuntimeCommand::Control(
+            crate::net::runtime::command::ControlCommand::ArpInsert {
+                ip: *ip.as_bytes(),
+                mac: *mac.as_bytes(),
+            },
+        ),
     );
 }
 
@@ -131,9 +133,11 @@ impl Future for GetUdpEndpointsFuture {
         if !this.sent {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetUdpEndpoints {
-                    reply: this.reply,
-                }),
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::GetUdpEndpoints {
+                        reply: this.reply,
+                    },
+                ),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -179,9 +183,11 @@ impl Future for GetTcpConnectionsFuture {
         if !this.sent {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetTcpConnections {
-                    reply: this.reply,
-                }),
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::GetTcpConnections {
+                        reply: this.reply,
+                    },
+                ),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
                 Poll::Ready(Ok(())) => this.sent = true,
@@ -231,15 +237,15 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn connection_queries_complete_with_event_task() {
-        let tcp = run_with_event_task(
-            super::get_tcp_connections_in(crate::net::runtime::default_runtime()),
-        );
-        let udp = run_with_event_task(
-            super::get_udp_endpoints_in(crate::net::runtime::default_runtime()),
-        );
-        let arp = run_with_event_task(
-            super::get_arp_cache_in(crate::net::runtime::default_runtime()),
-        );
+        let tcp = run_with_event_task(super::get_tcp_connections_in(
+            crate::net::runtime::default_runtime(),
+        ));
+        let udp = run_with_event_task(super::get_udp_endpoints_in(
+            crate::net::runtime::default_runtime(),
+        ));
+        let arp = run_with_event_task(super::get_arp_cache_in(
+            crate::net::runtime::default_runtime(),
+        ));
 
         assert!(tcp.is_empty());
         assert!(udp.is_empty());

@@ -259,13 +259,19 @@ impl DhcpV4AppliedConfig {
     }
 
     pub fn hostname_span(&self) -> Option<PayloadSpanRef<'_>> {
-        self.hostname
-            .and_then(|range| self.metadata_payload.as_ref().and_then(|payload| range.span(payload)))
+        self.hostname.and_then(|range| {
+            self.metadata_payload
+                .as_ref()
+                .and_then(|payload| range.span(payload))
+        })
     }
 
     pub fn domain_name_span(&self) -> Option<PayloadSpanRef<'_>> {
-        self.domain_name
-            .and_then(|range| self.metadata_payload.as_ref().and_then(|payload| range.span(payload)))
+        self.domain_name.and_then(|range| {
+            self.metadata_payload
+                .as_ref()
+                .and_then(|payload| range.span(payload))
+        })
     }
 }
 

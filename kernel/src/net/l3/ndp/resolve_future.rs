@@ -226,10 +226,12 @@ impl Future for NdpResolveFuture {
 
         if !self.request_sent || self.poll_count % 10 == 0 {
             crate::net::runtime::command::enqueue_command_ignore(
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::NdpResolveRequest {
-                    if_id: self.if_id,
-                    target_ip: ip_bytes,
-                }),
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::NdpResolveRequest {
+                        if_id: self.if_id,
+                        target_ip: ip_bytes,
+                    },
+                ),
             );
             self.request_sent = true;
         }

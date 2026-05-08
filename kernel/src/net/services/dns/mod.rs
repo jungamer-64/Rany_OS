@@ -803,8 +803,5 @@ pub(crate) fn shared_client_lock() -> &'static PoisonLock<Option<&'static DnsCli
 }
 
 pub(crate) fn shared_client() -> Option<&'static DnsClient> {
-    shared_client_lock()
-        .lock()
-        .ok()
-        .and_then(|guard| *guard)
+    shared_client_lock().lock().ok().and_then(|guard| *guard)
 }

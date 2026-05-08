@@ -2,12 +2,12 @@
 // kernel/src/net/services/dhcp/runtime.rs - サービス / DHCP / ランタイム
 // ============================================================================
 
-use super::v4::{DhcpAckResult, DhcpClient, DhcpResponseResult, DHCP_CLIENT_PORT};
-use super::v6::{DhcpV6Client, DHCPV6_CLIENT_PORT};
+use super::v4::{DHCP_CLIENT_PORT, DhcpAckResult, DhcpClient, DhcpResponseResult};
+use super::v6::{DHCPV6_CLIENT_PORT, DhcpV6Client};
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::stack::NetworkConfig;
-use crate::net::runtime::{context::default_runtime_context, NetRuntimeHandle};
+use crate::net::runtime::{NetRuntimeHandle, context::default_runtime_context};
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -203,7 +203,7 @@ pub(crate) fn restart_interface_runtime(if_id: NetIfId) -> Result<(), &'static s
     runtime.suspended.store(false, Ordering::Release);
 
     if !runtime.drive_started.swap(true, Ordering::AcqRel) {
-            crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(runtime)));
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(runtime)));
     }
 
     runtime
@@ -228,7 +228,9 @@ fn primary_interface_runtime() -> Option<&'static DhcpInterfaceRuntime> {
         .copied()
 }
 
-fn primary_interface_runtime_in(runtime: NetRuntimeHandle) -> Option<&'static DhcpInterfaceRuntime> {
+fn primary_interface_runtime_in(
+    runtime: NetRuntimeHandle,
+) -> Option<&'static DhcpInterfaceRuntime> {
     let state = runtime_state_for(runtime);
     let primary_if = state.primary_if_id.load(Ordering::Acquire);
     let guard = state.interface_runtimes.lock().ok()?;
@@ -418,10 +420,12 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                         );
                         crate::net::runtime::command::enqueue_command_ignore_in(
                             runtime,
-                            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpApplyLease {
-                                if_id: Some(interface_runtime.if_id.0),
-                                config: applied,
-                            }),
+                            crate::net::runtime::command::RuntimeCommand::Control(
+                                crate::net::runtime::command::ControlCommand::DhcpApplyLease {
+                                    if_id: Some(interface_runtime.if_id.0),
+                                    config: applied,
+                                },
+                            ),
                         );
                     }
                     Ok(DhcpResponseResult::Offer(lease)) => {

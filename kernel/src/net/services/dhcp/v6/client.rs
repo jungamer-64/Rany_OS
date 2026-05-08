@@ -621,9 +621,11 @@ impl DhcpV6Client {
                                 Err(_) => all_dhcp_servers,
                             };
                             let mut builder = PacketPayloadBuilder::new();
-                            let _ = builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-                                self.enqueue_v6_send(None, src, dst, builder.build())
-                            });
+                            let _ = builder
+                                .append_generated_bytes(&buf[..len])
+                                .is_some_and(|()| {
+                                    self.enqueue_v6_send(None, src, dst, builder.build())
+                                });
                             log::info!("[NET] DHCPv6: RELEASE sent for {}", lease.addr);
                         }
                     }
@@ -1074,9 +1076,11 @@ impl DhcpV6Client {
                     if let Ok(len) = self.build_request_from_advertise(&mut buf) {
                         if let Some(src_ip) = self.get_link_local() {
                             let mut builder = PacketPayloadBuilder::new();
-                            let _ = builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-                                self.enqueue_v6_send(if_id, src_ip, src, builder.build())
-                            });
+                            let _ = builder
+                                .append_generated_bytes(&buf[..len])
+                                .is_some_and(|()| {
+                                    self.enqueue_v6_send(if_id, src_ip, src, builder.build())
+                                });
                         }
                     }
                     return true;
@@ -1154,9 +1158,11 @@ impl DhcpV6Client {
                     if let Ok(len) = self.build_request_from_advertise(&mut buf) {
                         if let Some(src_ip) = self.get_link_local() {
                             let mut builder = PacketPayloadBuilder::new();
-                            let _ = builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-                                self.enqueue_v6_send(if_id, src_ip, src, builder.build())
-                            });
+                            let _ = builder
+                                .append_generated_bytes(&buf[..len])
+                                .is_some_and(|()| {
+                                    self.enqueue_v6_send(if_id, src_ip, src, builder.build())
+                                });
                         }
                     }
                     return true;
@@ -1316,9 +1322,12 @@ impl DhcpV6Client {
                     // Use link-local as source for SOLICIT (async event queue)
                     if let Some(src) = self.get_link_local() {
                         let mut builder = PacketPayloadBuilder::new();
-                        if builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-                            self.enqueue_v6_send(if_id, src, all_dhcp_servers, builder.build())
-                        }) {
+                        if builder
+                            .append_generated_bytes(&buf[..len])
+                            .is_some_and(|()| {
+                                self.enqueue_v6_send(if_id, src, all_dhcp_servers, builder.build())
+                            })
+                        {
                             *s = DhcpV6State::SolicitSent;
                             self.state_time.store(current_tick, Ordering::SeqCst);
                             self.retry_count.store(0, Ordering::SeqCst);
@@ -1353,14 +1362,16 @@ impl DhcpV6Client {
                             if let Some(src) = self.get_link_local() {
                                 let mut builder = PacketPayloadBuilder::new();
                                 let _ =
-                                    builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-                                        self.enqueue_v6_send(
-                                            if_id,
-                                            src,
-                                            all_dhcp_servers,
-                                            builder.build(),
-                                        )
-                                    });
+                                    builder
+                                        .append_generated_bytes(&buf[..len])
+                                        .is_some_and(|()| {
+                                            self.enqueue_v6_send(
+                                                if_id,
+                                                src,
+                                                all_dhcp_servers,
+                                                builder.build(),
+                                            )
+                                        });
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1396,9 +1407,11 @@ impl DhcpV6Client {
                                 };
                                 let mut builder = PacketPayloadBuilder::new();
                                 let _ =
-                                    builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
-                                        self.enqueue_v6_send(if_id, src, dst, builder.build())
-                                    });
+                                    builder
+                                        .append_generated_bytes(&buf[..len])
+                                        .is_some_and(|()| {
+                                            self.enqueue_v6_send(if_id, src, dst, builder.build())
+                                        });
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }

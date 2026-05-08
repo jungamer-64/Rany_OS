@@ -199,11 +199,12 @@ pub(crate) fn list_interface_stats_from_runtime_in(
 pub async fn primary_interface_config_in(
     runtime: NetRuntimeHandle,
 ) -> Option<InterfaceConfigSnapshot> {
-    let (reply, command_future) =
-        crate::net::runtime::command::new_command_channel_in::<Option<InterfaceConfigSnapshot>>(runtime);
-    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig {
-        reply,
-    });
+    let (reply, command_future) = crate::net::runtime::command::new_command_channel_in::<
+        Option<InterfaceConfigSnapshot>,
+    >(runtime);
+    let event = crate::net::runtime::command::RuntimeCommand::Control(
+        crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { reply },
+    );
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
@@ -212,12 +213,15 @@ pub async fn get_interface_config_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Option<InterfaceConfigSnapshot> {
-    let (reply, command_future) =
-        crate::net::runtime::command::new_command_channel_in::<Option<InterfaceConfigSnapshot>>(runtime);
-    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetInterfaceConfig {
-        if_id: if_id.0,
-        reply,
-    });
+    let (reply, command_future) = crate::net::runtime::command::new_command_channel_in::<
+        Option<InterfaceConfigSnapshot>,
+    >(runtime);
+    let event = crate::net::runtime::command::RuntimeCommand::Control(
+        crate::net::runtime::command::ControlCommand::GetInterfaceConfig {
+            if_id: if_id.0,
+            reply,
+        },
+    );
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
@@ -228,8 +232,9 @@ pub async fn list_interface_configs_in(
     let (reply, command_future) = crate::net::runtime::command::new_command_channel_in::<
         alloc::vec::Vec<InterfaceConfigSnapshot>,
     >(runtime);
-    let event =
-        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { reply });
+    let event = crate::net::runtime::command::RuntimeCommand::Control(
+        crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { reply },
+    );
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
@@ -238,12 +243,15 @@ pub async fn get_interface_stats_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Option<InterfaceStatsSnapshot> {
-    let (reply, command_future) =
-        crate::net::runtime::command::new_command_channel_in::<Option<InterfaceStatsSnapshot>>(runtime);
-    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetInterfaceStats {
-        if_id: if_id.0,
-        reply,
-    });
+    let (reply, command_future) = crate::net::runtime::command::new_command_channel_in::<
+        Option<InterfaceStatsSnapshot>,
+    >(runtime);
+    let event = crate::net::runtime::command::RuntimeCommand::Control(
+        crate::net::runtime::command::ControlCommand::GetInterfaceStats {
+            if_id: if_id.0,
+            reply,
+        },
+    );
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
@@ -254,8 +262,9 @@ pub async fn list_interface_stats_in(
     let (reply, command_future) = crate::net::runtime::command::new_command_channel_in::<
         alloc::vec::Vec<InterfaceStatsSnapshot>,
     >(runtime);
-    let event =
-        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaceStats { reply });
+    let event = crate::net::runtime::command::RuntimeCommand::Control(
+        crate::net::runtime::command::ControlCommand::ListInterfaceStats { reply },
+    );
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
@@ -264,8 +273,9 @@ pub async fn list_interfaces_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<In
     let (reply, command_future) = crate::net::runtime::command::new_command_channel_in::<
         alloc::vec::Vec<InterfaceSnapshot>,
     >(runtime);
-    let event =
-        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListInterfaces { reply });
+    let event = crate::net::runtime::command::RuntimeCommand::Control(
+        crate::net::runtime::command::ControlCommand::ListInterfaces { reply },
+    );
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
@@ -306,7 +316,10 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn list_interfaces_completes_with_event_task() {
-        let interfaces = run_with_event_task_in(default_runtime(), super::list_interfaces_in(default_runtime()));
+        let interfaces = run_with_event_task_in(
+            default_runtime(),
+            super::list_interfaces_in(default_runtime()),
+        );
         assert!(interfaces.is_empty());
     }
 
