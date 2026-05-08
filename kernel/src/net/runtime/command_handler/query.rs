@@ -6,7 +6,7 @@
 use crate::net::l4::tcp::tcb::{TcpConnectionState, tcb_table};
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command::{RuntimeCommand, complete_command};
 use crate::net::runtime::command_handler::common::finish_command;
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::manager::NetIfId;
@@ -21,12 +21,10 @@ impl RuntimeCommandHandler {
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetDhcpState {
                     if_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => finish_command(
-                result_slot,
-                waker,
+                reply,
                 if let Some(if_id) = if_id {
                     crate::net::api::dhcp::get_dhcp_state_snapshot_in(runtime, NetIfId(if_id))
                 } else {
@@ -34,15 +32,13 @@ impl RuntimeCommandHandler {
                 },
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ListDhcpStates { result_slot, waker },
+                crate::net::runtime::command::ControlCommand::ListDhcpStates { reply },
             ) => finish_command(
-                result_slot,
-                waker,
+                reply,
                 crate::net::api::dhcp::list_dhcp_states_snapshot_in(runtime),
             ),
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew {
-                result_slot,
-                waker,
+                reply,
             }) => {
                 use crate::net::services::dhcp;
 
@@ -75,14 +71,11 @@ impl RuntimeCommandHandler {
                     Ok(())
                 };
 
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
+                complete_command(reply, result);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpRelease { result_slot, waker },
+                crate::net::runtime::command::ControlCommand::DhcpRelease { reply },
             ) => {
                 use crate::net::services::dhcp;
 
@@ -98,14 +91,11 @@ impl RuntimeCommandHandler {
                     released = true;
                 }
 
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(released);
-                }
-                waker.wake();
+                complete_command(reply, released);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpDiscover { result_slot, waker },
+                crate::net::runtime::command::ControlCommand::DhcpDiscover { reply },
             ) => {
                 use crate::net::services::dhcp;
 
@@ -122,15 +112,11 @@ impl RuntimeCommandHandler {
                     }
                 }
 
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(offer);
-                }
-                waker.wake();
+                complete_command(reply, offer);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform {
-                result_slot,
-                waker,
+                reply,
             }) => {
                 use crate::net::services::dhcp;
 
@@ -149,16 +135,12 @@ impl RuntimeCommandHandler {
                     ))
                 };
 
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
+                complete_command(reply, result);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpLastDeclined {
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 use crate::net::services::dhcp;
@@ -168,16 +150,12 @@ impl RuntimeCommandHandler {
                     ip = client.last_declined_ip().map(|address| *address.as_bytes());
                 }
 
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(ip);
-                }
-                waker.wake();
+                complete_command(reply, ip);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpLastReleased {
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 use crate::net::services::dhcp;
@@ -187,16 +165,12 @@ impl RuntimeCommandHandler {
                     ip = client.last_released_ip().map(|address| *address.as_bytes());
                 }
 
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(ip);
-                }
-                waker.wake();
+                complete_command(reply, ip);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetTcpConnections {
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let snapshots = tcb_table().list_connections();
@@ -224,10 +198,7 @@ impl RuntimeCommandHandler {
                     })
                     .collect();
 
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(connections);
-                }
-                waker.wake();
+                complete_command(reply, connections);
                 EventHandleResult::Success
             }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),

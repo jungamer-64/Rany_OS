@@ -6,7 +6,7 @@
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command::{CommandReplyPayload, CommandReplyTicket, RuntimeCommand};
 use crate::net::runtime::manager::NetIfId;
 use kernel_api::resource::net::PacketPayload;
 
@@ -101,15 +101,11 @@ pub(super) fn tcp_error_from_endpoint_error(error: EndpointError) -> crate::net:
 }
 
 #[inline]
-pub(super) fn finish_command<T>(
-    result_slot: alloc::sync::Arc<crate::sync::PoisonLock<Option<T>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+pub(super) fn finish_command<T: CommandReplyPayload>(
+    reply: CommandReplyTicket<T>,
     value: T,
 ) -> EventHandleResult {
-    if let Ok(mut slot) = result_slot.lock() {
-        *slot = Some(value);
-    }
-    waker.wake();
+    crate::net::runtime::command::complete_command(reply, value);
     EventHandleResult::Success
 }
 

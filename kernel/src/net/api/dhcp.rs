@@ -4,7 +4,6 @@
 //! DHCPv4/v6クライアントの初期化、discover/request/release/renew、状態取得。
 
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -12,12 +11,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
 use crate::net::l4::tcp::tcb_table;
+use crate::net::runtime::command::{CommandFuture, CommandReplyTicket, new_command_channel_in};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::net::services::dhcp;
-use crate::sync::PoisonLock;
-use crate::sync::atomic_waker::AtomicWaker;
 
 extern crate alloc;
 
@@ -336,34 +334,32 @@ pub(crate) fn dhcp_state_snapshot_in(runtime: NetRuntimeHandle) -> DhcpRuntimeSt
 }
 
 pub async fn get_dhcp_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
-    let (result_slot, waker, command_future) =
-        crate::net::runtime::command::new_command_channel::<DhcpRuntimeState>();
+    let (reply, command_future) =
+        new_command_channel_in::<DhcpRuntimeState>(runtime);
     let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetDhcpState {
         if_id: Some(if_id.0),
-        result_slot,
-        waker,
+        reply,
     });
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn list_dhcp_states_in(runtime: NetRuntimeHandle) -> alloc::vec::Vec<InterfaceDhcpState> {
-    let (result_slot, waker, command_future) = crate::net::runtime::command::new_command_channel::<
+    let (reply, command_future) = new_command_channel_in::<
         alloc::vec::Vec<InterfaceDhcpState>,
-    >();
+    >(runtime);
     let event =
-        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListDhcpStates { result_slot, waker });
+        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ListDhcpStates { reply });
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
 
 pub async fn dhcp_state_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
-    let (result_slot, waker, command_future) =
-        crate::net::runtime::command::new_command_channel::<DhcpRuntimeState>();
+    let (reply, command_future) =
+        new_command_channel_in::<DhcpRuntimeState>(runtime);
     let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetDhcpState {
         if_id: None,
-        result_slot,
-        waker,
+        reply,
     });
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
@@ -372,17 +368,18 @@ pub async fn dhcp_state_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
 /// 非同期DHCPリニューFuture
 pub struct DhcpRenewFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<Result<(), String>>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<Result<(), String>>,
+    command_future: CommandFuture<Result<(), String>>,
     sent: bool,
 }
 
 impl DhcpRenewFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -398,8 +395,7 @@ impl Future for DhcpRenewFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -411,7 +407,7 @@ impl Future for DhcpRenewFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 
@@ -422,17 +418,18 @@ pub fn dhcp_renew_in(runtime: NetRuntimeHandle) -> DhcpRenewFuture {
 /// 非同期DHCPリリースFuture
 pub struct DhcpReleaseFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<bool>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<bool>,
+    command_future: CommandFuture<bool>,
     sent: bool,
 }
 
 impl DhcpReleaseFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -448,8 +445,7 @@ impl Future for DhcpReleaseFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRelease {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -459,7 +455,7 @@ impl Future for DhcpReleaseFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 
@@ -470,17 +466,18 @@ pub fn dhcp_release_in(runtime: NetRuntimeHandle) -> DhcpReleaseFuture {
 /// 非同期DHCPディスカバーFuture
 pub struct DhcpDiscoverFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<Option<DhcpOfferInfo>>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<Option<DhcpOfferInfo>>,
+    command_future: CommandFuture<Option<DhcpOfferInfo>>,
     sent: bool,
 }
 
 impl DhcpDiscoverFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -496,8 +493,7 @@ impl Future for DhcpDiscoverFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpDiscover {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -507,7 +503,7 @@ impl Future for DhcpDiscoverFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 
@@ -518,17 +514,18 @@ pub fn dhcp_discover_in(runtime: NetRuntimeHandle) -> DhcpDiscoverFuture {
 /// 非同期DHCP INFORM Future
 pub struct DhcpInformFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<Result<(), String>>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<Result<(), String>>,
+    command_future: CommandFuture<Result<(), String>>,
     sent: bool,
 }
 
 impl DhcpInformFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -544,8 +541,7 @@ impl Future for DhcpInformFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -557,7 +553,7 @@ impl Future for DhcpInformFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 
@@ -568,17 +564,18 @@ pub fn dhcp_inform_in(runtime: NetRuntimeHandle) -> DhcpInformFuture {
 /// 非同期DHCP最終拒否IP取得Future
 pub struct DhcpLastDeclinedFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<Option<[u8; 4]>>,
+    command_future: CommandFuture<Option<[u8; 4]>>,
     sent: bool,
 }
 
 impl DhcpLastDeclinedFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -594,8 +591,7 @@ impl Future for DhcpLastDeclinedFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastDeclined {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -605,7 +601,7 @@ impl Future for DhcpLastDeclinedFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 
@@ -616,17 +612,18 @@ pub fn dhcp_last_declined_in(runtime: NetRuntimeHandle) -> DhcpLastDeclinedFutur
 /// 非同期DHCP最終解放IP取得Future
 pub struct DhcpLastReleasedFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<Option<[u8; 4]>>,
+    command_future: CommandFuture<Option<[u8; 4]>>,
     sent: bool,
 }
 
 impl DhcpLastReleasedFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -642,8 +639,7 @@ impl Future for DhcpLastReleasedFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpLastReleased {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -653,7 +649,7 @@ impl Future for DhcpLastReleasedFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 

@@ -4,7 +4,9 @@
 
 use super::*;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::{new_detached_command_channel, poll_command_result};
+use crate::net::runtime::command::{
+    CommandReplyTicket, new_detached_command_channel_in, poll_command_result,
+};
 use crate::net::runtime::context::default_runtime;
 
 /// Initialize a runtime-local network stack
@@ -52,7 +54,7 @@ pub(crate) fn enqueue_udp_send_scoped_with_src_in(
             runtime, if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
         );
     }
-    let (result_slot, waker) = new_detached_command_channel();
+    let reply = new_detached_command_channel_in(runtime);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
@@ -64,8 +66,7 @@ pub(crate) fn enqueue_udp_send_scoped_with_src_in(
                 payload,
                 ttl,
                 completion_id: None,
-                result_slot,
-                waker,
+                reply,
             },
         ),
     );
@@ -87,7 +88,7 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
             runtime, if_id, src_port, src_ip, dst_ip, dst_port, payload, ttl,
         );
     }
-    let (result_slot, waker) = new_detached_command_channel();
+    let reply = new_detached_command_channel_in(runtime);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
@@ -99,8 +100,7 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
                 payload,
                 ttl,
                 completion_id: None,
-                result_slot,
-                waker,
+                reply,
             },
         ),
     );
@@ -114,7 +114,7 @@ pub(crate) fn enqueue_tcp_send_in(
     payload: kernel_api::resource::net::PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let (result_slot, waker) = new_detached_command_channel();
+    let reply = new_detached_command_channel_in(runtime);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
@@ -123,8 +123,7 @@ pub(crate) fn enqueue_tcp_send_in(
                 dst_ip: *dst_ip.as_bytes(),
                 payload,
                 completion_id,
-                result_slot,
-                waker,
+                reply,
             },
         ),
     );
@@ -138,7 +137,7 @@ pub(crate) fn enqueue_tcp_v6_send_in(
     payload: kernel_api::resource::net::PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let (result_slot, waker) = new_detached_command_channel();
+    let reply = new_detached_command_channel_in(runtime);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
@@ -147,8 +146,7 @@ pub(crate) fn enqueue_tcp_v6_send_in(
                 dst_ip: dst_ip.octets(),
                 payload,
                 completion_id,
-                result_slot,
-                waker,
+                reply,
             },
         ),
     );
@@ -198,8 +196,7 @@ async fn timeout_task_in(runtime: NetRuntimeHandle) {
 /// 非同期マルチキャスト参加 Future
 struct MulticastJoinFuture {
     runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    reply: CommandReplyTicket<bool>,
     sent: bool,
     group: Ipv4Address,
 }
@@ -217,8 +214,7 @@ impl core::future::Future for MulticastJoinFuture {
                 crate::net::runtime::command::RuntimeCommand::Control(
                     crate::net::runtime::command::ControlCommand::MulticastJoin {
                         group: *self.group.as_bytes(),
-                        result_slot: self.result_slot.clone(),
-                        waker: self.waker.clone(),
+                        reply: self.reply,
                     },
                 ),
             );
@@ -231,15 +227,14 @@ impl core::future::Future for MulticastJoinFuture {
             }
         }
 
-        poll_command_result(&self.result_slot, &self.waker, cx)
+        poll_command_result(self.reply, cx)
     }
 }
 
 /// 非同期マルチキャスト離脱 Future
 struct MulticastLeaveFuture {
     runtime: NetRuntimeHandle,
-    result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+    reply: CommandReplyTicket<bool>,
     sent: bool,
     group: Ipv4Address,
 }
@@ -257,8 +252,7 @@ impl core::future::Future for MulticastLeaveFuture {
                 crate::net::runtime::command::RuntimeCommand::Control(
                     crate::net::runtime::command::ControlCommand::MulticastLeave {
                         group: *self.group.as_bytes(),
-                        result_slot: self.result_slot.clone(),
-                        waker: self.waker.clone(),
+                        reply: self.reply,
                     },
                 ),
             );
@@ -271,7 +265,7 @@ impl core::future::Future for MulticastLeaveFuture {
             }
         }
 
-        poll_command_result(&self.result_slot, &self.waker, cx)
+        poll_command_result(self.reply, cx)
     }
 }
 
@@ -281,8 +275,7 @@ pub(crate) fn join_multicast_in(
 ) -> impl core::future::Future<Output = bool> {
     MulticastJoinFuture {
         runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        reply: new_detached_command_channel_in(runtime),
         sent: false,
         group,
     }
@@ -294,8 +287,7 @@ pub(crate) fn leave_multicast_in(
 ) -> impl core::future::Future<Output = bool> {
     MulticastLeaveFuture {
         runtime,
-        result_slot: alloc::sync::Arc::new(PoisonLock::new(None)),
-        waker: alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
+        reply: new_detached_command_channel_in(runtime),
         sent: false,
         group,
     }
@@ -315,7 +307,7 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
     payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
-    let (result_slot, waker) = new_detached_command_channel();
+    let reply = new_detached_command_channel_in(runtime);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
@@ -328,8 +320,7 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
                 payload,
                 ttl,
                 completion_id: None,
-                result_slot,
-                waker,
+                reply,
             },
         ),
     );
@@ -344,7 +335,7 @@ pub(crate) fn enqueue_tcp_send_on_in(
     payload: kernel_api::resource::net::PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let (result_slot, waker) = new_detached_command_channel();
+    let reply = new_detached_command_channel_in(runtime);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
@@ -354,8 +345,7 @@ pub(crate) fn enqueue_tcp_send_on_in(
                 dst_ip: *dst_ip.as_bytes(),
                 payload,
                 completion_id,
-                result_slot,
-                waker,
+                reply,
             },
         ),
     );
@@ -372,7 +362,7 @@ fn enqueue_udp_v6_send_on_in(
     payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
-    let (result_slot, waker) = new_detached_command_channel();
+    let reply = new_detached_command_channel_in(runtime);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
@@ -385,8 +375,7 @@ fn enqueue_udp_v6_send_on_in(
                 payload,
                 ttl,
                 completion_id: None,
-                result_slot,
-                waker,
+                reply,
             },
         ),
     );
@@ -401,7 +390,7 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
     payload: kernel_api::resource::net::PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let (result_slot, waker) = new_detached_command_channel();
+    let reply = new_detached_command_channel_in(runtime);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
@@ -411,8 +400,7 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
                 dst_ip: dst_ip.octets(),
                 payload,
                 completion_id,
-                result_slot,
-                waker,
+                reply,
             },
         ),
     );

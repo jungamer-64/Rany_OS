@@ -7,9 +7,11 @@ use crate::net::l4::socket::{Socket, TcpSocketState};
 use crate::net::l4::tcp::tcb::tcb_table;
 use crate::net::l4::types::{EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::{RuntimeCommand, enqueue_command_ignore_in, send_command_in};
+use crate::net::runtime::command::{
+    CommandFuture, CommandReplyPayload, CommandReplyTicket, RuntimeCommand, enqueue_command_ignore_in,
+    new_command_channel_in, send_command_in,
+};
 use crate::net::types::InterfaceScope;
-use crate::sync::PoisonLock;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -76,46 +78,16 @@ fn socket_inner_stats(socket: &Socket) -> TcpStats {
         .unwrap_or_default()
 }
 
-type TcpCommandResultSlot<T> = alloc::sync::Arc<PoisonLock<Option<Result<T, TcpError>>>>;
-type TcpCommandWaker = alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>;
-
-fn new_tcp_command_channel<T>() -> (TcpCommandResultSlot<T>, TcpCommandWaker) {
-    (
-        alloc::sync::Arc::new(PoisonLock::new(None)),
-        alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new()),
-    )
-}
-
-fn poll_tcp_command_result<T>(
-    result_slot: &TcpCommandResultSlot<T>,
-    waker: &TcpCommandWaker,
-    cx: &mut Context<'_>,
-) -> Poll<Result<T, TcpError>> {
-    if let Ok(mut slot) = result_slot.lock() {
-        if let Some(result) = slot.take() {
-            return Poll::Ready(result);
-        }
-    }
-
-    waker.register(cx.waker());
-
-    if let Ok(mut slot) = result_slot.lock() {
-        if let Some(result) = slot.take() {
-            return Poll::Ready(result);
-        }
-    }
-
-    Poll::Pending
-}
-
 fn poll_tcp_dispatch<T>(
     runtime: NetRuntimeHandle,
     sent: &mut bool,
-    result_slot: &TcpCommandResultSlot<T>,
-    waker: &TcpCommandWaker,
+    command_future: &mut CommandFuture<Result<T, TcpError>>,
     cx: &mut Context<'_>,
     event: RuntimeCommand,
-) -> Poll<Result<T, TcpError>> {
+) -> Poll<Result<T, TcpError>>
+where
+    Result<T, TcpError>: CommandReplyPayload,
+{
     if !*sent {
         let mut enqueue = send_command_in(runtime, event);
         match Future::poll(Pin::new(&mut enqueue), cx) {
@@ -127,13 +99,13 @@ fn poll_tcp_dispatch<T>(
         }
     }
 
-    poll_tcp_command_result(result_slot, waker, cx)
+    Future::poll(Pin::new(command_future), cx)
 }
 
 struct TcpDialDispatchFuture {
     runtime: NetRuntimeHandle,
-    result_slot: TcpCommandResultSlot<TcpConnection>,
-    waker: TcpCommandWaker,
+    reply: CommandReplyTicket<Result<TcpConnection, TcpError>>,
+    command_future: CommandFuture<Result<TcpConnection, TcpError>>,
     sent: bool,
     local: EndpointAddr,
     remote: EndpointAddr,
@@ -147,11 +119,11 @@ impl TcpDialDispatchFuture {
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> Self {
-        let (result_slot, waker) = new_tcp_command_channel();
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot,
-            waker,
+            reply,
+            command_future,
             sent: false,
             local,
             remote,
@@ -164,29 +136,29 @@ impl Future for TcpDialDispatchFuture {
     type Output = Result<TcpConnection, TcpError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let runtime = self.runtime;
-        let local = self.local;
-        let remote = self.remote;
-        let scope = self.scope;
-        let result_slot = self.result_slot.clone();
-        let waker = self.waker.clone();
+        let this = unsafe { self.as_mut().get_unchecked_mut() };
+        let runtime = this.runtime;
+        let local = this.local;
+        let remote = this.remote;
+        let scope = this.scope;
+        let reply = this.reply;
         let event =
             RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpDial {
                 local,
                 remote,
                 scope,
-                result_slot: result_slot.clone(),
-                waker: waker.clone(),
+                reply,
             });
-        let sent = &mut self.sent;
-        poll_tcp_dispatch(runtime, sent, &result_slot, &waker, cx, event)
+        let sent = &mut this.sent;
+        let command_future = &mut this.command_future;
+        poll_tcp_dispatch(runtime, sent, command_future, cx, event)
     }
 }
 
 struct TcpAcceptorBindDispatchFuture {
     runtime: NetRuntimeHandle,
-    result_slot: TcpCommandResultSlot<TcpAcceptor>,
-    waker: TcpCommandWaker,
+    reply: CommandReplyTicket<Result<TcpAcceptor, TcpError>>,
+    command_future: CommandFuture<Result<TcpAcceptor, TcpError>>,
     sent: bool,
     addr: EndpointAddr,
     scope: InterfaceScope,
@@ -200,11 +172,11 @@ impl TcpAcceptorBindDispatchFuture {
         addr: EndpointAddr,
         backlog: u32,
     ) -> Self {
-        let (result_slot, waker) = new_tcp_command_channel();
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot,
-            waker,
+            reply,
+            command_future,
             sent: false,
             addr,
             scope,
@@ -217,23 +189,23 @@ impl Future for TcpAcceptorBindDispatchFuture {
     type Output = Result<TcpAcceptor, TcpError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let runtime = self.runtime;
-        let addr = self.addr;
-        let scope = self.scope;
-        let backlog = self.backlog;
-        let result_slot = self.result_slot.clone();
-        let waker = self.waker.clone();
+        let this = unsafe { self.as_mut().get_unchecked_mut() };
+        let runtime = this.runtime;
+        let addr = this.addr;
+        let scope = this.scope;
+        let backlog = this.backlog;
+        let reply = this.reply;
         let event =
             RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::TcpBind {
                 local: addr,
                 scope,
                 backlog,
-                result_slot: result_slot.clone(),
-                waker: waker.clone(),
+                reply,
             });
 
-        let sent = &mut self.sent;
-        poll_tcp_dispatch(runtime, sent, &result_slot, &waker, cx, event)
+        let sent = &mut this.sent;
+        let command_future = &mut this.command_future;
+        poll_tcp_dispatch(runtime, sent, command_future, cx, event)
     }
 }
 

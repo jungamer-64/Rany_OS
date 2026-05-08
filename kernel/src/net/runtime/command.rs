@@ -7,10 +7,12 @@
 
 use crate::net::runtime::{NetRuntimeHandle, context::default_runtime_context};
 use crate::sync::{MpscRingBuffer, PoisonLock, WakerQueue};
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::future::Future;
+use core::marker::PhantomData;
 use core::pin::Pin;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 
 use crate::net::datapath::mempool::PacketRef;
@@ -72,16 +74,14 @@ pub(crate) enum TransportCommand {
         payload: PacketPayload,
         ttl: u8,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     RawTcpSend {
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
         payload: PacketPayload,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     RawUdpV6Send {
         src_port: u16,
@@ -91,16 +91,14 @@ pub(crate) enum TransportCommand {
         payload: PacketPayload,
         ttl: u8,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     RawTcpV6Send {
         src_ip: [u8; 16],
         dst_ip: [u8; 16],
         payload: PacketPayload,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     RawUdpSendOn {
         if_id: u16,
@@ -111,8 +109,7 @@ pub(crate) enum TransportCommand {
         payload: PacketPayload,
         ttl: u8,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     RawTcpSendOn {
         if_id: u16,
@@ -120,8 +117,7 @@ pub(crate) enum TransportCommand {
         dst_ip: [u8; 4],
         payload: PacketPayload,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     RawUdpV6SendOn {
         if_id: u16,
@@ -132,8 +128,7 @@ pub(crate) enum TransportCommand {
         payload: PacketPayload,
         ttl: u8,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     RawTcpV6SendOn {
         if_id: u16,
@@ -141,30 +136,23 @@ pub(crate) enum TransportCommand {
         dst_ip: [u8; 16],
         payload: PacketPayload,
         completion_id: Option<u64>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), EndpointError>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     TcpDial {
         local: EndpointAddr,
         remote: EndpointAddr,
         scope: InterfaceScope,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<
-                Option<Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError>>,
-            >,
+        reply: CommandReplyTicket<
+            Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError>,
         >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
     TcpBind {
         local: EndpointAddr,
         scope: InterfaceScope,
         backlog: u32,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<
-                Option<Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError>>,
-            >,
+        reply: CommandReplyTicket<
+            Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError>,
         >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
     },
 }
 
@@ -192,13 +180,11 @@ pub(crate) enum ControlCommand {
     },
     MulticastJoin {
         group: [u8; 4],
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<bool>,
     },
     MulticastLeave {
         group: [u8; 4],
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<bool>,
     },
     ProcessTimeouts,
     NatForwardUdp {
@@ -219,8 +205,7 @@ pub(crate) enum ControlCommand {
     IcmpEcho {
         target: [u8; 4],
         sequence: u16,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<u64, ()>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<u64, ()>>,
     },
     ArpProbe {
         target_ip: [u8; 4],
@@ -228,8 +213,7 @@ pub(crate) enum ControlCommand {
     ArpResolveCheck {
         target_ip: [u8; 4],
         requester_mac: [u8; 6],
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<bool>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Option<bool>>,
     },
     DhcpApplyLease {
         if_id: Option<u16>,
@@ -240,209 +224,381 @@ pub(crate) enum ControlCommand {
         config: crate::net::services::dhcp::DhcpV6AppliedConfig,
     },
     GetLinkLocal {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 16]>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Option<[u8; 16]>>,
     },
     GetPrimaryInterfaceConfig {
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Option<crate::net::api::config::InterfaceConfigSnapshot>>>,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Option<crate::net::api::config::InterfaceConfigSnapshot>>,
     },
     GetInterfaceConfig {
         if_id: u16,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Option<crate::net::api::config::InterfaceConfigSnapshot>>>,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Option<crate::net::api::config::InterfaceConfigSnapshot>>,
     },
     ListInterfaceConfigs {
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Vec<crate::net::api::config::InterfaceConfigSnapshot>>>,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Vec<crate::net::api::config::InterfaceConfigSnapshot>>,
     },
     GetInterfaceStats {
         if_id: u16,
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Option<crate::net::api::config::InterfaceStatsSnapshot>>>,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Option<crate::net::api::config::InterfaceStatsSnapshot>>,
     },
     ListInterfaceStats {
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Vec<crate::net::api::config::InterfaceStatsSnapshot>>>,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Vec<crate::net::api::config::InterfaceStatsSnapshot>>,
     },
     ListInterfaces {
-        result_slot:
-            alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::config::InterfaceSnapshot>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Vec<crate::net::api::config::InterfaceSnapshot>>,
     },
     GetNetworkSnapshot {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<crate::net::obs::NetSnapshot>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<crate::net::obs::NetSnapshot>,
     },
     GetNetworkRecentEvents {
         limit: usize,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::obs::NetTraceEvent>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Vec<crate::net::obs::NetTraceEvent>>,
     },
     GetArpCache {
-        result_slot:
-            alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::connections::ArpCacheEntry>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Vec<crate::net::api::connections::ArpCacheEntry>>,
     },
     ArpInsert {
         ip: [u8; 4],
         mac: [u8; 6],
     },
     GetUdpEndpoints {
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Vec<crate::net::api::connections::UdpEndpointInfo>>>,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Vec<crate::net::api::connections::UdpEndpointInfo>>,
     },
     GetDhcpState {
         if_id: Option<u16>,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<crate::net::api::dhcp::DhcpRuntimeState>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<crate::net::api::dhcp::DhcpRuntimeState>,
     },
     ListDhcpStates {
-        result_slot:
-            alloc::sync::Arc<PoisonLock<Option<Vec<crate::net::api::dhcp::InterfaceDhcpState>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Vec<crate::net::api::dhcp::InterfaceDhcpState>>,
     },
     DhcpRenew {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), alloc::string::String>>,
     },
     DhcpRelease {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<bool>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<bool>,
     },
     DhcpDiscover {
-        result_slot:
-            alloc::sync::Arc<PoisonLock<Option<Option<crate::net::api::dhcp::DhcpOfferInfo>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Option<crate::net::api::dhcp::DhcpOfferInfo>>,
     },
     DhcpInform {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), alloc::string::String>>,
     },
     DhcpLastDeclined {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Option<[u8; 4]>>,
     },
     DhcpLastReleased {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Option<[u8; 4]>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Option<[u8; 4]>>,
     },
     GetTcpConnections {
-        result_slot: alloc::sync::Arc<
-            PoisonLock<Option<Vec<crate::net::api::connections::TcpConnectionInfo>>>,
-        >,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Vec<crate::net::api::connections::TcpConnectionInfo>>,
     },
     FirewallEnable {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), &'static str>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), &'static str>>,
     },
     FirewallDisable {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), &'static str>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), &'static str>>,
     },
     FirewallStatus {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<alloc::string::String>,
     },
     FirewallListRules {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<alloc::string::String>,
     },
     FirewallStats {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<alloc::string::String>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<alloc::string::String>,
     },
     FirewallAddRule {
         rule: crate::net::security::firewall::FirewallRule,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<u64, alloc::string::String>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<u64, alloc::string::String>>,
     },
     FirewallRemoveRule {
         id: u64,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<bool, alloc::string::String>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<bool, alloc::string::String>>,
     },
     FirewallClearRules {
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), alloc::string::String>>,
     },
     FirewallSetDefaultPolicy {
         direction: crate::net::security::firewall::FirewallDirection,
         action: crate::net::security::firewall::FirewallAction,
-        result_slot: alloc::sync::Arc<PoisonLock<Option<Result<(), alloc::string::String>>>>,
-        waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+        reply: CommandReplyTicket<Result<(), alloc::string::String>>,
     },
 }
 
-pub(crate) struct CommandFuture<T> {
-    result_slot: alloc::sync::Arc<PoisonLock<Option<T>>>,
-    waker: alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct CommandReplyTicket<T> {
+    runtime: NetRuntimeHandle,
+    id: u64,
+    _marker: PhantomData<fn() -> T>,
 }
 
-impl<T> Future for CommandFuture<T> {
+impl<T> Copy for CommandReplyTicket<T> {}
+
+impl<T> Clone for CommandReplyTicket<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> CommandReplyTicket<T> {
+    const fn new(runtime: NetRuntimeHandle, id: u64) -> Self {
+        Self {
+            runtime,
+            id,
+            _marker: PhantomData,
+        }
+    }
+}
+
+pub(crate) enum CommandReplyValue {
+    EndpointUnit(Result<(), EndpointError>),
+    TcpConnection(
+        Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError>,
+    ),
+    TcpAcceptor(Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError>),
+    Bool(bool),
+    IcmpEcho(Result<u64, ()>),
+    OptionBool(Option<bool>),
+    OptionIpv6(Option<[u8; 16]>),
+    OptionInterfaceConfig(Option<crate::net::api::config::InterfaceConfigSnapshot>),
+    InterfaceConfigs(Vec<crate::net::api::config::InterfaceConfigSnapshot>),
+    OptionInterfaceStats(Option<crate::net::api::config::InterfaceStatsSnapshot>),
+    InterfaceStats(Vec<crate::net::api::config::InterfaceStatsSnapshot>),
+    Interfaces(Vec<crate::net::api::config::InterfaceSnapshot>),
+    NetworkSnapshot(crate::net::obs::NetSnapshot),
+    NetworkRecentEvents(Vec<crate::net::obs::NetTraceEvent>),
+    ArpCache(Vec<crate::net::api::connections::ArpCacheEntry>),
+    UdpEndpoints(Vec<crate::net::api::connections::UdpEndpointInfo>),
+    DhcpState(crate::net::api::dhcp::DhcpRuntimeState),
+    DhcpStates(Vec<crate::net::api::dhcp::InterfaceDhcpState>),
+    StringUnit(Result<(), alloc::string::String>),
+    DhcpOffer(Option<crate::net::api::dhcp::DhcpOfferInfo>),
+    OptionIpv4(Option<[u8; 4]>),
+    TcpConnections(Vec<crate::net::api::connections::TcpConnectionInfo>),
+    StaticStrUnit(Result<(), &'static str>),
+    Text(alloc::string::String),
+    StringU64(Result<u64, alloc::string::String>),
+    StringBool(Result<bool, alloc::string::String>),
+}
+
+pub(crate) trait CommandReplyPayload: Sized {
+    fn into_reply_value(self) -> CommandReplyValue;
+    fn take_reply_value(value: CommandReplyValue) -> Option<Self>;
+}
+
+macro_rules! command_reply_payload {
+    ($ty:ty, $variant:ident) => {
+        impl CommandReplyPayload for $ty {
+            fn into_reply_value(self) -> CommandReplyValue {
+                CommandReplyValue::$variant(self)
+            }
+
+            fn take_reply_value(value: CommandReplyValue) -> Option<Self> {
+                match value {
+                    CommandReplyValue::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+command_reply_payload!(Result<(), EndpointError>, EndpointUnit);
+command_reply_payload!(
+    Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError>,
+    TcpConnection
+);
+command_reply_payload!(
+    Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError>,
+    TcpAcceptor
+);
+command_reply_payload!(bool, Bool);
+command_reply_payload!(Result<u64, ()>, IcmpEcho);
+command_reply_payload!(Option<bool>, OptionBool);
+command_reply_payload!(Option<[u8; 16]>, OptionIpv6);
+command_reply_payload!(
+    Option<crate::net::api::config::InterfaceConfigSnapshot>,
+    OptionInterfaceConfig
+);
+command_reply_payload!(
+    Vec<crate::net::api::config::InterfaceConfigSnapshot>,
+    InterfaceConfigs
+);
+command_reply_payload!(
+    Option<crate::net::api::config::InterfaceStatsSnapshot>,
+    OptionInterfaceStats
+);
+command_reply_payload!(
+    Vec<crate::net::api::config::InterfaceStatsSnapshot>,
+    InterfaceStats
+);
+command_reply_payload!(Vec<crate::net::api::config::InterfaceSnapshot>, Interfaces);
+command_reply_payload!(crate::net::obs::NetSnapshot, NetworkSnapshot);
+command_reply_payload!(Vec<crate::net::obs::NetTraceEvent>, NetworkRecentEvents);
+command_reply_payload!(Vec<crate::net::api::connections::ArpCacheEntry>, ArpCache);
+command_reply_payload!(
+    Vec<crate::net::api::connections::UdpEndpointInfo>,
+    UdpEndpoints
+);
+command_reply_payload!(crate::net::api::dhcp::DhcpRuntimeState, DhcpState);
+command_reply_payload!(Vec<crate::net::api::dhcp::InterfaceDhcpState>, DhcpStates);
+command_reply_payload!(Result<(), alloc::string::String>, StringUnit);
+command_reply_payload!(Option<crate::net::api::dhcp::DhcpOfferInfo>, DhcpOffer);
+command_reply_payload!(Option<[u8; 4]>, OptionIpv4);
+command_reply_payload!(
+    Vec<crate::net::api::connections::TcpConnectionInfo>,
+    TcpConnections
+);
+command_reply_payload!(Result<(), &'static str>, StaticStrUnit);
+command_reply_payload!(alloc::string::String, Text);
+command_reply_payload!(Result<u64, alloc::string::String>, StringU64);
+command_reply_payload!(Result<bool, alloc::string::String>, StringBool);
+
+struct CommandReplyEntry {
+    value: Option<CommandReplyValue>,
+    waker: crate::sync::atomic_waker::AtomicWaker,
+}
+
+impl CommandReplyEntry {
+    const fn new() -> Self {
+        Self {
+            value: None,
+            waker: crate::sync::atomic_waker::AtomicWaker::new(),
+        }
+    }
+}
+
+pub(crate) struct CommandReplyRegistry {
+    next_id: AtomicU64,
+    entries: PoisonLock<BTreeMap<u64, CommandReplyEntry>>,
+}
+
+impl CommandReplyRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            entries: PoisonLock::new(BTreeMap::new()),
+        }
+    }
+
+    fn reserve<T: CommandReplyPayload>(
+        &self,
+        runtime: NetRuntimeHandle,
+    ) -> CommandReplyTicket<T> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(id, CommandReplyEntry::new());
+        }
+        CommandReplyTicket::new(runtime, id)
+    }
+
+    fn poll<T: CommandReplyPayload>(
+        &self,
+        ticket: CommandReplyTicket<T>,
+        cx: &mut Context<'_>,
+    ) -> Poll<T> {
+        if let Ok(mut entries) = self.entries.lock() {
+            if let Some(entry) = entries.get_mut(&ticket.id) {
+                if let Some(value) = entry.value.take() {
+                    entries.remove(&ticket.id);
+                    if let Some(value) = T::take_reply_value(value) {
+                        return Poll::Ready(value);
+                    }
+                    return Poll::Pending;
+                }
+                entry.waker.register(cx.waker());
+            }
+        }
+
+        if let Ok(mut entries) = self.entries.lock() {
+            if let Some(entry) = entries.get_mut(&ticket.id) {
+                if let Some(value) = entry.value.take() {
+                    entries.remove(&ticket.id);
+                    if let Some(value) = T::take_reply_value(value) {
+                        return Poll::Ready(value);
+                    }
+                }
+            }
+        }
+
+        Poll::Pending
+    }
+
+    fn complete<T: CommandReplyPayload>(&self, ticket: CommandReplyTicket<T>, value: T) {
+        if let Ok(mut entries) = self.entries.lock()
+            && let Some(entry) = entries.get_mut(&ticket.id)
+        {
+            entry.value = Some(value.into_reply_value());
+            entry.waker.wake();
+        }
+    }
+
+    fn unregister<T>(&self, ticket: CommandReplyTicket<T>) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.remove(&ticket.id);
+        }
+    }
+}
+
+pub(crate) struct CommandFuture<T> {
+    ticket: CommandReplyTicket<T>,
+}
+
+impl<T: CommandReplyPayload> Future for CommandFuture<T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        poll_command_result(&this.result_slot, &this.waker, cx)
+        poll_command_result(this.ticket, cx)
     }
 }
 
-pub(crate) fn poll_command_result<T>(
-    result_slot: &alloc::sync::Arc<PoisonLock<Option<T>>>,
-    waker: &alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+impl<T> Drop for CommandFuture<T> {
+    fn drop(&mut self) {
+        self.ticket
+            .runtime
+            .context()
+            .command_replies
+            .unregister(self.ticket);
+    }
+}
+
+pub(crate) fn poll_command_result<T: CommandReplyPayload>(
+    ticket: CommandReplyTicket<T>,
     cx: &mut Context<'_>,
 ) -> Poll<T> {
-    if let Ok(mut slot) = result_slot.lock() {
-        if let Some(result) = slot.take() {
-            return Poll::Ready(result);
-        }
-    }
-
-    waker.register(cx.waker());
-
-    if let Ok(mut slot) = result_slot.lock() {
-        if let Some(result) = slot.take() {
-            return Poll::Ready(result);
-        }
-    }
-
-    Poll::Pending
+    ticket.runtime.context().command_replies.poll(ticket, cx)
 }
 
-pub(crate) fn new_command_channel<T>() -> (
-    alloc::sync::Arc<PoisonLock<Option<T>>>,
-    alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+pub(crate) fn complete_command<T: CommandReplyPayload>(ticket: CommandReplyTicket<T>, value: T) {
+    ticket.runtime.context().command_replies.complete(ticket, value);
+}
+
+pub(crate) fn new_command_channel_in<T: CommandReplyPayload>(
+    runtime: NetRuntimeHandle,
+) -> (
+    CommandReplyTicket<T>,
     CommandFuture<T>,
 ) {
-    let result_slot = alloc::sync::Arc::new(PoisonLock::new(None));
-    let waker = alloc::sync::Arc::new(crate::sync::atomic_waker::AtomicWaker::new());
-    let future = CommandFuture {
-        result_slot: result_slot.clone(),
-        waker: waker.clone(),
-    };
-    (result_slot, waker, future)
+    let ticket = runtime.context().command_replies.reserve(runtime);
+    let future = CommandFuture { ticket };
+    (ticket, future)
 }
 
-pub(crate) fn new_detached_command_channel<T>() -> (
-    alloc::sync::Arc<PoisonLock<Option<T>>>,
-    alloc::sync::Arc<crate::sync::atomic_waker::AtomicWaker>,
+pub(crate) fn new_command_channel<T: CommandReplyPayload>() -> (
+    CommandReplyTicket<T>,
+    CommandFuture<T>,
 ) {
-    let (result_slot, waker, _future) = new_command_channel();
-    (result_slot, waker)
+    new_command_channel_in(default_runtime_context().handle())
+}
+
+pub(crate) fn new_detached_command_channel_in<T: CommandReplyPayload>(
+    runtime: NetRuntimeHandle,
+) -> CommandReplyTicket<T> {
+    runtime.context().command_replies.reserve(runtime)
+}
+
+pub(crate) fn new_detached_command_channel<T: CommandReplyPayload>() -> CommandReplyTicket<T> {
+    new_detached_command_channel_in(default_runtime_context().handle())
 }
 
 // ============================================================================

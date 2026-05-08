@@ -5,9 +5,21 @@
 
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command::{CommandReplyTicket, RuntimeCommand, complete_command};
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
+
+fn finish_raw_send(
+    reply: CommandReplyTicket<Result<(), EndpointError>>,
+    result: Result<(), EndpointError>,
+) -> EventHandleResult {
+    let handled = match result {
+        Ok(()) => EventHandleResult::Success,
+        Err(err) => EventHandleResult::ProtocolError(err),
+    };
+    complete_command(reply, result);
+    handled
+}
 
 impl RuntimeCommandHandler {
     pub(super) fn handle_raw_event_with_stack(
@@ -26,8 +38,7 @@ impl RuntimeCommandHandler {
                     payload,
                     ttl,
                     completion_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
@@ -89,14 +100,7 @@ impl RuntimeCommandHandler {
                     }
                     Err(EndpointError::NetworkUnreachable)
                 };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+                finish_raw_send(reply, result)
             }
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawTcpSend {
@@ -104,8 +108,7 @@ impl RuntimeCommandHandler {
                     dst_ip,
                     payload,
                     completion_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
@@ -142,14 +145,7 @@ impl RuntimeCommandHandler {
                     }
                     Err(EndpointError::ResourceExhausted)
                 };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+                finish_raw_send(reply, result)
             }
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawUdpV6Send {
@@ -160,8 +156,7 @@ impl RuntimeCommandHandler {
                     payload,
                     ttl,
                     completion_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
@@ -210,14 +205,7 @@ impl RuntimeCommandHandler {
                     }
                     Err(EndpointError::ResourceExhausted)
                 };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+                finish_raw_send(reply, result)
             }
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawTcpV6Send {
@@ -225,8 +213,7 @@ impl RuntimeCommandHandler {
                     dst_ip,
                     payload,
                     completion_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
@@ -267,14 +254,7 @@ impl RuntimeCommandHandler {
                     }
                     Err(EndpointError::ResourceExhausted)
                 };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+                finish_raw_send(reply, result)
             }
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawUdpSendOn {
@@ -286,8 +266,7 @@ impl RuntimeCommandHandler {
                     payload,
                     ttl,
                     completion_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
@@ -358,14 +337,7 @@ impl RuntimeCommandHandler {
                     }
                     Err(EndpointError::NetworkUnreachable)
                 };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+                finish_raw_send(reply, result)
             }
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawTcpSendOn {
@@ -374,8 +346,7 @@ impl RuntimeCommandHandler {
                     dst_ip,
                     payload,
                     completion_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
@@ -419,14 +390,7 @@ impl RuntimeCommandHandler {
                     }
                     Err(EndpointError::NetworkUnreachable)
                 };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+                finish_raw_send(reply, result)
             }
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
@@ -438,8 +402,7 @@ impl RuntimeCommandHandler {
                     payload,
                     ttl,
                     completion_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
@@ -493,14 +456,7 @@ impl RuntimeCommandHandler {
                     }
                     Err(EndpointError::ResourceExhausted)
                 };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+                finish_raw_send(reply, result)
             }
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
@@ -509,8 +465,7 @@ impl RuntimeCommandHandler {
                     dst_ip,
                     payload,
                     completion_id,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
@@ -558,14 +513,7 @@ impl RuntimeCommandHandler {
                     }
                     Err(EndpointError::NetworkUnreachable)
                 };
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result.clone());
-                }
-                waker.wake();
-                match result {
-                    Ok(()) => EventHandleResult::Success,
-                    Err(err) => EventHandleResult::ProtocolError(err),
-                }
+                finish_raw_send(reply, result)
             }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),
         }

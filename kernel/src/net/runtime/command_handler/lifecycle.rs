@@ -7,6 +7,7 @@ use crate::net::l4::tcp::tcb::tcb_table;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::RuntimeCommand;
+use crate::net::runtime::command::complete_command;
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 
 impl RuntimeCommandHandler {
@@ -72,46 +73,34 @@ impl RuntimeCommandHandler {
                     local,
                     remote,
                     scope,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let result =
                     self.make_tcp_connection_with_stack(runtime, local, remote, scope, stack);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
+                complete_command(reply, result);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::MulticastJoin {
                     group,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
                 let success = stack.join_multicast_group(ip).is_ok();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
+                complete_command(reply, success);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::MulticastLeave {
                     group,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
                 let success = stack.leave_multicast_group(ip).is_ok();
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(success);
-                }
-                waker.wake();
+                complete_command(reply, success);
                 EventHandleResult::Success
             }
             RuntimeCommand::Transport(
@@ -119,15 +108,11 @@ impl RuntimeCommandHandler {
                     local,
                     scope,
                     backlog,
-                    result_slot,
-                    waker,
+                    reply,
                 },
             ) => {
                 let result = self.make_tcp_acceptor_with_stack(runtime, local, scope, backlog);
-                if let Ok(mut slot) = result_slot.lock() {
-                    *slot = Some(result);
-                }
-                waker.wake();
+                complete_command(reply, result);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(

@@ -39,27 +39,26 @@ pub struct ArpCacheEntry {
 // 非同期API（推奨）
 // ============================================================================
 
-use crate::sync::PoisonLock;
-use crate::sync::atomic_waker::AtomicWaker;
-use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use crate::net::runtime::command::{CommandFuture, CommandReplyTicket, new_command_channel_in};
 
 /// 非同期ARPキャッシュ取得Future
 pub struct GetArpCacheFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<Vec<ArpCacheEntry>>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<Vec<ArpCacheEntry>>,
+    command_future: CommandFuture<Vec<ArpCacheEntry>>,
     sent: bool,
 }
 
 impl GetArpCacheFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -75,8 +74,7 @@ impl Future for GetArpCacheFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetArpCache {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -86,7 +84,7 @@ impl Future for GetArpCacheFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 
@@ -107,17 +105,18 @@ pub fn enqueue_arp_cache_insert_in(runtime: NetRuntimeHandle, ip: Ipv4Address, m
 /// 非同期UDPエンドポイント一覧取得Future
 pub struct GetUdpEndpointsFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<Vec<UdpEndpointInfo>>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<Vec<UdpEndpointInfo>>,
+    command_future: CommandFuture<Vec<UdpEndpointInfo>>,
     sent: bool,
 }
 
 impl GetUdpEndpointsFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -133,8 +132,7 @@ impl Future for GetUdpEndpointsFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetUdpEndpoints {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -144,7 +142,7 @@ impl Future for GetUdpEndpointsFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 
@@ -155,17 +153,18 @@ pub fn get_udp_endpoints_in(runtime: NetRuntimeHandle) -> GetUdpEndpointsFuture 
 /// 非同期TCP接続一覧取得Future
 pub struct GetTcpConnectionsFuture {
     runtime: NetRuntimeHandle,
-    result_slot: Arc<PoisonLock<Option<Vec<TcpConnectionInfo>>>>,
-    waker: Arc<AtomicWaker>,
+    reply: CommandReplyTicket<Vec<TcpConnectionInfo>>,
+    command_future: CommandFuture<Vec<TcpConnectionInfo>>,
     sent: bool,
 }
 
 impl GetTcpConnectionsFuture {
     fn new(runtime: NetRuntimeHandle) -> Self {
+        let (reply, command_future) = new_command_channel_in(runtime);
         Self {
             runtime,
-            result_slot: Arc::new(PoisonLock::new(None)),
-            waker: Arc::new(AtomicWaker::new()),
+            reply,
+            command_future,
             sent: false,
         }
     }
@@ -181,8 +180,7 @@ impl Future for GetTcpConnectionsFuture {
             let mut enqueue = crate::net::runtime::command::send_command_in(
                 this.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetTcpConnections {
-                    result_slot: this.result_slot.clone(),
-                    waker: this.waker.clone(),
+                    reply: this.reply,
                 }),
             );
             match core::future::Future::poll(core::pin::Pin::new(&mut enqueue), cx) {
@@ -192,7 +190,7 @@ impl Future for GetTcpConnectionsFuture {
             }
         }
 
-        crate::net::runtime::command::poll_command_result(&this.result_slot, &this.waker, cx)
+        Pin::new(&mut this.command_future).poll(cx)
     }
 }
 

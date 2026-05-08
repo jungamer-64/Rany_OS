@@ -2,8 +2,8 @@
 // kernel/src/net/runtime/context.rs - ランタイム / context
 // ============================================================================
 
-use crate::net::runtime::command::RuntimeCommandQueue;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
+use crate::net::runtime::command::{CommandReplyRegistry, RuntimeCommandQueue};
 use crate::net::runtime::device::{NetDeviceManager, TxCompletionState, TxLeaseState};
 use crate::net::runtime::manager::NetworkManager;
 use crate::net::runtime::stack::NetworkStack;
@@ -59,6 +59,7 @@ pub struct NetRuntimeContext {
     pub(crate) stack: PoisonLock<Option<NetworkStack>>,
     pub(crate) manager: PoisonLock<Option<NetworkManager>>,
     pub(crate) command_queue: RuntimeCommandQueue,
+    pub(crate) command_replies: CommandReplyRegistry,
     pub(crate) command_task_running: AtomicBool,
     pub(crate) command_task_ready_waiters: WakerQueue,
     pub(crate) tx_completion_next_id: AtomicU64,
@@ -81,6 +82,7 @@ impl NetRuntimeContext {
             stack: PoisonLock::new(None),
             manager: PoisonLock::new(None),
             command_queue: RuntimeCommandQueue::new(),
+            command_replies: CommandReplyRegistry::new(),
             command_task_running: AtomicBool::new(false),
             command_task_ready_waiters: WakerQueue::new(),
             tx_completion_next_id: AtomicU64::new(1),
