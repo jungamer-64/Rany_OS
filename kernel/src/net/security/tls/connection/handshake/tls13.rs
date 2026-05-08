@@ -237,7 +237,7 @@ impl TlsConnection {
         let signature = data
             .slice(4, sig_len)
             .ok_or(TlsError::DecodeError)?
-            .read_prefix::<1024>(sig_len)
+            .read_fixed_bytes::<1024>(sig_len)
             .ok_or(TlsError::DecodeError)?;
 
         self.verify_tls13_certificate_verify(sig_algorithm, signature.as_slice())?;
@@ -382,7 +382,7 @@ impl TlsConnection {
             return Err(TlsError::DecodeError);
         }
         let received = data
-            .read_prefix::<SHA384_OUTPUT_SIZE>(hash_len)
+            .read_fixed_bytes::<SHA384_OUTPUT_SIZE>(hash_len)
             .ok_or(TlsError::DecodeError)?;
 
         if self

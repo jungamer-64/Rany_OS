@@ -352,15 +352,15 @@ impl MdnsService {
         name: &DnsNameOwned,
     ) -> Option<kernel_api::resource::net::PacketPayload> {
         let mut builder = PacketPayloadBuilder::new();
-        builder.push_bytes(&0u16.to_be_bytes())?;
-        builder.push_bytes(&MDNS_QUERY_FLAGS.to_be_bytes())?;
-        builder.push_bytes(&1u16.to_be_bytes())?;
-        builder.push_bytes(&0u16.to_be_bytes())?;
-        builder.push_bytes(&0u16.to_be_bytes())?;
-        builder.push_bytes(&0u16.to_be_bytes())?;
+        builder.push_generated_bytes(&0u16.to_be_bytes())?;
+        builder.push_generated_bytes(&MDNS_QUERY_FLAGS.to_be_bytes())?;
+        builder.push_generated_bytes(&1u16.to_be_bytes())?;
+        builder.push_generated_bytes(&0u16.to_be_bytes())?;
+        builder.push_generated_bytes(&0u16.to_be_bytes())?;
+        builder.push_generated_bytes(&0u16.to_be_bytes())?;
         push_dns_name_payload(&mut builder, name)?;
-        builder.push_bytes(&DNS_TYPE_A.to_be_bytes())?;
-        builder.push_bytes(&DNS_CLASS_IN.to_be_bytes())?;
+        builder.push_generated_bytes(&DNS_TYPE_A.to_be_bytes())?;
+        builder.push_generated_bytes(&DNS_CLASS_IN.to_be_bytes())?;
         Some(builder.build())
     }
 
@@ -370,18 +370,18 @@ impl MdnsService {
         ttl: u32,
     ) -> Option<kernel_api::resource::net::PacketPayload> {
         let mut builder = PacketPayloadBuilder::new();
-        builder.push_bytes(&0u16.to_be_bytes())?;
-        builder.push_bytes(&MDNS_RESPONSE_FLAGS.to_be_bytes())?;
-        builder.push_bytes(&0u16.to_be_bytes())?;
-        builder.push_bytes(&1u16.to_be_bytes())?;
-        builder.push_bytes(&0u16.to_be_bytes())?;
-        builder.push_bytes(&0u16.to_be_bytes())?;
+        builder.push_generated_bytes(&0u16.to_be_bytes())?;
+        builder.push_generated_bytes(&MDNS_RESPONSE_FLAGS.to_be_bytes())?;
+        builder.push_generated_bytes(&0u16.to_be_bytes())?;
+        builder.push_generated_bytes(&1u16.to_be_bytes())?;
+        builder.push_generated_bytes(&0u16.to_be_bytes())?;
+        builder.push_generated_bytes(&0u16.to_be_bytes())?;
         push_dns_name_payload(&mut builder, name)?;
-        builder.push_bytes(&DNS_TYPE_A.to_be_bytes())?;
-        builder.push_bytes(&(DNS_CLASS_IN | MDNS_CACHE_FLUSH_BIT).to_be_bytes())?;
-        builder.push_bytes(&ttl.to_be_bytes())?;
-        builder.push_bytes(&4u16.to_be_bytes())?;
-        builder.push_bytes(ip.as_bytes())?;
+        builder.push_generated_bytes(&DNS_TYPE_A.to_be_bytes())?;
+        builder.push_generated_bytes(&(DNS_CLASS_IN | MDNS_CACHE_FLUSH_BIT).to_be_bytes())?;
+        builder.push_generated_bytes(&ttl.to_be_bytes())?;
+        builder.push_generated_bytes(&4u16.to_be_bytes())?;
+        builder.push_generated_bytes(ip.as_bytes())?;
         Some(builder.build())
     }
 
@@ -562,11 +562,11 @@ fn push_dns_name_payload(builder: &mut PacketPayloadBuilder, name: &DnsNameOwned
         if len > DNS_LABEL_MAX_LEN {
             return None;
         }
-        builder.push_bytes(&[len as u8])?;
+        builder.push_generated_bytes(&[len as u8])?;
         let span = label.span(name.payload())?;
         let mut pushed = true;
         span.for_each_chunk(|chunk| {
-            if pushed && builder.push_bytes(chunk).is_none() {
+            if pushed && builder.push_generated_bytes(chunk).is_none() {
                 pushed = false;
             }
         });
@@ -574,7 +574,7 @@ fn push_dns_name_payload(builder: &mut PacketPayloadBuilder, name: &DnsNameOwned
             return None;
         }
     }
-    builder.push_bytes(&[0])
+    builder.push_generated_bytes(&[0])
 }
 
 /// DNS名をデコード (ラベル圧縮対応)
@@ -666,7 +666,7 @@ pub fn decode_dns_name_view(
             return None;
         }
 
-        let label = view.read_prefix::<DNS_LABEL_MAX_LEN>(current, label_len)?;
+        let label = view.read_fixed_bytes::<DNS_LABEL_MAX_LEN>(current, label_len)?;
         for &byte in label.as_slice() {
             name.push(byte as char);
         }

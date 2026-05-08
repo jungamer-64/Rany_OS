@@ -413,7 +413,7 @@ impl NetworkStack {
                 }
 
                 let mut builder = PacketPayloadBuilder::new();
-                let Some(()) = builder.push_bytes(data) else {
+                let Some(()) = builder.push_generated_bytes(data) else {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
                 if self.send_udp_raw_with_config_and_if_ttl_payload(
@@ -442,7 +442,7 @@ impl NetworkStack {
                 },
             ) => {
                 let mut builder = PacketPayloadBuilder::new();
-                let Some(()) = builder.push_bytes(data) else {
+                let Some(()) = builder.push_generated_bytes(data) else {
                     return Err(crate::net::types::NetworkError::TransmitFailed);
                 };
                 let payload = builder.build();

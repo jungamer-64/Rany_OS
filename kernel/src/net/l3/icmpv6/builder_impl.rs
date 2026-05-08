@@ -17,7 +17,7 @@ impl Icmpv6Builder {
                 return;
             }
             let take = (len - copied).min(chunk.len());
-            if take > 0 && builder.push_bytes(&chunk[..take]).is_some() {
+            if take > 0 && builder.push_generated_bytes(&chunk[..take]).is_some() {
                 copied += take;
             }
         });

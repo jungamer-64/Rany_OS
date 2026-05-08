@@ -244,7 +244,7 @@ fn datetime_to_unix(year: u32, month: u32, day: u32, hour: u32, min: u32, sec: u
 }
 
 fn parse_time_value(tag: u8, value: PayloadSpanRef<'_>) -> Option<u64> {
-    let bytes = value.read_prefix::<32>(value.total_len())?;
+    let bytes = value.read_fixed_bytes::<32>(value.total_len())?;
     let data = bytes.as_slice();
     match tag {
         0x17 => {

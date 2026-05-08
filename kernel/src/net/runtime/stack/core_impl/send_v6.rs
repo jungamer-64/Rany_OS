@@ -151,6 +151,9 @@ impl NetworkStack {
             if more_fragments && (fragment_data_len % 8 != 0) {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
+            if more_fragments || offset != 0 || fragment_data_len != total_payload_len {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
 
             let fragment_payload_len = 8 + fragment_data_len;
             let header_len = EthernetHeader::SIZE + IPV6_HEADER_SIZE + 8;
@@ -195,13 +198,7 @@ impl NetworkStack {
             drop(frame);
             packet.set_len(frame_len);
 
-            let (fragment_payload, next_remaining) =
-                crate::net::payload::split_payload_prefix_owned(
-                    remaining_payload,
-                    fragment_data_len,
-                )
-                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            remaining_payload = next_remaining;
+            let fragment_payload = core::mem::take(&mut remaining_payload);
             let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
             crate::net::payload::append_payload(&mut frame_payload, fragment_payload);
             if !self.transmit_packet_on(if_id, frame_payload) {

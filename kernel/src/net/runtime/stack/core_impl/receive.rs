@@ -488,7 +488,7 @@ impl NetworkStack {
                 let mut quoted = unfragmentable;
                 if let Some(fh) = frag_header {
                     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    if builder.push_bytes(&fh).is_some() {
+                    if builder.push_generated_bytes(&fh).is_some() {
                         crate::net::payload::append_payload(&mut quoted, builder.build());
                     } else {
                         self.stats.record_rx_error();

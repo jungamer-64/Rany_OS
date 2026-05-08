@@ -3,9 +3,9 @@
 // ============================================================================
 
 use super::{
-    DhcpClient, DhcpHeader, DhcpLease, DhcpMessageType, DhcpOperation, DhcpOption,
-    DhcpResponseResult, DhcpState, DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE,
-    DHCP_SERVER_PORT,
+    DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE, DHCP_SERVER_PORT, DhcpClient,
+    DhcpHeader, DhcpLease, DhcpMessageType, DhcpOperation, DhcpOption, DhcpResponseResult,
+    DhcpState,
 };
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::payload::PacketPayloadBuilder;
@@ -45,9 +45,11 @@ impl DhcpClient {
         // Best-effort: ARP probe をイベントキュー経由で送信（デッドロック回避）
         crate::net::runtime::command::enqueue_command_ignore_in(
             self.runtime,
-            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe {
-                target_ip: *lease.ip_address.as_bytes(),
-            }),
+            crate::net::runtime::command::RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpProbe {
+                    target_ip: *lease.ip_address.as_bytes(),
+                },
+            ),
         );
         self.offered_probe_at.store(current_tick, Ordering::SeqCst);
 
@@ -269,7 +271,7 @@ impl DhcpClient {
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
                 let mut builder = PacketPayloadBuilder::new();
-                builder.push_bytes(&buf[..len]).is_some_and(|()| {
+                builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
                     send_dhcpv4_packet_on(
                         self.runtime,
                         if_id,
@@ -373,7 +375,7 @@ impl DhcpClient {
             // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
             Ok(len) => {
                 let mut builder = PacketPayloadBuilder::new();
-                builder.push_bytes(&buf[..len]).is_some_and(|()| {
+                builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
                     send_dhcpv4_packet_on(
                         self.runtime,
                         if_id,
@@ -431,7 +433,7 @@ impl DhcpClient {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.push_bytes(&buf[..len]).is_some_and(|()| {
+        Ok(builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,
@@ -491,7 +493,7 @@ impl DhcpClient {
             Ipv4Address::new([0, 0, 0, 0])
         };
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.push_bytes(&buf[..len]).is_some_and(|()| {
+        Ok(builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,
@@ -525,7 +527,7 @@ impl DhcpClient {
         };
 
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.push_bytes(&buf[..len]).is_some_and(|()| {
+        Ok(builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,
@@ -717,9 +719,11 @@ impl DhcpClient {
         // ARP probe をイベントキュー経由で送信（デッドロック回避）
         crate::net::runtime::command::enqueue_command_ignore_in(
             self.runtime,
-            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe {
-                target_ip: *offered_ip.as_bytes(),
-            }),
+            crate::net::runtime::command::RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpProbe {
+                    target_ip: *offered_ip.as_bytes(),
+                },
+            ),
         );
         self.offered_probe_at.store(current_tick, Ordering::SeqCst);
         false // wait for probe reply
@@ -748,9 +752,11 @@ impl DhcpClient {
         // また、将来的な競合を防ぐため、追加のプローブを定期的に送信
         crate::net::runtime::command::enqueue_command_ignore_in(
             self.runtime,
-            crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe {
-                target_ip: *offered_ip.as_bytes(),
-            }),
+            crate::net::runtime::command::RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ArpProbe {
+                    target_ip: *offered_ip.as_bytes(),
+                },
+            ),
         );
         false
     }

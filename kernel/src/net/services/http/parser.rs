@@ -6,7 +6,7 @@ use super::types::{
     HttpBodyView, HttpHeaderView, HttpInboundRequest, HttpInboundResponse, HttpMethod,
     HttpStatusCode, HttpVersion,
 };
-use crate::net::payload::{PayloadSpanRef, append_payload, split_payload_prefix_owned};
+use crate::net::payload::{PayloadSpanRef, append_payload};
 use alloc::vec::Vec;
 use kernel_api::resource::net::PacketPayload;
 
@@ -159,7 +159,10 @@ impl HttpParser {
         }
     }
 
-    fn take_message_payload(&mut self, consumed_len: usize) -> Result<PacketPayload, HttpParseError> {
+    fn take_message_payload(
+        &mut self,
+        consumed_len: usize,
+    ) -> Result<PacketPayload, HttpParseError> {
         let total_len = self.buffer.total_len();
         if consumed_len > total_len {
             return Err(HttpParseError::InvalidFormat);
@@ -172,18 +175,25 @@ impl HttpParser {
             return Ok(original);
         }
 
-        let Some((message, remaining)) = split_payload_prefix_owned(original, consumed_len) else {
+        if consumed_len != total_len {
             return Err(HttpParseError::InvalidFormat);
-        };
-        self.buffer = remaining;
-        Ok(message)
+        }
+        Ok(original)
     }
 
     fn parse_request_line(
         &self,
         full: &PayloadSpanRef<'_>,
         header_end: usize,
-    ) -> Result<(HttpMethod, crate::net::payload::PayloadRange, HttpVersion, usize), HttpParseError> {
+    ) -> Result<
+        (
+            HttpMethod,
+            crate::net::payload::PayloadRange,
+            HttpVersion,
+            usize,
+        ),
+        HttpParseError,
+    > {
         let (request_line, request_line_end) = self.parse_start_line(full, header_end)?;
         let (first_space, second_space) = self.find_first_two_spaces(&request_line)?;
         let method = self.parse_method_from_line(&request_line, first_space)?;
@@ -196,7 +206,15 @@ impl HttpParser {
         &self,
         full: &PayloadSpanRef<'_>,
         header_end: usize,
-    ) -> Result<(HttpVersion, HttpStatusCode, crate::net::payload::PayloadRange, usize), HttpParseError> {
+    ) -> Result<
+        (
+            HttpVersion,
+            HttpStatusCode,
+            crate::net::payload::PayloadRange,
+            usize,
+        ),
+        HttpParseError,
+    > {
         let (status_line, status_line_end) = self.parse_start_line(full, header_end)?;
         let (first_space, second_space) = self.find_first_two_spaces(&status_line)?;
 
@@ -413,7 +431,10 @@ impl HttpParser {
         }
 
         let body = span_slice(*full, body_start, len).ok_or(HttpParseError::InvalidFormat)?;
-        Ok(Some((Some(HttpBodyView::from_range(body.range())), body_end)))
+        Ok(Some((
+            Some(HttpBodyView::from_range(body.range())),
+            body_end,
+        )))
     }
 
     fn parse_close_delimited_body(
@@ -430,8 +451,8 @@ impl HttpParser {
             return Ok(Some((None, full.total_len())));
         }
 
-        let body = span_slice(*full, body_start, remaining_len)
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let body =
+            span_slice(*full, body_start, remaining_len).ok_or(HttpParseError::InvalidFormat)?;
         Ok(Some((
             Some(HttpBodyView::from_range(body.range())),
             full.total_len(),
@@ -521,8 +542,7 @@ impl HttpParser {
         line: &PayloadSpanRef<'a>,
     ) -> Result<(PayloadSpanRef<'a>, PayloadSpanRef<'a>), HttpParseError> {
         let colon = line.find_bytes(b":").ok_or(HttpParseError::InvalidFormat)?;
-        let name =
-            trim_span(span_slice(*line, 0, colon).ok_or(HttpParseError::InvalidFormat)?);
+        let name = trim_span(span_slice(*line, 0, colon).ok_or(HttpParseError::InvalidFormat)?);
         let value = trim_span(
             span_slice(*line, colon + 1, line.total_len().saturating_sub(colon + 1))
                 .ok_or(HttpParseError::InvalidFormat)?,

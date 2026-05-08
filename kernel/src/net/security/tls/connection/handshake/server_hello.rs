@@ -136,7 +136,7 @@ impl TlsConnection {
         }
 
         let peer_key = server_pubkey
-            .read_prefix::<128>(server_pubkey.total_len())
+            .read_fixed_bytes::<128>(server_pubkey.total_len())
             .ok_or(TlsError::DecodeError)?;
         let shared_secret = local_keypair
             .shared_secret(peer_key.as_slice())

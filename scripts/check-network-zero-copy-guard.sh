@@ -56,6 +56,28 @@ if rg -n "\\bOwnedPayloadRange\\b" "${network_tree[@]}" >/dev/null; then
   fail "found removed owned payload range abstraction"
 fi
 
+if rg -n "\\bsplit_payload_prefix_owned\\b|\\bdiscard_payload_prefix\\b" "${network_tree[@]}" >/dev/null; then
+  fail "found removed payload split/discard owner duplication root"
+fi
+
+if rg -n "\\bPayloadPrefix\\b|\\bread_prefix\\b" "${network_tree[@]}" >/dev/null; then
+  fail "found removed payload prefix materialization surface"
+fi
+
+if rg -n "\\bpub fn split_at\\b|\\bsplit_at:\\s*unsafe fn|\\bfn [A-Za-z0-9_]*split_at\\b" \
+  interfaces/kernel_api/src/types.rs kernel/src/net/datapath/mempool/mod.rs \
+  >/dev/null; then
+  fail "found removed PacketRef split backing surface"
+fi
+
+if rg -n "\\bpush_bytes\\b|\\bpush_str\\b" kernel/src/net/payload.rs >/dev/null; then
+  fail "found removed broad PacketPayloadBuilder byte/string ingestion API"
+fi
+
+if rg -n "\\.push_bytes\\(" "${network_tree[@]}" >/dev/null; then
+  fail "found call to removed broad PacketPayloadBuilder byte ingestion API"
+fi
+
 if rg -n "\\bpayload_span_from_slice\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed TLS slice-to-owned-payload helper"
 fi

@@ -255,12 +255,11 @@ impl TlsConnection {
             if view.total_len() < total_len {
                 break;
             }
+            if view.total_len() != total_len {
+                return Err(TlsError::DecodeError);
+            }
 
-            let recv_buffer = core::mem::take(&mut self.record.recv_buffer);
-            let (record, remainder) =
-                crate::net::payload::split_payload_prefix_owned(recv_buffer, total_len)
-                    .ok_or(TlsError::DecodeError)?;
-            self.record.recv_buffer = remainder;
+            let record = core::mem::take(&mut self.record.recv_buffer);
             self.consume_tls_record_payload(record, &mut plaintext)?;
         }
         Ok(plaintext)
@@ -384,10 +383,12 @@ impl TlsConnection {
         ];
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder
-            .push_bytes(&record_header)
+            .push_generated_bytes(&record_header)
             .ok_or(TlsError::DecodeError)?;
         builder.push_payload(ciphertext);
-        builder.push_bytes(&auth_tag).ok_or(TlsError::DecodeError)?;
+        builder
+            .push_generated_bytes(&auth_tag)
+            .ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
 

@@ -116,17 +116,21 @@ impl ConnectionOooQueue {
         while i < self.segments.len() {
             let (seq, _packet) = &self.segments[i];
             if seq_before(*seq, rcv_nxt) {
-                let (seq, mut packet) = self.segments.remove(i);
+                let (seq, packet) = self.segments.remove(i);
                 let seg_end = seq.wrapping_add(packet.total_len() as u32);
 
                 if seq_before(rcv_nxt, seg_end) {
                     // 部分的な重複: rcv_nxtより前の部分をカットして再挿入候補にする
                     let overlap = rcv_nxt.wrapping_sub(seq) as usize;
-                    if !crate::net::payload::discard_payload_prefix(&mut packet, overlap) {
+                    let Some(trimmed) = crate::net::payload::retain_payload_window_owned(
+                        packet,
+                        overlap,
+                        seg_end.wrapping_sub(rcv_nxt) as usize,
+                    ) else {
                         GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
                         continue;
-                    }
-                    to_reinsert.push((rcv_nxt, packet));
+                    };
+                    to_reinsert.push((rcv_nxt, trimmed));
                     // GLOBAL_OOO_COUNT remains the same because this segment is
                     // essentially replaced by a trimmed version.
                 } else {

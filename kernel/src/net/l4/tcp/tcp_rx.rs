@@ -362,7 +362,7 @@ impl TcpOptionsScratch {
             bytes: [0u8; 40],
         };
         if options_len > 0 {
-            let options = view.read_prefix::<40>(20, options_len)?;
+            let options = view.read_fixed_bytes::<40>(20, options_len)?;
             scratch.bytes[..options_len].copy_from_slice(options.as_slice());
         }
 
@@ -951,10 +951,15 @@ fn handle_data_received_with_delayed_ack(
             }
         } else {
             // Trim prefix
-            if !crate::net::payload::discard_payload_prefix(&mut data_payload, skip) {
+            let Some(trimmed) = crate::net::payload::retain_payload_window_owned(
+                data_payload,
+                skip,
+                payload_len as usize - skip,
+            ) else {
                 send_ack_for_fast_path(&tcb, tcb.rcv_nxt);
                 return;
-            }
+            };
+            data_payload = trimmed;
             payload_len -= skip as u32;
             seq_num = tcb.rcv_nxt;
         }

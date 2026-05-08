@@ -143,7 +143,7 @@ impl TcpSegmentBuilder {
     /// データ設定
     pub fn payload(mut self, data: &[u8]) -> Self {
         let mut builder = PacketPayloadBuilder::new();
-        if builder.push_bytes(data).is_some() {
+        if builder.push_generated_bytes(data).is_some() {
             self.data = TcpSegmentPayload::Packet(builder.build());
         }
         self

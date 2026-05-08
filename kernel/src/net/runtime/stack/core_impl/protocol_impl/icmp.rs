@@ -306,7 +306,7 @@ impl NetworkStack {
         if header_len < 20 || total_len < header_len {
             return false;
         }
-        let Some(header_storage) = original_packet.read_prefix::<60>(0, header_len) else {
+        let Some(header_storage) = original_packet.read_fixed_bytes::<60>(0, header_len) else {
             return false;
         };
         let header_buf = header_storage.as_slice();

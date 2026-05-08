@@ -741,9 +741,9 @@ impl<'a> Future for SendPayloadFuture<'a> {
         }
 
         match inner.send_payload(payload) {
-            Ok(queued) => {
+            Ok(()) => {
                 if let Some(tcp) = inner.tcp_mut() {
-                    tcp.stats.record_tx_enqueued(queued);
+                    tcp.stats.record_tx_enqueued(payload_len);
                 }
             }
             Err(err) => return Poll::Ready(Err(tcp_error_from_socket(err))),

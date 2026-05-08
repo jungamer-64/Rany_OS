@@ -20,6 +20,26 @@ pub struct PayloadRange {
     len: usize,
 }
 
+#[derive(Debug)]
+pub struct FixedPayloadBytes<const N: usize> {
+    bytes: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> FixedPayloadBytes<N> {
+    pub const fn as_slice(&self) -> &[u8] {
+        self.bytes.split_at(self.len).0
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
 impl PayloadRange {
     pub const fn new(offset: usize, len: usize) -> Self {
         Self { offset, len }
@@ -111,6 +131,13 @@ impl<'a> PayloadSpanRef<'a> {
             return None;
         }
         PacketPayloadView::new(self.payload).read_array(self.offset + index)
+    }
+
+    pub fn read_fixed_bytes<const N: usize>(&self, len: usize) -> Option<FixedPayloadBytes<N>> {
+        if len > self.len || len > N {
+            return None;
+        }
+        PacketPayloadView::new(self.payload).read_fixed_bytes(self.offset, len)
     }
 
     pub fn read_u8(&self, index: usize) -> Option<u8> {
@@ -313,6 +340,20 @@ impl PacketPayloadBuilder {
         self.segments.extend(payload.into_segments());
     }
 
+    pub fn push_generated_bytes(&mut self, data: &[u8]) -> Option<()> {
+        if data.is_empty() {
+            return Some(());
+        }
+        let mut packet = alloc_packet_with_headroom(data.len(), DEFAULT_PACKET_HEADROOM)?;
+        packet.data_mut()[..data.len()].copy_from_slice(data);
+        self.segments.push(packet);
+        Some(())
+    }
+
+    pub fn push_generated_str(&mut self, data: &str) -> Option<()> {
+        self.push_generated_bytes(data.as_bytes())
+    }
+
     pub fn build(self) -> PacketPayload {
         match self.segments.len() {
             0 => PacketPayload::default(),
@@ -435,6 +476,46 @@ impl<'a> PacketPayloadView<'a> {
         });
 
         (copied == N).then_some(out)
+    }
+
+    pub fn read_fixed_bytes<const N: usize>(
+        &self,
+        offset: usize,
+        len: usize,
+    ) -> Option<FixedPayloadBytes<N>> {
+        if len > N || offset.checked_add(len)? > self.total_len() {
+            return None;
+        }
+
+        let mut bytes = [0u8; N];
+        let mut payload_cursor = 0usize;
+        let mut copied = 0usize;
+
+        self.for_each_chunk(|chunk| {
+            if copied == len {
+                return;
+            }
+
+            let chunk_start = payload_cursor;
+            let chunk_end = payload_cursor.saturating_add(chunk.len());
+            payload_cursor = chunk_end;
+
+            if chunk_end <= offset {
+                return;
+            }
+
+            let local_start = offset.saturating_sub(chunk_start);
+            let available = chunk.len().saturating_sub(local_start);
+            let take = available.min(len.saturating_sub(copied));
+            if take == 0 {
+                return;
+            }
+
+            bytes[copied..copied + take].copy_from_slice(&chunk[local_start..local_start + take]);
+            copied += take;
+        });
+
+        (copied == len).then_some(FixedPayloadBytes { bytes, len })
     }
 
     pub fn read_u8(&self, offset: usize) -> Option<u8> {

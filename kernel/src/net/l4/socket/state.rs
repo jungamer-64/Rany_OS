@@ -9,7 +9,7 @@ use core::ops::{Deref, DerefMut};
 use crate::net::l4::tcp::TcpStats;
 use crate::net::l4::tcp::congestion::CongestionAlgorithm;
 use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketResult};
-use crate::net::payload::{PacketPayloadView, append_payload};
+use crate::net::payload::{PayloadSpanRef, append_payload};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
@@ -76,14 +76,64 @@ pub(crate) struct TcpSocketEntry {
     pub state: TcpSocketState,
     pub accept_queue: VecDeque<AcceptedConnection>,
     pub accept_backlog: usize,
-    pub recv_payload_queue: VecDeque<PacketPayload>,
+    pub recv_payload_queue: VecDeque<QueuedPayload>,
     pub recv_payload_bytes: usize,
-    pub send_payload_queue: VecDeque<PacketPayload>,
+    pub send_payload_queue: VecDeque<QueuedPayload>,
     pub send_payload_bytes: usize,
     pub nodelay: bool,
     pub urgent_pending: bool,
     pub congestion_algorithm: Option<CongestionAlgorithm>,
     pub stats: TcpStats,
+}
+
+pub(crate) struct QueuedPayload {
+    payload: PacketPayload,
+    consumed: usize,
+}
+
+impl QueuedPayload {
+    pub fn new(payload: PacketPayload) -> Self {
+        Self {
+            payload,
+            consumed: 0,
+        }
+    }
+
+    fn remaining_len(&self) -> usize {
+        self.payload.total_len().saturating_sub(self.consumed)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.remaining_len() == 0
+    }
+
+    fn first_byte(&self) -> Option<u8> {
+        PayloadSpanRef::from_range(&self.payload, self.consumed, self.remaining_len())?.byte_at(0)
+    }
+
+    fn copy_remaining_to(&mut self, buf: &mut [u8]) -> usize {
+        let take = self.remaining_len().min(buf.len());
+        let Some(span) = PayloadSpanRef::from_range(&self.payload, self.consumed, take) else {
+            return 0;
+        };
+
+        let mut written = 0usize;
+        span.for_each_chunk(|chunk| {
+            if written == take {
+                return;
+            }
+            let chunk_len = chunk.len().min(take - written);
+            buf[written..written + chunk_len].copy_from_slice(&chunk[..chunk_len]);
+            written += chunk_len;
+        });
+        self.consumed = self.consumed.saturating_add(written);
+        written
+    }
+
+    fn into_remaining_payload(self) -> Option<PacketPayload> {
+        let len = self.remaining_len();
+        crate::net::payload::retain_payload_window_owned(self.payload, self.consumed, len)
+    }
 }
 
 impl TcpSocketEntry {
@@ -349,13 +399,13 @@ impl SocketState {
     }
 
     #[inline]
-    fn trim_empty_payloads(queue: &mut VecDeque<PacketPayload>) {
+    fn trim_empty_payloads(queue: &mut VecDeque<QueuedPayload>) {
         while matches!(queue.front(), Some(payload) if payload.is_empty()) {
             queue.pop_front();
         }
     }
 
-    fn drain_send_prefix(queue: &mut VecDeque<PacketPayload>, len: usize) -> Option<PacketPayload> {
+    fn drain_send_prefix(queue: &mut VecDeque<QueuedPayload>, len: usize) -> Option<PacketPayload> {
         if len == 0 {
             return Some(PacketPayload::default());
         }
@@ -365,23 +415,18 @@ impl SocketState {
 
         while remaining > 0 {
             let front = queue.pop_front()?;
-            let front_len = front.total_len();
+            let front_len = front.remaining_len();
             if front_len <= remaining {
-                append_payload(&mut taken, front);
+                append_payload(&mut taken, front.into_remaining_payload()?);
                 remaining -= front_len;
                 continue;
             }
 
-            let (prefix, remainder) =
-                crate::net::payload::split_payload_prefix_owned(front, remaining)?;
-            append_payload(&mut taken, prefix);
-            if !remainder.is_empty() {
-                queue.push_front(remainder);
-            }
-            remaining = 0;
+            queue.push_front(front);
+            break;
         }
 
-        Some(taken)
+        (!taken.is_empty()).then_some(taken)
     }
 
     #[inline]
@@ -418,37 +463,21 @@ impl SocketState {
 
     #[inline]
     pub fn recv_from_buffer(&mut self, buf: &mut [u8]) -> usize {
-        let Some(tcp) = self.tcp_mut() else {
-            return 0;
+        let len = {
+            let Some(tcp) = self.tcp_mut() else {
+                return 0;
+            };
+
+            Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
+            let Some(front) = tcp.recv_payload_queue.front_mut() else {
+                return 0;
+            };
+
+            let len = front.copy_remaining_to(buf);
+            tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_sub(len);
+            Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
+            len
         };
-
-        Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
-        let Some(front) = tcp.recv_payload_queue.pop_front() else {
-            return 0;
-        };
-
-        let take = front.total_len().min(buf.len());
-        let Some((taken, remainder)) = crate::net::payload::split_payload_prefix_owned(front, take)
-        else {
-            return 0;
-        };
-
-        let view = PacketPayloadView::new(&taken);
-        let mut len = 0usize;
-        view.for_each_chunk(|chunk| {
-            if len == take {
-                return;
-            }
-            let chunk_len = chunk.len().min(take - len);
-            buf[len..len + chunk_len].copy_from_slice(&chunk[..chunk_len]);
-            len += chunk_len;
-        });
-
-        if !remainder.is_empty() {
-            tcp.recv_payload_queue.push_front(remainder);
-        }
-        tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_sub(len);
-        Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
 
         if len > 0 {
             if let Some(waker) = self.send_waker.take() {
@@ -467,15 +496,16 @@ impl SocketState {
         let payload = match max_len {
             Some(limit) => {
                 let front = tcp.recv_payload_queue.pop_front()?;
-                let take = limit.min(front.total_len());
-                let (taken, remainder) =
-                    crate::net::payload::split_payload_prefix_owned(front, take)?;
-                if !remainder.is_empty() {
-                    tcp.recv_payload_queue.push_front(remainder);
+                if front.remaining_len() > limit {
+                    tcp.recv_payload_queue.push_front(front);
+                    return None;
                 }
-                taken
+                front.into_remaining_payload()?
             }
-            None => tcp.recv_payload_queue.pop_front()?,
+            None => tcp
+                .recv_payload_queue
+                .pop_front()?
+                .into_remaining_payload()?,
         };
 
         tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_sub(payload.total_len());
@@ -491,30 +521,23 @@ impl SocketState {
     }
 
     #[inline]
-    pub fn send_payload(&mut self, payload: PacketPayload) -> SocketResult<usize> {
+    pub fn send_payload(&mut self, payload: PacketPayload) -> SocketResult<()> {
         let available = self
             .send_buffer_limit
             .saturating_sub(self.send_payload_bytes());
 
-        if available == 0 {
+        if available == 0 || payload.total_len() > available {
             return Err(EndpointError::BufferFull);
         }
 
-        let queued = if payload.total_len() > available {
-            let (queued, _) = crate::net::payload::split_payload_prefix_owned(payload, available)
-                .ok_or(EndpointError::BufferFull)?;
-            queued
-        } else {
-            payload
-        };
-
+        let queued = payload;
         let len = queued.total_len();
         let Some(tcp) = self.tcp_mut() else {
             return Err(EndpointError::InvalidArgument);
         };
         tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_add(len);
-        tcp.send_payload_queue.push_back(queued);
-        Ok(len)
+        tcp.send_payload_queue.push_back(QueuedPayload::new(queued));
+        Ok(())
     }
 
     #[inline]
@@ -531,7 +554,8 @@ impl SocketState {
         let len = payload.total_len();
         if let Some(tcp) = self.tcp_mut() {
             tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_add(len);
-            tcp.send_payload_queue.push_front(payload);
+            tcp.send_payload_queue
+                .push_front(QueuedPayload::new(payload));
         }
     }
 
@@ -539,7 +563,7 @@ impl SocketState {
     pub fn peek_send_byte(&self) -> Option<u8> {
         let tcp = self.tcp()?;
         let payload = tcp.send_payload_queue.front()?;
-        PacketPayloadView::new(payload).first_byte()
+        payload.first_byte()
     }
 
     #[inline]
@@ -561,22 +585,18 @@ impl SocketState {
             return 0;
         }
 
-        let queued = if payload.total_len() > available {
-            match crate::net::payload::split_payload_prefix_owned(payload, available) {
-                Some((payload, _)) => payload,
-                None => return 0,
-            }
-        } else {
-            payload
-        };
+        if payload.total_len() > available {
+            return 0;
+        }
 
+        let queued = payload;
         let len = queued.total_len();
         if len > 0 {
             let Some(tcp) = self.tcp_mut() else {
                 return 0;
             };
             tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_add(len);
-            tcp.recv_payload_queue.push_back(queued);
+            tcp.recv_payload_queue.push_back(QueuedPayload::new(queued));
             Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
 
             if let Some(waker) = self.recv_waker.take() {
@@ -591,5 +611,86 @@ impl SocketState {
         if let Some(waker) = self.connect_waker.take() {
             waker.wake();
         }
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use crate::net::payload::PacketPayloadBuilder;
+
+    fn payload_bytes(data: &[u8]) -> PacketPayload {
+        let mut builder = PacketPayloadBuilder::new();
+        builder
+            .push_generated_bytes(data)
+            .expect("test payload allocation");
+        builder.build()
+    }
+
+    #[cfg_attr(target_os = "linux", test)]
+    #[cfg_attr(not(target_os = "linux"), test_case)]
+    pub fn test_send_payload_rejects_partial_enqueue_without_slicing() {
+        let mut state = SocketState::new_tcp(TcpSocketState::Connected);
+        state.send_buffer_limit = 4;
+
+        assert_eq!(
+            state.send_payload(payload_bytes(b"abcde")),
+            Err(EndpointError::BufferFull)
+        );
+        assert_eq!(state.send_payload_bytes(), 0);
+        assert!(!state.has_send_data());
+
+        state.send_buffer_limit = 5;
+        assert_eq!(state.send_payload(payload_bytes(b"abcde")), Ok(()));
+        assert_eq!(state.send_payload_bytes(), 5);
+    }
+
+    #[cfg_attr(target_os = "linux", test)]
+    #[cfg_attr(not(target_os = "linux"), test_case)]
+    pub fn test_take_send_payload_prefix_does_not_split_front_payload() {
+        let mut state = SocketState::new_tcp(TcpSocketState::Connected);
+        assert_eq!(state.send_payload(payload_bytes(b"abcde")), Ok(()));
+
+        assert!(state.take_send_payload_prefix(4).is_none());
+        assert_eq!(state.send_payload_bytes(), 5);
+
+        let payload = state
+            .take_send_payload_prefix(5)
+            .expect("whole payload should be moved");
+        assert_eq!(payload.total_len(), 5);
+        assert_eq!(state.send_payload_bytes(), 0);
+    }
+
+    #[cfg_attr(target_os = "linux", test)]
+    #[cfg_attr(not(target_os = "linux"), test_case)]
+    pub fn test_recv_payload_limit_does_not_split_front_payload() {
+        let mut state = SocketState::new_tcp(TcpSocketState::Connected);
+        assert_eq!(state.push_recv_payload(payload_bytes(b"abcde")), 5);
+
+        assert!(state.recv_payload(Some(4)).is_none());
+        assert_eq!(state.recv_payload_bytes(), 5);
+
+        let payload = state
+            .recv_payload(Some(5))
+            .expect("whole payload should be moved");
+        assert_eq!(payload.total_len(), 5);
+        assert_eq!(state.recv_payload_bytes(), 0);
+    }
+
+    #[cfg_attr(target_os = "linux", test)]
+    #[cfg_attr(not(target_os = "linux"), test_case)]
+    pub fn test_recv_from_buffer_advances_payload_cursor_without_split() {
+        let mut state = SocketState::new_tcp(TcpSocketState::Connected);
+        assert_eq!(state.push_recv_payload(payload_bytes(b"abcde")), 5);
+
+        let mut first = [0u8; 2];
+        assert_eq!(state.recv_from_buffer(&mut first), 2);
+        assert_eq!(&first, b"ab");
+        assert_eq!(state.recv_payload_bytes(), 3);
+
+        let mut second = [0u8; 3];
+        assert_eq!(state.recv_from_buffer(&mut second), 3);
+        assert_eq!(&second, b"cde");
+        assert_eq!(state.recv_payload_bytes(), 0);
     }
 }

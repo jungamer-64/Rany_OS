@@ -38,14 +38,14 @@ impl DnsClient {
                 return Err("Label too long");
             }
             builder
-                .push_bytes(&[len as u8])
+                .push_generated_bytes(&[len as u8])
                 .ok_or("Failed to allocate DNS label")?;
             let span = label
                 .span(name.payload())
                 .ok_or("Invalid DNS label payload range")?;
             let mut pushed = true;
             span.for_each_chunk(|chunk| {
-                if pushed && builder.push_bytes(chunk).is_none() {
+                if pushed && builder.push_generated_bytes(chunk).is_none() {
                     pushed = false;
                 }
             });
@@ -54,7 +54,7 @@ impl DnsClient {
             }
         }
         builder
-            .push_bytes(&[0])
+            .push_generated_bytes(&[0])
             .ok_or("Failed to allocate DNS terminator")?;
         Ok(())
     }
@@ -87,45 +87,45 @@ impl DnsClient {
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder
-            .push_bytes(&id.to_be_bytes())
+            .push_generated_bytes(&id.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
         builder
-            .push_bytes(&0x0100u16.to_be_bytes())
+            .push_generated_bytes(&0x0100u16.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
         builder
-            .push_bytes(&1u16.to_be_bytes())
+            .push_generated_bytes(&1u16.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
         builder
-            .push_bytes(&0u16.to_be_bytes())
+            .push_generated_bytes(&0u16.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
         builder
-            .push_bytes(&0u16.to_be_bytes())
+            .push_generated_bytes(&0u16.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
         builder
-            .push_bytes(&1u16.to_be_bytes())
+            .push_generated_bytes(&1u16.to_be_bytes())
             .ok_or("Failed to allocate DNS header")?;
 
         Self::push_dns_name_payload(&mut builder, name)?;
         builder
-            .push_bytes(&(qtype as u16).to_be_bytes())
+            .push_generated_bytes(&(qtype as u16).to_be_bytes())
             .ok_or("Failed to allocate DNS qtype")?;
         builder
-            .push_bytes(&(DnsQueryClass::IN as u16).to_be_bytes())
+            .push_generated_bytes(&(DnsQueryClass::IN as u16).to_be_bytes())
             .ok_or("Failed to allocate DNS qclass")?;
         builder
-            .push_bytes(&[0])
+            .push_generated_bytes(&[0])
             .ok_or("Failed to allocate EDNS0 root name")?;
         builder
-            .push_bytes(&(DnsQueryType::OPT as u16).to_be_bytes())
+            .push_generated_bytes(&(DnsQueryType::OPT as u16).to_be_bytes())
             .ok_or("Failed to allocate EDNS0 type")?;
         builder
-            .push_bytes(&4096u16.to_be_bytes())
+            .push_generated_bytes(&4096u16.to_be_bytes())
             .ok_or("Failed to allocate EDNS0 payload size")?;
         builder
-            .push_bytes(&0u32.to_be_bytes())
+            .push_generated_bytes(&0u32.to_be_bytes())
             .ok_or("Failed to allocate EDNS0 flags")?;
         builder
-            .push_bytes(&0u16.to_be_bytes())
+            .push_generated_bytes(&0u16.to_be_bytes())
             .ok_or("Failed to allocate EDNS0 rdlength")?;
 
         self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
@@ -162,7 +162,7 @@ impl DnsClient {
         let message = self.build_query_payload_for_name_with_id(name, qtype, id)?;
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder
-            .push_bytes(&(message.total_len() as u16).to_be_bytes())
+            .push_generated_bytes(&(message.total_len() as u16).to_be_bytes())
             .ok_or("Buffer too small for TCP length prefix")?;
         builder.push_payload(message);
         Ok(builder.build())

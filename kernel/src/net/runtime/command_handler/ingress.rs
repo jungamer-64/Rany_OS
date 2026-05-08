@@ -217,7 +217,7 @@ impl RuntimeCommandHandler {
             if header_len < 20 || header_len > 60 {
                 return EventHandleResult::Success;
             }
-            let Some(header_prefix) = view.read_prefix::<60>(0, header_len) else {
+            let Some(header_prefix) = view.read_fixed_bytes::<60>(0, header_len) else {
                 return EventHandleResult::Success;
             };
             let header = header_prefix.as_slice();
@@ -231,7 +231,7 @@ impl RuntimeCommandHandler {
             let protocol = crate::net::l3::ipv4::IpProtocol::from(header[9]);
             let transport_len = view.total_len().saturating_sub(header_len);
             let prefix_len = transport_len.min(20);
-            let Some(prefix_storage) = view.read_prefix::<20>(header_len, prefix_len) else {
+            let Some(prefix_storage) = view.read_fixed_bytes::<20>(header_len, prefix_len) else {
                 return EventHandleResult::Success;
             };
             let prefix = prefix_storage.as_slice();
@@ -357,7 +357,8 @@ impl RuntimeCommandHandler {
             let payload_offset = header.len();
             let transport_len = view.total_len().saturating_sub(payload_offset);
             let prefix_len = transport_len.min(20);
-            let Some(prefix_storage) = view.read_prefix::<20>(payload_offset, prefix_len) else {
+            let Some(prefix_storage) = view.read_fixed_bytes::<20>(payload_offset, prefix_len)
+            else {
                 return EventHandleResult::Success;
             };
             let prefix = prefix_storage.as_slice();

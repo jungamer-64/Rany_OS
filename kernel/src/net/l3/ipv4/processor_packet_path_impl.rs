@@ -4,13 +4,13 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, split_payload_prefix_owned};
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, retain_payload_window_owned};
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv4Processor {
     fn owned_packet_payload(_packet_ref: Option<&PacketRef>, data: &[u8]) -> Option<PacketPayload> {
         let mut builder = PacketPayloadBuilder::new();
-        builder.push_bytes(data)?;
+        builder.push_generated_bytes(data)?;
         Some(builder.build())
     }
 
@@ -20,7 +20,7 @@ impl Ipv4Processor {
         current_time: u64,
     ) -> Ipv4ProcessResult<'static> {
         let original = PacketPayload::single(packet_ref);
-        let (total_len, header_len, header, protocol) = {
+        let (total_len, header_len, header_copy, header, protocol) = {
             let view = PacketPayloadView::new(&original);
             let total_len = view.total_len();
             if total_len < 20 {
@@ -39,7 +39,7 @@ impl Ipv4Processor {
                 self.stats.rx_errors += 1;
                 return Ipv4ProcessResult::Error;
             }
-            let Some(header_prefix) = view.read_prefix::<60>(0, header_len) else {
+            let Some(header_prefix) = view.read_fixed_bytes::<60>(0, header_len) else {
                 self.stats.rx_errors += 1;
                 return Ipv4ProcessResult::Error;
             };
@@ -75,7 +75,16 @@ impl Ipv4Processor {
                 return Ipv4ProcessResult::Dropped;
             }
 
-            (total_len, header_len, *packet.header(), packet.protocol())
+            let mut header_copy = [0u8; 60];
+            header_copy[..header_len].copy_from_slice(header_bytes);
+
+            (
+                total_len,
+                header_len,
+                header_copy,
+                *packet.header(),
+                packet.protocol(),
+            )
         };
         if protocol == IpProtocol::Tcp || protocol == IpProtocol::Udp {
             let fragment_offset = header.fragment_offset();
@@ -99,8 +108,17 @@ impl Ipv4Processor {
             }
         }
 
-        let Some((header_packet, payload_packet)) =
-            split_payload_prefix_owned(original, header_len)
+        let mut header_builder = PacketPayloadBuilder::new();
+        if header_builder
+            .push_generated_bytes(&header_copy[..header_len])
+            .is_none()
+        {
+            self.stats.rx_errors += 1;
+            return Ipv4ProcessResult::Error;
+        }
+        let header_packet = header_builder.build();
+        let Some(payload_packet) =
+            retain_payload_window_owned(original, header_len, total_len.saturating_sub(header_len))
         else {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;

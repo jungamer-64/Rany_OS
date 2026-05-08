@@ -87,12 +87,11 @@ impl DnsClient {
             if stash.total_len() < len {
                 return Ok(None);
             }
+            if stash.total_len() != len {
+                return Err("TCP payload record boundary requires whole-payload ownership");
+            }
             let owned_stash = core::mem::take(stash);
-            let (prefix, remainder) =
-                crate::net::payload::split_payload_prefix_owned(owned_stash, len)
-                    .ok_or("TCP payload prefix split failed")?;
-            *stash = remainder;
-            Ok(Some(prefix))
+            Ok(Some(owned_stash))
         }
 
         let dest = Self::endpoint_addr_for_server(server);

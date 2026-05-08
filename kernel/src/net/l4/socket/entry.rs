@@ -8,7 +8,6 @@ use core::sync::atomic::Ordering;
 
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::types::{EndpointAddr, EndpointError, NEXT_SOCKET_ID, SocketId, SocketResult};
-use crate::net::payload::split_payload_prefix_owned;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
     RuntimeCommand, TransportCommand, enqueue_command_ignore_in, enqueue_command_in,
@@ -18,7 +17,7 @@ use crate::sync::poison_lock::PoisonLock;
 use kernel_api::resource::net::PacketPayload;
 
 use super::registry::SOCKET_REGISTRY;
-use super::state::{SocketState, TcpSocketState};
+use super::state::{QueuedPayload, SocketState, TcpSocketState};
 
 fn register_socket(socket: &Socket) {
     if let Some(registry) = &*SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner()) {
@@ -65,14 +64,12 @@ impl Socket {
         }
 
         let payload_len = payload.total_len();
-        let (queued, remainder) = if payload_len > available {
-            let Some((queued, remainder)) = split_payload_prefix_owned(payload, available) else {
-                return (0, None);
-            };
-            (queued, (!remainder.is_empty()).then_some(remainder))
-        } else {
-            (payload, None)
-        };
+        if payload_len > available {
+            return (0, Some(payload));
+        }
+
+        let queued = payload;
+        let remainder = None;
 
         let pushed = queued.total_len();
         if pushed > 0 {
@@ -80,7 +77,7 @@ impl Socket {
                 return (0, Some(queued));
             };
             tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_add(pushed);
-            tcp.recv_payload_queue.push_back(queued);
+            tcp.recv_payload_queue.push_back(QueuedPayload::new(queued));
             while matches!(tcp.recv_payload_queue.front(), Some(segment) if segment.is_empty()) {
                 tcp.recv_payload_queue.pop_front();
             }

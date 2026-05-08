@@ -25,7 +25,7 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
 
 fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-    if builder.push_bytes(data).is_none() {
+    if builder.push_generated_bytes(data).is_none() {
         return kernel_api::resource::net::PacketPayload::default();
     }
     builder.build()

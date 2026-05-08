@@ -215,7 +215,7 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::InvalidAddress);
         }
 
-        let Some(header_storage) = payload_view.read_prefix::<60>(0, ihl) else {
+        let Some(header_storage) = payload_view.read_fixed_bytes::<60>(0, ihl) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
         let header = header_storage.as_slice();
@@ -751,16 +751,13 @@ impl NetworkStack {
             if more_fragments && (fragment_data_len % 8 != 0) {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
+            if more_fragments || offset != 0 || fragment_data_len != payload_len {
+                return Err(crate::net::types::NetworkError::BufferTooSmall);
+            }
 
             let fragment_offset_units = u16::try_from(offset / 8)
                 .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
-            let split = crate::net::payload::split_payload_prefix_owned(
-                remaining_payload,
-                fragment_data_len,
-            )
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let (fragment_payload, rest_payload) = split;
-            remaining_payload = rest_payload;
+            let fragment_payload = core::mem::take(&mut remaining_payload);
             let packet = self.build_ipv4_ethernet_header_packet(
                 src_mac,
                 dst_mac,
