@@ -180,52 +180,54 @@ impl Socket {
     }
 
     pub fn try_next_incoming(&self) -> SocketResult<(Socket, EndpointAddr, NetIfId)> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if !inner.is_tcp_listening() {
-            return Err(EndpointError::InvalidStateTransition);
-        }
+        self.with_inner_mut(|inner| {
+            if !inner.is_tcp_listening() {
+                return Err(EndpointError::InvalidStateTransition);
+            }
 
-        if let Some(conn) = inner.tcp_mut().and_then(|tcp| tcp.accept_queue.pop_front()) {
+            let Some(conn) = inner.tcp_mut().and_then(|tcp| tcp.accept_queue.pop_front()) else {
+                return Err(EndpointError::Timeout);
+            };
+            let listener_nodelay = inner.tcp().is_some_and(|tcp| tcp.nodelay);
+            let listener_priority = inner.priority;
             let socket = Self::new_tcp_with_socket_id_in(
                 conn.socket_id,
                 self.runtime,
                 TcpSocketState::Connected,
             );
-            {
-                let mut new_inner = socket.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let configured = socket.with_inner_mut(|new_inner| {
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 new_inner.scope = crate::net::types::InterfaceScope::Pinned(conn.if_id);
                 new_inner.last_ingress_if_id = Some(conn.if_id);
                 if let Some(new_tcp) = new_inner.tcp_mut() {
-                    new_tcp.nodelay = inner.tcp().is_some_and(|tcp| tcp.nodelay);
+                    new_tcp.nodelay = listener_nodelay;
                 }
-                new_inner.priority = inner.priority;
+                new_inner.priority = listener_priority;
+            });
+            if configured.is_none() {
+                return Err(EndpointError::NotFound);
             }
 
-            return Ok((socket, conn.remote_addr, conn.if_id));
-        }
-
-        Err(EndpointError::Timeout)
+            Ok((socket, conn.remote_addr, conn.if_id))
+        })
+        .unwrap_or(Err(EndpointError::NotFound))
     }
 
     pub fn register_accept_waker(&self, waker: core::task::Waker) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .accept_waker = Some(waker);
+        let _ = self.with_inner_mut(|inner| {
+            inner.accept_waker = Some(waker);
+        });
     }
 
     pub fn register_recv_waker(&self, waker: core::task::Waker) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .recv_waker = Some(waker);
+        let _ = self.with_inner_mut(|inner| {
+            inner.recv_waker = Some(waker);
+        });
     }
 
     pub fn push_payload(&self, payload: PacketPayload) -> usize {
-        let (pushed, local, remote, waker) = {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((pushed, local, remote, waker)) = self.with_inner_mut(|inner| {
             let pushed = inner.push_recv_payload(payload);
             let local = inner.local_addr;
             let remote = inner.remote_addr;
@@ -235,6 +237,8 @@ impl Socket {
                 }
             }
             (pushed, local, remote, inner.recv_waker.take())
+        }) else {
+            return 0;
         };
 
         Self::notify_tcb_data_received(local, remote, pushed);
@@ -248,9 +252,8 @@ impl Socket {
         &self,
         payload: PacketPayload,
     ) -> (usize, Option<PacketPayload>) {
-        let (pushed, remainder, local, remote, waker) = {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let (pushed, remainder) = Self::split_and_queue_payload(&mut inner, payload);
+        let Some((pushed, remainder, local, remote, waker)) = self.with_inner_mut(|inner| {
+            let (pushed, remainder) = Self::split_and_queue_payload(inner, payload);
             (
                 pushed,
                 remainder,
@@ -258,6 +261,8 @@ impl Socket {
                 inner.remote_addr,
                 inner.recv_waker.take(),
             )
+        }) else {
+            return (0, None);
         };
 
         Self::notify_tcb_data_received(local, remote, pushed);
@@ -285,8 +290,7 @@ impl Socket {
         ttl: u8,
         payload: PacketPayload,
     ) -> SocketResult<()> {
-        let recv_waker = {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let recv_waker = self.with_inner_mut(|inner| {
             if !inner.is_udp_bound() {
                 return Err(EndpointError::NotConnected);
             }
@@ -296,8 +300,9 @@ impl Socket {
             };
             udp.ttl = ttl;
             udp.pending_packets.push_back((if_id, addr, ttl, payload));
-            inner.recv_waker.take()
-        };
+            Ok(inner.recv_waker.take())
+        })
+        .unwrap_or(Err(EndpointError::NotFound))?;
 
         if let Some(waker) = recv_waker {
             waker.wake();
@@ -306,25 +311,26 @@ impl Socket {
     }
 
     pub fn try_recv_raw_payload(&self) -> SocketResult<(PacketPayload, NetIfId)> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if !inner.is_raw_open() {
-            return Err(EndpointError::NotConnected);
-        }
+        self.with_inner_mut(|inner| {
+            if !inner.is_raw_open() {
+                return Err(EndpointError::NotConnected);
+            }
 
-        if let Some((if_id, payload)) = inner
-            .raw_mut()
-            .and_then(|raw| raw.pending_payloads.pop_front())
-        {
-            inner.last_ingress_if_id = Some(if_id);
-            return Ok((payload, if_id));
-        }
+            if let Some((if_id, payload)) = inner
+                .raw_mut()
+                .and_then(|raw| raw.pending_payloads.pop_front())
+            {
+                inner.last_ingress_if_id = Some(if_id);
+                return Ok((payload, if_id));
+            }
 
-        Err(EndpointError::Timeout)
+            Err(EndpointError::Timeout)
+        })
+        .unwrap_or(Err(EndpointError::NotFound))
     }
 
     pub fn deliver_raw_payload(&self, if_id: NetIfId, payload: PacketPayload) -> SocketResult<()> {
-        let recv_waker = {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let recv_waker = self.with_inner_mut(|inner| {
             if !inner.is_raw_open() {
                 return Err(EndpointError::NotConnected);
             }
@@ -333,8 +339,9 @@ impl Socket {
                 return Err(EndpointError::InvalidArgument);
             };
             raw.pending_payloads.push_back((if_id, payload));
-            inner.recv_waker.take()
-        };
+            Ok(inner.recv_waker.take())
+        })
+        .unwrap_or(Err(EndpointError::NotFound))?;
 
         if let Some(waker) = recv_waker {
             waker.wake();
@@ -343,25 +350,26 @@ impl Socket {
     }
 
     pub fn try_recv_udp_payload(&self) -> SocketResult<(NetIfId, EndpointAddr, u8, PacketPayload)> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if !inner.is_udp_bound() {
-            return Err(EndpointError::NotConnected);
-        }
+        self.with_inner_mut(|inner| {
+            if !inner.is_udp_bound() {
+                return Err(EndpointError::NotConnected);
+            }
 
-        if let Some((if_id, addr, ttl, payload)) = inner
-            .udp_mut()
-            .and_then(|udp| udp.pending_packets.pop_front())
-        {
-            inner.last_ingress_if_id = Some(if_id);
-            return Ok((if_id, addr, ttl, payload));
-        }
+            if let Some((if_id, addr, ttl, payload)) = inner
+                .udp_mut()
+                .and_then(|udp| udp.pending_packets.pop_front())
+            {
+                inner.last_ingress_if_id = Some(if_id);
+                return Ok((if_id, addr, ttl, payload));
+            }
 
-        Err(EndpointError::Timeout)
+            Err(EndpointError::Timeout)
+        })
+        .unwrap_or(Err(EndpointError::NotFound))
     }
 
     pub(crate) fn close_immediate(&self) -> SocketResult<()> {
-        {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = self.with_inner_mut(|inner| {
             inner.mark_closed();
 
             if let Some(waker) = inner.recv_waker.take() {
@@ -376,7 +384,7 @@ impl Socket {
             if let Some(waker) = inner.accept_waker.take() {
                 waker.wake();
             }
-        }
+        });
 
         enqueue_command_ignore_in(
             self.runtime,
@@ -388,13 +396,14 @@ impl Socket {
     }
 
     pub fn set_nodelay(&self, nodelay: bool) -> SocketResult<()> {
-        {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        self.with_inner_mut(|inner| {
             let Some(tcp) = inner.tcp_mut() else {
                 return Err(EndpointError::InvalidArgument);
             };
             tcp.nodelay = nodelay;
-        }
+            Ok(())
+        })
+        .unwrap_or(Err(EndpointError::NotFound))?;
 
         enqueue_command_in(
             self.runtime,
@@ -406,10 +415,10 @@ impl Socket {
     }
 
     pub fn set_priority(&self, priority: u8) -> SocketResult<()> {
-        {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        self.with_inner_mut(|inner| {
             inner.priority = priority & 0x3F;
-        }
+        })
+        .ok_or(EndpointError::NotFound)?;
 
         enqueue_command_in(
             self.runtime,

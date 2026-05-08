@@ -32,15 +32,18 @@ impl RuntimeCommandHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        let (local, remote) = {
-            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let (local, remote) = match socket.with_inner(|inner| {
             let Some(local) = inner.local_addr else {
-                return EventHandleResult::ProtocolError(EndpointError::NotConnected);
+                return Err(EndpointError::NotConnected);
             };
             let Some(remote) = inner.remote_addr else {
-                return EventHandleResult::ProtocolError(EndpointError::NotConnected);
+                return Err(EndpointError::NotConnected);
             };
-            (local, remote)
+            Ok((local, remote))
+        }) {
+            Some(Ok(pair)) => pair,
+            Some(Err(err)) => return EventHandleResult::ProtocolError(err),
+            None => return EventHandleResult::SocketNotFound(fd),
         };
 
         loop {
@@ -51,7 +54,7 @@ impl RuntimeCommandHandler {
                         return None;
                     }
 
-                    let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                    let inner_result = socket.with_inner_mut(|inner| {
                     let pending_len = inner.send_payload_bytes();
                     if pending_len == 0 || tcb.should_delay_send(pending_len) {
                         return None;
@@ -74,6 +77,8 @@ impl RuntimeCommandHandler {
                         tcb.rcv_nxt,
                         tcb.advertised_recv_window(),
                     ))
+                    });
+                    inner_result.flatten()
                 });
 
             let Some((send_payload, seq, ack, advertised_wnd)) = send_params else {
@@ -98,12 +103,11 @@ impl RuntimeCommandHandler {
 
             if crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(local, remote, seq)
             {
-                {
-                    let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let _ = socket.with_inner_mut(|inner| {
                     if let Some(waker) = inner.send_waker.take() {
                         waker.wake();
                     }
-                }
+                });
 
                 tcb_table().lookup_mut(local, remote, |tcb| {
                     tcb.on_send(data_len);
@@ -131,11 +135,13 @@ impl RuntimeCommandHandler {
             TcpSocketState::Connecting,
         );
 
-        {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let configured = endpoint.with_inner_mut(|inner| {
             inner.local_addr = Some(local);
             inner.remote_addr = Some(remote);
             inner.scope = scope;
+        });
+        if configured.is_none() {
+            return Err(crate::net::l4::tcp::TcpError::InvalidState);
         }
 
         match self.handle_connect_with_stack(endpoint.socket_id(), local, remote, stack) {
@@ -165,14 +171,17 @@ impl RuntimeCommandHandler {
             TcpSocketState::Listening,
         );
 
-        {
-            let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let configured = endpoint.with_inner_mut(|inner| {
             inner.local_addr = Some(local);
             inner.scope = scope;
             let Some(tcp) = inner.tcp_mut() else {
                 return Err(crate::net::l4::tcp::TcpError::InvalidState);
             };
             tcp.accept_backlog = backlog as usize;
+            Ok(())
+        });
+        if configured.unwrap_or(Err(crate::net::l4::tcp::TcpError::InvalidState)).is_err() {
+            return Err(crate::net::l4::tcp::TcpError::InvalidState);
         }
 
         match self.handle_listen(endpoint.socket_id(), local, backlog) {
@@ -210,15 +219,18 @@ impl RuntimeCommandHandler {
         };
         let unresolved_local = local.with_port(local_port);
 
-        let (scope, preferred_if, congestion_algo, nodelay, priority) = {
-            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-            (
+        let Some((scope, preferred_if, congestion_algo, nodelay, priority)) =
+            socket.with_inner(|inner| {
+                (
                 inner.scope,
                 inner.last_ingress_if_id,
                 inner.tcp().and_then(|t| t.congestion_algorithm),
                 inner.tcp().map_or(false, |t| t.nodelay),
                 inner.priority,
-            )
+                )
+            })
+        else {
+            return EventHandleResult::SocketNotFound(fd);
         };
 
         let (local_addr, resolved_if) = if let (Some(local_v4), Some(remote_v4)) =
@@ -264,11 +276,13 @@ impl RuntimeCommandHandler {
             return EventHandleResult::ProtocolError(EndpointError::InvalidArgument);
         };
 
-        {
-            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let configured = socket.with_inner_mut(|inner| {
             inner.local_addr = Some(local_addr);
             inner.remote_addr = Some(remote);
             let _ = inner.set_tcp_state(TcpSocketState::Connecting);
+        });
+        if configured.is_none() {
+            return EventHandleResult::SocketNotFound(fd);
         }
 
         let isn = tcb_table().generate_isn(local_addr, remote);
@@ -338,8 +352,8 @@ impl RuntimeCommandHandler {
         let local_addr = local.with_port(local_port);
 
         // ソケットのローカルアドレスを更新し、設定を取得
-        let (scope, preferred_if, congestion_algo, nodelay, priority) = {
-            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let Some((scope, preferred_if, congestion_algo, nodelay, priority)) =
+            socket.with_inner_mut(|inner| {
             inner.local_addr = Some(local_addr);
             inner.remote_addr = Some(remote);
             let _ = inner.set_tcp_state(TcpSocketState::Connecting);
@@ -350,6 +364,9 @@ impl RuntimeCommandHandler {
                 inner.tcp().map_or(false, |t| t.nodelay),
                 inner.priority,
             )
+            })
+        else {
+            return EventHandleResult::SocketNotFound(fd);
         };
 
         // TCB（TCP Control Block）を作成
@@ -441,16 +458,21 @@ impl RuntimeCommandHandler {
         };
 
         // ローカルアドレスをソケットに設定
-        {
-            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let listen_result = socket.with_inner_mut(|inner| {
             inner.local_addr = Some(local);
             let Some(tcp) = inner.tcp_mut() else {
-                return EventHandleResult::ProtocolError(EndpointError::InvalidArgument);
+                return Err(EndpointError::InvalidArgument);
             };
             tcp.accept_backlog = backlog as usize;
             if let Err(err) = inner.set_tcp_state(TcpSocketState::Listening) {
-                return EventHandleResult::ProtocolError(err);
+                return Err(err);
             }
+            Ok(())
+        });
+        match listen_result {
+            Some(Ok(())) => {}
+            Some(Err(err)) => return EventHandleResult::ProtocolError(err),
+            None => return EventHandleResult::SocketNotFound(fd),
         }
 
         // TCBテーブルにリスナーエントリを作成
@@ -482,25 +504,26 @@ impl RuntimeCommandHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-        let local = match inner.local_addr {
+        let Some((local, remote)) = socket.with_inner(|inner| (inner.local_addr, inner.remote_addr))
+        else {
+            return EventHandleResult::SocketNotFound(fd);
+        };
+        let local = match local {
             Some(addr) => addr,
             None => {
                 log::info!("TCP: Close failed - no local address");
                 return EventHandleResult::ProtocolError(EndpointError::Internal);
             }
         };
-        let remote = match inner.remote_addr {
+        let remote = match remote {
             Some(addr) => addr,
             None => {
                 // リモートアドレスがない場合（Listenソケットなど）は即時クローズ
                 tcb_table().remove_by_socket_id(fd);
-                drop(inner);
                 self.close_socket_now(fd);
                 return EventHandleResult::Success;
             }
         };
-        drop(inner);
 
         // TCBエントリの状態を取得
         let state = tcb_table()

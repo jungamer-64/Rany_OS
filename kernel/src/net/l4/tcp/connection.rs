@@ -70,11 +70,7 @@ fn on_recv_progress(local: Option<EndpointAddr>, remote: Option<EndpointAddr>, l
 
 fn socket_inner_stats(socket: &Socket) -> TcpStats {
     socket
-        .inner()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .tcp()
-        .map(|tcp| tcp.stats)
+        .with_inner(|inner| inner.tcp().map(|tcp| tcp.stats).unwrap_or_default())
         .unwrap_or_default()
 }
 
@@ -209,7 +205,6 @@ impl Future for TcpAcceptorBindDispatchFuture {
     }
 }
 
-#[derive(Clone)]
 pub struct TcpConnection {
     socket: Socket,
     runtime: NetRuntimeHandle,
@@ -275,7 +270,7 @@ impl TcpConnection {
 
         let connection = TcpDialDispatchFuture::new(runtime, scope, local_addr, addr).await?;
         ConnectFuture {
-            connection: connection.clone(),
+            connection: &connection,
         }
         .await?;
         Ok(connection)
@@ -295,7 +290,7 @@ impl TcpConnection {
         let connection =
             TcpDialDispatchFuture::new(runtime, InterfaceScope::Any, local_addr, addr).await?;
         ConnectTimeoutFuture {
-            connection: connection.clone(),
+            connection: &connection,
             start_us: crate::time::precise_time_nanos() / 1000,
             timeout_us,
         }
@@ -326,41 +321,53 @@ impl TcpConnection {
     }
 
     pub fn poll_recv_payload(&self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
-        let mut inner = self
+        enum RecvOutcome {
+            Payload(PacketPayload, Option<EndpointAddr>, Option<EndpointAddr>, usize),
+            Closed,
+            Pending,
+        }
+
+        let outcome = self
             .socket
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .with_inner_mut(|inner| {
+                if let Some(err) = inner.last_error.take() {
+                    log::warn!(
+                        "[NET][tcp] payload receive observed socket error: {:?}",
+                        err
+                    );
+                }
 
-        if let Some(err) = inner.last_error.take() {
-            log::warn!(
-                "[NET][tcp] payload receive observed socket error: {:?}",
-                err
-            );
-        }
+                if inner.has_recv_data() {
+                    let local = inner.local_addr;
+                    let remote = inner.remote_addr;
+                    let Some(payload) = inner.recv_payload(None) else {
+                        inner.recv_waker = Some(cx.waker().clone());
+                        return RecvOutcome::Pending;
+                    };
+                    let delivered_len = payload.total_len();
+                    if let Some(tcp) = inner.tcp_mut() {
+                        tcp.stats.record_rx_delivered(delivered_len);
+                    }
+                    return RecvOutcome::Payload(payload, local, remote, delivered_len);
+                }
 
-        if inner.has_recv_data() {
-            let local = inner.local_addr;
-            let remote = inner.remote_addr;
-            let Some(payload) = inner.recv_payload(None) else {
+                if inner.is_tcp_closing_or_closed() {
+                    return RecvOutcome::Closed;
+                }
+
                 inner.recv_waker = Some(cx.waker().clone());
-                return Poll::Pending;
-            };
-            let delivered_len = payload.total_len();
-            if let Some(tcp) = inner.tcp_mut() {
-                tcp.stats.record_rx_delivered(delivered_len);
+                RecvOutcome::Pending
+            })
+            .unwrap_or(RecvOutcome::Closed);
+
+        match outcome {
+            RecvOutcome::Payload(payload, local, remote, delivered_len) => {
+                on_recv_progress(local, remote, delivered_len);
+                Poll::Ready(Some(payload))
             }
-            drop(inner);
-            on_recv_progress(local, remote, delivered_len);
-            return Poll::Ready(Some(payload));
+            RecvOutcome::Closed => Poll::Ready(None),
+            RecvOutcome::Pending => Poll::Pending,
         }
-
-        if inner.is_tcp_closing_or_closed() {
-            return Poll::Ready(None);
-        }
-
-        inner.recv_waker = Some(cx.waker().clone());
-        Poll::Pending
     }
 
     pub async fn send_payload(&mut self, payload: PacketPayload) -> Result<(), TcpError> {
@@ -376,20 +383,16 @@ impl TcpConnection {
     }
 
     pub fn close(&mut self) -> Result<(), TcpError> {
-        let mut inner = self
-            .socket
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        match inner.tcp_state() {
-            Some(TcpSocketState::Closed | TcpSocketState::Closing) => return Ok(()),
-            Some(TcpSocketState::Connected | TcpSocketState::Connecting) => {
-                let _ = inner.set_tcp_state(TcpSocketState::Closing);
-            }
-            _ => return Err(TcpError::InvalidState),
-        }
-        drop(inner);
+        self.socket
+            .with_inner_mut(|inner| match inner.tcp_state() {
+                Some(TcpSocketState::Closed | TcpSocketState::Closing) => Ok(()),
+                Some(TcpSocketState::Connected | TcpSocketState::Connecting) => {
+                    let _ = inner.set_tcp_state(TcpSocketState::Closing);
+                    Ok(())
+                }
+                _ => Err(TcpError::InvalidState),
+            })
+            .unwrap_or(Err(TcpError::InvalidState))?;
 
         enqueue_command_ignore_in(
             self.runtime,
@@ -409,10 +412,6 @@ impl Drop for TcpConnection {
             return;
         }
 
-        if alloc::sync::Arc::strong_count(self.socket.inner()) > 2 {
-            return;
-        }
-
         enqueue_command_ignore_in(
             self.runtime,
             RuntimeCommand::Transport(
@@ -424,7 +423,6 @@ impl Drop for TcpConnection {
     }
 }
 
-#[derive(Clone)]
 pub struct TcpAcceptor {
     socket: Socket,
     runtime: NetRuntimeHandle,
@@ -508,10 +506,6 @@ impl Drop for TcpAcceptor {
             return;
         }
 
-        if alloc::sync::Arc::strong_count(self.socket.inner()) > 2 {
-            return;
-        }
-
         enqueue_command_ignore_in(
             self.runtime,
             RuntimeCommand::Transport(
@@ -523,86 +517,87 @@ impl Drop for TcpAcceptor {
     }
 }
 
-pub(crate) struct ConnectFuture {
-    connection: TcpConnection,
+pub(crate) struct ConnectFuture<'a> {
+    connection: &'a TcpConnection,
 }
 
-impl Future for ConnectFuture {
+impl<'a> Future for ConnectFuture<'a> {
     type Output = Result<(), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut inner = this
-            .connection
+        this.connection
             .socket
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .with_inner_mut(|inner| {
+                if let Some(err) = inner.last_error.take() {
+                    return Poll::Ready(Err(tcp_error_from_socket(err)));
+                }
 
-        if let Some(err) = inner.last_error.take() {
-            return Poll::Ready(Err(tcp_error_from_socket(err)));
-        }
-
-        match inner.tcp_state() {
-            Some(TcpSocketState::Connected) => Poll::Ready(Ok(())),
-            Some(TcpSocketState::Closed | TcpSocketState::Closing) => {
-                Poll::Ready(Err(TcpError::ConnectionRefused))
-            }
-            Some(TcpSocketState::Connecting) => {
-                inner.connect_waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            _ => Poll::Ready(Err(TcpError::InvalidState)),
-        }
+                match inner.tcp_state() {
+                    Some(TcpSocketState::Connected) => Poll::Ready(Ok(())),
+                    Some(TcpSocketState::Closed | TcpSocketState::Closing) => {
+                        Poll::Ready(Err(TcpError::ConnectionRefused))
+                    }
+                    Some(TcpSocketState::Connecting) => {
+                        inner.connect_waker = Some(cx.waker().clone());
+                        Poll::Pending
+                    }
+                    _ => Poll::Ready(Err(TcpError::InvalidState)),
+                }
+            })
+            .unwrap_or(Poll::Ready(Err(TcpError::InvalidState)))
     }
 }
 
-pub(crate) struct ConnectTimeoutFuture {
-    connection: TcpConnection,
+pub(crate) struct ConnectTimeoutFuture<'a> {
+    connection: &'a TcpConnection,
     start_us: u64,
     timeout_us: u64,
 }
 
-impl Future for ConnectTimeoutFuture {
+impl<'a> Future for ConnectTimeoutFuture<'a> {
     type Output = Result<(), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut inner = this
+        let now = crate::time::precise_time_nanos() / 1000;
+        let timeout = now.saturating_sub(this.start_us) >= this.timeout_us;
+        let outcome = this
             .connection
             .socket
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-
-        if let Some(err) = inner.last_error.take() {
-            return Poll::Ready(Err(tcp_error_from_socket(err)));
-        }
-
-        match inner.tcp_state() {
-            Some(TcpSocketState::Connected) => Poll::Ready(Ok(())),
-            Some(TcpSocketState::Closed | TcpSocketState::Closing) => {
-                Poll::Ready(Err(TcpError::ConnectionRefused))
-            }
-            Some(TcpSocketState::Connecting) => {
-                let now = crate::time::precise_time_nanos() / 1000;
-                if now.saturating_sub(this.start_us) >= this.timeout_us {
-                    drop(inner);
-                    enqueue_command_ignore_in(
-                        this.connection.runtime,
-                        RuntimeCommand::Transport(
-                            crate::net::runtime::command::TransportCommand::CloseSocket {
-                                socket_id: this.connection.socket.socket_id(),
-                            },
-                        ),
-                    );
-                    return Poll::Ready(Err(TcpError::Timeout));
+            .with_inner_mut(|inner| {
+                if let Some(err) = inner.last_error.take() {
+                    return Poll::Ready(Err(tcp_error_from_socket(err)));
                 }
-                inner.connect_waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            _ => Poll::Ready(Err(TcpError::InvalidState)),
+
+                match inner.tcp_state() {
+                    Some(TcpSocketState::Connected) => Poll::Ready(Ok(())),
+                    Some(TcpSocketState::Closed | TcpSocketState::Closing) => {
+                        Poll::Ready(Err(TcpError::ConnectionRefused))
+                    }
+                    Some(TcpSocketState::Connecting) => {
+                        if timeout {
+                            return Poll::Ready(Err(TcpError::Timeout));
+                        }
+                        inner.connect_waker = Some(cx.waker().clone());
+                        Poll::Pending
+                    }
+                    _ => Poll::Ready(Err(TcpError::InvalidState)),
+                }
+            })
+            .unwrap_or(Poll::Ready(Err(TcpError::InvalidState)));
+
+        if matches!(outcome, Poll::Ready(Err(TcpError::Timeout))) {
+            enqueue_command_ignore_in(
+                this.connection.runtime,
+                RuntimeCommand::Transport(
+                    crate::net::runtime::command::TransportCommand::CloseSocket {
+                        socket_id: this.connection.socket.socket_id(),
+                    },
+                ),
+            );
         }
+        outcome
     }
 }
 
@@ -650,6 +645,15 @@ impl<'a> Future for SendPayloadFuture<'a> {
     type Output = Result<(), TcpError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        enum SendOutcome {
+            Enqueued,
+            Pending {
+                payload: PacketPayload,
+                has_queued_data: bool,
+            },
+            Ready(Result<(), TcpError>),
+        }
+
         let this = &mut *self;
         let Some(payload) = this.payload.take() else {
             return Poll::Ready(Err(TcpError::InvalidState));
@@ -659,46 +663,60 @@ impl<'a> Future for SendPayloadFuture<'a> {
             return Poll::Ready(Ok(()));
         }
 
-        let mut inner = this
+        let outcome = this
             .connection
             .socket
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .with_inner_mut(|inner| {
+                if let Some(err) = inner.last_error.take() {
+                    return SendOutcome::Ready(Err(tcp_error_from_socket(err)));
+                }
 
-        if let Some(err) = inner.last_error.take() {
-            this.payload = Some(payload);
-            return Poll::Ready(Err(tcp_error_from_socket(err)));
-        }
+                if inner.is_tcp_closing_or_closed() {
+                    return SendOutcome::Ready(Err(TcpError::ConnectionClosed));
+                }
 
-        if inner.is_tcp_closing_or_closed() {
-            return Poll::Ready(Err(TcpError::ConnectionClosed));
-        }
+                if !matches!(inner.tcp_state(), Some(TcpSocketState::Connected)) {
+                    return SendOutcome::Ready(Err(TcpError::InvalidState));
+                }
 
-        if !matches!(inner.tcp_state(), Some(TcpSocketState::Connected)) {
-            return Poll::Ready(Err(TcpError::InvalidState));
-        }
+                if payload_len > inner.send_buffer_limit {
+                    return SendOutcome::Ready(Err(TcpError::BufferFull));
+                }
 
-        if payload_len > inner.send_buffer_limit {
-            return Poll::Ready(Err(TcpError::BufferFull));
-        }
+                let queued_bytes = inner.send_payload_bytes();
+                let available =
+                    inner
+                        .send_buffer_limit
+                        .saturating_sub(queued_bytes)
+                        .min(socket_send_budget(
+                            inner.local_addr,
+                            inner.remote_addr,
+                            queued_bytes,
+                        ));
 
-        let queued_bytes = inner.send_payload_bytes();
-        let available =
-            inner
-                .send_buffer_limit
-                .saturating_sub(queued_bytes)
-                .min(socket_send_budget(
-                    inner.local_addr,
-                    inner.remote_addr,
-                    queued_bytes,
-                ));
+                if available < payload_len {
+                    let has_queued_data = inner.has_send_data();
+                    inner.send_waker = Some(cx.waker().clone());
+                    return SendOutcome::Pending {
+                        payload,
+                        has_queued_data,
+                    };
+                }
 
-        if available < payload_len {
-            let has_queued_data = inner.has_send_data();
-            inner.send_waker = Some(cx.waker().clone());
-            drop(inner);
-            if has_queued_data {
+                match inner.send_payload(payload) {
+                    Ok(()) => {
+                        if let Some(tcp) = inner.tcp_mut() {
+                            tcp.stats.record_tx_enqueued(payload_len);
+                        }
+                        SendOutcome::Enqueued
+                    }
+                    Err(err) => SendOutcome::Ready(Err(tcp_error_from_socket(err))),
+                }
+            })
+            .unwrap_or(SendOutcome::Ready(Err(TcpError::InvalidState)));
+
+        match outcome {
+            SendOutcome::Enqueued => {
                 enqueue_command_ignore_in(
                     this.connection.runtime,
                     RuntimeCommand::Transport(
@@ -707,31 +725,27 @@ impl<'a> Future for SendPayloadFuture<'a> {
                         },
                     ),
                 );
+                Poll::Ready(Ok(()))
             }
-            this.payload = Some(payload);
-            return Poll::Pending;
-        }
-
-        match inner.send_payload(payload) {
-            Ok(()) => {
-                if let Some(tcp) = inner.tcp_mut() {
-                    tcp.stats.record_tx_enqueued(payload_len);
+            SendOutcome::Pending {
+                payload,
+                has_queued_data,
+            } => {
+                if has_queued_data {
+                    enqueue_command_ignore_in(
+                        this.connection.runtime,
+                        RuntimeCommand::Transport(
+                            crate::net::runtime::command::TransportCommand::TcpDataReady {
+                                socket_id: this.connection.socket.socket_id(),
+                            },
+                        ),
+                    );
                 }
+                this.payload = Some(payload);
+                Poll::Pending
             }
-            Err(err) => return Poll::Ready(Err(tcp_error_from_socket(err))),
+            SendOutcome::Ready(result) => Poll::Ready(result),
         }
-        drop(inner);
-
-        enqueue_command_ignore_in(
-            this.connection.runtime,
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::TcpDataReady {
-                    socket_id: this.connection.socket.socket_id(),
-                },
-            ),
-        );
-
-        Poll::Ready(Ok(()))
     }
 }
 
@@ -744,23 +758,26 @@ impl<'a> Future for DrainTxFuture<'a> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let mut inner = this
-            .connection
-            .socket
-            .inner()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let has_send_data = match this.connection.socket.with_inner_mut(|inner| {
+            if let Some(err) = inner.last_error.take() {
+                return Err(tcp_error_from_socket(err));
+            }
 
-        if let Some(err) = inner.last_error.take() {
-            return Poll::Ready(Err(tcp_error_from_socket(err)));
-        }
+            if !inner.has_send_data() {
+                return Ok(false);
+            }
 
-        if !inner.has_send_data() {
+            inner.send_waker = Some(cx.waker().clone());
+            Ok(true)
+        }) {
+            Some(Ok(has_send_data)) => has_send_data,
+            Some(Err(err)) => return Poll::Ready(Err(err)),
+            None => return Poll::Ready(Err(TcpError::InvalidState)),
+        };
+
+        if !has_send_data {
             return Poll::Ready(Ok(()));
         }
-
-        inner.send_waker = Some(cx.waker().clone());
-        drop(inner);
 
         enqueue_command_ignore_in(
             this.connection.runtime,

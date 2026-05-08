@@ -606,10 +606,10 @@ impl TcbTable {
                     }
                     if entry.flow_control.should_send_probe(current_tick) {
                         if let Some(socket) = lookup_socket(entry.socket_id) {
-                            let mut inner =
-                                socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(probe_payload) = inner.take_send_payload_prefix(1) {
-                                drop(inner);
+                            if let Some(probe_payload) = socket
+                                .with_inner_mut(|inner| inner.take_send_payload_prefix(1))
+                                .flatten()
+                            {
                                 let seq = entry.snd_nxt;
                                 let mut builder =
                                     TcpSegmentBuilder::new(key.0.port(), key.1.port())

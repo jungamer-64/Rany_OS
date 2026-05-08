@@ -11,7 +11,7 @@ use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 use crate::net::l4::EndpointAddr;
 use crate::net::l4::socket::{
-    Socket, allocate_udp_ephemeral_port, bind_udp_dual_stack, register_socket, unregister_socket,
+    Socket, allocate_udp_ephemeral_port, bind_udp_dual_stack, unregister_socket,
 };
 use crate::net::l4::types::EndpointError;
 use crate::net::payload::PacketPayloadView;
@@ -20,7 +20,6 @@ use crate::net::runtime::command::CommandDispatch;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::net::types::NetworkError;
-use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -480,22 +479,21 @@ fn configure_udp_socket(
     port: u16,
     token: Option<u64>,
 ) -> Result<(), NetworkError> {
-    let mut inner = socket
-        .inner()
-        .lock()
-        .map_err(|_| NetworkError::LockPoisoned)?;
-    inner.local_addr = Some(EndpointAddr::new_v6([0; 16], port));
-    inner.scope = scope;
-    inner.last_ingress_if_id = None;
-    let Some(udp) = inner.udp_mut() else {
-        return Err(NetworkError::InvalidAddress);
-    };
-    udp.ttl = 64;
-    udp.token = token;
-    Ok(())
+    socket
+        .with_inner_mut(|inner| {
+            inner.local_addr = Some(EndpointAddr::new_v6([0; 16], port));
+            inner.scope = scope;
+            inner.last_ingress_if_id = None;
+            let Some(udp) = inner.udp_mut() else {
+                return Err(NetworkError::InvalidAddress);
+            };
+            udp.ttl = 64;
+            udp.token = token;
+            Ok(())
+        })
+        .unwrap_or(Err(NetworkError::Unknown))
 }
 
-#[derive(Clone)]
 pub struct UdpEndpoint {
     socket: Socket,
     runtime: NetRuntimeHandle,
@@ -506,9 +504,7 @@ impl core::fmt::Debug for UdpEndpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let scope = self
             .socket
-            .inner()
-            .lock()
-            .map(|inner| inner.scope)
+            .with_inner(|inner| inner.scope)
             .unwrap_or(InterfaceScope::Any);
         f.debug_struct("UdpEndpoint")
             .field("socket_id", &self.socket.socket_id().raw())
@@ -547,7 +543,6 @@ impl UdpEndpoint {
             return Err(error);
         }
 
-        register_socket(socket.clone());
         if let Err(error) = bind_udp_dual_stack(local_port, scope, socket.socket_id()) {
             let _ = unregister_socket(socket.socket_id());
             return Err(socket_error_to_network(error));
@@ -568,16 +563,16 @@ impl UdpEndpoint {
     }
 
     pub fn set_ttl(&self, ttl: u8) {
-        if let Ok(mut inner) = self.socket.inner().lock() {
+        let _ = self.socket.with_inner_mut(|inner| {
             if let Some(udp) = inner.udp_mut() {
                 udp.ttl = ttl;
             }
-        }
+        });
     }
 
     pub fn recv(&self) -> UdpRecvFuture {
         UdpRecvFuture {
-            socket: self.socket.clone(),
+            socket: self.socket,
         }
     }
 
@@ -599,7 +594,7 @@ impl UdpEndpoint {
     pub fn send(&self, payload: PacketPayload, dst: UdpAddr) -> UdpSendFuture {
         let payload_len = payload.total_len();
         UdpSendFuture {
-            socket: self.socket.clone(),
+            socket: self.socket,
             payload: Some(payload),
             payload_len,
             dst: socket_addr_from_udp(dst),
@@ -610,11 +605,6 @@ impl UdpEndpoint {
 
 impl Drop for UdpEndpoint {
     fn drop(&mut self) {
-        let threshold = if self.registered { 2 } else { 1 };
-        if Arc::strong_count(self.socket.inner()) > threshold {
-            return;
-        }
-
         self.close_internal();
     }
 }
@@ -660,12 +650,13 @@ impl Future for UdpSendFuture {
         let this = self.get_mut();
 
         {
-            let inner = this
+            let Some(is_bound) = this
                 .socket
-                .inner()
-                .lock()
-                .map_err(|_| NetworkError::LockPoisoned)?;
-            if !inner.is_udp_bound() {
+                .with_inner(|inner| inner.is_udp_bound())
+            else {
+                return Poll::Ready(Err(NetworkError::Unknown));
+            };
+            if !is_bound {
                 return Poll::Ready(Err(NetworkError::ConnectionClosed));
             }
         }

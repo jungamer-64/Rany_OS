@@ -559,13 +559,14 @@ fn try_fast_path(
     }
 
     if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
-        let can_accept = {
-            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let can_accept = socket
+            .with_inner(|inner| {
             inner
                 .recv_buffer_limit
                 .saturating_sub(inner.recv_payload_bytes())
                 >= payload_len
-        };
+            })
+            .unwrap_or(false);
         if !can_accept {
             return Err(data_payload);
         }
@@ -1217,11 +1218,12 @@ pub fn handle_icmp_error(
         );
         if let Some(id) = socket_id {
             if let Some(socket) = get_socket_by_socket_id(id) {
-                let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let _ = socket.with_inner_mut(|inner| {
                 inner.last_error = Some(error);
                 if let Some(waker) = inner.connect_waker.take() {
                     waker.wake();
                 }
+                });
             }
         }
     }
@@ -1272,11 +1274,12 @@ pub fn handle_icmpv6_error(
         );
         if let Some(id) = socket_id {
             if let Some(socket) = get_socket_by_socket_id(id) {
-                let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+                let _ = socket.with_inner_mut(|inner| {
                 inner.last_error = Some(error);
                 if let Some(waker) = inner.connect_waker.take() {
                     waker.wake();
                 }
+                });
             }
         }
     }
@@ -1378,11 +1381,12 @@ fn get_socket_by_socket_id(socket_id: SocketId) -> Option<Socket> {
 /// Helper to notify a socket that it is connected.
 fn notify_socket_connected(socket_id: SocketId) {
     if let Some(socket) = get_socket_by_socket_id(socket_id) {
-        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let _ = socket.with_inner_mut(|inner| {
         let _ = inner.set_tcp_state(TcpSocketState::Connected);
         if let Some(waker) = inner.connect_waker.take() {
             waker.wake();
         }
+        });
     }
 }
 
@@ -1462,13 +1466,14 @@ fn process_tcp_new_connection(
     let Some(socket) = socket else {
         return;
     };
-    let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-    if !inner.is_tcp_listening() {
+    let Some((nodelay, priority)) = socket.with_inner(|inner| {
+        if !inner.is_tcp_listening() {
+            return None;
+        }
+        Some((inner.tcp().map_or(false, |t| t.nodelay), inner.priority))
+    }).flatten() else {
         return;
-    }
-    let nodelay = inner.tcp().map_or(false, |t| t.nodelay); // 設定を取得
-    let priority = inner.priority;
-    drop(inner);
+    };
 
     // TCPオプション解析 (Timestamps / SACK Permitted / MSS / WSCALE)
     let (peer_ts, sack_permitted, peer_mss, peer_ws) = if !options.is_empty() {
@@ -1592,11 +1597,12 @@ fn handle_rst_received(tcb: TcpControlBlockSnapshot, seq_num: u32) {
 
         // ソケットにエラー通知
         if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
-            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+            let _ = socket.with_inner_mut(|inner| {
             inner.last_error = Some(EndpointError::ConnectionRefused);
             if let Some(waker) = inner.connect_waker.take() {
                 waker.wake();
             }
+            });
         }
 
         // リソースクリーンアップ
@@ -1750,37 +1756,35 @@ fn push_to_accept_queue(
 ) -> bool {
     // ローカルポートでリッスン中のソケットを検索
     if let Some(socket) = find_listening_tcp_socket(conn.local_addr, ingress_if_id) {
-        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        return socket
+            .with_inner_mut(|inner| {
+                if !inner.is_tcp_listening() {
+                    return false;
+                }
 
-        // Listening状態でなければスキップ
-        if !inner.is_tcp_listening() {
-            return false;
-        }
+                let tcp = match inner.tcp_mut() {
+                    Some(t) => t,
+                    None => return false,
+                };
+                if tcp.accept_queue.len() >= tcp.accept_backlog {
+                    log::info!("TCP: Accept queue full for port {}", local_port);
+                    return false;
+                }
 
-        // バックログがいっぱいでないか確認
-        let tcp = match inner.tcp_mut() {
-            Some(t) => t,
-            None => return false,
-        };
-        if tcp.accept_queue.len() >= tcp.accept_backlog {
-            log::info!("TCP: Accept queue full for port {}", local_port);
-            return false;
-        }
+                tcp.accept_queue.push_back(conn);
 
-        // Acceptキューに追加
-        tcp.accept_queue.push_back(conn);
+                if let Some(waker) = inner.accept_waker.take() {
+                    waker.wake();
+                }
 
-        // Accept待ちのWakerを起こす
-        if let Some(waker) = inner.accept_waker.take() {
-            waker.wake();
-        }
+                log::info!(
+                    "TCP: Pushed to accept queue (queue_len={})",
+                    inner.tcp().map_or(0, |t| t.accept_queue.len())
+                );
 
-        log::info!(
-            "TCP: Pushed to accept queue (queue_len={})",
-            inner.tcp().map_or(0, |t| t.accept_queue.len())
-        );
-
-        return true;
+                true
+            })
+            .unwrap_or(false);
     }
 
     false
@@ -1855,11 +1859,12 @@ fn handle_fin_in_order(tcb: TcpControlBlockSnapshot, rcv_nxt_at_fin: u32) {
 /// EOF (0バイト読み取り) を返せるようにする。
 fn notify_socket_peer_fin(socket_id: SocketId) {
     if let Some(socket) = lookup_socket(socket_id) {
-        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let _ = socket.with_inner_mut(|inner| {
         // recv_wakerを起こしてEOFを通知
         if let Some(waker) = inner.recv_waker.take() {
             waker.wake();
         }
+        });
     }
 }
 
@@ -1882,13 +1887,14 @@ fn handle_urgent_received(tcb: TcpControlBlockSnapshot, seq_num: u32, urgent_ptr
 /// ソケットにurgent data到着を通知
 fn notify_socket_urgent(socket_id: SocketId) {
     if let Some(socket) = lookup_socket(socket_id) {
-        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let _ = socket.with_inner_mut(|inner| {
         // urgent flagを設定
         inner.set_urgent_pending(true);
         // recv wakerを起こす（OOBデータ待ちの可能性）
         if let Some(waker) = inner.recv_waker.take() {
             waker.wake();
         }
+        });
     }
 }
 

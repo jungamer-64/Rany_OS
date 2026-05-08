@@ -334,8 +334,9 @@ impl RuntimeCommandHandler {
                     if !endpoint.is_udp() {
                         return;
                     }
-                    let inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-                    let Some(local_addr) = inner.local_addr else {
+                    let Some(local_addr) =
+                        endpoint.with_inner(|inner| inner.local_addr).flatten()
+                    else {
                         return;
                     };
                     result.push(crate::net::api::connections::UdpEndpointInfo {

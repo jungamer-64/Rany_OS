@@ -3,7 +3,6 @@
 // ============================================================================
 //! Raw IP facade backed by the internal socket registry.
 
-use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -31,7 +30,6 @@ fn network_error_to_socket(error: NetworkError) -> EndpointError {
     }
 }
 
-#[derive(Clone)]
 pub struct RawEndpoint {
     socket: Socket,
     registered: bool,
@@ -41,9 +39,7 @@ impl core::fmt::Debug for RawEndpoint {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let scope = self
             .socket
-            .inner()
-            .lock()
-            .map(|inner| inner.scope)
+            .with_inner(|inner| inner.scope)
             .unwrap_or(InterfaceScope::Any);
         f.debug_struct("RawEndpoint")
             .field("socket_id", &self.socket.socket_id().raw())
@@ -58,10 +54,11 @@ impl RawEndpoint {
         scope: InterfaceScope,
     ) -> Result<Self, EndpointError> {
         let socket = Socket::new_registered_raw_in(runtime);
-        {
-            let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        socket
+            .with_inner_mut(|inner| {
             inner.scope = scope;
-        }
+            })
+            .ok_or(EndpointError::Internal)?;
 
         register_raw_scope(scope, socket.socket_id())?;
 
@@ -95,14 +92,14 @@ impl RawEndpoint {
     }
 
     pub(crate) fn set_scope(&self, scope: InterfaceScope) {
-        if let Ok(mut inner) = self.socket.inner().lock() {
+        let _ = self.socket.with_inner_mut(|inner| {
             inner.scope = scope;
-        }
+        });
     }
 
     pub fn recv_payload(&self) -> RawRecvFuture {
         RawRecvFuture {
-            socket: self.socket.clone(),
+            socket: self.socket,
         }
     }
 
@@ -113,10 +110,8 @@ impl RawEndpoint {
     pub async fn send_payload(&self, payload: PacketPayload) -> Result<(), EndpointError> {
         let scope = self
             .socket
-            .inner()
-            .lock()
-            .map(|inner| inner.scope)
-            .map_err(|_| EndpointError::Internal)?;
+            .with_inner(|inner| inner.scope)
+            .ok_or(EndpointError::Internal)?;
         let runtime = self.socket.runtime();
         let mut guard = crate::net::runtime::stack::stack_in(runtime)
             .lock()
@@ -138,11 +133,6 @@ impl RawEndpoint {
 
 impl Drop for RawEndpoint {
     fn drop(&mut self) {
-        let threshold = if self.registered { 2 } else { 1 };
-        if Arc::strong_count(self.socket.inner()) > threshold {
-            return;
-        }
-
         let _ = self.close();
     }
 }

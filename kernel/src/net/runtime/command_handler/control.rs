@@ -18,17 +18,20 @@ impl RuntimeCommandHandler {
             return EventHandleResult::SocketNotFound(socket_id);
         };
 
-        let (local, remote) = {
-            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let (local, remote) = match socket.with_inner(|inner| {
             let local = match inner.local_addr {
                 Some(addr) => addr,
-                None => return EventHandleResult::Success,
+                None => return None,
             };
             let remote = match inner.remote_addr {
                 Some(addr) => addr,
-                None => return EventHandleResult::Success,
+                None => return None,
             };
-            (local, remote)
+            Some((local, remote))
+        }) {
+            Some(Some(pair)) => pair,
+            Some(None) => return EventHandleResult::Success,
+            None => return EventHandleResult::SocketNotFound(socket_id),
         };
 
         // TCBに反映
@@ -49,17 +52,20 @@ impl RuntimeCommandHandler {
             return EventHandleResult::SocketNotFound(socket_id);
         };
 
-        let (local, remote) = {
-            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let (local, remote) = match socket.with_inner(|inner| {
             let local = match inner.local_addr {
                 Some(addr) => addr,
-                None => return EventHandleResult::Success, // 未接続なら何もしない
+                None => return None,
             };
             let remote = match inner.remote_addr {
                 Some(addr) => addr,
-                None => return EventHandleResult::Success, // リモートなしなら何もしない
+                None => return None,
             };
-            (local, remote)
+            Some((local, remote))
+        }) {
+            Some(Some(pair)) => pair,
+            Some(None) => return EventHandleResult::Success,
+            None => return EventHandleResult::SocketNotFound(socket_id),
         };
 
         // TCBに反映
@@ -75,10 +81,9 @@ impl RuntimeCommandHandler {
         // 送信待ちのソケットに DataReady イベントを再送して再試行を促す（TCP）
         // また、イベントキュー満杯で待機していた UDP ソケットの send_waker も起床させる
         crate::net::l4::socket::for_each_socket(|socket| {
-            let pending = {
-                let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                inner.has_send_data()
-            };
+            let pending = socket
+                .with_inner(|inner| inner.has_send_data())
+                .unwrap_or(false);
             if pending && socket.is_tcp() {
                 crate::net::runtime::command::enqueue_command_ignore_in(
                     socket.runtime(),
@@ -91,9 +96,8 @@ impl RuntimeCommandHandler {
             } else {
                 // TCPバッファが空でも send_waker が設定されている場合（UDP の ResourceExhausted 待ち）
                 // はここで直接起床させる。TCP の write/poll_write 境界も安全に再ポーリング可能。
-                let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(w) = inner.send_waker.take() {
-                    drop(inner); // ロック解放後に wake（デッドロック回避）
+                let waker = socket.with_inner_mut(|inner| inner.send_waker.take()).flatten();
+                if let Some(w) = waker {
                     w.wake();
                 }
             }
@@ -111,21 +115,21 @@ impl RuntimeCommandHandler {
             return;
         };
 
-        let mut inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-        inner.mark_closed();
-        if let Some(waker) = inner.recv_waker.take() {
-            waker.wake();
-        }
-        if let Some(waker) = inner.send_waker.take() {
-            waker.wake();
-        }
-        if let Some(waker) = inner.connect_waker.take() {
-            waker.wake();
-        }
-        if let Some(waker) = inner.accept_waker.take() {
-            waker.wake();
-        }
-        drop(inner);
+        let _ = socket.with_inner_mut(|inner| {
+            inner.mark_closed();
+            if let Some(waker) = inner.recv_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = inner.send_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = inner.connect_waker.take() {
+                waker.wake();
+            }
+            if let Some(waker) = inner.accept_waker.take() {
+                waker.wake();
+            }
+        });
 
         let _ = crate::net::l4::socket::unregister_socket(socket_id);
     }

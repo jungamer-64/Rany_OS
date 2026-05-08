@@ -58,8 +58,7 @@ impl RuntimeCommandHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        let (local_addr, scope) = {
-            let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
+        let Some((local_addr, scope)) = socket.with_inner(|inner| {
             let scope = match inner.scope {
                 crate::net::types::InterfaceScope::Pinned(if_id) => {
                     crate::net::types::InterfaceScope::Pinned(if_id)
@@ -70,6 +69,8 @@ impl RuntimeCommandHandler {
                     .unwrap_or(crate::net::types::InterfaceScope::Any),
             };
             (inner.local_addr, scope)
+        }) else {
+            return EventHandleResult::SocketNotFound(fd);
         };
 
         let local_port = local_addr.map(|a| a.port()).unwrap_or(0);

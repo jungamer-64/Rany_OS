@@ -15,8 +15,9 @@ pub(crate) fn apply_endpoint_scope(
     endpoint: &crate::net::l4::socket::Socket,
     scope: kernel_api::resource::net::InterfaceScope,
 ) {
-    let mut inner = endpoint.inner().lock().unwrap_or_else(|e| e.into_inner());
-    inner.scope = stack_scope(scope);
+    let _ = endpoint.with_inner_mut(|inner| {
+        inner.scope = stack_scope(scope);
+    });
 }
 
 pub(crate) fn endpoint_addr_from_kapi(
