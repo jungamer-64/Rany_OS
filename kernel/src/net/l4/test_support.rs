@@ -2,61 +2,61 @@
 // kernel/src/net/l4/test_support.rs - L4 / test support
 // ============================================================================
 
-use crate::domain::{DomainCredentials, DomainId, DomainSecurity};
+use crate::domain::DomainId;
 use crate::net::datapath::mempool::PacketRef;
-use crate::security::capability::manager;
 use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
 use alloc::boxed::Box;
-use alloc::sync::Arc;
-use alloc::task::Wake;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use core::task::Waker;
+use core::task::{RawWaker, RawWakerVTable, Waker};
 
-struct NoopWake;
-
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
+unsafe fn noop_clone(data: *const ()) -> RawWaker {
+    RawWaker::new(data, &NOOP_WAKER_VTABLE)
 }
 
-struct CounterWake {
-    counter: &'static AtomicUsize,
+unsafe fn noop_wake(_: *const ()) {}
+
+unsafe fn noop_wake_by_ref(_: *const ()) {}
+
+unsafe fn noop_drop(_: *const ()) {}
+
+static NOOP_WAKER_VTABLE: RawWakerVTable =
+    RawWakerVTable::new(noop_clone, noop_wake, noop_wake_by_ref, noop_drop);
+
+unsafe fn counting_clone(data: *const ()) -> RawWaker {
+    RawWaker::new(data, &COUNTING_WAKER_VTABLE)
 }
 
-impl Wake for CounterWake {
-    fn wake(self: Arc<Self>) {
-        self.counter.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.counter.fetch_add(1, Ordering::SeqCst);
-    }
+unsafe fn counting_wake(data: *const ()) {
+    let counter = unsafe { &*(data as *const AtomicUsize) };
+    counter.fetch_add(1, Ordering::SeqCst);
 }
 
-struct SharedCounterWake {
-    counter: Arc<AtomicUsize>,
+unsafe fn counting_wake_by_ref(data: *const ()) {
+    let counter = unsafe { &*(data as *const AtomicUsize) };
+    counter.fetch_add(1, Ordering::SeqCst);
 }
 
-impl Wake for SharedCounterWake {
-    fn wake(self: Arc<Self>) {
-        self.counter.fetch_add(1, Ordering::SeqCst);
-    }
+unsafe fn counting_drop(_: *const ()) {}
 
-    fn wake_by_ref(self: &Arc<Self>) {
-        self.counter.fetch_add(1, Ordering::SeqCst);
-    }
-}
+static COUNTING_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+    counting_clone,
+    counting_wake,
+    counting_wake_by_ref,
+    counting_drop,
+);
 
 pub(crate) fn noop_waker() -> Waker {
-    Waker::from(Arc::new(NoopWake))
+    unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &NOOP_WAKER_VTABLE)) }
 }
 
 pub(crate) fn counting_waker(counter: &'static AtomicUsize) -> Waker {
-    Waker::from(Arc::new(CounterWake { counter }))
-}
-
-pub(crate) fn shared_counting_waker(counter: Arc<AtomicUsize>) -> Waker {
-    Waker::from(Arc::new(SharedCounterWake { counter }))
+    unsafe {
+        Waker::from_raw(RawWaker::new(
+            counter as *const AtomicUsize as *const (),
+            &COUNTING_WAKER_VTABLE,
+        ))
+    }
 }
 
 fn idle_entry(_: u64) -> ! {
@@ -89,11 +89,7 @@ pub(crate) fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
     let prev = get_current_task(cpu_id).and_then(NonNull::new);
     let mut tcb =
         TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
-    let caps = manager().get_capabilities(domain_id.as_u64());
-    tcb.security = Arc::new(DomainSecurity {
-        credentials: DomainCredentials::ROOT,
-        caps,
-    });
+    tcb.security = crate::domain::domain_security_handle(domain_id);
     let current = NonNull::from(Box::leak(Box::new(tcb)));
     // SAFETY: `current` points to a leaked `TaskControlBlock` that stays valid until the guard drops.
     unsafe {

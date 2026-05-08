@@ -6,7 +6,6 @@
 //! DHCPを使用してIPアドレス、サブネットマスク、ゲートウェイ、
 //! DNSサーバーなどのネットワーク設定を自動取得する。
 use crate::net::runtime::manager::NetIfId;
-use alloc::sync::Arc;
 
 mod runtime;
 mod v4;
@@ -25,7 +24,7 @@ pub(crate) use self::runtime::{
 pub use self::v4::*;
 pub use self::v6::*;
 
-pub(crate) fn interface_v4_client(if_id: NetIfId) -> Option<Arc<DhcpClient>> {
+pub(crate) fn interface_v4_client(if_id: NetIfId) -> Option<&'static DhcpClient> {
     self::runtime::interface_v4_client(if_id)
 }
 

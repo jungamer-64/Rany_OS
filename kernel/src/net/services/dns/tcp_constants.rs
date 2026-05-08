@@ -3,11 +3,11 @@
 // ============================================================================
 
 use super::*;
-use alloc::sync::Arc;
+use alloc::boxed::Box;
 
 /// DNSクライアントを初期化
 pub fn init(tick_rate: u64) {
-    let client = Arc::new(DnsClient::new(tick_rate));
+    let client = Box::leak(Box::new(DnsClient::new(tick_rate)));
     match super::shared_client_lock().lock() {
         Ok(mut g) => *g = Some(client),
         Err(_) => log::error!("[NET] DNS Global lock poisoned (init) - initialization skipped"),
@@ -85,9 +85,8 @@ pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
 
 /// 非同期でIPv4アドレスを解決 (Global API)
 pub async fn resolve_ipv4(name: &str) -> Option<Ipv4Address> {
-    // 1. クライアントの Arc を取得 (ロック時間は最小)
     let client = match super::shared_client_lock().lock() {
-        Ok(g) => g.as_ref().cloned(),
+        Ok(g) => *g,
         Err(_) => None,
     }?;
 
@@ -98,7 +97,7 @@ pub async fn resolve_ipv4(name: &str) -> Option<Ipv4Address> {
 /// 非同期でIPv6アドレスを解決 (Global API)
 pub async fn resolve_ipv6(name: &str) -> Option<Ipv6Address> {
     let client = match super::shared_client_lock().lock() {
-        Ok(g) => g.as_ref().cloned(),
+        Ok(g) => *g,
         Err(_) => None,
     }?;
 
@@ -108,7 +107,7 @@ pub async fn resolve_ipv6(name: &str) -> Option<Ipv6Address> {
 /// 非同期でTXTレコードを解決 (Global API)
 pub async fn resolve_txt(name: &str) -> Option<Vec<alloc::string::String>> {
     let client = match super::shared_client_lock().lock() {
-        Ok(g) => g.as_ref().cloned(),
+        Ok(g) => *g,
         Err(_) => None,
     }?;
 
@@ -118,7 +117,7 @@ pub async fn resolve_txt(name: &str) -> Option<Vec<alloc::string::String>> {
 /// 非同期でSRVレコードを解決 (Global API)
 pub async fn resolve_srv(name: &str) -> Option<Vec<DnsSrvRecord>> {
     let client = match super::shared_client_lock().lock() {
-        Ok(g) => g.as_ref().cloned(),
+        Ok(g) => *g,
         Err(_) => None,
     }?;
 
@@ -128,7 +127,7 @@ pub async fn resolve_srv(name: &str) -> Option<Vec<DnsSrvRecord>> {
 /// 非同期でMXレコードを解決 (Global API)
 pub async fn resolve_mx(name: &str) -> Option<Vec<DnsMxRecord>> {
     let client = match super::shared_client_lock().lock() {
-        Ok(g) => g.as_ref().cloned(),
+        Ok(g) => *g,
         Err(_) => None,
     }?;
 
@@ -138,7 +137,7 @@ pub async fn resolve_mx(name: &str) -> Option<Vec<DnsMxRecord>> {
 /// 非同期でIPv4逆引き（PTR）を解決 (Global API)
 pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<alloc::string::String> {
     let client = match super::shared_client_lock().lock() {
-        Ok(g) => g.as_ref().cloned(),
+        Ok(g) => *g,
         Err(_) => None,
     }?;
 
@@ -148,7 +147,7 @@ pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<alloc::string::String> 
 /// 非同期でIPv6逆引き（PTR）を解決 (Global API)
 pub async fn resolve_ptr_ipv6(ip: Ipv6Address) -> Option<alloc::string::String> {
     let client = match super::shared_client_lock().lock() {
-        Ok(g) => g.as_ref().cloned(),
+        Ok(g) => *g,
         Err(_) => None,
     }?;
 

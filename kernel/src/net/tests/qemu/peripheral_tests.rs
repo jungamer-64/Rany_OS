@@ -48,7 +48,7 @@ macro_rules! run_case {
 
 fn install_default_runtime_dhcp_v4_client(
     mac: crate::net::l2::ethernet::MacAddress,
-) -> alloc::sync::Arc<crate::net::services::dhcp::DhcpClient> {
+) -> &'static crate::net::services::dhcp::DhcpClient {
     let runtime = crate::net::runtime::default_runtime();
     crate::net::runtime::manager::init_network_manager_in(runtime);
 

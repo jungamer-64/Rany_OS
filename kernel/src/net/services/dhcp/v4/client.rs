@@ -225,7 +225,7 @@ impl DhcpClient {
 
     /// INFORM / REQUEST 共通で利用する、現在有効なリースを取得する
     pub(super) fn get_active_lease(&self) -> Result<DhcpLease, &'static str> {
-        self.with_lease(|g| g.cloned().ok_or("No active lease available"))
+        self.with_lease(|g| g.copied().ok_or("No active lease available"))
     }
 
     /// **テスト用**: リースを強制的に設定します。

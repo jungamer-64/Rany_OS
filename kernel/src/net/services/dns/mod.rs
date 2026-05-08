@@ -11,7 +11,6 @@ use crate::net::runtime::context::default_runtime_context;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -784,7 +783,7 @@ impl DnsStats {
 }
 
 pub(crate) struct DnsRuntimeState {
-    shared_client: PoisonLock<Option<Arc<DnsClient>>>,
+    shared_client: PoisonLock<Option<&'static DnsClient>>,
 }
 
 impl DnsRuntimeState {
@@ -799,13 +798,13 @@ pub(crate) fn runtime_state() -> &'static DnsRuntimeState {
     &default_runtime_context().dns
 }
 
-pub(crate) fn shared_client_lock() -> &'static PoisonLock<Option<Arc<DnsClient>>> {
+pub(crate) fn shared_client_lock() -> &'static PoisonLock<Option<&'static DnsClient>> {
     &runtime_state().shared_client
 }
 
-pub(crate) fn cloned_client() -> Option<Arc<DnsClient>> {
+pub(crate) fn shared_client() -> Option<&'static DnsClient> {
     shared_client_lock()
         .lock()
         .ok()
-        .and_then(|guard| guard.as_ref().cloned())
+        .and_then(|guard| *guard)
 }

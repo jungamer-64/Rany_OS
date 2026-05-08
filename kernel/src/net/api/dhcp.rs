@@ -151,7 +151,7 @@ pub(crate) fn start_background_service_tasks() {
         .lock()
         .ok()
         .is_some_and(|guard| guard.is_some());
-    let has_dns = crate::net::services::dns::cloned_client().is_some();
+    let has_dns = crate::net::services::dns::shared_client().is_some();
 
     if !has_dhcpv6 && !has_mdns && !has_dns {
         log::info!("[NET][boot] network service tasks not started: runtime services unavailable");
@@ -198,7 +198,7 @@ pub(crate) fn start_background_service_tasks() {
                 "[NET][boot] DNS client task running on CPU {}",
                 crate::cpu::try_current_id().unwrap_or(0)
             );
-            let client = crate::net::services::dns::cloned_client();
+            let client = crate::net::services::dns::shared_client();
             if let Some(client) = client {
                 let _ = client.run().await;
             }
