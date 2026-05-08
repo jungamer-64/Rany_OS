@@ -218,7 +218,6 @@ pub struct PacketRefVTable {
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
     pub advance: unsafe fn(&mut PacketRefStorage, usize),
     pub retreat: unsafe fn(&mut PacketRefStorage, usize) -> bool,
-    pub split_at: unsafe fn(&mut PacketRefStorage, usize) -> Option<PacketRefStorage>,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
 }
 
@@ -309,17 +308,6 @@ impl PacketRef {
     #[inline]
     pub fn retreat(&mut self, size: usize) -> bool {
         unsafe { (self.vtable.retreat)(&mut self.storage, size) }
-    }
-
-    #[inline]
-    pub fn split_at(&mut self, len: usize) -> Option<Self> {
-        let storage = unsafe { (self.vtable.split_at)(&mut self.storage, len) }?;
-        Some(Self {
-            storage,
-            vtable: self.vtable,
-            meta_cache: self.meta_cache,
-            _not_sync: PhantomData,
-        })
     }
 
     #[inline]
@@ -440,22 +428,6 @@ unsafe fn heap_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
     true
 }
 
-unsafe fn heap_split_at(storage: &mut PacketRefStorage, len: usize) -> Option<PacketRefStorage> {
-    let state = unsafe { heap_state_mut(storage) };
-    if len == 0 || len >= state.len {
-        return None;
-    }
-
-    let prefix = HeapPacketState {
-        backing: Arc::clone(&state.backing),
-        offset: state.offset,
-        len,
-    };
-    state.offset = state.offset.saturating_add(len);
-    state.len = state.len.saturating_sub(len);
-    Some(unsafe { PacketRefStorage::from_state(prefix) })
-}
-
 unsafe fn heap_drop(storage: &mut PacketRefStorage) {
     unsafe { ptr::drop_in_place(storage.as_state_mut::<HeapPacketState>()) };
 }
@@ -471,7 +443,6 @@ static HEAP_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: heap_headroom,
     advance: heap_advance,
     retreat: heap_retreat,
-    split_at: heap_split_at,
     drop_storage: heap_drop,
 };
 
@@ -929,25 +900,6 @@ mod packet_ref_tests {
         true
     }
 
-    unsafe fn heap_split_at(
-        storage: &mut PacketRefStorage,
-        len: usize,
-    ) -> Option<PacketRefStorage> {
-        let state = unsafe { heap_state_mut(storage) };
-        if len == 0 || len >= state.len {
-            return None;
-        }
-
-        let prefix = HeapPacketState {
-            backing: Arc::clone(&state.backing),
-            offset: state.offset,
-            len,
-        };
-        state.offset = state.offset.saturating_add(len);
-        state.len = state.len.saturating_sub(len);
-        Some(unsafe { PacketRefStorage::from_state(prefix) })
-    }
-
     unsafe fn heap_drop(storage: &mut PacketRefStorage) {
         unsafe { ptr::drop_in_place(storage.as_state_mut::<HeapPacketState>()) };
     }
@@ -963,7 +915,6 @@ mod packet_ref_tests {
         headroom: heap_headroom,
         advance: heap_advance,
         retreat: heap_retreat,
-        split_at: heap_split_at,
         drop_storage: heap_drop,
     };
 
@@ -1043,22 +994,6 @@ mod packet_ref_tests {
         true
     }
 
-    unsafe fn dma_split_at(storage: &mut PacketRefStorage, len: usize) -> Option<PacketRefStorage> {
-        let state = unsafe { dma_state_mut(storage) };
-        if len == 0 || len >= state.len {
-            return None;
-        }
-
-        let prefix = DmaPacketState {
-            backing: Rc::clone(&state.backing),
-            offset: state.offset,
-            len,
-        };
-        state.offset = state.offset.saturating_add(len);
-        state.len = state.len.saturating_sub(len);
-        Some(unsafe { PacketRefStorage::from_state(prefix) })
-    }
-
     unsafe fn dma_drop(storage: &mut PacketRefStorage) {
         unsafe { ptr::drop_in_place(storage.as_state_mut::<DmaPacketState>()) };
     }
@@ -1074,7 +1009,6 @@ mod packet_ref_tests {
         headroom: dma_headroom,
         advance: dma_advance,
         retreat: dma_retreat,
-        split_at: dma_split_at,
         drop_storage: dma_drop,
     };
 

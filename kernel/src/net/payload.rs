@@ -20,26 +20,6 @@ pub struct PayloadRange {
     len: usize,
 }
 
-#[derive(Debug)]
-pub struct PayloadPrefix<const N: usize> {
-    bytes: [u8; N],
-    len: usize,
-}
-
-impl<const N: usize> PayloadPrefix<N> {
-    pub const fn as_slice(&self) -> &[u8] {
-        self.bytes.split_at(self.len).0
-    }
-
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
 impl PayloadRange {
     pub const fn new(offset: usize, len: usize) -> Self {
         Self { offset, len }
@@ -131,13 +111,6 @@ impl<'a> PayloadSpanRef<'a> {
             return None;
         }
         PacketPayloadView::new(self.payload).read_array(self.offset + index)
-    }
-
-    pub fn read_prefix<const N: usize>(&self, len: usize) -> Option<PayloadPrefix<N>> {
-        if len > self.len || len > N {
-            return None;
-        }
-        PacketPayloadView::new(self.payload).read_prefix(self.offset, len)
     }
 
     pub fn read_u8(&self, index: usize) -> Option<u8> {
@@ -336,20 +309,6 @@ impl PacketPayloadBuilder {
         }
     }
 
-    pub fn push_bytes(&mut self, data: &[u8]) -> Option<()> {
-        if data.is_empty() {
-            return Some(());
-        }
-        let mut packet = alloc_packet_for_len(data.len())?;
-        packet.data_mut()[..data.len()].copy_from_slice(data);
-        self.segments.push(packet);
-        Some(())
-    }
-
-    pub fn push_str(&mut self, data: &str) -> Option<()> {
-        self.push_bytes(data.as_bytes())
-    }
-
     pub fn push_payload(&mut self, payload: PacketPayload) {
         self.segments.extend(payload.into_segments());
     }
@@ -478,46 +437,6 @@ impl<'a> PacketPayloadView<'a> {
         (copied == N).then_some(out)
     }
 
-    pub fn read_prefix<const N: usize>(
-        &self,
-        offset: usize,
-        len: usize,
-    ) -> Option<PayloadPrefix<N>> {
-        if len > N || offset.checked_add(len)? > self.total_len() {
-            return None;
-        }
-
-        let mut bytes = [0u8; N];
-        let mut payload_cursor = 0usize;
-        let mut copied = 0usize;
-
-        self.for_each_chunk(|chunk| {
-            if copied == len {
-                return;
-            }
-
-            let chunk_start = payload_cursor;
-            let chunk_end = payload_cursor.saturating_add(chunk.len());
-            payload_cursor = chunk_end;
-
-            if chunk_end <= offset {
-                return;
-            }
-
-            let local_start = offset.saturating_sub(chunk_start);
-            let available = chunk.len().saturating_sub(local_start);
-            let take = available.min(len.saturating_sub(copied));
-            if take == 0 {
-                return;
-            }
-
-            bytes[copied..copied + take].copy_from_slice(&chunk[local_start..local_start + take]);
-            copied += take;
-        });
-
-        (copied == len).then_some(PayloadPrefix { bytes, len })
-    }
-
     pub fn read_u8(&self, offset: usize) -> Option<u8> {
         self.read_array::<1>(offset).map(|bytes| bytes[0])
     }
@@ -626,10 +545,6 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
     Some(packet)
 }
 
-fn alloc_packet_for_len(len: usize) -> Option<PacketRef> {
-    alloc_packet_with_headroom(len, DEFAULT_PACKET_HEADROOM)
-}
-
 pub fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
     let base = container.as_ptr() as usize;
     let sub = subslice.as_ptr() as usize;
@@ -676,66 +591,6 @@ pub fn retain_payload_window_owned(
     }
 
     (remaining_len == 0).then(|| build_payload_from_segments(segments))
-}
-
-pub fn split_payload_prefix_owned(
-    payload: PacketPayload,
-    len: usize,
-) -> Option<(PacketPayload, PacketPayload)> {
-    let total_len = payload.total_len();
-    if len > total_len {
-        return None;
-    }
-    if len == 0 {
-        return Some((PacketPayload::default(), payload));
-    }
-    if len == total_len {
-        return Some((payload, PacketPayload::default()));
-    }
-
-    let mut prefix_segments = Vec::new();
-    let mut remainder_segments = Vec::new();
-    let mut remaining = len;
-
-    for mut segment in payload.into_segments() {
-        if remaining == 0 {
-            remainder_segments.push(segment);
-            continue;
-        }
-
-        if remaining >= segment.len() {
-            remaining -= segment.len();
-            prefix_segments.push(segment);
-            continue;
-        }
-
-        let Some(prefix_segment) = segment.split_at(remaining) else {
-            return None;
-        };
-        prefix_segments.push(prefix_segment);
-        remainder_segments.push(segment);
-        remaining = 0;
-    }
-
-    (remaining == 0).then(|| {
-        (
-            build_payload_from_segments(prefix_segments),
-            build_payload_from_segments(remainder_segments),
-        )
-    })
-}
-
-pub fn discard_payload_prefix(payload: &mut PacketPayload, len: usize) -> bool {
-    let total_len = payload.total_len();
-    if len > total_len {
-        return false;
-    }
-    let taken = core::mem::take(payload);
-    let Some((_, remaining_payload)) = split_payload_prefix_owned(taken, len) else {
-        return false;
-    };
-    *payload = remaining_payload;
-    true
 }
 
 fn build_payload_from_segments(mut segments: Vec<PacketRef>) -> PacketPayload {
