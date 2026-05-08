@@ -12,6 +12,7 @@
 
 use crate::ipc::rref::RRef;
 use crate::sync::PoisonLock;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
@@ -106,7 +107,6 @@ impl PacketBuffer {
 }
 
 use crate::io::dma::{CpuOwned as KernelCpuOwned, TypedDmaSlice};
-use alloc::sync::Arc;
 
 const NO_PACKET_DMA_DEVICE: u64 = u64::MAX;
 const DMA_PACKET_BUFFER_SIZE: usize = DMA_PAGE_SIZE;
@@ -114,8 +114,8 @@ const DMA_PACKET_BUFFER_SIZE: usize = DMA_PAGE_SIZE;
 static PACKET_DMA_DEVICE_ID: AtomicU64 = AtomicU64::new(NO_PACKET_DMA_DEVICE);
 
 enum DmaBufferOwner {
-    Kernel(Arc<PoisonLock<TypedDmaSlice<KernelCpuOwned>>>),
-    Kapi(Arc<PoisonLock<KapiDmaSlice<KapiCpuOwned>>>),
+    Kernel(PoisonLock<TypedDmaSlice<KernelCpuOwned>>),
+    Kapi(PoisonLock<KapiDmaSlice<KapiCpuOwned>>),
 }
 
 struct DmaBuffer {
@@ -148,7 +148,7 @@ impl DmaBuffer {
             phys_addr: phys,
             device_addr,
             size,
-            owner: DmaBufferOwner::Kernel(Arc::new(PoisonLock::new(slice))),
+            owner: DmaBufferOwner::Kernel(PoisonLock::new(slice)),
         }
     }
 
@@ -163,16 +163,7 @@ impl DmaBuffer {
             phys_addr: PhysAddr::new(device_addr),
             device_addr,
             size,
-            owner: DmaBufferOwner::Kapi(Arc::new(PoisonLock::new(slice))),
-        }
-    }
-}
-
-impl Clone for DmaBufferOwner {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Kernel(owner) => Self::Kernel(owner.clone()),
-            Self::Kapi(owner) => Self::Kapi(owner.clone()),
+            owner: DmaBufferOwner::Kapi(PoisonLock::new(slice)),
         }
     }
 }
@@ -185,9 +176,9 @@ struct PooledPacketState {
     len: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct DmaPacketState {
-    buf: Arc<DmaBuffer>,
+    buf: NonNull<DmaBuffer>,
     offset: usize,
     len: usize,
 }
@@ -282,36 +273,36 @@ unsafe fn dma_state_mut(storage: &mut PacketRefStorage) -> &mut DmaPacketState {
 }
 unsafe fn dma_data_ptr(storage: &PacketRefStorage) -> *const u8 {
     let state = dma_state_ref(storage);
-    state.buf.ptr.as_ptr().add(state.offset)
+    state.buf.as_ref().ptr.as_ptr().add(state.offset)
 }
 unsafe fn dma_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
     let state = dma_state_mut(storage);
-    state.buf.ptr.as_ptr().add(state.offset)
+    state.buf.as_ref().ptr.as_ptr().add(state.offset)
 }
 unsafe fn dma_len(storage: &PacketRefStorage) -> usize {
     dma_state_ref(storage).len
 }
 unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) {
     let state = dma_state_mut(storage);
-    state.len = len.min(state.buf.size.saturating_sub(state.offset));
+    state.len = len.min(state.buf.as_ref().size.saturating_sub(state.offset));
 }
 unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
-    dma_state_ref(storage).buf.size
+    dma_state_ref(storage).buf.as_ref().size
 }
 unsafe fn dma_headroom(storage: &PacketRefStorage) -> usize {
     dma_state_ref(storage).offset
 }
 unsafe fn dma_phys_addr(storage: &PacketRefStorage) -> u64 {
     let state = dma_state_ref(storage);
-    state.buf.phys_addr.as_u64() + state.offset as u64
+    state.buf.as_ref().phys_addr.as_u64() + state.offset as u64
 }
 unsafe fn dma_device_address(storage: &PacketRefStorage) -> u64 {
     let state = dma_state_ref(storage);
-    state.buf.device_addr + state.offset as u64
+    state.buf.as_ref().device_addr + state.offset as u64
 }
 unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) {
     let state = dma_state_mut(storage);
-    state.offset = state.offset.saturating_add(size).min(state.buf.size);
+    state.offset = state.offset.saturating_add(size).min(state.buf.as_ref().size);
     state.len = state.len.saturating_sub(size);
 }
 unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
@@ -324,7 +315,10 @@ unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
     true
 }
 unsafe fn dma_drop(storage: &mut PacketRefStorage) {
-    core::ptr::drop_in_place(storage.as_state_mut::<DmaPacketState>());
+    let state = storage.as_state_mut::<DmaPacketState>();
+    let buf = state.buf;
+    core::ptr::drop_in_place(state);
+    drop(Box::from_raw(buf.as_ptr()));
 }
 
 static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
@@ -432,7 +426,7 @@ fn new_pooled_packet_ref(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) 
 
 pub fn packet_ref_from_dma_slice(slice: TypedDmaSlice<KernelCpuOwned>) -> PacketRef {
     let state = DmaPacketState {
-        buf: Arc::new(DmaBuffer::from_typed(slice)),
+        buf: NonNull::from(Box::leak(Box::new(DmaBuffer::from_typed(slice)))),
         offset: DEFAULT_PACKET_HEADROOM.min(DMA_PACKET_BUFFER_SIZE),
         len: 0,
     };
@@ -441,7 +435,7 @@ pub fn packet_ref_from_dma_slice(slice: TypedDmaSlice<KernelCpuOwned>) -> Packet
 
 fn packet_ref_from_kapi_dma_slice(slice: KapiDmaSlice<KapiCpuOwned>) -> PacketRef {
     let state = DmaPacketState {
-        buf: Arc::new(DmaBuffer::from_kapi(slice)),
+        buf: NonNull::from(Box::leak(Box::new(DmaBuffer::from_kapi(slice)))),
         offset: DEFAULT_PACKET_HEADROOM.min(DMA_PACKET_BUFFER_SIZE),
         len: 0,
     };
@@ -609,7 +603,7 @@ impl Mempool {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct MempoolStats {
     pub total_buffers: usize,
     pub free_buffers: usize,
