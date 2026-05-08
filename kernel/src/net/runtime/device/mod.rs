@@ -74,25 +74,61 @@ impl TxLeaseState {
 }
 
 pub struct TxCompletionFuture {
-    state: Arc<TxCompletionState>,
+    runtime: NetRuntimeHandle,
+    completion_id: u64,
 }
 
 impl Future for TxCompletionFuture {
     type Output = TxCompletionResult;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Ok(mut slot) = self.state.result.lock() {
-            if let Some(result) = slot.take() {
-                return Poll::Ready(result);
+        let completion = self.as_ref().get_ref();
+        let context = runtime_context_for(completion.runtime);
+        let mut ready = None;
+        let mut missing = false;
+
+        {
+            let completions = context
+                .tx_completions
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(state) = completions.get(&completion.completion_id) {
+                if let Ok(mut slot) = state.result.lock() {
+                    ready = slot.take();
+                }
+                if ready.is_none() {
+                    state.waker.register(cx.waker());
+                    if let Ok(mut slot) = state.result.lock() {
+                        ready = slot.take();
+                    }
+                }
+            } else {
+                missing = true;
             }
         }
-        self.state.waker.register(cx.waker());
-        if let Ok(mut slot) = self.state.result.lock() {
-            if let Some(result) = slot.take() {
-                return Poll::Ready(result);
-            }
+
+        if let Some(result) = ready {
+            context
+                .tx_completions
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&completion.completion_id);
+            return Poll::Ready(result);
+        }
+        if missing {
+            return Poll::Ready(Err("tx completion missing"));
         }
         Poll::Pending
+    }
+}
+
+impl Drop for TxCompletionFuture {
+    fn drop(&mut self) {
+        runtime_context_for(self.runtime)
+            .tx_completions
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.completion_id);
     }
 }
 
@@ -274,13 +310,18 @@ pub fn register_tx_completion_in(runtime: NetRuntimeHandle) -> (u64, TxCompletio
     let completion_id = context
         .tx_completion_next_id
         .fetch_add(1, Ordering::Relaxed);
-    let state = Arc::new(TxCompletionState::new());
     context
         .tx_completions
         .write()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(completion_id, state.clone());
-    (completion_id, TxCompletionFuture { state })
+        .insert(completion_id, TxCompletionState::new());
+    (
+        completion_id,
+        TxCompletionFuture {
+            runtime,
+            completion_id,
+        },
+    )
 }
 
 pub fn complete_tx_request_in(
@@ -288,12 +329,11 @@ pub fn complete_tx_request_in(
     completion_id: u64,
     result: TxCompletionResult,
 ) -> bool {
-    let state = runtime_context_for(runtime)
+    let completions = runtime_context_for(runtime)
         .tx_completions
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&completion_id);
-    if let Some(state) = state {
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(state) = completions.get(&completion_id) {
         state.complete(result);
         true
     } else {
@@ -370,7 +410,7 @@ pub fn complete_tx_lease_in(
             let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
                 completion_id,
                 lease.keepalive,
-                result.clone(),
+                result,
             );
             let _ = complete_tx_request_in(runtime, completion_id, result);
             return true;
@@ -1560,10 +1600,10 @@ mod tests {
         let lease_b = sample_lease(20);
         crate::net::services::dhcp::interface_v4_client(if_a)
             .expect("dhcp client a")
-            .set_lease_for_test(lease_a.clone());
+            .set_lease_for_test(lease_a);
         crate::net::services::dhcp::interface_v4_client(if_b)
             .expect("dhcp client b")
-            .set_lease_for_test(lease_b.clone());
+            .set_lease_for_test(lease_b);
 
         set_primary_interface_in(default_runtime(), if_a);
         if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
@@ -1617,7 +1657,7 @@ mod tests {
         let lease_a = sample_lease(30);
         crate::net::services::dhcp::interface_v4_client(if_a)
             .expect("dhcp client a")
-            .set_lease_for_test(lease_a.clone());
+            .set_lease_for_test(lease_a);
         set_primary_interface_in(default_runtime(), if_a);
 
         assert!(unregister_port(if_a));
@@ -1648,10 +1688,10 @@ mod tests {
         let lease_b = sample_lease(50);
         crate::net::services::dhcp::interface_v4_client(if_a)
             .expect("dhcp client a")
-            .set_lease_for_test(lease_a.clone());
+            .set_lease_for_test(lease_a);
         crate::net::services::dhcp::interface_v4_client(if_b)
             .expect("dhcp client b")
-            .set_lease_for_test(lease_b.clone());
+            .set_lease_for_test(lease_b);
 
         set_primary_interface_in(default_runtime(), if_a);
         if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {

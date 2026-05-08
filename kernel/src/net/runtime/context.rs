@@ -13,7 +13,6 @@ use crate::net::services::mdns::MdnsRuntimeState;
 use crate::sync::{PoisonLock, PoisonRwLock, WakerQueue};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -63,7 +62,7 @@ pub struct NetRuntimeContext {
     pub(crate) command_task_running: AtomicBool,
     pub(crate) command_task_ready_waiters: WakerQueue,
     pub(crate) tx_completion_next_id: AtomicU64,
-    pub(crate) tx_completions: PoisonRwLock<BTreeMap<u64, Arc<TxCompletionState>>>,
+    pub(crate) tx_completions: PoisonRwLock<BTreeMap<u64, TxCompletionState>>,
     pub(crate) tx_lease_next_id: AtomicU64,
     pub(crate) tx_leases: PoisonLock<BTreeMap<u64, TxLeaseState>>,
     pub(crate) device_manager: PoisonRwLock<NetDeviceManager>,
