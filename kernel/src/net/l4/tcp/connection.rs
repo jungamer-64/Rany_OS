@@ -74,7 +74,7 @@ fn socket_inner_stats(socket: &Socket) -> TcpStats {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .tcp()
-        .map(|tcp| tcp.stats.clone())
+        .map(|tcp| tcp.stats)
         .unwrap_or_default()
 }
 

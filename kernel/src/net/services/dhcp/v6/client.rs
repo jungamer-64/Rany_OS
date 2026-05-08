@@ -205,7 +205,7 @@ impl DhcpV6Client {
 
     pub fn lease(&self) -> Option<DhcpV6Lease> {
         match self.lease.lock() {
-            Ok(g) => g.clone(),
+            Ok(g) => *g,
             Err(_) => None,
         }
     }
@@ -1740,7 +1740,7 @@ pub(crate) mod tests {
             domain_search: Vec::new(),
         };
         if let Ok(mut lg) = client.lease.lock() {
-            *lg = Some(lease.clone());
+            *lg = Some(lease);
         }
         if let Ok(mut st) = client.state.lock() {
             *st = DhcpV6State::Bound;
@@ -1909,7 +1909,7 @@ pub(crate) mod tests {
         };
 
         if let Ok(mut lg) = client.lease.lock() {
-            *lg = Some(lease.clone());
+            *lg = Some(lease);
         }
         if let Ok(mut st) = client.state.lock() {
             *st = DhcpV6State::Bound;
@@ -1998,7 +1998,7 @@ pub(crate) mod tests {
             domain_search: Vec::new(),
         };
         if let Ok(mut lg) = client.lease.lock() {
-            *lg = Some(lease.clone());
+            *lg = Some(lease);
         }
         if let Ok(mut st) = client.state.lock() {
             *st = DhcpV6State::Renewing;

@@ -417,15 +417,12 @@ impl NetworkStack {
     /// Create a new network stack with configuration
     ///
     /// # パフォーマンス注意
-    /// Ipv4Config が Clone を実装しているが、内部データが Copy なら
-    /// clone() はゼロコストでインライン化される
+    /// NetworkConfig is copied as scalar configuration at the stack boundary.
     pub fn new(config: NetworkConfig) -> Self {
         let mac = config.mac;
         let ip = config.ipv4.address;
         let dad_link_local = config.ipv6.as_ref().map(|cfg| cfg.link_local);
 
-        // ipv4.clone() は Ipv4Config が小さい構造体のため
-        // アセンブリでは memcpy やレジスタコピーに展開される
         let (ipv6_proc, icmpv6_proc, ndp_proc) = if let Some(ref ipv6_config) = config.ipv6 {
             let mac_bytes = mac.as_bytes();
             (
@@ -441,7 +438,7 @@ impl NetworkStack {
             interfaces: BTreeMap::new(),
             primary_interface: None,
             ethernet: EthernetProcessor::new(mac),
-            ipv4: Ipv4Processor::new(config.ipv4.clone()),
+            ipv4: Ipv4Processor::new(config.ipv4),
             ipv6: ipv6_proc,
             arp: ArpProcessor::new(mac, ip),
             icmp: IcmpProcessor::new(ip),
@@ -956,7 +953,7 @@ impl NetworkStack {
 
     /// Get configuration (full clone - use sparingly)
     pub fn config(&self) -> NetworkConfig {
-        self.config.clone()
+        self.config
     }
 
     /// ICMP echo が有効かチェック
@@ -984,7 +981,7 @@ impl NetworkStack {
 
         // Update all processors
         self.ethernet.set_local_mac(config.mac);
-        self.ipv4.set_config(config.ipv4.clone());
+        self.ipv4.set_config(config.ipv4);
         self.arp.set_local(config.mac, config.ipv4.address);
         self.igmp.set_local_ip(new_ip);
 

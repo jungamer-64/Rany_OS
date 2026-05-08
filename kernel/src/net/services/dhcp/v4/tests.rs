@@ -109,7 +109,7 @@ pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
 
     {
         let mut l = client.lease.lock().unwrap();
-        *l = Some(lease.clone());
+        *l = Some(lease);
     }
     {
         let mut s = client.state.lock().unwrap();
@@ -150,7 +150,7 @@ pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
 
     {
         let mut o = client.offered_lease.lock().unwrap();
-        *o = Some(offered.clone());
+        *o = Some(offered);
     }
     {
         let mut s = client.state.lock().unwrap();
@@ -332,7 +332,7 @@ pub fn test_process_response_ack_requesting_mismatch() {
 
     {
         let mut o = client.offered_lease.lock().unwrap();
-        *o = Some(offered.clone());
+        *o = Some(offered);
     }
     {
         let mut s = client.state.lock().unwrap();
@@ -389,7 +389,7 @@ pub fn test_process_response_ack_renewal_success() {
 
     {
         let mut l = client.lease.lock().unwrap();
-        *l = Some(lease.clone());
+        *l = Some(lease);
     }
     {
         let mut s = client.state.lock().unwrap();
@@ -484,7 +484,7 @@ pub fn test_build_decline_and_build_release_contents() {
     };
     {
         let mut l = client.lease.lock().unwrap();
-        *l = Some(lease.clone());
+        *l = Some(lease);
     }
 
     let mut rbuf = [0u8; 512];
@@ -530,7 +530,7 @@ pub fn test_release_clears_lease_and_sets_last_released() {
     };
     {
         let mut l = client.lease.lock().unwrap();
-        *l = Some(lease.clone());
+        *l = Some(lease);
     }
     {
         let mut s = client.state.lock().unwrap();
@@ -810,7 +810,7 @@ pub fn test_build_inform_sets_ciaddr_and_message_type() {
 
     {
         let mut l = client.lease.lock().unwrap();
-        *l = Some(lease.clone());
+        *l = Some(lease);
     }
 
     let mut buf = vec![0u8; DHCP_MAX_MESSAGE_SIZE];
@@ -853,7 +853,7 @@ pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
 
     {
         let mut l = client.lease.lock().unwrap();
-        *l = Some(lease.clone());
+        *l = Some(lease);
     }
     {
         let mut s = client.state.lock().unwrap();

@@ -36,7 +36,7 @@ pub enum TcpState {
 }
 
 /// TCP connection statistics owned by the endpoint state.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct TcpStats {
     pub bytes_sent: u64,
     pub bytes_received: u64,

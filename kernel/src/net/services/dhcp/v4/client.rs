@@ -137,7 +137,7 @@ impl DhcpClient {
     /// Offer されているリースを取得 (テスト・外部 API 用)
     pub fn offered_lease(&self) -> Option<DhcpLease> {
         match self.offered_lease.lock() {
-            Ok(g) => g.clone(),
+            Ok(g) => *g,
             Err(_) => {
                 log::error!("[NET] DHCP Offer lock poisoned (offered_lease) - returning None");
                 None
@@ -158,7 +158,7 @@ impl DhcpClient {
     /// 現在のリースを取得
     pub fn lease(&self) -> Option<DhcpLease> {
         match self.lease.lock() {
-            Ok(g) => g.clone(),
+            Ok(g) => *g,
             Err(_) => {
                 log::error!("[NET] DHCP Lease lock poisoned (lease) - returning None");
                 None
@@ -206,7 +206,7 @@ impl DhcpClient {
                 if let Some(l) = lease_opt {
                     let is_renew_or_rebind = current_state == DhcpState::Renewing
                         || current_state == DhcpState::Rebinding;
-                    Ok((l.clone(), is_renew_or_rebind))
+                    Ok((*l, is_renew_or_rebind))
                 } else {
                     Err("No active lease available")
                 }
@@ -215,7 +215,7 @@ impl DhcpClient {
             // not bound yet; use offered_lease
             self.with_offered_lease(|offer_opt| {
                 if let Some(l) = offer_opt {
-                    Ok((l.clone(), false))
+                    Ok((*l, false))
                 } else {
                     Err("No offered lease available")
                 }

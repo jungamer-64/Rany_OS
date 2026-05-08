@@ -184,7 +184,7 @@ impl NetworkManager {
     }
 
     fn list_ipv4_routes(&self) -> Vec<Ipv4Route> {
-        self.routes_v4.clone()
+        self.routes_v4.iter().copied().collect()
     }
 
     fn lookup_ipv4_route(&self, dst: Ipv4Address) -> RouteLookupResultV4 {
@@ -230,7 +230,7 @@ impl NetworkManager {
     }
 
     fn list_ipv6_routes(&self) -> Vec<Ipv6Route> {
-        self.routes_v6.clone()
+        self.routes_v6.iter().copied().collect()
     }
 
     fn lookup_ipv6_route(&self, dst: Ipv6Address) -> RouteLookupResultV6 {

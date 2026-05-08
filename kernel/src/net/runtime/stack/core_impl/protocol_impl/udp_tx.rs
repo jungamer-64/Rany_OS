@@ -277,7 +277,7 @@ impl NetworkStack {
             return Some(multicast_ip_to_mac(dst_ip));
         }
 
-        let config = self.config.clone(); // Clone to avoid borrow issues
+        let config = self.config; // Clone to avoid borrow issues
 
         // Determine next hop, considering ICMP Redirect cache
         let next_hop = self.resolve_ipv4_next_hop_on(if_id, dst_ip, &config, current_time)?;

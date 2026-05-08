@@ -1066,7 +1066,7 @@ impl NetworkStack {
             return;
         }
 
-        let config = self.config.clone();
+        let config = self.config;
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
             None => return,
@@ -1150,7 +1150,7 @@ impl NetworkStack {
             }
         };
 
-        let config = self.config.clone();
+        let config = self.config;
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
             None => return,

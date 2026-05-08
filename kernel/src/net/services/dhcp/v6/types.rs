@@ -28,7 +28,7 @@ pub enum DhcpV6MessageType {
     InformationRequest = 11,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct DhcpV6Lease {
     pub addr: Ipv6Address,
     pub preferred_lifetime: u32,

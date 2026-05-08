@@ -531,7 +531,11 @@ pub fn validate_certificate_chain<'a, 'b>(
             break;
         }
     }
-    trusted.then(|| leaf.subject_public_key_info.clone())
+    if trusted {
+        Some(certs.remove(0).subject_public_key_info)
+    } else {
+        None
+    }
 }
 
 fn match_hostname(cert: &X509Certificate<'_>, hostname: &str) -> bool {

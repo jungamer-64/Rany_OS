@@ -274,7 +274,7 @@ impl NetworkStack {
         dst_ip: Ipv4Address,
         current_time: u64,
     ) -> Ipv4Address {
-        let config = self.config.clone();
+        let config = self.config;
 
         if config.ipv4.is_local(&dst_ip) {
             dst_ip
@@ -295,7 +295,7 @@ impl NetworkStack {
         original_packet: &crate::net::payload::PacketPayloadView<'_>,
         dst_ip: Ipv4Address,
     ) -> bool {
-        let config = self.config.clone();
+        let config = self.config;
         let total_len = original_packet.total_len();
         let Some(fixed) = original_packet.read_array::<20>(0) else {
             return false;
@@ -853,7 +853,7 @@ impl NetworkStack {
         let identifier = 0x1234u16; // Fixed identifier for now
 
         // Need to resolve destination MAC
-        let config = self.config.clone();
+        let config = self.config;
         let current_time = self.current_time();
         let dst_mac = match self.resolve_mac(None, target, &config, current_time) {
             Some(mac) => mac,

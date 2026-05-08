@@ -279,10 +279,10 @@ pub fn disable() -> Result<(), &'static str> {
     }
 }
 
-/// 現在のルール一覧を取得する
-pub fn list_rules() -> Result<alloc::vec::Vec<FirewallRule>, &'static str> {
+/// 現在のルール一覧をロック内で参照する
+pub fn with_rules<R>(f: impl FnOnce(&[FirewallRule]) -> R) -> Result<R, &'static str> {
     match FIREWALL.lock() {
-        Ok(fw) => Ok(fw.list_rules()),
+        Ok(fw) => Ok(f(fw.rules())),
         Err(_) => Err("firewall lock poisoned"),
     }
 }

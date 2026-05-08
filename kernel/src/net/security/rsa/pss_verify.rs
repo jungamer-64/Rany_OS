@@ -203,10 +203,6 @@ pub mod qemu_tests {
         em.extend_from_slice(&DIGEST_INFO_SHA256_PREFIX);
         em.extend_from_slice(&digest);
 
-        // e = 1 なら s^1 mod n = s (ただし s < n)
-        // signature = EM
-        let signature = em.clone();
-
         // n = EM にバイトを加えた値（EM < n を保証）
         // 最も簡単: n の最上位バイトを EM のそれより大きくする
         let n_bytes = vec![0xFFu8; k];
@@ -217,7 +213,7 @@ pub mod qemu_tests {
             exponent: &[1], // e = 1
         };
 
-        rsa_pkcs1_verify(&key, HashAlgorithm::Sha256, &digest, &signature).is_ok()
+        rsa_pkcs1_verify(&key, HashAlgorithm::Sha256, &digest, &em).is_ok()
     }
 
     /// PKCS#1 v1.5 不正署名拒否テスト
@@ -241,9 +237,8 @@ pub mod qemu_tests {
         em.extend_from_slice(&digest);
 
         // 署名の最終バイトの最下位ビットを反転
-        let mut bad_sig = em.clone();
-        let last = bad_sig.len() - 1;
-        bad_sig[last] ^= 0x01;
+        let last = em.len() - 1;
+        em[last] ^= 0x01;
 
         let n_bytes = vec![0xFFu8; k];
 
@@ -252,7 +247,7 @@ pub mod qemu_tests {
             exponent: &[1],
         };
 
-        rsa_pkcs1_verify(&key, HashAlgorithm::Sha256, &digest, &bad_sig).is_err()
+        rsa_pkcs1_verify(&key, HashAlgorithm::Sha256, &digest, &em).is_err()
     }
 
     /// BigUint 乗算・除算ラウンドトリップテスト

@@ -164,9 +164,9 @@ impl FirewallEngine {
         log::info!("[FIREWALL] all rules cleared");
     }
 
-    /// 現在のルール一覧を取得する
-    pub fn list_rules(&self) -> Vec<FirewallRule> {
-        self.rules.clone()
+    /// 現在のルール一覧を借用する
+    pub fn rules(&self) -> &[FirewallRule] {
+        &self.rules
     }
 
     /// ルール数を取得する

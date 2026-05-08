@@ -275,7 +275,7 @@ pub struct DhcpAckResult {
     pub applied: DhcpV4AppliedConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct DhcpLease {
     pub ip_address: Ipv4Address,
     pub subnet_mask: Ipv4Address,

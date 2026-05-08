@@ -710,7 +710,7 @@ impl FailoverReason {
 fn apply_runtime_network_config(config: &NetworkConfig) {
     if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
         if let Some(stack) = guard.as_mut() {
-            stack.set_config(config.clone());
+            stack.set_config(*config);
         }
     }
 
@@ -1006,7 +1006,7 @@ pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'sta
     let driver = registration.driver;
     let info = registration.info;
     let config = default_config_for_port(info);
-    ensure_stack_initialized(config.clone())?;
+    ensure_stack_initialized(config)?;
 
     if let Some(existing) = lookup_if_by_port_id_in(default_runtime(), info.port_id) {
         if registration.primary_policy == PrimaryPortPolicy::Prefer {
@@ -1016,7 +1016,7 @@ pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'sta
     }
 
     let base = driver.info();
-    let if_id = interface_for_port(info.port_id, config.clone(), base.driver_name)?;
+    let if_id = interface_for_port(info.port_id, config, base.driver_name)?;
     let binding = NetDeviceBinding {
         port_id: info.port_id,
         if_id,

@@ -28,26 +28,28 @@ extern crate alloc;
 pub(crate) fn firewall_status_text() -> String {
     let enabled = firewall::is_enabled();
     let stats = firewall::get_stats();
-    let rules = firewall::list_rules().unwrap_or_default();
+    let rule_count = firewall::with_rules(|rules| rules.len()).unwrap_or_default();
     format!(
         "Firewall: {}\nRules: {}\nStats: {}",
         if enabled { "ENABLED" } else { "DISABLED" },
-        rules.len(),
+        rule_count,
         stats,
     )
 }
 
 /// ルール一覧を文字列化する（イベントハンドラ内部用）
 pub(crate) fn firewall_list_rules_text() -> String {
-    match firewall::list_rules() {
-        Ok(rules) if rules.is_empty() => String::from("(no rules)"),
-        Ok(rules) => {
+    match firewall::with_rules(|rules| {
+        if rules.is_empty() {
+            return String::from("(no rules)");
+        }
             let mut out = String::new();
-            for rule in &rules {
+            for rule in rules {
                 out.push_str(&format!("{}\n", rule));
             }
             out
-        }
+    }) {
+        Ok(text) => text,
         Err(e) => format!("Error: {}", e),
     }
 }
@@ -322,38 +324,40 @@ impl ToAsciiLowerStr for str {
 
 #[cfg(test)]
 mod tests {
+    use core::future::Future;
+    use core::task::{Context, Poll};
+
+    fn run_with_event_task<F>(future: F) -> F::Output
+    where
+        F: Future,
+    {
+        crate::net::runtime::command::reset_command_system_for_tests();
+        let mut executor = crate::task::TestExecutor::new();
+        executor.spawn(crate::task::Task::new(async {
+            crate::net::runtime::command_loop::runtime_command_task().await;
+        }));
+
+        let waker = crate::net::l4::test_support::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut future = core::pin::pin!(future);
+        for _ in 0..100_000 {
+            executor.drive_once_for_test();
+            if let Poll::Ready(output) = Future::poll(future.as_mut(), &mut cx) {
+                crate::net::runtime::command::reset_command_system_for_tests();
+                return output;
+            }
+        }
+
+        crate::net::runtime::command::reset_command_system_for_tests();
+        panic!("firewall_status test timed out")
+    }
+
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn firewall_status_completes_with_event_task() {
-        let status = {
-            crate::net::runtime::command::reset_command_system_for_tests();
-            let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
-            let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-            let mut executor = crate::task::TestExecutor::new();
-            let result_slot_clone = result_slot.clone();
-            let completed_clone = completed.clone();
-            executor.spawn(crate::task::Task::new(async move {
-                let output =
-                    super::firewall_status_in(crate::net::runtime::default_runtime()).await;
-                let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
-                *slot = Some(output);
-                completed_clone.store(true, core::sync::atomic::Ordering::Release);
-            }));
-            executor.spawn(crate::task::Task::new(async {
-                crate::net::runtime::command_loop::runtime_command_task().await;
-            }));
-
-            let mut output = None;
-            for _ in 0..100_000 {
-                executor.drive_once_for_test();
-                if completed.load(core::sync::atomic::Ordering::Acquire) {
-                    output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-                    break;
-                }
-            }
-            crate::net::runtime::command::reset_command_system_for_tests();
-            output.expect("firewall_status test timed out")
-        };
+        let status = run_with_event_task(super::firewall_status_in(
+            crate::net::runtime::default_runtime(),
+        ));
         assert!(status.contains("Firewall:"));
     }
 }

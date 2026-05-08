@@ -281,71 +281,33 @@ mod tests {
         future: F,
     ) -> F::Output
     where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
+        F: Future,
     {
         crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
-
-        let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
-        let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
         let mut executor = crate::task::TestExecutor::new();
-
-        let result_slot_clone = result_slot.clone();
-        let completed_clone = completed.clone();
-        executor.spawn(crate::task::Task::new(async move {
-            let output = future.await;
-            let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
-            *slot = Some(output);
-            completed_clone.store(true, core::sync::atomic::Ordering::Release);
-        }));
         executor.spawn(crate::task::Task::new(async move {
             crate::net::runtime::command_loop::runtime_command_task_in(runtime).await;
         }));
 
-        let mut output = None;
+        let waker = crate::net::l4::test_support::noop_waker();
+        let mut cx = core::task::Context::from_waker(&waker);
+        let mut future = core::pin::pin!(future);
         for _ in 0..100_000 {
             executor.drive_once_for_test();
-            if completed.load(core::sync::atomic::Ordering::Acquire) {
-                output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-                break;
+            if let core::task::Poll::Ready(output) = Future::poll(future.as_mut(), &mut cx) {
+                crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
+                return output;
             }
         }
 
         crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
-        output.expect("network config test future timed out")
+        panic!("network config test future timed out")
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn list_interfaces_completes_with_event_task() {
-        let interfaces = {
-            crate::net::runtime::command::reset_command_system_for_tests();
-            let result_slot = alloc::sync::Arc::new(crate::sync::PoisonLock::new(None));
-            let completed = alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false));
-            let mut executor = crate::task::TestExecutor::new();
-            let result_slot_clone = result_slot.clone();
-            let completed_clone = completed.clone();
-            executor.spawn(crate::task::Task::new(async move {
-                let output = super::list_interfaces_in(default_runtime()).await;
-                let mut slot = result_slot_clone.lock().unwrap_or_else(|e| e.into_inner());
-                *slot = Some(output);
-                completed_clone.store(true, core::sync::atomic::Ordering::Release);
-            }));
-            executor.spawn(crate::task::Task::new(async {
-                crate::net::runtime::command_loop::runtime_command_task().await;
-            }));
-
-            let mut output = None;
-            for _ in 0..100_000 {
-                executor.drive_once_for_test();
-                if completed.load(core::sync::atomic::Ordering::Acquire) {
-                    output = result_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
-                    break;
-                }
-            }
-            crate::net::runtime::command::reset_command_system_for_tests();
-            output.expect("list_interfaces test timed out")
-        };
+        let interfaces = run_with_event_task_in(default_runtime(), super::list_interfaces_in(default_runtime()));
         assert!(interfaces.is_empty());
     }
 

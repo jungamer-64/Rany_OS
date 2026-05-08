@@ -54,7 +54,7 @@ impl DhcpClient {
         self.offered_probe_at.store(current_tick, Ordering::SeqCst);
 
         match self.offered_lease.lock() {
-            Ok(mut g) => *g = Some(lease.clone()),
+            Ok(mut g) => *g = Some(lease),
             Err(_) => log::error!(
                 "[NET] DHCP Offer lock poisoned (process_response Offer) - skipping storing offer"
             ),
@@ -82,7 +82,7 @@ impl DhcpClient {
         self.retry_count.store(0, Ordering::SeqCst);
 
         match self.lease.lock() {
-            Ok(mut g) => *g = Some(lease.clone()),
+            Ok(mut g) => *g = Some(lease),
             Err(_) => log::error!(
                 "[NET] DHCP Lease lock poisoned (process_response Ack) - skipping storing lease"
             ),
@@ -302,7 +302,7 @@ impl DhcpClient {
 
         // Need an active lease
         let lease = match self.lease.lock() {
-            Ok(g) => g.clone().ok_or("No active lease")?,
+            Ok(g) => (*g).ok_or("No active lease")?,
             Err(_) => return Err("Lease lock poisoned"),
         };
 
@@ -357,7 +357,7 @@ impl DhcpClient {
     pub fn send_release_on(&self, if_id: Option<NetIfId>) -> bool {
         // Acquire lease to get server
         let lease = match self.lease.lock() {
-            Ok(g) => g.clone(),
+            Ok(g) => *g,
             Err(_) => return false,
         };
 

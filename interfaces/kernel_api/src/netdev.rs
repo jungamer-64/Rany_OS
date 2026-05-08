@@ -292,7 +292,7 @@ mod tests {
 
     impl NetDeviceServices for FakeServices {
         fn devices(&self) -> Vec<NetDeviceInfo> {
-            self.devices.clone()
+            self.devices.iter().copied().collect()
         }
     }
 
