@@ -2,8 +2,9 @@
 // kernel/src/net/security/tls/credentials.rs - TLS credential and key material types
 // ============================================================================
 
-use crate::net::payload::{PayloadRange, PayloadSpanRef};
+use crate::net::payload::PayloadSpanRef;
 use alloc::vec::Vec;
+use arrayvec::ArrayVec;
 use kernel_api::resource::net::PacketPayload;
 
 /// 証明書
@@ -66,25 +67,6 @@ impl Certificate {
     pub(crate) fn der_span(&self) -> PayloadSpanRef<'_> {
         PayloadSpanRef::from_payload(&self.der)
     }
-
-    pub(crate) fn der_contiguous_slice(&self) -> Option<&[u8]> {
-        self.der_span().single_chunk()
-    }
-}
-
-/// 秘密鍵
-#[derive(Debug)]
-pub struct PrivateKey {
-    pub der: PacketPayload,
-    pub(crate) key_type: KeyType,
-}
-
-/// 鍵タイプ
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum KeyType {
-    Rsa,
-    Ecdsa,
-    Ed25519,
 }
 
 pub(crate) fn base64_decode_payload(input: &str) -> Option<PacketPayload> {
@@ -137,72 +119,53 @@ fn base64_value(c: char) -> Option<u8> {
 #[derive(Debug)]
 pub(crate) enum ServerPublicKey {
     Rsa {
-        material: PacketPayload,
-        modulus: PayloadRange,
-        exponent: PayloadRange,
+        modulus: ArrayVec<u8, 1024>,
+        exponent: ArrayVec<u8, 8>,
     },
     EcdsaP256 {
-        material: PacketPayload,
-        point: PayloadRange,
+        point: ArrayVec<u8, 65>,
     },
     EcdsaP384 {
-        material: PacketPayload,
-        point: PayloadRange,
+        point: ArrayVec<u8, 97>,
     },
 }
 
 impl ServerPublicKey {
     pub(crate) fn rsa(modulus: &[u8], exponent: &[u8]) -> Option<Self> {
-        let material = store_tls_key_material(&[modulus, exponent])?;
-        let modulus_range = PayloadRange::new(0, modulus.len());
-        let exponent_range = PayloadRange::new(modulus.len(), exponent.len());
-        Some(Self::Rsa {
-            material,
-            modulus: modulus_range,
-            exponent: exponent_range,
-        })
+        let modulus = ArrayVec::try_from(modulus).ok()?;
+        let exponent = ArrayVec::try_from(exponent).ok()?;
+        Some(Self::Rsa { modulus, exponent })
     }
 
     pub(crate) fn ecdsa_p256(point: &[u8]) -> Option<Self> {
-        let material = store_tls_key_material(&[point])?;
         Some(Self::EcdsaP256 {
-            material,
-            point: PayloadRange::new(0, point.len()),
+            point: ArrayVec::try_from(point).ok()?,
         })
     }
 
     pub(crate) fn ecdsa_p384(point: &[u8]) -> Option<Self> {
-        let material = store_tls_key_material(&[point])?;
         Some(Self::EcdsaP384 {
-            material,
-            point: PayloadRange::new(0, point.len()),
+            point: ArrayVec::try_from(point).ok()?,
         })
     }
 
     pub(crate) fn rsa_components(&self) -> Option<(&[u8], &[u8])> {
         match self {
-            Self::Rsa {
-                material,
-                modulus,
-                exponent,
-            } => Some((
-                modulus.span(material)?.single_chunk()?,
-                exponent.span(material)?.single_chunk()?,
-            )),
+            Self::Rsa { modulus, exponent } => Some((modulus.as_slice(), exponent.as_slice())),
             _ => None,
         }
     }
 
     pub(crate) fn ecdsa_p256_point(&self) -> Option<&[u8]> {
         match self {
-            Self::EcdsaP256 { material, point } => point.span(material)?.single_chunk(),
+            Self::EcdsaP256 { point } => Some(point.as_slice()),
             _ => None,
         }
     }
 
     pub(crate) fn ecdsa_p384_point(&self) -> Option<&[u8]> {
         match self {
-            Self::EcdsaP384 { material, point } => point.span(material)?.single_chunk(),
+            Self::EcdsaP384 { point } => Some(point.as_slice()),
             _ => None,
         }
     }

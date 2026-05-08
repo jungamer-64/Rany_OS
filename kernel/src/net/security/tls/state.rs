@@ -15,7 +15,6 @@ pub enum TlsState {
     Tls13WaitFinished,
     Tls13ServerFinishedReceived,
     HelloRetryReceived,
-    WaitFinishedResumed,
     Established,
     Closing,
     Closed,

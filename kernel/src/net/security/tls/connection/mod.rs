@@ -4,12 +4,11 @@
 
 pub(crate) use super::error::{TlsError, TlsResult};
 pub(crate) use super::{
-    AlertDescription, AlertLevel, CipherSuite, ContentType, HandshakeType, ServerPublicKey,
-    SessionCache, SessionCacheEntry, SessionId, SessionTicket, TLS_CA_CERTS_CAPACITY,
-    TLS_CERT_CHAIN_CAPACITY, TlsBytes, TlsConfig, TlsState, TlsVersion,
+    AlertDescription, CipherSuite, ContentType, HandshakeType, ServerPublicKey,
+    TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, TlsBytes, TlsConfig, TlsState, TlsVersion,
 };
 pub(crate) use crate::net::payload::{
-    PacketPayloadBuilder, PacketPayloadView, PayloadRange, PayloadSpanRef, append_payload,
+    PacketPayloadBuilder, PacketPayloadView, PayloadSpanRef, append_payload,
 };
 pub(crate) use crate::net::security::ecdh;
 pub(crate) use kernel_api::resource::net::PacketPayload;
@@ -20,11 +19,8 @@ mod record;
 mod state;
 mod transcript;
 
-use state::{
-    CertificateRequestContext, EarlyDataState, HandshakeSecrets, NegotiationState,
-    RecordProtectionState, ResumptionState, Tls13State,
-};
 use super::crypto::{generate_random, has_secure_random};
+use state::{HandshakeSecrets, NegotiationState, RecordProtectionState, Tls13State};
 use transcript::TranscriptState;
 
 const TLS_CLIENT_HELLO_SCRATCH_CAPACITY: usize = 4096;
@@ -42,8 +38,6 @@ pub struct TlsConnection {
     record: RecordProtectionState,
     handshake_secrets: HandshakeSecrets,
     tls13: Tls13State,
-    resumption: ResumptionState,
-    early_data: EarlyDataState,
     transcript: TranscriptState,
 }
 
@@ -64,8 +58,6 @@ impl TlsConnection {
             record: RecordProtectionState::default(),
             handshake_secrets: HandshakeSecrets::default(),
             tls13: Tls13State::default(),
-            resumption: ResumptionState::default(),
-            early_data: EarlyDataState::default(),
             transcript: TranscriptState::default(),
         }
     }

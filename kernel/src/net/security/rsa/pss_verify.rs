@@ -94,11 +94,6 @@ pub(crate) fn mgf1_into(seed: &[u8], output: &mut [u8], hash_alg: HashAlgorithm)
 /// ハッシュ計算ヘルパー
 pub(crate) fn hash_compute_into(hash_alg: HashAlgorithm, data: &[u8], out: &mut [u8]) -> usize {
     match hash_alg {
-        HashAlgorithm::Sha1 => {
-            let hash = crate::net::security::tls::crypto::legacy::sha1_compute(data);
-            out[..20].copy_from_slice(&hash);
-            20
-        }
         HashAlgorithm::Sha256 => {
             let hash = crate::crypto::sha256::compute(data);
             out[..32].copy_from_slice(&hash);

@@ -1,12 +1,9 @@
 // ============================================================================
-// kernel/src/net/security/tls/qemu_tests/connection.rs - セキュリティ / TLS / QEMUテスト / 接続
+// kernel/src/net/security/tls/qemu_tests/connection.rs - TLS 1.3 connection smokes
 // ============================================================================
 
 use super::super::protocol::ContentType;
-use super::super::{
-    TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState,
-    tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished,
-};
+use super::super::{TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState};
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -16,9 +13,6 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
         .expect("qemu TLS payload fits fixed test buffer");
     let mut copied = 0usize;
     view.for_each_chunk(|chunk| {
-        if copied == view.total_len() {
-            return;
-        }
         let take = chunk.len().min(view.total_len() - copied);
         bytes.as_mut_slice()[copied..copied + take].copy_from_slice(&chunk[..take]);
         copied += take;
@@ -73,15 +67,6 @@ pub fn wave8_tls_tls_connection_encrypt_not_established_smoke() -> bool {
     matches!(conn.encrypt(b"hello"), Err(TlsError::NotConnected))
 }
 
-pub fn wave8_tls_process_handshake_multiple_messages_smoke() -> bool {
-    let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
-    let data = tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished();
-    conn.process_handshake(handshake_payload(&data)).is_ok()
-        && conn.state() == TlsState::Established
-        && conn.handshake_transcript_len() == data.len()
-}
-
 pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
@@ -93,9 +78,7 @@ pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_initial_state_smoke() -> bool {
-    let config = TlsConfig::new();
-    let conn = TlsConnection::new(config);
-    !conn.is_tls13() && !conn.needs_client_finished()
+    wave8_tls_tls_connection_initial_state_smoke()
 }
 
 pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
@@ -106,9 +89,7 @@ pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
     let mut conn = TlsConnection::new(config);
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
-    conn.has_local_ecdh_keypair()
-        && conn.has_transcript_hash()
-        && hello.first().copied() == Some(ContentType::Handshake as u8)
+    hello.first().copied() == Some(ContentType::Handshake as u8)
         && find_extension_in_hello(&hello, 0x33).is_some()
 }
 
@@ -122,20 +103,16 @@ pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
     let Some(sv_pos) = find_extension_in_hello(&hello, 0x2B) else {
         return false;
     };
-    if sv_pos + 8 >= hello_payload.len() {
+    if sv_pos + 7 > hello_payload.len() {
         return false;
     }
 
     let ext_len = ((hello_payload[sv_pos + 2] as usize) << 8) | hello_payload[sv_pos + 3] as usize;
     let versions_len = hello_payload[sv_pos + 4] as usize;
-    versions_len >= 4 && ext_len == versions_len + 1
-}
-
-pub fn wave8_tls_tls13_client_hello_psk_modes_smoke() -> bool {
-    let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
-    let hello = payload_bytes(&conn.build_client_hello_payload());
-    find_extension_in_hello(&hello, 0x2D).is_some()
+    versions_len == 2
+        && ext_len == versions_len + 1
+        && hello_payload[sv_pos + 5] == 0x03
+        && hello_payload[sv_pos + 6] == 0x04
 }
 
 pub fn wave8_tls_tls13_strip_content_type_smoke() -> bool {

@@ -68,7 +68,7 @@ pub const SHA384_OUTPUT_SIZE: usize = 48;
 /// HMAC-SHA384 (RFC 2104)
 ///
 /// Computes HMAC using SHA-384 as the underlying hash function.
-/// Used for TLS 1.2 PRF when negotiating AES-256-GCM-SHA384 cipher suites.
+/// Used by the TLS 1.3 SHA-384 key schedule.
 ///
 /// # Arguments
 /// * `key` - HMAC key (any length; keys > 128 bytes are first hashed)

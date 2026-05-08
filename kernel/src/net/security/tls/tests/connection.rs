@@ -1,12 +1,9 @@
 // ============================================================================
-// kernel/src/net/security/tls/tests/connection.rs - セキュリティ / TLS / テスト / 接続
+// kernel/src/net/security/tls/tests/connection.rs - TLS 1.3 connection tests
 // ============================================================================
 
 use super::super::protocol::ContentType;
-use super::super::{
-    TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState,
-    tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished,
-};
+use super::super::{TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState};
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -16,9 +13,6 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
         .expect("test payload fits fixed TLS buffer");
     let mut copied = 0usize;
     view.for_each_chunk(|chunk| {
-        if copied == view.total_len() {
-            return;
-        }
         let take = chunk.len().min(view.total_len() - copied);
         bytes.as_mut_slice()[copied..copied + take].copy_from_slice(&chunk[..take]);
         copied += take;
@@ -37,8 +31,6 @@ fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     builder.build()
 }
 
-/// Find a TLS extension (0x00, ext_lo) in a ClientHello record.
-/// Returns the offset within the payload (after record header) where the type was found.
 fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
     let payload = &hello[5..];
     for i in 0..payload.len().saturating_sub(1) {
@@ -49,7 +41,6 @@ fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
     None
 }
 
-/// TLS handshake parser should reject truncated handshake headers
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_truncated_header() {
@@ -61,7 +52,6 @@ pub(crate) fn test_process_handshake_truncated_header() {
     assert!(matches!(result, Err(TlsError::DecodeError)));
 }
 
-/// TLS connection state machine: initial state
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_connection_initial_state() {
@@ -71,7 +61,6 @@ pub(crate) fn test_tls_connection_initial_state() {
     assert!(conn.negotiated_version().is_none());
 }
 
-/// TLS connection: build ClientHello
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_connection_client_hello() {
@@ -88,7 +77,6 @@ pub(crate) fn test_tls_connection_client_hello() {
     assert_eq!(conn.state(), TlsState::ClientHelloSent);
 }
 
-/// TLS connection: encrypt fails when not established
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_connection_encrypt_not_established() {
@@ -98,21 +86,6 @@ pub(crate) fn test_tls_connection_encrypt_not_established() {
     assert!(matches!(result, Err(TlsError::NotConnected)));
 }
 
-/// TLS handshake parser should handle multiple handshake messages in one record
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_process_handshake_multiple_messages() {
-    let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
-
-    let data = tls12_multi_handshake_fixture_server_hello_done_plus_valid_finished();
-    let result = conn.process_handshake(handshake_payload(&data));
-    assert!(result.is_ok());
-    assert_eq!(conn.state(), TlsState::Established);
-    assert_eq!(conn.handshake_transcript_len(), data.len());
-}
-
-/// Finished(len=0) is invalid for TLS 1.2 and must be rejected.
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_finished_without_verify_data_rejected() {
@@ -124,7 +97,6 @@ pub(crate) fn test_process_handshake_finished_without_verify_data_rejected() {
     assert!(matches!(result, Err(TlsError::DecodeError)));
 }
 
-/// TLS 1.3: ClientHello should include KeyShare extension
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_key_share() {
@@ -134,8 +106,6 @@ pub(crate) fn test_tls13_client_hello_key_share() {
     let mut conn = TlsConnection::new(config);
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
-    assert!(conn.has_local_ecdh_keypair());
-    assert!(conn.has_transcript_hash());
     assert_eq!(hello[0], ContentType::Handshake as u8);
     assert!(
         find_extension_in_hello(&hello, 0x33).is_some(),
@@ -143,10 +113,9 @@ pub(crate) fn test_tls13_client_hello_key_share() {
     );
 }
 
-/// TLS 1.3: Supported Versions extension should list both TLS 1.3 and 1.2
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls13_client_hello_supported_versions() {
+pub(crate) fn test_tls13_client_hello_supported_versions_only_offer_tls13() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
     let hello = payload_bytes(&conn.build_client_hello_payload());
@@ -154,32 +123,23 @@ pub(crate) fn test_tls13_client_hello_supported_versions() {
 
     let sv_pos = find_extension_in_hello(&hello, 0x2B)
         .expect("Supported Versions extension not found in ClientHello");
-    if sv_pos + 8 < payload.len() {
-        let ext_len = ((payload[sv_pos + 2] as usize) << 8) | payload[sv_pos + 3] as usize;
-        let versions_len = payload[sv_pos + 4] as usize;
-        assert!(
-            versions_len >= 4,
-            "Expected at least 2 versions in supported_versions",
-        );
-        assert_eq!(ext_len, versions_len + 1);
-    }
+    let ext_len = ((payload[sv_pos + 2] as usize) << 8) | payload[sv_pos + 3] as usize;
+    let versions_len = payload[sv_pos + 4] as usize;
+    assert_eq!(versions_len, 2);
+    assert_eq!(ext_len, versions_len + 1);
+    assert_eq!(&payload[sv_pos + 5..sv_pos + 7], &[0x03, 0x04]);
 }
 
-/// TLS 1.3: PSK Key Exchange Modes extension present
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls13_client_hello_psk_modes() {
+pub(crate) fn test_tls13_client_hello_has_no_resumption_modes() {
     let config = TlsConfig::new();
     let mut conn = TlsConnection::new(config);
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
-    assert!(
-        find_extension_in_hello(&hello, 0x2D).is_some(),
-        "PSK Key Exchange Modes extension not found in ClientHello",
-    );
+    assert!(find_extension_in_hello(&hello, 0x2D).is_none());
 }
 
-/// TLS 1.3: strip_content_type helper
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_strip_content_type() {
@@ -201,14 +161,4 @@ pub(crate) fn test_tls13_strip_content_type() {
     let data4 = [0x00, 0x00, 0x00];
     let result4 = TlsConnection::tls13_strip_content_type(&data4);
     assert!(result4.is_none());
-}
-
-/// TLS 1.3: is_tls13 flag starts false
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls13_initial_state() {
-    let config = TlsConfig::new();
-    let conn = TlsConnection::new(config);
-    assert!(!conn.is_tls13());
-    assert!(!conn.needs_client_finished());
 }

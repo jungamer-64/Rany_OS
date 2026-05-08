@@ -381,7 +381,6 @@ impl core::fmt::Debug for BigUint {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HashAlgorithm {
-    Sha1,
     Sha256,
     Sha384,
     Sha512,
@@ -390,7 +389,6 @@ pub enum HashAlgorithm {
 impl HashAlgorithm {
     pub fn digest_len(self) -> usize {
         match self {
-            HashAlgorithm::Sha1 => 20,
             HashAlgorithm::Sha256 => 32,
             HashAlgorithm::Sha384 => 48,
             HashAlgorithm::Sha512 => 64,
@@ -405,9 +403,6 @@ pub struct RsaPublicKey<'a> {
 }
 
 // DigestInfo DER Prefixes
-const DIGEST_INFO_SHA1_PREFIX: [u8; 15] = [
-    0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14,
-];
 const DIGEST_INFO_SHA256_PREFIX: [u8; 19] = [
     0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
     0x00, 0x04, 0x20,
@@ -491,7 +486,6 @@ pub fn rsa_pkcs1_verify(
     let n = BigUint::from_be_bytes(key.modulus);
     let e = BigUint::from_be_bytes(key.exponent);
     let prefix = match hash_alg {
-        HashAlgorithm::Sha1 => &DIGEST_INFO_SHA1_PREFIX[..],
         HashAlgorithm::Sha256 => &DIGEST_INFO_SHA256_PREFIX[..],
         HashAlgorithm::Sha384 => &DIGEST_INFO_SHA384_PREFIX[..],
         HashAlgorithm::Sha512 => &DIGEST_INFO_SHA512_PREFIX[..],

@@ -110,6 +110,32 @@ if rg -n "\\bprocess_single_record\\(|\\bdecrypt_record\\(|\\btls13_decrypt_reco
   fail "found removed TLS record ingress root"
 fi
 
+if rg -n "\\bsingle_chunk\\(|contiguous_payload_bytes" "${network_tree[@]}" >/dev/null; then
+  fail "found removed contiguous payload TLS/X.509 boundary"
+fi
+
+if rg -n "\\bparse_x509\\(" kernel/src/net/security/tls kernel/src/net/security/x509 >/dev/null; then
+  fail "found removed slice-based X.509 parser"
+fi
+
+if rg -n "&\\[&\\[u8\\]\\]|validate_certificate_chain\\([^\\n]*&\\[&\\[u8\\]" \
+  kernel/src/net/security/x509 \
+  >/dev/null; then
+  fail "found removed slice-based X.509 API"
+fi
+
+if rg -n "TLS_1_[012]|TLS_RSA_WITH|_CBC_|\\btls12\\b|\\btls10\\b|aes_cbc|tls_add_padding|tls_verify_padding|derive_master_secret|derive_key_block|build_client_key_exchange|build_change_cipher_spec|build_client_finished_tls12" \
+  kernel/src/net/security/tls kernel/src/net/services/http \
+  >/dev/null; then
+  fail "found removed TLS pre-1.3, CBC, or key-transport surface"
+fi
+
+if rg -n "skip_verify|should_skip_verify|client_cert:|client_key:|SessionCache|SessionTicket|SessionId" \
+  kernel/src/net/security/tls kernel/src/net/services/http \
+  >/dev/null; then
+  fail "found removed TLS verification bypass, client-auth, or resumption state"
+fi
+
 if rg -n -e "rsa_pkcs1_encrypt\\(|\\bmgf1\\(|\\bhash_compute\\(" \
   "${network_tree[@]}" \
   >/dev/null; then

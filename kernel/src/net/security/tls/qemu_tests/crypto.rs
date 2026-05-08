@@ -2,21 +2,19 @@
 // kernel/src/net/security/tls/qemu_tests/crypto.rs - セキュリティ / TLS / QEMUテスト / 暗号
 // ============================================================================
 
-use super::super::crypto::{
-    derive_key_block as derive_key_block_into, derive_master_secret, generate_random,
-    hkdf_expand_label as hkdf_expand_label_into, hmac_sha256, hmac_sha384,
-    qemu_test_clear_random_override, qemu_test_set_random_override_seed, tls12_prf,
-    tls13_derive_secret, tls13_derive_traffic_keys as tls13_derive_traffic_keys_into,
-    tls13_early_secret, tls13_finished_key, tls13_handshake_secret, tls13_master_secret,
-    tls13_verify_data,
-};
 use super::super::crypto::aes_core::{aes_ctr_into, aes_key_expansion, gf_mul};
-use super::super::crypto::aes_gcm::{gf128_mul, AesGcmKey};
+use super::super::crypto::aes_gcm::{AesGcmKey, gf128_mul};
 use super::super::crypto::chacha20::{
     chacha20_block, chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
     chacha20_xor_in_place, poly1305_mac,
 };
 use super::super::crypto::hkdf::{hkdf_expand as hkdf_expand_into, hkdf_extract};
+use super::super::crypto::{
+    generate_random, hkdf_expand_label as hkdf_expand_label_into, hmac_sha256, hmac_sha384,
+    qemu_test_clear_random_override, qemu_test_set_random_override_seed, tls13_derive_secret,
+    tls13_derive_traffic_keys as tls13_derive_traffic_keys_into, tls13_early_secret,
+    tls13_finished_key, tls13_handshake_secret, tls13_master_secret, tls13_verify_data,
+};
 use alloc::{vec, vec::Vec};
 
 pub fn wave8_tls_hmac_sha256_rfc4231_case1_smoke() -> bool {
@@ -598,68 +596,6 @@ pub fn wave8_tls_aes_key_expansion_smoke() -> bool {
         }
     }
     true
-}
-
-pub fn wave8_tls_derive_master_secret_length_smoke() -> bool {
-    let pre_master = [0x42u8; 48];
-    let client_random = [0x01u8; 32];
-    let server_random = [0x02u8; 32];
-
-    let ms = derive_master_secret(&pre_master, &client_random, &server_random);
-    ms.len() == 48 && ms.iter().any(|&b| b != 0)
-}
-
-pub fn wave8_tls_derive_key_block_length_smoke() -> bool {
-    let master_secret = [0x55u8; 48];
-    let server_random = [0xAAu8; 32];
-    let client_random = [0xBBu8; 32];
-
-    let kb = derive_key_block(&master_secret, &server_random, &client_random, 40);
-    let kb256 = derive_key_block(&master_secret, &server_random, &client_random, 72);
-
-    kb.len() == 40 && kb.iter().any(|&b| b != 0) && kb256.len() == 72
-}
-
-pub fn wave8_tls_derive_master_secret_deterministic_smoke() -> bool {
-    let pre_master = [0x42u8; 48];
-    let client_random = [0x01u8; 32];
-    let server_random = [0x02u8; 32];
-
-    let ms1 = derive_master_secret(&pre_master, &client_random, &server_random);
-    let ms2 = derive_master_secret(&pre_master, &client_random, &server_random);
-    ms1 == ms2
-}
-
-pub fn wave8_tls_derive_master_secret_differs_with_input_smoke() -> bool {
-    let client_random = [0x01u8; 32];
-    let server_random = [0x02u8; 32];
-
-    let ms1 = derive_master_secret(&[0x42u8; 48], &client_random, &server_random);
-    let ms2 = derive_master_secret(&[0x43u8; 48], &client_random, &server_random);
-    ms1 != ms2
-}
-
-pub fn wave8_tls_tls12_prf_deterministic_smoke() -> bool {
-    let secret = b"test secret";
-    let label = b"test label";
-    let seed = b"test seed";
-
-    let mut out1 = [0u8; 64];
-    let mut out2 = [0u8; 64];
-    tls12_prf(secret, label, seed, &mut out1);
-    tls12_prf(secret, label, seed, &mut out2);
-    out1 == out2
-}
-
-pub fn wave8_tls_tls12_prf_different_labels_smoke() -> bool {
-    let secret = b"test secret";
-    let seed = b"test seed";
-
-    let mut out1 = [0u8; 32];
-    let mut out2 = [0u8; 32];
-    tls12_prf(secret, b"label A", seed, &mut out1);
-    tls12_prf(secret, b"label B", seed, &mut out2);
-    out1 != out2
 }
 
 pub fn wave8_tls_hkdf_expand_label_length_smoke() -> bool {

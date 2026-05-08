@@ -28,25 +28,6 @@ async fn send_payload(
         .map_err(|_| HttpClientError::WriteError)
 }
 
-async fn send_tls12_client_handshake_flight(
-    tls: &mut TlsConnection,
-    connection: &mut TcpConnection,
-) -> Result<(), HttpClientError> {
-    let key_exchange = tls
-        .build_client_key_exchange_payload()
-        .or_else(|| tls.build_client_key_exchange_rsa_payload())
-        .ok_or(HttpClientError::TlsHandshakeFailed)?;
-    send_payload(connection, key_exchange).await?;
-
-    let ccs = tls.build_change_cipher_spec_payload();
-    send_payload(connection, ccs).await?;
-
-    let finished = tls
-        .build_client_finished_tls12_payload()
-        .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
-    send_payload(connection, finished).await
-}
-
 async fn recv_tls_handshake_payload(
     connection: &mut TcpConnection,
 ) -> Result<PacketPayload, HttpClientError> {
@@ -69,21 +50,11 @@ fn process_tls_handshake_payload(
 async fn send_tls_handshake_followup(
     tls: &mut TlsConnection,
     connection: &mut TcpConnection,
-    tls12_client_flight_sent: &mut bool,
 ) -> Result<(), HttpClientError> {
-    match tls.state() {
-        TlsState::Handshaking => {
-            if !*tls12_client_flight_sent && !tls.is_tls13() {
-                send_tls12_client_handshake_flight(tls, connection).await?;
-                *tls12_client_flight_sent = true;
-            }
+    if tls.state() == TlsState::Tls13ServerFinishedReceived {
+        if let Ok(fin) = tls.build_client_finished_tls13_payload() {
+            send_payload(connection, fin).await?;
         }
-        TlsState::Tls13ServerFinishedReceived => {
-            if let Ok(fin) = tls.build_client_finished_tls13_payload() {
-                send_payload(connection, fin).await?;
-            }
-        }
-        _ => {}
     }
 
     Ok(())
@@ -93,13 +64,11 @@ async fn complete_tls_handshake(
     tls: &mut TlsConnection,
     connection: &mut TcpConnection,
 ) -> Result<(), HttpClientError> {
-    let mut tls12_client_flight_sent = false;
-
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while tls.state() != TlsState::Established && tls.state() != TlsState::Error {
         let in_payload = recv_tls_handshake_payload(connection).await?;
         process_tls_handshake_payload(tls, in_payload)?;
-        send_tls_handshake_followup(tls, connection, &mut tls12_client_flight_sent).await?;
+        send_tls_handshake_followup(tls, connection).await?;
     }
 
     if tls.state() != TlsState::Established {
@@ -181,7 +150,7 @@ async fn send_over_tls_transport(
     complete_tls_handshake(&mut tls, connection).await?;
 
     let encrypted_request = tls
-        .encrypt_application_payload(&request_payload)
+        .tls13_encrypt_application_payload(&request_payload)
         .map_err(|_| HttpClientError::WriteError)?;
     send_payload(connection, encrypted_request).await?;
 

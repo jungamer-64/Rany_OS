@@ -17,13 +17,13 @@ impl TlsConnection {
         msg_type: u8,
         payload: PayloadSpanRef<'_>,
     ) -> TlsResult<()> {
-        let payload = payload.single_chunk().ok_or(TlsError::DecodeError)?;
         match msg_type {
             2 => self.process_server_hello(payload),
-            11 => self.process_certificate(payload),
-            12 => self.process_server_key_exchange(payload),
-            14 => self.process_server_hello_done(payload),
-            20 => self.process_finished(payload),
+            8 => self.tls13_process_encrypted_extensions(payload),
+            11 => self.tls13_process_certificate(payload),
+            13 => self.tls13_process_certificate_request(payload),
+            15 => self.tls13_process_certificate_verify(payload),
+            20 => self.tls13_process_server_finished(payload),
             _ => Ok(()),
         }
     }
@@ -39,7 +39,7 @@ impl TlsConnection {
         }
 
         self.append_transcript_span(msg_data)?;
-        if msg_type == 2 && self.negotiation.is_tls13 {
+        if msg_type == 2 {
             self.tls13_derive_handshake_keys()?;
         }
         Ok(())

@@ -2,8 +2,7 @@
 // kernel/src/net/security/tls/crypto/aes_core.rs - AES Core Primitives (AES-128/AES-256)
 // ============================================================================
 
-// AES暗号プリミティブ。全関数が直接呼び出されるわけではないが、
-// AES-CBC/AES-GCM等のモード実装で必要となるビルディングブロック。
+// AES暗号プリミティブ。AES-GCMのビルディングブロックとして使う。
 
 /// AES-128 Sbox
 pub(crate) const AES_SBOX: [u8; 256] = [
