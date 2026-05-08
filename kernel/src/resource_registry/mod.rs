@@ -27,7 +27,7 @@ use kernel_api::abi::driver::{
 };
 use kernel_api::service::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRegistration,
-    NetPortRuntime, NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, PrimaryPortPolicy,
+    NetPortRuntimeHandle, NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, PrimaryPortPolicy,
     TxSubmission,
 };
 use kernel_api::service::storage::{StorageDeviceInfo, StorageTransport};
@@ -398,7 +398,7 @@ fn leak_driver_name(info: &AbiNetPortInfo) -> &'static str {
 }
 
 struct NetRuntimeState {
-    runtime: Arc<dyn NetPortRuntime>,
+    runtime: NetPortRuntimeHandle,
     table: AbiNetPortRuntimeV3,
 }
 
@@ -534,7 +534,7 @@ impl NetDevicePort for NetdevPortAdapter {
         }
     }
 
-    fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
+    fn start(&self, runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
         let mut state = Box::new(NetRuntimeState {
             runtime,
             table: AbiNetPortRuntimeV3::new(
@@ -701,7 +701,7 @@ impl NetdevBridgeRegistry {
         registration: &AbiNetPortRegistrationV5,
     ) -> Result<u64, AbiErrorCode> {
         let name = leak_driver_name(&registration.info);
-        let adapter: Arc<dyn NetDevicePort> = Arc::new(NetdevPortAdapter::new(registration, name)?);
+        let adapter: Box<dyn NetDevicePort> = Box::new(NetdevPortAdapter::new(registration, name)?);
         let info = adapter.info();
         let if_id = net_device_runtime::register_port(NetPortRegistration::new(
             info,

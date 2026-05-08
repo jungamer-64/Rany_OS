@@ -6,7 +6,7 @@ extern crate alloc;
 
 use crate::resource::net::PacketRef;
 use crate::service::kernel;
-use alloc::sync::Arc;
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -191,18 +191,85 @@ impl Default for NetDeviceInfo {
     }
 }
 
-pub trait NetPortRuntime: Send + Sync {
-    fn alloc_packet(&self) -> Option<PacketRef>;
-    fn submit_rx(&self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str>;
-    fn schedule_event(&self, event: NetDriverEvent) -> Result<(), &'static str>;
-    fn update_link(&self, up: bool) -> Result<(), &'static str>;
-    fn log(&self, level: NetLogLevel, message: &str);
+pub struct NetPortRuntimeOps {
+    pub alloc_packet: fn(usize, NetPortId) -> Option<PacketRef>,
+    pub submit_rx: fn(usize, NetPortId, PacketRef, NetRxMeta) -> Result<(), &'static str>,
+    pub schedule_event: fn(usize, NetPortId, NetDriverEvent) -> Result<(), &'static str>,
+    pub update_link: fn(usize, NetPortId, bool) -> Result<(), &'static str>,
+    pub log: fn(NetLogLevel, &str),
+}
+
+impl NetPortRuntimeOps {
+    pub const fn new(
+        alloc_packet: fn(usize, NetPortId) -> Option<PacketRef>,
+        submit_rx: fn(usize, NetPortId, PacketRef, NetRxMeta) -> Result<(), &'static str>,
+        schedule_event: fn(usize, NetPortId, NetDriverEvent) -> Result<(), &'static str>,
+        update_link: fn(usize, NetPortId, bool) -> Result<(), &'static str>,
+        log: fn(NetLogLevel, &str),
+    ) -> Self {
+        Self {
+            alloc_packet,
+            submit_rx,
+            schedule_event,
+            update_link,
+            log,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct NetPortRuntimeHandle {
+    context: usize,
+    port_id: NetPortId,
+    ops: &'static NetPortRuntimeOps,
+}
+
+impl NetPortRuntimeHandle {
+    pub const fn new(context: usize, port_id: NetPortId, ops: &'static NetPortRuntimeOps) -> Self {
+        Self {
+            context,
+            port_id,
+            ops,
+        }
+    }
+
+    pub const fn port_id(self) -> NetPortId {
+        self.port_id
+    }
+
+    pub fn alloc_packet(self) -> Option<PacketRef> {
+        (self.ops.alloc_packet)(self.context, self.port_id)
+    }
+
+    pub fn submit_rx(self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
+        (self.ops.submit_rx)(self.context, self.port_id, packet, meta)
+    }
+
+    pub fn schedule_event(self, event: NetDriverEvent) -> Result<(), &'static str> {
+        (self.ops.schedule_event)(self.context, self.port_id, event)
+    }
+
+    pub fn update_link(self, up: bool) -> Result<(), &'static str> {
+        (self.ops.update_link)(self.context, self.port_id, up)
+    }
+
+    pub fn log(self, level: NetLogLevel, message: &str) {
+        (self.ops.log)(level, message);
+    }
+}
+
+impl core::fmt::Debug for NetPortRuntimeHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NetPortRuntimeHandle")
+            .field("port_id", &self.port_id)
+            .finish()
+    }
 }
 
 pub trait NetDevicePort: Send + Sync {
     fn info(&self) -> NetDeviceInfo;
 
-    fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str>;
+    fn start(&self, runtime: NetPortRuntimeHandle) -> Result<(), &'static str>;
 
     fn bind(&self, _if_id: u16) -> Result<(), &'static str> {
         Ok(())
@@ -229,17 +296,16 @@ pub trait NetDevicePort: Send + Sync {
     fn stop(&self);
 }
 
-#[derive(Clone)]
 pub struct NetPortRegistration {
     pub info: NetDeviceInfo,
-    pub driver: Arc<dyn NetDevicePort>,
+    pub driver: Box<dyn NetDevicePort>,
     pub primary_policy: PrimaryPortPolicy,
 }
 
 impl NetPortRegistration {
-    pub const fn new(
+    pub fn new(
         info: NetDeviceInfo,
-        driver: Arc<dyn NetDevicePort>,
+        driver: Box<dyn NetDevicePort>,
         primary_policy: PrimaryPortPolicy,
     ) -> Self {
         Self {
@@ -306,7 +372,7 @@ mod tests {
             self.info
         }
 
-        fn start(&self, _runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
+        fn start(&self, _runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
             Ok(())
         }
 
@@ -361,7 +427,7 @@ mod tests {
 
     #[test]
     fn net_device_port_trait_object_reports_info_and_stats() {
-        let port: Arc<dyn NetDevicePort> = Arc::new(FakePort {
+        let port: Box<dyn NetDevicePort> = Box::new(FakePort {
             info: NetDeviceInfo {
                 port_id: NetPortId::new(99),
                 driver_name: "fake-port",

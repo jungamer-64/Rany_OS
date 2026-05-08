@@ -88,8 +88,7 @@ pub(crate) fn interface_stats_snapshot_with_stack_in(
         }
     }
 
-    if let Some(port) = device::lookup_port_in(runtime, if_id) {
-        let driver_stats = port.driver().stats();
+    if let Some(driver_stats) = device::port_stats_for_interface_in(runtime, if_id) {
         stack_snapshot.rx_packets = stack_snapshot.rx_packets.max(driver_stats.rx_packets);
         stack_snapshot.tx_packets = stack_snapshot.tx_packets.max(driver_stats.tx_packets);
         stack_snapshot.rx_errors = stack_snapshot.rx_errors.max(driver_stats.rx_errors);

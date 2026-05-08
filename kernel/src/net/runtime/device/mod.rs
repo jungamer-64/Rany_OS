@@ -18,19 +18,20 @@ use crate::per_cpu::in_interrupt_context;
 use crate::sync::atomic_waker::AtomicWaker;
 use crate::sync::lockfree::MpmcRingBuffer;
 use crate::sync::{PoisonLock, PoisonRwLock};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 use kernel_api::resource::net::{PacketPayload, PacketRef};
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
-    NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntime, NetPortStats, NetRxMeta,
-    NetTxCompletionPolicy, NetTxMeta, NetTxSegment, PrimaryPortPolicy, TxLeaseId, TxSubmission,
+    NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntimeHandle, NetPortRuntimeOps,
+    NetPortStats, NetRxMeta, NetTxCompletionPolicy, NetTxMeta, NetTxSegment, PrimaryPortPolicy,
+    TxLeaseId, TxSubmission,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
@@ -421,121 +422,144 @@ pub fn complete_tx_lease_in(
     }
 }
 
-struct PortRuntimeHandle {
-    port_id: NetPortId,
-    if_id: AtomicU16,
+fn runtime_context_from_cookie(cookie: usize) -> &'static NetRuntimeContext {
+    unsafe { &*(cookie as *const NetRuntimeContext) }
+}
+
+fn runtime_handle_for_port(
     context: &'static NetRuntimeContext,
+    port_id: NetPortId,
+) -> NetPortRuntimeHandle {
+    NetPortRuntimeHandle::new(
+        context as *const NetRuntimeContext as usize,
+        port_id,
+        &NET_PORT_RUNTIME_OPS,
+    )
 }
 
-impl PortRuntimeHandle {
-    fn new(port_id: NetPortId, if_id: NetIfId, context: &'static NetRuntimeContext) -> Self {
-        Self {
-            port_id,
-            if_id: AtomicU16::new(if_id.0),
-            context,
-        }
-    }
-
-    fn current_if_id(&self) -> NetIfId {
-        NetIfId(self.if_id.load(Ordering::Acquire))
-    }
-
-    fn set_if_id(&self, if_id: NetIfId) {
-        self.if_id.store(if_id.0, Ordering::Release);
-    }
+fn current_if_for_port(
+    context: &'static NetRuntimeContext,
+    port_id: NetPortId,
+) -> Result<NetIfId, &'static str> {
+    context
+        .device_manager
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .port_map
+        .get(&port_id)
+        .copied()
+        .ok_or("device port not registered")
 }
 
-impl NetPortRuntime for PortRuntimeHandle {
-    fn alloc_packet(&self) -> Option<PacketRef> {
-        crate::net::datapath::mempool::alloc_packet()
-    }
+fn runtime_alloc_packet(_: usize, _: NetPortId) -> Option<PacketRef> {
+    crate::net::datapath::mempool::alloc_packet()
+}
 
-    fn submit_rx(&self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
-        crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface_in(
-            self.context.handle(),
-            self.current_if_id(),
-            packet,
-            meta.header_len as usize,
-            meta.payload_len as usize,
-        );
+fn runtime_submit_rx(
+    cookie: usize,
+    port_id: NetPortId,
+    packet: PacketRef,
+    meta: NetRxMeta,
+) -> Result<(), &'static str> {
+    let context = runtime_context_from_cookie(cookie);
+    let if_id = current_if_for_port(context, port_id)?;
+    crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface_in(
+        context.handle(),
+        if_id,
+        packet,
+        meta.header_len as usize,
+        meta.payload_len as usize,
+    );
+    Ok(())
+}
+
+fn runtime_schedule_event(
+    cookie: usize,
+    port_id: NetPortId,
+    event: NetDriverEvent,
+) -> Result<(), &'static str> {
+    let runtime = runtime_context_from_cookie(cookie).handle();
+    let queued = if in_interrupt_context() {
+        enqueue_event_from_isr_in(runtime, port_id, event)
+    } else {
+        enqueue_event_in(runtime, port_id, event)
+    };
+    if queued {
         Ok(())
+    } else {
+        Err("port event queue full")
     }
+}
 
-    fn schedule_event(&self, event: NetDriverEvent) -> Result<(), &'static str> {
-        let queued = if in_interrupt_context() {
-            enqueue_event_from_isr(self.port_id, event)
-        } else {
-            enqueue_event(self.port_id, event)
-        };
-        if queued {
-            Ok(())
-        } else {
-            Err("port event queue full")
+fn runtime_update_link(cookie: usize, port_id: NetPortId, up: bool) -> Result<(), &'static str> {
+    let runtime = runtime_context_from_cookie(cookie).handle();
+    let if_id = current_if_for_port(runtime_context_for(runtime), port_id)?;
+    let result = if up {
+        manager::set_interface_up_in(runtime, if_id)
+    } else {
+        manager::set_interface_down_in(runtime, if_id)
+    };
+    result.map_err(|_| "failed to update interface link state")?;
+
+    if up {
+        if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
+            if let Some(config) = iface.config {
+                let _ = crate::net::services::dhcp::ensure_interface_runtime(if_id, config);
+            }
         }
-    }
-
-    fn update_link(&self, up: bool) -> Result<(), &'static str> {
-        let runtime = default_runtime();
-        let if_id = self.current_if_id();
-        let result = if up {
-            manager::set_interface_up_in(runtime, if_id)
-        } else {
-            manager::set_interface_down_in(runtime, if_id)
-        };
-        result.map_err(|_| "failed to update interface link state")?;
-
-        if up {
-            if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
-                if let Some(config) = iface.config {
-                    let _ = crate::net::services::dhcp::ensure_interface_runtime(if_id, config);
-                }
-            }
-            let _ = crate::net::services::dhcp::restart_interface_runtime(if_id);
-            if primary_if_in(default_runtime()) == Some(if_id) {
-                log::info!(
-                    target: "net::device",
-                    "[NET] link_up: port={} if{} role=primary",
-                    self.port_id.as_u64(),
-                    if_id.0
-                );
-            } else {
-                log::info!(
-                    target: "net::device",
-                    "[NET] secondary_rejoined: port={} if{}",
-                    self.port_id.as_u64(),
-                    if_id.0
-                );
-            }
-        } else {
-            log::warn!(
+        let _ = crate::net::services::dhcp::restart_interface_runtime(if_id);
+        if primary_if_in(runtime) == Some(if_id) {
+            log::info!(
                 target: "net::device",
-                "[NET] link_down: port={} if{}",
-                self.port_id.as_u64(),
+                "[NET] link_up: port={} if{} role=primary",
+                port_id.as_u64(),
                 if_id.0
             );
-            handle_interface_departure(if_id, FailoverReason::LinkDown);
+        } else {
+            log::info!(
+                target: "net::device",
+                "[NET] secondary_rejoined: port={} if{}",
+                port_id.as_u64(),
+                if_id.0
+            );
         }
-
-        Ok(())
+    } else {
+        log::warn!(
+            target: "net::device",
+            "[NET] link_down: port={} if{}",
+            port_id.as_u64(),
+            if_id.0
+        );
+        handle_interface_departure(if_id, FailoverReason::LinkDown);
     }
 
-    fn log(&self, level: NetLogLevel, message: &str) {
-        match level {
-            NetLogLevel::Error => log::error!(target: "net::device", "{}", message),
-            NetLogLevel::Warn => log::warn!(target: "net::device", "{}", message),
-            NetLogLevel::Info => log::info!(target: "net::device", "{}", message),
-            NetLogLevel::Debug => log::debug!(target: "net::device", "{}", message),
-            NetLogLevel::Trace => log::trace!(target: "net::device", "{}", message),
-        }
+    Ok(())
+}
+
+fn runtime_log(level: NetLogLevel, message: &str) {
+    match level {
+        NetLogLevel::Error => log::error!(target: "net::device", "{}", message),
+        NetLogLevel::Warn => log::warn!(target: "net::device", "{}", message),
+        NetLogLevel::Info => log::info!(target: "net::device", "{}", message),
+        NetLogLevel::Debug => log::debug!(target: "net::device", "{}", message),
+        NetLogLevel::Trace => log::trace!(target: "net::device", "{}", message),
     }
 }
 
+static NET_PORT_RUNTIME_OPS: NetPortRuntimeOps = NetPortRuntimeOps::new(
+    runtime_alloc_packet,
+    runtime_submit_rx,
+    runtime_schedule_event,
+    runtime_update_link,
+    runtime_log,
+);
+
 pub struct NetDeviceHandle {
-    driver: Arc<dyn NetDevicePort>,
+    driver: Box<dyn NetDevicePort>,
     binding: PoisonLock<NetDeviceBinding>,
-    runtime: Arc<PortRuntimeHandle>,
-    tx_queue: Arc<NetTxQueue>,
-    event_sink: Arc<NetEventSink>,
+    runtime: NetPortRuntimeHandle,
+    tx_queue: NetTxQueue,
+    event_sink: NetEventSink,
     active: AtomicBool,
     tx_worker_started: AtomicBool,
     event_worker_started: AtomicBool,
@@ -543,24 +567,20 @@ pub struct NetDeviceHandle {
 
 impl NetDeviceHandle {
     fn new(
-        driver: Arc<dyn NetDevicePort>,
+        driver: Box<dyn NetDevicePort>,
         binding: NetDeviceBinding,
         context: &'static NetRuntimeContext,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+    ) -> Self {
+        Self {
             driver,
-            runtime: Arc::new(PortRuntimeHandle::new(
-                binding.port_id,
-                binding.if_id,
-                context,
-            )),
+            runtime: runtime_handle_for_port(context, binding.port_id),
             binding: PoisonLock::new(binding),
-            tx_queue: Arc::new(NetTxQueue::new()),
-            event_sink: Arc::new(NetEventSink::new()),
+            tx_queue: NetTxQueue::new(),
+            event_sink: NetEventSink::new(),
             active: AtomicBool::new(true),
             tx_worker_started: AtomicBool::new(false),
             event_worker_started: AtomicBool::new(false),
-        })
+        }
     }
 
     pub fn binding(&self) -> NetDeviceBinding {
@@ -570,8 +590,8 @@ impl NetDeviceHandle {
         }
     }
 
-    pub fn driver(&self) -> &Arc<dyn NetDevicePort> {
-        &self.driver
+    pub fn driver(&self) -> &dyn NetDevicePort {
+        self.driver.as_ref()
     }
 
     pub fn info(&self) -> NetDeviceInfo {
@@ -613,18 +633,8 @@ impl NetDeviceHandle {
         self.event_sink.push(event)
     }
 
-    pub fn start_workers(self: &Arc<Self>) {
-        if !self.tx_worker_started.swap(true, Ordering::AcqRel) {
-            crate::task::spawn_task(crate::task::Task::new(tx_worker(self.clone())));
-        }
-        if !self.event_worker_started.swap(true, Ordering::AcqRel) {
-            crate::task::spawn_task(crate::task::Task::new(event_worker(self.clone())));
-        }
-    }
-
     fn rebind(&self, binding: NetDeviceBinding) -> Result<(), &'static str> {
         self.driver.bind(binding.if_id.0)?;
-        self.runtime.set_if_id(binding.if_id);
         match self.binding.lock() {
             Ok(mut guard) => {
                 *guard = binding;
@@ -644,80 +654,212 @@ impl NetDeviceHandle {
     }
 }
 
-async fn tx_worker(handle: Arc<NetDeviceHandle>) {
+fn with_port_handle_in<R>(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    f: impl FnOnce(&NetDeviceHandle) -> R,
+) -> Option<R> {
+    device_manager_in(runtime)
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .handles
+        .get(&if_id)
+        .map(f)
+}
+
+fn pop_tx_request_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<TxRequest> {
+    with_port_handle_in(runtime, if_id, |handle| handle.tx_queue.pop()).flatten()
+}
+
+fn pop_driver_event_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<NetDriverEvent> {
+    with_port_handle_in(runtime, if_id, |handle| handle.event_sink.pop()).flatten()
+}
+
+fn start_workers_for_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    let start = with_port_handle_in(runtime, if_id, |handle| {
+        (
+            !handle.tx_worker_started.swap(true, Ordering::AcqRel),
+            !handle.event_worker_started.swap(true, Ordering::AcqRel),
+        )
+    });
+    let Some((start_tx, start_event)) = start else {
+        return;
+    };
+    if start_tx {
+        crate::task::spawn_task(crate::task::Task::new(tx_worker(runtime, if_id)));
+    }
+    if start_event {
+        crate::task::spawn_task(crate::task::Task::new(event_worker(runtime, if_id)));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DeviceQueueKind {
+    Tx,
+    Event,
+}
+
+struct DeviceQueueWaitFuture {
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    kind: DeviceQueueKind,
+}
+
+impl DeviceQueueWaitFuture {
+    const fn new(runtime: NetRuntimeHandle, if_id: NetIfId, kind: DeviceQueueKind) -> Self {
+        Self {
+            runtime,
+            if_id,
+            kind,
+        }
+    }
+}
+
+impl Future for DeviceQueueWaitFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let ready = with_port_handle_in(self.runtime, self.if_id, |handle| {
+            if !handle.active.load(Ordering::Acquire) {
+                return true;
+            }
+            match self.kind {
+                DeviceQueueKind::Tx => {
+                    if !handle.tx_queue.is_empty() {
+                        return true;
+                    }
+                    handle.tx_queue.waker.register(cx.waker());
+                    !handle.tx_queue.is_empty()
+                }
+                DeviceQueueKind::Event => {
+                    if !handle.event_sink.is_empty() {
+                        return true;
+                    }
+                    handle.event_sink.waker.register(cx.waker());
+                    !handle.event_sink.is_empty()
+                }
+            }
+        })
+        .unwrap_or(true);
+        if ready {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
     loop {
-        if !handle.active.load(Ordering::Acquire) {
+        if !with_port_handle_in(runtime, if_id, |handle| {
+            handle.active.load(Ordering::Acquire)
+        })
+        .unwrap_or(false)
+        {
             break;
         }
 
-        let mut pending = handle.tx_queue.pop();
+        let mut pending = pop_tx_request_in(runtime, if_id);
         if pending.is_none() {
-            handle.tx_queue.wait().await;
-            pending = handle.tx_queue.pop();
+            DeviceQueueWaitFuture::new(runtime, if_id, DeviceQueueKind::Tx).await;
+            pending = pop_tx_request_in(runtime, if_id);
         }
 
         while let Some(request) = pending {
-            if !handle.active.load(Ordering::Acquire) {
+            if !with_port_handle_in(runtime, if_id, |handle| {
+                handle.active.load(Ordering::Acquire)
+            })
+            .unwrap_or(false)
+            {
                 return;
             }
 
             let completion_policy = request.meta.completion_policy;
             let submission = TxSubmission::new(request.lease_id, &request.descriptors);
-            if let Err(err) = handle.driver.submit_tx_chain(submission, request.meta) {
-                let _ = complete_tx_lease_in(default_runtime(), request.lease_id, Err(err));
-                log::warn!(
-                    target: "net::device",
-                    "device port={} TX submission failed: {}",
-                    handle.binding().port_id.as_u64(),
-                    err
-                );
-            } else if completion_policy == NetTxCompletionPolicy::QueueAcceptance {
-                let _ = complete_tx_lease_in(default_runtime(), request.lease_id, Ok(()));
+            let submitted = with_port_handle_in(runtime, if_id, |handle| {
+                (
+                    handle.binding().port_id,
+                    handle.driver.submit_tx_chain(submission, request.meta),
+                )
+            });
+            match submitted {
+                Some((port_id, Err(err))) => {
+                    let _ = complete_tx_lease_in(runtime, request.lease_id, Err(err));
+                    log::warn!(
+                        target: "net::device",
+                        "device port={} TX submission failed: {}",
+                        port_id.as_u64(),
+                        err
+                    );
+                }
+                Some((_, Ok(()))) if completion_policy == NetTxCompletionPolicy::QueueAcceptance => {
+                    let _ = complete_tx_lease_in(runtime, request.lease_id, Ok(()));
+                }
+                Some((_, Ok(()))) => {}
+                None => {
+                    let _ = complete_tx_lease_in(runtime, request.lease_id, Err("device handle missing"));
+                    return;
+                }
             }
-            pending = handle.tx_queue.pop();
+            pending = pop_tx_request_in(runtime, if_id);
         }
     }
 }
 
-async fn event_worker(handle: Arc<NetDeviceHandle>) {
+async fn event_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
     loop {
-        if !handle.active.load(Ordering::Acquire) {
+        if !with_port_handle_in(runtime, if_id, |handle| {
+            handle.active.load(Ordering::Acquire)
+        })
+        .unwrap_or(false)
+        {
             break;
         }
 
-        let mut pending = handle.event_sink.pop();
+        let mut pending = pop_driver_event_in(runtime, if_id);
         if pending.is_none() {
-            handle.event_sink.wait().await;
-            pending = handle.event_sink.pop();
+            DeviceQueueWaitFuture::new(runtime, if_id, DeviceQueueKind::Event).await;
+            pending = pop_driver_event_in(runtime, if_id);
         }
 
         while let Some(event) = pending {
-            if !handle.active.load(Ordering::Acquire) {
+            if !with_port_handle_in(runtime, if_id, |handle| {
+                handle.active.load(Ordering::Acquire)
+            })
+            .unwrap_or(false)
+            {
                 return;
             }
 
-            let if_id = handle.binding().if_id.0;
-            let result = match event {
-                NetDriverEvent::Poll => handle.driver.poll(if_id),
-                _ => handle.driver.handle_event(if_id, event),
-            };
-            if let Err(err) = result {
-                log::warn!(
-                    target: "net::device",
-                    "device port={} event {:?} failed: {}",
-                    handle.binding().port_id.as_u64(),
-                    event,
-                    err
-                );
+            let handled = with_port_handle_in(runtime, if_id, |handle| {
+                let binding = handle.binding();
+                let result = match event {
+                    NetDriverEvent::Poll => handle.driver.poll(binding.if_id.0),
+                    _ => handle.driver.handle_event(binding.if_id.0, event),
+                };
+                (binding.port_id, result)
+            });
+            match handled {
+                Some((port_id, Err(err))) => {
+                    log::warn!(
+                        target: "net::device",
+                        "device port={} event {:?} failed: {}",
+                        port_id.as_u64(),
+                        event,
+                        err
+                    );
+                }
+                Some((_, Ok(()))) => {}
+                None => return,
             }
-            pending = handle.event_sink.pop();
+            pending = pop_driver_event_in(runtime, if_id);
         }
     }
 }
 
 #[derive(Default)]
 pub struct NetDeviceManager {
-    handles: BTreeMap<NetIfId, Arc<NetDeviceHandle>>,
+    handles: BTreeMap<NetIfId, NetDeviceHandle>,
     port_map: BTreeMap<NetPortId, NetIfId>,
     primary: Option<NetIfId>,
 }
@@ -1061,10 +1203,9 @@ pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'sta
         port_id: info.port_id,
         if_id,
     };
-    let handle = NetDeviceHandle::new(driver.clone(), binding, runtime_context());
-    driver.bind(if_id.0)?;
-    driver.start(handle.runtime.clone())?;
-    handle.start_workers();
+    let handle = NetDeviceHandle::new(driver, binding, runtime_context());
+    handle.driver.bind(if_id.0)?;
+    let runtime_handle = handle.runtime;
 
     let selected_as_primary = {
         let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
@@ -1077,6 +1218,15 @@ pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'sta
         }
         selected_as_primary
     };
+
+    if let Some(start_result) =
+        with_port_handle_in(default_runtime(), if_id, |handle| handle.driver.start(runtime_handle))
+    {
+        start_result?;
+    } else {
+        return Err("device handle missing after registration");
+    }
+    start_workers_for_port_in(default_runtime(), if_id);
 
     if selected_as_primary {
         apply_runtime_network_config(&config);
@@ -1100,34 +1250,37 @@ pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'sta
 }
 
 pub fn bind_port_interface(port_id: NetPortId, if_id: NetIfId) -> Result<(), &'static str> {
-    let handle = {
+    let bound_if_id = {
         let guard = device_manager().read().unwrap_or_else(|e| e.into_inner());
         let Some(bound_if_id) = guard.port_map.get(&port_id).copied() else {
             return Err("device port not registered");
         };
-        guard.handles.get(&bound_if_id).cloned()
-    }
-    .ok_or("device handle missing")?;
+        bound_if_id
+    };
 
     let binding = NetDeviceBinding { port_id, if_id };
-    handle.rebind(binding)?;
+    let handle = {
+        let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
+        guard
+            .handles
+            .remove(&bound_if_id)
+            .ok_or("device handle missing")?
+    };
+    if let Err(err) = handle.rebind(binding) {
+        device_manager()
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .handles
+            .insert(bound_if_id, handle);
+        return Err(err);
+    }
 
     let mut guard = device_manager().write().unwrap_or_else(|e| e.into_inner());
     guard.port_map.insert(port_id, if_id);
-    guard.handles.insert(if_id, handle.clone());
-    if let Some(previous) = guard
-        .handles
-        .iter()
-        .find_map(|(current_if, current_handle)| {
-            if *current_if != if_id && current_handle.binding().port_id == port_id {
-                Some(*current_if)
-            } else {
-                None
-            }
-        })
-    {
-        guard.handles.remove(&previous);
+    if guard.primary == Some(bound_if_id) {
+        guard.primary = Some(if_id);
     }
+    guard.handles.insert(if_id, handle);
     Ok(())
 }
 
@@ -1166,42 +1319,31 @@ pub fn lookup_if_by_port_id_in(runtime: NetRuntimeHandle, port_id: NetPortId) ->
         .copied()
 }
 
-pub fn lookup_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<Arc<NetDeviceHandle>> {
-    device_manager_in(runtime)
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .handles
-        .get(&if_id)
-        .cloned()
-}
-
-pub fn list_ports() -> Vec<Arc<NetDeviceHandle>> {
+pub fn list_port_infos() -> Vec<NetDeviceInfo> {
     device_manager()
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .handles
         .values()
-        .cloned()
-        .collect()
-}
-
-pub fn list_port_infos() -> Vec<NetDeviceInfo> {
-    list_ports()
-        .into_iter()
-        .map(|handle| handle.info())
+        .map(NetDeviceHandle::info)
         .collect()
 }
 
 pub fn port_info(port_id: NetPortId) -> Option<NetDeviceInfo> {
     let if_id = lookup_if_by_port_id_in(default_runtime(), port_id)?;
-    let handle = lookup_port_in(default_runtime(), if_id)?;
-    Some(handle.info())
+    with_port_handle_in(default_runtime(), if_id, NetDeviceHandle::info)
 }
 
 pub fn port_stats(port_id: NetPortId) -> Option<NetPortStats> {
     let if_id = lookup_if_by_port_id_in(default_runtime(), port_id)?;
-    let handle = lookup_port_in(default_runtime(), if_id)?;
-    Some(handle.driver().stats())
+    port_stats_for_interface_in(default_runtime(), if_id)
+}
+
+pub fn port_stats_for_interface_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<NetPortStats> {
+    with_port_handle_in(runtime, if_id, |handle| handle.driver().stats())
 }
 
 pub fn list_port_ids_in(runtime: NetRuntimeHandle) -> Vec<NetPortId> {
@@ -1269,9 +1411,7 @@ pub(crate) fn claim_bound_primary_interface_with_stack_state_in(
 
 pub fn transmit_packet(if_id: Option<NetIfId>, payload: PacketPayload, meta: NetTxMeta) -> bool {
     let resolved_if = if_id.or_else(|| primary_if_in(default_runtime()));
-    let Some(handle) =
-        resolved_if.and_then(|resolved_if| lookup_port_in(default_runtime(), resolved_if))
-    else {
+    let Some(resolved_if) = resolved_if else {
         if let Some(completion_id) = meta.completion_id {
             let _ = complete_tx_request_in(
                 default_runtime(),
@@ -1281,7 +1421,11 @@ pub fn transmit_packet(if_id: Option<NetIfId>, payload: PacketPayload, meta: Net
         }
         return false;
     };
-    if handle.enqueue_tx(payload, meta) {
+    if with_port_handle_in(default_runtime(), resolved_if, |handle| {
+        handle.enqueue_tx(payload, meta)
+    })
+    .unwrap_or(false)
+    {
         true
     } else {
         if let Some(completion_id) = meta.completion_id {
@@ -1295,34 +1439,40 @@ pub fn transmit_packet(if_id: Option<NetIfId>, payload: PacketPayload, meta: Net
     }
 }
 
+fn enqueue_event_in(runtime: NetRuntimeHandle, port_id: NetPortId, event: NetDriverEvent) -> bool {
+    let Some(if_id) = lookup_if_by_port_id_in(runtime, port_id) else {
+        return false;
+    };
+    with_port_handle_in(runtime, if_id, |handle| handle.enqueue_event(event)).unwrap_or(false)
+}
+
 pub fn enqueue_event(port_id: NetPortId, event: NetDriverEvent) -> bool {
-    let Some(if_id) = lookup_if_by_port_id_in(default_runtime(), port_id) else {
+    enqueue_event_in(default_runtime(), port_id, event)
+}
+
+fn enqueue_event_from_isr_in(
+    runtime: NetRuntimeHandle,
+    port_id: NetPortId,
+    event: NetDriverEvent,
+) -> bool {
+    let Some(if_id) = lookup_if_by_port_id_in(runtime, port_id) else {
         return false;
     };
-    let Some(handle) = lookup_port_in(default_runtime(), if_id) else {
-        return false;
-    };
-    handle.enqueue_event(event)
+    with_port_handle_in(runtime, if_id, |handle| handle.enqueue_event_from_isr(event))
+        .unwrap_or(false)
 }
 
 pub fn enqueue_event_from_isr(port_id: NetPortId, event: NetDriverEvent) -> bool {
-    let Some(if_id) = lookup_if_by_port_id_in(default_runtime(), port_id) else {
-        return false;
-    };
-    let Some(handle) = lookup_port_in(default_runtime(), if_id) else {
-        return false;
-    };
-    handle.enqueue_event_from_isr(event)
+    enqueue_event_from_isr_in(default_runtime(), port_id, event)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::net::l3::ipv4::Ipv4Address;
-    use alloc::sync::Arc;
     use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
-    struct FakeDriver {
+    struct FakeDriverState {
         bind_calls: AtomicUsize,
         last_if_id: AtomicU16,
         last_event_queue: AtomicU16,
@@ -1333,7 +1483,7 @@ mod tests {
         initialized: AtomicBool,
     }
 
-    impl FakeDriver {
+    impl FakeDriverState {
         const fn new() -> Self {
             Self {
                 bind_calls: AtomicUsize::new(0),
@@ -1354,6 +1504,21 @@ mod tests {
         }
     }
 
+    struct FakeDriver {
+        state: &'static FakeDriverState,
+    }
+
+    impl FakeDriver {
+        const fn new(state: &'static FakeDriverState) -> Self {
+            Self { state }
+        }
+    }
+
+    fn fake_driver() -> (&'static FakeDriverState, Box<dyn NetDevicePort>) {
+        let state = Box::leak(Box::new(FakeDriverState::new()));
+        (state, Box::new(FakeDriver::new(state)))
+    }
+
     impl NetDevicePort for FakeDriver {
         fn info(&self) -> NetDeviceInfo {
             NetDeviceInfo {
@@ -1367,13 +1532,13 @@ mod tests {
             }
         }
 
-        fn start(&self, _runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
+        fn start(&self, _runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
             Ok(())
         }
 
         fn bind(&self, if_id: u16) -> Result<(), &'static str> {
-            self.bind_calls.fetch_add(1, Ordering::Relaxed);
-            self.last_if_id.store(if_id, Ordering::Release);
+            self.state.bind_calls.fetch_add(1, Ordering::Relaxed);
+            self.state.last_if_id.store(if_id, Ordering::Release);
             Ok(())
         }
 
@@ -1386,31 +1551,33 @@ mod tests {
         }
 
         fn poll(&self, if_id: u16) -> Result<(), &'static str> {
-            self.last_if_id.store(if_id, Ordering::Release);
-            self.poll_calls.fetch_add(1, Ordering::Relaxed);
+            self.state.last_if_id.store(if_id, Ordering::Release);
+            self.state.poll_calls.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
 
         fn handle_event(&self, if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
-            self.last_if_id.store(if_id, Ordering::Release);
+            self.state.last_if_id.store(if_id, Ordering::Release);
             if let NetDriverEvent::QueueWake { queue_index } = event {
-                self.last_event_queue.store(queue_index, Ordering::Release);
+                self.state
+                    .last_event_queue
+                    .store(queue_index, Ordering::Release);
             }
             Ok(())
         }
 
         fn stats(&self) -> NetPortStats {
             NetPortStats {
-                tx_packets: self.tx_packets.load(Ordering::Acquire),
-                rx_packets: self.rx_packets.load(Ordering::Acquire),
+                tx_packets: self.state.tx_packets.load(Ordering::Acquire),
+                rx_packets: self.state.rx_packets.load(Ordering::Acquire),
                 tx_errors: 0,
                 rx_errors: 0,
-                initialized: self.initialized.load(Ordering::Acquire),
+                initialized: self.state.initialized.load(Ordering::Acquire),
             }
         }
 
         fn stop(&self) {
-            self.stop_calls.fetch_add(1, Ordering::Relaxed);
+            self.state.stop_calls.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -1436,7 +1603,7 @@ mod tests {
 
     fn register_test_port(
         index: u16,
-        driver: Arc<dyn NetDevicePort>,
+        driver: Box<dyn NetDevicePort>,
         primary_policy: PrimaryPortPolicy,
     ) -> Result<NetIfId, &'static str> {
         let info = NetDeviceInfo {
@@ -1493,20 +1660,23 @@ mod tests {
             crate::per_cpu::init_per_cpu(1);
         }
 
-        let driver = Arc::new(FakeDriver::new());
+        let (_, driver) = fake_driver();
         let if_id =
             register_test_port(89, driver, PrimaryPortPolicy::Never).expect("register port");
-        let handle = lookup_port_in(default_runtime(), if_id).expect("handle");
 
         crate::per_cpu::enter_interrupt();
-        let result = handle
-            .runtime
-            .schedule_event(NetDriverEvent::QueueWake { queue_index: 3 });
+        let result = with_port_handle_in(default_runtime(), if_id, |handle| {
+            handle
+                .runtime
+                .schedule_event(NetDriverEvent::QueueWake { queue_index: 3 })
+        })
+        .expect("handle");
         crate::per_cpu::exit_interrupt();
 
         assert_eq!(result, Ok(()));
         assert_eq!(
-            handle.event_sink.pop(),
+            with_port_handle_in(default_runtime(), if_id, |handle| handle.event_sink.pop())
+                .flatten(),
             Some(NetDriverEvent::QueueWake { queue_index: 3 })
         );
 
@@ -1516,9 +1686,9 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn device_handle_rebind_updates_binding_smoke() {
-        let driver = Arc::new(FakeDriver::new());
+        let (state, driver) = fake_driver();
         let handle = NetDeviceHandle::new(
-            driver.clone(),
+            driver,
             NetDeviceBinding {
                 port_id: test_port_id(9),
                 if_id: NetIfId(1),
@@ -1534,17 +1704,17 @@ mod tests {
             .expect("rebind");
 
         assert_eq!(handle.binding().if_id, NetIfId(22));
-        assert_eq!(driver.bind_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(driver.last_if_id.load(Ordering::Acquire), 22);
+        assert_eq!(state.bind_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(state.last_if_id.load(Ordering::Acquire), 22);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn register_port_exposes_snapshot_smoke() {
-        let driver = Arc::new(FakeDriver::new());
-        driver.set_stats(11, 7, true);
+        let (state, driver) = fake_driver();
+        state.set_stats(11, 7, true);
 
-        let if_id = register_test_port(90, driver.clone(), PrimaryPortPolicy::Never)
+        let if_id = register_test_port(90, driver, PrimaryPortPolicy::Never)
             .expect("register port");
 
         let info = port_info(test_port_id(90)).expect("port info");
@@ -1561,14 +1731,14 @@ mod tests {
         assert!(list_port_ids_in(default_runtime()).contains(&test_port_id(90)));
 
         assert!(unregister_port(if_id));
-        assert_eq!(driver.stop_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(state.stop_calls.load(Ordering::Relaxed), 1);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn register_port_prefer_primary_updates_primary_selection_smoke() {
-        let driver_a = Arc::new(FakeDriver::new());
-        let driver_b = Arc::new(FakeDriver::new());
+        let (_, driver_a) = fake_driver();
+        let (_, driver_b) = fake_driver();
 
         let if_a =
             register_test_port(91, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
@@ -1588,8 +1758,8 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn primary_link_down_promotes_secondary_and_updates_runtime_config() {
-        let driver_a = Arc::new(FakeDriver::new());
-        let driver_b = Arc::new(FakeDriver::new());
+        let (_, driver_a) = fake_driver();
+        let (_, driver_b) = fake_driver();
 
         let if_a =
             register_test_port(93, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
@@ -1651,7 +1821,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn unregister_primary_without_survivor_clears_primary_runtime() {
-        let driver = Arc::new(FakeDriver::new());
+        let (_, driver) = fake_driver();
         let if_a = register_test_port(95, driver, PrimaryPortPolicy::Auto).expect("register port");
 
         let lease_a = sample_lease(30);
@@ -1676,8 +1846,8 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recovered_interface_does_not_reclaim_primary_after_failover() {
-        let driver_a = Arc::new(FakeDriver::new());
-        let driver_b = Arc::new(FakeDriver::new());
+        let (_, driver_a) = fake_driver();
+        let (_, driver_b) = fake_driver();
 
         let if_a =
             register_test_port(96, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
@@ -1718,8 +1888,8 @@ mod tests {
             .dhcp_bound_primary_selected
             .store(false, Ordering::Release);
 
-        let driver_a = Arc::new(FakeDriver::new());
-        let driver_b = Arc::new(FakeDriver::new());
+        let (_, driver_a) = fake_driver();
+        let (_, driver_b) = fake_driver();
 
         let if_a =
             register_test_port(98, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
