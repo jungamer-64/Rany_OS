@@ -9,7 +9,6 @@ use kernel_api::resource::net::PacketPayload;
 
 mod certificate;
 mod server_hello;
-mod tls12;
 mod tls13;
 
 impl TlsConnection {

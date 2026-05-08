@@ -2,14 +2,11 @@
 // kernel/src/net/security/tls/crypto/mod.rs - Cryptographic Primitives for TLS
 // ============================================================================
 
-pub mod aes_cbc;
 pub mod aes_core;
 pub mod aes_gcm;
 pub mod chacha20;
 pub mod hkdf;
 pub mod hmac;
-pub mod legacy;
-pub mod prf;
 pub mod random;
 
 // ── HMAC ────────────────────────────────────────────────────────────────────
@@ -24,28 +21,13 @@ pub use hkdf::{
     tls13_master_secret_sha384, tls13_verify_data, tls13_verify_data_sha384,
 };
 
-// ── TLS 1.2 PRF ─────────────────────────────────────────────────────────────
-pub use prf::{
-    derive_key_block, derive_key_block_sha384, derive_master_secret, derive_master_secret_sha384,
-    derive_master_secret_tls10, tls12_prf, tls12_prf_sha384,
-};
-
 // ── AES Core ─────────────────────────────────────────────────────────────────
 
 // ── AES-GCM ──────────────────────────────────────────────────────────────────
 pub(crate) use aes_gcm::{aes_gcm_decrypt_into, aes_gcm_encrypt_into};
 
-// ── AES-CBC ──────────────────────────────────────────────────────────────────
-pub(crate) use aes_cbc::{
-    aes_cbc_encrypt_in_place, tls_add_padding_in_place, tls_verify_padding,
-};
-
 // ── ChaCha20-Poly1305 ────────────────────────────────────────────────────────
 pub use chacha20::{chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place};
-
-// ── Legacy (MD5, SHA-1, TLS 1.0) ────────────────────────────────────────────
-pub(crate) use legacy::compute_tls_mac_into;
-pub use legacy::tls10_prf;
 
 // ── Random ───────────────────────────────────────────────────────────────────
 pub(crate) use random::generate_random;
