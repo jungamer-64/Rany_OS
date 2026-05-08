@@ -4,22 +4,17 @@
 
 use crate::test::TestResult;
 use alloc::string::String;
-use alloc::vec;
 
-/// Test mempool allocation
+/// Test packet-owned allocation
 pub fn test_mempool_allocation() -> TestResult {
-    use crate::net::datapath::mempool::{PacketBuffer, PacketPool};
+    use crate::net::payload::alloc_packet_with_headroom;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
-    // Create a packet pool
-    let pool = PacketPool::new(16, 1518);
-
-    // Allocate a packet
-    let packet = match pool.alloc() {
+    let packet = match alloc_packet_with_headroom(1518, DEFAULT_PACKET_HEADROOM) {
         Some(p) => p,
-        None => return TestResult::Failed(String::from("Failed to allocate packet from pool")),
+        None => return TestResult::Failed(String::from("Failed to allocate packet")),
     };
 
-    // Verify packet properties
     if packet.capacity() < 1518 {
         return TestResult::Failed(alloc::format!(
             "Packet capacity too small: {} < 1518",
@@ -27,22 +22,19 @@ pub fn test_mempool_allocation() -> TestResult {
         ));
     }
 
-    // Test allocation and deallocation cycle
-    let mut packets = vec![];
+    let mut packets = alloc::vec::Vec::new();
     for i in 0..8 {
-        if let Some(p) = pool.alloc() {
+        if let Some(p) = alloc_packet_with_headroom(64, DEFAULT_PACKET_HEADROOM) {
             packets.push(p);
         } else {
-            return TestResult::Failed(alloc::format!("Failed to allocate packet {} from pool", i));
+            return TestResult::Failed(alloc::format!("Failed to allocate packet {}", i));
         }
     }
 
-    // Drop all packets (should return to pool)
     packets.clear();
 
-    // Should be able to allocate again
-    if pool.alloc().is_none() {
-        return TestResult::Failed(String::from("Pool exhausted after returning packets"));
+    if alloc_packet_with_headroom(64, DEFAULT_PACKET_HEADROOM).is_none() {
+        return TestResult::Failed(String::from("Packet allocator exhausted after drop"));
     }
 
     TestResult::Passed
@@ -228,35 +220,32 @@ pub fn test_tcp_state_machine() -> TestResult {
     TestResult::Passed
 }
 
-/// Test zero-copy buffer
-pub fn test_zero_copy_buffer() -> TestResult {
-    use crate::net::datapath::zero_copy::{MemoryPool, PoolId, ZeroCopyBuffer};
+/// Test packet payload view
+pub fn test_packet_payload_view() -> TestResult {
+    use crate::net::payload::{PacketPayloadView, alloc_packet_with_headroom};
+    use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
-    // Create a small test pool
-    let pool = MemoryPool::new(PoolId(1), 8, 256);
-
-    // Allocate buffer
-    let buffer = match pool.alloc() {
-        Some(b) => b,
-        None => return TestResult::Failed(String::from("Failed to allocate zero-copy buffer")),
+    let data = b"Hello, packet payload!";
+    let mut packet = match alloc_packet_with_headroom(data.len(), DEFAULT_PACKET_HEADROOM) {
+        Some(packet) => packet,
+        None => return TestResult::Failed(String::from("Failed to allocate packet payload")),
     };
+    packet.data_mut().copy_from_slice(data);
 
-    // Verify capacity
-    if buffer.capacity() < 256 {
+    let payload = PacketPayload::single(packet);
+    let view = PacketPayloadView::new(&payload);
+    if view.total_len() != data.len() {
         return TestResult::Failed(alloc::format!(
-            "Buffer capacity too small: {}",
-            buffer.capacity()
+            "Payload length mismatch: {} != {}",
+            view.total_len(),
+            data.len()
         ));
     }
 
-    // Test write and read
-    let mut buf = buffer;
-    let data = b"Hello, zero-copy!";
-    buf.write(data);
-
-    let read_data = buf.data();
-    if read_data != data {
-        return TestResult::Failed(String::from("Data mismatch after write/read"));
+    for (index, expected) in data.iter().enumerate() {
+        if view.read_u8(index) != Some(*expected) {
+            return TestResult::Failed(alloc::format!("Payload byte mismatch at {}", index));
+        }
     }
 
     TestResult::Passed

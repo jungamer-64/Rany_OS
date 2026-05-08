@@ -2,10 +2,10 @@
 // kernel/src/net/runtime/stack/core_impl/protocol_impl/udp_tx.rs - ランタイム / スタック / コア実装 / プロトコル実装 / udp tx
 // ============================================================================
 //! UDP raw send helpers (IPv4), MAC address resolution via ARP/IGMP multicast,
-//! packet-native UDP TX, and UdpAddr-based send.
+//! and packet-owned UDP TX.
 
 use super::*;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
+use crate::net::payload::PacketPayloadView;
 
 fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
     let mut sum = initial;
@@ -303,160 +303,6 @@ impl NetworkStack {
                 self.send_arp_request(next_hop);
                 None
             }
-        }
-    }
-
-    /// Send a UDP datagram through the packet-native IPv4 TX path.
-    pub(crate) fn try_send_udp_packet_path(
-        &mut self,
-        config: &NetworkConfig,
-        src_ip: Ipv4Address,
-        src_port: u16,
-        dst_ip: Ipv4Address,
-        dst_mac: MacAddress,
-        dst_port: u16,
-        data: &[u8],
-    ) -> Option<Result<(), crate::net::types::NetworkError>> {
-        let mut packet = crate::net::datapath::mempool::alloc_packet()?;
-        let mut frame = EthernetFrameMut::new(packet.data_mut())?;
-        frame
-            .set_destination(dst_mac)
-            .set_source(config.mac)
-            .set_ether_type(EtherType::Ipv4);
-
-        let eth_payload = frame.payload_mut();
-
-        let mut ip_packet = Ipv4PacketMut::new(eth_payload)?;
-        ip_packet
-            .init_header()
-            .set_source(src_ip)
-            .set_destination(dst_ip)
-            .set_protocol(IpProtocol::Udp)
-            .set_ttl(64);
-
-        let ip_payload = ip_packet.payload_mut();
-
-        let udp_len = crate::net::l4::udp::UdpProcessor::build_packet(
-            ip_payload,
-            config.ipv4.address,
-            src_port,
-            dst_ip,
-            dst_port,
-            data,
-        )?;
-
-        ip_packet.finalize(udp_len);
-        let ip_len = ip_packet.total_len();
-        frame.set_payload_len(ip_len);
-
-        let total_len = frame.as_bytes().len();
-        drop(frame);
-        packet.set_len(total_len);
-
-        if self.transmit_packet_on(
-            None,
-            kernel_api::resource::net::PacketPayload::single(packet),
-        ) {
-            return Some(Ok(()));
-        }
-        // Fall back to payload-owned path on failure.
-        None
-    }
-
-    pub fn send_udp_addr(
-        &mut self,
-        src: crate::net::l4::udp::UdpAddr,
-        dst: crate::net::l4::udp::UdpAddr,
-        data: &[u8],
-    ) -> Result<(), crate::net::types::NetworkError> {
-        use crate::net::l4::udp::UdpAddr;
-
-        match (src, dst) {
-            (
-                UdpAddr::V4 {
-                    ip: s_ip,
-                    port: s_port,
-                },
-                UdpAddr::V4 {
-                    ip: d_ip,
-                    port: d_port,
-                },
-            ) => {
-                let current_time = self.current_time();
-                let explicit_src = if s_ip.is_any() { None } else { Some(s_ip) };
-                let (if_id, config, src_ip) = self.resolve_ipv4_egress(
-                    crate::net::types::InterfaceScope::Any,
-                    None,
-                    explicit_src,
-                    d_ip,
-                )?;
-
-                let dst_mac = if d_ip.is_loopback() {
-                    config.mac
-                } else {
-                    self.resolve_mac(if_id, d_ip, &config, current_time)
-                        .ok_or(crate::net::types::NetworkError::ArpResolutionPending)?
-                };
-                let path_mtu = self.effective_ipv4_pmtu(d_ip, current_time);
-                let can_send_unfragmented = data
-                    .len()
-                    .checked_add(8)
-                    .is_some_and(|udp_len| udp_len <= path_mtu.saturating_sub(20));
-
-                // Try the packet-native path first.
-                if if_id.is_none() && !d_ip.is_loopback() && can_send_unfragmented {
-                    if let Some(result) = self.try_send_udp_packet_path(
-                        &config, src_ip, s_port, d_ip, dst_mac, d_port, data,
-                    ) {
-                        return result;
-                    }
-                }
-
-                let mut builder = PacketPayloadBuilder::new();
-                let Some(()) = builder.append_generated_bytes(data) else {
-                    return Err(crate::net::types::NetworkError::TransmitFailed);
-                };
-                if self.send_udp_raw_with_config_and_if_ttl_payload(
-                    if_id,
-                    &config,
-                    src_ip,
-                    s_port,
-                    d_ip,
-                    d_port,
-                    builder.build(),
-                    64,
-                ) {
-                    Ok(())
-                } else {
-                    Err(crate::net::types::NetworkError::TransmitFailed)
-                }
-            }
-            (
-                UdpAddr::V6 {
-                    ip: s_ip,
-                    port: s_port,
-                },
-                UdpAddr::V6 {
-                    ip: d_ip,
-                    port: d_port,
-                },
-            ) => {
-                let mut builder = PacketPayloadBuilder::new();
-                let Some(()) = builder.append_generated_bytes(data) else {
-                    return Err(crate::net::types::NetworkError::TransmitFailed);
-                };
-                let payload = builder.build();
-                self.send_udp_v6_payload_scoped_with_ttl(
-                    crate::net::types::InterfaceScope::Any,
-                    s_port,
-                    s_ip,
-                    d_ip,
-                    d_port,
-                    payload,
-                    64,
-                )
-            }
-            _ => Err(crate::net::types::NetworkError::InvalidAddress),
         }
     }
 }

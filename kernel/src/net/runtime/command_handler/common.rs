@@ -4,7 +4,7 @@
 //! RuntimeCommandHandler 共通型/ヘルパー
 
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
+use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{CommandReplyPayload, CommandReplyTicket, RuntimeCommand};
 use crate::net::runtime::manager::NetIfId;
@@ -122,34 +122,6 @@ pub(super) fn stackless_dhcp_state_unavailable() -> crate::net::api::dhcp::DhcpR
         v6_preferred_remaining: None,
         v6_valid_remaining: None,
     }
-}
-
-pub(super) fn apply_tcp_checksum_for_addrs(
-    segment: &mut [u8],
-    local: EndpointAddr,
-    remote: EndpointAddr,
-) -> SocketResult<()> {
-    if let Some((lv4, rv4)) = endpoint_ipv4_pair(local, remote) {
-        crate::net::l4::tcp::segment::TcpSegmentBuilder::calculate_checksum_bytes(
-            segment, lv4, rv4,
-        );
-        return Ok(());
-    }
-    if endpoint_is_native_v6_pair(local, remote) {
-        crate::net::l4::tcp::segment::TcpSegmentBuilder::calculate_checksum_v6_bytes(
-            segment,
-            crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
-            crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
-        );
-        return Ok(());
-    }
-
-    log::warn!(
-        "[NET][endpoint] mixed TCP address family rejected: {} -> {}",
-        local,
-        remote
-    );
-    Err(EndpointError::InvalidArgument)
 }
 
 /// IPv4 ペイロードからトランスポート層の送信元/宛先ポートを抽出する。

@@ -272,20 +272,6 @@ impl<'a> UdpPacketMut<'a> {
         &mut self.buffer[UdpHeader::SIZE..]
     }
 
-    /// Write payload
-    pub fn write_payload(&mut self, data: &[u8]) -> usize {
-        let max_buffer = self.buffer.len() - UdpHeader::SIZE;
-        // RFC 768: UDP length is 16-bit, so total length (header+payload) <= 65535.
-        // Payload max = 65535 - 8 = 65527.
-        let max_udp = 65527;
-        let max = max_buffer.min(max_udp);
-
-        let len = data.len().min(max);
-        self.buffer[UdpHeader::SIZE..UdpHeader::SIZE + len].copy_from_slice(&data[..len]);
-        self.payload_len = len;
-        len
-    }
-
     /// Write payload from a potentially chained packet payload view.
     pub fn write_payload_view(&mut self, payload: &PacketPayloadView<'_>) -> usize {
         let max_buffer = self.buffer.len() - UdpHeader::SIZE;
@@ -650,10 +636,7 @@ impl Future for UdpSendFuture {
         let this = self.get_mut();
 
         {
-            let Some(is_bound) = this
-                .socket
-                .with_inner(|inner| inner.is_udp_bound())
-            else {
+            let Some(is_bound) = this.socket.with_inner(|inner| inner.is_udp_bound()) else {
                 return Poll::Ready(Err(NetworkError::Unknown));
             };
             if !is_bound {

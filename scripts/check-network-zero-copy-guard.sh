@@ -94,6 +94,18 @@ if rg -n "\\brecv_from_buffer\\b|\\bcopy_remaining_to\\b" "${network_tree[@]}" >
   fail "found removed byte-buffer socket receive path"
 fi
 
+if rg -n "\\bPacketPool\\b|\\bPerCoreTxCache\\b|Vec<\\s*Vec\\s*<\\s*u8\\s*>\\s*>" "${network_tree[@]}" kernel/src/test >/dev/null; then
+  fail "found removed byte-buffer TX pool"
+fi
+
+if rg -n "\\bsend_udp_addr\\b|\\btry_send_udp_packet_path\\b|\\bcalculate_checksum_bytes\\b|\\bcalculate_checksum_v6_bytes\\b" "${network_tree[@]}" kernel/src/test >/dev/null; then
+  fail "found removed byte-slice TX/checksum API"
+fi
+
+if rg -n "\\bScatterGatherList\\b|\\bSgTxBuilder\\b|\\bHeaderCache\\b|\\bTsoContext\\b|\\bTsoEngine\\b|\\bTsoSegmentInfo\\b|\\bGroTable\\b|\\bGroSegment\\b|\\bheader_cache\\b|\\bscatter_gather\\b" "${network_tree[@]}" kernel/src/test >/dev/null; then
+  fail "found removed dormant byte-buffer datapath surface"
+fi
+
 if rg -n "\\blinearize\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed scatter-gather linearization fallback"
 fi
@@ -220,7 +232,7 @@ if rg -n "packet\\.clone\\(|payload\\.clone\\(|PacketPayload::single\\(packet\\.
 fi
 
 if rg -n "\\bZeroCopyBuffer\\b|\\bZeroCopyWriter\\b|\\bSgList\\b|\\bDmaSgEntry\\b|datapath::zero_copy|mod zero_copy|pub mod zero_copy" \
-  kernel/src/net interfaces/kernel_api/src/netdev.rs interfaces/kernel_api/src/resource/net.rs interfaces/kernel_api/src/types.rs \
+  kernel/src/net kernel/src/test interfaces/kernel_api/src/netdev.rs interfaces/kernel_api/src/resource/net.rs interfaces/kernel_api/src/types.rs \
   >/dev/null; then
   fail "found removed zero_copy buffer facade"
 fi

@@ -3,13 +3,10 @@
 // ============================================================================
 //! # データパス最適化
 //!
-//! ゼロコピー、メモリプール、適応的ポーリング、GRO、
-//! チェックサムオフロード、スキャッタギャザーI/O等。
+//! ゼロコピー、メモリプール、適応的ポーリング、チェックサムオフロード等。
 
 pub mod adaptive_polling;
 pub mod checksum_offload;
-pub mod header_cache;
 pub mod mempool;
 pub mod optimization;
 pub mod per_cpu_batch;
-pub mod scatter_gather;

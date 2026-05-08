@@ -50,19 +50,19 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 | 用語 | 本書での意味 | 現行 tree での主な着地点 |
 | --- | --- | --- |
-| mempool / packet pool | NIC DMA と packet 再利用のための固定長バッファプール | `net::datapath::mempool`, `PacketPool` |
+| mempool / packet allocation | NIC DMA と packet 再利用のための固定長バッファ供給 | `net::datapath::mempool`, `PacketRef`, `PacketPayload` |
 | packet-backed payload | packet ownership を保った送受信単位 | `PacketRef`, `PacketPayload` |
 | ownership-based buffering | queue / endpoint / protocol 層が payload 所有権を明示して受け渡す設計 | `net::l4::endpoint`, `net::datapath`, `kernel_api::resource::net` |
 | end-to-end zero-copy | driver -> protocol -> app まで flatten / copy を最小化する経路 | `Canonical target` |
 | adaptive polling | 低負荷では interrupt、高負荷では polling / hybrid へ切り替えるモデル | `net::datapath::adaptive_polling`, runtime device control |
 | batch processing | 複数 packet をまとめて処理する最適化 | `PacketBatch`, `BatchProcessor` |
-| scatter-gather | multi-buffer DMA / descriptor chaining による送受信 | datapath / driver queue submission |
+| scatter-gather | multi-buffer DMA / descriptor chaining による送受信 | `PacketPayload` / `NetTxSegment` による driver queue submission |
 
 ## 3. Datapath and polling
 
-### 3.1 Normative: packet pool を中心に据える
+### 3.1 Normative: PacketRef / PacketPayload を中心に据える
 
-- NIC は事前に確保された packet pool / DMA buffer へ直接読み書きする。
+- NIC は事前に確保された packet / DMA buffer へ直接読み書きする。
 - protocol 層は `Vec<u8>` flatten を前提にせず、packet-backed payload を運ぶ。
 - packet の drop / recycle は pool 回収と結び付け、再利用可能な ownership cycle を維持する。
 - network TX の正規所有権単位は `PacketPayload` であり、旧 `datapath::zero_copy`

@@ -7,7 +7,6 @@
 
 use super::tcb::tcp_flags;
 use crate::net::l4::types::{EndpointAddr, EndpointError};
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload, PacketRef};
 
 #[inline]
@@ -46,25 +45,6 @@ impl TcpSegmentPayload {
         match self {
             Self::Empty => 0,
             Self::Packet(payload) => payload.total_len(),
-        }
-    }
-
-    fn write_to(&self, dst: &mut [u8]) {
-        match self {
-            Self::Empty => {}
-            Self::Packet(payload) => {
-                let view = PacketPayloadView::new(payload);
-                let mut copied = 0usize;
-                view.for_each_chunk(|chunk| {
-                    if copied == dst.len() {
-                        return;
-                    }
-                    let take = chunk.len().min(dst.len() - copied);
-                    dst[copied..copied + take].copy_from_slice(&chunk[..take]);
-                    copied += take;
-                });
-                debug_assert_eq!(copied, view.total_len());
-            }
         }
     }
 }
@@ -137,15 +117,6 @@ impl TcpSegmentBuilder {
     /// Window設定
     pub fn window(mut self, window: u16) -> Self {
         self.window = window;
-        self
-    }
-
-    /// データ設定
-    pub fn payload(mut self, data: &[u8]) -> Self {
-        let mut builder = PacketPayloadBuilder::new();
-        if builder.append_generated_bytes(data).is_some() {
-            self.data = TcpSegmentPayload::Packet(builder.build());
-        }
         self
     }
 
@@ -227,21 +198,6 @@ impl TcpSegmentBuilder {
                 self.options_len += 1;
             }
         }
-    }
-
-    #[cfg(test)]
-    pub fn build(mut self) -> alloc::vec::Vec<u8> {
-        self.pad_options();
-        let options_len = self.options_len.min(self.options.len());
-        let header_len = 20 + options_len;
-        let data_offset = (header_len / 4) as u8;
-        let total_len = header_len + self.data.len();
-        let mut segment = alloc::vec![0u8; total_len];
-        self.write_header_bytes(&mut segment, header_len, data_offset, options_len);
-        if self.data.len() > 0 {
-            self.data.write_to(&mut segment[header_len..]);
-        }
-        segment
     }
 
     pub fn build_packet(mut self) -> Result<PacketPayload, EndpointError> {
@@ -337,28 +293,6 @@ impl TcpSegmentBuilder {
         Err(EndpointError::InvalidArgument)
     }
 
-    fn write_header_bytes(
-        &self,
-        segment: &mut [u8],
-        header_len: usize,
-        data_offset: u8,
-        options_len: usize,
-    ) {
-        debug_assert!(segment.len() >= header_len);
-        segment[0..2].copy_from_slice(&self.src_port.to_be_bytes());
-        segment[2..4].copy_from_slice(&self.dst_port.to_be_bytes());
-        segment[4..8].copy_from_slice(&self.seq_num.to_be_bytes());
-        segment[8..12].copy_from_slice(&self.ack_num.to_be_bytes());
-        let data_off_flags = ((data_offset as u16) << 12) | (self.flags as u16);
-        segment[12..14].copy_from_slice(&data_off_flags.to_be_bytes());
-        segment[14..16].copy_from_slice(&self.window.to_be_bytes());
-        segment[16..18].copy_from_slice(&0u16.to_be_bytes());
-        segment[18..20].copy_from_slice(&self.urgent_ptr.to_be_bytes());
-        if self.options_len != 0 {
-            segment[20..20 + options_len].copy_from_slice(&self.options[..options_len]);
-        }
-    }
-
     pub fn calculate_checksum(payload: &mut PacketPayload, src_ip: [u8; 4], dst_ip: [u8; 4]) {
         if payload.total_len() < 20 {
             return;
@@ -451,40 +385,6 @@ impl TcpSegmentBuilder {
                 data[16..18].copy_from_slice(&checksum.to_be_bytes());
             }
         }
-    }
-
-    pub fn calculate_checksum_bytes(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
-        if segment.len() < 20 {
-            return;
-        }
-        segment[16] = 0;
-        segment[17] = 0;
-        use crate::net::l3::ipv4::{
-            IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum,
-        };
-        let src = Ipv4Address::new(src_ip);
-        let dst = Ipv4Address::new(dst_ip);
-        let pseudo = pseudo_header_checksum(src, dst, IpProtocol::Tcp, segment.len() as u16);
-        let checksum = data_checksum(segment, pseudo);
-        segment[16..18].copy_from_slice(&checksum.to_be_bytes());
-    }
-
-    pub fn calculate_checksum_v6_bytes(
-        segment: &mut [u8],
-        src_ip: crate::net::l3::ipv6::Ipv6Address,
-        dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    ) {
-        if segment.len() < 20 {
-            return;
-        }
-        segment[16] = 0;
-        segment[17] = 0;
-        use crate::net::l3::ipv4::{IpProtocol, data_checksum};
-        use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
-        let pseudo =
-            ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Tcp, segment.len() as u32);
-        let checksum = data_checksum(segment, pseudo);
-        segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
 }
 
@@ -606,31 +506,51 @@ pub fn send_tcp_segment_packet(
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
+
+    fn test_payload_bytes(data: &[u8]) -> PacketPayload {
+        let mut builder = PacketPayloadBuilder::new();
+        builder
+            .append_generated_bytes(data)
+            .expect("test packet payload allocation");
+        builder.build()
+    }
+
+    fn build_test_segment(builder: TcpSegmentBuilder) -> PacketPayload {
+        builder.build_packet().expect("test TCP segment allocation")
+    }
+
+    fn send_test_segment(
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        segment: PacketPayload,
+    ) -> bool {
+        send_tcp_segment_payload(local, remote, segment)
+    }
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_segment_builder() {
         // SYNセグメント構築
-        let segment = TcpSegmentBuilder::new(12345, 80)
-            .seq(1000)
-            .syn()
-            .window(65535)
-            .build();
+        let segment = build_test_segment(
+            TcpSegmentBuilder::new(12345, 80)
+                .seq(1000)
+                .syn()
+                .window(65535),
+        );
+        let view = PacketPayloadView::new(&segment);
 
         // ヘッダサイズは20バイト（オプションなし）
-        assert_eq!(segment.len(), 20);
+        assert_eq!(view.total_len(), 20);
 
         // ポート検証
-        assert_eq!(u16::from_be_bytes([segment[0], segment[1]]), 12345);
-        assert_eq!(u16::from_be_bytes([segment[2], segment[3]]), 80);
+        assert_eq!(view.read_u16_be(0), Some(12345));
+        assert_eq!(view.read_u16_be(2), Some(80));
 
         // シーケンス番号検証
-        assert_eq!(
-            u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]),
-            1000
-        );
+        assert_eq!(view.read_u32_be(4), Some(1000));
 
         // フラグ検証（SYN = 0x02）
-        let data_offset_flags = u16::from_be_bytes([segment[12], segment[13]]);
+        let data_offset_flags = view.read_u16_be(12).expect("TCP data offset flags");
         let flags = (data_offset_flags & 0x3F) as u8;
         assert_eq!(flags & tcp_flags::SYN, tcp_flags::SYN);
     }
@@ -638,93 +558,103 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_segment_with_data() {
         let data = alloc::vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
-        let segment = TcpSegmentBuilder::new(8080, 80)
-            .seq(2000)
-            .ack(3000)
-            .ack_flag()
-            .payload_packet(test_payload_bytes(&data))
-            .build();
+        let segment = build_test_segment(
+            TcpSegmentBuilder::new(8080, 80)
+                .seq(2000)
+                .ack(3000)
+                .ack_flag()
+                .payload_packet(test_payload_bytes(&data)),
+        );
+        let view = PacketPayloadView::new(&segment);
 
         // ヘッダ20バイト + データ5バイト
-        assert_eq!(segment.len(), 25);
+        assert_eq!(view.total_len(), 25);
 
         // データ検証
-        assert_eq!(&segment[20..], b"Hello");
+        assert_eq!(
+            view.read_fixed_bytes::<5>(20, 5)
+                .expect("TCP payload")
+                .as_slice(),
+            b"Hello"
+        );
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_segment_with_options() {
         // SYNセグメント with TCP options
-        let segment = TcpSegmentBuilder::new(12345, 80)
-            .seq(1000)
-            .syn()
-            .window(65535)
-            .syn_options(1460, Some(7), true, None) // MSS=1460, WS=7, SACK
-            .build();
+        let segment = build_test_segment(
+            TcpSegmentBuilder::new(12345, 80)
+                .seq(1000)
+                .syn()
+                .window(65535)
+                .syn_options(1460, Some(7), true, None), // MSS=1460, WS=7, SACK
+        );
+        let view = PacketPayloadView::new(&segment);
 
         // ヘッダ20バイト + オプション12バイト = 32バイト (MSS:4, WS:3, SACK:2, NOP:3)
-        assert_eq!(segment.len(), 32);
+        assert_eq!(view.total_len(), 32);
 
         // Data Offset = 8 (32バイト / 4 = 8)
-        let data_offset_flags = u16::from_be_bytes([segment[12], segment[13]]);
+        let data_offset_flags = view.read_u16_be(12).expect("TCP data offset flags");
         let data_offset = ((data_offset_flags >> 12) & 0xF) as u8;
         assert_eq!(data_offset, 8);
 
         // オプション検証
         // MSS (Kind=2, Length=4, Value=1460)
-        assert_eq!(segment[20], 2); // Kind
-        assert_eq!(segment[21], 4); // Length
-        assert_eq!(u16::from_be_bytes([segment[22], segment[23]]), 1460); // MSS
+        assert_eq!(view.read_u8(20), Some(2)); // Kind
+        assert_eq!(view.read_u8(21), Some(4)); // Length
+        assert_eq!(view.read_u16_be(22), Some(1460)); // MSS
 
         // Window Scale (Kind=3, Length=3, Shift=7)
-        assert_eq!(segment[24], 3); // Kind
-        assert_eq!(segment[25], 3); // Length
-        assert_eq!(segment[26], 7); // Shift
+        assert_eq!(view.read_u8(24), Some(3)); // Kind
+        assert_eq!(view.read_u8(25), Some(3)); // Length
+        assert_eq!(view.read_u8(26), Some(7)); // Shift
 
         // SACK Permitted (Kind=4, Length=2)
-        assert_eq!(segment[27], 4); // Kind
-        assert_eq!(segment[28], 2); // Length
+        assert_eq!(view.read_u8(27), Some(4)); // Kind
+        assert_eq!(view.read_u8(28), Some(2)); // Length
 
         // NOP padding (Kind=1) x 3
-        assert_eq!(segment[29], 1); // NOP
-        assert_eq!(segment[30], 1); // NOP
-        assert_eq!(segment[31], 1); // NOP
+        assert_eq!(view.read_u8(29), Some(1)); // NOP
+        assert_eq!(view.read_u8(30), Some(1)); // NOP
+        assert_eq!(view.read_u8(31), Some(1)); // NOP
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_message_length_field_for_checksum() {
-        let mut segment = TcpSegmentBuilder::new(12345, 80)
-            .seq(1)
-            .ack(1)
-            .ack_flag()
-            .payload_packet(test_payload_bytes(b"abc"))
-            .build();
+        let mut segment = build_test_segment(
+            TcpSegmentBuilder::new(12345, 80)
+                .seq(1)
+                .ack(1)
+                .ack_flag()
+                .payload_packet(test_payload_bytes(b"abc")),
+        );
 
         TcpSegmentBuilder::calculate_checksum(&mut segment, [192, 168, 1, 10], [192, 168, 1, 20]);
 
-        let checksum = u16::from_be_bytes([segment[16], segment[17]]);
+        let checksum = PacketPayloadView::new(&segment)
+            .read_u16_be(16)
+            .expect("TCP checksum");
         assert_ne!(checksum, 0);
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_checksum_v6() {
-        let mut segment = TcpSegmentBuilder::new(1234, 80).seq(1).ack(0).build();
+        let mut segment = build_test_segment(TcpSegmentBuilder::new(1234, 80).seq(1).ack(0));
         TcpSegmentBuilder::calculate_checksum_v6(
             &mut segment,
             crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
             crate::net::l3::ipv6::Ipv6Address::LOOPBACK,
         );
         // Checksum field should be non-zero for valid segment
-        assert!(segment[16] != 0 || segment[17] != 0);
+        assert_ne!(PacketPayloadView::new(&segment).read_u16_be(16), Some(0));
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_send_tcp_segment_rejects_mixed_family() {
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-        let segment = TcpSegmentBuilder::new(local.port(), remote.port())
-            .syn()
-            .build();
+        let segment = build_test_segment(TcpSegmentBuilder::new(local.port(), remote.port()).syn());
 
         assert!(!send_test_segment(local, remote, segment));
     }
@@ -733,9 +663,7 @@ pub mod tests {
     pub fn test_send_tcp_segment_ipv4_no_panic_when_stack_unavailable() {
         let local = EndpointAddr::new([127, 0, 0, 1], 12346);
         let remote = EndpointAddr::new([127, 0, 0, 1], 80);
-        let segment = TcpSegmentBuilder::new(local.port(), remote.port())
-            .syn()
-            .build();
+        let segment = build_test_segment(TcpSegmentBuilder::new(local.port(), remote.port()).syn());
 
         let _ = send_test_segment(local, remote, segment);
     }
@@ -745,9 +673,7 @@ pub mod tests {
         let local =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12347);
         let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-        let segment = TcpSegmentBuilder::new(local.port(), remote.port())
-            .syn()
-            .build();
+        let segment = build_test_segment(TcpSegmentBuilder::new(local.port(), remote.port()).syn());
 
         let _ = send_test_segment(local, remote, segment);
     }

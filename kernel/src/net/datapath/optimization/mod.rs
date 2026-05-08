@@ -14,14 +14,11 @@
 //! - NUMA対応メモリ配置
 //! - CPU親和性設定
 //! - インテリジェント割り込み合体 (Interrupt Coalescing)
-//! - GROv2 (Generic Receive Offload)
-//! - TSOシミュレーション (TCP Segmentation Offload)
 
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use super::checksum_offload::internet_checksum;
 use super::mempool::PacketRef;
 
 // ============================================================================
@@ -29,8 +26,6 @@ use super::mempool::PacketRef;
 // ============================================================================
 
 /// 最大バッチサイズ (DPDK/NAPIの典型値)
-mod gro_impl;
-pub use gro_impl::*;
 pub const MAX_BATCH_SIZE: usize = 64;
 
 /// パケットバッチ - 複数パケットをまとめて処理
@@ -793,45 +788,4 @@ impl AdaptiveCoalescing {
     pub fn packets_per_second(&self) -> u64 {
         self.packets_per_second.load(Ordering::Relaxed)
     }
-}
-
-// ============================================================================
-// GRO - Generic Receive Offload
-// ============================================================================
-
-/// GROセグメント
-pub struct GroSegment {
-    /// 先頭パケットバッファ（usizeとして保持）
-    pub head: usize,
-    /// 結合データサイズ
-    pub total_len: u32,
-    /// 結合パケット数
-    pub packet_count: u16,
-    /// フローハッシュ
-    pub flow_hash: u32,
-    /// シーケンス番号
-    pub seq: u32,
-    /// 次に期待するシーケンス番号
-    pub next_seq: u32,
-    /// タイムスタンプ (TSC)
-    pub timestamp: u64,
-}
-
-// SAFETY: GroSegmentはunsafe操作でのみアクセスされ、適切に同期される
-unsafe impl Send for GroSegment {}
-unsafe impl Sync for GroSegment {}
-
-impl GroSegment {
-    /// バッファポインタを取得
-    #[inline]
-    pub fn head_ptr(&self) -> *mut u8 {
-        self.head as *mut u8
-    }
-}
-
-/// GROテーブル
-pub struct GroTable {
-    segments: [Option<GroSegment>; GRO_TABLE_SIZE],
-    count: usize,
-    max_age_tsc: u64,
 }
