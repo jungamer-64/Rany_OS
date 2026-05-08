@@ -133,33 +133,6 @@ impl<'a> PayloadSpanRef<'a> {
         PacketPayloadView::new(self.payload).read_array(self.offset + index)
     }
 
-    pub fn single_chunk(&self) -> Option<&'a [u8]> {
-        let span_start = self.offset;
-        let span_end = self.offset.checked_add(self.len)?;
-        let mut cursor = 0usize;
-
-        match self.payload {
-            PacketPayload::Single(packet) => packet.data().get(span_start..span_end),
-            PacketPayload::Chain(chain) => {
-                for segment in chain.segments() {
-                    let data = segment.data();
-                    let seg_start = cursor;
-                    let seg_end = cursor.checked_add(data.len())?;
-                    cursor = seg_end;
-                    if span_start >= seg_start && span_end <= seg_end {
-                        let local_start = span_start - seg_start;
-                        let local_end = span_end - seg_start;
-                        return data.get(local_start..local_end);
-                    }
-                    if span_end <= seg_end {
-                        return None;
-                    }
-                }
-                None
-            }
-        }
-    }
-
     pub fn read_prefix<const N: usize>(&self, len: usize) -> Option<PayloadPrefix<N>> {
         if len > self.len || len > N {
             return None;

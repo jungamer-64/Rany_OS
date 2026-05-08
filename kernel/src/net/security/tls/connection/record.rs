@@ -163,14 +163,6 @@ impl TlsConnection {
         self.transcript.current_sha384()
     }
 
-    /// Return a contiguous view only when the payload is backed by a single segment.
-    /// Chained payloads are intentionally rejected to keep record parsing strict.
-    pub(super) fn contiguous_payload_bytes(payload: &PacketPayload) -> Option<&[u8]> {
-        let view = PacketPayloadView::new(payload);
-        let first = view.first_segment()?;
-        (first.data().len() == view.total_len()).then_some(first.data())
-    }
-
     /// Decide whether incoming TLS 1.3 ApplicationData should be decrypted
     /// with handshake traffic keys or application traffic keys.
     pub(super) fn tls13_reads_handshake_records(&self) -> bool {
