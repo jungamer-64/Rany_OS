@@ -67,7 +67,7 @@ impl Default for CongestionState {
 }
 
 /// 輻輳制御コントローラ (NewReno)
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CongestionController {
     /// アルゴリズム
     algorithm: CongestionAlgorithm,
@@ -314,7 +314,7 @@ impl Default for CongestionController {
 }
 
 /// デバッグ情報構造体
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CongestionDebugInfo {
     pub algorithm: CongestionAlgorithm,
     pub state: CongestionState,
@@ -349,7 +349,7 @@ mod cubic_constants {
 }
 
 /// CUBIC congestion controller state
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CubicController {
     /// Base congestion controller (inherits from NewReno for slow start)
     base: CongestionController,
@@ -680,7 +680,7 @@ impl Default for CubicController {
 ///
 /// TCP接続ごとに選択可能な輻輳制御アルゴリズムをenumで管理。
 /// vtableオーバーヘッドを避け、インライン展開可能な設計。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum CongestionControllerVariant {
     /// RFC 5681 NewReno (デフォルト)
     NewReno(CongestionController),

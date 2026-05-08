@@ -28,7 +28,7 @@ const WHEEL_MASK: usize = WHEEL_SLOTS - 1;
 pub type TimerId = u64;
 
 /// タイマーイベント情報
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TimerEntry {
     /// ユニークID
     pub id: TimerId,
@@ -174,7 +174,7 @@ impl TimeoutWheel {
 ///
 /// SRTT (Smoothed Round-Trip Time) と RTTVAR (RTT Variance) から
 /// RTO = SRTT + max(G, K * RTTVAR) を計算。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RetransmitTimer {
     /// SRTT in microseconds
     srtt: u64,
@@ -293,7 +293,7 @@ impl Default for RetransmitTimer {
 /// TCPキープアライブタイマー
 ///
 /// RFC 1122: アイドル接続を検出して自動切断。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct KeepaliveTimer {
     /// アイドルしきい値 (ms) — デフォルト 7200秒 (2時間)
     pub idle_timeout_ms: u64,
@@ -382,7 +382,7 @@ const MSL_MS: u64 = 120_000; // 120秒 (RFC 793)
 /// TIME_WAIT (2MSL) タイマー
 ///
 /// TCP接続のFIN-ACK完了後、遅延パケットの安全な破棄を保証する。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TimeWaitTimer {
     /// TIME_WAIT開始時刻
     start_time: u64,

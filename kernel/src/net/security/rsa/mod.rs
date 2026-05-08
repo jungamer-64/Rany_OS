@@ -396,7 +396,7 @@ impl HashAlgorithm {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RsaPublicKey<'a> {
     pub modulus: &'a [u8],
     pub exponent: &'a [u8],

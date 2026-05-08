@@ -155,7 +155,7 @@ pub(crate) struct RttSample {
 }
 
 /// BBR Congestion Controller
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BbrController {
     /// Current BBR state
     state: BbrState,
@@ -658,7 +658,7 @@ impl Default for BbrController {
 }
 
 /// BBR debug information
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BbrDebugInfo {
     pub state: BbrState,
     pub cwnd: u32,

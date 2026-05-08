@@ -22,7 +22,7 @@ extern crate alloc;
 static NET_BACKGROUND_TASKS_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// DHCP runtime state snapshot for v4/v6 clients.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DhcpRuntimeState {
     pub v4_state: String,
     pub v4_assigned_ip: Option<[u8; 4]>,
@@ -36,14 +36,14 @@ pub struct DhcpRuntimeState {
 }
 
 /// DHCP offer info exposed for shell/API consumers.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DhcpOfferInfo {
     pub server_ip: [u8; 4],
     pub offered_ip: [u8; 4],
 }
 
 /// DHCP snapshot tagged with the owning interface.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct InterfaceDhcpState {
     pub if_id: u16,
     pub state: DhcpRuntimeState,

@@ -13,7 +13,7 @@ use crate::net::runtime::NetRuntimeHandle;
 extern crate alloc;
 
 /// TCP connection info for netstat.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TcpConnectionInfo {
     pub local_addr: String,
     pub remote_addr: String,
@@ -21,14 +21,14 @@ pub struct TcpConnectionInfo {
 }
 
 /// UDP socket info for netstat.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct UdpEndpointInfo {
     pub local_addr: String,
     pub remote_addr: String,
 }
 
 /// ARP cache entry.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ArpCacheEntry {
     pub ip: [u8; 4],
     pub mac: [u8; 6],

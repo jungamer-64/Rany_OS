@@ -150,7 +150,7 @@ pub enum GroupState {
 }
 
 /// Multicast group membership entry
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MulticastGroup {
     /// Group address
     pub address: Ipv4Address,
@@ -211,7 +211,7 @@ impl PendingIgmpReportEntry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ParsedIgmpQuery {
     group_addr: Ipv4Address,
     max_resp_code: u8,
@@ -222,7 +222,7 @@ struct ParsedIgmpQuery {
     qqic: Option<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct IgmpV3GroupRecord {
     record_type: IgmpV3GroupRecordType,
     multicast_group: Ipv4Address,
@@ -262,7 +262,7 @@ mod processor_impl;
 // ============================================================================
 
 /// Result of IGMP message processing
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum IgmpResult {
     /// General Query received - respond for all groups
     GeneralQueryReceived { max_resp_time: u8 },

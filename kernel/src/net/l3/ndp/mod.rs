@@ -102,7 +102,7 @@ impl From<u8> for NdpOptionType {
 // =====================================================
 
 /// Parsed NDP option
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum NdpOption {
     /// Source/Target Link-Layer Address (6-byte MAC)
     LinkLayerAddress {
@@ -338,7 +338,7 @@ pub enum NeighborState {
 }
 
 /// Neighbor Cache entry
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct NeighborEntry {
     /// IPv6 address
     pub ip: Ipv6Address,

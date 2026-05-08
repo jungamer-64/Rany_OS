@@ -2,7 +2,7 @@
 // kernel/src/net/security/tls/buffer.rs - Fixed-capacity TLS byte buffers
 // ============================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct TlsBytes<const N: usize> {
     len: usize,
     bytes: [u8; N],

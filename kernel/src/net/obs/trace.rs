@@ -3,7 +3,6 @@
 // ============================================================================
 
 use alloc::collections::VecDeque;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::sync::PoisonLock;
@@ -30,23 +29,23 @@ pub enum NetEventKind {
     QueuePressure,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct NetTraceEvent {
     pub ts_ms: u64,
     pub layer: NetLayer,
     pub kind: NetEventKind,
-    pub message: String,
+    pub message: &'static str,
 }
 
 const MAX_EVENTS: usize = 256;
 static TRACE_EVENTS: PoisonLock<VecDeque<NetTraceEvent>> = PoisonLock::new(VecDeque::new());
 
-pub fn push_event(layer: NetLayer, kind: NetEventKind, message: impl Into<String>) {
+pub fn push_event(layer: NetLayer, kind: NetEventKind, message: &'static str) {
     let event = NetTraceEvent {
         ts_ms: crate::time::get_uptime_ms(),
         layer,
         kind,
-        message: message.into(),
+        message,
     };
 
     if let Ok(mut q) = TRACE_EVENTS.lock() {
@@ -60,7 +59,7 @@ pub fn push_event(layer: NetLayer, kind: NetEventKind, message: impl Into<String
 pub fn recent_events(limit: usize) -> Vec<NetTraceEvent> {
     if let Ok(q) = TRACE_EVENTS.lock() {
         let n = core::cmp::min(limit, q.len());
-        return q.iter().rev().take(n).cloned().collect();
+        return q.iter().rev().take(n).copied().collect();
     }
     Vec::new()
 }

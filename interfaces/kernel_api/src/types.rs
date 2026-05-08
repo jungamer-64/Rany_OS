@@ -467,7 +467,7 @@ impl PacketPayload {
 }
 
 /// System information
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SystemInfo {
     pub total_memory: u64,
     pub free_memory: u64,
@@ -649,7 +649,7 @@ pub enum NvmeIoPriority {
 }
 
 /// NVMe Read/Write request parameters
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct NvmeRwRequest {
     /// NVMe device ID
     pub device_id: u64,
@@ -688,7 +688,7 @@ impl NvmeIoHandle {
 }
 
 /// NVMe I/O result
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum NvmeIoResult {
     /// Success with transferred byte count
     Success(usize),

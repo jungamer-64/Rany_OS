@@ -109,7 +109,7 @@ impl HttpRequest {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HttpBodyView {
     pub ranges: Vec<PayloadRange>,
     total_len: usize,

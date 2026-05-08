@@ -275,7 +275,7 @@ impl PerCpuBatchProcessor {
 }
 
 /// Per-CPU バッチ統計
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PerCpuBatchStats {
     pub total_flushes: u64,
     pub total_packets: u64,

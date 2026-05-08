@@ -4,7 +4,7 @@
 //! ファイアウォールの統計情報。
 
 /// ファイアウォール統計情報
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct FirewallStats {
     /// 許可されたパケット数
     pub allowed: u64,

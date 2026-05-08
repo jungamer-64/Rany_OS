@@ -529,7 +529,7 @@ pub struct Ipv6FragmentReassembler {
 }
 
 /// Reassembly statistics
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct Ipv6FragmentStats {
     /// Total fragments received
     pub fragments_received: u64,

@@ -31,7 +31,7 @@ pub enum SignatureAlgorithmId {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SubjectPublicKeyInfo {
     Rsa {
         modulus: ArrayVec<u8, 1024>,
@@ -46,7 +46,7 @@ pub enum SubjectPublicKeyInfo {
     Unknown,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct X509Certificate<'a> {
     pub raw_tbs: PayloadSpanRef<'a>,
     pub signature_algorithm: SignatureAlgorithmId,

@@ -101,7 +101,7 @@ fn parse_host_and_port(authority: &str, default_port: HttpPort) -> Option<(HttpH
 }
 
 /// HTTPホスト
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct HttpHost(String);
 
 impl HttpHost {
@@ -125,7 +125,7 @@ impl fmt::Display for HttpHost {
 }
 
 /// HTTP request-target (origin-form)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct HttpRequestTarget(String);
 
 impl HttpRequestTarget {
@@ -149,7 +149,7 @@ impl fmt::Display for HttpRequestTarget {
 }
 
 /// HTTP request URI (client向け)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HttpRequestUri {
     OriginForm(HttpRequestTarget),
     Absolute {

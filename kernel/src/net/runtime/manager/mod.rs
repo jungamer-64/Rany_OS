@@ -9,7 +9,6 @@ use crate::net::runtime::stack::NetworkConfig;
 use crate::net::types::NetworkError;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Opaque network interface identifier.
@@ -51,10 +50,10 @@ impl RouteFlags {
 }
 
 /// Interface metadata managed by `NetworkManager`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct NetworkInterfaceInfo {
     pub if_id: NetIfId,
-    pub name: String,
+    pub name: &'static str,
     pub admin_up: bool,
     pub config: Option<NetworkConfig>,
 }
@@ -105,7 +104,7 @@ impl NetworkManager {
         Self::default()
     }
 
-    fn register_interface(&mut self, name: String) -> NetIfId {
+    fn register_interface(&mut self, name: &'static str) -> NetIfId {
         let if_id = NetIfId(self.next_if_id);
         self.next_if_id = self.next_if_id.wrapping_add(1);
         self.interfaces.insert(
@@ -121,7 +120,7 @@ impl NetworkManager {
     }
 
     fn list_interfaces(&self) -> Vec<NetworkInterfaceInfo> {
-        self.interfaces.values().cloned().collect()
+        self.interfaces.values().copied().collect()
     }
 
     fn get_interface(&self, if_id: NetIfId) -> Option<&NetworkInterfaceInfo> {
@@ -504,9 +503,9 @@ where
 
 pub fn register_interface_in(
     runtime: NetRuntimeHandle,
-    name: &str,
+    name: &'static str,
 ) -> Result<NetIfId, NetworkError> {
-    with_manager_mut_in(runtime, |m| m.register_interface(String::from(name)))
+    with_manager_mut_in(runtime, |m| m.register_interface(name))
 }
 
 pub fn list_interfaces_in(
@@ -519,7 +518,7 @@ pub fn get_interface_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Result<Option<NetworkInterfaceInfo>, NetworkError> {
-    with_manager_in(runtime, |m| m.get_interface(if_id).cloned())
+    with_manager_in(runtime, |m| m.get_interface(if_id).copied())
 }
 
 pub fn set_interface_config_in(

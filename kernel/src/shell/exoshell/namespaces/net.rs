@@ -1140,7 +1140,7 @@ impl NetNamespace {
                 );
                 map.insert(
                     String::from("message"),
-                    ExoValue::String(Cow::Owned(e.message)),
+                    ExoValue::String(Cow::Borrowed(e.message)),
                 );
                 map.insert(String::from("ts_ms"), ExoValue::Int(e.ts_ms as i64));
                 ExoValue::Map(map)

@@ -9,7 +9,7 @@ use crate::net::runtime::{
 };
 
 /// Per-interface configuration snapshot for shell and bootstrap consumers.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct InterfaceConfigSnapshot {
     pub if_id: u16,
     pub name: alloc::string::String,
@@ -34,7 +34,7 @@ pub struct InterfaceStatsSnapshot {
 }
 
 /// Lightweight interface summary used by shell and bootstrap flows.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct InterfaceSnapshot {
     pub if_id: u16,
     pub name: alloc::string::String,
@@ -49,7 +49,7 @@ pub(crate) fn interface_config_snapshot(
     let config = iface.config?;
     Some(InterfaceConfigSnapshot {
         if_id: iface.if_id.0,
-        name: iface.name,
+        name: alloc::string::String::from(iface.name),
         admin_up: iface.admin_up,
         ip: *config.ipv4.address.as_bytes(),
         netmask: *config.ipv4.subnet_mask.as_bytes(),
@@ -115,7 +115,7 @@ pub(crate) fn interface_summary_snapshot(iface: NetworkInterfaceInfo) -> Interfa
     let mac = iface.config.map(|config| *config.mac.as_bytes());
     InterfaceSnapshot {
         if_id: iface.if_id.0,
-        name: iface.name,
+        name: alloc::string::String::from(iface.name),
         admin_up: iface.admin_up,
         ip,
         mac,

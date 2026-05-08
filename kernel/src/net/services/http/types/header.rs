@@ -78,7 +78,7 @@ fn parse_known_header_name(value: &str) -> Option<HttpHeaderName> {
 }
 
 /// HTTPヘッダー名
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum HttpHeaderName {
     Host,
     Connection,
@@ -122,7 +122,7 @@ impl HttpHeaderName {
 }
 
 /// HTTPヘッダー値
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct HttpHeaderValue(String);
 
 impl HttpHeaderValue {
@@ -150,7 +150,7 @@ impl fmt::Display for HttpHeaderValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct HttpHeader {
     pub name: HttpHeaderName,
     pub value: HttpHeaderValue,
@@ -169,7 +169,7 @@ impl HttpHeader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HttpHeaderView {
     pub name: PayloadRange,
     pub value: PayloadRange,

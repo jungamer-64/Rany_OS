@@ -44,7 +44,7 @@ impl EcdhGroup {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum EcdhPublicKeyBytes {
     X25519([u8; 32]),
     Secp256r1([u8; 65]),

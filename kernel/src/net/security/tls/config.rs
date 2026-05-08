@@ -16,13 +16,13 @@ pub(crate) const TLS_CA_CERTS_CAPACITY: usize = 192;
 pub(crate) const TLS_CERT_CHAIN_CAPACITY: usize = 16;
 
 /// Server Name Indication
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ServerNameList {
     pub names: ArrayVec<ServerName, TLS_ALPN_PROTOCOLS_CAPACITY>,
 }
 
 /// サーバー名
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct ServerName {
     pub name_type: u8,
     pub name: ArrayString<TLS_SERVER_NAME_CAPACITY>,

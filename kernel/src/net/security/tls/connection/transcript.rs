@@ -5,7 +5,7 @@
 use crate::net::security::tls::HandshakeType;
 use crate::net::security::tls::crypto::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 
-#[derive(Clone)]
+
 pub(super) struct TranscriptState {
     sha256: crate::crypto::sha256::Sha256,
     sha384: crate::crypto::sha384::Sha384,

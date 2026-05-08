@@ -73,7 +73,7 @@ impl ConnId {
 /// フィールドを事前に書き込んだテンプレート。
 /// 送信時はシーケンス番号、ACK番号、ウィンドウサイズ、チェックサムのみ更新。
 #[repr(C, align(64))] // キャッシュラインに合わせる
-#[derive(Clone)]
+
 pub struct CachedHeader {
     /// コネクション識別子
     conn_id: ConnId,
@@ -409,7 +409,7 @@ impl HeaderCache {
 }
 
 /// ヘッダキャッシュ統計
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HeaderCacheStats {
     pub hits: u64,
     pub misses: u64,

@@ -43,7 +43,7 @@ impl Default for FlowControlState {
 }
 
 /// フロー制御コントローラ
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FlowController {
     /// 受信バッファサイズ（最大）
     buffer_size: u32,
@@ -283,7 +283,7 @@ impl Default for FlowController {
 }
 
 /// デバッグ情報
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FlowControlDebugInfo {
     pub buffer_size: u32,
     pub buffer_used: u32,

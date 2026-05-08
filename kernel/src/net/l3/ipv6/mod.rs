@@ -1223,7 +1223,7 @@ pub struct Ipv6PmtuCache {
 }
 
 /// IPv6 PMTU statistics
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct Ipv6PmtuStats {
     /// Number of PMTU discoveries
     pub discoveries: u64,

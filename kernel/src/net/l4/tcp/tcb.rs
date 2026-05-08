@@ -898,7 +898,7 @@ impl TcbTable {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TcpConnectionSnapshot {
     pub local: EndpointAddr,
     pub remote: EndpointAddr,

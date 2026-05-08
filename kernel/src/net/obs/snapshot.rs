@@ -11,14 +11,14 @@ use crate::net::runtime::{bridge, default_runtime, manager};
 
 extern crate alloc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct InterfaceSnapshot {
     pub name: alloc::string::String,
     pub rx_packets: u64,
     pub tx_packets: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct NetSnapshot {
     pub rx_packets: u64,
     pub tx_packets: u64,
@@ -39,7 +39,7 @@ fn collect_interface_snapshots() -> Vec<InterfaceSnapshot> {
         for iface in ifaces {
             let idx = interfaces.len();
             interfaces.push(InterfaceSnapshot {
-                name: iface.name,
+                name: alloc::string::String::from(iface.name),
                 rx_packets: 0,
                 tx_packets: 0,
             });
@@ -59,7 +59,7 @@ fn collect_interface_snapshots() -> Vec<InterfaceSnapshot> {
         let name = manager::get_interface_in(runtime, stats.if_id)
             .ok()
             .flatten()
-            .map(|iface| iface.name)
+            .map(|iface| alloc::string::String::from(iface.name))
             .unwrap_or_else(|| alloc::format!("if{}", stats.if_id.0));
 
         let idx = interfaces.len();

@@ -324,7 +324,7 @@ impl core::fmt::Display for IcmpMatch {
 ///
 /// 5タプル（送信元IP、宛先IP、プロトコル、送信元ポート、宛先ポート）と
 /// 方向・アクション・優先度で構成される。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FirewallRule {
     /// ルール識別子（エンジンが自動採番）
     pub id: RuleId,

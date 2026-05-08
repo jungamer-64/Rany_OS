@@ -390,7 +390,7 @@ pub struct FragmentReassembler {
 }
 
 /// Fragment reassembly statistics
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct FragmentStats {
     /// Fragments received
     pub fragments_received: u64,

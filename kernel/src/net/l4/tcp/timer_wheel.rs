@@ -28,7 +28,7 @@ const WHEEL_SLOTS: usize = 256;
 const WHEEL_MASK: usize = WHEEL_SLOTS - 1;
 
 /// タイマーエントリ
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TimerEntry {
     /// 接続キー
     pub local: EndpointAddr,

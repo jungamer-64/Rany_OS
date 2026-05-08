@@ -143,7 +143,7 @@ pub struct PmtuCache {
 }
 
 /// PMTU statistics
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct PmtuStats {
     /// Number of PMTU discoveries
     pub discoveries: u64,
