@@ -7,8 +7,6 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
@@ -346,105 +344,6 @@ impl fmt::Debug for PacketRef {
             .finish()
     }
 }
-
-#[derive(Debug)]
-struct HeapPacketBacking {
-    data: Box<[u8]>,
-    base_addr: u64,
-}
-
-#[derive(Clone)]
-struct HeapPacketState {
-    backing: Arc<HeapPacketBacking>,
-    offset: usize,
-    len: usize,
-}
-
-unsafe fn heap_state_ref(storage: &PacketRefStorage) -> &HeapPacketState {
-    unsafe { storage.as_state_ref::<HeapPacketState>() }
-}
-
-unsafe fn heap_state_mut(storage: &mut PacketRefStorage) -> &mut HeapPacketState {
-    unsafe { storage.as_state_mut::<HeapPacketState>() }
-}
-
-unsafe fn heap_data_ptr(storage: &PacketRefStorage) -> *const u8 {
-    let state = unsafe { heap_state_ref(storage) };
-    state.backing.data.as_ptr().wrapping_add(state.offset)
-}
-
-unsafe fn heap_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
-    let state = unsafe { heap_state_mut(storage) };
-    state
-        .backing
-        .data
-        .as_ptr()
-        .cast_mut()
-        .wrapping_add(state.offset)
-}
-
-unsafe fn heap_len(storage: &PacketRefStorage) -> usize {
-    unsafe { heap_state_ref(storage) }.len
-}
-
-unsafe fn heap_set_len(storage: &mut PacketRefStorage, len: usize) {
-    let state = unsafe { heap_state_mut(storage) };
-    state.len = len.min(state.backing.data.len().saturating_sub(state.offset));
-}
-
-unsafe fn heap_capacity(storage: &PacketRefStorage) -> usize {
-    unsafe { heap_state_ref(storage) }.backing.data.len()
-}
-
-unsafe fn heap_headroom(storage: &PacketRefStorage) -> usize {
-    unsafe { heap_state_ref(storage) }.offset
-}
-
-unsafe fn heap_phys(storage: &PacketRefStorage) -> u64 {
-    let state = unsafe { heap_state_ref(storage) };
-    state.backing.base_addr + state.offset as u64
-}
-
-unsafe fn heap_device(storage: &PacketRefStorage) -> u64 {
-    unsafe { heap_phys(storage) }
-}
-
-unsafe fn heap_advance(storage: &mut PacketRefStorage, size: usize) {
-    let state = unsafe { heap_state_mut(storage) };
-    state.offset = state
-        .offset
-        .saturating_add(size)
-        .min(state.backing.data.len());
-    state.len = state.len.saturating_sub(size);
-}
-
-unsafe fn heap_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
-    let state = unsafe { heap_state_mut(storage) };
-    if size > state.offset {
-        return false;
-    }
-    state.offset -= size;
-    state.len = state.len.saturating_add(size);
-    true
-}
-
-unsafe fn heap_drop(storage: &mut PacketRefStorage) {
-    unsafe { ptr::drop_in_place(storage.as_state_mut::<HeapPacketState>()) };
-}
-
-static HEAP_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
-    data_ptr: heap_data_ptr,
-    data_mut_ptr: heap_data_mut_ptr,
-    len: heap_len,
-    set_len: heap_set_len,
-    capacity: heap_capacity,
-    phys_addr: heap_phys,
-    device_address: heap_device,
-    headroom: heap_headroom,
-    advance: heap_advance,
-    retreat: heap_retreat,
-    drop_storage: heap_drop,
-};
 
 #[derive(Debug, Default)]
 pub struct PacketChain {

@@ -60,13 +60,6 @@ impl PayloadRange {
     pub fn span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
         PayloadSpanRef::from_range(payload, self.offset, self.len)
     }
-
-    pub fn slice(self, offset: usize, len: usize) -> Option<Self> {
-        if offset > self.len || len > self.len.saturating_sub(offset) {
-            return None;
-        }
-        Some(Self::new(self.offset + offset, len))
-    }
 }
 
 impl<'a> PayloadSpanRef<'a> {
@@ -104,13 +97,6 @@ impl<'a> PayloadSpanRef<'a> {
 
     pub const fn is_empty(&self) -> bool {
         self.len == 0
-    }
-
-    pub fn slice(self, offset: usize, len: usize) -> Option<Self> {
-        if offset > self.len || len > self.len.saturating_sub(offset) {
-            return None;
-        }
-        Self::from_range(self.payload, self.offset + offset, len)
     }
 
     pub const fn range(self) -> PayloadRange {
@@ -338,20 +324,6 @@ impl PacketPayloadBuilder {
 
     pub fn push_payload(&mut self, payload: PacketPayload) {
         self.segments.extend(payload.into_segments());
-    }
-
-    pub fn push_generated_bytes(&mut self, data: &[u8]) -> Option<()> {
-        if data.is_empty() {
-            return Some(());
-        }
-        let mut packet = alloc_packet_with_headroom(data.len(), DEFAULT_PACKET_HEADROOM)?;
-        packet.data_mut()[..data.len()].copy_from_slice(data);
-        self.segments.push(packet);
-        Some(())
-    }
-
-    pub fn push_generated_str(&mut self, data: &str) -> Option<()> {
-        self.push_generated_bytes(data.as_bytes())
     }
 
     pub fn build(self) -> PacketPayload {
@@ -632,54 +604,6 @@ pub fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
     let end = base.checked_add(container.len())?;
     let sub_end = sub.checked_add(subslice.len())?;
     (sub >= base && sub_end <= end).then_some(sub - base)
-}
-
-pub fn retain_payload_window_owned(
-    payload: PacketPayload,
-    offset: usize,
-    len: usize,
-) -> Option<PacketPayload> {
-    let total_len = payload.total_len();
-    if len == 0 {
-        return (offset <= total_len).then(PacketPayload::default);
-    }
-    if offset >= total_len || len > total_len.saturating_sub(offset) {
-        return None;
-    }
-
-    let mut segments = Vec::new();
-    let mut remaining_offset = offset;
-    let mut remaining_len = len;
-
-    for mut segment in payload.into_segments() {
-        if remaining_len == 0 {
-            break;
-        }
-        if remaining_offset >= segment.len() {
-            remaining_offset -= segment.len();
-            continue;
-        }
-
-        if remaining_offset > 0 {
-            segment.advance(remaining_offset);
-            remaining_offset = 0;
-        }
-
-        let take = remaining_len.min(segment.len());
-        segment.set_len(take);
-        remaining_len -= take;
-        segments.push(segment);
-    }
-
-    (remaining_len == 0).then(|| build_payload_from_segments(segments))
-}
-
-fn build_payload_from_segments(mut segments: Vec<PacketRef>) -> PacketPayload {
-    match segments.len() {
-        0 => PacketPayload::default(),
-        1 => PacketPayload::single(segments.remove(0)),
-        _ => PacketPayload::chain(PacketChain::from_segments(segments)),
-    }
 }
 
 pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, PayloadSpanRef<'_>)> {
