@@ -446,7 +446,6 @@ impl NetworkStack {
             igmp: IgmpProcessor::new(ip),
             ndp: ndp_proc,
             udp: UdpProcessor::new(),
-            tx_pool: PacketPool::new(64, MAX_PACKET_SIZE),
             stats: NetworkStats::default(),
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
             config,

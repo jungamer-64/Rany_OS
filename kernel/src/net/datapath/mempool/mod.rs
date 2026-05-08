@@ -689,10 +689,3 @@ impl PerCoreMempoolCache {
         self.parent.return_buffer(buffer);
     }
 }
-
-#[derive(Debug)]
-pub struct PacketPool {
-    buffers: PoisonLock<Vec<Vec<u8>>>,
-    buffer_size: usize,
-    capacity: usize,
-}
