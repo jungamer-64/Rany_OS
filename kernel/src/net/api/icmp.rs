@@ -8,7 +8,7 @@ extern crate alloc;
 use crate::net::runtime::command::CommandDispatch;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::sync::PoisonLock;
+use crate::sync::{AtomicWaker, PoisonLock};
 use alloc::collections::BTreeMap;
 use core::future::Future;
 use core::pin::Pin;
@@ -41,7 +41,7 @@ pub struct IcmpEchoResult {
 }
 
 struct PingWaiter {
-    waker: Option<core::task::Waker>,
+    waker: AtomicWaker,
     result: Option<IcmpEchoResult>,
     start_tick: u64,
     timeout_us: u64,
@@ -64,7 +64,7 @@ impl IcmpEchoRegistry {
         self.waiters.insert(
             key,
             PingWaiter {
-                waker: None,
+                waker: AtomicWaker::new(),
                 result: None,
                 start_tick: now,
                 timeout_us,
@@ -72,10 +72,10 @@ impl IcmpEchoRegistry {
         );
     }
 
-    fn set_waker(&mut self, target: [u8; 4], sequence: u16, waker: core::task::Waker) {
+    fn set_waker(&mut self, target: [u8; 4], sequence: u16, waker: &core::task::Waker) {
         let key = (u32::from_be_bytes(target), sequence);
         if let Some(entry) = self.waiters.get_mut(&key) {
-            entry.waker = Some(waker);
+            entry.waker.register(waker);
         }
     }
 
@@ -87,9 +87,7 @@ impl IcmpEchoRegistry {
                 sequence,
                 rtt_us,
             });
-            if let Some(waker) = entry.waker.take() {
-                waker.wake();
-            }
+            entry.waker.wake();
         }
     }
 
@@ -207,7 +205,7 @@ impl Future for IcmpEchoFuture {
         }
 
         if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
-            registry.set_waker(this.target, this.sequence, cx.waker().clone());
+            registry.set_waker(this.target, this.sequence, cx.waker());
             registry.poll_result(this.target, this.sequence)
         } else {
             Poll::Ready(Err(EndpointError::Internal))

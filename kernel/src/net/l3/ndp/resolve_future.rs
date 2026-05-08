@@ -14,7 +14,7 @@ use core::task::{Context, Poll, Waker};
 
 use super::Ipv6Address;
 use crate::net::l2::ethernet::MacAddress;
-use crate::sync::PoisonLock;
+use crate::sync::{AtomicWaker, PoisonLock};
 
 // ============================================================================
 // NDP Resolve Waiter Registry
@@ -25,7 +25,7 @@ struct NdpWaiter {
     if_id: Option<u16>,
     ip: [u8; 16],
     result: Option<MacAddress>,
-    waker: Option<Waker>,
+    waker: AtomicWaker,
     created_at_ms: u64,
     completed_at_ms: Option<u64>,
 }
@@ -70,14 +70,12 @@ pub fn notify_ndp_resolved(if_id: Option<u16>, ip: [u8; 16], mac: [u8; 6]) {
         if waiter_matches_resolution(waiter, if_id, ip) && waiter.result.is_none() {
             waiter.result = Some(resolved_mac);
             waiter.completed_at_ms = Some(now_ms);
-            if let Some(waker) = waiter.waker.as_ref() {
-                waker.wake_by_ref();
-            }
+            waiter.waker.wake();
         }
     }
 }
 
-fn register_ndp_waiter(if_id: Option<u16>, ip: [u8; 16], waker: Waker) -> Option<u64> {
+fn register_ndp_waiter(if_id: Option<u16>, ip: [u8; 16], waker: &Waker) -> Option<u64> {
     let Ok(mut waiters) = NDP_WAITERS.lock() else {
         return None;
     };
@@ -87,25 +85,27 @@ fn register_ndp_waiter(if_id: Option<u16>, ip: [u8; 16], waker: Waker) -> Option
     }
 
     let waiter_id = NDP_WAITER_NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    waiters.push(NdpWaiter {
+    let waiter = NdpWaiter {
         id: waiter_id,
         if_id,
         ip,
         result: None,
-        waker: Some(waker),
+        waker: AtomicWaker::new(),
         created_at_ms: current_time_ms(),
         completed_at_ms: None,
-    });
+    };
+    waiter.waker.register(waker);
+    waiters.push(waiter);
     Some(waiter_id)
 }
 
-fn update_ndp_waiter_waker(waiter_id: u64, waker: Waker) -> bool {
+fn update_ndp_waiter_waker(waiter_id: u64, waker: &Waker) -> bool {
     let Ok(mut waiters) = NDP_WAITERS.lock() else {
         return false;
     };
 
     if let Some(waiter) = waiters.iter_mut().find(|w| w.id == waiter_id) {
-        waiter.waker = Some(waker);
+        waiter.waker.register(waker);
         return true;
     }
 
@@ -197,7 +197,7 @@ impl Future for NdpResolveFuture {
         }
 
         if self.waiter_id.is_none() {
-            self.waiter_id = register_ndp_waiter(self.if_id, ip_bytes, cx.waker().clone());
+            self.waiter_id = register_ndp_waiter(self.if_id, ip_bytes, cx.waker());
             if self.waiter_id.is_none() {
                 return Poll::Ready(Err(NdpResolveError::ResourceExhausted));
             }
@@ -210,7 +210,7 @@ impl Future for NdpResolveFuture {
                 return Poll::Ready(Ok(mac));
             }
 
-            if !update_ndp_waiter_waker(waiter_id, cx.waker().clone()) {
+            if !update_ndp_waiter_waker(waiter_id, cx.waker()) {
                 self.waiter_id = None;
                 return Poll::Ready(Err(NdpResolveError::Timeout));
             }
@@ -265,9 +265,7 @@ pub fn cleanup_ndp_waiters() {
             let expired = now_ms.saturating_sub(age_base) > NDP_RESOLVE_TIMEOUT_MS;
 
             if expired && waiter.result.is_none() {
-                if let Some(waker) = waiter.waker.as_ref() {
-                    waker.wake_by_ref();
-                }
+                waiter.waker.wake();
             }
         }
 

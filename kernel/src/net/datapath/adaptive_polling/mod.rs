@@ -740,7 +740,7 @@ where
 
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
+use core::task::{Context, Poll};
 
 /// 適応的ポーリングFuture
 pub struct AdaptivePollFuture<F>
@@ -749,7 +749,6 @@ where
 {
     poll_fn: F,
     config: BusyPollConfig,
-    waker: Option<Waker>,
 }
 
 impl<F> AdaptivePollFuture<F>
@@ -760,7 +759,6 @@ where
         Self {
             poll_fn,
             config,
-            waker: None,
         }
     }
 }
@@ -772,8 +770,7 @@ where
     type Output = usize;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Wakerを保存
-        self.waker = Some(cx.waker().clone());
+        let _ = cx;
 
         // ビジーポーリング
         if self.config.enabled {

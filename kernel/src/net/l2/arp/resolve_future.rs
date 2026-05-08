@@ -19,7 +19,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 
 use super::{Ipv4Address, MacAddress};
-use crate::sync::PoisonLock;
+use crate::sync::{AtomicWaker, PoisonLock};
 
 // ============================================================================
 // ARP Resolve Waiter Registry
@@ -34,7 +34,7 @@ struct ArpWaiter {
     /// 結果格納スロット（解決成功時にMACアドレスが書き込まれる）
     result: Option<MacAddress>,
     /// 通知用Waker
-    waker: Option<Waker>,
+    waker: AtomicWaker,
     /// 登録時刻
     created_at_ms: u64,
     /// 解決完了時刻（未完了時はNone）
@@ -79,15 +79,13 @@ pub fn notify_arp_resolved(ip: [u8; 4], mac: [u8; 6]) {
         if waiter.ip == ip && waiter.result.is_none() {
             waiter.result = Some(resolved_mac);
             waiter.completed_at_ms = Some(now_ms);
-            if let Some(waker) = waiter.waker.as_ref() {
-                waker.wake_by_ref();
-            }
+            waiter.waker.wake();
         }
     }
 }
 
 /// ARP解決待ちを登録し、ウェイターIDを返す
-fn register_arp_waiter(ip: [u8; 4], waker: Waker) -> Option<u64> {
+fn register_arp_waiter(ip: [u8; 4], waker: &Waker) -> Option<u64> {
     let Ok(mut waiters) = ARP_WAITERS.lock() else {
         return None;
     };
@@ -97,14 +95,16 @@ fn register_arp_waiter(ip: [u8; 4], waker: Waker) -> Option<u64> {
     }
 
     let waiter_id = ARP_WAITER_NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    waiters.push(ArpWaiter {
+    let waiter = ArpWaiter {
         id: waiter_id,
         ip,
         result: None,
-        waker: Some(waker),
+        waker: AtomicWaker::new(),
         created_at_ms: current_time_ms(),
         completed_at_ms: None,
-    });
+    };
+    waiter.waker.register(waker);
+    waiters.push(waiter);
     Some(waiter_id)
 }
 
@@ -112,13 +112,13 @@ fn register_arp_waiter(ip: [u8; 4], waker: Waker) -> Option<u64> {
 ///
 /// `true`: 待機者が存在し更新できた
 /// `false`: 待機者が見つからない（タイムアウト回収などで削除済み）
-fn update_arp_waiter_waker(waiter_id: u64, waker: Waker) -> bool {
+fn update_arp_waiter_waker(waiter_id: u64, waker: &Waker) -> bool {
     let Ok(mut waiters) = ARP_WAITERS.lock() else {
         return false;
     };
 
     if let Some(waiter) = waiters.iter_mut().find(|w| w.id == waiter_id) {
-        waiter.waker = Some(waker);
+        waiter.waker.register(waker);
         return true;
     }
 
@@ -225,7 +225,7 @@ impl Future for ArpResolveFuture {
 
         // 初回ポーリング時にウェイター登録
         if self.waiter_id.is_none() {
-            self.waiter_id = register_arp_waiter(ip_bytes, cx.waker().clone());
+            self.waiter_id = register_arp_waiter(ip_bytes, cx.waker());
             if self.waiter_id.is_none() {
                 return Poll::Ready(Err(ArpResolveError::ResourceExhausted));
             }
@@ -240,7 +240,7 @@ impl Future for ArpResolveFuture {
             }
 
             // Future側のWakerを最新化。待機者が消えていればタイムアウト扱い。
-            if !update_arp_waiter_waker(waiter_id, cx.waker().clone()) {
+            if !update_arp_waiter_waker(waiter_id, cx.waker()) {
                 self.waiter_id = None;
                 return Poll::Ready(Err(ArpResolveError::Timeout));
             }
@@ -298,9 +298,7 @@ pub fn cleanup_arp_waiters() {
             // 未解決のまま期限切れになった待機者は起床させ、
             // 次回poll時にTimeoutへ遷移させる。
             if expired && waiter.result.is_none() {
-                if let Some(waker) = waiter.waker.as_ref() {
-                    waker.wake_by_ref();
-                }
+                waiter.waker.wake();
             }
         }
 
