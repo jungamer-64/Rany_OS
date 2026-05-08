@@ -148,7 +148,7 @@ impl Future for RawRecvFuture {
         match self.socket.try_recv_raw_payload() {
             Ok(result) => Poll::Ready(Ok(result)),
             Err(EndpointError::Timeout) => {
-                self.socket.register_recv_waker(cx.waker().clone());
+                self.socket.register_recv_waker(cx.waker());
                 Poll::Pending
             }
             Err(error) => Poll::Ready(Err(error)),

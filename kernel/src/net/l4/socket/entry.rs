@@ -214,20 +214,20 @@ impl Socket {
         .unwrap_or(Err(EndpointError::NotFound))
     }
 
-    pub fn register_accept_waker(&self, waker: core::task::Waker) {
+    pub fn register_accept_waker(&self, waker: &core::task::Waker) {
         let _ = self.with_inner_mut(|inner| {
-            inner.accept_waker = Some(waker);
+            inner.accept_waker.register(waker);
         });
     }
 
-    pub fn register_recv_waker(&self, waker: core::task::Waker) {
+    pub fn register_recv_waker(&self, waker: &core::task::Waker) {
         let _ = self.with_inner_mut(|inner| {
-            inner.recv_waker = Some(waker);
+            inner.recv_waker.register(waker);
         });
     }
 
     pub fn push_payload(&self, payload: PacketPayload) -> usize {
-        let Some((pushed, local, remote, waker)) = self.with_inner_mut(|inner| {
+        let Some((pushed, local, remote)) = self.with_inner_mut(|inner| {
             let pushed = inner.push_recv_payload(payload);
             let local = inner.local_addr;
             let remote = inner.remote_addr;
@@ -236,15 +236,15 @@ impl Socket {
                     tcp.stats.record_rx_segment(pushed);
                 }
             }
-            (pushed, local, remote, inner.recv_waker.take())
+            if pushed > 0 {
+                inner.recv_waker.wake();
+            }
+            (pushed, local, remote)
         }) else {
             return 0;
         };
 
         Self::notify_tcb_data_received(local, remote, pushed);
-        if let Some(waker) = waker {
-            waker.wake();
-        }
         pushed
     }
 
@@ -252,23 +252,22 @@ impl Socket {
         &self,
         payload: PacketPayload,
     ) -> (usize, Option<PacketPayload>) {
-        let Some((pushed, remainder, local, remote, waker)) = self.with_inner_mut(|inner| {
+        let Some((pushed, remainder, local, remote)) = self.with_inner_mut(|inner| {
             let (pushed, remainder) = Self::split_and_queue_payload(inner, payload);
+            if pushed > 0 {
+                inner.recv_waker.wake();
+            }
             (
                 pushed,
                 remainder,
                 inner.local_addr,
                 inner.remote_addr,
-                inner.recv_waker.take(),
             )
         }) else {
             return (0, None);
         };
 
         Self::notify_tcb_data_received(local, remote, pushed);
-        if let Some(waker) = waker {
-            waker.wake();
-        }
 
         (pushed, remainder)
     }
@@ -290,7 +289,7 @@ impl Socket {
         ttl: u8,
         payload: PacketPayload,
     ) -> SocketResult<()> {
-        let recv_waker = self.with_inner_mut(|inner| {
+        self.with_inner_mut(|inner| {
             if !inner.is_udp_bound() {
                 return Err(EndpointError::NotConnected);
             }
@@ -300,13 +299,10 @@ impl Socket {
             };
             udp.ttl = ttl;
             udp.pending_packets.push_back((if_id, addr, ttl, payload));
-            Ok(inner.recv_waker.take())
+            inner.recv_waker.wake();
+            Ok(())
         })
         .unwrap_or(Err(EndpointError::NotFound))?;
-
-        if let Some(waker) = recv_waker {
-            waker.wake();
-        }
         Ok(())
     }
 
@@ -330,7 +326,7 @@ impl Socket {
     }
 
     pub fn deliver_raw_payload(&self, if_id: NetIfId, payload: PacketPayload) -> SocketResult<()> {
-        let recv_waker = self.with_inner_mut(|inner| {
+        self.with_inner_mut(|inner| {
             if !inner.is_raw_open() {
                 return Err(EndpointError::NotConnected);
             }
@@ -339,13 +335,10 @@ impl Socket {
                 return Err(EndpointError::InvalidArgument);
             };
             raw.pending_payloads.push_back((if_id, payload));
-            Ok(inner.recv_waker.take())
+            inner.recv_waker.wake();
+            Ok(())
         })
         .unwrap_or(Err(EndpointError::NotFound))?;
-
-        if let Some(waker) = recv_waker {
-            waker.wake();
-        }
         Ok(())
     }
 
@@ -372,18 +365,10 @@ impl Socket {
         let _ = self.with_inner_mut(|inner| {
             inner.mark_closed();
 
-            if let Some(waker) = inner.recv_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = inner.send_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = inner.connect_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = inner.accept_waker.take() {
-                waker.wake();
-            }
+            inner.recv_waker.wake();
+            inner.send_waker.wake();
+            inner.connect_waker.wake();
+            inner.accept_waker.wake();
         });
 
         enqueue_command_ignore_in(

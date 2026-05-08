@@ -1220,9 +1220,7 @@ pub fn handle_icmp_error(
             if let Some(socket) = get_socket_by_socket_id(id) {
                 let _ = socket.with_inner_mut(|inner| {
                 inner.last_error = Some(error);
-                if let Some(waker) = inner.connect_waker.take() {
-                    waker.wake();
-                }
+                inner.connect_waker.wake();
                 });
             }
         }
@@ -1276,9 +1274,7 @@ pub fn handle_icmpv6_error(
             if let Some(socket) = get_socket_by_socket_id(id) {
                 let _ = socket.with_inner_mut(|inner| {
                 inner.last_error = Some(error);
-                if let Some(waker) = inner.connect_waker.take() {
-                    waker.wake();
-                }
+                inner.connect_waker.wake();
                 });
             }
         }
@@ -1383,9 +1379,7 @@ fn notify_socket_connected(socket_id: SocketId) {
     if let Some(socket) = get_socket_by_socket_id(socket_id) {
         let _ = socket.with_inner_mut(|inner| {
         let _ = inner.set_tcp_state(TcpSocketState::Connected);
-        if let Some(waker) = inner.connect_waker.take() {
-            waker.wake();
-        }
+        inner.connect_waker.wake();
         });
     }
 }
@@ -1599,9 +1593,7 @@ fn handle_rst_received(tcb: TcpControlBlockSnapshot, seq_num: u32) {
         if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
             let _ = socket.with_inner_mut(|inner| {
             inner.last_error = Some(EndpointError::ConnectionRefused);
-            if let Some(waker) = inner.connect_waker.take() {
-                waker.wake();
-            }
+            inner.connect_waker.wake();
             });
         }
 
@@ -1773,9 +1765,7 @@ fn push_to_accept_queue(
 
                 tcp.accept_queue.push_back(conn);
 
-                if let Some(waker) = inner.accept_waker.take() {
-                    waker.wake();
-                }
+                inner.accept_waker.wake();
 
                 log::info!(
                     "TCP: Pushed to accept queue (queue_len={})",
@@ -1861,9 +1851,7 @@ fn notify_socket_peer_fin(socket_id: SocketId) {
     if let Some(socket) = lookup_socket(socket_id) {
         let _ = socket.with_inner_mut(|inner| {
         // recv_wakerを起こしてEOFを通知
-        if let Some(waker) = inner.recv_waker.take() {
-            waker.wake();
-        }
+        inner.recv_waker.wake();
         });
     }
 }
@@ -1891,9 +1879,7 @@ fn notify_socket_urgent(socket_id: SocketId) {
         // urgent flagを設定
         inner.set_urgent_pending(true);
         // recv wakerを起こす（OOBデータ待ちの可能性）
-        if let Some(waker) = inner.recv_waker.take() {
-            waker.wake();
-        }
+        inner.recv_waker.wake();
         });
     }
 }

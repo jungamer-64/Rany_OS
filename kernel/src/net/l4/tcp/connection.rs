@@ -341,7 +341,7 @@ impl TcpConnection {
                     let local = inner.local_addr;
                     let remote = inner.remote_addr;
                     let Some(payload) = inner.recv_payload(None) else {
-                        inner.recv_waker = Some(cx.waker().clone());
+                        inner.recv_waker.register(cx.waker());
                         return RecvOutcome::Pending;
                     };
                     let delivered_len = payload.total_len();
@@ -355,7 +355,7 @@ impl TcpConnection {
                     return RecvOutcome::Closed;
                 }
 
-                inner.recv_waker = Some(cx.waker().clone());
+                inner.recv_waker.register(cx.waker());
                 RecvOutcome::Pending
             })
             .unwrap_or(RecvOutcome::Closed);
@@ -539,7 +539,7 @@ impl<'a> Future for ConnectFuture<'a> {
                         Poll::Ready(Err(TcpError::ConnectionRefused))
                     }
                     Some(TcpSocketState::Connecting) => {
-                        inner.connect_waker = Some(cx.waker().clone());
+                        inner.connect_waker.register(cx.waker());
                         Poll::Pending
                     }
                     _ => Poll::Ready(Err(TcpError::InvalidState)),
@@ -579,7 +579,7 @@ impl<'a> Future for ConnectTimeoutFuture<'a> {
                         if timeout {
                             return Poll::Ready(Err(TcpError::Timeout));
                         }
-                        inner.connect_waker = Some(cx.waker().clone());
+                        inner.connect_waker.register(cx.waker());
                         Poll::Pending
                     }
                     _ => Poll::Ready(Err(TcpError::InvalidState)),
@@ -616,7 +616,7 @@ impl<'a> Future for AcceptFuture<'a> {
             Err(EndpointError::Timeout) => {
                 self.acceptor
                     .socket
-                    .register_accept_waker(cx.waker().clone());
+                    .register_accept_waker(cx.waker());
                 Poll::Pending
             }
             Err(err) => Poll::Ready(Err(tcp_error_from_socket(err))),
@@ -696,7 +696,7 @@ impl<'a> Future for SendPayloadFuture<'a> {
 
                 if available < payload_len {
                     let has_queued_data = inner.has_send_data();
-                    inner.send_waker = Some(cx.waker().clone());
+                    inner.send_waker.register(cx.waker());
                     return SendOutcome::Pending {
                         payload,
                         has_queued_data,
@@ -767,7 +767,7 @@ impl<'a> Future for DrainTxFuture<'a> {
                 return Ok(false);
             }
 
-            inner.send_waker = Some(cx.waker().clone());
+            inner.send_waker.register(cx.waker());
             Ok(true)
         }) {
             Some(Ok(has_send_data)) => has_send_data,

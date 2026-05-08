@@ -104,9 +104,7 @@ impl RuntimeCommandHandler {
             if crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(local, remote, seq)
             {
                 let _ = socket.with_inner_mut(|inner| {
-                    if let Some(waker) = inner.send_waker.take() {
-                        waker.wake();
-                    }
+                    inner.send_waker.wake();
                 });
 
                 tcb_table().lookup_mut(local, remote, |tcb| {

@@ -622,7 +622,7 @@ impl Future for UdpRecvFuture {
                 Poll::Ready(Some((if_id, udp_addr_from_socket(addr), ttl, payload)))
             }
             Err(EndpointError::Timeout) => {
-                self.socket.register_recv_waker(cx.waker().clone());
+                self.socket.register_recv_waker(cx.waker());
                 Poll::Pending
             }
             Err(

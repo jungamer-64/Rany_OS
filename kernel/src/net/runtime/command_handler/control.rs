@@ -96,10 +96,7 @@ impl RuntimeCommandHandler {
             } else {
                 // TCPバッファが空でも send_waker が設定されている場合（UDP の ResourceExhausted 待ち）
                 // はここで直接起床させる。TCP の write/poll_write 境界も安全に再ポーリング可能。
-                let waker = socket.with_inner_mut(|inner| inner.send_waker.take()).flatten();
-                if let Some(w) = waker {
-                    w.wake();
-                }
+                let _ = socket.with_inner_mut(|inner| inner.send_waker.wake());
             }
         });
 
@@ -117,18 +114,10 @@ impl RuntimeCommandHandler {
 
         let _ = socket.with_inner_mut(|inner| {
             inner.mark_closed();
-            if let Some(waker) = inner.recv_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = inner.send_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = inner.connect_waker.take() {
-                waker.wake();
-            }
-            if let Some(waker) = inner.accept_waker.take() {
-                waker.wake();
-            }
+            inner.recv_waker.wake();
+            inner.send_waker.wake();
+            inner.connect_waker.wake();
+            inner.accept_waker.wake();
         });
 
         let _ = crate::net::l4::socket::unregister_socket(socket_id);

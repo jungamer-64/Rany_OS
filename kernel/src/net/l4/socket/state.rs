@@ -12,6 +12,7 @@ use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, Soc
 use crate::net::payload::{PayloadSpanRef, append_payload};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
+use crate::sync::atomic_waker::AtomicWaker;
 use kernel_api::resource::net::PacketPayload;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,10 +44,10 @@ pub(crate) struct SocketCommon {
     pub recv_buffer_limit: usize,
     pub send_buffer_limit: usize,
     pub last_error: Option<EndpointError>,
-    pub recv_waker: Option<core::task::Waker>,
-    pub send_waker: Option<core::task::Waker>,
-    pub connect_waker: Option<core::task::Waker>,
-    pub accept_waker: Option<core::task::Waker>,
+    pub recv_waker: AtomicWaker,
+    pub send_waker: AtomicWaker,
+    pub connect_waker: AtomicWaker,
+    pub accept_waker: AtomicWaker,
     pub priority: u8,
 }
 
@@ -63,10 +64,10 @@ impl SocketCommon {
             recv_buffer_limit: Self::MAX_BUFFER_SIZE,
             send_buffer_limit: Self::MAX_BUFFER_SIZE,
             last_error: None,
-            recv_waker: None,
-            send_waker: None,
-            connect_waker: None,
-            accept_waker: None,
+            recv_waker: AtomicWaker::new(),
+            send_waker: AtomicWaker::new(),
+            connect_waker: AtomicWaker::new(),
+            accept_waker: AtomicWaker::new(),
             priority: 0,
         }
     }
@@ -466,9 +467,7 @@ impl SocketState {
         Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
 
         if payload.total_len() > 0 {
-            if let Some(waker) = self.send_waker.take() {
-                waker.wake();
-            }
+            self.send_waker.wake();
         }
 
         Some(payload)
@@ -553,18 +552,14 @@ impl SocketState {
             tcp.recv_payload_queue.push_back(QueuedPayload::new(queued));
             Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
 
-            if let Some(waker) = self.recv_waker.take() {
-                waker.wake();
-            }
+            self.recv_waker.wake();
         }
         len
     }
 
     #[inline]
     pub fn notify_connected(&mut self) {
-        if let Some(waker) = self.connect_waker.take() {
-            waker.wake();
-        }
+        self.connect_waker.wake();
     }
 }
 
