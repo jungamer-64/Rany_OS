@@ -7,10 +7,12 @@ use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::net::l4::socket::Socket;
+use crate::net::l4::socket::state::SocketState;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
-use crate::sync::PoisonRwLock;
+use crate::sync::{PoisonLock, PoisonRwLock};
 
 const EPHEMERAL_PORT_START: u16 = 49152;
 const EPHEMERAL_PORT_END: u16 = 65535;
@@ -106,7 +108,7 @@ fn bind_port(
 
 fn find_socket_by_port(
     ports: &PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
-    sockets: &PoisonRwLock<BTreeMap<SocketId, Socket>>,
+    sockets: &PoisonRwLock<BTreeMap<SocketId, SocketRecord>>,
     family: SocketFamily,
     port: u16,
     ingress_if_id: Option<NetIfId>,
@@ -125,11 +127,25 @@ fn find_socket_by_port(
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&socket_id)
-        .cloned()
+        .map(|record| Socket::from_registered(socket_id, record.runtime))
+}
+
+pub(crate) struct SocketRecord {
+    runtime: NetRuntimeHandle,
+    state: PoisonLock<SocketState>,
+}
+
+impl SocketRecord {
+    fn new(runtime: NetRuntimeHandle, state: SocketState) -> Self {
+        Self {
+            runtime,
+            state: PoisonLock::new(state),
+        }
+    }
 }
 
 pub(crate) struct SocketRegistry {
-    sockets: PoisonRwLock<BTreeMap<SocketId, Socket>>,
+    sockets: PoisonRwLock<BTreeMap<SocketId, SocketRecord>>,
     tcp_ports: PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
     udp_ports: PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
     raw_scopes: PoisonRwLock<BTreeMap<InterfaceScope, SocketId>>,
@@ -155,11 +171,11 @@ impl SocketRegistry {
         allocate_ephemeral_port_from(&self.udp_ports, &self.next_ephemeral_port)
     }
 
-    pub fn register(&self, socket: Socket) {
+    pub fn register(&self, socket: Socket, state: SocketState) {
         self.sockets
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(socket.socket_id(), socket);
+            .insert(socket.socket_id(), SocketRecord::new(socket.runtime(), state));
     }
 
     pub fn unregister(&self, socket_id: SocketId) -> Option<Socket> {
@@ -168,34 +184,33 @@ impl SocketRegistry {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&socket_id);
-        if let Some(socket) = removed.as_ref() {
-            if socket.is_tcp() {
+        if let Some(record) = removed.as_ref() {
+            let socket = Socket::from_registered(socket_id, record.runtime);
+            let state = record.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.is_tcp() {
                 self.tcp_ports
                     .write()
                     .unwrap_or_else(|e| e.into_inner())
                     .retain(|_, bound_socket_id| *bound_socket_id != socket_id);
-            } else if socket.is_udp() {
+            } else if state.is_udp() {
                 self.udp_ports
                     .write()
                     .unwrap_or_else(|e| e.into_inner())
                     .retain(|_, bound_socket_id| *bound_socket_id != socket_id);
-                if let Some(token) = socket
-                    .inner()
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .udp_mut()
-                    .and_then(|udp| udp.token.take())
-                {
+                drop(state);
+                let mut state = record.state.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(token) = state.udp_mut().and_then(|udp| udp.token.take()) {
                     let _ = crate::security::capability::manager().decrement_in_flight(token);
                 }
-            } else if socket.is_raw() {
+            } else if state.is_raw() {
                 self.raw_scopes
                     .write()
                     .unwrap_or_else(|e| e.into_inner())
                     .retain(|_, bound_socket_id| *bound_socket_id != socket_id);
             }
+            return Some(socket);
         }
-        removed
+        None
     }
 
     pub fn get(&self, socket_id: SocketId) -> Option<Socket> {
@@ -203,7 +218,29 @@ impl SocketRegistry {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&socket_id)
-            .cloned()
+            .map(|record| Socket::from_registered(socket_id, record.runtime))
+    }
+
+    pub fn with_socket_state<R>(
+        &self,
+        socket_id: SocketId,
+        f: impl FnOnce(&SocketState) -> R,
+    ) -> Option<R> {
+        let sockets = self.sockets.read().unwrap_or_else(|e| e.into_inner());
+        let record = sockets.get(&socket_id)?;
+        let state = record.state.lock().unwrap_or_else(|e| e.into_inner());
+        Some(f(&state))
+    }
+
+    pub fn with_socket_state_mut<R>(
+        &self,
+        socket_id: SocketId,
+        f: impl FnOnce(&mut SocketState) -> R,
+    ) -> Option<R> {
+        let sockets = self.sockets.read().unwrap_or_else(|e| e.into_inner());
+        let record = sockets.get(&socket_id)?;
+        let mut state = record.state.lock().unwrap_or_else(|e| e.into_inner());
+        Some(f(&mut state))
     }
 
     pub fn bind_tcp_port(
@@ -295,11 +332,11 @@ impl SocketRegistry {
 
     pub fn for_each<F>(&self, mut f: F)
     where
-        F: FnMut(&Socket),
+        F: FnMut(Socket),
     {
         let sockets = self.sockets.read().unwrap_or_else(|e| e.into_inner());
-        for socket in sockets.values() {
-            f(socket);
+        for (socket_id, record) in sockets.iter() {
+            f(Socket::from_registered(*socket_id, record.runtime));
         }
     }
 
@@ -329,6 +366,7 @@ pub(crate) fn find_listening_tcp_socket(
     let registry = registry_guard.as_ref()?;
     let socket =
         registry.find_tcp_by_port(SocketFamily::from_addr(local), local.port(), ingress_if_id)?;
-    let inner = socket.inner().lock().unwrap_or_else(|e| e.into_inner());
-    inner.is_tcp_listening().then_some(socket.clone())
+    socket
+        .with_inner(|inner| inner.is_tcp_listening().then_some(socket))
+        .flatten()
 }

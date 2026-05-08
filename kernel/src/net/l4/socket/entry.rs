@@ -1,9 +1,8 @@
 // ============================================================================
 // kernel/src/net/l4/socket/entry.rs - L4 / ソケット / エントリ
 // ============================================================================
-//! Shared socket handle backed by `Arc<PoisonLock<SocketState>>`.
+//! Socket value handle backed by registry-owned socket state.
 
-use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use crate::net::datapath::mempool::PacketRef;
@@ -13,27 +12,30 @@ use crate::net::runtime::command::{
     RuntimeCommand, TransportCommand, enqueue_command_ignore_in, enqueue_command_in,
 };
 use crate::net::runtime::manager::NetIfId;
-use crate::sync::poison_lock::PoisonLock;
 use kernel_api::resource::net::PacketPayload;
 
 use super::registry::SOCKET_REGISTRY;
 use super::state::{QueuedPayload, SocketState, TcpSocketState};
 
-fn register_socket(socket: &Socket) {
+fn register_socket(socket: Socket, state: SocketState) {
     if let Some(registry) = &*SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner()) {
-        registry.register(socket.clone());
+        registry.register(socket, state);
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct Socket {
     socket_id: SocketId,
     runtime: NetRuntimeHandle,
-    inner: Arc<PoisonLock<SocketState>>,
 }
 
 impl Socket {
     fn next_socket_id() -> SocketId {
         SocketId::from_raw(NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub(crate) const fn from_registered(socket_id: SocketId, runtime: NetRuntimeHandle) -> Self {
+        Self { socket_id, runtime }
     }
 
     fn notify_tcb_data_received(
@@ -87,17 +89,13 @@ impl Socket {
     }
 
     pub fn new_tcp_in(runtime: NetRuntimeHandle, state: TcpSocketState) -> Self {
-        Self {
-            socket_id: Self::next_socket_id(),
-            runtime,
-            inner: Arc::new(PoisonLock::new(SocketState::new_tcp(state))),
-        }
+        let socket = Self::from_registered(Self::next_socket_id(), runtime);
+        register_socket(socket, SocketState::new_tcp(state));
+        socket
     }
 
     pub(crate) fn new_registered_tcp_in(runtime: NetRuntimeHandle, state: TcpSocketState) -> Self {
-        let socket = Self::new_tcp_in(runtime, state);
-        register_socket(&socket);
-        socket
+        Self::new_tcp_in(runtime, state)
     }
 
     pub fn new_tcp_with_socket_id_in(
@@ -105,39 +103,29 @@ impl Socket {
         runtime: NetRuntimeHandle,
         state: TcpSocketState,
     ) -> Self {
-        Self {
-            socket_id,
-            runtime,
-            inner: Arc::new(PoisonLock::new(SocketState::new_tcp(state))),
-        }
+        let socket = Self::from_registered(socket_id, runtime);
+        register_socket(socket, SocketState::new_tcp(state));
+        socket
     }
 
     pub fn new_udp_in(runtime: NetRuntimeHandle) -> Self {
-        Self {
-            socket_id: Self::next_socket_id(),
-            runtime,
-            inner: Arc::new(PoisonLock::new(SocketState::new_udp())),
-        }
+        let socket = Self::from_registered(Self::next_socket_id(), runtime);
+        register_socket(socket, SocketState::new_udp());
+        socket
     }
 
     pub(crate) fn new_registered_udp_in(runtime: NetRuntimeHandle) -> Self {
-        let socket = Self::new_udp_in(runtime);
-        register_socket(&socket);
-        socket
+        Self::new_udp_in(runtime)
     }
 
     pub fn new_raw_in(runtime: NetRuntimeHandle) -> Self {
-        Self {
-            socket_id: Self::next_socket_id(),
-            runtime,
-            inner: Arc::new(PoisonLock::new(SocketState::new_raw())),
-        }
+        let socket = Self::from_registered(Self::next_socket_id(), runtime);
+        register_socket(socket, SocketState::new_raw());
+        socket
     }
 
     pub(crate) fn new_registered_raw_in(runtime: NetRuntimeHandle) -> Self {
-        let socket = Self::new_raw_in(runtime);
-        register_socket(&socket);
-        socket
+        Self::new_raw_in(runtime)
     }
 
     #[inline(always)]
@@ -151,48 +139,44 @@ impl Socket {
     }
 
     #[inline]
-    pub fn inner(&self) -> &Arc<PoisonLock<SocketState>> {
-        &self.inner
+    pub(crate) fn with_inner<R>(&self, f: impl FnOnce(&SocketState) -> R) -> Option<R> {
+        let guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .and_then(|registry| registry.with_socket_state(self.socket_id, f))
+    }
+
+    #[inline]
+    pub(crate) fn with_inner_mut<R>(&self, f: impl FnOnce(&mut SocketState) -> R) -> Option<R> {
+        let guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .and_then(|registry| registry.with_socket_state_mut(self.socket_id, f))
     }
 
     #[inline]
     pub fn is_tcp(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_tcp()
+        self.with_inner(SocketState::is_tcp).unwrap_or(false)
     }
 
     #[inline]
     pub fn is_udp(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_udp()
+        self.with_inner(SocketState::is_udp).unwrap_or(false)
     }
 
     #[inline]
     pub fn is_raw(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_raw()
+        self.with_inner(SocketState::is_raw).unwrap_or(false)
     }
 
     #[inline]
     pub fn local_addr(&self) -> Option<EndpointAddr> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .local_addr
+        self.with_inner(|inner| inner.local_addr).flatten()
     }
 
     #[inline]
     pub fn remote_addr(&self) -> Option<EndpointAddr> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remote_addr
+        self.with_inner(|inner| inner.remote_addr).flatten()
     }
 
     pub fn try_next_incoming(&self) -> SocketResult<(Socket, EndpointAddr, NetIfId)> {
@@ -219,7 +203,6 @@ impl Socket {
                 new_inner.priority = inner.priority;
             }
 
-            register_socket(&socket);
             return Ok((socket, conn.remote_addr, conn.if_id));
         }
 
@@ -435,16 +418,6 @@ impl Socket {
                 priority: priority & 0x3F,
             }),
         )
-    }
-}
-
-impl Clone for Socket {
-    fn clone(&self) -> Self {
-        Self {
-            socket_id: self.socket_id,
-            runtime: self.runtime,
-            inner: Arc::clone(&self.inner),
-        }
     }
 }
 

@@ -36,13 +36,6 @@ pub(crate) fn lookup_socket(socket_id: SocketId) -> Option<Socket> {
     with_socket_registry(|registry| registry.get(socket_id)).flatten()
 }
 
-pub(crate) fn register_socket(socket: Socket) {
-    let guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
-    if let Some(registry) = guard.as_ref() {
-        registry.register(socket);
-    }
-}
-
 pub(crate) fn unregister_socket(socket_id: SocketId) -> Option<Socket> {
     let guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
     guard
@@ -50,7 +43,7 @@ pub(crate) fn unregister_socket(socket_id: SocketId) -> Option<Socket> {
         .and_then(|registry| registry.unregister(socket_id))
 }
 
-pub(crate) fn for_each_socket(mut f: impl FnMut(&Socket)) {
+pub(crate) fn for_each_socket(mut f: impl FnMut(Socket)) {
     let guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
     if let Some(registry) = guard.as_ref() {
         registry.for_each(|socket| f(socket));
