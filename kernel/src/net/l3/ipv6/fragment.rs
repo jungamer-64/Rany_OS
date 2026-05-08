@@ -676,7 +676,7 @@ impl Ipv6FragmentReassembler {
                     if let Some(fragment_header) = buffer.first_frag_header {
                         let mut header_builder = crate::net::payload::PacketPayloadBuilder::new();
                         if header_builder
-                            .push_generated_bytes(&fragment_header)
+                            .append_generated_bytes(&fragment_header)
                             .is_some()
                         {
                             append_payload(&mut quoted, header_builder.build());

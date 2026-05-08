@@ -271,7 +271,7 @@ impl DhcpClient {
 
                 let dst = server_ip.unwrap_or(Ipv4Address::new([255, 255, 255, 255]));
                 let mut builder = PacketPayloadBuilder::new();
-                builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+                builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
                     send_dhcpv4_packet_on(
                         self.runtime,
                         if_id,
@@ -375,7 +375,7 @@ impl DhcpClient {
             // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
             Ok(len) => {
                 let mut builder = PacketPayloadBuilder::new();
-                builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+                builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
                     send_dhcpv4_packet_on(
                         self.runtime,
                         if_id,
@@ -433,7 +433,7 @@ impl DhcpClient {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+        Ok(builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,
@@ -493,7 +493,7 @@ impl DhcpClient {
             Ipv4Address::new([0, 0, 0, 0])
         };
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+        Ok(builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,
@@ -527,7 +527,7 @@ impl DhcpClient {
         };
 
         let mut builder = PacketPayloadBuilder::new();
-        Ok(builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+        Ok(builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
             send_dhcpv4_packet_on(
                 self.runtime,
                 if_id,

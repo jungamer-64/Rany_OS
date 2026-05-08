@@ -122,7 +122,7 @@ impl ConnectionOooQueue {
                 if seq_before(rcv_nxt, seg_end) {
                     // 部分的な重複: rcv_nxtより前の部分をカットして再挿入候補にする
                     let overlap = rcv_nxt.wrapping_sub(seq) as usize;
-                    let Some(trimmed) = crate::net::payload::retain_payload_window_owned(
+                    let Some(trimmed) = crate::net::payload::move_payload_window_owned(
                         packet,
                         overlap,
                         seg_end.wrapping_sub(rcv_nxt) as usize,

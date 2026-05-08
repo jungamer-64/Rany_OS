@@ -427,7 +427,7 @@ fn push_builder_str(
     value: &str,
 ) -> Result<(), HttpResponseBuildError> {
     builder
-        .push_generated_str(value)
+        .append_generated_str(value)
         .ok_or(HttpResponseBuildError::AllocationFailed)
 }
 
@@ -441,7 +441,7 @@ fn write_content_type_header(
         HeaderValue::PayloadOrDefault(Some(value)) => {
             let mut pushed = true;
             value.for_each_chunk(|chunk| {
-                if pushed && builder.push_generated_bytes(chunk).is_none() {
+                if pushed && builder.append_generated_bytes(chunk).is_none() {
                     pushed = false;
                 }
             });

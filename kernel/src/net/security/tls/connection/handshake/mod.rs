@@ -73,10 +73,10 @@ impl TlsConnection {
             }
 
             let payload = handshake
-                .slice(body_start, length)
+                .subspan(body_start, length)
                 .ok_or(TlsError::DecodeError)?;
             let full_msg = handshake
-                .slice(offset, body_end - offset)
+                .subspan(offset, body_end - offset)
                 .ok_or(TlsError::DecodeError)?;
             self.dispatch_handshake_message(msg_type, payload)?;
             self.record_and_update_handshake(full_msg, msg_type)?;

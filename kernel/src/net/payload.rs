@@ -103,6 +103,13 @@ impl<'a> PayloadSpanRef<'a> {
         PayloadRange::new(self.offset, self.len)
     }
 
+    pub fn subspan(self, offset: usize, len: usize) -> Option<Self> {
+        if offset > self.len || len > self.len.saturating_sub(offset) {
+            return None;
+        }
+        Self::from_range(self.payload, self.offset + offset, len)
+    }
+
     pub fn byte_at(&self, index: usize) -> Option<u8> {
         if index >= self.len {
             return None;
@@ -315,6 +322,17 @@ pub struct PacketPayloadBuilder {
     segments: Vec<PacketRef>,
 }
 
+pub struct PacketPayloadWindow {
+    payload: PacketPayload,
+    offset: usize,
+    len: usize,
+}
+
+pub struct GeneratedPacketWriter {
+    packet: PacketRef,
+    offset: usize,
+}
+
 impl PacketPayloadBuilder {
     pub fn new() -> Self {
         Self {
@@ -326,6 +344,20 @@ impl PacketPayloadBuilder {
         self.segments.extend(payload.into_segments());
     }
 
+    pub fn append_generated_bytes(&mut self, data: &[u8]) -> Option<()> {
+        if data.is_empty() {
+            return Some(());
+        }
+        let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)?;
+        writer.write_bytes(data)?;
+        self.push_payload(writer.finish()?);
+        Some(())
+    }
+
+    pub fn append_generated_str(&mut self, data: &str) -> Option<()> {
+        self.append_generated_bytes(data.as_bytes())
+    }
+
     pub fn build(self) -> PacketPayload {
         match self.segments.len() {
             0 => PacketPayload::default(),
@@ -334,6 +366,125 @@ impl PacketPayloadBuilder {
                 self.segments,
             )),
         }
+    }
+}
+
+impl PacketPayloadWindow {
+    pub fn new(payload: PacketPayload, offset: usize, len: usize) -> Option<Self> {
+        let total_len = payload.total_len();
+        if offset > total_len || len > total_len.saturating_sub(offset) {
+            return None;
+        }
+        Some(Self {
+            payload,
+            offset,
+            len,
+        })
+    }
+
+    pub fn whole(payload: PacketPayload) -> Self {
+        let len = payload.total_len();
+        Self {
+            payload,
+            offset: 0,
+            len,
+        }
+    }
+
+    pub const fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub const fn total_len(&self) -> usize {
+        self.len
+    }
+
+    pub fn span(&self) -> Option<PayloadSpanRef<'_>> {
+        PayloadSpanRef::from_range(&self.payload, self.offset, self.len)
+    }
+
+    pub fn into_payload(self) -> Option<PacketPayload> {
+        if self.len == 0 {
+            return Some(PacketPayload::default());
+        }
+
+        let mut segments = Vec::new();
+        let mut remaining_offset = self.offset;
+        let mut remaining_len = self.len;
+
+        for mut segment in self.payload.into_segments() {
+            if remaining_len == 0 {
+                break;
+            }
+            if remaining_offset >= segment.len() {
+                remaining_offset -= segment.len();
+                continue;
+            }
+
+            if remaining_offset > 0 {
+                segment.advance(remaining_offset);
+                remaining_offset = 0;
+            }
+
+            let take = remaining_len.min(segment.len());
+            segment.set_len(take);
+            remaining_len -= take;
+            segments.push(segment);
+        }
+
+        (remaining_len == 0).then(|| packet_payload_from_segments(segments))
+    }
+}
+
+pub fn move_payload_window_owned(
+    payload: PacketPayload,
+    offset: usize,
+    len: usize,
+) -> Option<PacketPayload> {
+    PacketPayloadWindow::new(payload, offset, len)?.into_payload()
+}
+
+impl GeneratedPacketWriter {
+    pub fn new(len: usize, headroom: usize) -> Option<Self> {
+        Some(Self {
+            packet: alloc_packet_with_headroom(len, headroom)?,
+            offset: 0,
+        })
+    }
+
+    pub fn write_u8(&mut self, value: u8) -> Option<()> {
+        self.write_bytes(&[value])
+    }
+
+    pub fn write_u16_be(&mut self, value: u16) -> Option<()> {
+        self.write_bytes(&value.to_be_bytes())
+    }
+
+    pub fn write_u24_be(&mut self, value: u32) -> Option<()> {
+        self.write_bytes(&[
+            ((value >> 16) & 0xff) as u8,
+            ((value >> 8) & 0xff) as u8,
+            (value & 0xff) as u8,
+        ])
+    }
+
+    pub fn write_u32_be(&mut self, value: u32) -> Option<()> {
+        self.write_bytes(&value.to_be_bytes())
+    }
+
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> Option<()> {
+        let end = self.offset.checked_add(bytes.len())?;
+        let data = self.packet.data_mut();
+        if end > data.len() {
+            return None;
+        }
+        data[self.offset..end].copy_from_slice(bytes);
+        self.offset = end;
+        Some(())
+    }
+
+    pub fn finish(self) -> Option<PacketPayload> {
+        (self.offset == self.packet.len()).then(|| PacketPayload::single(self.packet))
     }
 }
 
@@ -355,6 +506,14 @@ pub fn append_payload(target: &mut PacketPayload, payload: PacketPayload) {
             segments,
         ))
     };
+}
+
+pub fn packet_payload_from_segments(mut segments: Vec<PacketRef>) -> PacketPayload {
+    match segments.len() {
+        0 => PacketPayload::default(),
+        1 => PacketPayload::single(segments.remove(0)),
+        _ => PacketPayload::chain(PacketChain::from_segments(segments)),
+    }
 }
 
 pub struct PacketPayloadView<'a> {

@@ -10,7 +10,7 @@ fn span_slice(
     offset: usize,
     len: usize,
 ) -> Option<PayloadSpanRef<'_>> {
-    span.slice(offset, len)
+    span.subspan(offset, len)
 }
 
 impl HttpParser {

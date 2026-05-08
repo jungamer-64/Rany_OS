@@ -93,8 +93,8 @@ impl TlsConnection {
 
         self.negotiation.state = TlsState::ClientHelloSent;
         let mut builder = PacketPayloadBuilder::new();
-        if builder.push_generated_bytes(&record_header).is_none()
-            || builder.push_generated_bytes(message.as_slice()).is_none()
+        if builder.append_generated_bytes(&record_header).is_none()
+            || builder.append_generated_bytes(message.as_slice()).is_none()
         {
             return PacketPayload::default();
         }

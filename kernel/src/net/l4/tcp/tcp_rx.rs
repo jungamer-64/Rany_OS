@@ -368,7 +368,7 @@ impl TcpOptionsScratch {
 
         let payload_len = view.total_len().saturating_sub(data_offset);
         let payload =
-            crate::net::payload::retain_payload_window_owned(segment, data_offset, payload_len)?;
+            crate::net::payload::move_payload_window_owned(segment, data_offset, payload_len)?;
 
         Some((
             ParsedTcpHeader {
@@ -951,7 +951,7 @@ fn handle_data_received_with_delayed_ack(
             }
         } else {
             // Trim prefix
-            let Some(trimmed) = crate::net::payload::retain_payload_window_owned(
+            let Some(trimmed) = crate::net::payload::move_payload_window_owned(
                 data_payload,
                 skip,
                 payload_len as usize - skip,

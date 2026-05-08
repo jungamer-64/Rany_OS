@@ -111,28 +111,9 @@ impl QueuedPayload {
         PayloadSpanRef::from_range(&self.payload, self.consumed, self.remaining_len())?.byte_at(0)
     }
 
-    fn copy_remaining_to(&mut self, buf: &mut [u8]) -> usize {
-        let take = self.remaining_len().min(buf.len());
-        let Some(span) = PayloadSpanRef::from_range(&self.payload, self.consumed, take) else {
-            return 0;
-        };
-
-        let mut written = 0usize;
-        span.for_each_chunk(|chunk| {
-            if written == take {
-                return;
-            }
-            let chunk_len = chunk.len().min(take - written);
-            buf[written..written + chunk_len].copy_from_slice(&chunk[..chunk_len]);
-            written += chunk_len;
-        });
-        self.consumed = self.consumed.saturating_add(written);
-        written
-    }
-
     fn into_remaining_payload(self) -> Option<PacketPayload> {
         let len = self.remaining_len();
-        crate::net::payload::retain_payload_window_owned(self.payload, self.consumed, len)
+        crate::net::payload::move_payload_window_owned(self.payload, self.consumed, len)
     }
 }
 
@@ -462,33 +443,6 @@ impl SocketState {
     }
 
     #[inline]
-    pub fn recv_from_buffer(&mut self, buf: &mut [u8]) -> usize {
-        let len = {
-            let Some(tcp) = self.tcp_mut() else {
-                return 0;
-            };
-
-            Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
-            let Some(front) = tcp.recv_payload_queue.front_mut() else {
-                return 0;
-            };
-
-            let len = front.copy_remaining_to(buf);
-            tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_sub(len);
-            Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
-            len
-        };
-
-        if len > 0 {
-            if let Some(waker) = self.send_waker.take() {
-                waker.wake();
-            }
-        }
-
-        len
-    }
-
-    #[inline]
     pub fn recv_payload(&mut self, max_len: Option<usize>) -> Option<PacketPayload> {
         let tcp = self.tcp_mut()?;
         Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
@@ -622,7 +576,7 @@ pub mod tests {
     fn payload_bytes(data: &[u8]) -> PacketPayload {
         let mut builder = PacketPayloadBuilder::new();
         builder
-            .push_generated_bytes(data)
+            .append_generated_bytes(data)
             .expect("test payload allocation");
         builder.build()
     }
@@ -677,20 +631,4 @@ pub mod tests {
         assert_eq!(state.recv_payload_bytes(), 0);
     }
 
-    #[cfg_attr(target_os = "linux", test)]
-    #[cfg_attr(not(target_os = "linux"), test_case)]
-    pub fn test_recv_from_buffer_advances_payload_cursor_without_split() {
-        let mut state = SocketState::new_tcp(TcpSocketState::Connected);
-        assert_eq!(state.push_recv_payload(payload_bytes(b"abcde")), 5);
-
-        let mut first = [0u8; 2];
-        assert_eq!(state.recv_from_buffer(&mut first), 2);
-        assert_eq!(&first, b"ab");
-        assert_eq!(state.recv_payload_bytes(), 3);
-
-        let mut second = [0u8; 3];
-        assert_eq!(state.recv_from_buffer(&mut second), 3);
-        assert_eq!(&second, b"cde");
-        assert_eq!(state.recv_payload_bytes(), 0);
-    }
 }

@@ -40,7 +40,7 @@ pub struct HttpParser {
 }
 
 fn span_slice(span: PayloadSpanRef<'_>, offset: usize, len: usize) -> Option<PayloadSpanRef<'_>> {
-    span.slice(offset, len)
+    span.subspan(offset, len)
 }
 
 fn trim_span(span: PayloadSpanRef<'_>) -> PayloadSpanRef<'_> {

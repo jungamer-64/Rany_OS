@@ -169,10 +169,10 @@ impl TlsConnection {
         }
 
         let ciphertext_len = data.total_len() - 16;
-        let ciphertext_span = data.slice(0, ciphertext_len).ok_or(TlsError::DecodeError)?;
+        let ciphertext_span = data.subspan(0, ciphertext_len).ok_or(TlsError::DecodeError)?;
         let ciphertext = Self::copy_span_to_packet(ciphertext_span)?;
         let tag = data
-            .slice(ciphertext_len, 16)
+            .subspan(ciphertext_len, 16)
             .ok_or(TlsError::DecodeError)?
             .read_array::<16>(0)
             .ok_or(TlsError::DecodeError)?;
@@ -225,7 +225,7 @@ impl TlsConnection {
             .ok_or(TlsError::DecodeError)?;
         let content_type = header[0];
         let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
-        let body = crate::net::payload::retain_payload_window_owned(record, 5, record_len)
+        let body = crate::net::payload::move_payload_window_owned(record, 5, record_len)
             .ok_or(TlsError::DecodeError)?;
 
         match ContentType::from_u8(content_type) {
@@ -288,13 +288,13 @@ impl TlsConnection {
             match ContentType::from_u8(inner_ct) {
                 Some(ContentType::ApplicationData) => {
                     let inner_payload =
-                        crate::net::payload::retain_payload_window_owned(decrypted, 0, inner_len)
+                        crate::net::payload::move_payload_window_owned(decrypted, 0, inner_len)
                             .ok_or(TlsError::DecodeError)?;
                     append_payload(plaintext, inner_payload);
                 }
                 Some(ContentType::Handshake) => {
                     let inner_payload =
-                        crate::net::payload::retain_payload_window_owned(decrypted, 0, inner_len)
+                        crate::net::payload::move_payload_window_owned(decrypted, 0, inner_len)
                             .ok_or(TlsError::DecodeError)?;
                     if self.negotiation.state == TlsState::Established {
                         let inner_data = PayloadSpanRef::from_payload(&inner_payload);
@@ -305,7 +305,7 @@ impl TlsConnection {
                 }
                 Some(ContentType::Alert) => {
                     let inner_payload =
-                        crate::net::payload::retain_payload_window_owned(decrypted, 0, inner_len)
+                        crate::net::payload::move_payload_window_owned(decrypted, 0, inner_len)
                             .ok_or(TlsError::DecodeError)?;
                     self.handle_alert_payload(&inner_payload)?;
                 }
@@ -383,11 +383,11 @@ impl TlsConnection {
         ];
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
         builder
-            .push_generated_bytes(&record_header)
+            .append_generated_bytes(&record_header)
             .ok_or(TlsError::DecodeError)?;
         builder.push_payload(ciphertext);
         builder
-            .push_generated_bytes(&auth_tag)
+            .append_generated_bytes(&auth_tag)
             .ok_or(TlsError::DecodeError)?;
         Ok(builder.build())
     }
@@ -475,7 +475,7 @@ impl TlsConnection {
                 return Err(TlsError::DecodeError);
             }
             let payload = data
-                .slice(body_start, length)
+                .subspan(body_start, length)
                 .ok_or(TlsError::DecodeError)?;
             if msg_type == 24 {
                 self.tls13_process_key_update(payload)?;

@@ -134,8 +134,8 @@ impl<'a> DerCursor<'a> {
         self.pos = end;
         Some(DerTlv {
             tag,
-            value: self.span.slice(value_start, length)?,
-            full: self.span.slice(start, end - start)?,
+            value: self.span.subspan(value_start, length)?,
+            full: self.span.subspan(start, end - start)?,
         })
     }
 
@@ -161,7 +161,7 @@ impl<'a> DerCursor<'a> {
         if value.is_empty() {
             return None;
         }
-        value.slice(1, value.total_len() - 1)
+        value.subspan(1, value.total_len() - 1)
     }
 
     fn read_octet_string(&mut self) -> Option<PayloadSpanRef<'a>> {
@@ -308,7 +308,7 @@ fn parse_spki(spki: PayloadSpanRef<'_>) -> Option<SubjectPublicKeyInfo> {
         let mut rsa_inner = DerCursor::new(rsa_seq);
         let mut modulus = rsa_inner.read_integer()?;
         if modulus.total_len() > 1 && modulus.byte_at(0) == Some(0) {
-            modulus = modulus.slice(1, modulus.total_len() - 1)?;
+            modulus = modulus.subspan(1, modulus.total_len() - 1)?;
         }
         let exponent = rsa_inner.read_integer()?;
         return Some(SubjectPublicKeyInfo::Rsa {

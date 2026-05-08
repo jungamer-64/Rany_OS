@@ -157,7 +157,7 @@ impl NtpClient {
 
         let mut builder = PacketPayloadBuilder::new();
         builder
-            .push_generated_bytes(req.as_bytes())
+            .append_generated_bytes(req.as_bytes())
             .ok_or(EndpointError::Internal)?;
 
         socket

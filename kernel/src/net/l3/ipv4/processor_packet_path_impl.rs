@@ -4,13 +4,13 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, retain_payload_window_owned};
+use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, move_payload_window_owned};
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv4Processor {
     fn owned_packet_payload(_packet_ref: Option<&PacketRef>, data: &[u8]) -> Option<PacketPayload> {
         let mut builder = PacketPayloadBuilder::new();
-        builder.push_generated_bytes(data)?;
+        builder.append_generated_bytes(data)?;
         Some(builder.build())
     }
 
@@ -110,7 +110,7 @@ impl Ipv4Processor {
 
         let mut header_builder = PacketPayloadBuilder::new();
         if header_builder
-            .push_generated_bytes(&header_copy[..header_len])
+            .append_generated_bytes(&header_copy[..header_len])
             .is_none()
         {
             self.stats.rx_errors += 1;
@@ -118,7 +118,7 @@ impl Ipv4Processor {
         }
         let header_packet = header_builder.build();
         let Some(payload_packet) =
-            retain_payload_window_owned(original, header_len, total_len.saturating_sub(header_len))
+            move_payload_window_owned(original, header_len, total_len.saturating_sub(header_len))
         else {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;

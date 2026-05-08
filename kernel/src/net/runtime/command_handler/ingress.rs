@@ -277,7 +277,7 @@ impl RuntimeCommandHandler {
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
                     if let Some(transport_payload) =
-                        crate::net::payload::retain_payload_window_owned(
+                        crate::net::payload::move_payload_window_owned(
                             payload,
                             header_len,
                             transport_len,
@@ -305,7 +305,7 @@ impl RuntimeCommandHandler {
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmp => {
                     if let Some(transport_payload) =
-                        crate::net::payload::retain_payload_window_owned(
+                        crate::net::payload::move_payload_window_owned(
                             payload,
                             header_len,
                             transport_len,
@@ -322,7 +322,7 @@ impl RuntimeCommandHandler {
                 }
                 crate::net::l3::ipv4::IpProtocol::Igmp => {
                     if let Some(transport_payload) =
-                        crate::net::payload::retain_payload_window_owned(
+                        crate::net::payload::move_payload_window_owned(
                             payload,
                             header_len,
                             transport_len,
@@ -404,7 +404,7 @@ impl RuntimeCommandHandler {
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
                     if let Some(transport_payload) =
-                        crate::net::payload::retain_payload_window_owned(
+                        crate::net::payload::move_payload_window_owned(
                             payload,
                             payload_offset,
                             transport_len,
@@ -431,7 +431,7 @@ impl RuntimeCommandHandler {
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
                     if let Some(transport_payload) =
-                        crate::net::payload::retain_payload_window_owned(
+                        crate::net::payload::move_payload_window_owned(
                             payload,
                             payload_offset,
                             transport_len,
@@ -549,7 +549,7 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(payload) = crate::net::payload::retain_payload_window_owned(
+                let Some(payload) = crate::net::payload::move_payload_window_owned(
                     original_packet,
                     offset,
                     payload_len,
@@ -570,7 +570,7 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(payload) = crate::net::payload::retain_payload_window_owned(
+                let Some(payload) = crate::net::payload::move_payload_window_owned(
                     original_packet,
                     offset,
                     payload_len,
@@ -630,7 +630,7 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::Success;
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(tcp_segment_payload) = crate::net::payload::retain_payload_window_owned(
+                let Some(tcp_segment_payload) = crate::net::payload::move_payload_window_owned(
                     original_packet,
                     offset,
                     payload_len,

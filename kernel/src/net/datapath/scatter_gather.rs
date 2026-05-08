@@ -157,21 +157,6 @@ impl<'a> ScatterGatherList<'a> {
         self.entries[..count].iter_mut().flatten()
     }
 
-    /// SG リスト全体をリニアバッファにコピー（フォールバック用）
-    pub fn linearize(&self, output: &mut [u8]) -> Result<usize, ()> {
-        if output.len() < self.total_len as usize {
-            return Err(());
-        }
-        let mut offset = 0;
-        for entry in self.iter() {
-            let src = entry.as_slice();
-            let entry_len = src.len();
-            output[offset..offset + entry_len].copy_from_slice(src);
-            offset += entry_len;
-        }
-        Ok(offset)
-    }
-
     /// リセット
     #[inline]
     pub fn clear(&mut self) {
@@ -418,23 +403,6 @@ mod tests {
 
         // MAX超過
         assert!(sg.push(&data).is_err());
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_sg_linearize() {
-        let mut sg = ScatterGatherList::new();
-        let data1 = [0xAAu8, 0xBB];
-        let data2 = [0xCCu8, 0xDD, 0xEE];
-
-        sg.push(&data1).unwrap();
-        sg.push(&data2).unwrap();
-
-        let mut output = [0u8; 16];
-        let written = sg.linearize(&mut output).unwrap();
-
-        assert_eq!(written, 5);
-        assert_eq!(&output[..5], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

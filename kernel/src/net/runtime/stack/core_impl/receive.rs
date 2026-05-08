@@ -63,7 +63,7 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(icmp_payload) = crate::net::payload::retain_payload_window_owned(
+                let Some(icmp_payload) = crate::net::payload::move_payload_window_owned(
                     original_packet,
                     offset,
                     payload.len(),
@@ -83,7 +83,7 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(igmp_payload) = crate::net::payload::retain_payload_window_owned(
+                let Some(igmp_payload) = crate::net::payload::move_payload_window_owned(
                     original_packet,
                     offset,
                     payload.len(),
@@ -381,7 +381,7 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(icmpv6_payload) = crate::net::payload::retain_payload_window_owned(
+                let Some(icmpv6_payload) = crate::net::payload::move_payload_window_owned(
                     original_packet,
                     data_offset,
                     payload_len,
@@ -418,7 +418,7 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(tcp_segment_payload) = crate::net::payload::retain_payload_window_owned(
+                let Some(tcp_segment_payload) = crate::net::payload::move_payload_window_owned(
                     original_packet,
                     offset,
                     payload_len,
@@ -488,7 +488,7 @@ impl NetworkStack {
                 let mut quoted = unfragmentable;
                 if let Some(fh) = frag_header {
                     let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    if builder.push_generated_bytes(&fh).is_some() {
+                    if builder.append_generated_bytes(&fh).is_some() {
                         crate::net::payload::append_payload(&mut quoted, builder.build());
                     } else {
                         self.stats.record_rx_error();

@@ -779,7 +779,7 @@ impl DhcpClient {
                     if opts.dns_servers.len() >= 8 {
                         break;
                     }
-                    let Some(chunk) = opt_data.slice(index * 4, 4) else {
+                    let Some(chunk) = opt_data.subspan(index * 4, 4) else {
                         break;
                     };
                     let Some(bytes) = chunk.read_array::<4>(0) else {

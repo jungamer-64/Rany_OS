@@ -707,115 +707,9 @@ mod packet_ref_tests {
     use super::*;
     use alloc::boxed::Box;
     use alloc::rc::Rc;
-    use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    static HEAP_RELEASES: AtomicUsize = AtomicUsize::new(0);
     static DMA_RELEASES: AtomicUsize = AtomicUsize::new(0);
-
-    struct SharedHeapBuffer {
-        data: Box<[u8; 64]>,
-        addr: u64,
-    }
-
-    impl Drop for SharedHeapBuffer {
-        fn drop(&mut self) {
-            HEAP_RELEASES.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    #[derive(Clone)]
-    struct HeapPacketState {
-        backing: Arc<SharedHeapBuffer>,
-        offset: usize,
-        len: usize,
-    }
-
-    unsafe fn heap_state_ref(storage: &PacketRefStorage) -> &HeapPacketState {
-        unsafe { storage.as_state_ref::<HeapPacketState>() }
-    }
-
-    unsafe fn heap_state_mut(storage: &mut PacketRefStorage) -> &mut HeapPacketState {
-        unsafe { storage.as_state_mut::<HeapPacketState>() }
-    }
-
-    unsafe fn heap_data_ptr(storage: &PacketRefStorage) -> *const u8 {
-        let state = unsafe { heap_state_ref(storage) };
-        state.backing.data.as_ptr().wrapping_add(state.offset)
-    }
-
-    unsafe fn heap_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
-        let state = unsafe { heap_state_mut(storage) };
-        state
-            .backing
-            .data
-            .as_ptr()
-            .cast_mut()
-            .wrapping_add(state.offset)
-    }
-
-    unsafe fn heap_len(storage: &PacketRefStorage) -> usize {
-        unsafe { heap_state_ref(storage) }.len
-    }
-
-    unsafe fn heap_set_len(storage: &mut PacketRefStorage, len: usize) {
-        let state = unsafe { heap_state_mut(storage) };
-        state.len = len.min(state.backing.data.len().saturating_sub(state.offset));
-    }
-
-    unsafe fn heap_capacity(storage: &PacketRefStorage) -> usize {
-        unsafe { heap_state_ref(storage) }.backing.data.len()
-    }
-
-    unsafe fn heap_headroom(storage: &PacketRefStorage) -> usize {
-        unsafe { heap_state_ref(storage) }.offset
-    }
-
-    unsafe fn heap_phys(storage: &PacketRefStorage) -> u64 {
-        let state = unsafe { heap_state_ref(storage) };
-        state.backing.addr + state.offset as u64
-    }
-
-    unsafe fn heap_device(storage: &PacketRefStorage) -> u64 {
-        unsafe { heap_phys(storage) }
-    }
-
-    unsafe fn heap_advance(storage: &mut PacketRefStorage, size: usize) {
-        let state = unsafe { heap_state_mut(storage) };
-        state.offset = state
-            .offset
-            .saturating_add(size)
-            .min(state.backing.data.len());
-        state.len = state.len.saturating_sub(size);
-    }
-
-    unsafe fn heap_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
-        let state = unsafe { heap_state_mut(storage) };
-        if size > state.offset {
-            return false;
-        }
-        state.offset -= size;
-        state.len = state.len.saturating_add(size);
-        true
-    }
-
-    unsafe fn heap_drop(storage: &mut PacketRefStorage) {
-        unsafe { ptr::drop_in_place(storage.as_state_mut::<HeapPacketState>()) };
-    }
-
-    static HEAP_VTABLE: PacketRefVTable = PacketRefVTable {
-        data_ptr: heap_data_ptr,
-        data_mut_ptr: heap_data_mut_ptr,
-        len: heap_len,
-        set_len: heap_set_len,
-        capacity: heap_capacity,
-        phys_addr: heap_phys,
-        device_address: heap_device,
-        headroom: heap_headroom,
-        advance: heap_advance,
-        retreat: heap_retreat,
-        drop_storage: heap_drop,
-    };
 
     struct SharedDmaBuffer {
         dma: Box<crate::dma::DmaSlice<crate::dma::CpuOwned>>,
@@ -825,7 +719,6 @@ mod packet_ref_tests {
         device_addr: u64,
     }
 
-    #[derive(Clone)]
     struct DmaPacketState {
         backing: Rc<SharedDmaBuffer>,
         offset: usize,
@@ -918,18 +811,6 @@ mod packet_ref_tests {
         let _ = unsafe { Box::from_raw(ptr.cast::<[u8; 64]>()) };
     }
 
-    fn make_heap_packet() -> PacketRef {
-        let mut data = Box::new([0u8; 64]);
-        data[..6].copy_from_slice(b"kernel");
-        let state = HeapPacketState {
-            backing: Arc::new(SharedHeapBuffer { data, addr: 0x1000 }),
-            offset: 0,
-            len: 6,
-        };
-
-        unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &HEAP_VTABLE) }
-    }
-
     fn make_dma_packet() -> PacketRef {
         let mut raw = Box::new([0u8; 64]);
         raw[..7].copy_from_slice(b"packet!");
@@ -958,36 +839,6 @@ mod packet_ref_tests {
         };
 
         unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_VTABLE) }
-    }
-
-    #[test]
-    fn heap_backing_supports_len_advance_drop_and_meta() {
-        HEAP_RELEASES.store(0, Ordering::SeqCst);
-
-        let mut packet = make_heap_packet();
-        assert_eq!(packet.len(), 6);
-        assert_eq!(packet.data(), b"kernel");
-        assert_eq!(packet.capacity(), 64);
-        assert_eq!(packet.phys_addr().as_u64(), 0x1000);
-        assert_eq!(packet.device_address(), 0x1000);
-
-        let mut meta = PacketMeta {
-            l2_len: 14,
-            l3_len: 20,
-            ..PacketMeta::default()
-        };
-        meta.set_ip_csum_verified();
-        packet.set_meta(meta);
-        assert!(packet.meta().ip_csum_verified());
-        assert_eq!(packet.meta().header_len(), 34);
-
-        packet.advance(2);
-        assert_eq!(packet.len(), 4);
-        assert_eq!(packet.data(), b"rnel");
-        assert_eq!(packet.phys_addr().as_u64(), 0x1002);
-
-        drop(packet);
-        assert_eq!(HEAP_RELEASES.load(Ordering::SeqCst), 1);
     }
 
     #[test]

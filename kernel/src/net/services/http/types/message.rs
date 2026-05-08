@@ -13,10 +13,10 @@ use kernel_api::resource::net::PacketPayload;
 
 fn write_headers(builder: &mut PacketPayloadBuilder, headers: &[HttpHeader]) -> Option<()> {
     for header in headers {
-        builder.push_generated_str(header.name.as_str())?;
-        builder.push_generated_str(": ")?;
-        builder.push_generated_str(header.value.as_str())?;
-        builder.push_generated_str("\r\n")?;
+        builder.append_generated_str(header.name.as_str())?;
+        builder.append_generated_str(": ")?;
+        builder.append_generated_str(header.value.as_str())?;
+        builder.append_generated_str("\r\n")?;
     }
 
     Some(())
@@ -76,7 +76,7 @@ impl HttpRequest {
 
     pub fn body_bytes(self, data: &[u8]) -> Option<Self> {
         let mut builder = PacketPayloadBuilder::new();
-        builder.push_generated_bytes(data)?;
+        builder.append_generated_bytes(data)?;
         self.body_payload(builder.build())
     }
 
@@ -96,14 +96,14 @@ impl HttpRequest {
 
     pub fn into_payload(self) -> Option<PacketPayload> {
         let mut builder = PacketPayloadBuilder::new();
-        builder.push_generated_str(&alloc::format!(
+        builder.append_generated_str(&alloc::format!(
             "{} {} {}\r\n",
             self.method,
             self.uri.as_request_target(),
             self.version
         ))?;
         write_headers(&mut builder, &self.headers)?;
-        builder.push_generated_str("\r\n")?;
+        builder.append_generated_str("\r\n")?;
         write_optional_body(&mut builder, self.body);
         Some(builder.build())
     }
@@ -144,7 +144,7 @@ impl HttpBodyView {
         for span in self.spans(payload) {
             let mut pushed = true;
             span.for_each_chunk(|chunk| {
-                if pushed && builder.push_generated_bytes(chunk).is_none() {
+                if pushed && builder.append_generated_bytes(chunk).is_none() {
                     pushed = false;
                 }
             });
@@ -251,20 +251,20 @@ impl HttpResponse {
 
     pub fn body_bytes(self, data: &[u8]) -> Option<Self> {
         let mut builder = PacketPayloadBuilder::new();
-        builder.push_generated_bytes(data)?;
+        builder.append_generated_bytes(data)?;
         self.body_payload(builder.build())
     }
 
     pub fn into_payload(self) -> Option<PacketPayload> {
         let mut builder = PacketPayloadBuilder::new();
-        builder.push_generated_str(&alloc::format!(
+        builder.append_generated_str(&alloc::format!(
             "{} {} {}\r\n",
             self.version,
             self.status_code.as_u16(),
             self.reason_phrase
         ))?;
         write_headers(&mut builder, &self.headers)?;
-        builder.push_generated_str("\r\n")?;
+        builder.append_generated_str("\r\n")?;
         builder.push_payload(self.body);
         Some(builder.build())
     }

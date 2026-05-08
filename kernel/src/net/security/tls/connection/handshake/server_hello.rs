@@ -102,7 +102,7 @@ impl TlsConnection {
                             return Err(TlsError::DecodeError);
                         }
                         let key_share = data
-                            .slice(body_offset + 4, key_len)
+                            .subspan(body_offset + 4, key_len)
                             .ok_or(TlsError::DecodeError)?;
                         server_key_share = Some((group, key_share));
                     }

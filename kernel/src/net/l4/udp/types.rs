@@ -171,7 +171,7 @@ impl UdpProcessor {
         let checksum = u16::from_be_bytes([header[6], header[7]]);
         if checksum != 0 {
             let pseudo = pseudo_header_checksum(src_ip, dst_ip, IpProtocol::Udp, length as u16);
-            let Some(checksum_span) = segment.slice(0, length) else {
+            let Some(checksum_span) = segment.subspan(0, length) else {
                 return Err((UdpResult::Invalid, packet));
             };
             if Self::payload_span_checksum(checksum_span, pseudo) != 0 {
@@ -190,7 +190,7 @@ impl UdpProcessor {
             return Err((UdpResult::NoEndpoint, packet));
         };
 
-        let Some(udp_payload) = crate::net::payload::retain_payload_window_owned(
+        let Some(udp_payload) = crate::net::payload::move_payload_window_owned(
             packet,
             offset + UdpHeader::SIZE,
             length - UdpHeader::SIZE,
@@ -258,7 +258,7 @@ impl UdpProcessor {
         }
 
         let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Udp, length as u32);
-        let Some(checksum_span) = segment.slice(0, length) else {
+        let Some(checksum_span) = segment.subspan(0, length) else {
             return Err((UdpResult::Invalid, packet));
         };
         if Self::payload_span_checksum(checksum_span, pseudo) != 0 {
@@ -276,7 +276,7 @@ impl UdpProcessor {
             return Err((UdpResult::NoEndpoint, packet));
         };
 
-        let Some(udp_payload) = crate::net::payload::retain_payload_window_owned(
+        let Some(udp_payload) = crate::net::payload::move_payload_window_owned(
             packet,
             offset + UdpHeader::SIZE,
             length - UdpHeader::SIZE,
@@ -510,7 +510,7 @@ impl UdpProcessor {
             }
         }
 
-        let Some(udp_payload) = crate::net::payload::retain_payload_window_owned(
+        let Some(udp_payload) = crate::net::payload::move_payload_window_owned(
             payload,
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
@@ -627,7 +627,7 @@ impl UdpProcessor {
             return UdpResult::ChecksumError;
         }
 
-        let Some(udp_payload) = crate::net::payload::retain_payload_window_owned(
+        let Some(udp_payload) = crate::net::payload::move_payload_window_owned(
             payload,
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,

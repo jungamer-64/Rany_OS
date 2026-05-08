@@ -310,7 +310,7 @@ impl DnsNameOwned {
             let len = span.total_len();
             let mut pushed = true;
             span.for_each_chunk(|chunk| {
-                if pushed && builder.push_generated_bytes(chunk).is_none() {
+                if pushed && builder.append_generated_bytes(chunk).is_none() {
                     pushed = false;
                 }
             });
@@ -351,7 +351,7 @@ impl DnsNameOwned {
             }
 
             builder
-                .push_generated_bytes(bytes)
+                .append_generated_bytes(bytes)
                 .ok_or(DnsNameError::AllocationFailed)?;
             labels.push(PayloadRange::new(payload_offset, bytes.len()));
             payload_offset = payload_offset.saturating_add(bytes.len());

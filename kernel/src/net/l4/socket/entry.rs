@@ -240,23 +240,6 @@ impl Socket {
             .recv_waker = Some(waker);
     }
 
-    pub fn try_recv(&self, buf: &mut [u8]) -> SocketResult<usize> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if !matches!(
-            inner.tcp_state(),
-            Some(TcpSocketState::Connected | TcpSocketState::Closing)
-        ) {
-            return Err(EndpointError::NotConnected);
-        }
-
-        let len = inner.recv_from_buffer(buf);
-        if len > 0 {
-            Ok(len)
-        } else {
-            Err(EndpointError::Timeout)
-        }
-    }
-
     pub fn push_payload(&self, payload: PacketPayload) -> usize {
         let (pushed, local, remote, waker) = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());

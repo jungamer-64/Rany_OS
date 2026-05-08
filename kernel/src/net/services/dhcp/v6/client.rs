@@ -621,7 +621,7 @@ impl DhcpV6Client {
                                 Err(_) => all_dhcp_servers,
                             };
                             let mut builder = PacketPayloadBuilder::new();
-                            let _ = builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+                            let _ = builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
                                 self.enqueue_v6_send(None, src, dst, builder.build())
                             });
                             log::info!("[NET] DHCPv6: RELEASE sent for {}", lease.addr);
@@ -962,7 +962,7 @@ impl DhcpV6Client {
         }
 
         if let Some((server_duid_offset, server_duid_len)) = server_duid_range {
-            let retained_server_duid = crate::net::payload::retain_payload_window_owned(
+            let retained_server_duid = crate::net::payload::move_payload_window_owned(
                 payload,
                 server_duid_offset,
                 server_duid_len,
@@ -1074,7 +1074,7 @@ impl DhcpV6Client {
                     if let Ok(len) = self.build_request_from_advertise(&mut buf) {
                         if let Some(src_ip) = self.get_link_local() {
                             let mut builder = PacketPayloadBuilder::new();
-                            let _ = builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+                            let _ = builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
                                 self.enqueue_v6_send(if_id, src_ip, src, builder.build())
                             });
                         }
@@ -1154,7 +1154,7 @@ impl DhcpV6Client {
                     if let Ok(len) = self.build_request_from_advertise(&mut buf) {
                         if let Some(src_ip) = self.get_link_local() {
                             let mut builder = PacketPayloadBuilder::new();
-                            let _ = builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+                            let _ = builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
                                 self.enqueue_v6_send(if_id, src_ip, src, builder.build())
                             });
                         }
@@ -1316,7 +1316,7 @@ impl DhcpV6Client {
                     // Use link-local as source for SOLICIT (async event queue)
                     if let Some(src) = self.get_link_local() {
                         let mut builder = PacketPayloadBuilder::new();
-                        if builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+                        if builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
                             self.enqueue_v6_send(if_id, src, all_dhcp_servers, builder.build())
                         }) {
                             *s = DhcpV6State::SolicitSent;
@@ -1353,7 +1353,7 @@ impl DhcpV6Client {
                             if let Some(src) = self.get_link_local() {
                                 let mut builder = PacketPayloadBuilder::new();
                                 let _ =
-                                    builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+                                    builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
                                         self.enqueue_v6_send(
                                             if_id,
                                             src,
@@ -1396,7 +1396,7 @@ impl DhcpV6Client {
                                 };
                                 let mut builder = PacketPayloadBuilder::new();
                                 let _ =
-                                    builder.push_generated_bytes(&buf[..len]).is_some_and(|()| {
+                                    builder.append_generated_bytes(&buf[..len]).is_some_and(|()| {
                                         self.enqueue_v6_send(if_id, src, dst, builder.build())
                                     });
                             }
@@ -1429,7 +1429,7 @@ impl DhcpV6Client {
                                         };
                                         let mut builder = PacketPayloadBuilder::new();
                                         let _ = builder
-                                            .push_generated_bytes(&buf[..len])
+                                            .append_generated_bytes(&buf[..len])
                                             .is_some_and(|()| {
                                                 self.enqueue_v6_send(
                                                     if_id,
@@ -1473,7 +1473,7 @@ impl DhcpV6Client {
                                     if let Some(src) = self.get_link_local() {
                                         let mut builder = PacketPayloadBuilder::new();
                                         let _ = builder
-                                            .push_generated_bytes(&buf[..len])
+                                            .append_generated_bytes(&buf[..len])
                                             .is_some_and(|()| {
                                                 self.enqueue_v6_send(
                                                     if_id,
@@ -1503,7 +1503,7 @@ impl DhcpV6Client {
                                         };
                                         let mut builder = PacketPayloadBuilder::new();
                                         let _ = builder
-                                            .push_generated_bytes(&buf[..len])
+                                            .append_generated_bytes(&buf[..len])
                                             .is_some_and(|()| {
                                                 self.enqueue_v6_send(
                                                     if_id,
@@ -1558,7 +1558,7 @@ impl DhcpV6Client {
                                     if let Some(src) = self.get_link_local() {
                                         let mut builder = PacketPayloadBuilder::new();
                                         let _ = builder
-                                            .push_generated_bytes(&buf[..len])
+                                            .append_generated_bytes(&buf[..len])
                                             .is_some_and(|()| {
                                                 self.enqueue_v6_send(
                                                     if_id,
@@ -2036,7 +2036,7 @@ pub(crate) mod tests {
         // Set server DUID
         if let Ok(mut g) = client.server_duid.lock() {
             let mut builder = PacketPayloadBuilder::new();
-            let _ = builder.push_generated_bytes(&[0x01, 0x02, 0x03, 0x04]);
+            let _ = builder.append_generated_bytes(&[0x01, 0x02, 0x03, 0x04]);
             *g = Some(builder.build());
         }
         client.xid.store(0x123456, Ordering::SeqCst);
@@ -2106,7 +2106,7 @@ pub(crate) mod tests {
         };
         if let Ok(mut g) = client.server_duid.lock() {
             let mut builder = PacketPayloadBuilder::new();
-            let _ = builder.push_generated_bytes(&[0xAA, 0xBB]);
+            let _ = builder.append_generated_bytes(&[0xAA, 0xBB]);
             *g = Some(builder.build());
         }
         client.xid.store(0x654321, Ordering::SeqCst);
@@ -2138,7 +2138,7 @@ pub(crate) mod tests {
         }
         if let Ok(mut sg) = client.server_duid.lock() {
             let mut builder = PacketPayloadBuilder::new();
-            let _ = builder.push_generated_bytes(&[0x01]);
+            let _ = builder.append_generated_bytes(&[0x01]);
             *sg = Some(builder.build());
         }
         if let Ok(mut ag) = client.server_addr.lock() {

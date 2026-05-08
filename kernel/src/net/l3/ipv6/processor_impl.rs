@@ -6,7 +6,7 @@ use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
 use crate::net::payload::{
-    PacketPayloadBuilder, append_payload, retain_payload_window_owned, subslice_offset,
+    PacketPayloadBuilder, append_payload, move_payload_window_owned, subslice_offset,
 };
 use kernel_api::resource::net::PacketPayload;
 
@@ -16,7 +16,7 @@ impl Ipv6Processor {
         _packet_ref: Option<&PacketRef>,
     ) -> Option<PacketPayload> {
         let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder.push_generated_bytes(data)?;
+        builder.append_generated_bytes(data)?;
         Some(builder.build())
     }
 
@@ -185,7 +185,7 @@ impl Ipv6Processor {
                     } else {
                         let mut builder = PacketPayloadBuilder::new();
                         if builder
-                            .push_generated_bytes(&raw_packet[..unfrag_len])
+                            .append_generated_bytes(&raw_packet[..unfrag_len])
                             .is_none()
                         {
                             self.stats.record_header_error();
@@ -198,7 +198,7 @@ impl Ipv6Processor {
                     } else {
                         let mut builder = PacketPayloadBuilder::new();
                         if builder
-                            .push_generated_bytes(&raw_packet[..unfrag_len])
+                            .append_generated_bytes(&raw_packet[..unfrag_len])
                             .is_none()
                         {
                             self.stats.record_header_error();
@@ -236,7 +236,7 @@ impl Ipv6Processor {
             frag_header,
         ) = fragment_info;
         let Some(frag_payload_packet) =
-            retain_payload_window_owned(original, frag_payload_offset, frag_payload_len)
+            move_payload_window_owned(original, frag_payload_offset, frag_payload_len)
         else {
             self.stats.record_header_error();
             return Ipv6ProcessResult::Error;
@@ -276,7 +276,7 @@ impl Ipv6Processor {
                 frag_bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
                 frag_bytes[4..8].copy_from_slice(&frag_header.identification.to_be_bytes());
                 let mut builder = PacketPayloadBuilder::new();
-                if builder.push_generated_bytes(&frag_bytes).is_none() {
+                if builder.append_generated_bytes(&frag_bytes).is_none() {
                     self.stats.record_header_error();
                     return Ipv6ProcessResult::Error;
                 }
