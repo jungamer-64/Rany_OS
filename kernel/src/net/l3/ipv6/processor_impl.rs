@@ -11,15 +11,6 @@ use crate::net::payload::{
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv6Processor {
-    fn packet_payload_from_frame(
-        data: &[u8],
-        _packet_ref: Option<&PacketRef>,
-    ) -> Option<PacketPayload> {
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder.append_generated_bytes(data)?;
-        Some(builder.build())
-    }
-
     /// Create a new IPv6 processor
     pub fn new(config: Ipv6Config) -> Self {
         Ipv6Processor {

@@ -5,29 +5,6 @@
 use super::*;
 
 impl Icmpv6Builder {
-    fn append_copied_prefix(
-        target: &mut PacketPayload,
-        source: &PacketPayloadView<'_>,
-        len: usize,
-    ) -> Option<()> {
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        let mut copied = 0usize;
-        source.for_each_chunk(|chunk| {
-            if copied >= len {
-                return;
-            }
-            let take = (len - copied).min(chunk.len());
-            if take > 0 && builder.append_generated_bytes(&chunk[..take]).is_some() {
-                copied += take;
-            }
-        });
-        if copied != len {
-            return None;
-        }
-        crate::net::payload::append_payload(target, builder.build());
-        Some(())
-    }
-
     /// Build an ICMPv6 Echo Reply
     ///
     /// Returns the complete ICMPv6 message with correct checksum

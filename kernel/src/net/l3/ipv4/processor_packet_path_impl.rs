@@ -8,12 +8,6 @@ use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, move_payload_
 use kernel_api::resource::net::PacketPayload;
 
 impl Ipv4Processor {
-    fn owned_packet_payload(_packet_ref: Option<&PacketRef>, data: &[u8]) -> Option<PacketPayload> {
-        let mut builder = PacketPayloadBuilder::new();
-        builder.append_generated_bytes(data)?;
-        Some(builder.build())
-    }
-
     pub(crate) fn process_fragment_owned_packet(
         &mut self,
         packet_ref: PacketRef,

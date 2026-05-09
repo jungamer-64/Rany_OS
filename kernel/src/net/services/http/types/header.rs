@@ -4,17 +4,8 @@
 
 use crate::net::payload::{PayloadRange, PayloadSpanRef};
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 use core::fmt;
 use kernel_api::resource::net::PacketPayload;
-
-fn payload_span_to_string(span: PayloadSpanRef<'_>) -> Option<String> {
-    let mut bytes = Vec::new();
-    bytes.reserve(span.total_len());
-    span.for_each_chunk(|chunk| bytes.extend_from_slice(chunk));
-    let text = core::str::from_utf8(&bytes).ok()?;
-    Some(String::from(text))
-}
 
 fn is_http_token_char(byte: u8) -> bool {
     matches!(
@@ -200,11 +191,4 @@ impl HttpHeaderView {
             .is_some_and(|span| span.eq_ignore_ascii_case(name.as_bytes()))
     }
 
-    pub fn typed_name(&self, payload: &PacketPayload) -> Option<HttpHeaderName> {
-        HttpHeaderName::parse(&payload_span_to_string(self.name_span(payload)?)?)
-    }
-
-    pub fn typed_value(&self, payload: &PacketPayload) -> Option<HttpHeaderValue> {
-        HttpHeaderValue::parse(&payload_span_to_string(self.value_span(payload)?)?)
-    }
 }

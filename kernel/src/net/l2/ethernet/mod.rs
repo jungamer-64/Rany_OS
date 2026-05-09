@@ -276,16 +276,6 @@ impl<'a> EthernetFrameMut<'a> {
         self
     }
 
-    /// Copy payload data
-    pub fn write_payload(&mut self, payload: &[u8]) -> usize {
-        let max_len = self.data.len() - EthernetHeader::SIZE;
-        let copy_len = payload.len().min(max_len);
-        self.data[EthernetHeader::SIZE..EthernetHeader::SIZE + copy_len]
-            .copy_from_slice(&payload[..copy_len]);
-        self.payload_len = copy_len;
-        copy_len
-    }
-
     /// Get total frame length
     pub fn total_len(&self) -> usize {
         EthernetHeader::SIZE + self.payload_len
@@ -617,16 +607,6 @@ impl<'a> VlanEthernetFrameMut<'a> {
     pub fn set_payload_len(&mut self, len: usize) -> &mut Self {
         self.payload_len = len.min(self.data.len() - Self::HEADER_SIZE);
         self
-    }
-
-    /// Copy payload data into frame
-    pub fn write_payload(&mut self, payload: &[u8]) -> usize {
-        let max_len = self.data.len() - Self::HEADER_SIZE;
-        let copy_len = payload.len().min(max_len);
-        self.data[Self::HEADER_SIZE..Self::HEADER_SIZE + copy_len]
-            .copy_from_slice(&payload[..copy_len]);
-        self.payload_len = copy_len;
-        copy_len
     }
 
     /// Get total frame length

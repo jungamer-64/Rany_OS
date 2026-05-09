@@ -5,19 +5,6 @@
 use super::*;
 use crate::net::payload::PacketPayloadView;
 
-fn copy_payload_prefix(view: &PacketPayloadView<'_>, dst: &mut [u8]) -> usize {
-    let mut copied = 0usize;
-    view.for_each_chunk(|chunk| {
-        if copied == dst.len() {
-            return;
-        }
-        let take = chunk.len().min(dst.len() - copied);
-        dst[copied..copied + take].copy_from_slice(&chunk[..take]);
-        copied += take;
-    });
-    copied
-}
-
 impl IcmpProcessor {
     /// Build an echo reply packet
     pub fn build_echo_reply(
