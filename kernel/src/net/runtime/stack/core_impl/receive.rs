@@ -71,7 +71,7 @@ impl NetworkStack {
                     self.stats.record_rx_error();
                     return;
                 };
-                self.process_icmp_payload(&icmp_payload, src_ip, dst_ip, ttl, current_time);
+                self.process_icmp_payload(icmp_payload, src_ip, dst_ip, ttl, current_time);
             }
             Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 let Some(packet_ref) = packet.take() else {
@@ -166,21 +166,25 @@ impl NetworkStack {
                 self.send_icmp_time_exceeded_payload(
                     src,
                     crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
-                    &header_data,
+                    header_data,
                 );
             }
-            Ipv4ProcessResult::UnknownProtocol(proto, src, _dst, orig_packet) => {
+            Ipv4ProcessResult::UnknownProtocol(proto, src, _dst) => {
                 // RFC 792: send Destination Unreachable / Protocol Unreachable.
                 log::warn!(
                     "IPv4: Unknown protocol {} from {} - sending ICMP Protocol Unreachable",
                     proto,
                     src
                 );
+                let Some(packet_ref) = packet.take() else {
+                    self.stats.record_rx_error();
+                    return;
+                };
                 self.send_icmp_error_payload(
                     src,
                     crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
                     None,
-                    &orig_packet,
+                    kernel_api::resource::net::PacketPayload::single(packet_ref),
                     current_time,
                 );
             }
@@ -192,7 +196,7 @@ impl NetworkStack {
 
     pub fn process_icmp_payload(
         &mut self,
-        payload: &kernel_api::resource::net::PacketPayload,
+        payload: kernel_api::resource::net::PacketPayload,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         _ttl: u8,
@@ -211,7 +215,7 @@ impl NetworkStack {
 
         let result = self
             .icmp
-            .process_payload(payload, src_ip, dst_ip, current_time);
+            .process_payload(&payload, src_ip, dst_ip, current_time);
 
         match result {
             IcmpResult::SendEchoReply {
@@ -222,7 +226,7 @@ impl NetworkStack {
                 data_len,
             } => {
                 let Some(echo_data) =
-                    crate::net::payload::PayloadSpanRef::from_range(payload, data_offset, data_len)
+                    crate::net::payload::move_payload_window_owned(payload, data_offset, data_len)
                 else {
                     self.stats.record_rx_error();
                     return;
@@ -252,7 +256,7 @@ impl NetworkStack {
                 );
             }
             IcmpResult::Error { icmp_type, code } => {
-                self.handle_icmp_error_payload(payload, icmp_type, code, current_time);
+                self.handle_icmp_error_payload(&payload, icmp_type, code, current_time);
             }
             IcmpResult::Redirect {
                 code,
@@ -495,8 +499,7 @@ impl NetworkStack {
                         return;
                     }
                 }
-                let quoted = crate::net::payload::PacketPayloadView::new(&quoted);
-                self.send_icmpv6_time_exceeded(src, 1, &quoted);
+                self.send_icmpv6_time_exceeded(src, 1, quoted);
             }
             Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => match err {
                 crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
@@ -509,7 +512,7 @@ impl NetworkStack {
                 crate::net::l3::ipv6::Ipv6ReassemblyError::InvalidSize
                 | crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
                     // RFC 8200: Parameter Problem, pointer to Payload Length field.
-                    self.send_icmpv6_parameter_problem_payload(src, 0, 4, &quoted_packet);
+                    self.send_icmpv6_parameter_problem_payload(src, 0, 4, quoted_packet);
                 }
                 crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
                     // RFC 7112: pointer targets first byte of Fragment Header.
@@ -519,18 +522,40 @@ impl NetworkStack {
                         src,
                         0,
                         fragment_header_pointer,
-                        &quoted_packet,
+                        quoted_packet,
                     );
                 }
             },
-            Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst, orig_packet) => {
+            Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst) => {
                 // RFC 4443 Section 3.4: Parameter Problem (Code 1).
-                self.send_icmpv6_parameter_problem_payload(src, 1, pointer, &orig_packet);
+                let Some(packet_ref) = ip_packet.take() else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                self.send_icmpv6_parameter_problem_payload(
+                    src,
+                    1,
+                    pointer,
+                    kernel_api::resource::net::PacketPayload::single(packet_ref),
+                );
             }
-            Ipv6ProcessResult::HopLimitExceeded(src, _dst, orig_packet) => {
+            Ipv6ProcessResult::UnknownNextHeaderOwned(_proto, pointer, src, _dst, orig_packet) => {
+                self.send_icmpv6_parameter_problem_payload(src, 1, pointer, orig_packet);
+            }
+            Ipv6ProcessResult::HopLimitExceeded(src, _dst) => {
                 // RFC 4443 Section 3.3: Time Exceeded (Code 0).
-                let orig_packet = crate::net::payload::PacketPayloadView::new(&orig_packet);
-                self.send_icmpv6_time_exceeded(src, 0, &orig_packet);
+                let Some(packet_ref) = ip_packet.take() else {
+                    self.stats.record_rx_error();
+                    return;
+                };
+                self.send_icmpv6_time_exceeded(
+                    src,
+                    0,
+                    kernel_api::resource::net::PacketPayload::single(packet_ref),
+                );
+            }
+            Ipv6ProcessResult::HopLimitExceededOwned(src, _dst, orig_packet) => {
+                self.send_icmpv6_time_exceeded(src, 0, orig_packet);
             }
             Ipv6ProcessResult::Dropped => self.stats.record_dropped(),
             Ipv6ProcessResult::Error => self.stats.record_rx_error(),

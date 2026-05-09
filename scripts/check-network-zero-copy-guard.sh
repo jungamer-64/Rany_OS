@@ -64,6 +64,42 @@ if rg -n "\\bPayloadPrefix\\b|\\bread_prefix\\b" "${network_tree[@]}" >/dev/null
   fail "found removed payload prefix materialization surface"
 fi
 
+if rg -n "\\bcopy_payload_prefix\\b|\\bappend_copied_prefix\\b|\\bowned_packet_payload\\b|\\bpacket_payload_from_frame\\b" \
+  "${network_tree[@]}" kernel/src/test \
+  >/dev/null; then
+  fail "found removed packet payload materialization root"
+fi
+
+if rg -n "\\bpayload_span_to_string\\b|\\btyped_name\\b|\\btyped_value\\b" \
+  "${network_tree[@]}" kernel/src/test \
+  >/dev/null; then
+  fail "found removed payload span text materialization accessor"
+fi
+
+if rg -n "\\bwrite_payload_view\\b|\\bwrite_payload_span_ref\\b|\\.write_data\\(" \
+  kernel/src/net/l3/icmp kernel/src/net/l4/udp \
+  >/dev/null; then
+  fail "found removed ICMP/UDP payload copy writer"
+fi
+
+if rg -n "append_generated_bytes\\(&raw_packet|core::mem::take\\(&mut remaining_payload\\)|more_fragments \\|\\| offset != 0 \\|\\| fragment_data_len !=" \
+  kernel/src/net/l3/ipv6/processor_impl.rs \
+  kernel/src/net/runtime/stack/core_impl/mod.rs \
+  kernel/src/net/runtime/stack/core_impl/send_v6.rs \
+  >/dev/null; then
+  fail "found removed ingress or fragmentation payload copy fallback"
+fi
+
+if ! rg -n "\\bTxOwnerGroupState\\b" kernel/src/net/runtime/device/mod.rs >/dev/null; then
+  fail "missing TX owner group state for fragmented descriptor ownership"
+fi
+
+if rg -n "\\btx_bounce\\b|\\bbounce_tx\\b|\\blinearize_tx\\b|copy[^\\n]*tx[^\\n]*fallback|tx[^\\n]*copy[^\\n]*fallback" \
+  "${network_tree[@]}" interfaces/kernel_api/src/netdev.rs \
+  >/dev/null; then
+  fail "found driver TX bounce/copy fallback"
+fi
+
 if rg -n "\\bpub fn split_at\\b|\\bsplit_at:\\s*unsafe fn|\\bfn [A-Za-z0-9_]*split_at\\b" \
   interfaces/kernel_api/src/types.rs kernel/src/net/datapath/mempool/mod.rs \
   >/dev/null; then

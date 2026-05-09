@@ -3,126 +3,121 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::PacketPayloadView;
+use crate::net::payload::{PacketPayloadView, append_payload, move_payload_window_owned};
+use kernel_api::resource::net::PacketPayload;
 
-impl IcmpProcessor {
-    /// Build an echo reply packet
-    pub fn build_echo_reply(
-        buffer: &mut [u8],
-        identifier: u16,
-        sequence: u16,
-        echo_data: &[u8],
-    ) -> Option<usize> {
-        let mut builder = IcmpEchoBuilder::new(buffer)?;
-        builder
-            .build_reply(identifier, sequence)
-            .write_data(echo_data);
-        Some(builder.finalize())
-    }
+fn packet_payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
+    let mut sum = initial;
+    let mut trailing = None;
 
-    /// Build an echo request packet
-    pub fn build_echo_request(
-        buffer: &mut [u8],
-        identifier: u16,
-        sequence: u16,
-        data: &[u8],
-    ) -> Option<usize> {
-        let mut builder = IcmpEchoBuilder::new(buffer)?;
-        builder.build_request(identifier, sequence).write_data(data);
-        Some(builder.finalize())
-    }
-
-    /// Build a destination unreachable packet (RFC 792 / RFC 1191)
-    pub fn build_dest_unreachable(
-        buffer: &mut [u8],
-        code: DestUnreachCode,
-        next_hop_mtu: Option<u16>,
-        original_packet: &PacketPayloadView<'_>,
-    ) -> Option<usize> {
-        if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
-            return None;
-        }
-
-        let mut builder = IcmpBuilder::new(buffer)?;
-        builder
-            .set_type(IcmpType::DestinationUnreachable)
-            .set_code(code as u8);
-
-        // Bytes 4-7 of ICMP: 4 bytes unused, but for Code 4 (Fragmentation Needed)
-        // the last 2 bytes (bytes 6-7) contain the Next-Hop MTU (RFC 1191).
-        let payload = builder.payload_mut();
-        payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Default to zero
-
-        if code == DestUnreachCode::FragmentationNeeded {
-            if let Some(mtu) = next_hop_mtu {
-                payload[2..4].copy_from_slice(&mtu.to_be_bytes());
+    view.for_each_chunk(|chunk| {
+        let mut index = 0usize;
+        if let Some(prev) = trailing.take() {
+            if let Some((&first, rest)) = chunk.split_first() {
+                sum = sum.saturating_add(u16::from_be_bytes([prev, first]) as u32);
+                index = 1;
+                if rest.is_empty() {
+                    return;
+                }
+            } else {
+                trailing = Some(prev);
+                return;
             }
         }
 
-        // RFC 1122 / RFC 1812: Include the full IP header + at least 8 octets of the data.
-        // MUST NOT exceed 576 bytes total (IP header 20 + ICMP header 8 + payload 4 + copy_len <= 576 -> copy_len <= 544).
-        let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
-        if copy_payload_prefix(original_packet, &mut payload[4..4 + copy_len]) != copy_len {
-            return None;
+        while index + 1 < chunk.len() {
+            sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
+            index += 2;
         }
+        if index < chunk.len() {
+            trailing = Some(chunk[index]);
+        }
+    });
 
-        builder.set_payload_len(4 + copy_len);
-        Some(builder.finalize())
+    if let Some(last) = trailing {
+        sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
     }
 
-    /// Build a time exceeded packet
-    pub fn build_time_exceeded(
-        buffer: &mut [u8],
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+impl IcmpProcessor {
+    fn build_error_payload(
+        icmp_type: IcmpType,
+        code: u8,
+        rest_of_header: [u8; 4],
+        original_packet: PacketPayload,
+    ) -> Option<PacketPayload> {
+        let quote_len = original_packet.total_len().min(544);
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(
+            IcmpHeader::SIZE + 4,
+            kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
+        )?;
+        let data = packet.data_mut();
+        data[0] = u8::from(icmp_type);
+        data[1] = code;
+        data[2] = 0;
+        data[3] = 0;
+        data[4..8].copy_from_slice(&rest_of_header);
+        packet.set_len(IcmpHeader::SIZE + 4);
+
+        let mut message = PacketPayload::single(packet);
+        if quote_len != 0 {
+            append_payload(
+                &mut message,
+                move_payload_window_owned(original_packet, 0, quote_len)?,
+            );
+        }
+
+        let checksum = packet_payload_checksum(&PacketPayloadView::new(&message), 0);
+        if let Some(first) = message.segments_mut().first_mut() {
+            first.data_mut()[2..4].copy_from_slice(&checksum.to_be_bytes());
+        }
+        Some(message)
+    }
+
+    /// Build a destination unreachable payload (RFC 792 / RFC 1191).
+    pub fn build_dest_unreachable_payload(
+        code: DestUnreachCode,
+        next_hop_mtu: Option<u16>,
+        original_packet: PacketPayload,
+    ) -> Option<PacketPayload> {
+        let mut rest = [0u8; 4];
+        if code == DestUnreachCode::FragmentationNeeded {
+            if let Some(mtu) = next_hop_mtu {
+                rest[2..4].copy_from_slice(&mtu.to_be_bytes());
+            }
+        }
+        Self::build_error_payload(
+            IcmpType::DestinationUnreachable,
+            code as u8,
+            rest,
+            original_packet,
+        )
+    }
+
+    /// Build a time exceeded payload.
+    pub fn build_time_exceeded_payload(
         code: TimeExceededCode,
-        original_packet: &PacketPayloadView<'_>,
-    ) -> Option<usize> {
-        if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
-            return None;
-        }
-
-        let mut builder = IcmpBuilder::new(buffer)?;
-        builder
-            .set_type(IcmpType::TimeExceeded)
-            .set_code(code as u8);
-
-        let payload = builder.payload_mut();
-        payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
-
-        // RFC 1122 / RFC 1812: MUST NOT exceed 576 bytes total.
-        let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
-        if copy_payload_prefix(original_packet, &mut payload[4..4 + copy_len]) != copy_len {
-            return None;
-        }
-
-        builder.set_payload_len(4 + copy_len);
-        Some(builder.finalize())
+        original_packet: PacketPayload,
+    ) -> Option<PacketPayload> {
+        Self::build_error_payload(IcmpType::TimeExceeded, code as u8, [0; 4], original_packet)
     }
 
-    /// Build a parameter problem packet (RFC 792)
-    pub fn build_parameter_problem(
-        buffer: &mut [u8],
+    /// Build a parameter problem payload (RFC 792).
+    pub fn build_parameter_problem_payload(
         pointer: u8,
-        original_packet: &PacketPayloadView<'_>,
-    ) -> Option<usize> {
-        if buffer.len() < IcmpHeader::SIZE + 4 + 28 {
-            return None;
-        }
-
-        let mut builder = IcmpBuilder::new(buffer)?;
-        builder.set_type(IcmpType::ParameterProblem).set_code(0);
-
-        let payload = builder.payload_mut();
-        payload[0] = pointer; // Pointer to the byte in the original header where the error was detected
-        payload[1..4].copy_from_slice(&[0, 0, 0]); // Unused
-
-        // RFC 1122 / RFC 1812: MUST NOT exceed 576 bytes total.
-        let copy_len = original_packet.total_len().min(payload.len() - 4).min(544);
-        if copy_payload_prefix(original_packet, &mut payload[4..4 + copy_len]) != copy_len {
-            return None;
-        }
-
-        builder.set_payload_len(4 + copy_len);
-        Some(builder.finalize())
+        original_packet: PacketPayload,
+    ) -> Option<PacketPayload> {
+        Self::build_error_payload(
+            IcmpType::ParameterProblem,
+            0,
+            [pointer, 0, 0, 0],
+            original_packet,
+        )
     }
 
     /// Build a timestamp reply packet (RFC 792)

@@ -1130,7 +1130,9 @@ pub enum Ipv6ProcessResult<'a> {
         kernel_api::resource::net::PacketPayload,
     ),
     /// Unknown Next Header encountered (RFC 4443 Parameter Problem Code 1)
-    UnknownNextHeader(
+    UnknownNextHeader(u8, u32, Ipv6Address, Ipv6Address),
+    /// Unknown Next Header encountered while the processor owns the packet.
+    UnknownNextHeaderOwned(
         u8,
         u32,
         Ipv6Address,
@@ -1138,7 +1140,9 @@ pub enum Ipv6ProcessResult<'a> {
         kernel_api::resource::net::PacketPayload,
     ),
     /// Hop Limit exceeded (RFC 4443 Time Exceeded Code 0)
-    HopLimitExceeded(
+    HopLimitExceeded(Ipv6Address, Ipv6Address),
+    /// Hop Limit exceeded while the processor owns the packet.
+    HopLimitExceededOwned(
         Ipv6Address,
         Ipv6Address,
         kernel_api::resource::net::PacketPayload,

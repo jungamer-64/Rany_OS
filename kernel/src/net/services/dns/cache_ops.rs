@@ -5,7 +5,7 @@
 use super::*;
 use alloc::string::String;
 
-fn payload_span_to_string(span: crate::net::payload::PayloadSpanRef<'_>) -> String {
+fn dns_public_span_to_string(span: crate::net::payload::PayloadSpanRef<'_>) -> String {
     let mut out = String::with_capacity(span.total_len());
     for index in 0..span.total_len() {
         if let Some(byte) = span.byte_at(index) {
@@ -21,7 +21,7 @@ fn dns_name_view_to_string(payload: &PacketPayload, name: &DnsNameView) -> Optio
         if index > 0 {
             out.push('.');
         }
-        out.push_str(&payload_span_to_string(label.span(payload)?));
+        out.push_str(&dns_public_span_to_string(label.span(payload)?));
     }
     Some(out)
 }
@@ -29,7 +29,7 @@ fn dns_name_view_to_string(payload: &PacketPayload, name: &DnsNameView) -> Optio
 fn dns_txt_view_to_string(payload: &PacketPayload, txt: &DnsTxtView) -> Option<String> {
     let mut out = String::with_capacity(txt.text_len());
     for span in txt.spans() {
-        out.push_str(&payload_span_to_string(span.span(payload)?));
+        out.push_str(&dns_public_span_to_string(span.span(payload)?));
     }
     Some(out)
 }

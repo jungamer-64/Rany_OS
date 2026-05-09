@@ -6,7 +6,6 @@
 //! This module integrates all network protocol layers into
 //! a unified zero-copy network stack as specified in Section 6.2.
 
-use crate::net::datapath::mempool::PacketRef;
 use crate::net::datapath::optimization::PacketBatch;
 use crate::net::l2::arp::{ArpProcessor, ArpResult};
 use crate::net::l2::ethernet::{

@@ -195,7 +195,7 @@ impl NetworkStack {
                         src_ip,
                         DestUnreachCode::PortUnreachable,
                         None,
-                        &original_packet,
+                        original_packet,
                         current_time,
                     );
                 }
@@ -229,7 +229,7 @@ impl NetworkStack {
             Ok(()) => {}
             Err((UdpResult::NoEndpoint, original_packet)) => {
                 self.stats.record_dropped();
-                self.send_icmpv6_error_payload(src, 4, &original_packet);
+                self.send_icmpv6_error_payload(src, 4, original_packet);
             }
             Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
                 self.stats.record_rx_error();

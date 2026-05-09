@@ -137,11 +137,12 @@ impl NetworkStack {
 
         let identification = Self::next_ipv6_fragment_identification();
         let total_payload_len = payload_view.total_len();
-        let mut remaining_payload = payload;
+        let owners = payload.into_segments();
+        let mut fragments = Vec::new();
         let mut offset = 0usize;
 
         while offset < total_payload_len {
-            let remaining = remaining_payload.total_len();
+            let remaining = total_payload_len - offset;
             let fragment_data_len = if remaining > fragment_payload_limit {
                 non_last_fragment_len.min(remaining)
             } else {
@@ -149,9 +150,6 @@ impl NetworkStack {
             };
             let more_fragments = offset + fragment_data_len < total_payload_len;
             if more_fragments && (fragment_data_len % 8 != 0) {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
-            if more_fragments || offset != 0 || fragment_data_len != total_payload_len {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
 
@@ -198,17 +196,22 @@ impl NetworkStack {
             drop(frame);
             packet.set_len(frame_len);
 
-            let fragment_payload = core::mem::take(&mut remaining_payload);
-            let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
-            crate::net::payload::append_payload(&mut frame_payload, fragment_payload);
-            if !self.transmit_packet_on(if_id, frame_payload) {
-                return Err(crate::net::types::NetworkError::TransmitFailed);
-            }
+            let descriptors =
+                Self::build_fragment_tx_descriptors(&packet, &owners, offset, fragment_data_len)?;
+            let frame_len = packet
+                .len()
+                .checked_add(fragment_data_len)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            fragments.push(FragmentTxPacket {
+                header: packet,
+                descriptors,
+                frame_len,
+            });
 
             offset += fragment_data_len;
         }
 
-        Ok(())
+        self.transmit_fragment_packets_on(if_id, owners, fragments)
     }
 
     /// Send ICMPv6 Echo Reply with explicit source
@@ -273,15 +276,23 @@ impl NetworkStack {
         &mut self,
         dst_v6: Ipv6Address,
         mtu: u32,
-        original_packet: &crate::net::payload::PacketPayloadView<'_>,
+        original_packet: PacketPayload,
     ) -> bool {
         if let Some(ref mut ipv6_proc) = self.ipv6 {
             let our_addr = ipv6_proc.config().link_local;
 
             // SECURITY: RFC 4443 への準拠を検査する。
-            if !self.should_send_icmp_v6_error(original_packet, dst_v6, Icmpv6Type::PacketTooBig, 0)
             {
-                return false;
+                let original_packet_view =
+                    crate::net::payload::PacketPayloadView::new(&original_packet);
+                if !self.should_send_icmp_v6_error(
+                    &original_packet_view,
+                    dst_v6,
+                    Icmpv6Type::PacketTooBig,
+                    0,
+                ) {
+                    return false;
+                }
             }
 
             // Rate limit ICMPv6 error messages
@@ -313,19 +324,23 @@ impl NetworkStack {
         &mut self,
         dst_v6: Ipv6Address,
         code: u8,
-        original_packet: &crate::net::payload::PacketPayloadView<'_>,
+        original_packet: PacketPayload,
     ) -> bool {
         if let Some(ref mut ipv6_proc) = self.ipv6 {
             let our_addr = ipv6_proc.config().link_local;
 
             // SECURITY: multicast などへ error を返さないことを含め、RFC 4443 への準拠を検査する。
-            if !self.should_send_icmp_v6_error(
-                original_packet,
-                dst_v6,
-                Icmpv6Type::TimeExceeded,
-                code,
-            ) {
-                return false;
+            {
+                let original_packet_view =
+                    crate::net::payload::PacketPayloadView::new(&original_packet);
+                if !self.should_send_icmp_v6_error(
+                    &original_packet_view,
+                    dst_v6,
+                    Icmpv6Type::TimeExceeded,
+                    code,
+                ) {
+                    return false;
+                }
             }
 
             // SECURITY: ICMPv6 error message を rate limit する（RFC 4443）。

@@ -86,7 +86,7 @@ impl Icmpv6Builder {
         src: &Ipv6Address,
         dst: &Ipv6Address,
         mtu: u32,
-        trigger_packet: &PacketPayloadView<'_>,
+        trigger_packet: PacketPayload,
     ) -> Option<PacketPayload> {
         Self::build_error(src, dst, Icmpv6Type::PacketTooBig, 0, mtu, trigger_packet)
     }
@@ -96,7 +96,7 @@ impl Icmpv6Builder {
         src: &Ipv6Address,
         dst: &Ipv6Address,
         code: u8,
-        trigger_packet: &PacketPayloadView<'_>,
+        trigger_packet: PacketPayload,
     ) -> Option<PacketPayload> {
         Self::build_error(
             src,
@@ -113,7 +113,7 @@ impl Icmpv6Builder {
         src: &Ipv6Address,
         dst: &Ipv6Address,
         code: u8,
-        trigger_packet: &PacketPayloadView<'_>,
+        trigger_packet: PacketPayload,
     ) -> Option<PacketPayload> {
         Self::build_error(src, dst, Icmpv6Type::TimeExceeded, code, 0, trigger_packet)
     }
@@ -124,7 +124,7 @@ impl Icmpv6Builder {
         dst: &Ipv6Address,
         code: u8,
         pointer: u32,
-        trigger_packet: &PacketPayloadView<'_>,
+        trigger_packet: PacketPayload,
     ) -> Option<PacketPayload> {
         Self::build_error(
             src,
@@ -143,7 +143,7 @@ impl Icmpv6Builder {
         msg_type: Icmpv6Type,
         code: u8,
         arg: u32,
-        trigger_packet: &PacketPayloadView<'_>,
+        trigger_packet: PacketPayload,
     ) -> Option<PacketPayload> {
         // ICMPv6 header (4) + arg/unused (4) + as much of trigger as fits
         // stay under minimum MTU of 1280 (RFC 4443)
@@ -163,7 +163,10 @@ impl Icmpv6Builder {
 
         let mut message_payload = PacketPayload::single(packet);
         if max_trigger > 0 {
-            Self::append_copied_prefix(&mut message_payload, trigger_packet, max_trigger)?;
+            crate::net::payload::append_payload(
+                &mut message_payload,
+                crate::net::payload::move_payload_window_owned(trigger_packet, 0, max_trigger)?,
+            );
         }
 
         // Compute checksum

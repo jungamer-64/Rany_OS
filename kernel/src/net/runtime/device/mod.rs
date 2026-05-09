@@ -63,6 +63,7 @@ impl TxCompletionState {
 pub(crate) struct TxLeaseState {
     keepalive: Vec<PacketRef>,
     completion_id: Option<u64>,
+    owner_group_id: Option<u64>,
 }
 
 impl TxLeaseState {
@@ -70,8 +71,173 @@ impl TxLeaseState {
         Self {
             keepalive,
             completion_id,
+            owner_group_id: None,
         }
     }
+
+    fn grouped(keepalive: Vec<PacketRef>, owner_group_id: u64) -> Self {
+        Self {
+            keepalive,
+            completion_id: None,
+            owner_group_id: Some(owner_group_id),
+        }
+    }
+}
+
+pub(crate) struct TxOwnerGroupState {
+    keepalive: Vec<PacketRef>,
+    completion_id: Option<u64>,
+    remaining_leases: usize,
+    result: TxCompletionResult,
+}
+
+impl TxOwnerGroupState {
+    fn new(keepalive: Vec<PacketRef>, completion_id: Option<u64>, remaining_leases: usize) -> Self {
+        Self {
+            keepalive,
+            completion_id,
+            remaining_leases,
+            result: Ok(()),
+        }
+    }
+
+    fn complete_one(&mut self, result: TxCompletionResult) -> bool {
+        if self.result.is_ok() {
+            self.result = result;
+        }
+        self.remaining_leases = self.remaining_leases.saturating_sub(1);
+        self.remaining_leases == 0
+    }
+
+    fn into_parts(self) -> (Vec<PacketRef>, Option<u64>, TxCompletionResult) {
+        (self.keepalive, self.completion_id, self.result)
+    }
+}
+
+fn complete_tx_owner_group_in(
+    runtime: NetRuntimeHandle,
+    group_id: u64,
+    result: TxCompletionResult,
+) -> bool {
+    let completed = {
+        let mut groups = runtime_context_for(runtime)
+            .tx_owner_groups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(group) = groups.get_mut(&group_id) else {
+            return false;
+        };
+        if !group.complete_one(result) {
+            return true;
+        }
+        groups.remove(&group_id)
+    };
+
+    let Some(group) = completed else {
+        return false;
+    };
+    let (keepalive, completion_id, final_result) = group.into_parts();
+    if let Some(completion_id) = completion_id {
+        let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
+            completion_id,
+            keepalive,
+            final_result,
+        );
+        let _ = complete_tx_request_in(runtime, completion_id, final_result);
+    }
+    true
+}
+
+pub(crate) fn register_tx_owner_group_in(
+    runtime: NetRuntimeHandle,
+    keepalive: Vec<PacketRef>,
+    remaining_leases: usize,
+    completion_id: Option<u64>,
+) -> Option<u64> {
+    if keepalive.is_empty() || remaining_leases == 0 {
+        return None;
+    }
+    let group_id = runtime_context_for(runtime)
+        .tx_owner_group_next_id
+        .fetch_add(1, Ordering::Relaxed);
+    runtime_context_for(runtime)
+        .tx_owner_groups
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            group_id,
+            TxOwnerGroupState::new(keepalive, completion_id, remaining_leases),
+        );
+    Some(group_id)
+}
+
+pub(crate) fn unregister_tx_owner_group_in(runtime: NetRuntimeHandle, group_id: u64) {
+    runtime_context_for(runtime)
+        .tx_owner_groups
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&group_id);
+}
+
+pub(crate) fn packet_window_to_tx_segments(
+    packets: &[PacketRef],
+    offset: usize,
+    len: usize,
+) -> Option<Vec<NetTxSegment>> {
+    if len == 0 {
+        return None;
+    }
+
+    let mut descriptors = Vec::new();
+    let mut cursor = 0usize;
+    let window_end = offset.checked_add(len)?;
+    for packet in packets {
+        let packet_start = cursor;
+        let packet_end = cursor.checked_add(packet.len())?;
+        cursor = packet_end;
+        if packet_end <= offset || packet_start >= window_end {
+            continue;
+        }
+        let local_start = offset.saturating_sub(packet_start);
+        let local_end = packet.len().min(window_end.saturating_sub(packet_start));
+        if local_start >= local_end {
+            continue;
+        }
+        let descriptor_len = local_end - local_start;
+        let cpu_ptr = unsafe { packet.data().as_ptr().add(local_start) };
+        descriptors.push(NetTxSegment::new(
+            cpu_ptr,
+            packet.device_address().saturating_add(local_start as u64),
+            descriptor_len,
+        ));
+    }
+
+    (!descriptors.is_empty()).then_some(descriptors)
+}
+
+pub(crate) fn register_grouped_tx_lease_in(
+    runtime: NetRuntimeHandle,
+    keepalive: Vec<PacketRef>,
+    owner_group_id: u64,
+    descriptors: Vec<NetTxSegment>,
+    meta: NetTxMeta,
+) -> Option<TxRequest> {
+    if descriptors.is_empty() {
+        return None;
+    }
+    let lease_id = runtime_context_for(runtime)
+        .tx_lease_next_id
+        .fetch_add(1, Ordering::Relaxed);
+    runtime_context_for(runtime)
+        .tx_leases
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(lease_id, TxLeaseState::grouped(keepalive, owner_group_id));
+    Some(TxRequest {
+        lease_id,
+        descriptors,
+        meta,
+    })
 }
 
 pub struct TxCompletionFuture {
@@ -407,6 +573,9 @@ pub fn complete_tx_lease_in(
         .unwrap_or_else(|e| e.into_inner())
         .remove(&lease_id);
     if let Some(lease) = lease {
+        if let Some(owner_group_id) = lease.owner_group_id {
+            return complete_tx_owner_group_in(runtime, owner_group_id, result);
+        }
         if let Some(completion_id) = lease.completion_id {
             let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
                 completion_id,
@@ -623,6 +792,10 @@ impl NetDeviceHandle {
     pub fn enqueue_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> bool {
         register_payload_tx_request_in(default_runtime(), payload, meta)
             .is_some_and(|request| self.tx_queue.push(request))
+    }
+
+    pub(crate) fn enqueue_tx_request(&self, request: TxRequest) -> bool {
+        self.tx_queue.push(request)
     }
 
     pub fn enqueue_event(&self, event: NetDriverEvent) -> bool {
@@ -1445,6 +1618,29 @@ pub fn transmit_packet(if_id: Option<NetIfId>, payload: PacketPayload, meta: Net
     }
 }
 
+pub(crate) fn transmit_registered_tx_request_in(
+    runtime: NetRuntimeHandle,
+    if_id: Option<NetIfId>,
+    request: TxRequest,
+) -> bool {
+    let lease_id = request.lease_id;
+    let resolved_if = if_id.or_else(|| primary_if_in(runtime));
+    let Some(resolved_if) = resolved_if else {
+        let _ = complete_tx_lease_in(runtime, lease_id, Err("network interface unavailable"));
+        return false;
+    };
+    if with_port_handle_in(runtime, resolved_if, |handle| {
+        handle.enqueue_tx_request(request)
+    })
+    .unwrap_or(false)
+    {
+        true
+    } else {
+        let _ = complete_tx_lease_in(runtime, lease_id, Err("device TX queue full"));
+        false
+    }
+}
+
 fn enqueue_event_in(runtime: NetRuntimeHandle, port_id: NetPortId, event: NetDriverEvent) -> bool {
     let Some(if_id) = lookup_if_by_port_id_in(runtime, port_id) else {
         return false;
@@ -1942,5 +2138,92 @@ mod tests {
             Err("submit failed")
         ));
         assert_eq!(crate::task::block_on(future), Err("submit failed"));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn packet_window_descriptors_reference_original_packet_range() {
+        let _ = crate::net::datapath::mempool::init_net_mempool(16);
+        let mut packet = crate::net::datapath::mempool::alloc_packet().expect("packet");
+        packet.set_len(32);
+        let base_ptr = packet.data().as_ptr() as usize;
+        let base_device_addr = packet.device_address();
+        let packets = alloc::vec![packet];
+
+        let descriptors = packet_window_to_tx_segments(&packets, 8, 16).expect("window");
+
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].cpu_ptr, base_ptr + 8);
+        assert_eq!(descriptors[0].device_addr, base_device_addr + 8);
+        assert_eq!(descriptors[0].len, 16);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn tx_owner_group_completes_after_all_fragment_leases() {
+        let _ = crate::net::datapath::mempool::init_net_mempool(16);
+        let mut owner = crate::net::datapath::mempool::alloc_packet().expect("owner");
+        owner.set_len(32);
+        let mut header_a = crate::net::datapath::mempool::alloc_packet().expect("header a");
+        header_a.set_len(8);
+        let mut header_b = crate::net::datapath::mempool::alloc_packet().expect("header b");
+        header_b.set_len(8);
+        let (completion_id, future) = register_tx_completion_in(default_runtime());
+        let group_id = register_tx_owner_group_in(
+            default_runtime(),
+            alloc::vec![owner],
+            2,
+            Some(completion_id),
+        )
+        .expect("owner group");
+        let request_a = register_grouped_tx_lease_in(
+            default_runtime(),
+            alloc::vec![header_a],
+            group_id,
+            alloc::vec![NetTxSegment::new(core::ptr::null(), 0, 8)],
+            NetTxMeta::default(),
+        )
+        .expect("request a");
+        let request_b = register_grouped_tx_lease_in(
+            default_runtime(),
+            alloc::vec![header_b],
+            group_id,
+            alloc::vec![NetTxSegment::new(core::ptr::null(), 8, 8)],
+            NetTxMeta::default(),
+        )
+        .expect("request b");
+
+        assert!(
+            runtime_context()
+                .tx_owner_groups
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&group_id)
+        );
+        assert!(complete_tx_lease_in(
+            default_runtime(),
+            request_a.lease_id,
+            Ok(())
+        ));
+        assert!(
+            runtime_context()
+                .tx_owner_groups
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&group_id)
+        );
+        assert!(complete_tx_lease_in(
+            default_runtime(),
+            request_b.lease_id,
+            Err("fragment failed")
+        ));
+        assert!(
+            !runtime_context()
+                .tx_owner_groups
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(&group_id)
+        );
+        assert_eq!(crate::task::block_on(future), Err("fragment failed"));
     }
 }

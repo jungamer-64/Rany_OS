@@ -276,13 +276,11 @@ impl RuntimeCommandHandler {
 
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    if let Some(transport_payload) =
-                        crate::net::payload::move_payload_window_owned(
-                            payload,
-                            header_len,
-                            transport_len,
-                        )
-                    {
+                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
+                        payload,
+                        header_len,
+                        transport_len,
+                    ) {
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
                             if_id,
                             src_ip.octets(),
@@ -304,15 +302,13 @@ impl RuntimeCommandHandler {
                     );
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmp => {
-                    if let Some(transport_payload) =
-                        crate::net::payload::move_payload_window_owned(
-                            payload,
-                            header_len,
-                            transport_len,
-                        )
-                    {
+                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
+                        payload,
+                        header_len,
+                        transport_len,
+                    ) {
                         stack.process_icmp_payload(
-                            &transport_payload,
+                            transport_payload,
                             src_ip,
                             dst_ip,
                             ttl,
@@ -321,13 +317,11 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Igmp => {
-                    if let Some(transport_payload) =
-                        crate::net::payload::move_payload_window_owned(
-                            payload,
-                            header_len,
-                            transport_len,
-                        )
-                    {
+                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
+                        payload,
+                        header_len,
+                        transport_len,
+                    ) {
                         stack.process_igmp_payload(&transport_payload, src_ip, ttl);
                     }
                 }
@@ -403,13 +397,11 @@ impl RuntimeCommandHandler {
 
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    if let Some(transport_payload) =
-                        crate::net::payload::move_payload_window_owned(
-                            payload,
-                            payload_offset,
-                            transport_len,
-                        )
-                    {
+                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
+                        payload,
+                        payload_offset,
+                        transport_len,
+                    ) {
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
                             if_id,
                             src,
@@ -430,13 +422,11 @@ impl RuntimeCommandHandler {
                     );
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
-                    if let Some(transport_payload) =
-                        crate::net::payload::move_payload_window_owned(
-                            payload,
-                            payload_offset,
-                            transport_len,
-                        )
-                    {
+                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
+                        payload,
+                        payload_offset,
+                        transport_len,
+                    ) {
                         stack.process_icmpv6_data(
                             if_id,
                             transport_payload,
@@ -556,7 +546,7 @@ impl RuntimeCommandHandler {
                 ) else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
-                stack.process_icmp_payload(&payload, src_ip, dst_ip, ttl, current_time);
+                stack.process_icmp_payload(payload, src_ip, dst_ip, ttl, current_time);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 let (offset, payload_len) = {
@@ -662,7 +652,7 @@ impl RuntimeCommandHandler {
                 stack.send_icmp_time_exceeded_payload(
                     src,
                     crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
-                    &header_data,
+                    header_data,
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Dropped => {
@@ -672,22 +662,21 @@ impl RuntimeCommandHandler {
                 stack.stats.record_rx_error();
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Success => {}
-            crate::net::l3::ipv4::Ipv4ProcessResult::UnknownProtocol(
-                proto,
-                src,
-                _dst,
-                orig_packet,
-            ) => {
+            crate::net::l3::ipv4::Ipv4ProcessResult::UnknownProtocol(proto, src, _dst) => {
                 log::warn!(
                     "[NET] Unknown protocol {} from {} - sending ICMP Protocol Unreachable",
                     proto,
                     src
                 );
+                let Some(packet_ref) = ip_packet.take() else {
+                    stack.stats.record_rx_error();
+                    return EventHandleResult::Success;
+                };
                 stack.send_icmp_error_payload(
                     src,
                     crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
                     None,
-                    &orig_packet,
+                    PacketPayload::single(packet_ref),
                     current_time,
                 );
             }

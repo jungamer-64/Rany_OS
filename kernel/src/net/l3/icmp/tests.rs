@@ -16,10 +16,10 @@ pub fn test_echo_builder() {
     let mut buffer = [0u8; 64];
     let mut builder = IcmpEchoBuilder::new(&mut buffer).unwrap();
 
-    builder.build_request(1234, 1).write_data(b"hello");
+    builder.build_request(1234, 1);
     let len = builder.finalize();
 
-    assert_eq!(len, IcmpEchoHeader::SIZE + 5);
+    assert_eq!(len, IcmpEchoHeader::SIZE);
 
     // Verify we can parse it back
     let packet = IcmpPacket::parse(&buffer[..len]).unwrap();
@@ -29,5 +29,5 @@ pub fn test_echo_builder() {
     let echo = packet.as_echo().unwrap();
     assert_eq!(echo.identifier(), 1234);
     assert_eq!(echo.sequence(), 1);
-    assert_eq!(echo.data(), b"hello");
+    assert!(echo.data().is_empty());
 }

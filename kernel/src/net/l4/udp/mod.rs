@@ -272,25 +272,6 @@ impl<'a> UdpPacketMut<'a> {
         &mut self.buffer[UdpHeader::SIZE..]
     }
 
-    /// Write payload from a potentially chained packet payload view.
-    pub fn write_payload_view(&mut self, payload: &PacketPayloadView<'_>) -> usize {
-        let max_buffer = self.buffer.len() - UdpHeader::SIZE;
-        let max_udp = 65527;
-        let len = payload.total_len().min(max_buffer).min(max_udp);
-        let dst = &mut self.buffer[UdpHeader::SIZE..UdpHeader::SIZE + len];
-        let mut copied = 0usize;
-        payload.for_each_chunk(|chunk| {
-            if copied == len {
-                return;
-            }
-            let take = chunk.len().min(len - copied);
-            dst[copied..copied + take].copy_from_slice(&chunk[..take]);
-            copied += take;
-        });
-        self.payload_len = copied;
-        copied
-    }
-
     /// Set payload length
     pub fn set_payload_len(&mut self, len: usize) {
         let max_udp = 65527;

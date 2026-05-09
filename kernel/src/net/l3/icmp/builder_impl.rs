@@ -39,15 +39,6 @@ impl<'a> IcmpBuilder<'a> {
         &mut self.buffer[IcmpHeader::SIZE..]
     }
 
-    /// Write payload
-    pub fn write_payload(&mut self, data: &[u8]) -> usize {
-        let max = self.buffer.len() - IcmpHeader::SIZE;
-        let len = data.len().min(max);
-        self.buffer[IcmpHeader::SIZE..IcmpHeader::SIZE + len].copy_from_slice(&data[..len]);
-        self.payload_len = len;
-        len
-    }
-
     /// Set payload length
     pub fn set_payload_len(&mut self, len: usize) {
         self.payload_len = len.min(self.buffer.len() - IcmpHeader::SIZE);
@@ -109,55 +100,6 @@ impl<'a> IcmpEchoBuilder<'a> {
         header.set_identifier(identifier);
         header.set_sequence(sequence);
         self
-    }
-
-    /// Write echo data
-    pub fn write_data(&mut self, data: &[u8]) -> usize {
-        let max = self.buffer.len() - IcmpEchoHeader::SIZE;
-        let len = data.len().min(max);
-        self.buffer[IcmpEchoHeader::SIZE..IcmpEchoHeader::SIZE + len].copy_from_slice(&data[..len]);
-        self.data_len = len;
-        len
-    }
-
-    pub fn write_payload_view(
-        &mut self,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-    ) -> usize {
-        let max = self.buffer.len() - IcmpEchoHeader::SIZE;
-        let len = view.total_len().min(max);
-        let mut copied = 0usize;
-        view.for_each_chunk(|chunk| {
-            if copied == len {
-                return;
-            }
-            let take = chunk.len().min(len - copied);
-            self.buffer[IcmpEchoHeader::SIZE + copied..IcmpEchoHeader::SIZE + copied + take]
-                .copy_from_slice(&chunk[..take]);
-            copied += take;
-        });
-        self.data_len = copied;
-        copied
-    }
-
-    pub fn write_payload_span_ref(
-        &mut self,
-        span: crate::net::payload::PayloadSpanRef<'_>,
-    ) -> usize {
-        let max = self.buffer.len() - IcmpEchoHeader::SIZE;
-        let len = span.total_len().min(max);
-        let mut copied = 0usize;
-        span.for_each_chunk(|chunk| {
-            if copied == len {
-                return;
-            }
-            let take = chunk.len().min(len - copied);
-            self.buffer[IcmpEchoHeader::SIZE + copied..IcmpEchoHeader::SIZE + copied + take]
-                .copy_from_slice(&chunk[..take]);
-            copied += take;
-        });
-        self.data_len = copied;
-        copied
     }
 
     /// Finalize the packet

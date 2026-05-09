@@ -173,21 +173,17 @@ impl Ipv4Processor {
         data: &'a [u8],
         src: Ipv4Address,
         dst: Ipv4Address,
-        packet_ref: Option<&PacketRef>,
+        _packet_ref: Option<&PacketRef>,
     ) -> Ipv4ProcessResult<'a> {
         // Non-fragmented packet - process normally
         let payload = packet.payload();
-        let original_packet = match Self::owned_packet_payload(packet_ref, data) {
-            Some(payload) => payload,
-            None => return Ipv4ProcessResult::Error,
-        };
 
         match packet.protocol() {
             IpProtocol::Icmp => Ipv4ProcessResult::Icmp(payload, src, dst, packet.ttl(), data),
             IpProtocol::Igmp => Ipv4ProcessResult::Igmp(payload, src, packet.ttl(), data),
             IpProtocol::Tcp => Ipv4ProcessResult::Tcp(payload, src, dst, data),
             IpProtocol::Udp => Ipv4ProcessResult::Udp(payload, src, dst, data),
-            p => Ipv4ProcessResult::UnknownProtocol(p.into(), src, dst, original_packet),
+            p => Ipv4ProcessResult::UnknownProtocol(p.into(), src, dst),
         }
     }
 }
