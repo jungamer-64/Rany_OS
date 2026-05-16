@@ -37,11 +37,20 @@ impl NetNamespace {
         args: &[ExoValue<'static>],
         method: &str,
     ) -> Result<crate::net::runtime::manager::NetIfId, ExoValue<'static>> {
-        match args.first() {
-            Some(ExoValue::Int(n)) if *n >= 0 => {
-                Ok(crate::net::runtime::manager::NetIfId(*n as u16))
-            }
+        match args.first().and_then(Self::parse_if_id_value) {
+            Some(if_id) => Ok(if_id),
             _ => Err(ExoValue::Error(format!("usage: net.{method}(if_id)"))),
+        }
+    }
+
+    fn parse_if_id_value(
+        value: &ExoValue<'static>,
+    ) -> Option<crate::net::runtime::manager::NetIfId> {
+        match value {
+            ExoValue::Int(n) => u16::try_from(*n)
+                .ok()
+                .map(crate::net::runtime::manager::NetIfId),
+            _ => None,
         }
     }
 
@@ -584,8 +593,8 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        let if_id = match args.first() {
-            Some(ExoValue::Int(n)) => crate::net::runtime::manager::NetIfId(*n as u16),
+        let if_id = match args.first().and_then(Self::parse_if_id_value) {
+            Some(if_id) => if_id,
             _ => return ExoValue::Error(String::from("usage: net.if_up(interface_id)")),
         };
         match crate::net::runtime::manager::set_interface_up_in(
@@ -603,8 +612,8 @@ impl NetNamespace {
         if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
         }
-        let if_id = match args.first() {
-            Some(ExoValue::Int(n)) => crate::net::runtime::manager::NetIfId(*n as u16),
+        let if_id = match args.first().and_then(Self::parse_if_id_value) {
+            Some(if_id) => if_id,
             _ => return ExoValue::Error(String::from("usage: net.if_down(interface_id)")),
         };
         match crate::net::runtime::manager::set_interface_down_in(
@@ -748,8 +757,8 @@ impl NetNamespace {
                 Err(e) => return ExoValue::Error(format!("gateway: {}", e)),
             },
         };
-        let if_id = match &args[3] {
-            ExoValue::Int(n) => crate::net::runtime::manager::NetIfId(*n as u16),
+        let if_id = match Self::parse_if_id_value(&args[3]) {
+            Some(if_id) => if_id,
             _ => return ExoValue::Error(String::from("if_id must be integer")),
         };
         let metric = args
@@ -802,8 +811,8 @@ impl NetNamespace {
             ExoValue::Int(n) => *n as u8,
             _ => return ExoValue::Error(String::from("prefix_len must be integer")),
         };
-        let if_id = match &args[2] {
-            ExoValue::Int(n) => crate::net::runtime::manager::NetIfId(*n as u16),
+        let if_id = match Self::parse_if_id_value(&args[2]) {
+            Some(if_id) => if_id,
             _ => return ExoValue::Error(String::from("if_id must be integer")),
         };
         // Build a route to match for deletion (gateway/metric/flags don't matter for retain comparison)

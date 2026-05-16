@@ -29,6 +29,8 @@ pub enum NetworkError {
     ArpResolutionPending,
     /// Buffer too small for operation
     BufferTooSmall,
+    /// Runtime-owned network resources were exhausted
+    ResourceExhausted,
     /// No usable route or interface was found for the requested operation
     NetworkUnreachable,
     /// Transmit operation failed

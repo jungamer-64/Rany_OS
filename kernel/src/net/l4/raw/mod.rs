@@ -22,9 +22,9 @@ fn network_error_to_socket(error: NetworkError) -> EndpointError {
         NetworkError::PortInUse => EndpointError::PortInUse,
         NetworkError::BufferTooSmall => EndpointError::BufferFull,
         NetworkError::ConnectionClosed => EndpointError::NotConnected,
-        NetworkError::ArpResolutionPending | NetworkError::TransmitFailed => {
-            EndpointError::ResourceExhausted
-        }
+        NetworkError::ResourceExhausted
+        | NetworkError::ArpResolutionPending
+        | NetworkError::TransmitFailed => EndpointError::ResourceExhausted,
         NetworkError::InvalidAddress => EndpointError::InvalidArgument,
         NetworkError::LockPoisoned | NetworkError::Unknown => EndpointError::Internal,
     }
@@ -56,7 +56,7 @@ impl RawEndpoint {
         let socket = Socket::new_registered_raw_in(runtime);
         socket
             .with_inner_mut(|inner| {
-            inner.scope = scope;
+                inner.scope = scope;
             })
             .ok_or(EndpointError::Internal)?;
 

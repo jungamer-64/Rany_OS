@@ -403,7 +403,8 @@ fn socket_error_to_network(err: EndpointError) -> NetworkError {
         | EndpointError::HostUnreachable
         | EndpointError::ProtocolUnreachable => NetworkError::NetworkUnreachable,
         EndpointError::BufferFull => NetworkError::BufferTooSmall,
-        EndpointError::ResourceExhausted | EndpointError::Internal => NetworkError::LockPoisoned,
+        EndpointError::ResourceExhausted => NetworkError::ResourceExhausted,
+        EndpointError::Internal => NetworkError::LockPoisoned,
         EndpointError::InvalidArgument
         | EndpointError::InvalidStateTransition
         | EndpointError::NotFound

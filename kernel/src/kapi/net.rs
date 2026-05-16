@@ -64,6 +64,7 @@ pub(crate) fn network_error_to_kapi(error: crate::net::types::NetworkError) -> K
         crate::net::types::NetworkError::Timeout => KapiError::Timeout,
         crate::net::types::NetworkError::NetworkUnreachable => KapiError::NotFound,
         crate::net::types::NetworkError::BufferTooSmall
+        | crate::net::types::NetworkError::ResourceExhausted
         | crate::net::types::NetworkError::ArpResolutionPending
         | crate::net::types::NetworkError::TransmitFailed => KapiError::ResourceExhausted,
         _ => KapiError::IoError,

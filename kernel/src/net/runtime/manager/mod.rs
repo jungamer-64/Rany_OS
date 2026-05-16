@@ -91,22 +91,32 @@ pub type RouteLookupResultV4 = Option<Ipv4Route>;
 pub type RouteLookupResultV6 = Option<Ipv6Route>;
 
 /// Multi-interface network manager
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct NetworkManager {
     interfaces: BTreeMap<NetIfId, NetworkInterfaceInfo>,
     routes_v4: Vec<Ipv4Route>,
     routes_v6: Vec<Ipv6Route>,
-    next_if_id: u16,
+    next_if_id: Option<u16>,
 }
 
 impl NetworkManager {
     fn new() -> Self {
-        Self::default()
+        Self {
+            interfaces: BTreeMap::new(),
+            routes_v4: Vec::new(),
+            routes_v6: Vec::new(),
+            next_if_id: Some(0),
+        }
     }
 
-    fn register_interface(&mut self, name: &'static str) -> NetIfId {
-        let if_id = NetIfId(self.next_if_id);
-        self.next_if_id = self.next_if_id.wrapping_add(1);
+    fn register_interface(&mut self, name: &'static str) -> Result<NetIfId, NetworkError> {
+        let raw_if_id = self.next_if_id.ok_or(NetworkError::ResourceExhausted)?;
+        let if_id = NetIfId(raw_if_id);
+        if self.interfaces.contains_key(&if_id) {
+            return Err(NetworkError::ResourceExhausted);
+        }
+
+        self.next_if_id = raw_if_id.checked_add(1);
         self.interfaces.insert(
             if_id,
             NetworkInterfaceInfo {
@@ -116,7 +126,7 @@ impl NetworkManager {
                 config: None,
             },
         );
-        if_id
+        Ok(if_id)
     }
 
     fn list_interfaces(&self) -> Vec<NetworkInterfaceInfo> {
@@ -505,7 +515,7 @@ pub fn register_interface_in(
     runtime: NetRuntimeHandle,
     name: &'static str,
 ) -> Result<NetIfId, NetworkError> {
-    with_manager_mut_in(runtime, |m| m.register_interface(name))
+    with_manager_mut_in(runtime, |m| m.register_interface(name)).and_then(|r| r)
 }
 
 pub fn list_interfaces_in(
@@ -600,4 +610,39 @@ pub fn set_default_route_v6_in(
     metric: u32,
 ) -> Result<(), NetworkError> {
     with_manager_mut_in(runtime, |m| m.set_default_route_v6(if_id, gateway, metric)).and_then(|r| r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interface_ids_do_not_wrap_after_exhaustion() {
+        let mut manager = NetworkManager::new();
+        manager.next_if_id = Some(u16::MAX);
+
+        let if_id = manager
+            .register_interface("last-if")
+            .expect("last representable interface id");
+        assert_eq!(if_id, NetIfId(u16::MAX));
+        assert_eq!(
+            manager.register_interface("wrapped-if"),
+            Err(NetworkError::ResourceExhausted)
+        );
+        assert_eq!(manager.interfaces.len(), 1);
+    }
+
+    #[test]
+    fn network_manager_rejects_interface_id_reuse() {
+        let mut manager = NetworkManager::new();
+        let if_id = manager.register_interface("if0").expect("first interface");
+        assert_eq!(if_id, NetIfId(0));
+
+        manager.next_if_id = Some(0);
+        assert_eq!(
+            manager.register_interface("if0-reused"),
+            Err(NetworkError::ResourceExhausted)
+        );
+        assert_eq!(manager.interfaces.len(), 1);
+    }
 }
