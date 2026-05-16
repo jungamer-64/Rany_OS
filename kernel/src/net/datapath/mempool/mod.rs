@@ -16,7 +16,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice as KapiDmaSlice};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketRefStorage, PacketRefVTable};
 pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
@@ -40,7 +40,6 @@ const CACHE_LINE_SIZE: usize = 64;
 #[repr(C)]
 #[derive(Debug)]
 struct PacketBufferMeta {
-    len: AtomicUsize,
     phys_addr: PhysAddr,
     device_addr: u64,
     pool_id: u32,
@@ -61,29 +60,11 @@ pub struct PacketBuffer {
 }
 
 impl PacketBuffer {
-    pub fn data(&self) -> &[u8] {
-        &self.data[..self.meta.len.load(Ordering::Acquire)]
-    }
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        let len = self.meta.len.load(Ordering::Acquire);
-        &mut self.data[..len]
-    }
     pub fn as_ptr(&self) -> *const u8 {
         self.data.as_ptr()
     }
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.data.as_mut_ptr()
-    }
-    pub fn len(&self) -> usize {
-        self.meta.len.load(Ordering::Acquire)
-    }
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-    pub fn set_len(&self, len: usize) {
-        self.meta
-            .len
-            .store(len.min(DEFAULT_BUFFER_SIZE), Ordering::Release);
     }
     pub fn phys_addr(&self) -> PhysAddr {
         self.meta.phys_addr
@@ -112,6 +93,67 @@ const NO_PACKET_DMA_DEVICE: u64 = u64::MAX;
 const DMA_PACKET_BUFFER_SIZE: usize = DMA_PAGE_SIZE;
 
 static PACKET_DMA_DEVICE_ID: AtomicU64 = AtomicU64::new(NO_PACKET_DMA_DEVICE);
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct PacketWindow {
+    capacity: usize,
+    offset: usize,
+    len: usize,
+}
+
+impl PacketWindow {
+    fn new(capacity: usize, offset: usize, len: usize) -> Option<Self> {
+        (offset <= capacity && len <= capacity - offset).then_some(Self {
+            capacity,
+            offset,
+            len,
+        })
+    }
+
+    fn offset(&self) -> usize {
+        self.offset
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn set_len(&mut self, len: usize) -> bool {
+        if len > self.capacity - self.offset {
+            return false;
+        }
+        self.len = len;
+        true
+    }
+
+    fn advance(&mut self, n: usize) -> bool {
+        if n > self.len {
+            return false;
+        }
+        self.offset += n;
+        self.len -= n;
+        true
+    }
+
+    fn retreat(&mut self, n: usize) -> bool {
+        let Some(new_offset) = self.offset.checked_sub(n) else {
+            return false;
+        };
+        let Some(new_len) = self.len.checked_add(n) else {
+            return false;
+        };
+        if new_len > self.capacity - new_offset {
+            return false;
+        }
+        self.offset = new_offset;
+        self.len = new_len;
+        true
+    }
+}
 
 enum DmaBufferOwner {
     Kernel(PoisonLock<TypedDmaSlice<KernelCpuOwned>>),
@@ -172,24 +214,20 @@ impl DmaBuffer {
 struct PooledPacketState {
     buffer: NonNull<PacketBuffer>,
     pool: &'static Mempool,
-    offset: usize,
-    len: usize,
+    window: PacketWindow,
 }
 
 #[derive(Debug)]
 struct DmaPacketState {
     buf: NonNull<DmaBuffer>,
-    offset: usize,
-    len: usize,
+    window: PacketWindow,
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 #[derive(Debug, Clone, Copy)]
 struct BorrowedTestPacketState {
     ptr: NonNull<u8>,
-    cap: usize,
-    offset: usize,
-    len: usize,
+    window: PacketWindow,
 }
 
 unsafe fn pooled_state_ref(storage: &PacketRefStorage) -> &PooledPacketState {
@@ -200,49 +238,40 @@ unsafe fn pooled_state_mut(storage: &mut PacketRefStorage) -> &mut PooledPacketS
 }
 unsafe fn pooled_data_ptr(storage: &PacketRefStorage) -> *const u8 {
     let state = pooled_state_ref(storage);
-    state.buffer.as_ref().as_ptr().add(state.offset)
+    state.buffer.as_ref().as_ptr().add(state.window.offset())
 }
 unsafe fn pooled_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
     let state = pooled_state_mut(storage);
-    (*state.buffer.as_ptr()).as_mut_ptr().add(state.offset)
+    (*state.buffer.as_ptr()).as_mut_ptr().add(state.window.offset())
 }
 unsafe fn pooled_len(storage: &PacketRefStorage) -> usize {
-    pooled_state_ref(storage).len
+    pooled_state_ref(storage).window.len()
 }
-unsafe fn pooled_set_len(storage: &mut PacketRefStorage, len: usize) {
+unsafe fn pooled_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
     let state = pooled_state_mut(storage);
-    let new_len = len.min(DEFAULT_BUFFER_SIZE.saturating_sub(state.offset));
-    state.len = new_len;
-    state.buffer.as_ref().set_len(new_len);
+    state.window.set_len(len)
 }
 unsafe fn pooled_capacity(_: &PacketRefStorage) -> usize {
     DEFAULT_BUFFER_SIZE
 }
 unsafe fn pooled_headroom(storage: &PacketRefStorage) -> usize {
-    pooled_state_ref(storage).offset
+    pooled_state_ref(storage).window.offset()
 }
 unsafe fn pooled_phys_addr(storage: &PacketRefStorage) -> u64 {
     let state = pooled_state_ref(storage);
-    state.buffer.as_ref().phys_addr().as_u64() + state.offset as u64
+    state.buffer.as_ref().phys_addr().as_u64() + state.window.offset() as u64
 }
 unsafe fn pooled_device_address(storage: &PacketRefStorage) -> u64 {
     let state = pooled_state_ref(storage);
-    state.buffer.as_ref().device_address() + state.offset as u64
+    state.buffer.as_ref().device_address() + state.window.offset() as u64
 }
-unsafe fn pooled_advance(storage: &mut PacketRefStorage, size: usize) {
+unsafe fn pooled_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
     let state = pooled_state_mut(storage);
-    state.offset = state.offset.saturating_add(size).min(DEFAULT_BUFFER_SIZE);
-    state.len = state.len.saturating_sub(size);
+    state.window.advance(size)
 }
 unsafe fn pooled_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
     let state = pooled_state_mut(storage);
-    if size > state.offset {
-        return false;
-    }
-    state.offset -= size;
-    state.len = state.len.saturating_add(size);
-    state.buffer.as_ref().set_len(state.len);
-    true
+    state.window.retreat(size)
 }
 unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
     let state = pooled_state_mut(storage);
@@ -273,49 +302,40 @@ unsafe fn dma_state_mut(storage: &mut PacketRefStorage) -> &mut DmaPacketState {
 }
 unsafe fn dma_data_ptr(storage: &PacketRefStorage) -> *const u8 {
     let state = dma_state_ref(storage);
-    state.buf.as_ref().ptr.as_ptr().add(state.offset)
+    state.buf.as_ref().ptr.as_ptr().add(state.window.offset())
 }
 unsafe fn dma_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
     let state = dma_state_mut(storage);
-    state.buf.as_ref().ptr.as_ptr().add(state.offset)
+    state.buf.as_ref().ptr.as_ptr().add(state.window.offset())
 }
 unsafe fn dma_len(storage: &PacketRefStorage) -> usize {
-    dma_state_ref(storage).len
+    dma_state_ref(storage).window.len()
 }
-unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) {
+unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
     let state = dma_state_mut(storage);
-    state.len = len.min(state.buf.as_ref().size.saturating_sub(state.offset));
+    state.window.set_len(len)
 }
 unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
-    dma_state_ref(storage).buf.as_ref().size
+    dma_state_ref(storage).window.capacity()
 }
 unsafe fn dma_headroom(storage: &PacketRefStorage) -> usize {
-    dma_state_ref(storage).offset
+    dma_state_ref(storage).window.offset()
 }
 unsafe fn dma_phys_addr(storage: &PacketRefStorage) -> u64 {
     let state = dma_state_ref(storage);
-    state.buf.as_ref().phys_addr.as_u64() + state.offset as u64
+    state.buf.as_ref().phys_addr.as_u64() + state.window.offset() as u64
 }
 unsafe fn dma_device_address(storage: &PacketRefStorage) -> u64 {
     let state = dma_state_ref(storage);
-    state.buf.as_ref().device_addr + state.offset as u64
+    state.buf.as_ref().device_addr + state.window.offset() as u64
 }
-unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) {
+unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
     let state = dma_state_mut(storage);
-    state.offset = state
-        .offset
-        .saturating_add(size)
-        .min(state.buf.as_ref().size);
-    state.len = state.len.saturating_sub(size);
+    state.window.advance(size)
 }
 unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
     let state = dma_state_mut(storage);
-    if size > state.offset {
-        return false;
-    }
-    state.offset -= size;
-    state.len = state.len.saturating_add(size);
-    true
+    state.window.retreat(size)
 }
 unsafe fn dma_drop(storage: &mut PacketRefStorage) {
     let state = storage.as_state_mut::<DmaPacketState>();
@@ -349,53 +369,47 @@ unsafe fn borrowed_state_mut(storage: &mut PacketRefStorage) -> &mut BorrowedTes
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_data_ptr(storage: &PacketRefStorage) -> *const u8 {
     let state = borrowed_state_ref(storage);
-    state.ptr.as_ptr().add(state.offset)
+    state.ptr.as_ptr().add(state.window.offset())
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
     let state = borrowed_state_mut(storage);
-    state.ptr.as_ptr().add(state.offset)
+    state.ptr.as_ptr().add(state.window.offset())
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_len(storage: &PacketRefStorage) -> usize {
-    borrowed_state_ref(storage).len
+    borrowed_state_ref(storage).window.len()
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_set_len(storage: &mut PacketRefStorage, len: usize) {
+unsafe fn borrowed_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
     let state = borrowed_state_mut(storage);
-    state.len = len.min(state.cap.saturating_sub(state.offset));
+    state.window.set_len(len)
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_capacity(storage: &PacketRefStorage) -> usize {
-    borrowed_state_ref(storage).cap
+    borrowed_state_ref(storage).window.capacity()
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_headroom(storage: &PacketRefStorage) -> usize {
-    borrowed_state_ref(storage).offset
+    borrowed_state_ref(storage).window.offset()
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_phys_addr(storage: &PacketRefStorage) -> u64 {
-    borrowed_state_ref(storage).offset as u64
+    borrowed_state_ref(storage).window.offset() as u64
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_device_address(storage: &PacketRefStorage) -> u64 {
     borrowed_phys_addr(storage)
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_advance(storage: &mut PacketRefStorage, size: usize) {
+unsafe fn borrowed_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
     let state = borrowed_state_mut(storage);
-    state.offset = state.offset.saturating_add(size).min(state.cap);
-    state.len = state.len.saturating_sub(size);
+    state.window.advance(size)
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
     let state = borrowed_state_mut(storage);
-    if size > state.offset {
-        return false;
-    }
-    state.offset -= size;
-    state.len = state.len.saturating_add(size);
-    true
+    state.window.retreat(size)
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_drop(_: &mut PacketRefStorage) {}
@@ -416,11 +430,16 @@ static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
 };
 
 fn new_pooled_packet_ref(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> PacketRef {
+    let window = PacketWindow::new(
+        DEFAULT_BUFFER_SIZE,
+        DEFAULT_PACKET_HEADROOM.min(DEFAULT_BUFFER_SIZE),
+        0,
+    )
+    .expect("pooled packet headroom is bounded by capacity");
     let state = PooledPacketState {
         buffer,
         pool,
-        offset: DEFAULT_PACKET_HEADROOM.min(DEFAULT_BUFFER_SIZE),
-        len: unsafe { buffer.as_ref().len() },
+        window,
     };
     unsafe {
         PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &POOLED_PACKET_VTABLE)
@@ -428,19 +447,23 @@ fn new_pooled_packet_ref(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) 
 }
 
 pub fn packet_ref_from_dma_slice(slice: TypedDmaSlice<KernelCpuOwned>) -> PacketRef {
+    let size = slice.len();
+    let window = PacketWindow::new(size, DEFAULT_PACKET_HEADROOM.min(size), 0)
+        .expect("DMA packet headroom is bounded by capacity");
     let state = DmaPacketState {
         buf: NonNull::from(Box::leak(Box::new(DmaBuffer::from_typed(slice)))),
-        offset: DEFAULT_PACKET_HEADROOM.min(DMA_PACKET_BUFFER_SIZE),
-        len: 0,
+        window,
     };
     unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE) }
 }
 
 fn packet_ref_from_kapi_dma_slice(slice: KapiDmaSlice<KapiCpuOwned>) -> PacketRef {
+    let size = slice.size();
+    let window = PacketWindow::new(size, DEFAULT_PACKET_HEADROOM.min(size), 0)
+        .expect("KAPI DMA packet headroom is bounded by capacity");
     let state = DmaPacketState {
         buf: NonNull::from(Box::leak(Box::new(DmaBuffer::from_kapi(slice)))),
-        offset: DEFAULT_PACKET_HEADROOM.min(DMA_PACKET_BUFFER_SIZE),
-        len: 0,
+        window,
     };
     unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE) }
 }
@@ -475,9 +498,7 @@ pub unsafe fn packet_ref_from_static_raw_for_tests(ptr: *mut u8, cap: usize) -> 
     }
     let state = BorrowedTestPacketState {
         ptr: NonNull::new(ptr)?,
-        cap,
-        offset: DEFAULT_PACKET_HEADROOM.min(cap),
-        len: 0,
+        window: PacketWindow::new(cap, DEFAULT_PACKET_HEADROOM.min(cap), 0)?,
     };
     Some(unsafe {
         PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &BORROWED_PACKET_VTABLE)
@@ -526,7 +547,6 @@ impl Mempool {
                 let buffer_ptr = non_null.as_ptr();
                 (*buffer_ptr).meta.pool_id = self.id;
                 (*buffer_ptr).meta.index = i as u32;
-                (*buffer_ptr).meta.len = AtomicUsize::new(0);
                 (*buffer_ptr).meta.ref_count = AtomicU64::new(0);
                 let virt_addr = buffer_ptr as u64;
                 let offset = crate::mm::virt::mapping::physical_memory_offset();
@@ -557,7 +577,6 @@ impl Mempool {
                 0,
                 DEFAULT_BUFFER_SIZE,
             );
-            buffer.as_ref().meta.len.store(0, Ordering::Release);
             buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
         }
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
@@ -582,7 +601,6 @@ impl Mempool {
                 crate::sas::DomainId::new(0),
             );
             // Always return to buffer pool to avoid leakage
-            ptr.as_ref().meta.len.store(0, Ordering::Release);
             ptr.as_ref().meta.ref_count.store(0, Ordering::Release);
             self.return_buffer(ptr);
         }
@@ -645,7 +663,6 @@ impl PerCoreMempoolCache {
             0,
             DEFAULT_BUFFER_SIZE,
         );
-        buffer.as_ref().meta.len.store(0, Ordering::Release);
         buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
         new_pooled_packet_ref(buffer, pool)
     }

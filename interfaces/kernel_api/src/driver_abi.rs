@@ -714,7 +714,7 @@ pub struct AbiNetPortInfo {
     pub name_len: usize,
 }
 
-pub const ABI_PACKET_REF_STORAGE_WORDS: usize = 4;
+pub const ABI_PACKET_REF_STORAGE_WORDS: usize = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -764,12 +764,12 @@ pub struct AbiPacketRefVTable {
     pub data_ptr: extern "C" fn(storage: *const AbiPacketRefStorage) -> *const u8,
     pub data_mut_ptr: extern "C" fn(storage: *mut AbiPacketRefStorage) -> *mut u8,
     pub len: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
-    pub set_len: extern "C" fn(storage: *mut AbiPacketRefStorage, len: usize),
+    pub set_len: extern "C" fn(storage: *mut AbiPacketRefStorage, len: usize) -> bool,
     pub capacity: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
     pub phys_addr: extern "C" fn(storage: *const AbiPacketRefStorage) -> u64,
     pub device_address: extern "C" fn(storage: *const AbiPacketRefStorage) -> u64,
     pub headroom: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
-    pub advance: extern "C" fn(storage: *mut AbiPacketRefStorage, size: usize),
+    pub advance: extern "C" fn(storage: *mut AbiPacketRefStorage, size: usize) -> bool,
     pub retreat: extern "C" fn(storage: *mut AbiPacketRefStorage, size: usize) -> bool,
     pub drop: extern "C" fn(storage: *mut AbiPacketRefStorage),
     pub reserved: [u64; 4],
@@ -932,11 +932,11 @@ extern "C" fn abi_packet_len(storage: *const AbiPacketRefStorage) -> usize {
     unsafe { abi_packet_state_ref(&*storage).len() }
 }
 
-extern "C" fn abi_packet_set_len(storage: *mut AbiPacketRefStorage, len: usize) {
+extern "C" fn abi_packet_set_len(storage: *mut AbiPacketRefStorage, len: usize) -> bool {
     if storage.is_null() {
-        return;
+        return false;
     }
-    unsafe { abi_packet_state_mut(&mut *storage).set_len(len) };
+    unsafe { abi_packet_state_mut(&mut *storage).set_len(len) }
 }
 
 extern "C" fn abi_packet_capacity(storage: *const AbiPacketRefStorage) -> usize {
@@ -967,11 +967,11 @@ extern "C" fn abi_packet_headroom(storage: *const AbiPacketRefStorage) -> usize 
     unsafe { abi_packet_state_ref(&*storage).headroom() }
 }
 
-extern "C" fn abi_packet_advance(storage: *mut AbiPacketRefStorage, size: usize) {
+extern "C" fn abi_packet_advance(storage: *mut AbiPacketRefStorage, size: usize) -> bool {
     if storage.is_null() {
-        return;
+        return false;
     }
-    unsafe { abi_packet_state_mut(&mut *storage).advance(size) };
+    unsafe { abi_packet_state_mut(&mut *storage).advance(size) }
 }
 
 extern "C" fn abi_packet_retreat(storage: *mut AbiPacketRefStorage, size: usize) -> bool {
@@ -1065,10 +1065,11 @@ impl AbiPacketRefRaw {
         self.len() == 0
     }
 
-    pub fn set_len(&mut self, len: usize) {
+    pub fn set_len(&mut self, len: usize) -> bool {
         if !self.vtable.is_null() {
-            unsafe { ((*self.vtable).set_len)(&mut self.storage, len) };
+            return unsafe { ((*self.vtable).set_len)(&mut self.storage, len) };
         }
+        false
     }
 
     pub fn capacity(&self) -> usize {

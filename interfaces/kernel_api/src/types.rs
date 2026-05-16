@@ -151,7 +151,7 @@ impl PacketMeta {
     }
 }
 
-pub const PACKET_REF_STORAGE_WORDS: usize = 4;
+pub const PACKET_REF_STORAGE_WORDS: usize = 5;
 
 /// Inline opaque storage used by `PacketRef` backings.
 #[derive(Clone, Copy)]
@@ -209,12 +209,12 @@ pub struct PacketRefVTable {
     pub data_ptr: unsafe fn(&PacketRefStorage) -> *const u8,
     pub data_mut_ptr: unsafe fn(&mut PacketRefStorage) -> *mut u8,
     pub len: unsafe fn(&PacketRefStorage) -> usize,
-    pub set_len: unsafe fn(&mut PacketRefStorage, usize),
+    pub set_len: unsafe fn(&mut PacketRefStorage, usize) -> bool,
     pub capacity: unsafe fn(&PacketRefStorage) -> usize,
     pub phys_addr: unsafe fn(&PacketRefStorage) -> u64,
     pub device_address: unsafe fn(&PacketRefStorage) -> u64,
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
-    pub advance: unsafe fn(&mut PacketRefStorage, usize),
+    pub advance: unsafe fn(&mut PacketRefStorage, usize) -> bool,
     pub retreat: unsafe fn(&mut PacketRefStorage, usize) -> bool,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
 }
@@ -274,8 +274,8 @@ impl PacketRef {
     }
 
     #[inline]
-    pub fn set_len(&mut self, len: usize) {
-        unsafe { (self.vtable.set_len)(&mut self.storage, len) };
+    pub fn set_len(&mut self, len: usize) -> bool {
+        unsafe { (self.vtable.set_len)(&mut self.storage, len) }
     }
 
     #[inline]
@@ -299,8 +299,8 @@ impl PacketRef {
     }
 
     #[inline]
-    pub fn advance(&mut self, size: usize) {
-        unsafe { (self.vtable.advance)(&mut self.storage, size) };
+    pub fn advance(&mut self, size: usize) -> bool {
+        unsafe { (self.vtable.advance)(&mut self.storage, size) }
     }
 
     #[inline]
@@ -747,9 +747,13 @@ mod packet_ref_tests {
         unsafe { dma_state_ref(storage) }.len
     }
 
-    unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) {
+    unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
         let state = unsafe { dma_state_mut(storage) };
-        state.len = len.min(state.backing.len.saturating_sub(state.offset));
+        if len > state.backing.len.saturating_sub(state.offset) {
+            return false;
+        }
+        state.len = len;
+        true
     }
 
     unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
@@ -770,10 +774,14 @@ mod packet_ref_tests {
         state.backing.device_addr + state.offset as u64
     }
 
-    unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) {
+    unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
         let state = unsafe { dma_state_mut(storage) };
-        state.offset = state.offset.saturating_add(size).min(state.backing.len);
-        state.len = state.len.saturating_sub(size);
+        if size > state.len {
+            return false;
+        }
+        state.offset += size;
+        state.len -= size;
+        true
     }
 
     unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
@@ -781,8 +789,15 @@ mod packet_ref_tests {
         if size > state.offset {
             return false;
         }
-        state.offset -= size;
-        state.len = state.len.saturating_add(size);
+        let Some(new_len) = state.len.checked_add(size) else {
+            return false;
+        };
+        let new_offset = state.offset - size;
+        if new_len > state.backing.len.saturating_sub(new_offset) {
+            return false;
+        }
+        state.offset = new_offset;
+        state.len = new_len;
         true
     }
 
