@@ -726,7 +726,9 @@ impl NetworkStack {
         frame.set_payload_len(0);
         let frame_len = frame.as_bytes().len();
         drop(frame);
-        packet.set_len(frame_len);
+        if !packet.set_len(frame_len) {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
         Ok(packet)
     }
 
@@ -787,7 +789,9 @@ impl NetworkStack {
         frame.set_payload_len(IPV4_HEADER_LEN);
         let frame_len = frame.as_bytes().len();
         drop(frame);
-        packet.set_len(frame_len);
+        if !packet.set_len(frame_len) {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        }
         Ok(packet)
     }
 

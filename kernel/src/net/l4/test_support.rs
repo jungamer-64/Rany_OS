@@ -115,7 +115,7 @@ pub(crate) fn leaked_test_packet(cap: usize) -> PacketRef {
 pub(crate) fn leaked_test_packet_with_data(data: &[u8]) -> PacketRef {
     let cap = data.len().max(1);
     let mut packet = leaked_test_packet(cap);
-    packet.set_len(data.len());
+    assert!(packet.set_len(data.len()));
     packet.data_mut()[..data.len()].copy_from_slice(data);
     packet
 }

@@ -565,7 +565,7 @@ impl Ipv6FragmentReassembler {
         &self.stats
     }
 
-    fn take_payload_prefix(payload: PacketPayload, len: usize) -> PacketPayload {
+    fn take_payload_prefix(payload: PacketPayload, len: usize) -> Option<PacketPayload> {
         let mut remaining = len;
         let mut segments = Vec::new();
         for mut segment in payload.into_segments() {
@@ -573,16 +573,18 @@ impl Ipv6FragmentReassembler {
                 break;
             }
             let take = segment.len().min(remaining);
-            segment.set_len(take);
+            if !segment.set_len(take) {
+                return None;
+            }
             segments.push(segment);
             remaining -= take;
         }
 
-        match segments.len() {
+        Some(match segments.len() {
             0 => PacketPayload::default(),
             1 => PacketPayload::single(segments.remove(0)),
             _ => PacketPayload::chain(PacketChain::from_segments(segments)),
-        }
+        })
     }
 
     pub fn process_fragment(
@@ -689,8 +691,9 @@ impl Ipv6FragmentReassembler {
                         .into_iter()
                         .find(|segment| segment.offset == 0)
                     {
-                        let prefix = Self::take_payload_prefix(segment.payload, 8);
-                        append_payload(&mut quoted, prefix);
+                        if let Some(prefix) = Self::take_payload_prefix(segment.payload, 8) {
+                            append_payload(&mut quoted, prefix);
+                        }
                     }
                     expired_with_first.push((key.src, key.dst, quoted, None));
                 }

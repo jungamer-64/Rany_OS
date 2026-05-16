@@ -148,7 +148,9 @@ impl NetworkStack {
             Some(packet) => packet,
             None => return false,
         };
-        header_packet.set_len(crate::net::l4::udp::UdpHeader::SIZE);
+        if !header_packet.set_len(crate::net::l4::udp::UdpHeader::SIZE) {
+            return false;
+        }
         let Some(header) =
             crate::util::get_mut_ref::<crate::net::l4::udp::UdpHeader>(header_packet.data_mut(), 0)
         else {

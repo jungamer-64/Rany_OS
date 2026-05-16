@@ -65,7 +65,9 @@ impl Icmpv6Builder {
         message[3] = 0;
         message[4..6].copy_from_slice(&identifier.to_be_bytes());
         message[6..8].copy_from_slice(&sequence.to_be_bytes());
-        packet.set_len(ICMPV6_ECHO_HEADER_SIZE);
+        if !packet.set_len(ICMPV6_ECHO_HEADER_SIZE) {
+            return None;
+        }
 
         let mut message_payload = PacketPayload::single(packet);
         if payload_len > 0 {
@@ -159,7 +161,9 @@ impl Icmpv6Builder {
         let arg_bytes = arg.to_be_bytes();
         message[4..8].copy_from_slice(&arg_bytes);
 
-        packet.set_len(8);
+        if !packet.set_len(8) {
+            return None;
+        }
 
         let mut message_payload = PacketPayload::single(packet);
         if max_trigger > 0 {

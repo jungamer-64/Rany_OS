@@ -117,7 +117,9 @@ impl NetworkStack {
                     frame.set_payload_len(ip_len);
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
-                    packet.set_len(frame_len);
+                    if !packet.set_len(frame_len) {
+                        return false;
+                    }
 
                     let mut frame_payload =
                         kernel_api::resource::net::PacketPayload::single(packet);
@@ -287,11 +289,12 @@ impl NetworkStack {
                     frame.set_payload_len(total_len - EthernetHeader::SIZE);
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
-                    packet.set_len(frame_len);
-                    let _ = self.transmit_packet_on(
-                        None,
-                        kernel_api::resource::net::PacketPayload::single(packet),
-                    );
+                    if packet.set_len(frame_len) {
+                        let _ = self.transmit_packet_on(
+                            None,
+                            kernel_api::resource::net::PacketPayload::single(packet),
+                        );
+                    }
                 }
             }
         }
@@ -830,8 +833,7 @@ impl NetworkStack {
                     frame.set_payload_len(ip_len);
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
-                    packet.set_len(frame_len);
-                    built = true;
+                    built = packet.set_len(frame_len);
                 }
             }
         }
@@ -889,7 +891,9 @@ impl NetworkStack {
         if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
             // 新規割り当てのPacketRefはlen=0なので、書き込み前にcapacityまで拡張する
             let cap = packet.capacity();
-            packet.set_len(cap);
+            if !packet.set_len(cap) {
+                return Err(());
+            }
             if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
                 let src_mac = self.mac_address();
                 frame
@@ -916,12 +920,13 @@ impl NetworkStack {
                         let total_len = frame.as_bytes().len();
                         let send_time = self.current_time();
                         drop(frame);
-                        packet.set_len(total_len);
 
-                        if self.transmit_packet_on(
-                            None,
-                            kernel_api::resource::net::PacketPayload::single(packet),
-                        ) {
+                        if packet.set_len(total_len)
+                            && self.transmit_packet_on(
+                                None,
+                                kernel_api::resource::net::PacketPayload::single(packet),
+                            )
+                        {
                             log::info!(
                                 "[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}",
                                 target.as_bytes()[0],

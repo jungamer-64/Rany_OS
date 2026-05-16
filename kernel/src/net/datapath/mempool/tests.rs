@@ -32,3 +32,56 @@ fn test_mempool_stats() {
     assert_eq!(stats.total_buffers, 0);
     assert_eq!(stats.free_buffers, 0);
 }
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn packet_window_rejects_advance_past_visible_len() {
+    let mut window = PacketWindow::new(64, 16, 8).expect("valid packet window");
+
+    assert!(!window.advance(9));
+    assert_eq!(
+        window,
+        PacketWindow::new(64, 16, 8).expect("valid packet window")
+    );
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn packet_window_rejects_retreat_without_headroom() {
+    let mut window = PacketWindow::new(64, 4, 8).expect("valid packet window");
+
+    assert!(!window.retreat(5));
+    assert_eq!(
+        window,
+        PacketWindow::new(64, 4, 8).expect("valid packet window")
+    );
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn packet_window_rejects_retreat_past_capacity() {
+    let mut window = PacketWindow::new(16, 4, 12).expect("valid packet window");
+
+    assert!(!window.retreat(1));
+    assert_eq!(
+        window,
+        PacketWindow::new(16, 4, 12).expect("valid packet window")
+    );
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn packet_window_preserves_bounds_across_valid_moves() {
+    let mut window = PacketWindow::new(64, 16, 24).expect("valid packet window");
+
+    assert!(window.advance(8));
+    assert_eq!(
+        window,
+        PacketWindow::new(64, 24, 16).expect("valid packet window")
+    );
+    assert!(window.retreat(8));
+    assert_eq!(
+        window,
+        PacketWindow::new(64, 16, 24).expect("valid packet window")
+    );
+}

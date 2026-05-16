@@ -5,11 +5,7 @@
 use super::{HttpBodyView, HttpParseError, HttpParser, MAX_CONTENT_LENGTH};
 use crate::net::payload::{PayloadRange, PayloadSpanRef};
 
-fn span_slice(
-    span: PayloadSpanRef<'_>,
-    offset: usize,
-    len: usize,
-) -> Option<PayloadSpanRef<'_>> {
+fn span_slice(span: PayloadSpanRef<'_>, offset: usize, len: usize) -> Option<PayloadSpanRef<'_>> {
     span.subspan(offset, len)
 }
 
@@ -17,7 +13,7 @@ impl HttpParser {
     fn parse_chunk_size(&self, line: &PayloadSpanRef<'_>) -> Option<usize> {
         let semicolon = line.find_bytes(b";").unwrap_or(line.total_len());
         let size_span = span_slice(*line, 0, semicolon)?;
-        let size = size_span.trim_ascii_whitespace();
+        let size = size_span.trim_ascii_whitespace()?;
         size.parse_ascii_hex_usize()
     }
 
@@ -39,13 +35,8 @@ impl HttpParser {
                 return self.finish_chunked_body(full, cursor, body);
             }
 
-            let Some(next_cursor) = self.append_chunk_data(
-                full,
-                &mut body,
-                &mut total_len,
-                cursor,
-                chunk_size,
-            )?
+            let Some(next_cursor) =
+                self.append_chunk_data(full, &mut body, &mut total_len, cursor, chunk_size)?
             else {
                 return Ok(None);
             };
@@ -149,8 +140,8 @@ impl HttpParser {
         cursor: usize,
         line_end: usize,
     ) -> Result<usize, HttpParseError> {
-        let line = span_slice(*full, cursor, line_end - cursor)
-            .ok_or(HttpParseError::InvalidFormat)?;
+        let line =
+            span_slice(*full, cursor, line_end - cursor).ok_or(HttpParseError::InvalidFormat)?;
         let (name, value) = self.parse_header_name_value(&line)?;
         self.validate_header_name_value(0, &name, &value)?;
         // Trailer ヘッダーは現時点では検証のみ行い、レスポンス構造体には保持しない。

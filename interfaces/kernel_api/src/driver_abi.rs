@@ -1065,6 +1065,7 @@ impl AbiPacketRefRaw {
         self.len() == 0
     }
 
+    #[must_use]
     pub fn set_len(&mut self, len: usize) -> bool {
         if !self.vtable.is_null() {
             return unsafe { ((*self.vtable).set_len)(&mut self.storage, len) };

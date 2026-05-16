@@ -62,7 +62,9 @@ impl IcmpProcessor {
         data[2] = 0;
         data[3] = 0;
         data[4..8].copy_from_slice(&rest_of_header);
-        packet.set_len(IcmpHeader::SIZE + 4);
+        if !packet.set_len(IcmpHeader::SIZE + 4) {
+            return None;
+        }
 
         let mut message = PacketPayload::single(packet);
         if quote_len != 0 {

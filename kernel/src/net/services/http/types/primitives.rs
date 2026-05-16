@@ -141,7 +141,7 @@ impl HttpStatusCode {
     }
 
     pub fn parse_span_ref(span: PayloadSpanRef<'_>) -> Option<Self> {
-        let code = span.trim_ascii_whitespace().parse_ascii_usize()?;
+        let code = span.trim_ascii_whitespace()?.parse_ascii_usize()?;
         if code > u16::MAX as usize {
             return None;
         }

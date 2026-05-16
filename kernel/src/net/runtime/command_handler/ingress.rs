@@ -56,8 +56,10 @@ impl RuntimeCommandHandler {
                 };
                 let payload_len = payload.len();
                 let mut ip_packet = packet;
-                ip_packet.advance(offset);
-                ip_packet.set_len(payload_len);
+                if !ip_packet.advance(offset) || !ip_packet.set_len(payload_len) {
+                    stack.stats.record_rx_error();
+                    return EventHandleResult::Success;
+                }
                 self.handle_ipv4_ingress_with_stack(
                     runtime,
                     if_id,
@@ -82,8 +84,10 @@ impl RuntimeCommandHandler {
                     };
                     let payload_len = payload.len();
                     let mut ip_packet = packet;
-                    ip_packet.advance(offset);
-                    ip_packet.set_len(payload_len);
+                    if !ip_packet.advance(offset) || !ip_packet.set_len(payload_len) {
+                        stack.stats.record_rx_error();
+                        return EventHandleResult::Success;
+                    }
                     let ip_data = ip_packet.data();
                     // ── ファイアウォール Ingress チェック (IPv6) ──
                     if ip_data.len() >= 40 {

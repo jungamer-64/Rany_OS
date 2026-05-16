@@ -28,6 +28,10 @@ use crate::mm::types::PAGE_SIZE_4K;
 /// DMAページサイズ
 mod pool_impl;
 pub use pool_impl::*;
+
+#[cfg(test)]
+mod tests;
+
 const DMA_PAGE_SIZE: usize = PAGE_SIZE_4K;
 
 /// デフォルトのプール容量
@@ -242,7 +246,9 @@ unsafe fn pooled_data_ptr(storage: &PacketRefStorage) -> *const u8 {
 }
 unsafe fn pooled_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
     let state = pooled_state_mut(storage);
-    (*state.buffer.as_ptr()).as_mut_ptr().add(state.window.offset())
+    (*state.buffer.as_ptr())
+        .as_mut_ptr()
+        .add(state.window.offset())
 }
 unsafe fn pooled_len(storage: &PacketRefStorage) -> usize {
     pooled_state_ref(storage).window.len()

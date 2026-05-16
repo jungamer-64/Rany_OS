@@ -17,11 +17,11 @@ use crate::net::runtime::stack;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 mod nat;
-use nat::*;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use nat::*;
 
 extern crate alloc;
 
@@ -201,10 +201,7 @@ fn record_stack_glue_if_rx_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     entry.initialized = true;
 }
 
-pub fn register_stack_glue_interface_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-) {
+pub fn register_stack_glue_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     ensure_stack_glue_if_state_in(runtime, if_id);
     set_primary_stack_glue_if_in(runtime, if_id);
     runtime_state_for(runtime)
@@ -294,10 +291,15 @@ pub fn process_received_packet_zero_copy_in(
     counters::global().record_rx(payload_len);
     trace::push_event(NetLayer::Driver, NetEventKind::Rx, "rx packet");
 
-    packet.set_len(header_size + payload_len);
+    let Some(frame_len) = header_size.checked_add(payload_len) else {
+        return;
+    };
+    if !packet.set_len(frame_len) {
+        return;
+    }
 
-    if header_size > 0 {
-        packet.advance(header_size);
+    if header_size > 0 && !packet.advance(header_size) {
+        return;
     }
 
     compute_and_set_flow_hash(&mut packet);
@@ -337,9 +339,14 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     record_stack_glue_if_rx_in(runtime, if_id);
     nat_maybe_gc_in(runtime, rx_count);
 
-    packet.set_len(header_size + payload_len);
-    if header_size > 0 {
-        packet.advance(header_size);
+    let Some(frame_len) = header_size.checked_add(payload_len) else {
+        return;
+    };
+    if !packet.set_len(frame_len) {
+        return;
+    }
+    if header_size > 0 && !packet.advance(header_size) {
+        return;
     }
 
     // NAT Inbound (omitted for brevity, assume similar fixes applied)
@@ -355,10 +362,12 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     compute_and_set_flow_hash(&mut packet);
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
-            if_id: Some(if_id),
-            packet,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Ingress(
+            crate::net::runtime::command::IngressCommand::Packet {
+                if_id: Some(if_id),
+                packet,
+            },
+        ),
     );
 }
 

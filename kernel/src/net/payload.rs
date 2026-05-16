@@ -53,8 +53,8 @@ impl PayloadRange {
         self.len
     }
 
-    pub const fn end_offset(&self) -> usize {
-        self.offset + self.len
+    pub const fn checked_end_offset(&self) -> Option<usize> {
+        self.offset.checked_add(self.len)
     }
 
     pub fn span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
@@ -264,14 +264,12 @@ impl<'a> PayloadSpanRef<'a> {
         Some(value)
     }
 
-    pub fn trim_ascii_whitespace(self) -> Self {
+    pub fn trim_ascii_whitespace(self) -> Option<Self> {
         let mut start = 0usize;
         let mut end = self.len;
 
         while start < end {
-            let Some(byte) = self.byte_at(start) else {
-                break;
-            };
+            let byte = self.byte_at(start)?;
             if !byte.is_ascii_whitespace() {
                 break;
             }
@@ -279,17 +277,14 @@ impl<'a> PayloadSpanRef<'a> {
         }
 
         while end > start {
-            let Some(byte) = self.byte_at(end - 1) else {
-                break;
-            };
+            let byte = self.byte_at(end - 1)?;
             if !byte.is_ascii_whitespace() {
                 break;
             }
             end -= 1;
         }
 
-        Self::from_range(self.payload, self.offset + start, end - start)
-            .unwrap_or_else(|| Self::from_payload(self.payload))
+        Self::from_range(self.payload, self.offset.checked_add(start)?, end - start)
     }
 
     pub fn starts_with(&self, prefix: &[u8]) -> bool {
@@ -382,12 +377,16 @@ impl PacketPayloadWindow {
             }
 
             if remaining_offset > 0 {
-                segment.advance(remaining_offset);
+                if !segment.advance(remaining_offset) {
+                    return None;
+                }
                 remaining_offset = 0;
             }
 
             let take = remaining_len.min(segment.len());
-            segment.set_len(take);
+            if !segment.set_len(take) {
+                return None;
+            }
             remaining_len -= take;
             segments.push(segment);
         }
@@ -700,7 +699,9 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
         let available_headroom = packet.headroom();
         let capacity = packet.capacity().saturating_sub(available_headroom);
         if headroom <= available_headroom && len <= capacity {
-            packet.set_len(len);
+            if !packet.set_len(len) {
+                return None;
+            }
             return Some(packet);
         }
     }
@@ -713,7 +714,9 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
     if headroom > available_headroom || len > capacity {
         return None;
     }
-    packet.set_len(len);
+    if !packet.set_len(len) {
+        return None;
+    }
     Some(packet)
 }
 
@@ -796,4 +799,28 @@ pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, Pa
     let transport_len = view.total_len().checked_sub(offset)?;
     PayloadSpanRef::from_range(payload, offset, transport_len)
         .map(|transport| (next_header, transport))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_range_checked_end_rejects_overflow() {
+        let range = PayloadRange::new(usize::MAX, 1);
+
+        assert_eq!(range.checked_end_offset(), None);
+    }
+
+    #[test]
+    fn trim_ascii_whitespace_rejects_invalid_span_instead_of_widening() {
+        let payload = PacketPayload::default();
+        let span = PayloadSpanRef {
+            payload: &payload,
+            offset: usize::MAX,
+            len: 1,
+        };
+
+        assert!(span.trim_ascii_whitespace().is_none());
+    }
 }

@@ -274,6 +274,7 @@ impl PacketRef {
     }
 
     #[inline]
+    #[must_use]
     pub fn set_len(&mut self, len: usize) -> bool {
         unsafe { (self.vtable.set_len)(&mut self.storage, len) }
     }
@@ -299,6 +300,7 @@ impl PacketRef {
     }
 
     #[inline]
+    #[must_use]
     pub fn advance(&mut self, size: usize) -> bool {
         unsafe { (self.vtable.advance)(&mut self.storage, size) }
     }
@@ -867,8 +869,8 @@ mod packet_ref_tests {
         assert_eq!(packet.phys_addr().as_u64(), 0x3000);
         assert_eq!(packet.device_address(), 0x4000);
 
-        packet.set_len(6);
-        packet.advance(1);
+        assert!(packet.set_len(6));
+        assert!(packet.advance(1));
         assert_eq!(packet.len(), 5);
         assert_eq!(packet.data(), b"acket");
         assert_eq!(packet.phys_addr().as_u64(), 0x3001);

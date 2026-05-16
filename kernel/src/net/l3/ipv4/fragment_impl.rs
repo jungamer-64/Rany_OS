@@ -66,7 +66,7 @@ pub struct FragmentBuffer {
 }
 
 impl FragmentBuffer {
-    fn take_payload_prefix(payload: PacketPayload, len: usize) -> PacketPayload {
+    fn take_payload_prefix(payload: PacketPayload, len: usize) -> Option<PacketPayload> {
         let mut remaining = len;
         let mut segments = Vec::new();
         for mut segment in payload.into_segments() {
@@ -74,18 +74,20 @@ impl FragmentBuffer {
                 break;
             }
             let take = segment.len().min(remaining);
-            segment.set_len(take);
+            if !segment.set_len(take) {
+                return None;
+            }
             segments.push(segment);
             remaining -= take;
         }
 
-        match segments.len() {
+        Some(match segments.len() {
             0 => PacketPayload::default(),
             1 => PacketPayload::single(segments.remove(0)),
             _ => PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
                 segments,
             )),
-        }
+        })
     }
 
     /// Maximum reassembled packet size (64KB - IP header)
@@ -511,8 +513,11 @@ impl FragmentReassembler {
                         .into_iter()
                         .find(|segment| segment.offset == 0)
                     {
-                        let prefix = FragmentBuffer::take_payload_prefix(segment.payload, 8);
-                        append_payload(&mut quoted, prefix);
+                        if let Some(prefix) =
+                            FragmentBuffer::take_payload_prefix(segment.payload, 8)
+                        {
+                            append_payload(&mut quoted, prefix);
+                        }
                     }
                     expired_with_first.push((key.src, quoted));
                 }

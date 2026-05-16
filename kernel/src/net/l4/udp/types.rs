@@ -340,7 +340,9 @@ impl UdpProcessor {
             }
             // Set length BEFORE data_mut() — freshly allocated buffers have len=0,
             // so data_mut() would return an empty slice without this.
-            pkt_ref.set_len(payload.len());
+            if !pkt_ref.set_len(payload.len()) {
+                return UdpResult::Invalid;
+            }
             let buf = pkt_ref.data_mut();
             buf[..payload.len()].copy_from_slice(payload);
 
@@ -398,7 +400,9 @@ impl UdpProcessor {
                 return UdpResult::Invalid;
             }
             // Set length BEFORE data_mut() — freshly allocated buffers have len=0
-            pkt_ref.set_len(payload.len());
+            if !pkt_ref.set_len(payload.len()) {
+                return UdpResult::Invalid;
+            }
             let buf = pkt_ref.data_mut();
             buf[..payload.len()].copy_from_slice(payload);
 
@@ -456,8 +460,9 @@ impl UdpProcessor {
         }
 
         // Advance PacketRef to skip UDP header for zero-copy delivery
-        packet.advance(UdpHeader::SIZE);
-        packet.set_len(payload_len);
+        if !packet.advance(UdpHeader::SIZE) || !packet.set_len(payload_len) {
+            return UdpResult::Invalid;
+        }
 
         let src = crate::net::l4::EndpointAddr::new(src_ip.octets(), packet_view.src_port());
         let dst_port = packet_view.dst_port();
@@ -571,8 +576,9 @@ impl UdpProcessor {
         }
 
         // Advance PacketRef to skip UDP header
-        packet.advance(UdpHeader::SIZE);
-        packet.set_len(payload_len);
+        if !packet.advance(UdpHeader::SIZE) || !packet.set_len(payload_len) {
+            return UdpResult::Invalid;
+        }
 
         let src = crate::net::l4::EndpointAddr::new_v6(src_ip.octets(), packet_view.src_port());
         let dst_port = packet_view.dst_port();

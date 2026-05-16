@@ -602,7 +602,9 @@ fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
             if buffer_size == 0 {
                 return Err(AbiError::OutOfMemory);
             }
-            packet.set_len(buffer_size);
+            if !packet.set_len(buffer_size) {
+                return Err(AbiError::InvalidParam);
+            }
             let device_addr = packet.device_address();
             let virt_addr = packet.data_mut().as_ptr() as u64;
             let size = buffer_size as u32;
@@ -662,16 +664,19 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
                     let len = replacement
                         .capacity()
                         .saturating_sub(replacement.headroom());
-                    replacement.set_len(len);
-                    let _ = unsafe {
-                        state.device.post_receive(
-                            rq_index,
-                            replacement.device_address(),
-                            replacement.data_mut().as_ptr() as u64,
-                            len as u32,
-                        )
-                    };
-                    state.rx_slots[rq_index][slot] = Some(replacement);
+                    if replacement.set_len(len) {
+                        let _ = unsafe {
+                            state.device.post_receive(
+                                rq_index,
+                                replacement.device_address(),
+                                replacement.data_mut().as_ptr() as u64,
+                                len as u32,
+                            )
+                        };
+                        state.rx_slots[rq_index][slot] = Some(replacement);
+                    } else {
+                        state.rx_errors = state.rx_errors.saturating_add(1);
+                    }
                 }
                 continue;
             }
@@ -680,7 +685,10 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
                 cqe.byte_count as usize,
                 packet.capacity().saturating_sub(packet.headroom()),
             );
-            packet.set_len(byte_count);
+            if !packet.set_len(byte_count) {
+                state.rx_errors = state.rx_errors.saturating_add(1);
+                continue;
+            }
             let status = (runtime.submit_rx_packet)(
                 runtime.runtime_cookie,
                 &mut packet,
@@ -702,7 +710,10 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
                     let len = replacement
                         .capacity()
                         .saturating_sub(replacement.headroom());
-                    replacement.set_len(len);
+                    if !replacement.set_len(len) {
+                        state.rx_errors = state.rx_errors.saturating_add(1);
+                        continue;
+                    }
                     match unsafe {
                         state.device.post_receive(
                             rq_index,
