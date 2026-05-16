@@ -3,14 +3,16 @@
 // ============================================================================
 
 use super::{
-    AlertDescription, CipherSuite, ContentType, HandshakeType, PacketPayload, PacketPayloadView,
-    PayloadSpanRef, TlsBytes, TlsConnection, TlsError, TlsResult, TlsState, append_payload,
+    AlertDescription, CipherSuite, ContentType, GeneratedPacketWriter, HandshakeType,
+    PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, TlsConnection, TlsError, TlsResult,
+    TlsState, append_payload,
 };
 use crate::net::security::tls::crypto::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, aes_gcm_decrypt_into, aes_gcm_encrypt_into,
     chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
     tls13_derive_traffic_keys, tls13_derive_traffic_keys_sha384,
 };
+use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
 impl TlsConnection {
     pub(super) fn set_tls_bytes<const N: usize>(
@@ -169,7 +171,9 @@ impl TlsConnection {
         }
 
         let ciphertext_len = data.total_len() - 16;
-        let ciphertext_span = data.subspan(0, ciphertext_len).ok_or(TlsError::DecodeError)?;
+        let ciphertext_span = data
+            .subspan(0, ciphertext_len)
+            .ok_or(TlsError::DecodeError)?;
         let ciphertext = Self::copy_span_to_packet(ciphertext_span)?;
         let tag = data
             .subspan(ciphertext_len, 16)
@@ -381,15 +385,26 @@ impl TlsConnection {
             encrypted_len_bytes[0],
             encrypted_len_bytes[1],
         ];
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder
-            .append_generated_bytes(&record_header)
+        let mut record = {
+            let mut writer =
+                GeneratedPacketWriter::new(record_header.len(), DEFAULT_PACKET_HEADROOM)
+                    .ok_or(TlsError::DecodeError)?;
+            writer
+                .write_bytes(&record_header)
+                .ok_or(TlsError::DecodeError)?;
+            writer.finish().ok_or(TlsError::DecodeError)?
+        };
+        append_payload(&mut record, ciphertext);
+        let mut tag_writer = GeneratedPacketWriter::new(auth_tag.len(), DEFAULT_PACKET_HEADROOM)
             .ok_or(TlsError::DecodeError)?;
-        builder.push_payload(ciphertext);
-        builder
-            .append_generated_bytes(&auth_tag)
+        tag_writer
+            .write_bytes(&auth_tag)
             .ok_or(TlsError::DecodeError)?;
-        Ok(builder.build())
+        append_payload(
+            &mut record,
+            tag_writer.finish().ok_or(TlsError::DecodeError)?,
+        );
+        Ok(record)
     }
 
     pub(crate) fn tls13_encrypt_application_payload(

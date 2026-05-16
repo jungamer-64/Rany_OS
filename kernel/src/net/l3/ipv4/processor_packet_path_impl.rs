@@ -4,8 +4,8 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, move_payload_window_owned};
-use kernel_api::resource::net::PacketPayload;
+use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView, move_payload_window_owned};
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 impl Ipv4Processor {
     pub(crate) fn process_fragment_owned_packet(
@@ -102,15 +102,23 @@ impl Ipv4Processor {
             }
         }
 
-        let mut header_builder = PacketPayloadBuilder::new();
-        if header_builder
-            .append_generated_bytes(&header_copy[..header_len])
+        let Some(mut header_writer) =
+            GeneratedPacketWriter::new(header_len, DEFAULT_PACKET_HEADROOM)
+        else {
+            self.stats.rx_errors += 1;
+            return Ipv4ProcessResult::Error;
+        };
+        if header_writer
+            .write_bytes(&header_copy[..header_len])
             .is_none()
         {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
         }
-        let header_packet = header_builder.build();
+        let Some(header_packet) = header_writer.finish() else {
+            self.stats.rx_errors += 1;
+            return Ipv4ProcessResult::Error;
+        };
         let Some(payload_packet) =
             move_payload_window_owned(original, header_len, total_len.saturating_sub(header_len))
         else {

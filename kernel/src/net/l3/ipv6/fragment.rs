@@ -29,8 +29,8 @@ use alloc::vec::Vec;
 
 use super::Ipv6Address;
 use super::Ipv6ReassemblyError;
-use crate::net::payload::{PacketPayloadView, append_payload};
-use kernel_api::resource::net::{PacketChain, PacketPayload};
+use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView, append_payload};
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketChain, PacketPayload};
 
 // =====================================================
 // Fragment Header Parsing
@@ -674,12 +674,15 @@ impl Ipv6FragmentReassembler {
                 if let Some(unfrag) = buffer.unfragmentable_part {
                     let mut quoted = unfrag;
                     if let Some(fragment_header) = buffer.first_frag_header {
-                        let mut header_builder = crate::net::payload::PacketPayloadBuilder::new();
-                        if header_builder
-                            .append_generated_bytes(&fragment_header)
-                            .is_some()
-                        {
-                            append_payload(&mut quoted, header_builder.build());
+                        if let Some(mut header_writer) = GeneratedPacketWriter::new(
+                            fragment_header.len(),
+                            DEFAULT_PACKET_HEADROOM,
+                        ) {
+                            if header_writer.write_bytes(&fragment_header).is_some() {
+                                if let Some(header_payload) = header_writer.finish() {
+                                    append_payload(&mut quoted, header_payload);
+                                }
+                            }
                         }
                     } else if let Some(segment) = buffer
                         .segments

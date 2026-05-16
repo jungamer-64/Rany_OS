@@ -491,9 +491,19 @@ impl NetworkStack {
                 // the Identification value.
                 let mut quoted = unfragmentable;
                 if let Some(fh) = frag_header {
-                    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-                    if builder.append_generated_bytes(&fh).is_some() {
-                        crate::net::payload::append_payload(&mut quoted, builder.build());
+                    let Some(mut writer) = crate::net::payload::GeneratedPacketWriter::new(
+                        fh.len(),
+                        kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
+                    ) else {
+                        self.stats.record_rx_error();
+                        return;
+                    };
+                    if writer.write_bytes(&fh).is_none() {
+                        self.stats.record_rx_error();
+                        return;
+                    }
+                    if let Some(fragment_header) = writer.finish() {
+                        crate::net::payload::append_payload(&mut quoted, fragment_header);
                     } else {
                         self.stats.record_rx_error();
                         return;

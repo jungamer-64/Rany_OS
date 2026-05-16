@@ -566,14 +566,16 @@ impl SocketState {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::net::payload::PacketPayloadBuilder;
+    use crate::net::payload::GeneratedPacketWriter;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
     fn payload_bytes(data: &[u8]) -> PacketPayload {
-        let mut builder = PacketPayloadBuilder::new();
-        builder
-            .append_generated_bytes(data)
+        let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
             .expect("test payload allocation");
-        builder.build()
+        writer
+            .write_bytes(data)
+            .expect("test payload write succeeds");
+        writer.finish().expect("test payload is exact")
     }
 
     #[cfg_attr(target_os = "linux", test)]
@@ -625,5 +627,4 @@ pub mod tests {
         assert_eq!(payload.total_len(), 5);
         assert_eq!(state.recv_payload_bytes(), 0);
     }
-
 }

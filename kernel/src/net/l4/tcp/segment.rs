@@ -506,14 +506,16 @@ pub fn send_tcp_segment_packet(
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView};
+    use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView};
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
     fn test_payload_bytes(data: &[u8]) -> PacketPayload {
-        let mut builder = PacketPayloadBuilder::new();
-        builder
-            .append_generated_bytes(data)
+        let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
             .expect("test packet payload allocation");
-        builder.build()
+        writer
+            .write_bytes(data)
+            .expect("test packet payload write succeeds");
+        writer.finish().expect("test packet payload is exact")
     }
 
     fn build_test_segment(builder: TcpSegmentBuilder) -> PacketPayload {

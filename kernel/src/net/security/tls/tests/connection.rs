@@ -24,11 +24,15 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
 }
 
 fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
-    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-    builder
-        .append_generated_bytes(data)
-        .expect("test handshake payload allocation succeeds");
-    builder.build()
+    let mut writer = crate::net::payload::GeneratedPacketWriter::new(
+        data.len(),
+        kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
+    )
+    .expect("test handshake payload allocation succeeds");
+    writer
+        .write_bytes(data)
+        .expect("test handshake payload write succeeds");
+    writer.finish().expect("test handshake payload is exact")
 }
 
 fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {

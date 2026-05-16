@@ -3,11 +3,12 @@
 // ============================================================================
 
 use super::{
-    ContentType, HandshakeType, PacketPayload, PacketPayloadBuilder,
+    ContentType, GeneratedPacketWriter, HandshakeType, PacketPayload,
     TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, TlsConnection,
     TlsState, ecdh,
 };
 use crate::net::security::tls::crypto::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
+use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
 impl TlsConnection {
     pub(super) fn hash_len(&self) -> usize {
@@ -92,13 +93,18 @@ impl TlsConnection {
         ];
 
         self.negotiation.state = TlsState::ClientHelloSent;
-        let mut builder = PacketPayloadBuilder::new();
-        if builder.append_generated_bytes(&record_header).is_none()
-            || builder.append_generated_bytes(message.as_slice()).is_none()
+        let Some(mut writer) = GeneratedPacketWriter::new(
+            record_header.len().saturating_add(message.len()),
+            DEFAULT_PACKET_HEADROOM,
+        ) else {
+            return PacketPayload::default();
+        };
+        if writer.write_bytes(&record_header).is_none()
+            || writer.write_bytes(message.as_slice()).is_none()
         {
             return PacketPayload::default();
         }
-        builder.build()
+        writer.finish().unwrap_or_default()
     }
 
     fn append_supported_versions_ext<const N: usize>(&self, ext: &mut TlsBytes<N>) -> Option<()> {

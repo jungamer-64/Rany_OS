@@ -6,25 +6,35 @@ use super::{
     ConnectionDirective, HttpHeader, HttpHeaderName, HttpHeaderValue, HttpMethod, HttpRequestUri,
     HttpStatusCode, HttpVersion,
 };
-use crate::net::payload::{PacketPayloadBuilder, PayloadRange, PayloadSpanRef};
+use crate::net::payload::{
+    GeneratedPacketWriter, PayloadRange, PayloadSpanRef, append_payload, move_payload_window_owned,
+};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use kernel_api::resource::net::PacketPayload;
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
-fn write_headers(builder: &mut PacketPayloadBuilder, headers: &[HttpHeader]) -> Option<()> {
-    for header in headers {
-        builder.append_generated_str(header.name.as_str())?;
-        builder.append_generated_str(": ")?;
-        builder.append_generated_str(header.value.as_str())?;
-        builder.append_generated_str("\r\n")?;
-    }
-
-    Some(())
+fn generated_payload_from_bytes(data: &[u8]) -> Option<PacketPayload> {
+    let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)?;
+    writer.write_bytes(data)?;
+    writer.finish()
 }
 
-fn write_optional_body(builder: &mut PacketPayloadBuilder, body: Option<PacketPayload>) {
+fn generated_payload_from_string(data: &str) -> Option<PacketPayload> {
+    generated_payload_from_bytes(data.as_bytes())
+}
+
+fn write_headers(out: &mut String, headers: &[HttpHeader]) {
+    for header in headers {
+        out.push_str(header.name.as_str());
+        out.push_str(": ");
+        out.push_str(header.value.as_str());
+        out.push_str("\r\n");
+    }
+}
+
+fn append_optional_body(target: &mut PacketPayload, body: Option<PacketPayload>) {
     if let Some(body) = body {
-        builder.push_payload(body);
+        append_payload(target, body);
     }
 }
 
@@ -75,9 +85,7 @@ impl HttpRequest {
     }
 
     pub fn body_bytes(self, data: &[u8]) -> Option<Self> {
-        let mut builder = PacketPayloadBuilder::new();
-        builder.append_generated_bytes(data)?;
-        self.body_payload(builder.build())
+        self.body_payload(generated_payload_from_bytes(data)?)
     }
 
     pub fn get_header(&self, name: HttpHeaderName) -> Option<&HttpHeaderValue> {
@@ -95,17 +103,17 @@ impl HttpRequest {
     }
 
     pub fn into_payload(self) -> Option<PacketPayload> {
-        let mut builder = PacketPayloadBuilder::new();
-        builder.append_generated_str(&alloc::format!(
+        let mut head = alloc::format!(
             "{} {} {}\r\n",
             self.method,
             self.uri.as_request_target(),
             self.version
-        ))?;
-        write_headers(&mut builder, &self.headers)?;
-        builder.append_generated_str("\r\n")?;
-        write_optional_body(&mut builder, self.body);
-        Some(builder.build())
+        );
+        write_headers(&mut head, &self.headers);
+        head.push_str("\r\n");
+        let mut payload = generated_payload_from_string(&head)?;
+        append_optional_body(&mut payload, self.body);
+        Some(payload)
     }
 }
 
@@ -139,20 +147,12 @@ impl HttpBodyView {
         self.ranges.iter().filter_map(|range| range.span(payload))
     }
 
-    pub fn to_payload(&self, payload: &PacketPayload) -> Option<PacketPayload> {
-        let mut builder = PacketPayloadBuilder::new();
-        for span in self.spans(payload) {
-            let mut pushed = true;
-            span.for_each_chunk(|chunk| {
-                if pushed && builder.append_generated_bytes(chunk).is_none() {
-                    pushed = false;
-                }
-            });
-            if !pushed {
-                return None;
-            }
+    pub fn into_payload(self, payload: PacketPayload) -> Option<PacketPayload> {
+        if self.ranges.len() != 1 {
+            return None;
         }
-        Some(builder.build())
+        let range = self.ranges.into_iter().next()?;
+        move_payload_window_owned(payload, range.offset(), range.total_len())
     }
 }
 
@@ -204,10 +204,8 @@ impl HttpInboundRequest {
         self.get_header("Content-Type")
     }
 
-    pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body
-            .as_ref()
-            .and_then(|body| body.to_payload(&self.payload))
+    pub fn into_body_payload(self) -> Option<PacketPayload> {
+        self.body.and_then(|body| body.into_payload(self.payload))
     }
 }
 
@@ -250,23 +248,21 @@ impl HttpResponse {
     }
 
     pub fn body_bytes(self, data: &[u8]) -> Option<Self> {
-        let mut builder = PacketPayloadBuilder::new();
-        builder.append_generated_bytes(data)?;
-        self.body_payload(builder.build())
+        self.body_payload(generated_payload_from_bytes(data)?)
     }
 
     pub fn into_payload(self) -> Option<PacketPayload> {
-        let mut builder = PacketPayloadBuilder::new();
-        builder.append_generated_str(&alloc::format!(
+        let mut head = alloc::format!(
             "{} {} {}\r\n",
             self.version,
             self.status_code.as_u16(),
             self.reason_phrase
-        ))?;
-        write_headers(&mut builder, &self.headers)?;
-        builder.append_generated_str("\r\n")?;
-        builder.push_payload(self.body);
-        Some(builder.build())
+        );
+        write_headers(&mut head, &self.headers);
+        head.push_str("\r\n");
+        let mut payload = generated_payload_from_string(&head)?;
+        append_payload(&mut payload, self.body);
+        Some(payload)
     }
 }
 
@@ -295,9 +291,7 @@ impl HttpInboundResponse {
         })
     }
 
-    pub fn body_payload(&self) -> Option<PacketPayload> {
-        self.body
-            .as_ref()
-            .and_then(|body| body.to_payload(&self.payload))
+    pub fn into_body_payload(self) -> Option<PacketPayload> {
+        self.body.and_then(|body| body.into_payload(self.payload))
     }
 }

@@ -72,7 +72,7 @@ fn plan_from_buffered_payload(
 ) -> Option<Option<ResponsePlan>> {
     match parser.try_parse_request() {
         Ok(Some(request)) => Some(request_response_to_plan(
-            router::build_request_response_or_fallback(&request),
+            router::build_request_response_or_fallback(request),
         )),
         Ok(None) => None,
         Err(err) => {

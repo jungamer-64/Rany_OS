@@ -6,11 +6,11 @@ use alloc::string::{String, ToString};
 use alloc::{format, vec};
 use core::sync::atomic::Ordering;
 
-use crate::net::payload::{PacketPayloadBuilder, PayloadSpanRef};
+use crate::net::payload::{GeneratedPacketWriter, append_payload};
 use crate::net::services::http::types::{
     ConnectionDirective, HttpInboundRequest, HttpMethod, HttpVersion,
 };
-use kernel_api::resource::net::PacketPayload;
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 use super::index_html;
 
@@ -80,8 +80,8 @@ pub(super) fn build_timeout_response_or_log() -> Option<PacketPayload> {
     )
 }
 
-pub(super) fn build_request_response_or_fallback(request: &HttpInboundRequest) -> RequestResponse {
-    let keep_alive = keep_alive_for_request(request);
+pub(super) fn build_request_response_or_fallback(request: HttpInboundRequest) -> RequestResponse {
+    let keep_alive = keep_alive_for_request(&request);
 
     match build_response_for_request(request, keep_alive) {
         Ok(payload) => RequestResponse::Respond {
@@ -145,13 +145,13 @@ fn build_health_response(keep_alive: bool) -> Result<PacketPayload, HttpResponse
 }
 
 fn build_response_for_request(
-    request: &HttpInboundRequest,
+    request: HttpInboundRequest,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
     super::TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
 
     if request.method == HttpMethod::Get {
-        return build_get_response(request, keep_alive);
+        return build_get_response(&request, keep_alive);
     }
 
     if request.method == HttpMethod::Post && request.uri_eq("/echo") {
@@ -191,13 +191,13 @@ fn build_get_response(
 }
 
 fn build_echo_response(
-    request: &HttpInboundRequest,
+    request: HttpInboundRequest,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
-    if let Some(body) = request.body_payload() {
+    if let Some(body) = request.into_body_payload() {
         build_payload_response(
             "200 OK",
-            HeaderValue::PayloadOrDefault(request.content_type()),
+            HeaderValue::DefaultContentType,
             body,
             keep_alive,
             &[],
@@ -411,111 +411,84 @@ fn build_html_response(
     build_custom_response(status, "text/html; charset=utf-8", body, keep_alive)
 }
 
-enum HeaderValue<'a> {
+enum HeaderValue {
     Text(String),
-    PayloadOrDefault(Option<PayloadSpanRef<'a>>),
+    DefaultContentType,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum HttpResponseBuildError {
     AllocationFailed,
-    InvalidPayloadSpan,
-}
-
-fn push_builder_str(
-    builder: &mut PacketPayloadBuilder,
-    value: &str,
-) -> Result<(), HttpResponseBuildError> {
-    builder
-        .append_generated_str(value)
-        .ok_or(HttpResponseBuildError::AllocationFailed)
 }
 
 fn write_content_type_header(
-    builder: &mut PacketPayloadBuilder,
-    content_type: HeaderValue<'_>,
+    head: &mut String,
+    content_type: HeaderValue,
 ) -> Result<(), HttpResponseBuildError> {
-    push_builder_str(builder, "Content-Type: ")?;
+    head.push_str("Content-Type: ");
     match content_type {
-        HeaderValue::Text(value) => push_builder_str(builder, &value)?,
-        HeaderValue::PayloadOrDefault(Some(value)) => {
-            let mut pushed = true;
-            value.for_each_chunk(|chunk| {
-                if pushed && builder.append_generated_bytes(chunk).is_none() {
-                    pushed = false;
-                }
-            });
-            if !pushed {
-                return Err(HttpResponseBuildError::InvalidPayloadSpan);
-            }
-        }
-        HeaderValue::PayloadOrDefault(None) => {
-            push_builder_str(builder, "application/octet-stream")?;
-        }
+        HeaderValue::Text(value) => head.push_str(&value),
+        HeaderValue::DefaultContentType => head.push_str("application/octet-stream"),
     }
     Ok(())
 }
 
-fn write_additional_headers(
-    builder: &mut PacketPayloadBuilder,
-    additional_headers: &[(&str, &str)],
-) -> Result<(), HttpResponseBuildError> {
+fn write_additional_headers(head: &mut String, additional_headers: &[(&str, &str)]) {
     for (name, value) in additional_headers {
-        push_builder_str(builder, name)?;
-        push_builder_str(builder, ": ")?;
-        push_builder_str(builder, value)?;
-        push_builder_str(builder, "\r\n")?;
+        head.push_str(name);
+        head.push_str(": ");
+        head.push_str(value);
+        head.push_str("\r\n");
     }
-    Ok(())
 }
 
 const fn connection_header_value(keep_alive: bool) -> &'static str {
     if keep_alive { "keep-alive" } else { "close" }
 }
 
-fn write_status_line(
-    builder: &mut PacketPayloadBuilder,
-    status: &str,
-) -> Result<(), HttpResponseBuildError> {
-    push_builder_str(builder, "HTTP/1.1 ")?;
-    push_builder_str(builder, status)?;
-    push_builder_str(builder, "\r\n")
+fn write_status_line(head: &mut String, status: &str) {
+    head.push_str("HTTP/1.1 ");
+    head.push_str(status);
+    head.push_str("\r\n");
 }
 
-fn write_connection_header(
-    builder: &mut PacketPayloadBuilder,
-    keep_alive: bool,
-) -> Result<(), HttpResponseBuildError> {
-    push_builder_str(builder, "Connection: ")?;
-    push_builder_str(builder, connection_header_value(keep_alive))?;
-    push_builder_str(builder, "\r\n")
+fn write_connection_header(head: &mut String, keep_alive: bool) {
+    head.push_str("Connection: ");
+    head.push_str(connection_header_value(keep_alive));
+    head.push_str("\r\n");
 }
 
-fn write_content_length_header(
-    builder: &mut PacketPayloadBuilder,
-    body_len: usize,
-) -> Result<(), HttpResponseBuildError> {
-    push_builder_str(builder, "Content-Length: ")?;
-    push_builder_str(builder, &format!("{}", body_len))?;
-    push_builder_str(builder, "\r\n\r\n")
+fn write_content_length_header(head: &mut String, body_len: usize) {
+    head.push_str("Content-Length: ");
+    head.push_str(&format!("{}", body_len));
+    head.push_str("\r\n\r\n");
 }
 
 fn build_payload_response(
     status: &str,
-    content_type: HeaderValue<'_>,
+    content_type: HeaderValue,
     body: PacketPayload,
     keep_alive: bool,
     additional_headers: &[(&str, &str)],
 ) -> Result<PacketPayload, HttpResponseBuildError> {
-    let mut builder = PacketPayloadBuilder::new();
-    write_status_line(&mut builder, status)?;
-    write_content_type_header(&mut builder, content_type)?;
-    push_builder_str(&mut builder, "\r\n")?;
-    write_additional_headers(&mut builder, additional_headers)?;
-    write_connection_header(&mut builder, keep_alive)?;
-    write_content_length_header(&mut builder, body.total_len())?;
-    builder.push_payload(body);
-    Ok(builder.build())
+    let mut head = String::new();
+    write_status_line(&mut head, status);
+    write_content_type_header(&mut head, content_type)?;
+    head.push_str("\r\n");
+    write_additional_headers(&mut head, additional_headers);
+    write_connection_header(&mut head, keep_alive);
+    write_content_length_header(&mut head, body.total_len());
+
+    let mut writer = GeneratedPacketWriter::new(head.len(), DEFAULT_PACKET_HEADROOM)
+        .ok_or(HttpResponseBuildError::AllocationFailed)?;
+    writer
+        .write_bytes(head.as_bytes())
+        .ok_or(HttpResponseBuildError::AllocationFailed)?;
+    let mut payload = writer
+        .finish()
+        .ok_or(HttpResponseBuildError::AllocationFailed)?;
+    append_payload(&mut payload, body);
+    Ok(payload)
 }
 
 fn build_custom_response_with_headers(
@@ -525,12 +498,17 @@ fn build_custom_response_with_headers(
     keep_alive: bool,
     additional_headers: &[(&str, &str)],
 ) -> Result<PacketPayload, HttpResponseBuildError> {
-    let mut body_builder = PacketPayloadBuilder::new();
-    push_builder_str(&mut body_builder, body)?;
+    let mut writer = GeneratedPacketWriter::new(body.len(), DEFAULT_PACKET_HEADROOM)
+        .ok_or(HttpResponseBuildError::AllocationFailed)?;
+    writer
+        .write_bytes(body.as_bytes())
+        .ok_or(HttpResponseBuildError::AllocationFailed)?;
     build_payload_response(
         status,
         HeaderValue::Text(content_type.to_string()),
-        body_builder.build(),
+        writer
+            .finish()
+            .ok_or(HttpResponseBuildError::AllocationFailed)?,
         keep_alive,
         additional_headers,
     )

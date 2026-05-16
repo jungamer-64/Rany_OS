@@ -24,11 +24,18 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
 }
 
 fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
-    let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-    if builder.append_generated_bytes(data).is_none() {
+    let Some(mut writer) = crate::net::payload::GeneratedPacketWriter::new(
+        data.len(),
+        kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
+    ) else {
+        return kernel_api::resource::net::PacketPayload::default();
+    };
+    if writer.write_bytes(data).is_none() {
         return kernel_api::resource::net::PacketPayload::default();
     }
-    builder.build()
+    writer
+        .finish()
+        .unwrap_or_else(kernel_api::resource::net::PacketPayload::default)
 }
 
 fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {

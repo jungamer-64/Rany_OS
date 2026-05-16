@@ -28,8 +28,19 @@ impl DnsClient {
         }
     }
 
-    fn push_dns_name_payload(
-        builder: &mut crate::net::payload::PacketPayloadBuilder,
+    fn dns_name_wire_len(name: &DnsNameOwned) -> Option<usize> {
+        let mut len = 1usize;
+        for label in name.labels() {
+            if label.total_len() > 63 {
+                return None;
+            }
+            len = len.checked_add(1)?.checked_add(label.total_len())?;
+        }
+        Some(len)
+    }
+
+    fn write_dns_name_payload(
+        writer: &mut GeneratedPacketWriter,
         name: &DnsNameOwned,
     ) -> Result<(), &'static str> {
         for label in name.labels() {
@@ -37,15 +48,15 @@ impl DnsClient {
             if len > 63 {
                 return Err("Label too long");
             }
-            builder
-                .append_generated_bytes(&[len as u8])
+            writer
+                .write_u8(len as u8)
                 .ok_or("Failed to allocate DNS label")?;
             let span = label
                 .span(name.payload())
                 .ok_or("Invalid DNS label payload range")?;
             let mut pushed = true;
             span.for_each_chunk(|chunk| {
-                if pushed && builder.append_generated_bytes(chunk).is_none() {
+                if pushed && writer.write_bytes(chunk).is_none() {
                     pushed = false;
                 }
             });
@@ -53,8 +64,8 @@ impl DnsClient {
                 return Err("Failed to allocate DNS label payload");
             }
         }
-        builder
-            .append_generated_bytes(&[0])
+        writer
+            .write_u8(0)
             .ok_or("Failed to allocate DNS terminator")?;
         Ok(())
     }
@@ -85,52 +96,51 @@ impl DnsClient {
         qtype: DnsQueryType,
         id: u16,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder
-            .append_generated_bytes(&id.to_be_bytes())
-            .ok_or("Failed to allocate DNS header")?;
-        builder
-            .append_generated_bytes(&0x0100u16.to_be_bytes())
-            .ok_or("Failed to allocate DNS header")?;
-        builder
-            .append_generated_bytes(&1u16.to_be_bytes())
-            .ok_or("Failed to allocate DNS header")?;
-        builder
-            .append_generated_bytes(&0u16.to_be_bytes())
-            .ok_or("Failed to allocate DNS header")?;
-        builder
-            .append_generated_bytes(&0u16.to_be_bytes())
-            .ok_or("Failed to allocate DNS header")?;
-        builder
-            .append_generated_bytes(&1u16.to_be_bytes())
-            .ok_or("Failed to allocate DNS header")?;
+        let name_len = Self::dns_name_wire_len(name).ok_or("Invalid DNS name")?;
+        let packet_len = DnsHeader::SIZE
+            .checked_add(name_len)
+            .and_then(|len| len.checked_add(4))
+            .and_then(|len| len.checked_add(11))
+            .ok_or("DNS query too large")?;
+        let mut writer = GeneratedPacketWriter::new(packet_len, DEFAULT_PACKET_HEADROOM)
+            .ok_or("Failed to allocate DNS query")?;
+        writer
+            .write_u16_be(id)
+            .ok_or("Failed to write DNS header")?;
+        writer
+            .write_u16_be(0x0100)
+            .ok_or("Failed to write DNS header")?;
+        writer.write_u16_be(1).ok_or("Failed to write DNS header")?;
+        writer.write_u16_be(0).ok_or("Failed to write DNS header")?;
+        writer.write_u16_be(0).ok_or("Failed to write DNS header")?;
+        writer.write_u16_be(1).ok_or("Failed to write DNS header")?;
 
-        Self::push_dns_name_payload(&mut builder, name)?;
-        builder
-            .append_generated_bytes(&(qtype as u16).to_be_bytes())
-            .ok_or("Failed to allocate DNS qtype")?;
-        builder
-            .append_generated_bytes(&(DnsQueryClass::IN as u16).to_be_bytes())
-            .ok_or("Failed to allocate DNS qclass")?;
-        builder
-            .append_generated_bytes(&[0])
-            .ok_or("Failed to allocate EDNS0 root name")?;
-        builder
-            .append_generated_bytes(&(DnsQueryType::OPT as u16).to_be_bytes())
-            .ok_or("Failed to allocate EDNS0 type")?;
-        builder
-            .append_generated_bytes(&4096u16.to_be_bytes())
-            .ok_or("Failed to allocate EDNS0 payload size")?;
-        builder
-            .append_generated_bytes(&0u32.to_be_bytes())
-            .ok_or("Failed to allocate EDNS0 flags")?;
-        builder
-            .append_generated_bytes(&0u16.to_be_bytes())
-            .ok_or("Failed to allocate EDNS0 rdlength")?;
+        Self::write_dns_name_payload(&mut writer, name)?;
+        writer
+            .write_u16_be(qtype as u16)
+            .ok_or("Failed to write DNS qtype")?;
+        writer
+            .write_u16_be(DnsQueryClass::IN as u16)
+            .ok_or("Failed to write DNS qclass")?;
+        writer
+            .write_u8(0)
+            .ok_or("Failed to write EDNS0 root name")?;
+        writer
+            .write_u16_be(DnsQueryType::OPT as u16)
+            .ok_or("Failed to write EDNS0 type")?;
+        writer
+            .write_u16_be(4096)
+            .ok_or("Failed to write EDNS0 payload size")?;
+        writer
+            .write_u32_be(0)
+            .ok_or("Failed to write EDNS0 flags")?;
+        writer
+            .write_u16_be(0)
+            .ok_or("Failed to write EDNS0 rdlength")?;
 
         self.stats.queries_sent.fetch_add(1, Ordering::Relaxed);
 
-        Ok(builder.build())
+        writer.finish().ok_or("Incomplete DNS query")
     }
 
     /// Build a DNS query for TCP transport as a packet-backed payload.
@@ -160,12 +170,14 @@ impl DnsClient {
         id: u16,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
         let message = self.build_query_payload_for_name_with_id(name, qtype, id)?;
-        let mut builder = crate::net::payload::PacketPayloadBuilder::new();
-        builder
-            .append_generated_bytes(&(message.total_len() as u16).to_be_bytes())
+        let mut prefix = GeneratedPacketWriter::new(2, DEFAULT_PACKET_HEADROOM)
             .ok_or("Buffer too small for TCP length prefix")?;
-        builder.push_payload(message);
-        Ok(builder.build())
+        prefix
+            .write_u16_be(message.total_len() as u16)
+            .ok_or("Buffer too small for TCP length prefix")?;
+        let mut payload = prefix.finish().ok_or("Incomplete DNS TCP prefix")?;
+        crate::net::payload::append_payload(&mut payload, message);
+        Ok(payload)
     }
 
     /// Check if a DNS query should be retried based on attempt count and elapsed time
@@ -181,15 +193,7 @@ impl DnsClient {
         }
     }
 
-    pub(super) fn retire_pending_query_id(
-        &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-    ) {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
-        let Some(id) = view.read_array::<2>(0).map(u16::from_be_bytes) else {
-            return;
-        };
-
+    pub(super) fn retire_pending_query_id_value(&self, id: u16) {
         if let Ok(mut pending) = self.pending_ids.lock() {
             pending.remove(&id);
         }

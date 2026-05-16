@@ -6,7 +6,7 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
-use crate::net::payload::{PacketPayloadBuilder, PacketPayloadView, PayloadRange, PayloadSpanRef};
+use crate::net::payload::{GeneratedPacketWriter, PayloadRange, PayloadSpanRef};
 use crate::net::runtime::context::default_runtime_context;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -17,7 +17,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
 use core::cmp::Ordering as CmpOrdering;
-use kernel_api::resource::net::PacketPayload;
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 /// DNSポート
 mod tcp_constants;
@@ -296,46 +296,14 @@ impl DnsNameOwned {
         }
     }
 
-    pub(crate) fn from_payload_ranges(
-        payload: &PacketPayload,
-        labels: &[PayloadRange],
-        text_len: usize,
-    ) -> Option<Self> {
-        let mut builder = PacketPayloadBuilder::new();
-        let mut owned_labels = Vec::new();
-        let mut offset = 0usize;
-        for label in labels {
-            let span = label.span(payload)?;
-            let len = span.total_len();
-            let mut pushed = true;
-            span.for_each_chunk(|chunk| {
-                if pushed && builder.append_generated_bytes(chunk).is_none() {
-                    pushed = false;
-                }
-            });
-            if !pushed {
-                return None;
-            }
-            owned_labels.push(PayloadRange::new(offset, len));
-            offset = offset.saturating_add(len);
-        }
-        Some(Self::from_payload_labels(
-            builder.build(),
-            owned_labels,
-            text_len,
-        ))
-    }
-
     pub fn parse_ascii(name: &str) -> Result<Self, DnsNameError> {
         let trimmed = name.strip_suffix('.').unwrap_or(name);
         if trimmed.is_empty() {
             return Err(DnsNameError::EmptyName);
         }
 
-        let mut builder = PacketPayloadBuilder::new();
-        let mut labels = Vec::new();
+        let mut payload_len = 0usize;
         let mut text_len = 0usize;
-        let mut payload_offset = 0usize;
         for (index, label) in trimmed.split('.').enumerate() {
             if label.is_empty() {
                 return Err(DnsNameError::EmptyLabel);
@@ -349,18 +317,31 @@ impl DnsNameOwned {
                 return Err(DnsNameError::NonAsciiLabel);
             }
 
-            builder
-                .append_generated_bytes(bytes)
-                .ok_or(DnsNameError::AllocationFailed)?;
-            labels.push(PayloadRange::new(payload_offset, bytes.len()));
-            payload_offset = payload_offset.saturating_add(bytes.len());
+            payload_len = payload_len.saturating_add(bytes.len());
             text_len = text_len.saturating_add(bytes.len());
             if index > 0 {
                 text_len = text_len.saturating_add(1);
             }
         }
 
-        Ok(Self::from_payload_labels(builder.build(), labels, text_len))
+        let mut writer = GeneratedPacketWriter::new(payload_len, DEFAULT_PACKET_HEADROOM)
+            .ok_or(DnsNameError::AllocationFailed)?;
+        let mut labels = Vec::new();
+        let mut payload_offset = 0usize;
+        for label in trimmed.split('.') {
+            let bytes = label.as_bytes();
+            writer
+                .write_bytes(bytes)
+                .ok_or(DnsNameError::AllocationFailed)?;
+            labels.push(PayloadRange::new(payload_offset, bytes.len()));
+            payload_offset = payload_offset.saturating_add(bytes.len());
+        }
+
+        Ok(Self::from_payload_labels(
+            writer.finish().ok_or(DnsNameError::AllocationFailed)?,
+            labels,
+            text_len,
+        ))
     }
 
     pub fn labels(&self) -> &[PayloadRange] {
@@ -706,14 +687,6 @@ pub(crate) fn compare_dns_name_view_to_owned(
     owned: &DnsNameOwned,
 ) -> CmpOrdering {
     compare_dns_name_ranges(view_payload, view.labels(), owned.payload(), owned.labels())
-}
-
-pub(crate) fn dns_name_owned_from_view(
-    view: &PacketPayloadView<'_>,
-    labels: &[PayloadRange],
-    text_len: usize,
-) -> Option<DnsNameOwned> {
-    DnsNameOwned::from_payload_ranges(view.payload(), labels, text_len)
 }
 
 /// DNSクライアント

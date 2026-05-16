@@ -25,11 +25,7 @@ impl DnsClient {
             .query_servers_with_failover(&socket, &servers, name, qtype, tick, query_id)
             .await;
         if result.is_err() {
-            let mut id_payload_builder = crate::net::payload::PacketPayloadBuilder::new();
-            id_payload_builder
-                .append_generated_bytes(&query_id.to_be_bytes())
-                .ok_or("Failed to allocate DNS query id payload")?;
-            self.retire_pending_query_id(&id_payload_builder.build());
+            self.retire_pending_query_id_value(query_id);
         }
         result
     }
