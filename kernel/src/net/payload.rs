@@ -318,10 +318,6 @@ impl<'a> PayloadSpanRef<'a> {
     }
 }
 
-pub struct PacketPayloadBuilder {
-    segments: Vec<PacketRef>,
-}
-
 pub struct PacketPayloadWindow {
     payload: PacketPayload,
     offset: usize,
@@ -331,42 +327,6 @@ pub struct PacketPayloadWindow {
 pub struct GeneratedPacketWriter {
     packet: PacketRef,
     offset: usize,
-}
-
-impl PacketPayloadBuilder {
-    pub fn new() -> Self {
-        Self {
-            segments: Vec::new(),
-        }
-    }
-
-    pub fn push_payload(&mut self, payload: PacketPayload) {
-        self.segments.extend(payload.into_segments());
-    }
-
-    pub fn append_generated_bytes(&mut self, data: &[u8]) -> Option<()> {
-        if data.is_empty() {
-            return Some(());
-        }
-        let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)?;
-        writer.write_bytes(data)?;
-        self.push_payload(writer.finish()?);
-        Some(())
-    }
-
-    pub fn append_generated_str(&mut self, data: &str) -> Option<()> {
-        self.append_generated_bytes(data.as_bytes())
-    }
-
-    pub fn build(self) -> PacketPayload {
-        match self.segments.len() {
-            0 => PacketPayload::default(),
-            1 => PacketPayload::single(self.segments.into_iter().next().expect("single segment")),
-            _ => PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
-                self.segments,
-            )),
-        }
-    }
 }
 
 impl PacketPayloadWindow {
