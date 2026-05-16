@@ -17,7 +17,7 @@ pub mod stack;
 pub mod timeouts;
 
 pub use context::{
-    NetRuntimeContext, NetRuntimeHandle, NetRuntimeId, create_runtime, default_runtime,
-    default_runtime_context, list_runtimes, reset_runtime_registry_for_tests, runtime,
-    set_default_runtime,
+    NetRuntimeContext, NetRuntimeHandle, NetRuntimeId, RuntimeAllocationError, create_runtime,
+    default_runtime, default_runtime_context, list_runtimes, reset_runtime_registry_for_tests,
+    runtime, set_default_runtime,
 };

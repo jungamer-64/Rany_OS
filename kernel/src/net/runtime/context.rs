@@ -18,7 +18,13 @@ use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct NetRuntimeId(pub u16);
+pub struct NetRuntimeId(pub u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeAllocationError {
+    IdSpaceExhausted,
+    IdAlreadyAllocated,
+}
 
 #[derive(Clone, Copy)]
 pub struct NetRuntimeHandle {
@@ -116,7 +122,7 @@ impl NetRuntimeContext {
 #[derive(Default)]
 struct RuntimeRegistry {
     default: Option<NetRuntimeId>,
-    next_id: u16,
+    next_id: Option<u64>,
     runtimes: BTreeMap<NetRuntimeId, &'static NetRuntimeContext>,
 }
 
@@ -124,17 +130,24 @@ impl RuntimeRegistry {
     const fn new() -> Self {
         Self {
             default: None,
-            next_id: 0,
+            next_id: Some(0),
             runtimes: BTreeMap::new(),
         }
     }
 
-    fn allocate_runtime(&mut self) -> &'static NetRuntimeContext {
-        let id = NetRuntimeId(self.next_id);
-        self.next_id = self.next_id.wrapping_add(1);
+    fn allocate_runtime(&mut self) -> Result<&'static NetRuntimeContext, RuntimeAllocationError> {
+        let raw_id = self
+            .next_id
+            .ok_or(RuntimeAllocationError::IdSpaceExhausted)?;
+        let id = NetRuntimeId(raw_id);
+        if self.runtimes.contains_key(&id) {
+            return Err(RuntimeAllocationError::IdAlreadyAllocated);
+        }
+
+        self.next_id = raw_id.checked_add(1);
         let context = Box::leak(Box::new(NetRuntimeContext::new(id)));
         self.runtimes.insert(id, context);
-        context
+        Ok(context)
     }
 
     fn default_runtime(&mut self) -> &'static NetRuntimeContext {
@@ -144,7 +157,9 @@ impl RuntimeRegistry {
             }
         }
 
-        let context = self.allocate_runtime();
+        let context = self
+            .allocate_runtime()
+            .expect("network runtime id space exhausted");
         self.default = Some(context.id());
         context
     }
@@ -161,9 +176,9 @@ pub fn default_runtime_context() -> &'static NetRuntimeContext {
     default_runtime().context()
 }
 
-pub fn create_runtime() -> NetRuntimeHandle {
+pub fn create_runtime() -> Result<NetRuntimeHandle, RuntimeAllocationError> {
     let mut registry = RUNTIME_REGISTRY.lock_for_init("[NET] runtime registry create");
-    registry.allocate_runtime().handle()
+    registry.allocate_runtime().map(NetRuntimeContext::handle)
 }
 
 pub fn runtime(id: NetRuntimeId) -> Option<NetRuntimeHandle> {
@@ -197,7 +212,7 @@ pub fn set_default_runtime(handle: NetRuntimeHandle) {
 pub fn reset_runtime_registry_for_tests() {
     if let Ok(mut registry) = RUNTIME_REGISTRY.lock() {
         registry.default = None;
-        registry.next_id = 0;
+        registry.next_id = Some(0);
         registry.runtimes.clear();
     }
 }
@@ -217,7 +232,7 @@ mod tests {
         reset_runtime_registry_for_tests();
 
         let runtime_a = default_runtime();
-        let runtime_b = create_runtime();
+        let runtime_b = create_runtime().expect("second runtime allocation");
 
         assert_ne!(runtime_a.id(), runtime_b.id());
         assert_eq!(list_runtimes().len(), 2);
@@ -239,5 +254,35 @@ mod tests {
         );
         assert!(runtime_a.context().command_queue.has_events());
         assert!(runtime_b.context().command_queue.is_empty());
+    }
+
+    #[test]
+    fn runtime_ids_do_not_wrap_after_exhaustion() {
+        let mut registry = RuntimeRegistry::new();
+        registry.next_id = Some(u64::MAX);
+
+        let runtime = registry
+            .allocate_runtime()
+            .expect("last representable runtime id");
+        assert_eq!(runtime.id(), NetRuntimeId(u64::MAX));
+        assert!(matches!(
+            registry.allocate_runtime(),
+            Err(RuntimeAllocationError::IdSpaceExhausted)
+        ));
+        assert_eq!(registry.runtimes.len(), 1);
+    }
+
+    #[test]
+    fn runtime_registry_rejects_id_reuse() {
+        let mut registry = RuntimeRegistry::new();
+        let runtime = registry.allocate_runtime().expect("first runtime");
+        assert_eq!(runtime.id(), NetRuntimeId(0));
+
+        registry.next_id = Some(0);
+        assert!(matches!(
+            registry.allocate_runtime(),
+            Err(RuntimeAllocationError::IdAlreadyAllocated)
+        ));
+        assert_eq!(registry.runtimes.len(), 1);
     }
 }

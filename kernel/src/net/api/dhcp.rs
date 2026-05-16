@@ -709,7 +709,7 @@ mod tests {
         reset_runtime_registry_for_tests();
 
         let runtime_a = default_runtime();
-        let runtime_b = create_runtime();
+        let runtime_b = create_runtime().expect("runtime b allocation");
 
         manager::init_network_manager_in(runtime_a);
         manager::init_network_manager_in(runtime_b);
