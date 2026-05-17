@@ -220,15 +220,14 @@ fn http_config_usable(config: &crate::net::api::config::InterfaceConfigSnapshot)
 }
 
 fn http_network_ready() -> bool {
-    if !crate::net::runtime::bridge::get_stack_glue_stats().initialized {
+    let runtime = crate::net::runtime::default_runtime();
+    if !crate::net::runtime::bridge::get_stack_glue_stats_in(runtime).initialized {
         return false;
     }
 
-    crate::net::api::config::primary_interface_config_from_runtime_in(
-        crate::net::runtime::default_runtime(),
-    )
-    .as_ref()
-    .is_some_and(http_config_usable)
+    crate::net::api::config::primary_interface_config_from_runtime_in(runtime)
+        .as_ref()
+        .is_some_and(http_config_usable)
 }
 
 async fn wait_for_http_network_ready() {

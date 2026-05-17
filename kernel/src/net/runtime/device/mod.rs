@@ -1285,7 +1285,7 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
                 return Err("network stack unavailable");
             };
             stack.set_transmit_fn_with_completion(
-                crate::net::runtime::bridge::transmit_from_stack,
+                crate::net::runtime::bridge::transmit_from_stack_in,
                 true,
             );
         }
@@ -1306,6 +1306,12 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
 
 pub fn is_initialized() -> bool {
     runtime_context().stack_initialized.load(Ordering::Acquire)
+}
+
+pub fn is_initialized_in(runtime: NetRuntimeHandle) -> bool {
+    runtime_context_for(runtime)
+        .stack_initialized
+        .load(Ordering::Acquire)
 }
 
 fn interface_for_port(
@@ -1590,19 +1596,24 @@ pub(crate) fn claim_bound_primary_interface_with_stack_state_in(
     }
 }
 
-pub fn transmit_packet(if_id: Option<NetIfId>, payload: PacketPayload, meta: NetTxMeta) -> bool {
-    let resolved_if = if_id.or_else(|| primary_if_in(default_runtime()));
+pub fn transmit_packet_in(
+    runtime: NetRuntimeHandle,
+    if_id: Option<NetIfId>,
+    payload: PacketPayload,
+    meta: NetTxMeta,
+) -> bool {
+    let resolved_if = if_id.or_else(|| primary_if_in(runtime));
     let Some(resolved_if) = resolved_if else {
         if let Some(completion_id) = meta.completion_id {
             let _ = complete_tx_request_in(
-                default_runtime(),
+                runtime,
                 completion_id,
                 Err("network interface unavailable"),
             );
         }
         return false;
     };
-    if with_port_handle_in(default_runtime(), resolved_if, |handle| {
+    if with_port_handle_in(runtime, resolved_if, |handle| {
         handle.enqueue_tx(payload, meta)
     })
     .unwrap_or(false)
@@ -1610,11 +1621,7 @@ pub fn transmit_packet(if_id: Option<NetIfId>, payload: PacketPayload, meta: Net
         true
     } else {
         if let Some(completion_id) = meta.completion_id {
-            let _ = complete_tx_request_in(
-                default_runtime(),
-                completion_id,
-                Err("device TX queue full"),
-            );
+            let _ = complete_tx_request_in(runtime, completion_id, Err("device TX queue full"));
         }
         false
     }
@@ -2102,7 +2109,8 @@ mod tests {
         let if_b = register_test_port(99, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
-        let mut test_stack = stack::NetworkStack::new(NetworkConfig::default());
+        let mut test_stack =
+            stack::NetworkStack::new_in(default_runtime(), NetworkConfig::default());
         test_stack.register_interface_state(if_a, NetworkConfig::default());
         test_stack.register_interface_state(if_b, NetworkConfig::default());
 

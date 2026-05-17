@@ -8,8 +8,8 @@
 use crate::net::datapath::optimization::{BatchConfig, BatchProcessor};
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::obs::{
-    counters,
-    trace::{self, NetEventKind, NetLayer},
+    observability_in,
+    trace::{NetEventKind, NetLayer},
 };
 use crate::net::runtime::device;
 use crate::net::runtime::manager::{self, NetIfId};
@@ -79,10 +79,6 @@ impl NetBridgeRuntimeState {
             nat: NatRuntimeState::new(),
         }
     }
-}
-
-fn runtime_state() -> &'static NetBridgeRuntimeState {
-    &crate::net::runtime::default_runtime_context().bridge
 }
 
 fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static NetBridgeRuntimeState {
@@ -213,43 +209,38 @@ pub fn register_stack_glue_interface_in(runtime: NetRuntimeHandle, if_id: NetIfI
 // Transmit Bridge
 // ============================================================================
 
-pub fn transmit_from_stack(
+pub fn transmit_from_stack_in(
+    runtime: NetRuntimeHandle,
     if_id: Option<NetIfId>,
     payload: kernel_api::resource::net::PacketPayload,
     meta: kernel_api::service::netdev::NetTxMeta,
 ) -> bool {
-    let resolved_if = if_id.or_else(|| primary_stack_glue_if_in(default_runtime()));
+    let resolved_if = if_id.or_else(|| primary_stack_glue_if_in(runtime));
     let packet_len = payload.total_len();
-    let sent = device::transmit_packet(if_id, payload, meta);
+    let sent = device::transmit_packet_in(runtime, if_id, payload, meta);
+    let observability = observability_in(runtime);
 
     if sent {
         if let Some(if_id) = resolved_if {
-            record_stack_glue_if_tx_in(default_runtime(), if_id);
+            record_stack_glue_if_tx_in(runtime, if_id);
         }
-        runtime_state().tx_packets.fetch_add(1, Ordering::Relaxed);
-        counters::global().record_tx(packet_len);
-        trace::push_event(NetLayer::Driver, NetEventKind::Tx, "device queued tx");
+        runtime_state_for(runtime)
+            .tx_packets
+            .fetch_add(1, Ordering::Relaxed);
+        observability.counters().record_tx(packet_len);
+        observability
+            .trace()
+            .push(NetLayer::Driver, NetEventKind::Tx, "device queued tx");
         true
     } else {
-        counters::global().record_error();
-        trace::push_event(
+        observability.counters().record_error();
+        observability.trace().push(
             NetLayer::Driver,
             NetEventKind::Error,
             "device tx enqueue failed",
         );
         false
     }
-}
-
-pub fn send_packet_on_interface(
-    if_id: NetIfId,
-    packet: crate::net::datapath::mempool::PacketRef,
-) -> bool {
-    transmit_from_stack(
-        Some(if_id),
-        kernel_api::resource::net::PacketPayload::single(packet),
-        kernel_api::service::netdev::NetTxMeta::default(),
-    )
 }
 
 // ============================================================================
@@ -288,8 +279,11 @@ pub fn process_received_packet_zero_copy_in(
     }
 
     state.rx_packets.fetch_add(1, Ordering::Relaxed);
-    counters::global().record_rx(payload_len);
-    trace::push_event(NetLayer::Driver, NetEventKind::Rx, "rx packet");
+    let observability = observability_in(runtime);
+    observability.counters().record_rx(payload_len);
+    observability
+        .trace()
+        .push(NetLayer::Driver, NetEventKind::Rx, "rx packet");
 
     let Some(frame_len) = header_size.checked_add(payload_len) else {
         return;
@@ -335,7 +329,11 @@ pub fn process_received_packet_zero_copy_for_interface_in(
         .rx_packets
         .fetch_add(1, Ordering::Relaxed)
         .saturating_add(1);
-    counters::global().record_rx(payload_len);
+    let observability = observability_in(runtime);
+    observability.counters().record_rx(payload_len);
+    observability
+        .trace()
+        .push(NetLayer::Driver, NetEventKind::Rx, "rx packet");
     record_stack_glue_if_rx_in(runtime, if_id);
     nat_maybe_gc_in(runtime, rx_count);
 
@@ -393,8 +391,11 @@ pub fn flush_batch_in(runtime: NetRuntimeHandle) {
     }
 }
 
-pub fn get_stack_glue_stats_for_interface(if_id: NetIfId) -> Option<StackGlueInterfaceStats> {
-    runtime_state()
+pub fn get_stack_glue_stats_for_interface_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<StackGlueInterfaceStats> {
+    runtime_state_for(runtime)
         .if_stats
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -402,8 +403,8 @@ pub fn get_stack_glue_stats_for_interface(if_id: NetIfId) -> Option<StackGlueInt
         .copied()
 }
 
-pub fn list_stack_glue_stats() -> Vec<StackGlueInterfaceStats> {
-    runtime_state()
+pub fn list_stack_glue_stats_in(runtime: NetRuntimeHandle) -> Vec<StackGlueInterfaceStats> {
+    runtime_state_for(runtime)
         .if_stats
         .read()
         .unwrap_or_else(|e| e.into_inner())
@@ -419,11 +420,11 @@ pub struct StackGlueStats {
     pub tx_packets: u64,
 }
 
-pub fn get_stack_glue_stats() -> StackGlueStats {
-    let state = runtime_state();
+pub fn get_stack_glue_stats_in(runtime: NetRuntimeHandle) -> StackGlueStats {
+    let state = runtime_state_for(runtime);
     StackGlueStats {
         initialized: state.stack_glue_initialized.load(Ordering::Acquire)
-            || device::is_initialized(),
+            || device::is_initialized_in(runtime),
         rx_packets: state.rx_packets.load(Ordering::Relaxed),
         tx_packets: state.tx_packets.load(Ordering::Relaxed),
     }

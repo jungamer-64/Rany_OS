@@ -5,9 +5,9 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use crate::net::obs::counters;
-use crate::net::obs::trace::{NetTraceEvent, recent_events};
-use crate::net::runtime::{bridge, default_runtime, manager};
+use crate::net::obs::observability_in;
+use crate::net::obs::trace::NetTraceEvent;
+use crate::net::runtime::{NetRuntimeHandle, bridge, manager};
 
 extern crate alloc;
 
@@ -30,8 +30,7 @@ pub struct NetSnapshot {
     pub recent_events: Vec<NetTraceEvent>,
 }
 
-fn collect_interface_snapshots() -> Vec<InterfaceSnapshot> {
-    let runtime = default_runtime();
+fn collect_interface_snapshots(runtime: NetRuntimeHandle) -> Vec<InterfaceSnapshot> {
     let mut interfaces = Vec::new();
     let mut index_by_if = BTreeMap::new();
 
@@ -47,7 +46,7 @@ fn collect_interface_snapshots() -> Vec<InterfaceSnapshot> {
         }
     }
 
-    for stats in bridge::list_stack_glue_stats() {
+    for stats in bridge::list_stack_glue_stats_in(runtime) {
         if let Some(idx) = index_by_if.get(&stats.if_id).copied() {
             if let Some(entry) = interfaces.get_mut(idx) {
                 entry.rx_packets = stats.rx_packets;
@@ -74,8 +73,9 @@ fn collect_interface_snapshots() -> Vec<InterfaceSnapshot> {
     interfaces
 }
 
-pub fn snapshot() -> NetSnapshot {
-    let c = counters::global();
+pub fn snapshot_in(runtime: NetRuntimeHandle) -> NetSnapshot {
+    let observability = observability_in(runtime);
+    let c = observability.counters();
     NetSnapshot {
         rx_packets: c.rx_packets.load(core::sync::atomic::Ordering::Relaxed),
         tx_packets: c.tx_packets.load(core::sync::atomic::Ordering::Relaxed),
@@ -83,31 +83,35 @@ pub fn snapshot() -> NetSnapshot {
         tx_bytes: c.tx_bytes.load(core::sync::atomic::Ordering::Relaxed),
         drops: c.drops.load(core::sync::atomic::Ordering::Relaxed),
         errors: c.errors.load(core::sync::atomic::Ordering::Relaxed),
-        interfaces: collect_interface_snapshots(),
-        recent_events: recent_events(64),
+        interfaces: collect_interface_snapshots(runtime),
+        recent_events: observability.trace().recent(64),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::obs::trace::{self, NetEventKind, NetLayer};
+    use crate::net::obs::observability_in;
+    use crate::net::obs::trace::{NetEventKind, NetLayer};
+    use crate::net::runtime::create_runtime;
 
     #[cfg_attr(test, test_case)]
     fn snapshot_reflects_counter_deltas_and_recent_events() {
-        let before = snapshot();
+        let runtime = create_runtime().expect("test runtime allocation");
+        let before = snapshot_in(runtime);
+        let observability = observability_in(runtime);
 
-        counters::global().record_rx(64);
-        counters::global().record_tx(32);
-        counters::global().record_drop();
-        counters::global().record_error();
-        trace::push_event(
+        observability.counters().record_rx(64);
+        observability.counters().record_tx(32);
+        observability.counters().record_drop();
+        observability.counters().record_error();
+        observability.trace().push(
             NetLayer::Service,
             NetEventKind::Rx,
             "obs-snapshot-test-event",
         );
 
-        let after = snapshot();
+        let after = snapshot_in(runtime);
         assert!(after.rx_packets >= before.rx_packets + 1);
         assert!(after.tx_packets >= before.tx_packets + 1);
         assert!(after.rx_bytes >= before.rx_bytes + 64);
@@ -123,12 +127,45 @@ mod tests {
     }
 
     #[cfg_attr(test, test_case)]
+    fn snapshot_keeps_runtime_observability_isolated() {
+        let runtime_a = create_runtime().expect("runtime a allocation");
+        let runtime_b = create_runtime().expect("runtime b allocation");
+
+        let obs_a = observability_in(runtime_a);
+        obs_a.counters().record_rx(128);
+        obs_a
+            .trace()
+            .push(NetLayer::Driver, NetEventKind::Rx, "runtime-a-only-event");
+
+        let snap_a = snapshot_in(runtime_a);
+        let snap_b = snapshot_in(runtime_b);
+
+        assert_eq!(snap_a.rx_packets, 1);
+        assert_eq!(snap_a.rx_bytes, 128);
+        assert!(
+            snap_a
+                .recent_events
+                .iter()
+                .any(|e| e.message == "runtime-a-only-event")
+        );
+
+        assert_eq!(snap_b.rx_packets, 0);
+        assert_eq!(snap_b.rx_bytes, 0);
+        assert!(
+            snap_b
+                .recent_events
+                .iter()
+                .all(|e| e.message != "runtime-a-only-event")
+        );
+    }
+
+    #[cfg_attr(test, test_case)]
     fn snapshot_contains_registered_interface_entries() {
-        let runtime = default_runtime();
+        let runtime = create_runtime().expect("test runtime allocation");
         manager::init_network_manager_in(runtime);
         assert!(manager::register_interface_in(runtime, "obs-snapshot-if").is_ok());
 
-        let snap = snapshot();
+        let snap = snapshot_in(runtime);
         assert!(
             snap.interfaces
                 .iter()

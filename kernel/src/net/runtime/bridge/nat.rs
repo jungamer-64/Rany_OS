@@ -53,10 +53,6 @@ impl NatRuntimeState {
     }
 }
 
-fn nat_state() -> &'static NatRuntimeState {
-    &super::runtime_state().nat
-}
-
 fn nat_state_for(runtime: NetRuntimeHandle) -> &'static NatRuntimeState {
     &super::runtime_state_for(runtime).nat
 }
@@ -119,25 +115,6 @@ fn generate_random_port(table: &NatTable) -> u16 {
     NAT_EPHEMERAL_PORT_START
 }
 
-pub fn nat_translate_in(
-    proto: IpProtocol,
-    src_ip: Ipv4Address,
-    src_port: u16,
-    dst_ip: &mut Ipv4Address,
-    dst_port: &mut u16,
-    _tcp_flags: u8,
-) -> bool {
-    nat_translate_in_in(
-        crate::net::runtime::default_runtime(),
-        proto,
-        src_ip,
-        src_port,
-        dst_ip,
-        dst_port,
-        _tcp_flags,
-    )
-}
-
 pub fn nat_translate_in_in(
     runtime: NetRuntimeHandle,
     proto: IpProtocol,
@@ -174,27 +151,6 @@ pub fn nat_translate_in_in(
         return true;
     }
     false
-}
-
-pub fn nat_translate_out(
-    proto: IpProtocol,
-    src_ip: Ipv4Address,
-    src_port: u16,
-    dst_ip: Ipv4Address,
-    dst_port: u16,
-    if_id: NetIfId,
-    _tcp_flags: u8,
-) -> Option<(Ipv4Address, u16)> {
-    nat_translate_out_in(
-        crate::net::runtime::default_runtime(),
-        proto,
-        src_ip,
-        src_port,
-        dst_ip,
-        dst_port,
-        if_id,
-        _tcp_flags,
-    )
 }
 
 pub fn nat_translate_out_in(
@@ -263,10 +219,6 @@ pub fn nat_translate_out_in(
     Some((ext_ip, ext_port))
 }
 
-pub fn nat_maybe_gc(rx_count: u64) {
-    nat_maybe_gc_in(crate::net::runtime::default_runtime(), rx_count);
-}
-
 pub fn nat_maybe_gc_in(runtime: NetRuntimeHandle, rx_count: u64) {
     // Periodic GC every 1000 packets or when forced (rx_count=0)
     if rx_count != 0 && rx_count % 1000 != 0 {
@@ -322,68 +274,6 @@ pub fn nat_translate_out_icmp(
     _if_id: NetIfId,
 ) -> Option<(Ipv4Address, u16)> {
     None
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(super) fn nat_test_snapshot() -> Vec<NatEntry> {
-    nat_state()
-        .table
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .outbound
-        .values()
-        .copied()
-        .collect()
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(super) fn nat_test_restore(entries: &[NatEntry]) {
-    let mut table = nat_state().table.write().unwrap_or_else(|e| e.into_inner());
-    table.inbound.clear();
-    table.outbound.clear();
-    for entry in entries {
-        insert_nat_entry(&mut table, *entry);
-    }
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(super) fn nat_test_clear() {
-    let mut table = nat_state().table.write().unwrap_or_else(|e| e.into_inner());
-    table.inbound.clear();
-    table.outbound.clear();
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(super) fn nat_test_entries() -> Vec<NatEntry> {
-    nat_test_snapshot()
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(super) fn nat_test_entry_count() -> usize {
-    nat_state()
-        .table
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .outbound
-        .len()
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(super) fn nat_test_force_last_used(external_port: u16, last_used: u64) -> bool {
-    let mut table = nat_state().table.write().unwrap_or_else(|e| e.into_inner());
-    let mut updated = false;
-    for entry in table.outbound.values_mut() {
-        if entry.external_port == external_port {
-            entry.last_used = last_used;
-            updated = true;
-        }
-    }
-    for entry in table.inbound.values_mut() {
-        if entry.external_port == external_port {
-            entry.last_used = last_used;
-        }
-    }
-    updated
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]

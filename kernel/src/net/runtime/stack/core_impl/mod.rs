@@ -26,13 +26,10 @@ struct FragmentTxPacket {
 impl NetworkStack {
     pub(crate) fn interface_config_or_runtime(&self, if_id: NetIfId) -> Option<NetworkConfig> {
         self.interface_config(if_id).or_else(|| {
-            crate::net::runtime::manager::get_interface_in(
-                crate::net::runtime::default_runtime(),
-                if_id,
-            )
-            .ok()
-            .flatten()
-            .and_then(|iface| iface.config)
+            crate::net::runtime::manager::get_interface_in(self.runtime, if_id)
+                .ok()
+                .flatten()
+                .and_then(|iface| iface.config)
         })
     }
 
@@ -119,16 +116,13 @@ impl NetworkStack {
             })
             .transpose()?
             .or_else(|| {
-                crate::net::runtime::manager::lookup_ipv4_route_in(
-                    crate::net::runtime::default_runtime(),
-                    dst_ip,
-                )
-                .ok()
-                .flatten()
-                .and_then(|route| {
-                    self.interface_config_or_runtime(route.if_id)
-                        .map(|cfg| (Some(route.if_id), cfg))
-                })
+                crate::net::runtime::manager::lookup_ipv4_route_in(self.runtime, dst_ip)
+                    .ok()
+                    .flatten()
+                    .and_then(|route| {
+                        self.interface_config_or_runtime(route.if_id)
+                            .map(|cfg| (Some(route.if_id), cfg))
+                    })
             })
             .or_else(|| self.bootstrap_runtime_config())
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
@@ -155,16 +149,13 @@ impl NetworkStack {
             })
             .transpose()?
             .or_else(|| {
-                crate::net::runtime::manager::lookup_ipv6_route_in(
-                    crate::net::runtime::default_runtime(),
-                    dst_ip,
-                )
-                .ok()
-                .flatten()
-                .and_then(|route| {
-                    self.interface_config_or_runtime(route.if_id)
-                        .map(|cfg| (Some(route.if_id), cfg))
-                })
+                crate::net::runtime::manager::lookup_ipv6_route_in(self.runtime, dst_ip)
+                    .ok()
+                    .flatten()
+                    .and_then(|route| {
+                        self.interface_config_or_runtime(route.if_id)
+                            .map(|cfg| (Some(route.if_id), cfg))
+                    })
             })
             .or_else(|| self.bootstrap_runtime_config())
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
@@ -179,11 +170,9 @@ impl NetworkStack {
         }
         self.primary_interface
             .or_else(|| {
-                crate::net::runtime::manager::list_interfaces_in(
-                    crate::net::runtime::default_runtime(),
-                )
-                .ok()
-                .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+                crate::net::runtime::manager::list_interfaces_in(self.runtime)
+                    .ok()
+                    .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
             })
             .unwrap_or_default()
     }
@@ -426,7 +415,7 @@ impl NetworkStack {
     ///
     /// # パフォーマンス注意
     /// NetworkConfig is copied as scalar configuration at the stack boundary.
-    pub fn new(config: NetworkConfig) -> Self {
+    pub fn new_in(runtime: NetRuntimeHandle, config: NetworkConfig) -> Self {
         let mac = config.mac;
         let ip = config.ipv4.address;
         let dad_link_local = config.ipv6.as_ref().map(|cfg| cfg.link_local);
@@ -443,6 +432,7 @@ impl NetworkStack {
         };
 
         let mut stack = NetworkStack {
+            runtime,
             interfaces: BTreeMap::new(),
             primary_interface: None,
             ethernet: EthernetProcessor::new(mac),
@@ -476,11 +466,6 @@ impl NetworkStack {
         }
 
         stack
-    }
-
-    /// Create with default configuration
-    pub fn new_default() -> Self {
-        Self::new(NetworkConfig::default())
     }
 
     /// Set transmit callback
@@ -558,14 +543,14 @@ impl NetworkStack {
         if let Some(f) = self.transmit_fn {
             let meta = self.pending_tx_meta.unwrap_or_default();
             let packet_len = kernel_api::resource::net::PacketPayload::total_len(&payload);
-            if f(if_id, payload, meta) {
+            if f(self.runtime, if_id, payload, meta) {
                 if !self.transmit_awaits_device_completion
                     && meta.completion_policy
                         == kernel_api::service::netdev::NetTxCompletionPolicy::DeviceCompletion
                 {
                     if let Some(completion_id) = meta.completion_id {
                         let _ = crate::net::runtime::device::complete_tx_request_in(
-                            crate::net::runtime::default_runtime(),
+                            self.runtime,
                             completion_id,
                             Ok(()),
                         );
@@ -645,7 +630,7 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
-        let runtime = crate::net::runtime::default_runtime();
+        let runtime = self.runtime;
         let meta = self.pending_tx_meta.unwrap_or_default();
         let frame_len = fragments
             .iter()

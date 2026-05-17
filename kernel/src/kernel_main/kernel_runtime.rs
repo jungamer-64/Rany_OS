@@ -681,7 +681,8 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
 }
 
 fn log_network_port_snapshot(stage: &str) {
-    let stack_stats = crate::net::runtime::bridge::get_stack_glue_stats();
+    let runtime = crate::net::runtime::default_runtime();
+    let stack_stats = crate::net::runtime::bridge::get_stack_glue_stats_in(runtime);
     for info in crate::net::runtime::device::list_port_infos() {
         let runtime_stats =
             crate::net::runtime::device::port_stats(info.port_id).unwrap_or_default();

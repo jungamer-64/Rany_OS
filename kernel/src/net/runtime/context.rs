@@ -2,6 +2,7 @@
 // kernel/src/net/runtime/context.rs - ランタイム / context
 // ============================================================================
 
+use crate::net::obs::NetObservability;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
 use crate::net::runtime::command::{CommandReplyRegistry, RuntimeCommandQueue};
 use crate::net::runtime::device::{
@@ -72,6 +73,7 @@ pub struct NetRuntimeContext {
     pub(crate) command_task_running: AtomicBool,
     pub(crate) command_task_ready_waiters: WakerQueue,
     pub(crate) transport: TransportState,
+    pub(crate) observability: NetObservability,
     pub(crate) arp_waiters: ArpWaiterRegistry,
     pub(crate) ndp_waiters: NdpWaiterRegistry,
     pub(crate) tx_completion_next_id: AtomicU64,
@@ -100,6 +102,7 @@ impl NetRuntimeContext {
             command_task_running: AtomicBool::new(false),
             command_task_ready_waiters: WakerQueue::new(),
             transport: TransportState::new(),
+            observability: NetObservability::new(),
             arp_waiters: ArpWaiterRegistry::new(),
             ndp_waiters: NdpWaiterRegistry::new(),
             tx_completion_next_id: AtomicU64::new(1),

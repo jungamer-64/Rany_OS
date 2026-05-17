@@ -158,19 +158,14 @@ impl RuntimeCommandHandler {
                 finish_command(reply, result)
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { reply },
             ) => {
                 let result =
                     crate::net::api::config::primary_interface_config_from_runtime_in(runtime);
                 finish_command(reply, result)
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetInterfaceConfig {
-                    if_id,
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetInterfaceConfig { if_id, reply },
             ) => finish_command(
                 reply,
                 crate::net::api::config::get_interface_config_from_runtime_in(
@@ -179,18 +174,13 @@ impl RuntimeCommandHandler {
                 ),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ListInterfaceConfigs {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { reply },
             ) => finish_command(
                 reply,
                 crate::net::api::config::list_interface_configs_from_runtime_in(runtime),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetInterfaceStats {
-                    if_id,
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetInterfaceStats { if_id, reply },
             ) => finish_command(
                 reply,
                 crate::net::api::config::interface_stats_snapshot_with_stack_in(
@@ -200,9 +190,7 @@ impl RuntimeCommandHandler {
                 ),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ListInterfaceStats {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::ListInterfaceStats { reply },
             ) => finish_command(
                 reply,
                 crate::net::api::config::list_interface_stats_with_stack_in(runtime, Some(stack)),
@@ -214,10 +202,8 @@ impl RuntimeCommandHandler {
                 crate::net::api::config::list_interfaces_from_runtime_in(runtime),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetNetworkSnapshot {
-                    reply,
-                },
-            ) => finish_command(reply, crate::net::obs::snapshot()),
+                crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { reply },
+            ) => finish_command(reply, crate::net::obs::snapshot_in(runtime)),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents {
                     limit,
@@ -225,66 +211,40 @@ impl RuntimeCommandHandler {
                 },
             ) => finish_command(
                 reply,
-                crate::net::obs::snapshot()
-                    .recent_events
-                    .into_iter()
-                    .take(limit)
-                    .collect(),
+                crate::net::obs::observability_in(runtime)
+                    .trace()
+                    .recent(limit),
             ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallEnable { reply },
             ) => finish_command(reply, crate::net::security::firewall::enable()),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallDisable {
-                    reply,
-                },
-            ) => finish_command(
-                reply,
-                crate::net::security::firewall::disable(),
-            ),
+                crate::net::runtime::command::ControlCommand::FirewallDisable { reply },
+            ) => finish_command(reply, crate::net::security::firewall::disable()),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallStatus { reply },
-            ) => finish_command(
-                reply,
-                crate::net::api::firewall::firewall_status_text(),
-            ),
+            ) => finish_command(reply, crate::net::api::firewall::firewall_status_text()),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallListRules {
-                    reply,
-                },
-            ) => finish_command(
-                reply,
-                crate::net::api::firewall::firewall_list_rules_text(),
-            ),
+                crate::net::runtime::command::ControlCommand::FirewallListRules { reply },
+            ) => finish_command(reply, crate::net::api::firewall::firewall_list_rules_text()),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallStats { reply },
-            ) => finish_command(
-                reply,
-                crate::net::api::firewall::firewall_stats_text(),
-            ),
+            ) => finish_command(reply, crate::net::api::firewall::firewall_stats_text()),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallAddRule {
-                    rule,
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::FirewallAddRule { rule, reply },
             ) => finish_command(
                 reply,
                 crate::net::security::firewall::add_rule(rule).map_err(alloc::string::String::from),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallRemoveRule {
-                    id,
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::FirewallRemoveRule { id, reply },
             ) => finish_command(
                 reply,
                 crate::net::security::firewall::remove_rule(id)
                     .map_err(alloc::string::String::from),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallClearRules {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::FirewallClearRules { reply },
             ) => finish_command(
                 reply,
                 crate::net::security::firewall::clear_rules().map_err(alloc::string::String::from),
@@ -325,17 +285,14 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetUdpEndpoints {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetUdpEndpoints { reply },
             ) => {
                 let mut result = alloc::vec::Vec::new();
                 crate::net::l4::socket::for_each_socket(|endpoint| {
                     if !endpoint.is_udp() {
                         return;
                     }
-                    let Some(local_addr) =
-                        endpoint.with_inner(|inner| inner.local_addr).flatten()
+                    let Some(local_addr) = endpoint.with_inner(|inner| inner.local_addr).flatten()
                     else {
                         return;
                     };

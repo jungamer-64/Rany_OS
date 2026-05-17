@@ -161,24 +161,18 @@ impl RuntimeCommandHandler {
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { reply },
-            ) => finish_command(
-                reply,
-                crate::net::obs::NetSnapshot {
-                    rx_packets: 0,
-                    tx_packets: 0,
-                    rx_bytes: 0,
-                    tx_bytes: 0,
-                    drops: 0,
-                    errors: 0,
-                    interfaces: Vec::new(),
-                    recent_events: Vec::new(),
-                },
-            ),
+            ) => finish_command(reply, crate::net::obs::snapshot_in(runtime)),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents {
-                    reply, ..
+                    limit,
+                    reply,
                 },
-            ) => finish_command(reply, Vec::new()),
+            ) => finish_command(
+                reply,
+                crate::net::obs::observability_in(runtime)
+                    .trace()
+                    .recent(limit),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallEnable { reply },
             ) => finish_command(reply, Err("Stack unavailable")),

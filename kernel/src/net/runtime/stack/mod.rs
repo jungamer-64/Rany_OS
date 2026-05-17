@@ -26,10 +26,7 @@ use crate::net::l3::ipv6::{
 };
 use crate::net::l3::ndp::{NdpProcessor, NdpResult};
 use crate::net::l4::udp::{UdpProcessor, UdpResult};
-use crate::net::obs::{
-    counters,
-    trace::{self, NetEventKind, NetLayer},
-};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::timeouts::TimeoutWheel; // required for new transmit callback signature
 
@@ -112,42 +109,32 @@ impl NetworkStats {
     pub fn record_rx(&self, len: usize) {
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
         self.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
-        trace::push_event(NetLayer::L3, NetEventKind::Rx, "stack receive");
     }
 
     /// Record transmitted packet
     pub fn record_tx(&self, len: usize) {
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
         self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
-        trace::push_event(NetLayer::L4, NetEventKind::Tx, "stack transmit");
     }
 
     /// Record receive error
     pub fn record_rx_error(&self) {
         self.rx_errors.fetch_add(1, Ordering::Relaxed);
-        counters::global().record_error();
-        trace::push_event(NetLayer::L3, NetEventKind::Error, "stack rx error");
     }
 
     /// Record transmit error
     pub fn record_tx_error(&self) {
         self.tx_errors.fetch_add(1, Ordering::Relaxed);
-        counters::global().record_error();
-        trace::push_event(NetLayer::L4, NetEventKind::Error, "stack tx error");
     }
 
     /// Record header parse error
     pub fn record_header_error(&self) {
         self.rx_errors.fetch_add(1, Ordering::Relaxed);
-        counters::global().record_error();
-        trace::push_event(NetLayer::L3, NetEventKind::Error, "header error");
     }
 
     /// Record dropped packet
     pub fn record_dropped(&self) {
         self.rx_dropped.fetch_add(1, Ordering::Relaxed);
-        counters::global().record_drop();
-        trace::push_event(NetLayer::L3, NetEventKind::Drop, "stack drop");
     }
 }
 
@@ -165,7 +152,7 @@ impl NetworkStats {
 /// The callback should return `true` if the packet was successfully queued
 /// for transmission; `false` indicates failure and will usually result in the
 /// stack dropping the packet and recording an error statistic.
-pub type TransmitFn = fn(Option<NetIfId>, PacketPayload, NetTxMeta) -> bool;
+pub type TransmitFn = fn(NetRuntimeHandle, Option<NetIfId>, PacketPayload, NetTxMeta) -> bool;
 
 // ICMP Redirect Cache Entry (map-backed)
 //
@@ -243,6 +230,8 @@ impl RedirectCache {
 
 /// Integrated network stack
 pub struct NetworkStack {
+    /// Runtime that owns this stack instance.
+    pub runtime: NetRuntimeHandle,
     /// Per-interface L2/L3 state and snapshots.
     pub interfaces: BTreeMap<NetIfId, InterfaceStackState>,
     /// Preferred interface for scope-less runtime resolution.
