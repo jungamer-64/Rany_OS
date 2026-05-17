@@ -24,7 +24,11 @@ impl RuntimeCommandHandler {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
                 let current_time = stack.current_time();
                 if let Some(mac) = stack.arp.resolve(ip, current_time) {
-                    crate::net::l2::arp::notify_arp_resolved(target_ip, *mac.as_bytes());
+                    crate::net::l2::arp::notify_arp_resolved_in(
+                        runtime,
+                        target_ip,
+                        *mac.as_bytes(),
+                    );
                 } else {
                     stack.send_arp_request(ip);
                 }
@@ -39,7 +43,12 @@ impl RuntimeCommandHandler {
                 let ip = crate::net::l3::ipv6::Ipv6Address::new(target_ip);
 
                 if ip.is_multicast() {
-                    crate::net::l3::ndp::notify_ndp_resolved(if_id, target_ip, ip.multicast_mac());
+                    crate::net::l3::ndp::notify_ndp_resolved_in(
+                        runtime,
+                        if_id,
+                        target_ip,
+                        ip.multicast_mac(),
+                    );
                     return EventHandleResult::Success;
                 }
 
@@ -48,7 +57,7 @@ impl RuntimeCommandHandler {
 
                 match stack.resolve_ndp_for_send(if_scope, &ip, current_time, |_| {}) {
                     Some(Ok(mac)) => {
-                        crate::net::l3::ndp::notify_ndp_resolved(if_id, target_ip, mac);
+                        crate::net::l3::ndp::notify_ndp_resolved_in(runtime, if_id, target_ip, mac);
                     }
                     Some(Err((ns_if_id, our_ll, ns_msg))) => {
                         let sn_mcast = ip.solicited_node();
@@ -65,7 +74,7 @@ impl RuntimeCommandHandler {
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac },
             ) => {
-                crate::net::l2::arp::notify_arp_resolved(ip, mac);
+                crate::net::l2::arp::notify_arp_resolved_in(runtime, ip, mac);
                 EventHandleResult::Success
             }
             RuntimeCommand::Transport(
@@ -129,9 +138,9 @@ impl RuntimeCommandHandler {
                 // ICMP Echo待ちの期限切れエントリをクリーンアップ
                 crate::net::api::icmp::cleanup_icmp_echo_waiters();
                 // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
-                crate::net::l2::arp::cleanup_arp_waiters();
+                crate::net::l2::arp::cleanup_arp_waiters_in(runtime);
                 // NDP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
-                crate::net::l3::ndp::cleanup_ndp_waiters();
+                crate::net::l3::ndp::cleanup_ndp_waiters_in(runtime);
                 EventHandleResult::Success
             }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),

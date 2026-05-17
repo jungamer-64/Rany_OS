@@ -112,7 +112,7 @@ impl RuntimeCommandHandler {
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac },
             ) => {
-                crate::net::l2::arp::notify_arp_resolved(ip, mac);
+                crate::net::l2::arp::notify_arp_resolved_in(runtime, ip, mac);
                 EventHandleResult::Success
             }
 
@@ -223,8 +223,8 @@ impl RuntimeCommandHandler {
                 tcp_table_in(runtime).tick(runtime);
 
                 crate::net::api::icmp::cleanup_icmp_echo_waiters();
-                crate::net::l2::arp::cleanup_arp_waiters();
-                crate::net::l3::ndp::cleanup_ndp_waiters();
+                crate::net::l2::arp::cleanup_arp_waiters_in(runtime);
+                crate::net::l3::ndp::cleanup_ndp_waiters_in(runtime);
                 EventHandleResult::Success
             }
 

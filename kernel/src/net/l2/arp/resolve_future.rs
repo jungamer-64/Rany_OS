@@ -19,6 +19,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 
 use super::{Ipv4Address, MacAddress};
+use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::enqueue_command_ignore_in;
 use crate::sync::{AtomicWaker, PoisonLock};
 
 // ============================================================================
@@ -49,26 +51,45 @@ const ARP_WAITER_CAPACITY: usize = 32;
 /// タイムアウト（ミリ秒）
 const ARP_RESOLVE_TIMEOUT_MS: u64 = 5_000;
 
+pub(crate) struct ArpWaiterRegistry {
+    waiters: PoisonLock<Vec<ArpWaiter>>,
+    next_id: AtomicU64,
+}
+
+impl ArpWaiterRegistry {
+    pub(crate) const fn new() -> Self {
+        Self {
+            waiters: PoisonLock::new(Vec::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
+}
+
+pub(crate) fn arp_waiters_in(runtime: NetRuntimeHandle) -> &'static ArpWaiterRegistry {
+    &runtime.context().arp_waiters
+}
+
 #[inline]
 fn current_time_ms() -> u64 {
     crate::time::get_uptime_ms()
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-fn reset_arp_waiters_for_tests() {
-    if let Ok(mut waiters) = ARP_WAITERS.lock() {
+fn reset_arp_waiters_for_tests(runtime: NetRuntimeHandle) {
+    let registry = arp_waiters_in(runtime);
+    if let Ok(mut waiters) = registry.waiters.lock() {
         waiters.clear();
     }
-    ARP_WAITER_NEXT_ID.store(1, Ordering::Relaxed);
+    registry.next_id.store(1, Ordering::Relaxed);
 }
 
 /// ARP解決完了を通知する（ARPキャッシュ更新時にイベントハンドラから呼ばれる）
 ///
 /// 該当IPの全待機者にMACアドレスを通知してWakerを起こす。
-pub fn notify_arp_resolved(ip: [u8; 4], mac: [u8; 6]) {
+pub fn notify_arp_resolved_in(runtime: NetRuntimeHandle, ip: [u8; 4], mac: [u8; 6]) {
     let now_ms = current_time_ms();
     let resolved_mac = MacAddress::new(mac);
-    let Ok(mut waiters) = ARP_WAITERS.lock() else {
+    let Ok(mut waiters) = arp_waiters_in(runtime).waiters.lock() else {
         return;
     };
 
@@ -82,8 +103,9 @@ pub fn notify_arp_resolved(ip: [u8; 4], mac: [u8; 6]) {
 }
 
 /// ARP解決待ちを登録し、ウェイターIDを返す
-fn register_arp_waiter(ip: [u8; 4], waker: &Waker) -> Option<u64> {
-    let Ok(mut waiters) = ARP_WAITERS.lock() else {
+fn register_arp_waiter(runtime: NetRuntimeHandle, ip: [u8; 4], waker: &Waker) -> Option<u64> {
+    let registry = arp_waiters_in(runtime);
+    let Ok(mut waiters) = registry.waiters.lock() else {
         return None;
     };
 
@@ -91,7 +113,7 @@ fn register_arp_waiter(ip: [u8; 4], waker: &Waker) -> Option<u64> {
         return None;
     }
 
-    let waiter_id = ARP_WAITER_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let waiter_id = registry.next_id.fetch_add(1, Ordering::Relaxed);
     let waiter = ArpWaiter {
         id: waiter_id,
         ip,
@@ -109,8 +131,8 @@ fn register_arp_waiter(ip: [u8; 4], waker: &Waker) -> Option<u64> {
 ///
 /// `true`: 待機者が存在し更新できた
 /// `false`: 待機者が見つからない（タイムアウト回収などで削除済み）
-fn update_arp_waiter_waker(waiter_id: u64, waker: &Waker) -> bool {
-    let Ok(mut waiters) = ARP_WAITERS.lock() else {
+fn update_arp_waiter_waker(runtime: NetRuntimeHandle, waiter_id: u64, waker: &Waker) -> bool {
+    let Ok(mut waiters) = arp_waiters_in(runtime).waiters.lock() else {
         return false;
     };
 
@@ -123,8 +145,8 @@ fn update_arp_waiter_waker(waiter_id: u64, waker: &Waker) -> bool {
 }
 
 /// 待機IDに紐づくARP解決結果を取得（ポーリング用）
-fn poll_arp_result(waiter_id: u64) -> Option<MacAddress> {
-    let Ok(waiters) = ARP_WAITERS.lock() else {
+fn poll_arp_result(runtime: NetRuntimeHandle, waiter_id: u64) -> Option<MacAddress> {
+    let Ok(waiters) = arp_waiters_in(runtime).waiters.lock() else {
         return None;
     };
 
@@ -138,8 +160,8 @@ fn poll_arp_result(waiter_id: u64) -> Option<MacAddress> {
 }
 
 /// 待機IDに紐づくエントリを削除する
-fn remove_arp_waiter(waiter_id: u64) -> bool {
-    let Ok(mut waiters) = ARP_WAITERS.lock() else {
+fn remove_arp_waiter(runtime: NetRuntimeHandle, waiter_id: u64) -> bool {
+    let Ok(mut waiters) = arp_waiters_in(runtime).waiters.lock() else {
         return false;
     };
 
@@ -149,8 +171,8 @@ fn remove_arp_waiter(waiter_id: u64) -> bool {
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-fn waiter_exists(waiter_id: u64) -> bool {
-    let Ok(waiters) = ARP_WAITERS.lock() else {
+fn waiter_exists(runtime: NetRuntimeHandle, waiter_id: u64) -> bool {
+    let Ok(waiters) = arp_waiters_in(runtime).waiters.lock() else {
         return false;
     };
 
@@ -170,13 +192,14 @@ fn waiter_exists(waiter_id: u64) -> bool {
 ///
 /// # 使用例
 /// ```ignore
-/// let mac = ArpResolveFuture::new(target_ip).await;
+/// let mac = ArpResolveFuture::new_in(runtime, target_ip).await;
 /// match mac {
 ///     Ok(mac) => log::info!("Resolved: {}", mac),
 ///     Err(e) => log::warn!("ARP resolve failed: {}", e),
 /// }
 /// ```
 pub struct ArpResolveFuture {
+    runtime: NetRuntimeHandle,
     target_ip: Ipv4Address,
     /// 待機者ID（登録済みの場合）
     waiter_id: Option<u64>,
@@ -188,8 +211,9 @@ pub struct ArpResolveFuture {
 
 impl ArpResolveFuture {
     /// 新規作成
-    pub fn new(target_ip: Ipv4Address) -> Self {
+    pub fn new_in(runtime: NetRuntimeHandle, target_ip: Ipv4Address) -> Self {
         Self {
+            runtime,
             target_ip,
             waiter_id: None,
             request_sent: false,
@@ -222,7 +246,7 @@ impl Future for ArpResolveFuture {
 
         // 初回ポーリング時にウェイター登録
         if self.waiter_id.is_none() {
-            self.waiter_id = register_arp_waiter(ip_bytes, cx.waker());
+            self.waiter_id = register_arp_waiter(self.runtime, ip_bytes, cx.waker());
             if self.waiter_id.is_none() {
                 return Poll::Ready(Err(ArpResolveError::ResourceExhausted));
             }
@@ -230,14 +254,14 @@ impl Future for ArpResolveFuture {
 
         // ウェイター登録済みの結果を確認
         if let Some(waiter_id) = self.waiter_id {
-            if let Some(mac) = poll_arp_result(waiter_id) {
-                let _ = remove_arp_waiter(waiter_id);
+            if let Some(mac) = poll_arp_result(self.runtime, waiter_id) {
+                let _ = remove_arp_waiter(self.runtime, waiter_id);
                 self.waiter_id = None;
                 return Poll::Ready(Ok(mac));
             }
 
             // Future側のWakerを最新化。待機者が消えていればタイムアウト扱い。
-            if !update_arp_waiter_waker(waiter_id, cx.waker()) {
+            if !update_arp_waiter_waker(self.runtime, waiter_id, cx.waker()) {
                 self.waiter_id = None;
                 return Poll::Ready(Err(ArpResolveError::Timeout));
             }
@@ -247,18 +271,21 @@ impl Future for ArpResolveFuture {
         self.poll_count += 1;
         if self.poll_count > 50 {
             if let Some(waiter_id) = self.waiter_id.take() {
-                let _ = remove_arp_waiter(waiter_id);
+                let _ = remove_arp_waiter(self.runtime, waiter_id);
             }
             return Poll::Ready(Err(ArpResolveError::Timeout));
         }
 
         // ARP要求をイベントキュー経由で送信（初回のみ、または再送）
-        // ArpResolveRequestハンドラ内でキャッシュヒット時は即座にnotify_arp_resolved()が呼ばれる
+        // ArpResolveRequestハンドラ内でキャッシュヒット時は即座にnotify_arp_resolved_in()が呼ばれる
         if !self.request_sent || self.poll_count % 10 == 0 {
-            crate::net::runtime::command::enqueue_command_ignore(
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpResolveRequest {
-                    target_ip: ip_bytes,
-                }),
+            enqueue_command_ignore_in(
+                self.runtime,
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::ArpResolveRequest {
+                        target_ip: ip_bytes,
+                    },
+                ),
             );
             self.request_sent = true;
         }
@@ -270,7 +297,7 @@ impl Future for ArpResolveFuture {
 impl Drop for ArpResolveFuture {
     fn drop(&mut self) {
         if let Some(waiter_id) = self.waiter_id.take() {
-            let _ = remove_arp_waiter(waiter_id);
+            let _ = remove_arp_waiter(self.runtime, waiter_id);
         }
     }
 }
@@ -278,16 +305,19 @@ impl Drop for ArpResolveFuture {
 /// 非同期ARP解決ヘルパー関数
 ///
 /// `ArpResolveFuture` のショートカット。
-pub async fn resolve_mac(target_ip: Ipv4Address) -> Result<MacAddress, ArpResolveError> {
-    ArpResolveFuture::new(target_ip).await
+pub async fn resolve_mac_in(
+    runtime: NetRuntimeHandle,
+    target_ip: Ipv4Address,
+) -> Result<MacAddress, ArpResolveError> {
+    ArpResolveFuture::new_in(runtime, target_ip).await
 }
 
 /// 期限切れのARP待機エントリをクリーンアップ
 ///
 /// タイマータスクから定期的に呼び出す。
-pub fn cleanup_arp_waiters() {
+pub fn cleanup_arp_waiters_in(runtime: NetRuntimeHandle) {
     let now_ms = current_time_ms();
-    if let Ok(mut waiters) = ARP_WAITERS.lock() {
+    if let Ok(mut waiters) = arp_waiters_in(runtime).waiters.lock() {
         for waiter in waiters.iter() {
             let age_base = waiter.completed_at_ms.unwrap_or(waiter.created_at_ms);
             let expired = now_ms.saturating_sub(age_base) > ARP_RESOLVE_TIMEOUT_MS;
@@ -328,26 +358,36 @@ mod tests {
 
     #[cfg_attr(test, test_case)]
     fn arp_waiter_notify_wakes_all_waiters_for_same_ip() {
-        reset_arp_waiters_for_tests();
+        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
+        reset_arp_waiters_for_tests(runtime);
 
         let ip = [10, 0, 0, 42];
         let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x42];
 
-        let waiter_a = register_arp_waiter(ip, noop_waker()).expect("failed to register waiter A");
-        let waiter_b = register_arp_waiter(ip, noop_waker()).expect("failed to register waiter B");
+        let waiter_a =
+            register_arp_waiter(runtime, ip, &noop_waker()).expect("failed to register waiter A");
+        let waiter_b =
+            register_arp_waiter(runtime, ip, &noop_waker()).expect("failed to register waiter B");
 
-        notify_arp_resolved(ip, mac);
+        notify_arp_resolved_in(runtime, ip, mac);
 
-        assert_eq!(poll_arp_result(waiter_a), Some(MacAddress::new(mac)));
-        assert_eq!(poll_arp_result(waiter_b), Some(MacAddress::new(mac)));
+        assert_eq!(
+            poll_arp_result(runtime, waiter_a),
+            Some(MacAddress::new(mac))
+        );
+        assert_eq!(
+            poll_arp_result(runtime, waiter_b),
+            Some(MacAddress::new(mac))
+        );
 
-        let _ = remove_arp_waiter(waiter_a);
-        let _ = remove_arp_waiter(waiter_b);
+        let _ = remove_arp_waiter(runtime, waiter_a);
+        let _ = remove_arp_waiter(runtime, waiter_b);
     }
 
     #[cfg_attr(test, test_case)]
     fn arp_resolve_future_returns_ready_after_resolution_notification() {
-        reset_arp_waiters_for_tests();
+        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
+        reset_arp_waiters_for_tests(runtime);
 
         let ip = [192, 168, 1, 77];
         let target_ip = Ipv4Address::new(ip);
@@ -355,12 +395,12 @@ mod tests {
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        let mut fut = ArpResolveFuture::new(target_ip);
+        let mut fut = ArpResolveFuture::new_in(runtime, target_ip);
         fut.request_sent = true;
 
         assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending));
 
-        notify_arp_resolved(ip, *resolved_mac.as_bytes());
+        notify_arp_resolved_in(runtime, ip, *resolved_mac.as_bytes());
 
         let poll = Pin::new(&mut fut).poll(&mut cx);
         assert!(matches!(poll, Poll::Ready(Ok(mac)) if mac == resolved_mac));
@@ -368,21 +408,23 @@ mod tests {
 
     #[cfg_attr(test, test_case)]
     fn arp_resolve_future_timeout_removes_registered_waiter() {
-        reset_arp_waiters_for_tests();
+        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
+        reset_arp_waiters_for_tests(runtime);
 
         let ip = [172, 16, 0, 9];
-        let waiter_id = register_arp_waiter(ip, noop_waker()).expect("failed to register waiter");
-        assert!(waiter_exists(waiter_id));
+        let waiter_id =
+            register_arp_waiter(runtime, ip, &noop_waker()).expect("failed to register waiter");
+        assert!(waiter_exists(runtime, waiter_id));
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        let mut fut = ArpResolveFuture::new(Ipv4Address::new(ip));
+        let mut fut = ArpResolveFuture::new_in(runtime, Ipv4Address::new(ip));
         fut.request_sent = true;
         fut.waiter_id = Some(waiter_id);
         fut.poll_count = 50;
 
         let poll = Pin::new(&mut fut).poll(&mut cx);
         assert!(matches!(poll, Poll::Ready(Err(ArpResolveError::Timeout))));
-        assert!(!waiter_exists(waiter_id));
+        assert!(!waiter_exists(runtime, waiter_id));
     }
 }

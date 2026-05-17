@@ -13,6 +13,7 @@ use crate::net::runtime::transport::TransportState;
 use crate::net::services::dhcp::DhcpRuntimeState;
 use crate::net::services::dns::DnsRuntimeState;
 use crate::net::services::mdns::MdnsRuntimeState;
+use crate::net::{l2::arp::ArpWaiterRegistry, l3::ndp::NdpWaiterRegistry};
 use crate::sync::{PoisonLock, PoisonRwLock, WakerQueue};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -71,6 +72,8 @@ pub struct NetRuntimeContext {
     pub(crate) command_task_running: AtomicBool,
     pub(crate) command_task_ready_waiters: WakerQueue,
     pub(crate) transport: TransportState,
+    pub(crate) arp_waiters: ArpWaiterRegistry,
+    pub(crate) ndp_waiters: NdpWaiterRegistry,
     pub(crate) tx_completion_next_id: AtomicU64,
     pub(crate) tx_completions: PoisonRwLock<BTreeMap<u64, TxCompletionState>>,
     pub(crate) tx_owner_group_next_id: AtomicU64,
@@ -97,6 +100,8 @@ impl NetRuntimeContext {
             command_task_running: AtomicBool::new(false),
             command_task_ready_waiters: WakerQueue::new(),
             transport: TransportState::new(),
+            arp_waiters: ArpWaiterRegistry::new(),
+            ndp_waiters: NdpWaiterRegistry::new(),
             tx_completion_next_id: AtomicU64::new(1),
             tx_completions: PoisonRwLock::new(BTreeMap::new()),
             tx_owner_group_next_id: AtomicU64::new(1),

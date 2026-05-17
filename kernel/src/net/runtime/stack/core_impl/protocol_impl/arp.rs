@@ -4,11 +4,13 @@
 //! ARP packet processing, ARP reply/request/probe sending, and ARP cache access.
 
 use super::*;
+use crate::net::runtime::NetRuntimeHandle;
 
 impl NetworkStack {
     /// Process ARP packet
     pub fn process_arp(
         &mut self,
+        runtime: NetRuntimeHandle,
         if_id: Option<super::NetIfId>,
         data: &[u8],
         current_time: u64,
@@ -32,7 +34,8 @@ impl NetworkStack {
                         resolved_ip,
                         resolved_mac,
                     } => {
-                        crate::net::l2::arp::notify_arp_resolved(
+                        crate::net::l2::arp::notify_arp_resolved_in(
+                            runtime,
                             *resolved_ip.as_bytes(),
                             *resolved_mac.as_bytes(),
                         );
@@ -61,7 +64,8 @@ impl NetworkStack {
                 resolved_mac,
             } => {
                 // ARP解決完了をウェイターレジストリに通知（非同期ArpResolveFuture向け）
-                crate::net::l2::arp::notify_arp_resolved(
+                crate::net::l2::arp::notify_arp_resolved_in(
+                    runtime,
                     *resolved_ip.as_bytes(),
                     *resolved_mac.as_bytes(),
                 );

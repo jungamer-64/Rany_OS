@@ -691,6 +691,7 @@ impl NetworkStack {
                 hop_limit,
             } => {
                 self.process_ndp_message(
+                    runtime,
                     if_id,
                     msg_type,
                     ndp_data,
@@ -875,6 +876,7 @@ impl NetworkStack {
     /// Process NDP message
     pub(crate) fn process_ndp_message(
         &mut self,
+        runtime: NetRuntimeHandle,
         if_id: Option<super::NetIfId>,
         msg_type: crate::net::l3::icmpv6::Icmpv6Type,
         payload: kernel_api::resource::net::PacketPayload,
@@ -1030,7 +1032,12 @@ impl NetworkStack {
                 );
 
                 // NDP解決完了をウェイターレジストリへ通知（非同期NdpResolveFuture向け）
-                crate::net::l3::ndp::notify_ndp_resolved(if_id.map(|id| id.0), ip.octets(), mac);
+                crate::net::l3::ndp::notify_ndp_resolved_in(
+                    runtime,
+                    if_id.map(|id| id.0),
+                    ip.octets(),
+                    mac,
+                );
 
                 // Drain any pending packets for this now-resolved neighbor
                 if let Some(if_id) = if_id {

@@ -72,7 +72,7 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
-                stack.process_arp(if_id, payload, current_time, src_mac);
+                stack.process_arp(runtime, if_id, payload, current_time, src_mac);
                 stack.stats.record_rx(pkt_len);
                 EventHandleResult::Success
             }
