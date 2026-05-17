@@ -101,7 +101,7 @@ serial = ["uart_16550"]
 stats = []
 mouse = []
 bench = ["std", "dep:criterion"]
-qemu-test-export = ["full_mm_tests"]
+qemu-test-export = []
 
 # FreeList Buddy Allocator with page mobility + cache coloring.
 # When enabled, UnifiedFrameAllocator routes user-page allocations through
