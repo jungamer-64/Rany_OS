@@ -7,7 +7,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use crate::net::l4::socket::{Socket, register_raw_scope, unregister_socket};
+use crate::net::l4::socket::{Socket, register_raw_scope_in, unregister_socket_in};
 use crate::net::l4::types::{EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
@@ -60,7 +60,7 @@ impl RawEndpoint {
             })
             .ok_or(EndpointError::Internal)?;
 
-        register_raw_scope(scope, socket.socket_id())?;
+        register_raw_scope_in(runtime, scope, socket.socket_id())?;
 
         Ok(Self {
             socket,
@@ -125,7 +125,7 @@ impl RawEndpoint {
     pub fn close(&self) -> Result<(), EndpointError> {
         self.socket.close_immediate()?;
         if self.registered {
-            let _ = unregister_socket(self.socket.socket_id());
+            let _ = unregister_socket_in(self.socket.runtime(), self.socket.socket_id());
         }
         Ok(())
     }

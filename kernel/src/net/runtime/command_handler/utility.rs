@@ -288,7 +288,7 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::ControlCommand::GetUdpEndpoints { reply },
             ) => {
                 let mut result = alloc::vec::Vec::new();
-                crate::net::l4::socket::for_each_socket(|endpoint| {
+                crate::net::l4::socket::for_each_socket_in(runtime, |endpoint| {
                     if !endpoint.is_udp() {
                         return;
                     }

@@ -596,7 +596,7 @@ impl TcbTable {
     fn check_zero_window_probes(&self, runtime: NetRuntimeHandle, current_tick: u64) {
         use super::retransmit::retransmit_queue_push;
         use super::segment::TcpSegmentBuilder;
-        use crate::net::l4::socket::lookup_socket;
+        use crate::net::l4::socket::lookup_socket_in;
         for shard in &self.shards {
             let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
             for (key, entry) in entries.iter_mut() {
@@ -605,7 +605,7 @@ impl TcbTable {
                         continue;
                     }
                     if entry.flow_control.should_send_probe(current_tick) {
-                        if let Some(socket) = lookup_socket(entry.socket_id) {
+                        if let Some(socket) = lookup_socket_in(runtime, entry.socket_id) {
                             if let Some(probe_payload) = socket
                                 .with_inner_mut(|inner| inner.take_send_payload_prefix(1))
                                 .flatten()

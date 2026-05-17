@@ -3,18 +3,20 @@
 // ============================================================================
 //! RuntimeCommandHandler 制御系メソッド
 use crate::net::l4::types::SocketId;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command_handler::EventHandleResult;
 use crate::net::runtime::command_handler::RuntimeCommandHandler;
 use crate::net::runtime::transport::tcp_table_in;
 
 impl RuntimeCommandHandler {
     /// SetPriorityイベント処理
-    pub(super) fn handle_set_priority(
+    pub(super) fn handle_set_priority_in(
         &self,
+        runtime: NetRuntimeHandle,
         socket_id: SocketId,
         priority: u8,
     ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(socket_id) else {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, socket_id) else {
             return EventHandleResult::SocketNotFound(socket_id);
         };
 
@@ -43,12 +45,13 @@ impl RuntimeCommandHandler {
     }
 
     /// SetNoDelayイベント処理
-    pub(super) fn handle_set_nodelay(
+    pub(super) fn handle_set_nodelay_in(
         &self,
+        runtime: NetRuntimeHandle,
         socket_id: SocketId,
         nodelay: bool,
     ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(socket_id) else {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, socket_id) else {
             return EventHandleResult::SocketNotFound(socket_id);
         };
 
@@ -77,10 +80,10 @@ impl RuntimeCommandHandler {
     }
 
     /// TX 資源解放通知処理
-    pub(super) fn handle_tx_available(&self) -> EventHandleResult {
+    pub(super) fn handle_tx_available_in(&self, runtime: NetRuntimeHandle) -> EventHandleResult {
         // 送信待ちのソケットに DataReady イベントを再送して再試行を促す（TCP）
         // また、イベントキュー満杯で待機していた UDP ソケットの send_waker も起床させる
-        crate::net::l4::socket::for_each_socket(|socket| {
+        crate::net::l4::socket::for_each_socket_in(runtime, |socket| {
             let pending = socket
                 .with_inner(|inner| inner.has_send_data())
                 .unwrap_or(false);
@@ -103,12 +106,12 @@ impl RuntimeCommandHandler {
         EventHandleResult::Success
     }
 
-    pub(super) fn unregister_socket(&self, socket_id: SocketId) {
-        let _ = crate::net::l4::socket::unregister_socket(socket_id);
+    pub(super) fn unregister_socket_in(&self, runtime: NetRuntimeHandle, socket_id: SocketId) {
+        let _ = crate::net::l4::socket::unregister_socket_in(runtime, socket_id);
     }
 
-    pub(super) fn close_socket_now(&self, socket_id: SocketId) {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(socket_id) else {
+    pub(super) fn close_socket_now_in(&self, runtime: NetRuntimeHandle, socket_id: SocketId) {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, socket_id) else {
             return;
         };
 
@@ -120,7 +123,7 @@ impl RuntimeCommandHandler {
             inner.accept_waker.wake();
         });
 
-        let _ = crate::net::l4::socket::unregister_socket(socket_id);
+        let _ = crate::net::l4::socket::unregister_socket_in(runtime, socket_id);
     }
 
     /// ICMP Echo Requestイベント処理（イベントキュー経由で非同期処理）

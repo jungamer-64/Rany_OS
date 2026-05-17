@@ -20,17 +20,21 @@ use kernel_api::resource::net::PacketPayload;
 impl RuntimeCommandHandler {
     pub(super) fn handle_tcp_data_ready_with_stack(
         &self,
+        runtime: NetRuntimeHandle,
         fd: SocketId,
         _stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        self.handle_data_ready(fd)
+        self.handle_data_ready_in(runtime, fd)
     }
 
-    pub(super) fn handle_data_ready(&self, fd: SocketId) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
+    pub(super) fn handle_data_ready_in(
+        &self,
+        runtime: NetRuntimeHandle,
+        fd: SocketId,
+    ) -> EventHandleResult {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
-        let runtime = socket.runtime();
         let tcb_table = tcp_table_in(runtime);
 
         let (local, remote) = match socket.with_inner(|inner| {
@@ -145,16 +149,16 @@ impl RuntimeCommandHandler {
             return Err(crate::net::l4::tcp::TcpError::InvalidState);
         }
 
-        match self.handle_connect_with_stack(endpoint.socket_id(), local, remote, stack) {
+        match self.handle_connect_with_stack(runtime, endpoint.socket_id(), local, remote, stack) {
             EventHandleResult::Success => {
                 Ok(crate::net::l4::tcp::TcpConnection::from_socket(endpoint))
             }
             EventHandleResult::ProtocolError(err) => {
-                self.unregister_socket(endpoint.socket_id());
+                self.unregister_socket_in(runtime, endpoint.socket_id());
                 Err(tcp_error_from_endpoint_error(err))
             }
             _ => {
-                self.unregister_socket(endpoint.socket_id());
+                self.unregister_socket_in(runtime, endpoint.socket_id());
                 Err(crate::net::l4::tcp::TcpError::InvalidState)
             }
         }
@@ -188,16 +192,16 @@ impl RuntimeCommandHandler {
             return Err(crate::net::l4::tcp::TcpError::InvalidState);
         }
 
-        match self.handle_listen(endpoint.socket_id(), local, backlog) {
+        match self.handle_listen_in(runtime, endpoint.socket_id(), local, backlog) {
             EventHandleResult::Success => {
                 Ok(crate::net::l4::tcp::TcpAcceptor::from_socket(endpoint))
             }
             EventHandleResult::ProtocolError(err) => {
-                self.unregister_socket(endpoint.socket_id());
+                self.unregister_socket_in(runtime, endpoint.socket_id());
                 Err(tcp_error_from_endpoint_error(err))
             }
             _ => {
-                self.unregister_socket(endpoint.socket_id());
+                self.unregister_socket_in(runtime, endpoint.socket_id());
                 Err(crate::net::l4::tcp::TcpError::InvalidState)
             }
         }
@@ -207,18 +211,18 @@ impl RuntimeCommandHandler {
     /// TCPハンドシェイクを開始（SYN送信）
     pub(super) fn handle_connect_with_stack(
         &self,
+        runtime: NetRuntimeHandle,
         fd: SocketId,
         local: EndpointAddr,
         remote: EndpointAddr,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
-        let runtime = socket.runtime();
 
         let local_port = if local.port() == 0 {
-            crate::net::l4::socket::allocate_tcp_ephemeral_port().unwrap_or(49152)
+            crate::net::l4::socket::allocate_tcp_ephemeral_port_in(runtime).unwrap_or(49152)
         } else {
             local.port()
         };
@@ -341,21 +345,21 @@ impl RuntimeCommandHandler {
         EventHandleResult::Success
     }
 
-    pub(super) fn handle_connect(
+    pub(super) fn handle_connect_in(
         &self,
+        runtime: NetRuntimeHandle,
         fd: SocketId,
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
-        let runtime = socket.runtime();
         let tcb_table = tcp_table_in(runtime);
 
         // ローカルポートが未割り当ての場合はエフェメラルポートを割り当て
         let local_port = if local.port() == 0 {
-            crate::net::l4::socket::allocate_tcp_ephemeral_port().unwrap_or(49152)
+            crate::net::l4::socket::allocate_tcp_ephemeral_port_in(runtime).unwrap_or(49152)
         } else {
             local.port()
         };
@@ -460,16 +464,16 @@ impl RuntimeCommandHandler {
 
     /// Listenイベント処理
     /// サーバーソケットを設定
-    pub(super) fn handle_listen(
+    pub(super) fn handle_listen_in(
         &self,
+        runtime: NetRuntimeHandle,
         fd: SocketId,
         local: EndpointAddr,
         backlog: u32,
     ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
-        let runtime = socket.runtime();
 
         // ローカルアドレスをソケットに設定
         let listen_result = socket.with_inner_mut(|inner| {
@@ -513,11 +517,14 @@ impl RuntimeCommandHandler {
 
     /// Closeイベント処理
     /// 接続を終了
-    pub(super) fn handle_close(&self, fd: SocketId) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
+    pub(super) fn handle_close_in(
+        &self,
+        runtime: NetRuntimeHandle,
+        fd: SocketId,
+    ) -> EventHandleResult {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
-        let runtime = socket.runtime();
         let tcb_table = tcp_table_in(runtime);
 
         let Some((local, remote)) =
@@ -537,7 +544,7 @@ impl RuntimeCommandHandler {
             None => {
                 // リモートアドレスがない場合（Listenソケットなど）は即時クローズ
                 tcb_table.remove_by_socket_id(fd);
-                self.close_socket_now(fd);
+                self.close_socket_now_in(runtime, fd);
                 return EventHandleResult::Success;
             }
         };
@@ -613,7 +620,7 @@ impl RuntimeCommandHandler {
             TcpConnectionState::Listen | TcpConnectionState::SynSent => {
                 // まだ接続が確立していない場合は即座にクローズ
                 tcb_table.remove(local, remote);
-                self.close_socket_now(fd);
+                self.close_socket_now_in(runtime, fd);
             }
             _ => {
                 // 他の状態では何もしない（既にクローズ処理中など）

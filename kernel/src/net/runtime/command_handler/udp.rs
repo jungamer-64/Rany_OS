@@ -49,12 +49,13 @@ impl RuntimeCommandHandler {
     /// SendToイベント処理 (UDP)
     pub(super) fn handle_send_to_with_stack(
         &self,
+        runtime: NetRuntimeHandle,
         fd: SocketId,
         remote: EndpointAddr,
         payload: PacketPayload,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
+        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 

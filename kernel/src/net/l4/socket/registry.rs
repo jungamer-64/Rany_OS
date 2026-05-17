@@ -149,6 +149,7 @@ pub(crate) struct SocketRegistry {
     tcp_ports: PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
     udp_ports: PoisonRwLock<BTreeMap<PortBindingKey, SocketId>>,
     raw_scopes: PoisonRwLock<BTreeMap<InterfaceScope, SocketId>>,
+    next_socket_id: AtomicU32,
     next_ephemeral_port: AtomicU32,
 }
 
@@ -159,6 +160,7 @@ impl SocketRegistry {
             tcp_ports: PoisonRwLock::new(BTreeMap::new()),
             udp_ports: PoisonRwLock::new(BTreeMap::new()),
             raw_scopes: PoisonRwLock::new(BTreeMap::new()),
+            next_socket_id: AtomicU32::new(1),
             next_ephemeral_port: AtomicU32::new(EPHEMERAL_PORT_START as u32),
         }
     }
@@ -175,7 +177,10 @@ impl SocketRegistry {
         self.sockets
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(socket.socket_id(), SocketRecord::new(socket.runtime(), state));
+            .insert(
+                socket.socket_id(),
+                SocketRecord::new(socket.runtime(), state),
+            );
     }
 
     pub fn unregister(&self, socket_id: SocketId) -> Option<Socket> {
@@ -340,9 +345,21 @@ impl SocketRegistry {
         }
     }
 
-    pub fn generate_socket_id(&self) -> SocketId {
-        static SOCKET_ID_COUNTER: AtomicU32 = AtomicU32::new(1);
-        SocketId::from_raw(SOCKET_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
+    pub fn generate_socket_id(&self) -> Option<SocketId> {
+        loop {
+            let current = self.next_socket_id.load(Ordering::Relaxed);
+            if current == SocketId::INVALID.raw() {
+                return None;
+            }
+            let next = current.checked_add(1)?;
+            if self
+                .next_socket_id
+                .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Some(SocketId::from_raw(current));
+            }
+        }
     }
 }
 

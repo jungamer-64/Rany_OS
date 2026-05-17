@@ -304,7 +304,7 @@ impl NetworkStack {
     ) {
         let mut ip_packet = Some(ip_packet);
         let ingress_if_id = self.resolve_ingress_if(if_id);
-        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope(ingress_if_id);
+        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
                 let _ = endpoint.deliver_raw_payload(
@@ -771,7 +771,7 @@ impl NetworkStack {
                                 if let Some(header) = transport_payload.read_array::<4>(0) {
                                     let src_port = u16::from_be_bytes([header[0], header[1]]);
                                     let has_udp_port =
-                                        crate::net::l4::socket::has_udp_port(src_port);
+                                        crate::net::l4::socket::has_udp_port_in(runtime, src_port);
                                     if !has_udp_port {
                                         log::warn!(
                                             "[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})",

@@ -74,13 +74,14 @@ pub(crate) fn network_error_to_kapi(error: crate::net::types::NetworkError) -> K
 pub(crate) fn lookup_socket(
     fd: crate::net::l4::types::SocketId,
 ) -> Result<crate::net::l4::socket::Socket, KapiError> {
-    crate::net::l4::socket::lookup_socket(fd).ok_or(KapiError::InvalidHandle)
+    crate::net::l4::socket::lookup_socket_in(crate::net::runtime::default_runtime(), fd)
+        .ok_or(KapiError::InvalidHandle)
 }
 
 pub(crate) fn close_socket_handle(fd: crate::net::l4::types::SocketId) -> Result<(), KapiError> {
     let socket = lookup_socket(fd)?;
     socket.close_immediate().map_err(endpoint_error_to_kapi)?;
-    let _ = crate::net::l4::socket::unregister_socket(fd);
+    let _ = crate::net::l4::socket::unregister_socket_in(socket.runtime(), fd);
 
     Ok(())
 }

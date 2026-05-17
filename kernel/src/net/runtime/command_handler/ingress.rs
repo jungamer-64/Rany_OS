@@ -217,7 +217,7 @@ impl RuntimeCommandHandler {
     ) -> EventHandleResult {
         let current_time = stack.current_time();
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope(ingress_if_id);
+        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         let view = crate::net::payload::PacketPayloadView::new(&payload);
 
         if view.total_len() >= 20 && view.first_byte().map(|byte| byte >> 4) == Some(4) {
@@ -513,7 +513,7 @@ impl RuntimeCommandHandler {
         }
 
         let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
-        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope(ingress_if_id);
+        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
                 let _ = endpoint.deliver_raw_payload(ingress_if_id, PacketPayload::single(packet));

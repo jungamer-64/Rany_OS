@@ -2,6 +2,7 @@
 // kernel/src/net/runtime/context.rs - ランタイム / context
 // ============================================================================
 
+use crate::net::l4::socket::SocketRegistry;
 use crate::net::obs::NetObservability;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
 use crate::net::runtime::command::{CommandReplyRegistry, RuntimeCommandQueue};
@@ -11,7 +12,6 @@ use crate::net::runtime::device::{
 use crate::net::runtime::manager::NetworkManager;
 use crate::net::runtime::stack::NetworkStack;
 use crate::net::runtime::transport::TransportState;
-use crate::net::l4::socket::SocketRegistry;
 use crate::net::services::dhcp::DhcpRuntimeState;
 use crate::net::services::dns::DnsRuntimeState;
 use crate::net::services::mdns::MdnsRuntimeState;

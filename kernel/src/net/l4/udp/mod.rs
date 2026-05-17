@@ -11,7 +11,7 @@ use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 use crate::net::l4::EndpointAddr;
 use crate::net::l4::socket::{
-    Socket, allocate_udp_ephemeral_port, bind_udp_dual_stack, unregister_socket,
+    Socket, allocate_udp_ephemeral_port_in, bind_udp_dual_stack_in, unregister_socket_in,
 };
 use crate::net::l4::types::EndpointError;
 use crate::net::payload::PacketPayloadView;
@@ -492,7 +492,7 @@ impl UdpEndpoint {
         validate_udp_bind_permission(port, token)?;
 
         let local_port = if port == 0 {
-            allocate_udp_ephemeral_port().ok_or(NetworkError::PortInUse)?
+            allocate_udp_ephemeral_port_in(runtime).ok_or(NetworkError::PortInUse)?
         } else {
             port
         };
@@ -511,8 +511,8 @@ impl UdpEndpoint {
             return Err(error);
         }
 
-        if let Err(error) = bind_udp_dual_stack(local_port, scope, socket.socket_id()) {
-            let _ = unregister_socket(socket.socket_id());
+        if let Err(error) = bind_udp_dual_stack_in(runtime, local_port, scope, socket.socket_id()) {
+            let _ = unregister_socket_in(runtime, socket.socket_id());
             return Err(socket_error_to_network(error));
         }
 
@@ -526,7 +526,7 @@ impl UdpEndpoint {
     fn close_internal(&self) {
         let _ = self.socket.close_immediate();
         if self.registered {
-            let _ = unregister_socket(self.socket.socket_id());
+            let _ = unregister_socket_in(self.runtime, self.socket.socket_id());
         }
     }
 

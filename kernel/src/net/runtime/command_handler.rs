@@ -77,13 +77,13 @@ impl RuntimeCommandHandler {
             // ============================================================
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
-            ) => self.handle_data_ready(socket_id),
+            ) => self.handle_data_ready_in(runtime, socket_id),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::TxAvailable,
-            ) => self.handle_tx_available(),
+            ) => self.handle_tx_available_in(runtime),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::CloseSocket { socket_id },
-            ) => self.handle_close(socket_id),
+            ) => self.handle_close_in(runtime, socket_id),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::UdpSendTo { .. },
             ) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
@@ -92,13 +92,13 @@ impl RuntimeCommandHandler {
                     socket_id,
                     nodelay,
                 },
-            ) => self.handle_set_nodelay(socket_id, nodelay),
+            ) => self.handle_set_nodelay_in(runtime, socket_id, nodelay),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::SetSocketPriority {
                     socket_id,
                     priority,
                 },
-            ) => self.handle_set_priority(socket_id, priority),
+            ) => self.handle_set_priority_in(runtime, socket_id, priority),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::IcmpEchoReply {
                     source,
@@ -352,14 +352,14 @@ impl RuntimeCommandHandler {
             ) => self.handle_reassembled_packet_with_stack(runtime, if_id, payload, stack),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
-            ) => self.handle_tcp_data_ready_with_stack(socket_id, stack),
+            ) => self.handle_tcp_data_ready_with_stack(runtime, socket_id, stack),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::UdpSendTo {
                     socket_id,
                     payload,
                     remote,
                 },
-            ) => self.handle_send_to_with_stack(socket_id, remote, payload, stack),
+            ) => self.handle_send_to_with_stack(runtime, socket_id, remote, payload, stack),
             raw_event @ RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawUdpSend { .. },
             ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),

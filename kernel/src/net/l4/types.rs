@@ -37,9 +37,6 @@ impl SocketId {
     }
 }
 
-/// 次のファイルディスクリプタ
-pub(crate) static NEXT_SOCKET_ID: AtomicU32 = AtomicU32::new(0);
-
 /// エンドポイントエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointError {

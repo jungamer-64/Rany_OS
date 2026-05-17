@@ -163,7 +163,7 @@ pub(crate) fn init_network_infra() {
     let port_runtime_initialized =
         !crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime())
             .is_empty();
-    let endpoint_manager_initialized = crate::net::l4::socket::socket_registry_initialized();
+    let endpoint_manager_initialized = true;
     debug!(
         target: "init",
         "Network bootstrap precheck: port_runtime_active={} stack_initialized={} socket_manager_initialized={}",
@@ -190,21 +190,13 @@ pub(crate) fn init_network_infra() {
         }
     }
 
-    if !crate::net::l4::socket::socket_registry_initialized() {
-        crate::net::l4::socket::init_socket_registry();
-        info!(target: "init", "Socket manager initialized");
-    } else {
-        info!(
-            target: "init",
-            "Socket manager already initialized; skipping reinit"
-        );
-    }
+    info!(target: "init", "Socket registry is owned by each network runtime");
 
     let stack_initialized = crate::net::runtime::device::is_initialized();
     let port_runtime_initialized =
         !crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime())
             .is_empty();
-    let endpoint_manager_initialized = crate::net::l4::socket::socket_registry_initialized();
+    let endpoint_manager_initialized = true;
     info!(
         target: "init",
         "Network core ready: stack_initialized={} socket_manager_initialized={} port_runtime_active={} async_port_bootstrap_pending={}",

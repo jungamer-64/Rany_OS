@@ -706,7 +706,7 @@ impl NetworkStack {
                 }
             }
             17 => {
-                let has_udp_port = crate::net::l4::socket::has_udp_port(src_port);
+                let has_udp_port = crate::net::l4::socket::has_udp_port_in(runtime, src_port);
                 if !has_udp_port {
                     return;
                 }
@@ -1006,7 +1006,7 @@ impl NetworkStack {
                     return;
                 };
                 let src_port = u16::from_be_bytes([header[0], header[1]]);
-                let has_udp_port = crate::net::l4::socket::has_udp_port(src_port);
+                let has_udp_port = crate::net::l4::socket::has_udp_port_in(runtime, src_port);
                 if !has_udp_port {
                     return;
                 }

@@ -178,6 +178,7 @@ impl NetworkStack {
         current_time: u64,
     ) {
         match self.udp.process_window_on(
+            self.runtime,
             if_id,
             original_packet,
             udp_offset,
@@ -217,6 +218,7 @@ impl NetworkStack {
         hop_limit: u8,
     ) {
         match self.udp.process_window_v6_on(
+            self.runtime,
             if_id,
             original_packet,
             udp_offset,

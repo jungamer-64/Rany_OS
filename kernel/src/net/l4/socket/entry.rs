@@ -3,10 +3,8 @@
 // ============================================================================
 //! Socket value handle backed by registry-owned socket state.
 
-use core::sync::atomic::Ordering;
-
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::l4::types::{EndpointAddr, EndpointError, NEXT_SOCKET_ID, SocketId, SocketResult};
+use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
     RuntimeCommand, TransportCommand, enqueue_command_ignore_in, enqueue_command_in,
@@ -15,13 +13,10 @@ use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
 use kernel_api::resource::net::PacketPayload;
 
-use super::registry::SOCKET_REGISTRY;
 use super::state::{QueuedPayload, SocketState, TcpSocketState};
 
 fn register_socket(socket: Socket, state: SocketState) {
-    if let Some(registry) = &*SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner()) {
-        registry.register(socket, state);
-    }
+    socket.runtime.context().sockets.register(socket, state);
 }
 
 #[derive(Clone, Copy)]
@@ -31,8 +26,12 @@ pub struct Socket {
 }
 
 impl Socket {
-    fn next_socket_id() -> SocketId {
-        SocketId::from_raw(NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed))
+    fn next_socket_id_in(runtime: NetRuntimeHandle) -> SocketId {
+        runtime
+            .context()
+            .sockets
+            .generate_socket_id()
+            .expect("socket id space exhausted")
     }
 
     pub(crate) const fn from_registered(socket_id: SocketId, runtime: NetRuntimeHandle) -> Self {
@@ -91,7 +90,7 @@ impl Socket {
     }
 
     pub fn new_tcp_in(runtime: NetRuntimeHandle, state: TcpSocketState) -> Self {
-        let socket = Self::from_registered(Self::next_socket_id(), runtime);
+        let socket = Self::from_registered(Self::next_socket_id_in(runtime), runtime);
         register_socket(socket, SocketState::new_tcp(state));
         socket
     }
@@ -111,7 +110,7 @@ impl Socket {
     }
 
     pub fn new_udp_in(runtime: NetRuntimeHandle) -> Self {
-        let socket = Self::from_registered(Self::next_socket_id(), runtime);
+        let socket = Self::from_registered(Self::next_socket_id_in(runtime), runtime);
         register_socket(socket, SocketState::new_udp());
         socket
     }
@@ -121,7 +120,7 @@ impl Socket {
     }
 
     pub fn new_raw_in(runtime: NetRuntimeHandle) -> Self {
-        let socket = Self::from_registered(Self::next_socket_id(), runtime);
+        let socket = Self::from_registered(Self::next_socket_id_in(runtime), runtime);
         register_socket(socket, SocketState::new_raw());
         socket
     }
@@ -142,18 +141,18 @@ impl Socket {
 
     #[inline]
     pub(crate) fn with_inner<R>(&self, f: impl FnOnce(&SocketState) -> R) -> Option<R> {
-        let guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
-        guard
-            .as_ref()
-            .and_then(|registry| registry.with_socket_state(self.socket_id, f))
+        self.runtime
+            .context()
+            .sockets
+            .with_socket_state(self.socket_id, f)
     }
 
     #[inline]
     pub(crate) fn with_inner_mut<R>(&self, f: impl FnOnce(&mut SocketState) -> R) -> Option<R> {
-        let guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
-        guard
-            .as_ref()
-            .and_then(|registry| registry.with_socket_state_mut(self.socket_id, f))
+        self.runtime
+            .context()
+            .sockets
+            .with_socket_state_mut(self.socket_id, f)
     }
 
     #[inline]
@@ -415,19 +414,12 @@ impl Socket {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::net::l4::socket::registry::init_socket_registry;
     use crate::net::runtime::default_runtime;
 
     #[cfg_attr(test, test_case)]
     pub fn test_new_registered_tcp_socket_registers_socket() {
-        init_socket_registry();
-        let socket = Socket::new_registered_tcp_in(default_runtime(), TcpSocketState::Connected);
-        let registry = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
-        assert!(
-            registry
-                .as_ref()
-                .and_then(|it| it.get(socket.socket_id()))
-                .is_some()
-        );
+        let runtime = default_runtime();
+        let socket = Socket::new_registered_tcp_in(runtime, TcpSocketState::Connected);
+        assert!(runtime.context().sockets.get(socket.socket_id()).is_some());
     }
 }

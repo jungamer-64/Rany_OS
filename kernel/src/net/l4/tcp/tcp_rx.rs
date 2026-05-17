@@ -23,7 +23,7 @@ use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot, tcp_flags};
 use super::window_scale::TcpOptionParser;
 use crate::net::l4::socket::{
-    Socket, TcpSocketState, find_listening_tcp_socket, generate_socket_id, lookup_socket,
+    Socket, TcpSocketState, find_listening_tcp_socket_in, generate_socket_id_in, lookup_socket_in,
 };
 use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketId};
 use crate::net::payload::PacketPayloadView;
@@ -490,7 +490,8 @@ fn process_parsed_tcp_segment(
                 remote
             );
 
-            if let Some(socket) = find_listening_tcp_socket(local, Some(ingress_if_id)) {
+            if let Some(socket) = find_listening_tcp_socket_in(runtime, local, Some(ingress_if_id))
+            {
                 let mss = match mss_idx {
                     2 => 1460,
                     1 => 536,
@@ -515,7 +516,8 @@ fn process_parsed_tcp_segment(
                 if let Some(accepted) =
                     create_accepted_socket(runtime, local, remote, ingress_if_id)
                 {
-                    let _ = push_to_accept_queue(local.port(), Some(ingress_if_id), accepted);
+                    let _ =
+                        push_to_accept_queue(runtime, local.port(), Some(ingress_if_id), accepted);
                 }
 
                 if !data_payload.is_empty() {
@@ -571,7 +573,7 @@ fn try_fast_path(
         retransmit_queue_ack(runtime, tcb.local, tcb.remote, ack_num);
     }
 
-    if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
+    if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
         let can_accept = socket
             .with_inner(|inner| {
                 inner
@@ -1006,7 +1008,7 @@ fn handle_data_received_with_delayed_ack(
     let mut fin_encountered = false;
 
     // ソケットの受信バッファにデータ追加
-    if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
+    if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
         if payload_len > 0 {
             let (pushed, _remainder) = socket.push_payload_with_remainder(data_payload);
             new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
@@ -1250,7 +1252,7 @@ pub fn handle_icmp_error(
             error
         );
         if let Some(id) = socket_id {
-            if let Some(socket) = get_socket_by_socket_id(id) {
+            if let Some(socket) = get_socket_by_socket_id(runtime, id) {
                 let _ = socket.with_inner_mut(|inner| {
                     inner.last_error = Some(error);
                     inner.connect_waker.wake();
@@ -1305,7 +1307,7 @@ pub fn handle_icmpv6_error(
             error
         );
         if let Some(id) = socket_id {
-            if let Some(socket) = get_socket_by_socket_id(id) {
+            if let Some(socket) = get_socket_by_socket_id(runtime, id) {
                 let _ = socket.with_inner_mut(|inner| {
                     inner.last_error = Some(error);
                     inner.connect_waker.wake();
@@ -1405,13 +1407,13 @@ fn handle_syn_ack_received(
 }
 
 /// Helper to get a socket by its file descriptor.
-fn get_socket_by_socket_id(socket_id: SocketId) -> Option<Socket> {
-    lookup_socket(socket_id)
+fn get_socket_by_socket_id(runtime: NetRuntimeHandle, socket_id: SocketId) -> Option<Socket> {
+    lookup_socket_in(runtime, socket_id)
 }
 
 /// Helper to notify a socket that it is connected.
-fn notify_socket_connected(socket_id: SocketId) {
-    if let Some(socket) = get_socket_by_socket_id(socket_id) {
+fn notify_socket_connected(runtime: NetRuntimeHandle, socket_id: SocketId) {
+    if let Some(socket) = get_socket_by_socket_id(runtime, socket_id) {
         let _ = socket.with_inner_mut(|inner| {
             let _ = inner.set_tcp_state(TcpSocketState::Connected);
             inner.connect_waker.wake();
@@ -1443,7 +1445,7 @@ fn process_tcp_new_connection(
     }
 
     // リッスン中のソケットを探す
-    let socket = find_listening_tcp_socket(local, Some(ingress_if_id));
+    let socket = find_listening_tcp_socket_in(runtime, local, Some(ingress_if_id));
 
     // リッスン中のソケットがない場合、または SYN 以外を受信した場合
     if socket.is_none() || !is_syn {
@@ -1629,7 +1631,7 @@ fn handle_rst_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
         });
 
         // ソケットにエラー通知
-        if let Some(socket) = get_socket_by_socket_id(tcb.socket_id) {
+        if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
             let _ = socket.with_inner_mut(|inner| {
                 inner.last_error = Some(EndpointError::ConnectionRefused);
                 inner.connect_waker.wake();
@@ -1746,7 +1748,7 @@ fn handle_ack_for_syn(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, a
     };
 
     // Listeningソケットを探してAcceptキューに追加
-    if !push_to_accept_queue(tcb.local.port(), Some(ingress_if_id), new_socket) {
+    if !push_to_accept_queue(runtime, tcb.local.port(), Some(ingress_if_id), new_socket) {
         log::info!(
             "TCP: No listening socket found for port {}",
             tcb.local.port()
@@ -1762,7 +1764,7 @@ fn create_accepted_socket(
     ingress_if_id: NetIfId,
 ) -> Option<AcceptedConnection> {
     // 新しいFDを割り当て
-    let new_socket_id = generate_socket_id()?;
+    let new_socket_id = generate_socket_id_in(runtime)?;
 
     // TCB情報を更新してFDを紐付け
     tcp_table_in(runtime).update(local, remote, |entry| {
@@ -1782,12 +1784,13 @@ fn create_accepted_socket(
 
 /// Listeningソケットを探してAcceptキューに追加
 fn push_to_accept_queue(
+    runtime: NetRuntimeHandle,
     local_port: u16,
     ingress_if_id: Option<NetIfId>,
     conn: AcceptedConnection,
 ) -> bool {
     // ローカルポートでリッスン中のソケットを検索
-    if let Some(socket) = find_listening_tcp_socket(conn.local_addr, ingress_if_id) {
+    if let Some(socket) = find_listening_tcp_socket_in(runtime, conn.local_addr, ingress_if_id) {
         return socket
             .with_inner_mut(|inner| {
                 if !inner.is_tcp_listening() {
@@ -1884,15 +1887,15 @@ fn handle_fin_in_order(
 
     // ソケットに接続相手のクローズを通知
     // recv_wakerを起こして、readがEOFを返せるようにする
-    notify_socket_peer_fin(tcb.socket_id);
+    notify_socket_peer_fin(runtime, tcb.socket_id);
 }
 
 /// ソケットに相手側FIN受信を通知
 ///
 /// recv_wakerを起こすことで、アプリケーション側のread操作が
 /// EOF (0バイト読み取り) を返せるようにする。
-fn notify_socket_peer_fin(socket_id: SocketId) {
-    if let Some(socket) = lookup_socket(socket_id) {
+fn notify_socket_peer_fin(runtime: NetRuntimeHandle, socket_id: SocketId) {
+    if let Some(socket) = lookup_socket_in(runtime, socket_id) {
         let _ = socket.with_inner_mut(|inner| {
             // recv_wakerを起こしてEOFを通知
             inner.recv_waker.wake();
@@ -1916,14 +1919,14 @@ fn handle_urgent_received(
 
         if has_new_urgent {
             // ソケットにurgent dataの存在を通知
-            notify_socket_urgent(entry.socket_id);
+            notify_socket_urgent(runtime, entry.socket_id);
         }
     });
 }
 
 /// ソケットにurgent data到着を通知
-fn notify_socket_urgent(socket_id: SocketId) {
-    if let Some(socket) = lookup_socket(socket_id) {
+fn notify_socket_urgent(runtime: NetRuntimeHandle, socket_id: SocketId) {
+    if let Some(socket) = lookup_socket_in(runtime, socket_id) {
         let _ = socket.with_inner_mut(|inner| {
             // urgent flagを設定
             inner.set_urgent_pending(true);

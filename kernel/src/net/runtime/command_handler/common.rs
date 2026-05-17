@@ -68,8 +68,12 @@ pub(super) fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize
 }
 
 #[inline]
-pub(super) fn deliver_raw_payload_if_registered(if_id: NetIfId, payload: PacketPayload) -> bool {
-    let Some(endpoint) = crate::net::l4::socket::find_raw_by_scope(if_id) else {
+pub(super) fn deliver_raw_payload_if_registered(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    payload: PacketPayload,
+) -> bool {
+    let Some(endpoint) = crate::net::l4::socket::find_raw_by_scope_in(runtime, if_id) else {
         return false;
     };
     endpoint.deliver_raw_payload(if_id, payload).is_ok()
