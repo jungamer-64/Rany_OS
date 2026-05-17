@@ -910,12 +910,6 @@ pub struct TcpConnectionSnapshot {
     pub rcv_wnd: u16,
 }
 
-pub static TCB_TABLE: TcbTable = TcbTable::new();
-
-pub fn tcb_table() -> &'static TcbTable {
-    &TCB_TABLE
-}
-
 #[cfg(test)]
 pub mod tests {
     use super::*;
