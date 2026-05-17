@@ -48,9 +48,3 @@ impl NetCounters {
         self.errors.fetch_add(1, Ordering::Relaxed);
     }
 }
-
-static NET_COUNTERS: NetCounters = NetCounters::new();
-
-pub fn global() -> &'static NetCounters {
-    &NET_COUNTERS
-}

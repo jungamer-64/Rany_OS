@@ -36,30 +36,3 @@ pub struct NetTraceEvent {
     pub kind: NetEventKind,
     pub message: &'static str,
 }
-
-const MAX_EVENTS: usize = 256;
-static TRACE_EVENTS: PoisonLock<VecDeque<NetTraceEvent>> = PoisonLock::new(VecDeque::new());
-
-pub fn push_event(layer: NetLayer, kind: NetEventKind, message: &'static str) {
-    let event = NetTraceEvent {
-        ts_ms: crate::time::get_uptime_ms(),
-        layer,
-        kind,
-        message,
-    };
-
-    if let Ok(mut q) = TRACE_EVENTS.lock() {
-        if q.len() >= MAX_EVENTS {
-            q.pop_front();
-        }
-        q.push_back(event);
-    }
-}
-
-pub fn recent_events(limit: usize) -> Vec<NetTraceEvent> {
-    if let Ok(q) = TRACE_EVENTS.lock() {
-        let n = core::cmp::min(limit, q.len());
-        return q.iter().rev().take(n).copied().collect();
-    }
-    Vec::new()
-}
