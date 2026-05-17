@@ -90,9 +90,7 @@ impl NetworkStack {
         lease: &crate::net::services::dhcp::DhcpLease,
         dns_server: Option<crate::net::l3::ipv4::Ipv4Address>,
     ) {
-        if let Some(primary_if) =
-            crate::net::runtime::device::primary_if_in(crate::net::runtime::default_runtime())
-        {
+        if let Some(primary_if) = crate::net::runtime::device::primary_if_in(self.runtime) {
             self.apply_dhcp_v4_lease_for_interface(lease, primary_if, true, dns_server);
             return;
         }
@@ -115,7 +113,7 @@ impl NetworkStack {
         update_primary_runtime: bool,
         dns_server: Option<crate::net::l3::ipv4::Ipv4Address>,
     ) {
-        let runtime = crate::net::runtime::default_runtime();
+        let runtime = self.runtime;
         let base_config = crate::net::runtime::manager::get_interface_in(runtime, if_id)
             .ok()
             .flatten()
@@ -147,7 +145,7 @@ impl NetworkStack {
         if_id: crate::net::runtime::manager::NetIfId,
         clear_primary_runtime: bool,
     ) {
-        let runtime = crate::net::runtime::default_runtime();
+        let runtime = self.runtime;
         let base_config = crate::net::runtime::manager::get_interface_in(runtime, if_id)
             .ok()
             .flatten()
