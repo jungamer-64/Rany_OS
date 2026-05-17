@@ -756,10 +756,7 @@ where
     F: FnMut() -> Option<usize>,
 {
     pub fn new(poll_fn: F, config: BusyPollConfig) -> Self {
-        Self {
-            poll_fn,
-            config,
-        }
+        Self { poll_fn, config }
     }
 }
 

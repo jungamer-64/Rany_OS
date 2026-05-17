@@ -190,5 +190,4 @@ impl HttpHeaderView {
         self.name_span(payload)
             .is_some_and(|span| span.eq_ignore_ascii_case(name.as_bytes()))
     }
-
 }

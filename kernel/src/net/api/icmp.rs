@@ -5,9 +5,9 @@
 
 extern crate alloc;
 
-use crate::net::runtime::command::CommandDispatch;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::command::CommandDispatch;
 use crate::sync::{AtomicWaker, PoisonLock};
 use alloc::collections::BTreeMap;
 use core::future::Future;
@@ -24,10 +24,12 @@ use core::task::{Context, Poll};
 pub fn enqueue_icmp_echo_in(runtime: NetRuntimeHandle, target: [u8; 4], seq: u16) -> bool {
     crate::net::runtime::command::enqueue_command_ignore_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoRequest {
-            target,
-            sequence: seq,
-        }),
+        crate::net::runtime::command::RuntimeCommand::Control(
+            crate::net::runtime::command::ControlCommand::IcmpEchoRequest {
+                target,
+                sequence: seq,
+            },
+        ),
     );
     true
 }
@@ -193,10 +195,12 @@ impl Future for IcmpEchoFuture {
 
         if !this.sent {
             match this.dispatch.poll(cx, || {
-                crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEchoRequest {
-                    target: this.target,
-                    sequence: this.sequence,
-                })
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::IcmpEchoRequest {
+                        target: this.target,
+                        sequence: this.sequence,
+                    },
+                )
             }) {
                 Poll::Ready(Ok(())) => this.sent = true,
                 Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),

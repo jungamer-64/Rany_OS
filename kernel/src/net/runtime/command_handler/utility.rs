@@ -154,7 +154,9 @@ impl RuntimeCommandHandler {
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetLinkLocal { reply },
             ) => {
-                let result = stack.config().ipv6.map(|config| config.link_local.octets());
+                let result = stack.primary_interface_state().and_then(|(_, state)| {
+                    state.config.ipv6.map(|config| config.link_local.octets())
+                });
                 finish_command(reply, result)
             }
             RuntimeCommand::Control(

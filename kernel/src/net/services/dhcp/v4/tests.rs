@@ -5,7 +5,6 @@
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::sync::set_panicking;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
@@ -74,7 +73,7 @@ pub fn test_dhcp_header_encode_into_serializes_network_order_bytes() {
         file: [0xCC; 128],
     };
 
-    let mut buf = vec![0u8; DhcpHeader::SIZE];
+    let mut buf = [0u8; DhcpHeader::SIZE];
     header
         .encode_into(&mut buf)
         .expect("encode_into should succeed");
@@ -114,7 +113,7 @@ pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
         *s = DhcpState::Renewing;
     }
 
-    let mut buf = vec![0u8; 512];
+    let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
     let len = client
         .build_request(&mut buf, 123)
         .expect("build_request failed");
@@ -152,7 +151,7 @@ pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
         *s = DhcpState::Requesting;
     }
 
-    let mut buf = vec![0u8; 512];
+    let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
     let len = client
         .build_request(&mut buf, 42)
         .expect("build_request failed");
@@ -172,14 +171,14 @@ pub fn test_build_discover_reuse_xid_on_retransmit() {
         *s = DhcpState::Selecting;
     }
 
-    let mut buf1 = vec![0u8; 512];
+    let mut buf1 = [0u8; DHCP_MAX_MESSAGE_SIZE];
     let _ = client
         .build_discover(&mut buf1, 10)
         .expect("build_discover failed");
     let xid1 = u32::from_be_bytes(buf1[4..8].try_into().unwrap());
     assert_eq!(xid1, 0x1234_5678);
 
-    let mut buf2 = vec![0u8; 512];
+    let mut buf2 = [0u8; DHCP_MAX_MESSAGE_SIZE];
     let _ = client
         .build_discover(&mut buf2, 20)
         .expect("build_discover failed");
@@ -199,7 +198,7 @@ pub fn test_build_discover_state_lock_poison_returns_err() {
         set_panicking(false);
     }
 
-    let mut buf = vec![0u8; 512];
+    let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
     assert!(client.build_discover(&mut buf, 100).is_err());
 }
 
@@ -210,7 +209,7 @@ pub fn test_process_response_chaddr_mismatch() {
     let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
     client.xid.store(0x1234_5678, Ordering::SeqCst);
 
-    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    let mut buf = [0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;
     buf[1] = 1;
     buf[2] = 6;
@@ -245,7 +244,7 @@ pub fn test_process_response_offer_missing_serverid_returns_err() {
     let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
     client.xid.store(0x2222_3333, Ordering::SeqCst);
 
-    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    let mut buf = [0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;
     buf[1] = 1;
     buf[2] = 6;
@@ -275,7 +274,7 @@ pub fn test_process_response_siaddr_serverid_mismatch() {
     let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
     client.xid.store(0x4444_5555, Ordering::SeqCst);
 
-    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    let mut buf = [0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;
     buf[1] = 1;
     buf[2] = 6;
@@ -331,7 +330,7 @@ pub fn test_process_response_ack_requesting_mismatch() {
         *s = DhcpState::Requesting;
     }
 
-    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    let mut buf = [0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;
     buf[1] = 1;
     buf[2] = 6;
@@ -386,7 +385,7 @@ pub fn test_process_response_ack_renewal_success() {
     }
 
     // Build ACK matching current lease
-    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    let mut buf = [0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;
     buf[1] = 1;
     buf[2] = 6;
@@ -531,7 +530,7 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
     let client = DhcpClient::new(crate::net::l2::ethernet::MacAddress::ZERO);
     client.xid.store(0x1111_2222, Ordering::SeqCst);
 
-    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    let mut buf = [0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;
     buf[1] = 1;
     buf[2] = 6;
@@ -654,7 +653,7 @@ pub fn test_offer_probe_and_decline_flow() {
     client.xid.store(0x3333_4444, Ordering::SeqCst);
 
     // Build an OFFER packet
-    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    let mut buf = [0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;
     buf[1] = 1;
     buf[2] = 6;
@@ -785,7 +784,7 @@ pub fn test_build_inform_sets_ciaddr_and_message_type() {
         *l = Some(lease);
     }
 
-    let mut buf = vec![0u8; DHCP_MAX_MESSAGE_SIZE];
+    let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
     let len = client
         .build_inform(&mut buf, 123)
         .expect("build_inform failed");
@@ -829,7 +828,7 @@ pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
         *s = DhcpState::Informing;
     }
 
-    let mut buf = vec![0u8; DhcpHeader::SIZE + 64];
+    let mut buf = [0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;
     buf[1] = 1;
     buf[2] = 6;
@@ -872,9 +871,10 @@ pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
             assert_eq!(updated.lease.t1, lease.t1);
             assert_eq!(updated.lease.t2, lease.t2);
             assert_eq!(updated.lease.server_ip, lease.server_ip);
+            assert_eq!(updated.applied.dns_servers.len(), 1);
             assert_eq!(
-                updated.applied.dns_servers,
-                vec![Ipv4Address::new([1, 1, 1, 1])]
+                updated.applied.dns_servers[0],
+                Ipv4Address::new([1, 1, 1, 1])
             );
         }
         _ => panic!("expected Ack"),

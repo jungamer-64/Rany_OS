@@ -351,9 +351,7 @@ impl<T> CommandReplyTicket<T> {
 
 pub(crate) enum CommandReplyValue {
     EndpointUnit(Result<(), EndpointError>),
-    TcpConnection(
-        Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError>,
-    ),
+    TcpConnection(Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError>),
     TcpAcceptor(Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError>),
     Bool(bool),
     IcmpEcho(Result<u64, ()>),
@@ -480,10 +478,7 @@ impl CommandReplyRegistry {
         }
     }
 
-    fn reserve<T: CommandReplyPayload>(
-        &self,
-        runtime: NetRuntimeHandle,
-    ) -> CommandReplyTicket<T> {
+    fn reserve<T: CommandReplyPayload>(&self, runtime: NetRuntimeHandle) -> CommandReplyTicket<T> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut entries) = self.entries.lock() {
             entries.insert(id, CommandReplyEntry::new());
@@ -570,24 +565,23 @@ pub(crate) fn poll_command_result<T: CommandReplyPayload>(
 }
 
 pub(crate) fn complete_command<T: CommandReplyPayload>(ticket: CommandReplyTicket<T>, value: T) {
-    ticket.runtime.context().command_replies.complete(ticket, value);
+    ticket
+        .runtime
+        .context()
+        .command_replies
+        .complete(ticket, value);
 }
 
 pub(crate) fn new_command_channel_in<T: CommandReplyPayload>(
     runtime: NetRuntimeHandle,
-) -> (
-    CommandReplyTicket<T>,
-    CommandFuture<T>,
-) {
+) -> (CommandReplyTicket<T>, CommandFuture<T>) {
     let ticket = runtime.context().command_replies.reserve(runtime);
     let future = CommandFuture { ticket };
     (ticket, future)
 }
 
-pub(crate) fn new_command_channel<T: CommandReplyPayload>() -> (
-    CommandReplyTicket<T>,
-    CommandFuture<T>,
-) {
+pub(crate) fn new_command_channel<T: CommandReplyPayload>()
+-> (CommandReplyTicket<T>, CommandFuture<T>) {
     new_command_channel_in(default_runtime_context().handle())
 }
 

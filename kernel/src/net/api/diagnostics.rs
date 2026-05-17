@@ -15,8 +15,9 @@ extern crate alloc;
 pub async fn network_snapshot_in(runtime: NetRuntimeHandle) -> NetSnapshot {
     let (reply, command_future) =
         crate::net::runtime::command::new_command_channel_in::<NetSnapshot>(runtime);
-    let event =
-        crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { reply });
+    let event = crate::net::runtime::command::RuntimeCommand::Control(
+        crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { reply },
+    );
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }
@@ -27,10 +28,9 @@ pub async fn network_recent_events_in(
 ) -> Vec<NetTraceEvent> {
     let (reply, command_future) =
         crate::net::runtime::command::new_command_channel_in::<Vec<NetTraceEvent>>(runtime);
-    let event = crate::net::runtime::command::RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents {
-        limit,
-        reply,
-    });
+    let event = crate::net::runtime::command::RuntimeCommand::Control(
+        crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents { limit, reply },
+    );
     let _ = crate::net::runtime::command::send_command_in(runtime, event).await;
     command_future.await
 }

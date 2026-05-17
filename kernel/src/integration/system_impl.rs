@@ -341,10 +341,8 @@ impl SystemIntegration {
             dev.enable_bus_master();
             dev.enable_memory_space();
             let bar0_virt =
-                crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(
-                    bar0.base(),
-                ))
-                .as_u64();
+                crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0.base()))
+                    .as_u64();
             let mut ctx = kernel_api::abi::driver::DriverContext::for_pci(
                 bar0_virt,
                 dev.interrupt_line as u32,
@@ -373,10 +371,7 @@ impl SystemIntegration {
                 crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
             }
         }
-        self.log(&alloc::format!(
-            "  Staged PCI driver starts: {}",
-            started
-        ));
+        self.log(&alloc::format!("  Staged PCI driver starts: {}", started));
     }
 }
 

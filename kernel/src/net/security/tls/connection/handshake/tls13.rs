@@ -178,7 +178,10 @@ impl TlsConnection {
                 return Err(TlsError::DecodeError);
             }
             certs
-                .try_push(data.subspan(offset, cert_len).ok_or(TlsError::DecodeError)?)
+                .try_push(
+                    data.subspan(offset, cert_len)
+                        .ok_or(TlsError::DecodeError)?,
+                )
                 .map_err(|_| TlsError::CertificateError)?;
             offset = cert_end;
             let ext_len = data.read_u16_be(offset).ok_or(TlsError::DecodeError)? as usize;

@@ -93,7 +93,11 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         .iter()
         .find_map(|iface| iface.config)
         .or_else(|| match stack::stack_in(runtime).lock() {
-            Ok(guard) => guard.as_ref().map(|stack_guard| stack_guard.config()),
+            Ok(guard) => guard.as_ref().and_then(|stack_guard| {
+                stack_guard
+                    .primary_interface_state()
+                    .map(|(_, state)| state.config)
+            }),
             Err(_) => None,
         })
         .ok_or_else(|| String::from("Network stack is not initialized"))?;

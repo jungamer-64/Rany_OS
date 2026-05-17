@@ -52,9 +52,10 @@ impl DhcpV6Client {
 
         // 初回のみスタックロックで取得してキャッシュ
         let result = match crate::net::runtime::stack::stack_in(self.runtime).lock() {
-            Ok(guard) => guard
-                .as_ref()
-                .and_then(|s| s.config().ipv6.map(|c| c.link_local)),
+            Ok(guard) => guard.as_ref().and_then(|s| {
+                s.primary_interface_state()
+                    .and_then(|(_, state)| state.config.ipv6.map(|c| c.link_local))
+            }),
             Err(_) => {
                 log::error!("[NET] DHCPv6: Global Stack poisoned - cannot get link-local");
                 None
