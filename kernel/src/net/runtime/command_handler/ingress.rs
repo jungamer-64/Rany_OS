@@ -4,9 +4,7 @@
 //! RuntimeCommandHandler Ingress系メソッド
 
 use super::*;
-use crate::net::runtime::command_handler::common::{
-    extract_ports, resolve_ingress_if_id_in, subslice_offset,
-};
+use crate::net::runtime::command_handler::common::{extract_ports, subslice_offset};
 use kernel_api::resource::net::PacketPayload;
 
 impl RuntimeCommandHandler {
@@ -47,45 +45,71 @@ impl RuntimeCommandHandler {
         let pkt_len = packet.len();
         let data = packet.data();
         let current_time = stack.current_time();
+        let Some(selected_if_id) = stack.resolve_ingress_if(if_id) else {
+            return EventHandleResult::Success;
+        };
 
-        match stack.ethernet.process(data) {
+        let ethernet_result = {
+            let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(selected_if_id))
+            else {
+                return EventHandleResult::Success;
+            };
+            state.ethernet.process(data)
+        };
+
+        match ethernet_result {
             crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
                 let Some(offset) = subslice_offset(data, payload) else {
-                    stack.stats.record_rx_error();
+                    if let Some(stats) = stack.interface_stats(selected_if_id) {
+                        stats.record_rx_error();
+                    }
                     return EventHandleResult::Success;
                 };
                 let payload_len = payload.len();
                 let mut ip_packet = packet;
                 if !ip_packet.advance(offset) || !ip_packet.set_len(payload_len) {
-                    stack.stats.record_rx_error();
+                    if let Some(stats) = stack.interface_stats(selected_if_id) {
+                        stats.record_rx_error();
+                    }
                     return EventHandleResult::Success;
                 }
                 self.handle_ipv4_ingress_with_stack(
                     runtime,
-                    if_id,
+                    Some(selected_if_id),
                     ip_packet,
                     src_mac,
                     current_time,
                     stack,
                 );
-                stack.stats.record_rx(pkt_len);
+                if let Some(stats) = stack.interface_stats(selected_if_id) {
+                    stats.record_rx(pkt_len);
+                }
                 EventHandleResult::Success
             }
             crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
-                stack.process_arp(runtime, if_id, payload, current_time, src_mac);
-                stack.stats.record_rx(pkt_len);
+                stack.process_arp(runtime, Some(selected_if_id), payload, current_time, src_mac);
+                if let Some(stats) = stack.interface_stats(selected_if_id) {
+                    stats.record_rx(pkt_len);
+                }
                 EventHandleResult::Success
             }
             crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
-                if stack.ipv6.is_some() {
+                let ipv6_enabled = stack
+                    .interface_state_for_ingress(Some(selected_if_id))
+                    .is_some_and(|(_, state)| state.ipv6.is_some());
+                if ipv6_enabled {
                     let Some(offset) = subslice_offset(data, payload) else {
-                        stack.stats.record_rx_error();
+                        if let Some(stats) = stack.interface_stats(selected_if_id) {
+                            stats.record_rx_error();
+                        }
                         return EventHandleResult::Success;
                     };
                     let payload_len = payload.len();
                     let mut ip_packet = packet;
                     if !ip_packet.advance(offset) || !ip_packet.set_len(payload_len) {
-                        stack.stats.record_rx_error();
+                        if let Some(stats) = stack.interface_stats(selected_if_id) {
+                            stats.record_rx_error();
+                        }
                         return EventHandleResult::Success;
                     }
                     let ip_data = ip_packet.data();
@@ -163,22 +187,28 @@ impl RuntimeCommandHandler {
                             dst_port,
                             tcp_flags,
                         ) {
-                            stack.stats.record_dropped();
+                            if let Some(stats) = stack.interface_stats(selected_if_id) {
+                                stats.record_dropped();
+                            }
                             return EventHandleResult::Success;
                         }
                     }
 
                     stack.process_ipv6_data(
                         runtime,
-                        if_id,
+                        Some(selected_if_id),
                         current_time,
                         src_mac,
                         false,
                         ip_packet,
                     );
-                    stack.stats.record_rx(pkt_len);
+                    if let Some(stats) = stack.interface_stats(selected_if_id) {
+                        stats.record_rx(pkt_len);
+                    }
                 } else {
-                    stack.stats.record_dropped();
+                    if let Some(stats) = stack.interface_stats(selected_if_id) {
+                        stats.record_dropped();
+                    }
                 }
                 EventHandleResult::Success
             }
@@ -216,7 +246,9 @@ impl RuntimeCommandHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         let current_time = stack.current_time();
-        let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(ingress_if_id) = stack.resolve_ingress_if(if_id) else {
+            return EventHandleResult::Success;
+        };
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         let view = crate::net::payload::PacketPayloadView::new(&payload);
 
@@ -276,7 +308,9 @@ impl RuntimeCommandHandler {
                 dst_port,
                 tcp_flags,
             ) {
-                stack.stats.record_dropped();
+                if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                    stats.record_dropped();
+                }
                 return EventHandleResult::Success;
             }
 
@@ -294,7 +328,7 @@ impl RuntimeCommandHandler {
                     ) {
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
                             runtime,
-                            if_id,
+                            Some(ingress_if_id),
                             src_ip.octets(),
                             dst_ip.octets(),
                             transport_payload,
@@ -303,7 +337,7 @@ impl RuntimeCommandHandler {
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
                     stack.process_udp_payload(
-                        if_id,
+                        Some(ingress_if_id),
                         payload,
                         header_len,
                         transport_len,
@@ -399,7 +433,9 @@ impl RuntimeCommandHandler {
                 dst_port,
                 tcp_flags,
             ) {
-                stack.stats.record_dropped();
+                if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                    stats.record_dropped();
+                }
                 return EventHandleResult::Success;
             }
 
@@ -417,7 +453,7 @@ impl RuntimeCommandHandler {
                     ) {
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
                             runtime,
-                            if_id,
+                            Some(ingress_if_id),
                             src,
                             dst,
                             transport_payload,
@@ -426,7 +462,7 @@ impl RuntimeCommandHandler {
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
                     stack.process_udp_payload_v6(
-                        if_id,
+                        Some(ingress_if_id),
                         payload,
                         payload_offset,
                         transport_len,
@@ -443,7 +479,7 @@ impl RuntimeCommandHandler {
                     ) {
                         stack.process_icmpv6_data(
                             runtime,
-                            if_id,
+                            Some(ingress_if_id),
                             transport_payload,
                             src,
                             dst,
@@ -470,6 +506,9 @@ impl RuntimeCommandHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         let mut ip_packet = Some(ip_packet);
+        let Some(ingress_if_id) = stack.resolve_ingress_if(if_id) else {
+            return EventHandleResult::Success;
+        };
         {
             let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
             if data.len() >= 20 {
@@ -487,7 +526,9 @@ impl RuntimeCommandHandler {
                         _ => 0,
                     };
                     if data.len() < ihl + min_l4_len {
-                        stack.stats.record_dropped();
+                        if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                            stats.record_dropped();
+                        }
                         return EventHandleResult::Success;
                     }
                 }
@@ -506,13 +547,14 @@ impl RuntimeCommandHandler {
                 if !crate::net::security::firewall::check_ingress(
                     src_ip, dst_ip, protocol, src_port, dst_port, tcp_flags,
                 ) {
-                    stack.stats.record_dropped();
+                    if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                        stats.record_dropped();
+                    }
                     return EventHandleResult::Success;
                 }
             }
         }
 
-        let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
@@ -531,12 +573,18 @@ impl RuntimeCommandHandler {
             let Some(packet_ref) = ip_packet.take() else {
                 return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
             };
-            stack
-                .ipv4
-                .process_fragment_owned_packet(packet_ref, current_time)
+            let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(ingress_if_id))
+            else {
+                return EventHandleResult::Success;
+            };
+            state.ipv4.process_fragment_owned_packet(packet_ref, current_time)
         } else {
             let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-            stack
+            let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(ingress_if_id))
+            else {
+                return EventHandleResult::Success;
+            };
+            state
                 .ipv4
                 .process_with_time_and_packet(data, ip_packet.as_ref(), current_time)
         };
@@ -609,7 +657,7 @@ impl RuntimeCommandHandler {
                 let original_packet = PacketPayload::single(packet_ref);
                 self.handle_udp_ingress_with_stack(
                     runtime,
-                    if_id,
+                    Some(ingress_if_id),
                     src_ip.octets(),
                     dst_ip.octets(),
                     src_port,
@@ -644,7 +692,7 @@ impl RuntimeCommandHandler {
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
                     runtime,
-                    if_id,
+                    Some(ingress_if_id),
                     src_ip.octets(),
                     dst_ip.octets(),
                     tcp_segment_payload,
@@ -656,7 +704,7 @@ impl RuntimeCommandHandler {
                     runtime,
                     RuntimeCommand::Ingress(
                         crate::net::runtime::command::IngressCommand::Reassembled {
-                            if_id,
+                            if_id: Some(ingress_if_id),
                             payload,
                         },
                     ),
@@ -672,10 +720,14 @@ impl RuntimeCommandHandler {
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Dropped => {
-                stack.stats.record_dropped();
+                if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                    stats.record_dropped();
+                }
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Error => {
-                stack.stats.record_rx_error();
+                if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                    stats.record_rx_error();
+                }
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Success => {}
             crate::net::l3::ipv4::Ipv4ProcessResult::UnknownProtocol(proto, src, _dst) => {
@@ -685,7 +737,9 @@ impl RuntimeCommandHandler {
                     src
                 );
                 let Some(packet_ref) = ip_packet.take() else {
-                    stack.stats.record_rx_error();
+                    if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                        stats.record_rx_error();
+                    }
                     return EventHandleResult::Success;
                 };
                 stack.send_icmp_error_payload(

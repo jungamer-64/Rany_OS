@@ -9,11 +9,11 @@ use crate::net::runtime::command::{
 };
 use crate::net::runtime::context::default_runtime;
 
-/// Initialize a runtime-local network stack
-pub(crate) fn init_in(runtime: NetRuntimeHandle, config: NetworkConfig) {
+/// Initialize a runtime-local network stack.
+pub(crate) fn init_in(runtime: NetRuntimeHandle) {
     // Initialization-time best-effort recovery: use helper
     let mut stack = stack_in(runtime).lock_for_init("[NET] Global Stack init");
-    *stack = Some(NetworkStack::new_in(runtime, config));
+    *stack = Some(NetworkStack::new_in(runtime));
 }
 
 /// Get the runtime-local network stack

@@ -107,7 +107,7 @@ impl NetworkStack {
             dst_port,
             0,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         }
 
@@ -203,12 +203,19 @@ impl NetworkStack {
     ) -> bool {
         let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(scope, None, None, dst_ip)
         else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         };
 
         self.send_udp_raw_with_config_and_if_ttl_payload(
-            if_id, &config, src_ip, src_port, dst_ip, dst_port, payload, ttl,
+            Some(if_id),
+            &config,
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+            payload,
+            ttl,
         )
     }
 
@@ -225,12 +232,12 @@ impl NetworkStack {
         let Ok((if_id, config, resolved_src)) =
             self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)
         else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         };
 
         self.send_udp_raw_with_config_and_if_ttl_payload(
-            if_id,
+            Some(if_id),
             &config,
             resolved_src,
             src_port,
@@ -278,30 +285,23 @@ impl NetworkStack {
             return Some(multicast_ip_to_mac(dst_ip));
         }
 
-        let config = self.config; // Clone to avoid borrow issues
+        let Some(if_id) = if_id else {
+            return None;
+        };
+        let config = self.interface_config_or_runtime(if_id)?;
 
         // Determine next hop, considering ICMP Redirect cache
-        let next_hop = self.resolve_ipv4_next_hop_on(if_id, dst_ip, &config, current_time)?;
+        let next_hop = self.resolve_ipv4_next_hop_on(Some(if_id), dst_ip, &config, current_time)?;
 
         // Look up in ARP cache
-        if let Some(if_id) = if_id {
-            if let Some(state) = self.interfaces.get_mut(&if_id) {
-                return match state.arp.resolve(next_hop, current_time) {
-                    Some(mac) => Some(mac),
-                    None => {
-                        queue_pending(&mut state.arp_pending_queue);
-                        self.send_arp_request_on(if_id, next_hop);
-                        None
-                    }
-                };
-            }
-        }
-
-        match self.arp.resolve(next_hop, current_time) {
+        let Some(state) = self.interfaces.get_mut(&if_id) else {
+            return None;
+        };
+        match state.arp.resolve(next_hop, current_time) {
             Some(mac) => Some(mac),
             None => {
-                queue_pending(&mut self.arp_pending_queue);
-                self.send_arp_request(next_hop);
+                queue_pending(&mut state.arp_pending_queue);
+                self.send_arp_request_on(if_id, next_hop);
                 None
             }
         }

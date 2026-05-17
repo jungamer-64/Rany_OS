@@ -234,7 +234,7 @@ impl NetworkStack {
         let Some(icmpv6_msg) =
             Icmpv6Builder::build_echo_reply(&src, &dst, identifier, sequence, echo_data)
         else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return;
         };
 
@@ -261,7 +261,7 @@ impl NetworkStack {
         let Some(icmpv6_msg) =
             Icmpv6Builder::build_echo_reply(&src, &dst, identifier, sequence, echo_data)
         else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return;
         };
 
@@ -317,7 +317,7 @@ impl NetworkStack {
                 mtu,
                 original_packet,
             ) else {
-                self.stats.record_dropped();
+                self.stats().record_dropped();
                 return false;
             };
             self.send_ipv6_icmpv6_payload(&our_addr, &dst_v6, icmp_msg);
@@ -365,7 +365,7 @@ impl NetworkStack {
                 code,
                 original_packet,
             ) else {
-                self.stats.record_dropped();
+                self.stats().record_dropped();
                 return false;
             };
             self.send_ipv6_icmpv6_payload(&our_addr, &dst_v6, icmp_msg);
@@ -391,7 +391,7 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_payload: PacketPayload,
     ) {
-        let config = self.config;
+        let config = self.config();
         let current_time = self.current_time.load(Ordering::Relaxed);
         let mut pending_payload = Some(icmpv6_payload);
 
@@ -413,7 +413,7 @@ impl NetworkStack {
 
                             // Start NDP resolution (send NS)
                             let Some(ns_msg) = ndp.start_resolution(dst, current_time) else {
-                                self.stats.record_dropped();
+                                self.stats().record_dropped();
                                 return;
                             };
                             // Send NS via solicited-node multicast
@@ -506,7 +506,7 @@ impl NetworkStack {
             Some(*src),
             *dst,
         ) else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return;
         };
         let current_time = self.current_time.load(Ordering::Relaxed);
@@ -524,7 +524,7 @@ impl NetworkStack {
             }) {
                 Some(Ok(mac)) => MacAddress::new(mac),
                 Some(Err(_)) if !queued => {
-                    self.stats.record_dropped();
+                    self.stats().record_dropped();
                     return;
                 }
                 Some(Err((ns_if_id, our_ll, ns_msg))) => {
@@ -599,7 +599,7 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_payload: PacketPayload,
     ) {
-        let config = self.config;
+        let config = self.config();
 
         // Multicast MAC resolution (no NDP needed)
         let dst_mac = MacAddress::new(dst.multicast_mac());
@@ -759,7 +759,7 @@ impl NetworkStack {
         let (if_id, config, resolved_src) = self
             .resolve_ipv6_egress(scope, None, Some(src_ip), dst)
             .map_err(|error| {
-                self.stats.record_dropped();
+                self.stats().record_dropped();
                 error
             })?;
 
@@ -771,7 +771,7 @@ impl NetworkStack {
             dst_port,
             0,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
@@ -874,7 +874,7 @@ impl NetworkStack {
         let (if_id, config, resolved_src) = self
             .resolve_ipv6_egress(scope, None, Some(src_ip), dst)
             .map_err(|error| {
-                self.stats.record_dropped();
+                self.stats().record_dropped();
                 error
             })?;
         let Some(header) = tcp_segment_view.read_array::<14>(0) else {
@@ -891,7 +891,7 @@ impl NetworkStack {
             dst_port,
             tcp_flags,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
@@ -1080,18 +1080,18 @@ impl NetworkStack {
     pub(crate) fn send_igmp_report(&mut self, group_addr: Ipv4Address, _current_time: u64) {
         // ── ファイアウォール Egress チェック ──
         if !crate::net::security::firewall::check_egress(
-            self.config.ipv4.address.octets(),
+            self.config().ipv4.address.octets(),
             group_addr.octets(),
             2, // IGMP
             0,
             0,
             0,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return;
         }
 
-        let config = self.config;
+        let config = self.config();
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
             None => return,
@@ -1153,14 +1153,14 @@ impl NetworkStack {
         let dst_group = crate::net::l3::igmp::ALL_ROUTERS_V3_GROUP;
 
         if !crate::net::security::firewall::check_egress(
-            self.config.ipv4.address.octets(),
+            self.config().ipv4.address.octets(),
             dst_group.octets(),
             2,
             0,
             0,
             0,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return;
         }
 
@@ -1176,7 +1176,7 @@ impl NetworkStack {
             }
         };
 
-        let config = self.config;
+        let config = self.config();
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
             None => return,

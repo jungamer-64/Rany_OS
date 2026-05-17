@@ -19,20 +19,23 @@ mod udp_tx;
 impl NetworkStack {
     /// Send an IGMP Leave Group message
     pub(super) fn send_igmp_leave(&mut self, group_addr: Ipv4Address, _current_time: u64) {
+        let Some((if_id, state)) = self.primary_interface_state() else {
+            return;
+        };
+        let config = state.config;
         // ── ファイアウォール Egress チェック ──
         if !crate::net::security::firewall::check_egress(
-            self.config.ipv4.address.octets(),
+            config.ipv4.address.octets(),
             Ipv4Address::new([224, 0, 0, 2]).octets(), // all-routers
             2,                                         // IGMP
             0,
             0,
             0,
         ) {
-            self.stats.record_dropped();
+            state.stats.record_dropped();
             return;
         }
 
-        let config = self.config;
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
             None => return,
@@ -74,7 +77,7 @@ impl NetworkStack {
                         drop(frame);
                         if packet.set_len(frame_len) {
                             let _ = self.transmit_packet_on(
-                                None,
+                                Some(if_id),
                                 kernel_api::resource::net::PacketPayload::single(packet),
                             );
                         }
@@ -95,15 +98,10 @@ impl NetworkStack {
             return;
         }
 
-        let mut config = self.config();
-        config.ipv4.address = lease.ip_address;
-        config.ipv4.subnet_mask = lease.subnet_mask;
-        if let Some(gateway) = lease.gateway {
-            config.ipv4.gateway = gateway;
-        }
-        config.ipv4.dns = dns_server;
-
-        self.set_config(config);
+        log::warn!(
+            target: "net::dhcp",
+            "DHCPv4 lease ignored because no primary runtime interface is registered"
+        );
     }
 
     pub fn apply_dhcp_v4_lease_for_interface(
@@ -114,11 +112,14 @@ impl NetworkStack {
         dns_server: Option<crate::net::l3::ipv4::Ipv4Address>,
     ) {
         let runtime = self.runtime;
-        let base_config = crate::net::runtime::manager::get_interface_in(runtime, if_id)
+        let Some(base_config) = crate::net::runtime::manager::get_interface_in(runtime, if_id)
             .ok()
             .flatten()
             .and_then(|iface| iface.config)
-            .unwrap_or_else(|| self.config());
+            .or_else(|| self.interface_config(if_id))
+        else {
+            return;
+        };
 
         let mut iface_config = base_config;
         iface_config.ipv4.address = lease.ip_address;
@@ -146,11 +147,14 @@ impl NetworkStack {
         clear_primary_runtime: bool,
     ) {
         let runtime = self.runtime;
-        let base_config = crate::net::runtime::manager::get_interface_in(runtime, if_id)
+        let Some(base_config) = crate::net::runtime::manager::get_interface_in(runtime, if_id)
             .ok()
             .flatten()
             .and_then(|iface| iface.config)
-            .unwrap_or_else(|| self.config());
+            .or_else(|| self.interface_config(if_id))
+        else {
+            return;
+        };
 
         let mut iface_config = base_config;
         iface_config.ipv4.address = crate::net::l3::ipv4::Ipv4Address::ANY;
@@ -177,19 +181,30 @@ impl NetworkStack {
         ttl: u8,
         current_time: u64,
     ) {
-        match self.udp.process_window_on(
-            self.runtime,
-            if_id,
-            original_packet,
-            udp_offset,
-            udp_len,
-            src_ip,
-            dst_ip,
-            ttl,
-        ) {
+        let Some(resolved_if_id) = self.resolve_ingress_if(if_id) else {
+            return;
+        };
+        let result = {
+            let Some(state) = self.interfaces.get_mut(&resolved_if_id) else {
+                return;
+            };
+            state.udp.process_window_on(
+                self.runtime,
+                Some(resolved_if_id),
+                original_packet,
+                udp_offset,
+                udp_len,
+                src_ip,
+                dst_ip,
+                ttl,
+            )
+        };
+        match result {
             Ok(()) => {}
             Err((UdpResult::NoEndpoint, original_packet)) => {
-                self.stats.record_dropped();
+                if let Some(stats) = self.interface_stats(resolved_if_id) {
+                    stats.record_dropped();
+                }
                 if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
                     self.send_icmp_error_payload(
                         src_ip,
@@ -201,7 +216,9 @@ impl NetworkStack {
                 }
             }
             Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
-                self.stats.record_rx_error();
+                if let Some(stats) = self.interface_stats(resolved_if_id) {
+                    stats.record_rx_error();
+                }
             }
             Err((UdpResult::Delivered, _)) => unreachable!(),
         }
@@ -217,23 +234,36 @@ impl NetworkStack {
         dst: crate::net::l3::ipv6::Ipv6Address,
         hop_limit: u8,
     ) {
-        match self.udp.process_window_v6_on(
-            self.runtime,
-            if_id,
-            original_packet,
-            udp_offset,
-            udp_len,
-            src,
-            dst,
-            hop_limit,
-        ) {
+        let Some(resolved_if_id) = self.resolve_ingress_if(if_id) else {
+            return;
+        };
+        let result = {
+            let Some(state) = self.interfaces.get_mut(&resolved_if_id) else {
+                return;
+            };
+            state.udp.process_window_v6_on(
+                self.runtime,
+                Some(resolved_if_id),
+                original_packet,
+                udp_offset,
+                udp_len,
+                src,
+                dst,
+                hop_limit,
+            )
+        };
+        match result {
             Ok(()) => {}
             Err((UdpResult::NoEndpoint, original_packet)) => {
-                self.stats.record_dropped();
+                if let Some(stats) = self.interface_stats(resolved_if_id) {
+                    stats.record_dropped();
+                }
                 self.send_icmpv6_error_payload(src, 4, original_packet);
             }
             Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
-                self.stats.record_rx_error();
+                if let Some(stats) = self.interface_stats(resolved_if_id) {
+                    stats.record_rx_error();
+                }
             }
             Err((UdpResult::Delivered, _)) => unreachable!(),
         }

@@ -25,20 +25,51 @@ struct FragmentTxPacket {
 
 impl NetworkStack {
     pub(crate) fn interface_config_or_runtime(&self, if_id: NetIfId) -> Option<NetworkConfig> {
-        self.interface_config(if_id).or_else(|| {
-            crate::net::runtime::manager::get_interface_in(self.runtime, if_id)
-                .ok()
-                .flatten()
-                .and_then(|iface| iface.config)
-        })
+        self.interface_config(if_id)
     }
 
-    fn bootstrap_runtime_config(&self) -> Option<(Option<NetIfId>, NetworkConfig)> {
-        if self.interfaces.is_empty() {
-            Some((None, self.config()))
-        } else {
-            None
+    fn default_interface_id(&self) -> Option<NetIfId> {
+        self.primary_interface
+            .filter(|if_id| self.interfaces.contains_key(if_id))
+            .or_else(|| self.interfaces.keys().next().copied())
+    }
+
+    pub(crate) fn interface_state_for_ingress(
+        &self,
+        if_id: Option<NetIfId>,
+    ) -> Option<(NetIfId, &InterfaceStackState)> {
+        match if_id {
+            Some(if_id) => self.interfaces.get(&if_id).map(|state| (if_id, state)),
+            None => self
+                .default_interface_id()
+                .and_then(|if_id| self.interfaces.get(&if_id).map(|state| (if_id, state))),
         }
+    }
+
+    pub(crate) fn interface_state_for_ingress_mut(
+        &mut self,
+        if_id: Option<NetIfId>,
+    ) -> Option<(NetIfId, &mut InterfaceStackState)> {
+        let selected_if_id = match if_id {
+            Some(if_id) if self.interfaces.contains_key(&if_id) => if_id,
+            Some(_) => return None,
+            None => self.default_interface_id()?,
+        };
+        self.interfaces
+            .get_mut(&selected_if_id)
+            .map(|state| (selected_if_id, state))
+    }
+
+    pub(crate) fn primary_interface_state(&self) -> Option<(NetIfId, &InterfaceStackState)> {
+        self.default_interface_id()
+            .and_then(|if_id| self.interfaces.get(&if_id).map(|state| (if_id, state)))
+    }
+
+    pub(crate) fn primary_interface_state_mut(
+        &mut self,
+    ) -> Option<(NetIfId, &mut InterfaceStackState)> {
+        let if_id = self.default_interface_id()?;
+        self.interfaces.get_mut(&if_id).map(|state| (if_id, state))
     }
 
     fn select_ipv4_source(
@@ -104,14 +135,14 @@ impl NetworkStack {
         preferred_if: Option<NetIfId>,
         explicit_src: Option<Ipv4Address>,
         dst_ip: Ipv4Address,
-    ) -> Result<(Option<NetIfId>, NetworkConfig, Ipv4Address), crate::net::types::NetworkError>
+    ) -> Result<(NetIfId, NetworkConfig, Ipv4Address), crate::net::types::NetworkError>
     {
         let resolved = scope
             .as_if_id()
             .or(preferred_if)
             .map(|if_id| {
                 self.interface_config_or_runtime(if_id)
-                    .map(|cfg| (Some(if_id), cfg))
+                    .map(|cfg| (if_id, cfg))
                     .ok_or(crate::net::types::NetworkError::NetworkUnreachable)
             })
             .transpose()?
@@ -121,10 +152,13 @@ impl NetworkStack {
                     .flatten()
                     .and_then(|route| {
                         self.interface_config_or_runtime(route.if_id)
-                            .map(|cfg| (Some(route.if_id), cfg))
+                            .map(|cfg| (route.if_id, cfg))
                     })
             })
-            .or_else(|| self.bootstrap_runtime_config())
+            .or_else(|| {
+                self.default_interface_id()
+                    .and_then(|if_id| self.interface_config(if_id).map(|cfg| (if_id, cfg)))
+            })
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
 
         let src_ip = self.select_ipv4_source(resolved.1, explicit_src)?;
@@ -137,14 +171,14 @@ impl NetworkStack {
         preferred_if: Option<NetIfId>,
         explicit_src: Option<Ipv6Address>,
         dst_ip: Ipv6Address,
-    ) -> Result<(Option<NetIfId>, NetworkConfig, Ipv6Address), crate::net::types::NetworkError>
+    ) -> Result<(NetIfId, NetworkConfig, Ipv6Address), crate::net::types::NetworkError>
     {
         let resolved = scope
             .as_if_id()
             .or(preferred_if)
             .map(|if_id| {
                 self.interface_config_or_runtime(if_id)
-                    .map(|cfg| (Some(if_id), cfg))
+                    .map(|cfg| (if_id, cfg))
                     .ok_or(crate::net::types::NetworkError::NetworkUnreachable)
             })
             .transpose()?
@@ -154,27 +188,36 @@ impl NetworkStack {
                     .flatten()
                     .and_then(|route| {
                         self.interface_config_or_runtime(route.if_id)
-                            .map(|cfg| (Some(route.if_id), cfg))
+                            .map(|cfg| (route.if_id, cfg))
                     })
             })
-            .or_else(|| self.bootstrap_runtime_config())
+            .or_else(|| {
+                self.default_interface_id()
+                    .and_then(|if_id| self.interface_config(if_id).map(|cfg| (if_id, cfg)))
+            })
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
 
         let src_ip = self.select_ipv6_source(resolved.1, explicit_src, dst_ip)?;
         Ok((resolved.0, resolved.1, src_ip))
     }
 
-    pub(crate) fn resolve_ingress_if(&self, if_id: Option<NetIfId>) -> NetIfId {
+    pub(crate) fn resolve_ingress_if(&self, if_id: Option<NetIfId>) -> Option<NetIfId> {
         if let Some(if_id) = if_id {
-            return if_id;
+            return self.interfaces.contains_key(&if_id).then_some(if_id);
         }
         self.primary_interface
+            .filter(|if_id| self.interfaces.contains_key(if_id))
             .or_else(|| {
                 crate::net::runtime::manager::list_interfaces_in(self.runtime)
                     .ok()
-                    .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+                    .and_then(|ifaces| {
+                        ifaces
+                            .iter()
+                            .map(|iface| iface.if_id)
+                            .find(|if_id| self.interfaces.contains_key(if_id))
+                    })
             })
-            .unwrap_or_default()
+            .or_else(|| self.interfaces.keys().next().copied())
     }
 
     pub fn send_raw_ip_payload_scoped(
@@ -268,7 +311,7 @@ impl NetworkStack {
             dst_port,
             tcp_flags,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
@@ -278,7 +321,7 @@ impl NetworkStack {
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
-            match self.resolve_arp_for_send(if_id, dst_ip, current_time, |pending| {
+            match self.resolve_arp_for_send(Some(if_id), dst_ip, current_time, |pending| {
                 pending.enqueue_raw(
                     src_ip,
                     dst_ip,
@@ -303,7 +346,7 @@ impl NetworkStack {
                 .take()
                 .expect("resolved raw IPv4 payload must exist"),
         );
-        if self.transmit_packet_on(if_id, frame_payload) {
+        if self.transmit_packet_on(Some(if_id), frame_payload) {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -345,7 +388,7 @@ impl NetworkStack {
             MacAddress::new(dst_ip.multicast_mac())
         } else {
             match self.resolve_ndp_for_send(
-                if_id,
+                Some(if_id),
                 &dst_ip,
                 self.current_time.load(Ordering::Relaxed),
                 |_| {},
@@ -397,14 +440,14 @@ impl NetworkStack {
             dst_port,
             tcp_flags,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
         let packet = self.build_ethernet_header_packet(config.mac, dst_mac, EtherType::Ipv6)?;
         let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
         crate::net::payload::append_payload(&mut frame_payload, payload);
-        if self.transmit_packet_on(if_id, frame_payload) {
+        if self.transmit_packet_on(Some(if_id), frame_payload) {
             Ok(())
         } else {
             Err(crate::net::types::NetworkError::TransmitFailed)
@@ -415,10 +458,8 @@ impl NetworkStack {
     ///
     /// # パフォーマンス注意
     /// NetworkConfig is copied as scalar configuration at the stack boundary.
-    pub fn new_in(runtime: NetRuntimeHandle, config: NetworkConfig) -> Self {
-        let dad_link_local = config.ipv6.as_ref().map(|cfg| cfg.link_local);
-
-        let mut stack = NetworkStack {
+    pub fn new_in(runtime: NetRuntimeHandle) -> Self {
+        NetworkStack {
             runtime,
             interfaces: BTreeMap::new(),
             primary_interface: None,
@@ -427,14 +468,7 @@ impl NetworkStack {
             transmit_awaits_device_completion: false,
             pending_tx_meta: None,
             current_time: AtomicU64::new(0),
-        };
-
-        // RFC 4862: Initiate DAD for link-local address upon interface startup
-        if let Some(ll) = dad_link_local {
-            stack.initiate_ipv6_dad(ll);
         }
-
-        stack
     }
 
     /// Set transmit callback
@@ -537,20 +571,20 @@ impl NetworkStack {
     }
 
     fn record_tx_success_on(&self, if_id: Option<NetIfId>, packet_len: usize) {
-        self.stats.record_tx(packet_len);
-        if let Some(if_id) = if_id {
-            if let Some(stats) = self.interface_stats(if_id) {
-                stats.record_tx(packet_len);
-            }
+        let stats = if_id
+            .and_then(|if_id| self.interface_stats(if_id))
+            .or_else(|| self.primary_interface_state().map(|(_, state)| &state.stats));
+        if let Some(stats) = stats {
+            stats.record_tx(packet_len);
         }
     }
 
     fn record_tx_error_on(&self, if_id: Option<NetIfId>) {
-        self.stats.record_tx_error();
-        if let Some(if_id) = if_id {
-            if let Some(stats) = self.interface_stats(if_id) {
-                stats.record_tx_error();
-            }
+        let stats = if_id
+            .and_then(|if_id| self.interface_stats(if_id))
+            .or_else(|| self.primary_interface_state().map(|(_, state)| &state.stats));
+        if let Some(stats) = stats {
+            stats.record_tx_error();
         }
     }
 
@@ -750,10 +784,15 @@ impl NetworkStack {
     }
 
     fn effective_ipv4_pmtu(&mut self, dst_ip: Ipv4Address, current_time: u64) -> usize {
-        self.ipv4
-            .get_pmtu(dst_ip, current_time)
-            .max(crate::net::l3::ipv4::PmtuEntry::MIN_MTU)
-            .min(crate::net::runtime::stack::MTU as u16) as usize
+        self.primary_interface_state_mut()
+            .map(|(_, state)| {
+                state
+                    .ipv4
+                    .get_pmtu(dst_ip, current_time)
+                    .max(crate::net::l3::ipv4::PmtuEntry::MIN_MTU)
+                    .min(crate::net::runtime::stack::MTU as u16) as usize
+            })
+            .unwrap_or(crate::net::runtime::stack::MTU)
     }
 
     fn send_ipv4_l4_payload_with_pmtu(
@@ -779,7 +818,10 @@ impl NetworkStack {
         let Some(unfragmented_payload_limit) = path_mtu.checked_sub(IPV4_HEADER_LEN) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
-        let identification = self.ipv4.next_id(dst_ip);
+        let Some((_, state)) = self.primary_interface_state_mut() else {
+            return Err(crate::net::types::NetworkError::NetworkUnreachable);
+        };
+        let identification = state.ipv4.next_id(dst_ip);
 
         if payload_len <= unfragmented_payload_limit {
             let packet = self.build_ipv4_ethernet_header_packet(
@@ -881,14 +923,14 @@ impl NetworkStack {
             dst_port,
             tcp_flags,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         }
 
         let Ok((if_id, config, resolved_src)) =
             self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)
         else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         };
 
@@ -897,7 +939,7 @@ impl NetworkStack {
         let dst_mac = if dst_ip.is_loopback() {
             config.mac
         } else {
-            match self.resolve_arp_for_send(if_id, dst_ip, current_time, |pending| {
+            match self.resolve_arp_for_send(Some(if_id), dst_ip, current_time, |pending| {
                 pending.enqueue_tcp(
                     resolved_src,
                     dst_ip,
@@ -918,7 +960,7 @@ impl NetworkStack {
             .take()
             .expect("resolved TCP segment must exist");
         self.send_ipv4_l4_payload_with_pmtu(
-            if_id,
+            Some(if_id),
             config.mac,
             dst_mac,
             resolved_src,
@@ -982,14 +1024,20 @@ impl NetworkStack {
         &mut self,
         group: Ipv4Address,
     ) -> Result<(), crate::net::l3::igmp::IgmpError> {
-        self.igmp.join_group(group)
+        let Some((_, state)) = self.primary_interface_state_mut() else {
+            return Err(crate::net::l3::igmp::IgmpError::InvalidGroupAddress);
+        };
+        state.igmp.join_group(group)
     }
 
     pub fn leave_multicast_group(
         &mut self,
         group: Ipv4Address,
     ) -> Result<(), crate::net::l3::igmp::IgmpError> {
-        self.igmp.leave_group(group)
+        let Some((_, state)) = self.primary_interface_state_mut() else {
+            return Err(crate::net::l3::igmp::IgmpError::InvalidGroupAddress);
+        };
+        state.igmp.leave_group(group)
     }
 
     /// Update current time (call periodically)
@@ -1008,7 +1056,9 @@ impl NetworkStack {
 
         // IGMPタイマー進行とpending送信を周期処理に接続する。
         // これにより受信イベントが無い期間でもMembership Report/Leaveを排出できる。
-        self.igmp.update_time(now);
+        for state in self.interfaces.values_mut() {
+            state.igmp.update_time(now);
+        }
         self.send_pending_igmp_reports();
 
         // Expire timed-out pending packets
@@ -1030,70 +1080,76 @@ impl NetworkStack {
 
     /// Get configuration (full clone - use sparingly)
     pub fn config(&self) -> NetworkConfig {
-        self.config
+        self.primary_interface_state()
+            .map(|(_, state)| state.config)
+            .expect("network stack config requested without registered interface state")
     }
 
     /// ICMP echo が有効かチェック
     #[inline]
     pub fn icmp_echo_enabled(&self) -> bool {
-        self.config.icmp_echo_enabled
+        self.primary_interface_state()
+            .is_some_and(|(_, state)| state.config.icmp_echo_enabled)
     }
 
     /// MAC アドレスを取得
     #[inline]
     pub fn mac_address(&self) -> MacAddress {
-        self.config.mac
+        self.primary_interface_state()
+            .map(|(_, state)| state.config.mac)
+            .expect("network stack MAC requested without registered interface state")
     }
 
     /// IPv4 アドレスを取得
     #[inline]
     pub fn ipv4_address(&self) -> Ipv4Address {
-        self.config.ipv4.address
+        self.primary_interface_state()
+            .map(|(_, state)| state.config.ipv4.address)
+            .expect("network stack IPv4 address requested without registered interface state")
     }
 
     /// Update configuration
     pub fn set_config(&mut self, config: NetworkConfig) {
-        let old_ip = self.config.ipv4.address;
+        let Some((primary_if_id, state)) = self.primary_interface_state_mut() else {
+            return;
+        };
+        let old_ip = state.config.ipv4.address;
         let new_ip = config.ipv4.address;
 
-        // Update all processors
-        self.ethernet.set_local_mac(config.mac);
-        self.ipv4.set_config(config.ipv4);
-        self.arp.set_local(config.mac, config.ipv4.address);
-        self.igmp.set_local_ip(new_ip);
-
-        self.config = config;
-
-        if let Some(primary_if_id) = self.primary_interface {
-            if let Some(state) = self.interfaces.get_mut(&primary_if_id) {
-                state.set_config(config);
-            }
-        }
+        state.set_config(config);
 
         // RFC 2131 Section 4.4.1: Send Gratuitous ARP when IP address is assigned or changed.
         // This updates the ARP cache of other hosts on the network.
         if new_ip != Ipv4Address::ANY && new_ip != old_ip {
-            self.send_arp_request(new_ip);
+            self.send_arp_request_on(primary_if_id, new_ip);
         }
     }
 
     /// Get statistics
     pub fn stats(&self) -> &NetworkStats {
-        &self.stats
+        self.primary_interface_state()
+            .map(|(_, state)| &state.stats)
+            .expect("network stack stats requested without registered interface state")
     }
 
     /// Check if an IPv4 multicast group is allowed (joined or mandatory)
     fn is_multicast_allowed(&self, group: Ipv4Address) -> bool {
         use crate::net::l3::igmp::ALL_HOSTS_GROUP;
-        group == ALL_HOSTS_GROUP || self.igmp.is_member(group)
+        group == ALL_HOSTS_GROUP
+            || self
+                .primary_interface_state()
+                .is_some_and(|(_, state)| state.igmp.is_member(group))
     }
 
     /// Apply a DHCPv6-obtained global IPv6 address to the stack
     pub fn enqueue_apply_ipv6_global_address(&mut self, addr: crate::net::l3::ipv6::Ipv6Address) {
-        if let Some(ref mut ipv6_proc) = self.ipv6 {
+        let Some((_, state)) = self.primary_interface_state_mut() else {
+            return;
+        };
+        if let Some(ref mut ipv6_proc) = state.ipv6 {
             ipv6_proc.set_global_address(addr);
         }
-        if let Some(ref mut ndp_proc) = self.ndp {
+        if let Some(ref mut ndp_proc) = state.ndp {
             ndp_proc.add_global_address(addr);
         }
         self.initiate_ipv6_dad(addr);
@@ -1101,28 +1157,37 @@ impl NetworkStack {
 
     /// Initiate DAD for an IPv6 address
     pub fn initiate_ipv6_dad(&mut self, addr: Ipv6Address) {
-        if let Some(ref mut ndp) = self.ndp {
-            let res = ndp.initiate_dad(&addr);
-            if let NdpResult::SendNeighborSolicitation { src, dst, target } = res {
-                if let Some(msg) =
-                    NdpProcessor::build_ns(&src, &dst, &target, self.config.mac.as_bytes())
-                {
-                    self.send_ipv6_icmpv6(&src, &dst, msg);
+        let dad = {
+            let Some((if_id, state)) = self.primary_interface_state_mut() else {
+                return;
+            };
+            let Some(ref mut ndp) = state.ndp else {
+                return;
+            };
+            match ndp.initiate_dad(&addr) {
+                NdpResult::SendNeighborSolicitation { src, dst, target } => {
+                    NdpProcessor::build_ns(&src, &dst, &target, state.config.mac.as_bytes())
+                        .map(|msg| (if_id, src, dst, msg))
                 }
+                _ => None,
             }
+        };
+        if let Some((if_id, src, dst, msg)) = dad {
+            self.send_ipv6_icmpv6_raw_on(if_id, &src, &dst, msg);
         }
     }
 
     /// Expire timed-out NDP pending packets
     pub fn expire_ndp_pending(&mut self) {
         let current_time = self.current_time.load(Ordering::Relaxed);
-        self.ndp_pending_queue.expire(current_time);
+        for state in self.interfaces.values_mut() {
+            state.ndp_pending_queue.expire(current_time);
+        }
     }
 
     /// Expire timed-out ARP pending packets
     pub fn expire_arp_pending(&mut self) {
         let current_time = self.current_time.load(Ordering::Relaxed);
-        self.arp_pending_queue.expire(current_time);
         for state in self.interfaces.values_mut() {
             state.arp_pending_queue.expire(current_time);
         }

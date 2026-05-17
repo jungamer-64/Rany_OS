@@ -305,7 +305,7 @@ impl RuntimeCommandHandler {
         tcb.set_nodelay(nodelay);
         tcb.set_priority(priority);
         tcb.scope = scope;
-        tcb.ingress_if_id = resolved_if.or(preferred_if);
+        tcb.ingress_if_id = Some(resolved_if);
         tcb.state = TcpConnectionState::SynSent;
         let _ = tcb_table.insert(tcb);
 

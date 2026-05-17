@@ -88,7 +88,7 @@ impl RuntimeCommandHandler {
             let mut outbound_payload = Some(payload);
 
             match stack.resolve_ipv4_egress(scope, None, explicit_src, dst_ip) {
-                Ok((Some(if_id), _, _)) => {
+                Ok((if_id, _, _)) => {
                     let pinned = crate::net::types::InterfaceScope::Pinned(if_id);
                     if let Some(src_ip) = explicit_src {
                         stack.send_udp_raw_payload_scoped_with_src_ttl(
@@ -111,28 +111,6 @@ impl RuntimeCommandHandler {
                         )
                     }
                 }
-                Ok((None, _, _)) => {
-                    if let Some(src_ip) = explicit_src {
-                        stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            src_ip,
-                            local_port,
-                            dst_ip,
-                            remote.port(),
-                            outbound_payload.take().expect("UDP payload must exist"),
-                            64,
-                        )
-                    } else {
-                        stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            local_port,
-                            dst_ip,
-                            remote.port(),
-                            outbound_payload.take().expect("UDP payload must exist"),
-                            64,
-                        )
-                    }
-                }
                 Err(error) => {
                     return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
                 }
@@ -144,20 +122,9 @@ impl RuntimeCommandHandler {
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
 
             match stack.resolve_ipv6_egress(scope, None, Some(src_v6), dst_v6) {
-                Ok((Some(if_id), _, _)) => stack
+                Ok((if_id, _, _)) => stack
                     .send_udp_v6_payload_scoped_with_ttl(
                         crate::net::types::InterfaceScope::Pinned(if_id),
-                        local_port,
-                        src_v6,
-                        dst_v6,
-                        remote.port(),
-                        payload,
-                        64,
-                    )
-                    .is_ok(),
-                Ok((None, _, _)) => stack
-                    .send_udp_v6_payload_scoped_with_ttl(
-                        crate::net::types::InterfaceScope::Any,
                         local_port,
                         src_v6,
                         dst_v6,

@@ -48,6 +48,11 @@ fn checksum_payload_span(span: crate::net::payload::PayloadSpanRef<'_>, initial:
 }
 
 impl NetworkStack {
+    fn check_icmp_rate_limit(&mut self, dst_ip: Ipv4Address, current_time: u64) -> bool {
+        self.primary_interface_state_mut()
+            .is_some_and(|(_, state)| state.icmp.check_rate_limit(dst_ip, current_time))
+    }
+
     /// Send ICMP Echo Reply (RFC 792) while keeping payload access zero-copy.
     pub fn send_icmp_echo_reply_payload(
         &mut self,
@@ -57,26 +62,26 @@ impl NetworkStack {
         echo_data: PacketPayload,
         current_time: u64,
     ) -> bool {
-        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+        if !self.check_icmp_rate_limit(dst_ip, current_time) {
             return false;
         }
 
         // Firewall egress gate for ICMP.
         if !crate::net::security::firewall::check_egress(
-            self.config.ipv4.address.octets(),
+            self.config().ipv4.address.octets(),
             dst_ip.octets(),
             1,
             0,
             0,
             0,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         }
 
         // Resolve next-hop and destination MAC before frame build.
         let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
-        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+        let dst_mac = match self.arp_resolve(next_hop, current_time) {
             Some(mac) => mac,
             None => {
                 self.send_arp_request(next_hop);
@@ -95,13 +100,13 @@ impl NetworkStack {
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
-                .set_source(self.config.mac)
+                .set_source(self.config().mac)
                 .set_ether_type(EtherType::Ipv4);
 
             if let Some(mut ip_packet) = Ipv4PacketMut::new(frame.payload_mut()) {
                 ip_packet
                     .init_header()
-                    .set_source(self.config.ipv4.address)
+                    .set_source(self.config().ipv4.address)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Icmp)
                     .set_ttl(64);
@@ -160,25 +165,25 @@ impl NetworkStack {
                 return;
             }
         }
-        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+        if !self.check_icmp_rate_limit(dst_ip, current_time) {
             return;
         }
         if !crate::net::security::firewall::check_egress(
-            self.config.ipv4.address.octets(),
+            self.config().ipv4.address.octets(),
             dst_ip.octets(),
             1,
             0,
             0,
             0,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return;
         }
 
         let current_time = self.current_time();
         // Loopback destinations do not require ARP resolution.
         let Some(dst_mac) = (if dst_ip.is_loopback() {
-            Some(self.config.mac)
+            Some(self.config().mac)
         } else {
             self.resolve_arp_for_send(None, dst_ip, current_time, |_| {})
         }) else {
@@ -188,15 +193,15 @@ impl NetworkStack {
         let Some(icmp_payload) =
             IcmpProcessor::build_dest_unreachable_payload(code, next_hop_mtu, original_packet)
         else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return;
         };
         let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
         let _ = self.send_ipv4_l4_payload_with_pmtu(
             None,
-            self.config.mac,
+            self.config().mac,
             dst_mac,
-            self.config.ipv4.address,
+            self.config().ipv4.address,
             dst_ip,
             IpProtocol::Icmp,
             64,
@@ -216,20 +221,20 @@ impl NetworkStack {
         transmit_ts: u32,
         current_time: u64,
     ) {
-        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+        if !self.check_icmp_rate_limit(dst_ip, current_time) {
             return;
         }
 
         // ── ファイアウォール Egress チェック ──
         if !crate::net::security::firewall::check_egress(
-            self.config.ipv4.address.octets(),
+            self.config().ipv4.address.octets(),
             dst_ip.octets(),
             1, // ICMP
             0,
             0,
             0,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return;
         }
 
@@ -237,7 +242,7 @@ impl NetworkStack {
         let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
         // Resolve MAC address
-        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+        let dst_mac = match self.arp_resolve(next_hop, current_time) {
             Some(mac) => mac,
             None => {
                 self.send_arp_request(next_hop);
@@ -254,7 +259,7 @@ impl NetworkStack {
         if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
             frame
                 .set_destination(dst_mac)
-                .set_source(self.config.mac)
+                .set_source(self.config().mac)
                 .set_ether_type(EtherType::Ipv4);
 
             let eth_payload = frame.payload_mut();
@@ -263,7 +268,7 @@ impl NetworkStack {
             if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
                 ip_packet
                     .init_header()
-                    .set_source(self.config.ipv4.address)
+                    .set_source(self.config().ipv4.address)
                     .set_destination(dst_ip)
                     .set_protocol(IpProtocol::Icmp)
                     .set_ttl(64);
@@ -308,7 +313,7 @@ impl NetworkStack {
         dst_ip: Ipv4Address,
         current_time: u64,
     ) -> Ipv4Address {
-        let config = self.config;
+        let config = self.config();
 
         if config.ipv4.is_local(&dst_ip) {
             dst_ip
@@ -329,7 +334,7 @@ impl NetworkStack {
         original_packet: &crate::net::payload::PacketPayloadView<'_>,
         dst_ip: Ipv4Address,
     ) -> bool {
-        let config = self.config;
+        let config = self.config();
         let total_len = original_packet.total_len();
         let Some(fixed) = original_packet.read_array::<20>(0) else {
             return false;
@@ -415,20 +420,20 @@ impl NetworkStack {
         }
 
         // Rate limiting
-        if !self.icmp.check_rate_limit(dst_ip, current_time) {
+        if !self.check_icmp_rate_limit(dst_ip, current_time) {
             return false;
         }
 
         // ── ファイアウォール Egress チェック ──
         if !crate::net::security::firewall::check_egress(
-            self.config.ipv4.address.octets(),
+            self.config().ipv4.address.octets(),
             dst_ip.octets(),
             1, // ICMP
             0,
             0,
             0,
         ) {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         }
 
@@ -436,7 +441,7 @@ impl NetworkStack {
         let next_hop = self.resolve_ipv4_next_hop(dst_ip, current_time);
 
         // Resolve MAC address
-        let dst_mac = match self.arp.resolve(next_hop, current_time) {
+        let dst_mac = match self.arp_resolve(next_hop, current_time) {
             Some(mac) => mac,
             None => {
                 self.send_arp_request(next_hop);
@@ -447,15 +452,15 @@ impl NetworkStack {
         let Some(icmp_payload) =
             crate::net::l3::icmp::IcmpProcessor::build_time_exceeded_payload(code, original_packet)
         else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         };
         let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
         self.send_ipv4_l4_payload_with_pmtu(
             None,
-            self.config.mac,
+            self.config().mac,
             dst_mac,
-            self.config.ipv4.address,
+            self.config().ipv4.address,
             dst_ip,
             IpProtocol::Icmp,
             64,
@@ -509,7 +514,7 @@ impl NetworkStack {
             code,
             original_packet,
         ) else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         };
         self.send_ipv6_icmpv6(&src_v6, &dst_v6, icmpv6_msg);
@@ -561,7 +566,7 @@ impl NetworkStack {
             pointer,
             original_packet,
         ) else {
-            self.stats.record_dropped();
+            self.stats().record_dropped();
             return false;
         };
         self.send_ipv6_icmpv6(&src_v6, &dst_v6, icmpv6_msg);
@@ -665,7 +670,7 @@ impl NetworkStack {
             original_ip[19],
         );
 
-        if original_src != self.config.ipv4.address && !original_src.is_any() {
+        if original_src != self.config().ipv4.address && !original_src.is_any() {
             return;
         }
 
@@ -749,7 +754,7 @@ impl NetworkStack {
         redirect_source: Ipv4Address,
     ) {
         // SECURITY: check 0: Redirect handling が global に有効か確認する。
-        if !self.config.icmp_redirect_enabled {
+        if !self.config().icmp_redirect_enabled {
             log::warn!(
                 "[NET] ICMP: Ignoring Redirect from {} to {} via {} (Security: disabled by default)",
                 redirect_source,
@@ -760,7 +765,7 @@ impl NetworkStack {
         }
 
         // SECURITY: check 1: 現在の gateway からの Redirect だけを受理する。
-        let current_gateway = self.config.ipv4.gateway;
+        let current_gateway = self.config().ipv4.gateway;
         if redirect_source != current_gateway {
             // Ignore redirects from non-gateway sources (potential attack)
             return;
@@ -768,8 +773,8 @@ impl NetworkStack {
 
         // SECURITY: check 2: 新しい gateway が直接接続 network 上にあることを保証する。
         // (same subnet as the host)
-        let local_ip = self.config.ipv4.address;
-        let local_mask = self.config.ipv4.subnet_mask;
+        let local_ip = self.config().ipv4.address;
+        let local_mask = self.config().ipv4.subnet_mask;
         let local_network = local_ip.apply_mask(local_mask);
         let gateway_network = gateway.apply_mask(local_mask);
 
@@ -873,7 +878,7 @@ impl NetworkStack {
         let identifier = 0x1234u16; // Fixed identifier for now
 
         // Need to resolve destination MAC
-        let config = self.config;
+        let config = self.config();
         let current_time = self.current_time();
         let dst_mac = match self.resolve_mac(None, target, &config, current_time) {
             Some(mac) => mac,

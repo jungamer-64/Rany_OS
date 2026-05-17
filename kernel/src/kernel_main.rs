@@ -178,9 +178,7 @@ pub(crate) fn init_network_infra() {
             "Network stack already initialized by port runtime; skipping default init"
         );
     } else {
-        match crate::net::runtime::device::ensure_stack_initialized(
-            crate::net::runtime::stack::NetworkConfig::default(),
-        ) {
+        match crate::net::runtime::device::ensure_stack_initialized() {
             Ok(()) => info!(target: "init", "Network stack initialized via port runtime"),
             Err(err) => warn!(
                 target: "init",

@@ -1255,7 +1255,7 @@ fn handle_interface_departure(if_id: NetIfId, reason: FailoverReason) {
     }
 }
 
-pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static str> {
+pub fn ensure_stack_initialized() -> Result<(), &'static str> {
     let runtime = default_runtime();
     if runtime_context().stack_initialized.load(Ordering::Acquire) {
         return Ok(());
@@ -1273,8 +1273,8 @@ pub fn ensure_stack_initialized(config: NetworkConfig) -> Result<(), &'static st
         log::warn!(target: "net::device", "mempool init failed: {}", err);
     }
 
-    stack::init_in(runtime, config);
     manager::init_network_manager_in(runtime);
+    stack::init_in(runtime);
 
     match stack::stack_in(runtime).lock() {
         Ok(mut guard) => {
@@ -1375,7 +1375,7 @@ pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'sta
     let driver = registration.driver;
     let info = registration.info;
     let config = default_config_for_port(info);
-    ensure_stack_initialized(config)?;
+    ensure_stack_initialized()?;
 
     if let Some(existing) = lookup_if_by_port_id_in(default_runtime(), info.port_id) {
         if registration.primary_policy == PrimaryPortPolicy::Prefer {
@@ -2109,8 +2109,7 @@ mod tests {
         let if_b = register_test_port(99, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
-        let mut test_stack =
-            stack::NetworkStack::new_in(default_runtime(), NetworkConfig::default());
+        let mut test_stack = stack::NetworkStack::new_in(default_runtime());
         test_stack.register_interface_state(if_a, NetworkConfig::default());
         test_stack.register_interface_state(if_b, NetworkConfig::default());
 
