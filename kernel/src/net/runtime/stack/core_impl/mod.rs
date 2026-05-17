@@ -416,48 +416,17 @@ impl NetworkStack {
     /// # パフォーマンス注意
     /// NetworkConfig is copied as scalar configuration at the stack boundary.
     pub fn new_in(runtime: NetRuntimeHandle, config: NetworkConfig) -> Self {
-        let mac = config.mac;
-        let ip = config.ipv4.address;
         let dad_link_local = config.ipv6.as_ref().map(|cfg| cfg.link_local);
-
-        let (ipv6_proc, icmpv6_proc, ndp_proc) = if let Some(ref ipv6_config) = config.ipv6 {
-            let mac_bytes = mac.as_bytes();
-            (
-                Some(Ipv6Processor::new(*ipv6_config)),
-                Some(Icmpv6Processor::new(config.icmp_echo_enabled)),
-                Some(NdpProcessor::new(ipv6_config.link_local, *mac_bytes)),
-            )
-        } else {
-            (None, None, None)
-        };
 
         let mut stack = NetworkStack {
             runtime,
             interfaces: BTreeMap::new(),
             primary_interface: None,
-            ethernet: EthernetProcessor::new(mac),
-            ipv4: Ipv4Processor::new(config.ipv4),
-            ipv6: ipv6_proc,
-            arp: ArpProcessor::new(mac, ip),
-            icmp: IcmpProcessor::new(ip),
-            icmpv6: icmpv6_proc,
-            igmp: IgmpProcessor::new(ip),
-            ndp: ndp_proc,
-            udp: UdpProcessor::new(),
-            stats: NetworkStats::default(),
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
-            config,
             transmit_fn: None,
             transmit_awaits_device_completion: false,
             pending_tx_meta: None,
             current_time: AtomicU64::new(0),
-            redirect_cache: RedirectCache::new(),
-            arp_pending_queue: ArpPendingQueue::new(),
-            ndp_pending_queue: NdpPendingQueue::new(),
-            ipv6_fragment_reassembler: Ipv6FragmentReassembler::new(
-                Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS,
-            ),
-            ipv6_pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
         };
 
         // RFC 4862: Initiate DAD for link-local address upon interface startup

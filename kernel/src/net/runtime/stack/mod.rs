@@ -236,28 +236,6 @@ pub struct NetworkStack {
     pub interfaces: BTreeMap<NetIfId, InterfaceStackState>,
     /// Preferred interface for scope-less runtime resolution.
     pub primary_interface: Option<NetIfId>,
-    /// Configuration
-    pub config: NetworkConfig,
-    /// Ethernet processor
-    pub ethernet: EthernetProcessor,
-    /// IPv4 processor
-    pub ipv4: Ipv4Processor,
-    /// IPv6 processor (optional)
-    pub ipv6: Option<Ipv6Processor>,
-    /// ARP processor
-    pub arp: ArpProcessor,
-    /// ICMP processor
-    pub icmp: IcmpProcessor,
-    /// ICMPv6 processor (optional)
-    pub icmpv6: Option<Icmpv6Processor>,
-    /// IGMP processor (multicast group management)
-    pub igmp: IgmpProcessor,
-    /// NDP processor (optional, IPv6 neighbor discovery)
-    pub ndp: Option<NdpProcessor>,
-    /// UDP processor
-    pub udp: UdpProcessor,
-    /// Statistics
-    pub stats: NetworkStats,
     /// Timeout wheel for periodic tasks
     pub timeout_wheel: TimeoutWheel,
     /// Transmit callback
@@ -268,16 +246,6 @@ pub struct NetworkStack {
     pub pending_tx_meta: Option<NetTxMeta>,
     /// Current timestamp (ticks)
     pub current_time: AtomicU64,
-    /// ICMP Redirect cache
-    pub redirect_cache: RedirectCache,
-    /// Pending IPv4 packets awaiting ARP resolution
-    pub arp_pending_queue: ArpPendingQueue,
-    /// Pending IPv6 packets awaiting NDP resolution
-    pub ndp_pending_queue: NdpPendingQueue,
-    /// IPv6 fragment reassembler
-    pub ipv6_fragment_reassembler: Ipv6FragmentReassembler,
-    /// IPv6 Path MTU Discovery cache
-    pub ipv6_pmtu_cache: Ipv6PmtuCache,
 }
 
 /// Per-interface stack state used by multi-interface APIs.
