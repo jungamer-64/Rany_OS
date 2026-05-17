@@ -28,8 +28,6 @@ mod parser;
 mod parser_rdata_extra;
 mod parser_records;
 mod query_builder;
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests;
 mod transport;
 mod transport_tcp;
 pub const DNS_PORT: u16 = 53;

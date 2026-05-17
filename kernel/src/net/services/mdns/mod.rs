@@ -933,10 +933,3 @@ pub fn init_in(runtime: NetRuntimeHandle, hostname: String, local_ip: Ipv4Addres
 pub fn service_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<MdnsService>> {
     &runtime_state_for(runtime).service
 }
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) mod tests;

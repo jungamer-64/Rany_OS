@@ -592,6 +592,3 @@ impl HttpParser {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

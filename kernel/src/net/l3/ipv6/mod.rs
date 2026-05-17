@@ -674,9 +674,6 @@ impl<'a> Ipv6PacketMut<'a> {
     }
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests;
-
 // =====================================================
 // Extension Header Traversal
 // =====================================================

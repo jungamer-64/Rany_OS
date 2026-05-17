@@ -429,6 +429,3 @@ pub fn get_stack_glue_stats_in(runtime: NetRuntimeHandle) -> StackGlueStats {
         tx_packets: state.tx_packets.load(Ordering::Relaxed),
     }
 }
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests;

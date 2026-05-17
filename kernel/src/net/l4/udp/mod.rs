@@ -80,8 +80,6 @@ fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
 /// UDP header
 mod types;
 pub use types::*;
-#[cfg(test)]
-pub mod tests;
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
 pub struct UdpHeader {

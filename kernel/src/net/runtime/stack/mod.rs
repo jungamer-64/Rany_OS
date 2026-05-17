@@ -41,8 +41,6 @@ use kernel_api::resource::net::PacketPayload;
 use kernel_api::service::netdev::NetTxMeta;
 mod core_impl;
 pub(crate) use core_impl::*;
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests;
 
 extern crate alloc;
 

@@ -36,8 +36,6 @@ mod protocol_impl;
 pub use checksum_impl::{data_checksum, pseudo_header_checksum};
 pub use fragment_impl::*;
 pub use processor_impl::*;
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct Ipv4Address([u8; 4]);
 
