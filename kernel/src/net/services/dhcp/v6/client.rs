@@ -699,6 +699,7 @@ impl DhcpV6Client {
         let mut dns_servers: Vec<Ipv6Address> = Vec::new();
         let domain_search: Vec<crate::net::services::dns::DnsNameOwned> = Vec::new();
         let mut status_code: Option<u16> = None;
+        let mut retained_server_duid: Option<PacketPayload> = None;
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while off + 4 <= data.len() {
@@ -710,7 +711,12 @@ impl DhcpV6Client {
             }
 
             match code {
-                2 => {}
+                2 => {
+                    if len > 0 {
+                        retained_server_duid =
+                            Some(Self::generated_message_payload(&data[off..off + len])?);
+                    }
+                }
                 3 => {
                     // IA_NA - scan suboptions for IAADDR and Status Code
                     if len >= 12 {
@@ -802,6 +808,12 @@ impl DhcpV6Client {
             }
 
             off += len;
+        }
+
+        if let Some(server_duid) = retained_server_duid {
+            if let Ok(mut g) = self.server_duid.lock() {
+                *g = Some(server_duid);
+            }
         }
 
         // If a non-zero status code was found, treat as error
@@ -1774,7 +1786,7 @@ pub(crate) mod tests {
             .retry_count
             .store(DhcpV6Client::MAX_RETRIES, Ordering::SeqCst);
         let tick_rate = 1000u64;
-        let now = DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate + 10;
+        let now = 120 * tick_rate;
         client.check_timeout(None, now, tick_rate).unwrap();
         assert_eq!(client.state(), DhcpV6State::Init);
     }
@@ -1836,10 +1848,11 @@ pub(crate) mod tests {
         assert_eq!(client.state(), DhcpV6State::Requesting);
 
         // Now build a REPLY that contains IAADDR for the requested IA
+        let reply_xid = client.xid.load(Ordering::SeqCst);
         let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
         let mut reply = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24];
         reply[0] = DhcpV6MessageType::Reply as u8;
-        reply[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
+        reply[1..4].copy_from_slice(&reply_xid.to_be_bytes()[1..4]);
         let mut roff = 4;
         // IA_NA option (top-level)
         reply[roff..roff + 2].copy_from_slice(&(3u16.to_be_bytes())); // code
@@ -1873,10 +1886,10 @@ pub(crate) mod tests {
             addr: crate::net::l3::ipv6::Ipv6Address::new([
                 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5,
             ]),
-            preferred_lifetime: 1,
-            valid_lifetime: 10,
+            preferred_lifetime: 60,
+            valid_lifetime: 120,
             t1: 0,
-            t2: 0,
+            t2: 60,
             obtained_at: 0,
         };
         if let Ok(mut lg) = client.lease.lock() {
@@ -1892,10 +1905,13 @@ pub(crate) mod tests {
         if let Ok(mut g) = client.server_addr.lock() {
             *g = Some(server_ip);
         }
+        if let Ok(mut g) = client.server_duid.lock() {
+            *g = DhcpV6Client::generated_message_payload(&[0x01, 0x02, 0x03, 0x04]).ok();
+        }
 
         let tick_rate = 1000u64;
         // force a retransmit interval to elapse
-        let now = DhcpV6Client::RETRANS_INTERVAL_SECS * tick_rate + 10;
+        let now = 20 * tick_rate;
         client.check_timeout(None, now, tick_rate).unwrap();
         // should still be Renewing (not immediately escalate to Rebinding)
         assert_eq!(client.state(), DhcpV6State::Renewing);

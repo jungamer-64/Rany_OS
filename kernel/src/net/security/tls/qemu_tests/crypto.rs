@@ -5,7 +5,7 @@
 use super::super::crypto::aes_core::{
     aes_ctr_with_schedule_in_place, aes_expand_key_schedule, aes_key_expansion, gf_mul,
 };
-use super::super::crypto::aes_gcm::{gf128_mul, AesGcmKey};
+use super::super::crypto::aes_gcm::{AesGcmKey, gf128_mul};
 use super::super::crypto::chacha20::{
     chacha20_block, chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
     chacha20_xor_in_place, poly1305_mac,
@@ -31,6 +31,27 @@ fn hkdf_expand_label(secret: &[u8; 32], label: &[u8], context: &[u8], output: &m
 fn tls13_derive_traffic_keys(secret: &[u8; 32], key: &mut [u8], iv: &mut [u8; 12]) -> bool {
     tls13_derive_traffic_keys_into(secret, key, iv);
     true
+}
+
+fn bytes_eq(lhs: &[u8], rhs: &[u8]) -> bool {
+    if lhs.len() != rhs.len() {
+        return false;
+    }
+
+    let mut i = 0usize;
+    // LOOP_PROOF: mode=condition; reason=i advances by one and exits once it reaches the shared slice length.;
+    while i < lhs.len() {
+        if lhs[i] != rhs[i] {
+            return false;
+        }
+        i += 1;
+    }
+
+    true
+}
+
+fn bytes_ne(lhs: &[u8], rhs: &[u8]) -> bool {
+    !bytes_eq(lhs, rhs)
 }
 
 fn chacha20_encrypt_in_place(key: &[u8; 32], nonce: &[u8; 12], counter: u32, data: &mut [u8]) {
@@ -110,7 +131,7 @@ pub fn wave8_tls_hmac_sha256_rfc4231_case1_smoke() -> bool {
         0x2b, 0x88, 0x1d, 0xc2, 0x00, 0xc9, 0x83, 0x3d, 0xa7, 0x26, 0xe9, 0x37, 0x6c, 0x2e, 0x32,
         0xcf, 0xf7,
     ];
-    hmac_sha256(&key, data) == expected
+    bytes_eq(&hmac_sha256(&key, data), &expected)
 }
 
 pub fn wave8_tls_hmac_sha256_rfc4231_case2_smoke() -> bool {
@@ -121,7 +142,7 @@ pub fn wave8_tls_hmac_sha256_rfc4231_case2_smoke() -> bool {
         0xc7, 0x5a, 0x00, 0x3f, 0x08, 0x9d, 0x27, 0x39, 0x83, 0x9d, 0xec, 0x58, 0xb9, 0x64, 0xec,
         0x38, 0x43,
     ];
-    hmac_sha256(key, data) == expected
+    bytes_eq(&hmac_sha256(key, data), &expected)
 }
 
 pub fn wave8_tls_hmac_sha256_rfc4231_case3_smoke() -> bool {
@@ -132,7 +153,7 @@ pub fn wave8_tls_hmac_sha256_rfc4231_case3_smoke() -> bool {
         0xa7, 0x29, 0x59, 0x09, 0x8b, 0x3e, 0xf8, 0xc1, 0x22, 0xd9, 0x63, 0x55, 0x14, 0xce, 0xd5,
         0x65, 0xfe,
     ];
-    hmac_sha256(&key, &data) == expected
+    bytes_eq(&hmac_sha256(&key, &data), &expected)
 }
 
 pub fn wave8_tls_hkdf_rfc5869_case1_extract_smoke() -> bool {
@@ -145,7 +166,7 @@ pub fn wave8_tls_hkdf_rfc5869_case1_extract_smoke() -> bool {
         0x63, 0x90, 0xb6, 0xc7, 0x3b, 0xb5, 0x0f, 0x9c, 0x31, 0x22, 0xec, 0x84, 0x4a, 0xd7, 0xc2,
         0xb3, 0xe5,
     ];
-    hkdf_extract(&salt, &ikm) == expected_prk
+    bytes_eq(&hkdf_extract(&salt, &ikm), &expected_prk)
 }
 
 pub fn wave8_tls_hkdf_rfc5869_case1_expand_smoke() -> bool {
@@ -161,7 +182,7 @@ pub fn wave8_tls_hkdf_rfc5869_case1_expand_smoke() -> bool {
         0xc5, 0xbf, 0x34, 0x00, 0x72, 0x08, 0xd5, 0xb8, 0x87, 0x18, 0x58, 0x65,
     ];
     let mut okm = [0u8; 42];
-    hkdf_expand(&prk, &info, &mut okm) && okm == expected_okm
+    hkdf_expand(&prk, &info, &mut okm) && bytes_eq(&okm, &expected_okm)
 }
 
 pub fn wave8_tls_chacha20_rfc8439_block_smoke() -> bool {
@@ -183,7 +204,7 @@ pub fn wave8_tls_chacha20_rfc8439_block_smoke() -> bool {
         0xb5, 0x12, 0x9c, 0xd1, 0xde, 0x16, 0x4e, 0xb9, 0xcb, 0xd0, 0x83, 0xe8, 0xa2, 0x50, 0x3c,
         0x4e,
     ];
-    &block[0..16] == expected_start.as_slice() && &block[48..64] == expected_end.as_slice()
+    bytes_eq(&block[0..16], &expected_start) && bytes_eq(&block[48..64], &expected_end)
 }
 
 pub fn wave8_tls_chacha20_rfc8439_encrypt_smoke() -> bool {
@@ -211,7 +232,7 @@ pub fn wave8_tls_chacha20_rfc8439_encrypt_smoke() -> bool {
     chacha20_encrypt_in_place(&key, &nonce, 1, &mut ciphertext);
     let mut decrypted = ciphertext;
     chacha20_encrypt_in_place(&key, &nonce, 1, &mut decrypted);
-    ciphertext.as_slice() == expected_ciphertext.as_slice() && decrypted.as_slice() == plaintext
+    bytes_eq(&ciphertext, &expected_ciphertext) && bytes_eq(&decrypted, plaintext)
 }
 
 pub fn wave8_tls_poly1305_rfc8439_smoke() -> bool {
@@ -225,7 +246,7 @@ pub fn wave8_tls_poly1305_rfc8439_smoke() -> bool {
         0xa8, 0x06, 0x1d, 0xc1, 0x30, 0x51, 0x36, 0xc6, 0xc2, 0x2b, 0x8b, 0xaf, 0x0c, 0x01, 0x27,
         0xa9,
     ];
-    poly1305_mac(&key, message) == expected_tag
+    bytes_eq(&poly1305_mac(&key, message), &expected_tag)
 }
 
 pub fn wave8_tls_chacha20_poly1305_rfc8439_encrypt_smoke() -> bool {
@@ -261,7 +282,7 @@ pub fn wave8_tls_chacha20_poly1305_rfc8439_encrypt_smoke() -> bool {
     if !chacha20_poly1305_encrypt(&key, &nonce, &aad, plaintext, &mut ciphertext, &mut tag) {
         return false;
     }
-    ciphertext.as_slice() == expected_ciphertext.as_slice() && tag == expected_tag
+    bytes_eq(&ciphertext, &expected_ciphertext) && bytes_eq(&tag, &expected_tag)
 }
 
 pub fn wave8_tls_chacha20_poly1305_rfc8439_decrypt_smoke() -> bool {
@@ -294,7 +315,7 @@ pub fn wave8_tls_chacha20_poly1305_rfc8439_decrypt_smoke() -> bool {
 
     let mut plaintext = [0u8; 114];
     chacha20_poly1305_decrypt(&key, &nonce, &aad, &ciphertext, &tag, &mut plaintext)
-        && plaintext.as_slice() == expected
+        && bytes_eq(&plaintext, expected)
 }
 
 pub fn wave8_tls_aes_gcm_roundtrip_smoke() -> bool {
@@ -313,12 +334,12 @@ pub fn wave8_tls_aes_gcm_roundtrip_smoke() -> bool {
     if !aes_gcm_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
         return false;
     }
-    if ciphertext.as_slice() == plaintext || ciphertext.len() != plaintext.len() {
+    if bytes_eq(&ciphertext, plaintext) || ciphertext.len() != plaintext.len() {
         return false;
     }
     let mut decrypted = [0u8; 26];
     aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
-        && decrypted.as_slice() == plaintext
+        && bytes_eq(&decrypted, plaintext)
 }
 
 pub fn wave8_tls_aes_gcm_auth_failure_smoke() -> bool {
@@ -349,20 +370,21 @@ pub fn wave8_tls_aes_ctr_roundtrip_smoke() -> bool {
     if !aes_ctr(&key, &nonce, plaintext, &mut ciphertext) {
         return false;
     }
-    if ciphertext.as_slice() == plaintext {
+    let unchanged = bytes_eq(&ciphertext, plaintext);
+    if unchanged {
         return false;
     }
     let mut decrypted = [0u8; 53];
     if !aes_ctr(&key, &nonce, &ciphertext, &mut decrypted) {
         return false;
     }
-    decrypted.as_slice() == plaintext
+    bytes_eq(&decrypted, plaintext)
 }
 
 pub fn wave8_tls_gf128_mul_zero_smoke() -> bool {
     let zero = [0u8; 16];
     let h = [0x42u8; 16];
-    gf128_mul(&zero, &h) == zero
+    bytes_eq(&gf128_mul(&zero, &h), &zero)
 }
 
 pub fn wave8_tls_gf_mul_basic_smoke() -> bool {
@@ -373,7 +395,7 @@ pub fn wave8_tls_tls13_early_secret_no_psk_smoke() -> bool {
     let early_secret = tls13_early_secret(None);
     let early_secret2 = tls13_early_secret(None);
     early_secret.len() == 32
-        && early_secret == early_secret2
+        && bytes_eq(&early_secret, &early_secret2)
         && early_secret.iter().any(|&b| b != 0)
 }
 
@@ -382,7 +404,7 @@ pub fn wave8_tls_tls13_handshake_secret_smoke() -> bool {
     let shared_secret = [0x42u8; 32];
     let hs_secret = tls13_handshake_secret(&early_secret, &shared_secret);
     let hs_secret2 = tls13_handshake_secret(&early_secret, &[0x43u8; 32]);
-    hs_secret.len() == 32 && hs_secret.iter().any(|&b| b != 0) && hs_secret != hs_secret2
+    hs_secret.len() == 32 && hs_secret.iter().any(|&b| b != 0) && bytes_ne(&hs_secret, &hs_secret2)
 }
 
 pub fn wave8_tls_tls13_master_secret_smoke() -> bool {
@@ -397,7 +419,7 @@ pub fn wave8_tls_tls13_derive_secret_smoke() -> bool {
     let transcript = [0xAAu8; 32];
     let result = tls13_derive_secret(&secret, b"c hs traffic", &transcript);
     let result2 = tls13_derive_secret(&secret, b"s hs traffic", &transcript);
-    result.len() == 32 && result.iter().any(|&b| b != 0) && result != result2
+    result.len() == 32 && result.iter().any(|&b| b != 0) && bytes_ne(&result, &result2)
 }
 
 pub fn wave8_tls_tls13_derive_traffic_keys_smoke() -> bool {
@@ -409,7 +431,7 @@ pub fn wave8_tls_tls13_derive_traffic_keys_smoke() -> bool {
 
     tls13_derive_traffic_keys(&secret, &mut key128, &mut iv128)
         && tls13_derive_traffic_keys(&secret, &mut key256, &mut iv256)
-        && key128.as_slice() != &key256[..16]
+        && bytes_ne(&key128, &key256[..16])
 }
 
 pub fn wave8_tls_tls13_finished_key_and_verify_data_smoke() -> bool {
@@ -423,8 +445,8 @@ pub fn wave8_tls_tls13_finished_key_and_verify_data_smoke() -> bool {
     finished_key.len() == 32
         && finished_key.iter().any(|&b| b != 0)
         && verify_data.len() == 32
-        && verify_data == verify_data2
-        && verify_data != verify_data3
+        && bytes_eq(&verify_data, &verify_data2)
+        && bytes_ne(&verify_data, &verify_data3)
 }
 
 pub fn wave8_tls_tls13_full_key_schedule_smoke() -> bool {
@@ -453,11 +475,11 @@ pub fn wave8_tls_tls13_full_key_schedule_smoke() -> bool {
     let c_app_traffic = tls13_derive_secret(&master, b"c ap traffic", &transcript_sf);
     let s_app_traffic = tls13_derive_secret(&master, b"s ap traffic", &transcript_sf);
 
-    c_hs_traffic != s_hs_traffic
-        && c_key != s_key
-        && c_iv != s_iv
-        && c_app_traffic != s_app_traffic
-        && c_app_traffic != c_hs_traffic
+    bytes_ne(&c_hs_traffic, &s_hs_traffic)
+        && bytes_ne(&c_key, &s_key)
+        && bytes_ne(&c_iv, &s_iv)
+        && bytes_ne(&c_app_traffic, &s_app_traffic)
+        && bytes_ne(&c_app_traffic, &c_hs_traffic)
 }
 
 pub fn wave8_tls_tls13_hkdf_expand_label_rfc8446_smoke() -> bool {
@@ -472,7 +494,7 @@ pub fn wave8_tls_tls13_hkdf_expand_label_rfc8446_smoke() -> bool {
         return false;
     }
 
-    result1 == result2 && result1 != result3
+    bytes_eq(&result1, &result2) && bytes_ne(&result1, &result3)
 }
 
 pub fn wave8_tls_tls13_key_schedule_chain_consistency_smoke() -> bool {
@@ -490,7 +512,7 @@ pub fn wave8_tls_tls13_key_schedule_chain_consistency_smoke() -> bool {
     let hs2 = tls13_handshake_secret(&early, &shared);
     let master2 = tls13_master_secret(&hs2);
 
-    hs == hs2 && master == master2
+    bytes_eq(&hs, &hs2) && bytes_eq(&master, &master2)
 }
 
 pub fn wave8_tls_tls13_finished_round_trip_smoke() -> bool {
@@ -501,7 +523,7 @@ pub fn wave8_tls_tls13_finished_round_trip_smoke() -> bool {
     let verify_data = tls13_verify_data(&finished_key, &transcript_hash);
     let expected = hmac_sha256(&finished_key, &transcript_hash);
 
-    verify_data == expected
+    bytes_eq(&verify_data, &expected)
 }
 
 pub fn wave8_tls_hmac_sha256_long_key_smoke() -> bool {
@@ -512,7 +534,7 @@ pub fn wave8_tls_hmac_sha256_long_key_smoke() -> bool {
         0x7f, 0x8e, 0x0b, 0xc6, 0x21, 0x37, 0x28, 0xc5, 0x14, 0x05, 0x46, 0x04, 0x0f, 0x0e, 0xe3,
         0x7f, 0x54,
     ];
-    hmac_sha256(&key, data) == expected
+    bytes_eq(&hmac_sha256(&key, data), &expected)
 }
 
 pub fn wave8_tls_hkdf_extract_empty_salt_smoke() -> bool {
@@ -555,13 +577,13 @@ pub fn wave8_tls_chacha20_poly1305_roundtrip_smoke() -> bool {
     if !chacha20_poly1305_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
         return false;
     }
-    if ciphertext.as_slice() == plaintext {
+    if bytes_eq(&ciphertext, plaintext) {
         return false;
     }
 
     let mut decrypted = [0u8; 43];
     chacha20_poly1305_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
-        && decrypted.as_slice() == plaintext
+        && bytes_eq(&decrypted, plaintext)
 }
 
 pub fn wave8_tls_chacha20_poly1305_empty_plaintext_smoke() -> bool {
@@ -596,13 +618,13 @@ pub fn wave8_tls_aes_gcm_256_roundtrip_smoke() -> bool {
     if !aes_gcm_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
         return false;
     }
-    if ciphertext.len() != plaintext.len() || ciphertext.as_slice() == plaintext {
+    if ciphertext.len() != plaintext.len() || bytes_eq(&ciphertext, plaintext) {
         return false;
     }
 
     let mut decrypted = [0u8; 24];
     aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
-        && decrypted.as_slice() == plaintext
+        && bytes_eq(&decrypted, plaintext)
 }
 
 pub fn wave8_tls_aes_gcm_corrupted_ciphertext_smoke() -> bool {
@@ -664,7 +686,7 @@ pub fn wave8_tls_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
         return false;
     }
 
-    decrypted.as_slice() == plaintext
+    bytes_eq(&decrypted, plaintext)
 }
 
 pub fn wave8_tls_aes_gcm_key_invalid_nonce_len_smoke() -> bool {
@@ -709,7 +731,7 @@ pub fn wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke() -> boo
 
     ctx.decrypt_in_place(nonce.as_slice(), aad, &ciphertext, &mut out, &tag)
         .is_err()
-        && out == before
+        && bytes_eq(&out, &before)
 }
 
 pub fn wave8_tls_aes_key_expansion_smoke() -> bool {
@@ -718,11 +740,11 @@ pub fn wave8_tls_aes_key_expansion_smoke() -> bool {
         0x3c,
     ];
     let round_keys = aes_key_expansion(&key);
-    if round_keys[0] != key {
+    if bytes_ne(&round_keys[0], &key) {
         return false;
     }
     for i in 0..10 {
-        if round_keys[i] == round_keys[i + 1] {
+        if bytes_eq(&round_keys[i], &round_keys[i + 1]) {
             return false;
         }
     }
@@ -746,7 +768,7 @@ pub fn wave8_tls_hkdf_expand_label_different_labels_smoke() -> bool {
     {
         return false;
     }
-    result1 != result2
+    bytes_ne(&result1, &result2)
 }
 
 pub fn wave8_tls_generate_random_not_all_zeros_smoke() -> bool {
@@ -762,7 +784,7 @@ pub fn wave8_tls_generate_random_different_calls_smoke() -> bool {
     let first = generate_random();
     let second = generate_random();
     qemu_test_clear_random_override();
-    first != second
+    bytes_ne(&first, &second)
 }
 
 pub fn wave8_tls_sha384_empty_smoke() -> bool {
@@ -775,7 +797,7 @@ pub fn wave8_tls_sha384_empty_smoke() -> bool {
         0xe1, 0xda, 0x27, 0x4e, 0xde, 0xbf, 0xe7, 0x6f, 0x65, 0xfb, 0xd5, 0x1a, 0xd2, 0xf1, 0x48,
         0x98, 0xb9, 0x5b,
     ];
-    hash == expected
+    bytes_eq(&hash, &expected)
 }
 
 pub fn wave8_tls_sha384_abc_smoke() -> bool {
@@ -788,7 +810,7 @@ pub fn wave8_tls_sha384_abc_smoke() -> bool {
         0x5b, 0xed, 0x80, 0x86, 0x07, 0x2b, 0xa1, 0xe7, 0xcc, 0x23, 0x58, 0xba, 0xec, 0xa1, 0x34,
         0xc8, 0x25, 0xa7,
     ];
-    hash == expected
+    bytes_eq(&hash, &expected)
 }
 
 pub fn wave8_tls_hmac_sha384_rfc4231_case1_smoke() -> bool {
@@ -800,7 +822,7 @@ pub fn wave8_tls_hmac_sha384_rfc4231_case1_smoke() -> bool {
         0xc5, 0x9c, 0xfa, 0xea, 0x9e, 0xa9, 0x07, 0x6e, 0xde, 0x7f, 0x4a, 0xf1, 0x52, 0xe8, 0xb2,
         0xfa, 0x9c, 0xb6,
     ];
-    hmac_sha384(&key, data) == expected
+    bytes_eq(&hmac_sha384(&key, data), &expected)
 }
 
 pub fn wave8_tls_hmac_sha384_rfc4231_case2_smoke() -> bool {
@@ -812,7 +834,7 @@ pub fn wave8_tls_hmac_sha384_rfc4231_case2_smoke() -> bool {
         0x44, 0x5e, 0x8e, 0x22, 0x40, 0xca, 0x5e, 0x69, 0xe2, 0xc7, 0x8b, 0x32, 0x39, 0xec, 0xfa,
         0xb2, 0x16, 0x49,
     ];
-    hmac_sha384(key, data) == expected
+    bytes_eq(&hmac_sha384(key, data), &expected)
 }
 
 pub fn wave8_tls_p256_point_on_curve_smoke() -> bool {

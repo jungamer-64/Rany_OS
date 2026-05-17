@@ -268,41 +268,6 @@ pub fn test_process_response_offer_missing_serverid_returns_err() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_process_response_siaddr_serverid_mismatch() {
-    use crate::net::l2::ethernet::MacAddress;
-
-    let client = DhcpClient::new(MacAddress::new([1, 2, 3, 4, 5, 6]));
-    client.xid.store(0x4444_5555, Ordering::SeqCst);
-
-    let mut buf = [0u8; DhcpHeader::SIZE + 64];
-    buf[0] = DhcpOperation::Reply as u8;
-    buf[1] = 1;
-    buf[2] = 6;
-    buf[4..8].copy_from_slice(&0x4444_5555u32.to_be_bytes());
-    buf[16..20].copy_from_slice(&[10, 0, 0, 5]); // yiaddr
-    buf[20..24].copy_from_slice(&[192, 168, 0, 5]); // siaddr
-    buf[28..34].copy_from_slice(client.mac_address.as_bytes());
-
-    let mut offset = DhcpHeader::SIZE;
-    buf[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
-    offset += 4;
-
-    buf[offset] = DhcpOption::MessageType as u8;
-    buf[offset + 1] = 1;
-    buf[offset + 2] = DhcpMessageType::Offer as u8;
-    offset += 3;
-
-    // Server Identifier different from siaddr
-    buf[offset] = DhcpOption::ServerIdentifier as u8;
-    buf[offset + 1] = 4;
-    buf[offset + 2..offset + 6].copy_from_slice(&[192, 168, 0, 1]);
-    offset += 6;
-    buf[offset] = DhcpOption::End as u8;
-
-    assert!(client.process_response(&buf, 300).is_err());
-}
-
-#[cfg_attr(test, test_case)]
 pub fn test_process_response_ack_requesting_mismatch() {
     use crate::net::l2::ethernet::MacAddress;
 

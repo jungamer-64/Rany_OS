@@ -23,10 +23,18 @@ pub mod p384 {
     /// P-384素数体の元（リトルエンディアン6×u64リム表現）
     ///
     /// p = FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFF
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug)]
     pub struct P384FieldElement {
         pub limbs: [u64; 6],
     }
+
+    impl PartialEq for P384FieldElement {
+        fn eq(&self, other: &Self) -> bool {
+            self.equals(other)
+        }
+    }
+
+    impl Eq for P384FieldElement {}
 
     // p = FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFFFF0000000000000000FFFFFFFF
     pub(super) const P: [u64; 6] = [
@@ -105,6 +113,23 @@ pub mod p384 {
         /// ゼロ判定
         pub fn is_zero(&self) -> bool {
             self.is_zero_ct() != 0
+        }
+
+        /// 等価判定
+        pub fn equals(&self, other: &Self) -> bool {
+            self.equals_ct(other) != 0
+        }
+
+        /// 等価判定 (Constant-time version)
+        /// 等しければ1、異なれば0を返す。
+        pub fn equals_ct(&self, other: &Self) -> u8 {
+            let diff = (self.limbs[0] ^ other.limbs[0])
+                | (self.limbs[1] ^ other.limbs[1])
+                | (self.limbs[2] ^ other.limbs[2])
+                | (self.limbs[3] ^ other.limbs[3])
+                | (self.limbs[4] ^ other.limbs[4])
+                | (self.limbs[5] ^ other.limbs[5]);
+            (((diff | 0u64.wrapping_sub(diff)) >> 63) ^ 1) as u8
         }
 
         /// ゼロ判定 (Constant-time version)
@@ -326,8 +351,10 @@ pub mod p384 {
         let mut result_bytes = [0u8; 48];
         result.write_be_bytes_padded(&mut result_bytes);
 
-        P384FieldElement::from_be_bytes(&result_bytes)
-            .unwrap_or_else(|| P384FieldElement::from_limbs([0; 6]))
+        match P384FieldElement::from_be_bytes(&result_bytes) {
+            Some(value) => value,
+            None => unreachable!("P-384 modular reduction produced an out-of-field value"),
+        }
     }
 
     // ========================================================================
@@ -382,6 +409,9 @@ pub mod p384 {
         pub fn to_affine(&self) -> Option<(P384FieldElement, P384FieldElement)> {
             if self.is_identity() {
                 return None;
+            }
+            if self.z.equals(&P384FieldElement::ONE) {
+                return Some((self.x, self.y));
             }
 
             let z_inv = self.z.inv();
@@ -545,7 +575,7 @@ pub mod p384 {
             let ax = a.mul(&x);
             let rhs = x3.add(&ax).add(&b);
 
-            y2 == rhs
+            y2.equals(&rhs)
         }
     }
 

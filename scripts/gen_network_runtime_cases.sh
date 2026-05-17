@@ -33,8 +33,6 @@ fi
     printf '    ("%s", crate::qemu_tests::%s),\n' "${case_name}" "${case_name}"
   done
   echo "];"
-  echo
-  echo "pub const NETWORK_RUNTIME_CASE_COUNT: usize = NETWORK_RUNTIME_CASES.len();"
 } > "${OUTPUT_FILE}"
 
 echo "Generated ${OUTPUT_FILE} with ${#CASES[@]} cases"

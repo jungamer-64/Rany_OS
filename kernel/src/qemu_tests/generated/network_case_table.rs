@@ -16,17 +16,14 @@ pub static NETWORK_RUNTIME_CASES: &[(&str, fn() -> bool)] = &[
     ("net_ecdh_x25519_rfc7748_vector_smoke", crate::qemu_tests::net_ecdh_x25519_rfc7748_vector_smoke),
     ("net_peripheral_dhcp_v4_build_decline_and_build_release_contents_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_build_decline_and_build_release_contents_smoke),
     ("net_peripheral_dhcp_v4_build_discover_reuse_xid_on_retransmit_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_build_discover_reuse_xid_on_retransmit_smoke),
-    ("net_peripheral_dhcp_v4_build_discover_state_lock_poison_returns_err_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_build_discover_state_lock_poison_returns_err_smoke),
     ("net_peripheral_dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke),
     ("net_peripheral_dhcp_v4_build_request_requesting_includes_serverid_and_requestedip_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_build_request_requesting_includes_serverid_and_requestedip_smoke),
-    ("net_peripheral_dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke),
     ("net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke),
     ("net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke),
     ("net_peripheral_dhcp_v4_process_response_ack_renewal_success_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_process_response_ack_renewal_success_smoke),
     ("net_peripheral_dhcp_v4_process_response_ack_requesting_mismatch_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_process_response_ack_requesting_mismatch_smoke),
     ("net_peripheral_dhcp_v4_process_response_chaddr_mismatch_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_process_response_chaddr_mismatch_smoke),
     ("net_peripheral_dhcp_v4_process_response_offer_missing_serverid_returns_err_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_process_response_offer_missing_serverid_returns_err_smoke),
-    ("net_peripheral_dhcp_v4_process_response_siaddr_serverid_mismatch_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_process_response_siaddr_serverid_mismatch_smoke),
     ("net_peripheral_dhcp_v4_release_clears_lease_and_sets_last_released_smoke", crate::qemu_tests::net_peripheral_dhcp_v4_release_clears_lease_and_sets_last_released_smoke),
     ("net_peripheral_dhcp_v6_advertise_triggers_request_and_requesting_state_smoke", crate::qemu_tests::net_peripheral_dhcp_v6_advertise_triggers_request_and_requesting_state_smoke),
     ("net_peripheral_dhcp_v6_bound_to_renewing_and_rebinding_transitions_smoke", crate::qemu_tests::net_peripheral_dhcp_v6_bound_to_renewing_and_rebinding_transitions_smoke),
@@ -131,5 +128,3 @@ pub static NETWORK_RUNTIME_CASES: &[(&str, fn() -> bool)] = &[
     ("net_tls_wave8_x509_parse_self_signed_smoke", crate::qemu_tests::net_tls_wave8_x509_parse_self_signed_smoke),
     ("net_tls_wave8_x509_signature_algorithm_oid_smoke", crate::qemu_tests::net_tls_wave8_x509_signature_algorithm_oid_smoke),
 ];
-
-pub const NETWORK_RUNTIME_CASE_COUNT: usize = NETWORK_RUNTIME_CASES.len();

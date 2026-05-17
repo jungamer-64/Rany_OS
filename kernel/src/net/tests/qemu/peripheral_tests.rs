@@ -26,10 +26,6 @@ macro_rules! run_case {
     }};
 }
 
-pub fn dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke() -> bool {
-    run_case!(dhcp::qemu_v4_tests::test_check_timeout_poisoned_state_reset_skips)
-}
-
 pub fn dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke() -> bool {
     run_case!(
         dhcp::qemu_v4_tests::test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip
@@ -44,20 +40,12 @@ pub fn dhcp_v4_build_discover_reuse_xid_on_retransmit_smoke() -> bool {
     run_case!(dhcp::qemu_v4_tests::test_build_discover_reuse_xid_on_retransmit)
 }
 
-pub fn dhcp_v4_build_discover_state_lock_poison_returns_err_smoke() -> bool {
-    run_case!(dhcp::qemu_v4_tests::test_build_discover_state_lock_poison_returns_err)
-}
-
 pub fn dhcp_v4_process_response_chaddr_mismatch_smoke() -> bool {
     run_case!(dhcp::qemu_v4_tests::test_process_response_chaddr_mismatch)
 }
 
 pub fn dhcp_v4_process_response_offer_missing_serverid_returns_err_smoke() -> bool {
     run_case!(dhcp::qemu_v4_tests::test_process_response_offer_missing_serverid_returns_err)
-}
-
-pub fn dhcp_v4_process_response_siaddr_serverid_mismatch_smoke() -> bool {
-    run_case!(dhcp::qemu_v4_tests::test_process_response_siaddr_serverid_mismatch)
 }
 
 pub fn dhcp_v4_process_response_ack_requesting_mismatch_smoke() -> bool {

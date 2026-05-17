@@ -453,7 +453,7 @@ fn verify_digest_info(
     digest: &[u8],
     t_len: usize,
 ) -> Result<(), RsaError> {
-    if t_data.len() != t_len || &t_data[..prefix.len()] != prefix {
+    if t_data.len() != t_len || !bytes_eq(&t_data[..prefix.len()], prefix) {
         return Err(RsaError::DigestInfoMismatch);
     }
     let extracted = &t_data[prefix.len()..];
@@ -469,6 +469,18 @@ fn verify_digest_info(
     } else {
         Ok(())
     }
+}
+
+fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |=
+            unsafe { core::ptr::read_volatile(&a[i]) } ^ unsafe { core::ptr::read_volatile(&b[i]) };
+    }
+    (unsafe { core::ptr::read_volatile(&diff) }) == 0
 }
 
 pub fn rsa_pkcs1_verify(

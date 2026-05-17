@@ -36,10 +36,18 @@ pub mod p256 {
     /// P-256素数体の元（リトルエンディアン4×u64リム表現）
     ///
     /// p = FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug)]
     pub struct P256FieldElement {
         pub limbs: [u64; 4],
     }
+
+    impl PartialEq for P256FieldElement {
+        fn eq(&self, other: &Self) -> bool {
+            self.equals(other)
+        }
+    }
+
+    impl Eq for P256FieldElement {}
 
     // p = FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
     const P: [u64; 4] = [
@@ -106,6 +114,21 @@ pub mod p256 {
         /// ゼロ判定
         pub fn is_zero(&self) -> bool {
             self.is_zero_ct() != 0
+        }
+
+        /// 等価判定
+        pub fn equals(&self, other: &Self) -> bool {
+            self.equals_ct(other) != 0
+        }
+
+        /// 等価判定 (Constant-time version)
+        /// 等しければ1、異なれば0を返す。
+        pub fn equals_ct(&self, other: &Self) -> u8 {
+            let diff = (self.limbs[0] ^ other.limbs[0])
+                | (self.limbs[1] ^ other.limbs[1])
+                | (self.limbs[2] ^ other.limbs[2])
+                | (self.limbs[3] ^ other.limbs[3]);
+            (((diff | 0u64.wrapping_sub(diff)) >> 63) ^ 1) as u8
         }
 
         /// ゼロ判定 (Constant-time version)
@@ -200,7 +223,7 @@ pub mod p256 {
             }
 
             // NIST P-256高速リダクション (FIPS 186-4 D.2.3)
-            nist_p256_reduce(&product)
+            reduce_mod_p256(&product)
         }
 
         /// フィールド二乗 (mod p)
@@ -302,143 +325,30 @@ pub mod p256 {
         }
     }
 
-    /// i64アキュムレータから4個のu64リムへ変換（キャリー伝搬付き）
-    fn carry_propagate_to_limbs(acc: &mut [i64; 8]) -> (P256FieldElement, i64) {
-        let mut carry: i64 = 0;
-        let mut words = [0u32; 8];
-        for i in 0..8 {
-            acc[i] += carry;
-            // 右シフトは算術シフトであることを期待 (i64)
-            carry = acc[i] >> 32;
-            words[i] = (acc[i] & 0xFFFFFFFF) as u32;
-        }
-
-        let mut limbs = [0u64; 4];
-        for i in 0..4 {
-            limbs[i] = (words[2 * i] as u64) | ((words[2 * i + 1] as u64) << 32);
-        }
-
-        (P256FieldElement { limbs }, carry)
-    }
-
-    /// キャリーと最終正規化を適用して result mod p を返す (Constant-time version)
-    fn normalize_mod_p(result: P256FieldElement, carry: i64) -> P256FieldElement {
-        let p_fe = P256FieldElement { limbs: P };
-        let mut val = result;
-
-        // NISTリダクションの結果は -4p < res < 6p の範囲に収まる。
-        // キャリー (2^256の倍数) を定数時間で処理する。
-
-        // 1. carry * 2^256 を加算/減算するのと同等の処理
-        // 実際には carry は limbs の外側にあるため、
-        // val = val - carry * p (mod p) を計算すればよい (carry * 2^256 = carry * p mod p)
-        // ただし p は 2^256 に近いため、単純に carry の回数だけ p を足し引きする。
-
-        // 正のキャリーを処理 (最大6回)
-        for i in 1..=6 {
-            let subbed = val.sub(&p_fe);
-            let condition = (carry >= i as i64) as u8;
-            val = P256FieldElement::ct_select(&val, &subbed, condition);
-        }
-
-        // 負のキャリーを処理 (最大4回)
-        for i in 1..=4 {
-            let added = val.add(&p_fe);
-            let condition = (carry <= -(i as i64)) as u8;
-            val = P256FieldElement::ct_select(&val, &added, condition);
-        }
-
-        val
-    }
-
-    /// NIST P-256高速リダクション (FIPS 186-4 Section D.2.3)
+    /// BigUintベースのP-256剰余リダクション。
     ///
-    /// 512ビット積を16個のu32ワードに分解し、NISTの公式に従って
-    /// s1 + 2*s2 + 2*s3 + s4 + s5 - s6 - s7 - s8 - s9 (mod p) を計算する。
-    fn nist_p256_reduce(product: &[u64; 8]) -> P256FieldElement {
-        // 512ビット積を16個のu32ワード（リトルエンディアン）に分解
-        let mut c = [0u32; 16];
+    /// P-256の高速リダクションは正しさの中核なので、壊れた特殊化を残さず
+    /// 汎用多倍長整数で積を素数体へ戻す。
+    fn reduce_mod_p256(product: &[u64; 8]) -> P256FieldElement {
+        let mut be_bytes = [0u8; 64];
         for i in 0..8 {
-            c[2 * i] = product[i] as u32;
-            c[2 * i + 1] = (product[i] >> 32) as u32;
+            let bytes = product[7 - i].to_be_bytes();
+            be_bytes[i * 8..(i + 1) * 8].copy_from_slice(&bytes);
         }
+        let prod_big = crate::net::security::rsa::BigUint::from_be_bytes(&be_bytes);
 
-        // i64アキュムレータで各位置を計算
-        // 結果は8個のu32ワード（256ビット）
-        let mut acc = [0i64; 8];
+        let p_fe = P256FieldElement::from_limbs(P);
+        let p_bytes = p_fe.to_be_bytes();
+        let p_big = crate::net::security::rsa::BigUint::from_be_bytes(&p_bytes);
 
-        // s1 = [c0, c1, c2, c3, c4, c5, c6, c7]
-        for i in 0..8 {
-            acc[i] += c[i] as i64;
+        let result = prod_big.rem(&p_big);
+        let mut result_bytes = [0u8; 32];
+        result.write_be_bytes_padded(&mut result_bytes);
+
+        match P256FieldElement::from_be_bytes(&result_bytes) {
+            Some(value) => value,
+            None => unreachable!("P-256 modular reduction produced an out-of-field value"),
         }
-
-        // s2 = [0, 0, 0, c11, c12, c13, c14, c15] (加算2回)
-        acc[3] += 2 * (c[11] as i64);
-        acc[4] += 2 * (c[12] as i64);
-        acc[5] += 2 * (c[13] as i64);
-        acc[6] += 2 * (c[14] as i64);
-        acc[7] += 2 * (c[15] as i64);
-
-        // s3 = [0, 0, 0, c12, c13, c14, c15, 0] (加算2回)
-        acc[3] += 2 * (c[12] as i64);
-        acc[4] += 2 * (c[13] as i64);
-        acc[5] += 2 * (c[14] as i64);
-        acc[6] += 2 * (c[15] as i64);
-
-        // s4 = [c8, c9, c10, 0, 0, 0, c14, c15]
-        acc[0] += c[8] as i64;
-        acc[1] += c[9] as i64;
-        acc[2] += c[10] as i64;
-        acc[6] += c[14] as i64;
-        acc[7] += c[15] as i64;
-
-        // s5 = [c9, c10, c11, c13, c14, c15, c13, c8]
-        acc[0] += c[9] as i64;
-        acc[1] += c[10] as i64;
-        acc[2] += c[11] as i64;
-        acc[3] += c[13] as i64;
-        acc[4] += c[14] as i64;
-        acc[5] += c[15] as i64;
-        acc[6] += c[13] as i64;
-        acc[7] += c[8] as i64;
-
-        // s6 = [c11, c12, c13, 0, 0, 0, c8, c10] (減算)
-        acc[0] -= c[11] as i64;
-        acc[1] -= c[12] as i64;
-        acc[2] -= c[13] as i64;
-        acc[6] -= c[8] as i64;
-        acc[7] -= c[10] as i64;
-
-        // s7 = [c12, c13, c14, c15, 0, 0, c9, c11] (減算)
-        acc[0] -= c[12] as i64;
-        acc[1] -= c[13] as i64;
-        acc[2] -= c[14] as i64;
-        acc[3] -= c[15] as i64;
-        acc[6] -= c[9] as i64;
-        acc[7] -= c[11] as i64;
-
-        // s8 = [c13, c14, c15, c8, c9, c10, 0, c12] (減算)
-        acc[0] -= c[13] as i64;
-        acc[1] -= c[14] as i64;
-        acc[2] -= c[15] as i64;
-        acc[3] -= c[8] as i64;
-        acc[4] -= c[9] as i64;
-        acc[5] -= c[10] as i64;
-        acc[7] -= c[12] as i64;
-
-        // s9 = [c14, c15, 0, c9, c10, c11, 0, c13] (減算)
-        acc[0] -= c[14] as i64;
-        acc[1] -= c[15] as i64;
-        acc[3] -= c[9] as i64;
-        acc[4] -= c[10] as i64;
-        acc[5] -= c[11] as i64;
-        acc[7] -= c[13] as i64;
-
-        // キャリー伝播と4個のu64リムへ変換
-        let (result, carry) = carry_propagate_to_limbs(&mut acc);
-
-        // 残りのキャリーとpによる正規化
-        normalize_mod_p(result, carry)
     }
 
     // ========================================================================
@@ -496,6 +406,9 @@ pub mod p256 {
         pub fn to_affine(&self) -> Option<(P256FieldElement, P256FieldElement)> {
             if self.is_identity() {
                 return None;
+            }
+            if self.z.equals(&P256FieldElement::ONE) {
+                return Some((self.x, self.y));
             }
 
             let z_inv = self.z.inv();
@@ -665,7 +578,7 @@ pub mod p256 {
             let ax = a.mul(&x);
             let rhs = x3.add(&ax).add(&b);
 
-            y2 == rhs
+            y2.equals(&rhs)
         }
     }
 

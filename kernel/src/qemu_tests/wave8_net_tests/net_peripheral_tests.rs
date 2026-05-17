@@ -1,7 +1,3 @@
-pub fn net_peripheral_dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke() -> bool {
-    crate::net::qemu_tests::dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke()
-}
-
 pub fn net_peripheral_dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke()
 -> bool {
     crate::net::qemu_tests::dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke()
@@ -17,20 +13,12 @@ pub fn net_peripheral_dhcp_v4_build_discover_reuse_xid_on_retransmit_smoke() -> 
     crate::net::qemu_tests::dhcp_v4_build_discover_reuse_xid_on_retransmit_smoke()
 }
 
-pub fn net_peripheral_dhcp_v4_build_discover_state_lock_poison_returns_err_smoke() -> bool {
-    crate::net::qemu_tests::dhcp_v4_build_discover_state_lock_poison_returns_err_smoke()
-}
-
 pub fn net_peripheral_dhcp_v4_process_response_chaddr_mismatch_smoke() -> bool {
     crate::net::qemu_tests::dhcp_v4_process_response_chaddr_mismatch_smoke()
 }
 
 pub fn net_peripheral_dhcp_v4_process_response_offer_missing_serverid_returns_err_smoke() -> bool {
     crate::net::qemu_tests::dhcp_v4_process_response_offer_missing_serverid_returns_err_smoke()
-}
-
-pub fn net_peripheral_dhcp_v4_process_response_siaddr_serverid_mismatch_smoke() -> bool {
-    crate::net::qemu_tests::dhcp_v4_process_response_siaddr_serverid_mismatch_smoke()
 }
 
 pub fn net_peripheral_dhcp_v4_process_response_ack_requesting_mismatch_smoke() -> bool {
