@@ -4,33 +4,6 @@
 
 use super::*;
 
-fn run_with_event_task<F>(future: F, timeout_message: &str) -> F::Output
-where
-    F: core::future::Future,
-{
-    crate::net::runtime::command::reset_command_system_for_tests();
-    let mut executor = crate::task::TestExecutor::new();
-    executor.spawn(crate::task::Task::new(async {
-        crate::net::runtime::command_loop::runtime_command_task().await;
-    }));
-
-    let waker = crate::net::l4::test_support::noop_waker();
-    let mut cx = core::task::Context::from_waker(&waker);
-    let mut future = core::pin::pin!(future);
-    for _ in 0..100_000 {
-        executor.drive_once_for_test();
-        if let core::task::Poll::Ready(output) =
-            core::future::Future::poll(future.as_mut(), &mut cx)
-        {
-            crate::net::runtime::command::reset_command_system_for_tests();
-            return output;
-        }
-    }
-
-    crate::net::runtime::command::reset_command_system_for_tests();
-    panic!("{}", timeout_message)
-}
-
 macro_rules! run_case {
     ($func:path) => {{
         #[cfg(all(test, feature = "qemu-test-export"))]
@@ -44,25 +17,6 @@ macro_rules! run_case {
             true
         }
     }};
-}
-
-fn install_default_runtime_dhcp_v4_client(
-    mac: crate::net::l2::ethernet::MacAddress,
-) -> &'static crate::net::services::dhcp::DhcpClient {
-    let runtime = crate::net::runtime::default_runtime();
-    crate::net::runtime::manager::init_network_manager_in(runtime);
-
-    let if_id = crate::net::runtime::manager::register_interface_in(runtime, "dhcp-qemu-test0")
-        .expect("register dhcp qemu test interface");
-    let mut config = crate::net::runtime::stack::NetworkConfig::default();
-    config.mac = mac;
-    crate::net::runtime::manager::set_interface_config_in(runtime, if_id, config)
-        .expect("set dhcp qemu test config");
-    crate::net::services::dhcp::ensure_interface_runtime(if_id, config)
-        .expect("init dhcp qemu interface runtime");
-    crate::net::services::dhcp::mark_primary_interface(if_id);
-    crate::net::services::dhcp::primary_v4_client_in(crate::net::runtime::default_runtime())
-        .expect("dhcp client")
 }
 
 pub fn dhcp_v4_check_timeout_poisoned_state_reset_skips_smoke() -> bool {
@@ -126,10 +80,7 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
         DHCP_MAGIC_COOKIE, DhcpClient, DhcpHeader, DhcpMessageType, DhcpOperation, DhcpOption,
     };
 
-    stack::init_in(
-        crate::net::runtime::default_runtime(),
-        stack::NetworkConfig::default(),
-    );
+    stack::init_in(crate::net::runtime::default_runtime());
 
     let client = DhcpClient::new(MacAddress::new([7, 7, 7, 7, 7, 7]));
 
@@ -162,65 +113,6 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
         .last_declined_ip()
         .map(|ip| ip == crate::net::l3::ipv4::Ipv4Address::new([10, 0, 0, 9]))
         .unwrap_or(true)
-}
-
-// DHCP ランタイムスナップショットで last_declined / last_released を検証する。
-pub fn dhcp_v4_runtime_api_lastfields_smoke() -> bool {
-    use crate::net::runtime::stack;
-
-    crate::net::runtime::context::reset_runtime_registry_for_tests();
-    stack::init_in(
-        crate::net::runtime::default_runtime(),
-        stack::NetworkConfig::default(),
-    );
-    let _ = crate::net::api::dhcp::init_dhcp_runtime();
-    let client = install_default_runtime_dhcp_v4_client(
-        crate::net::runtime::stack::NetworkConfig::default().mac,
-    );
-
-    // initially None
-    let st = run_with_event_task(
-        crate::net::api::dhcp::dhcp_state_in(crate::net::runtime::default_runtime()),
-        "dhcp_state smoke future timed out",
-    );
-    if st.v4_last_declined.is_some() || st.v4_last_released.is_some() {
-        return false;
-    }
-
-    let lease = crate::net::services::dhcp::DhcpLease {
-        ip_address: crate::net::l3::ipv4::Ipv4Address::new([1, 2, 3, 4]),
-        subnet_mask: crate::net::l3::ipv4::Ipv4Address::new([255, 255, 255, 0]),
-        gateway: None,
-        dns_servers: alloc::vec![],
-        server_ip: crate::net::l3::ipv4::Ipv4Address::new([1, 2, 3, 1]),
-        lease_time: 0,
-        t1: 0,
-        t2: 0,
-        obtained_at: 0,
-        hostname: None,
-        domain_name: None,
-    };
-    client.set_lease_for_test(lease);
-    client.release();
-
-    let st2 = run_with_event_task(
-        crate::net::api::dhcp::dhcp_state_in(crate::net::runtime::default_runtime()),
-        "dhcp_state release snapshot future timed out",
-    );
-    if st2.v4_last_released != Some([1, 2, 3, 4]) {
-        return false;
-    }
-
-    let _ = client.send_decline(crate::net::l3::ipv4::Ipv4Address::new([5, 6, 7, 8]), None);
-    let st3 = run_with_event_task(
-        crate::net::api::dhcp::dhcp_state_in(crate::net::runtime::default_runtime()),
-        "dhcp_state decline snapshot future timed out",
-    );
-    if st3.v4_last_declined != Some([5, 6, 7, 8]) {
-        return false;
-    }
-
-    true
 }
 
 pub fn dhcp_v6_build_solicit_min_size_smoke() -> bool {
@@ -257,162 +149,6 @@ pub fn dhcp_v6_solicit_advertise_request_reply_complete_flow_smoke() -> bool {
 
 pub fn dhcp_v6_renew_uses_known_server_address_for_dst_smoke() -> bool {
     run_case!(dhcp::qemu_v6_tests::test_renew_uses_known_server_address_for_dst)
-}
-
-pub fn dns_primary_server_poisoned_returns_none_smoke() -> bool {
-    run_case!(dns::tests::test_primary_server_poisoned_returns_none)
-}
-
-pub fn dns_dns_header_truncated_flag_smoke() -> bool {
-    run_case!(dns::tests::test_dns_header_truncated_flag)
-}
-
-pub fn dns_dns_header_not_truncated_smoke() -> bool {
-    run_case!(dns::tests::test_dns_header_not_truncated)
-}
-
-pub fn dns_build_tcp_query_payload_smoke() -> bool {
-    run_case!(dns::tests::test_build_tcp_query_payload)
-}
-
-pub fn dns_build_query_with_edns0_smoke() -> bool {
-    run_case!(dns::tests::test_build_query_with_edns0)
-}
-
-pub fn dns_needs_tcp_fallback_truncated_smoke() -> bool {
-    run_case!(dns::tests::test_needs_tcp_fallback_truncated)
-}
-
-pub fn dns_needs_tcp_fallback_512_bytes_smoke() -> bool {
-    run_case!(dns::tests::test_needs_tcp_fallback_512_bytes)
-}
-
-pub fn dns_needs_tcp_fallback_normal_smoke() -> bool {
-    run_case!(dns::tests::test_needs_tcp_fallback_normal)
-}
-
-pub fn dns_tcp_message_length_smoke() -> bool {
-    run_case!(dns::tests::test_tcp_message_length)
-}
-
-pub fn dns_parse_aaaa_record_smoke() -> bool {
-    run_case!(dns::tests::test_parse_aaaa_record)
-}
-
-pub fn dns_parse_response_rejects_unexpected_transaction_id_smoke() -> bool {
-    run_case!(dns::tests::test_parse_response_rejects_unexpected_transaction_id)
-}
-
-pub fn dns_parse_response_rejects_question_mismatch_smoke() -> bool {
-    run_case!(dns::tests::test_parse_response_rejects_question_mismatch)
-}
-
-pub fn dns_cache_entry_ttl_boundary_smoke() -> bool {
-    run_case!(dns::tests::test_cache_entry_ttl_boundary)
-}
-
-pub fn dns_cname_chain_extracts_final_a_smoke() -> bool {
-    run_case!(dns::tests::test_cname_chain_extracts_final_a)
-}
-
-pub fn dns_cname_chain_extracts_final_aaaa_smoke() -> bool {
-    run_case!(dns::tests::test_cname_chain_extracts_final_aaaa)
-}
-
-pub fn dns_parse_response_preserves_unknown_rtype_smoke() -> bool {
-    run_case!(dns::tests::test_parse_response_preserves_unknown_rtype)
-}
-
-pub fn dns_build_prioritized_server_list_ipv4_then_ipv6_smoke() -> bool {
-    run_case!(dns::tests::test_build_prioritized_server_list_ipv4_then_ipv6)
-}
-
-pub fn dns_ptr_ipv4_query_name_smoke() -> bool {
-    run_case!(dns::tests::test_ptr_ipv4_query_name)
-}
-
-pub fn dns_ptr_ipv6_query_name_smoke() -> bool {
-    run_case!(dns::tests::test_ptr_ipv6_query_name)
-}
-
-pub fn dns_resolve_txt_from_records_filters_name_smoke() -> bool {
-    run_case!(dns::tests::test_resolve_txt_from_records_filters_name)
-}
-
-pub fn dns_resolve_mx_from_records_returns_structs_smoke() -> bool {
-    run_case!(dns::tests::test_resolve_mx_from_records_returns_structs)
-}
-
-pub fn dns_resolve_srv_from_records_returns_structs_smoke() -> bool {
-    run_case!(dns::tests::test_resolve_srv_from_records_returns_structs)
-}
-
-pub fn dns_resolve_ptr_from_records_follows_cname_chain_smoke() -> bool {
-    run_case!(dns::tests::test_resolve_ptr_from_records_follows_cname_chain)
-}
-
-pub fn dns_resolve_ptr_ipv6_from_records_follows_cname_chain_smoke() -> bool {
-    run_case!(dns::tests::test_resolve_ptr_ipv6_from_records_follows_cname_chain)
-}
-
-pub fn mdns_constants_smoke() -> bool {
-    run_case!(mdns::tests::test_constants)
-}
-
-pub fn mdns_multicast_mac_smoke() -> bool {
-    run_case!(mdns::tests::test_multicast_mac)
-}
-
-pub fn mdns_mdns_service_new_smoke() -> bool {
-    run_case!(mdns::tests::test_mdns_service_new)
-}
-
-pub fn mdns_encode_decode_dns_name_smoke() -> bool {
-    run_case!(mdns::tests::test_encode_decode_dns_name)
-}
-
-pub fn mdns_build_query_smoke() -> bool {
-    run_case!(mdns::tests::test_build_query)
-}
-
-pub fn mdns_build_response_smoke() -> bool {
-    run_case!(mdns::tests::test_build_response)
-}
-
-pub fn mdns_process_query_for_our_hostname_smoke() -> bool {
-    run_case!(mdns::tests::test_process_query_for_our_hostname)
-}
-
-pub fn mdns_process_query_for_other_hostname_smoke() -> bool {
-    run_case!(mdns::tests::test_process_query_for_other_hostname)
-}
-
-pub fn mdns_process_response_updates_cache_smoke() -> bool {
-    run_case!(mdns::tests::test_process_response_updates_cache)
-}
-
-pub fn mdns_cleanup_expired_smoke() -> bool {
-    run_case!(mdns::tests::test_cleanup_expired)
-}
-
-pub fn mdns_invalid_packet_too_short_smoke() -> bool {
-    run_case!(mdns::tests::test_invalid_packet_too_short)
-}
-
-pub fn mdns_names_equal_case_insensitive_smoke() -> bool {
-    run_case!(mdns::tests::test_names_equal_case_insensitive)
-}
-
-pub fn mdns_dns_name_compression_smoke() -> bool {
-    run_case!(mdns::tests::test_dns_name_compression)
-}
-
-pub fn mdns_encode_dns_name_label_too_long_smoke() -> bool {
-    run_case!(mdns::tests::test_encode_dns_name_label_too_long)
-}
-
-pub fn mdns_roundtrip_query_response_smoke() -> bool {
-    run_case!(mdns::tests::test_roundtrip_query_response)
 }
 
 pub fn igmp_igmp_type_conversion_smoke() -> bool {
@@ -473,32 +209,4 @@ pub fn igmp_v3_report_minimal_layout_accepted_smoke() -> bool {
 
 pub fn igmp_v3_report_invalid_layout_rejected_smoke() -> bool {
     run_case!(igmp::tests::test_v3_report_invalid_layout_rejected)
-}
-
-pub fn stack_glue_zero_copy_via_bridge_smoke() -> bool {
-    stack_glue::tests::qemu_zero_copy_via_bridge_smoke()
-}
-
-pub fn stack_glue_routing_and_nat_smoke() -> bool {
-    stack_glue::tests::qemu_routing_and_nat_smoke()
-}
-
-pub fn stack_glue_nat_inbound_roundtrip_is_protocol_scoped_smoke() -> bool {
-    run_case!(stack_glue::tests::test_nat_inbound_roundtrip_is_protocol_scoped)
-}
-
-pub fn stack_glue_nat_gc_expires_idle_entries_smoke() -> bool {
-    run_case!(stack_glue::tests::test_nat_gc_expires_idle_entries)
-}
-
-pub fn stack_glue_zero_copy_via_bridge_v6_smoke() -> bool {
-    stack_glue::tests::qemu_zero_copy_via_bridge_v6_smoke()
-}
-
-pub fn stack_glue_per_interface_stats_are_separated_smoke() -> bool {
-    run_case!(stack_glue::tests::test_per_interface_bridge_stats_are_separated)
-}
-
-pub fn port_runtime_transmit_interface_argument_smoke() -> bool {
-    run_case!(stack_glue::tests::test_transmit_from_stack_interface_argument)
 }

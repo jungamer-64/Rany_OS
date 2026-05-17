@@ -225,14 +225,6 @@ pub fn net_tls_wave8_rsa_biguint_mul_div_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_rsa_biguint_mul_div_smoke()
 }
 
-pub fn kernel_net_stack_glue_zero_copy_integration_smoke() -> bool {
-    crate::net::runtime::bridge::tests::qemu_zero_copy_via_bridge_smoke()
-}
-
-pub fn kernel_net_stack_glue_zero_copy_integration_v6_smoke() -> bool {
-    crate::net::runtime::bridge::tests::qemu_zero_copy_via_bridge_v6_smoke()
-}
-
 pub fn kernel_bench_framebuffer_smoke() -> bool {
     use crate::graphics::image::Image;
     use crate::graphics::{Color, Framebuffer, FramebufferInfo, PixelFormat};

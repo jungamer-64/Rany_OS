@@ -3,6 +3,8 @@
 // ============================================================================
 
 use super::*;
+#[cfg(feature = "qemu-test-export")]
+use alloc::vec;
 
 pub fn rsa_pss_verify(
     key: &RsaPublicKey,

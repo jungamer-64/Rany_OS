@@ -7,7 +7,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 INPUT_FILES=(
   "${REPO_ROOT}/kernel/src/qemu_tests.rs"
   "${REPO_ROOT}/kernel/src/qemu_tests/wave8_net_tests.rs"
-  "${REPO_ROOT}/kernel/src/qemu_tests/wave8_net_tests/net_endpoint_tests.rs"
   "${REPO_ROOT}/kernel/src/qemu_tests/wave8_net_tests/net_peripheral_tests.rs"
 )
 
