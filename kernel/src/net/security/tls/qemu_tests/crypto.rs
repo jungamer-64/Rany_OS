@@ -2,20 +2,105 @@
 // kernel/src/net/security/tls/qemu_tests/crypto.rs - セキュリティ / TLS / QEMUテスト / 暗号
 // ============================================================================
 
-use super::super::crypto::aes_core::{aes_ctr_into, aes_key_expansion, gf_mul};
-use super::super::crypto::aes_gcm::{AesGcmKey, gf128_mul};
+use super::super::crypto::aes_core::{
+    aes_ctr_with_schedule_in_place, aes_expand_key_schedule, aes_key_expansion, gf_mul,
+};
+use super::super::crypto::aes_gcm::{gf128_mul, AesGcmKey};
 use super::super::crypto::chacha20::{
     chacha20_block, chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
     chacha20_xor_in_place, poly1305_mac,
 };
 use super::super::crypto::hkdf::{hkdf_expand as hkdf_expand_into, hkdf_extract};
 use super::super::crypto::{
-    generate_random, hkdf_expand_label as hkdf_expand_label_into, hmac_sha256, hmac_sha384,
+    aes_gcm_decrypt_into, aes_gcm_encrypt_into, generate_random,
+    hkdf_expand_label as hkdf_expand_label_into, hmac_sha256, hmac_sha384,
     qemu_test_clear_random_override, qemu_test_set_random_override_seed, tls13_derive_secret,
     tls13_derive_traffic_keys as tls13_derive_traffic_keys_into, tls13_early_secret,
     tls13_finished_key, tls13_handshake_secret, tls13_master_secret, tls13_verify_data,
 };
-use alloc::{vec, vec::Vec};
+fn hkdf_expand(prk: &[u8; 32], info: &[u8], output: &mut [u8]) -> bool {
+    hkdf_expand_into(prk, info, output);
+    true
+}
+
+fn hkdf_expand_label(secret: &[u8; 32], label: &[u8], context: &[u8], output: &mut [u8]) -> bool {
+    hkdf_expand_label_into(secret, label, context, output);
+    true
+}
+
+fn tls13_derive_traffic_keys(secret: &[u8; 32], key: &mut [u8], iv: &mut [u8; 12]) -> bool {
+    tls13_derive_traffic_keys_into(secret, key, iv);
+    true
+}
+
+fn chacha20_encrypt_in_place(key: &[u8; 32], nonce: &[u8; 12], counter: u32, data: &mut [u8]) {
+    chacha20_xor_in_place(key, nonce, counter, data);
+}
+
+fn chacha20_poly1305_encrypt(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    plaintext: &[u8],
+    ciphertext: &mut [u8],
+    tag: &mut [u8; 16],
+) -> bool {
+    if ciphertext.len() != plaintext.len() {
+        return false;
+    }
+    ciphertext.copy_from_slice(plaintext);
+    chacha20_poly1305_encrypt_in_place(key, nonce, aad, ciphertext, tag);
+    true
+}
+
+fn chacha20_poly1305_decrypt(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    ciphertext: &[u8],
+    tag: &[u8; 16],
+    plaintext: &mut [u8],
+) -> bool {
+    if plaintext.len() != ciphertext.len() {
+        return false;
+    }
+    plaintext.copy_from_slice(ciphertext);
+    chacha20_poly1305_decrypt_in_place(key, nonce, aad, plaintext, tag).is_ok()
+}
+
+fn aes_gcm_encrypt(
+    key: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+    plaintext: &[u8],
+    ciphertext: &mut [u8],
+    tag: &mut [u8; 16],
+) -> bool {
+    aes_gcm_encrypt_into(key, nonce, aad, plaintext, ciphertext, tag).is_ok()
+}
+
+fn aes_gcm_decrypt(
+    key: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+    ciphertext: &[u8],
+    tag: &[u8; 16],
+    plaintext: &mut [u8],
+) -> bool {
+    aes_gcm_decrypt_into(key, nonce, aad, ciphertext, plaintext, tag).is_ok()
+}
+
+fn aes_ctr(key: &[u8], nonce: &[u8], data: &[u8], output: &mut [u8]) -> bool {
+    if output.len() != data.len() {
+        return false;
+    }
+    let Some(schedule) = aes_expand_key_schedule(key) else {
+        return false;
+    };
+    output.copy_from_slice(data);
+    aes_ctr_with_schedule_in_place(&schedule, nonce, 1, output);
+    true
+}
 
 pub fn wave8_tls_hmac_sha256_rfc4231_case1_smoke() -> bool {
     let key = [0x0bu8; 20];
@@ -75,7 +160,8 @@ pub fn wave8_tls_hkdf_rfc5869_case1_expand_smoke() -> bool {
         0x2a, 0x2d, 0x2d, 0x0a, 0x90, 0xcf, 0x1a, 0x5a, 0x4c, 0x5d, 0xb0, 0x2d, 0x56, 0xec, 0xc4,
         0xc5, 0xbf, 0x34, 0x00, 0x72, 0x08, 0xd5, 0xb8, 0x87, 0x18, 0x58, 0x65,
     ];
-    hkdf_expand(&prk, &info, 42).as_slice() == &expected_okm
+    let mut okm = [0u8; 42];
+    hkdf_expand(&prk, &info, &mut okm) && okm == expected_okm
 }
 
 pub fn wave8_tls_chacha20_rfc8439_block_smoke() -> bool {
@@ -121,8 +207,10 @@ pub fn wave8_tls_chacha20_rfc8439_encrypt_smoke() -> bool {
         0x0b, 0x8e, 0xed, 0xf2, 0x78, 0x5e, 0x42, 0x87, 0x4d,
     ];
 
-    let ciphertext = chacha20_encrypt(&key, &nonce, 1, plaintext);
-    let decrypted = chacha20_encrypt(&key, &nonce, 1, &ciphertext);
+    let mut ciphertext = *plaintext;
+    chacha20_encrypt_in_place(&key, &nonce, 1, &mut ciphertext);
+    let mut decrypted = ciphertext;
+    chacha20_encrypt_in_place(&key, &nonce, 1, &mut decrypted);
     ciphertext.as_slice() == expected_ciphertext.as_slice() && decrypted.as_slice() == plaintext
 }
 
@@ -168,7 +256,11 @@ pub fn wave8_tls_chacha20_poly1305_rfc8439_encrypt_smoke() -> bool {
         0x91,
     ];
 
-    let (ciphertext, tag) = chacha20_poly1305_encrypt(&key, &nonce, &aad, plaintext);
+    let mut ciphertext = [0u8; 114];
+    let mut tag = [0u8; 16];
+    if !chacha20_poly1305_encrypt(&key, &nonce, &aad, plaintext, &mut ciphertext, &mut tag) {
+        return false;
+    }
     ciphertext.as_slice() == expected_ciphertext.as_slice() && tag == expected_tag
 }
 
@@ -200,10 +292,9 @@ pub fn wave8_tls_chacha20_poly1305_rfc8439_decrypt_smoke() -> bool {
     ];
     let expected = b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
 
-    match chacha20_poly1305_decrypt(&key, &nonce, &aad, &ciphertext, &tag) {
-        Some(pt) => pt.as_slice() == expected,
-        None => false,
-    }
+    let mut plaintext = [0u8; 114];
+    chacha20_poly1305_decrypt(&key, &nonce, &aad, &ciphertext, &tag, &mut plaintext)
+        && plaintext.as_slice() == expected
 }
 
 pub fn wave8_tls_aes_gcm_roundtrip_smoke() -> bool {
@@ -217,14 +308,17 @@ pub fn wave8_tls_aes_gcm_roundtrip_smoke() -> bool {
     let aad = b"additional authenticated data";
     let plaintext = b"Hello, AES-GCM encryption!";
 
-    let (ciphertext, tag) = aes_gcm_encrypt(&key, &nonce, aad, plaintext);
+    let mut ciphertext = [0u8; 26];
+    let mut tag = [0u8; 16];
+    if !aes_gcm_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
+        return false;
+    }
     if ciphertext.as_slice() == plaintext || ciphertext.len() != plaintext.len() {
         return false;
     }
-    match aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag) {
-        Some(pt) => pt.as_slice() == plaintext,
-        None => false,
-    }
+    let mut decrypted = [0u8; 26];
+    aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
+        && decrypted.as_slice() == plaintext
 }
 
 pub fn wave8_tls_aes_gcm_auth_failure_smoke() -> bool {
@@ -233,9 +327,14 @@ pub fn wave8_tls_aes_gcm_auth_failure_smoke() -> bool {
     let aad = b"test aad";
     let plaintext = b"test data";
 
-    let (ciphertext, mut tag) = aes_gcm_encrypt(&key, &nonce, aad, plaintext);
+    let mut ciphertext = [0u8; 9];
+    let mut tag = [0u8; 16];
+    if !aes_gcm_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
+        return false;
+    }
     tag[0] ^= 0xFF;
-    aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag).is_none()
+    let mut decrypted = [0u8; 9];
+    !aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
 }
 
 pub fn wave8_tls_aes_ctr_roundtrip_smoke() -> bool {
@@ -246,11 +345,17 @@ pub fn wave8_tls_aes_ctr_roundtrip_smoke() -> bool {
     let nonce: [u8; 12] = [0x00; 12];
     let plaintext = b"AES-CTR mode test data that spans multiple blocks!!!!";
 
-    let ciphertext = aes_ctr(&key, &nonce, plaintext);
+    let mut ciphertext = [0u8; 53];
+    if !aes_ctr(&key, &nonce, plaintext, &mut ciphertext) {
+        return false;
+    }
     if ciphertext.as_slice() == plaintext {
         return false;
     }
-    let decrypted = aes_ctr(&key, &nonce, &ciphertext);
+    let mut decrypted = [0u8; 53];
+    if !aes_ctr(&key, &nonce, &ciphertext, &mut decrypted) {
+        return false;
+    }
     decrypted.as_slice() == plaintext
 }
 
@@ -297,13 +402,13 @@ pub fn wave8_tls_tls13_derive_secret_smoke() -> bool {
 
 pub fn wave8_tls_tls13_derive_traffic_keys_smoke() -> bool {
     let secret = [0x42u8; 32];
-    let (key128, iv128) = tls13_derive_traffic_keys(&secret, 16);
-    let (key256, iv256) = tls13_derive_traffic_keys(&secret, 32);
+    let mut key128 = [0u8; 16];
+    let mut iv128 = [0u8; 12];
+    let mut key256 = [0u8; 32];
+    let mut iv256 = [0u8; 12];
 
-    key128.len() == 16
-        && iv128.len() == 12
-        && key256.len() == 32
-        && iv256.len() == 12
+    tls13_derive_traffic_keys(&secret, &mut key128, &mut iv128)
+        && tls13_derive_traffic_keys(&secret, &mut key256, &mut iv256)
         && key128.as_slice() != &key256[..16]
 }
 
@@ -332,8 +437,15 @@ pub fn wave8_tls_tls13_full_key_schedule_smoke() -> bool {
     let c_hs_traffic = tls13_derive_secret(&hs_secret, b"c hs traffic", &transcript_ch_sh);
     let s_hs_traffic = tls13_derive_secret(&hs_secret, b"s hs traffic", &transcript_ch_sh);
 
-    let (c_key, c_iv) = tls13_derive_traffic_keys(&c_hs_traffic, 16);
-    let (s_key, s_iv) = tls13_derive_traffic_keys(&s_hs_traffic, 16);
+    let mut c_key = [0u8; 16];
+    let mut c_iv = [0u8; 12];
+    let mut s_key = [0u8; 16];
+    let mut s_iv = [0u8; 12];
+    if !tls13_derive_traffic_keys(&c_hs_traffic, &mut c_key, &mut c_iv)
+        || !tls13_derive_traffic_keys(&s_hs_traffic, &mut s_key, &mut s_iv)
+    {
+        return false;
+    }
 
     let master = tls13_master_secret(&hs_secret);
 
@@ -350,11 +462,17 @@ pub fn wave8_tls_tls13_full_key_schedule_smoke() -> bool {
 
 pub fn wave8_tls_tls13_hkdf_expand_label_rfc8446_smoke() -> bool {
     let secret = [0x33u8; 32];
-    let result1 = hkdf_expand_label(&secret, b"key", b"", 16);
-    let result2 = hkdf_expand_label(&secret, b"key", b"", 16);
-    let result3 = hkdf_expand_label(&secret, b"key", &[0x42u8; 32], 16);
+    let mut result1 = [0u8; 16];
+    let mut result2 = [0u8; 16];
+    let mut result3 = [0u8; 16];
+    if !hkdf_expand_label(&secret, b"key", b"", &mut result1)
+        || !hkdf_expand_label(&secret, b"key", b"", &mut result2)
+        || !hkdf_expand_label(&secret, b"key", &[0x42u8; 32], &mut result3)
+    {
+        return false;
+    }
 
-    result1 == result2 && result1.len() == 16 && result1 != result3
+    result1 == result2 && result1 != result3
 }
 
 pub fn wave8_tls_tls13_key_schedule_chain_consistency_smoke() -> bool {
@@ -405,7 +523,8 @@ pub fn wave8_tls_hkdf_extract_empty_salt_smoke() -> bool {
 
 pub fn wave8_tls_hkdf_expand_zero_length_smoke() -> bool {
     let prk = [0x42u8; 32];
-    hkdf_expand(&prk, b"test", 0).is_empty()
+    let mut output = [];
+    hkdf_expand(&prk, b"test", &mut output) && output.is_empty()
 }
 
 pub fn wave8_tls_chacha20_poly1305_auth_failure_smoke() -> bool {
@@ -414,10 +533,15 @@ pub fn wave8_tls_chacha20_poly1305_auth_failure_smoke() -> bool {
     let aad = b"additional data";
     let plaintext = b"hello, world!";
 
-    let (ciphertext, mut tag) = chacha20_poly1305_encrypt(&key, &nonce, aad, plaintext);
+    let mut ciphertext = [0u8; 13];
+    let mut tag = [0u8; 16];
+    if !chacha20_poly1305_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
+        return false;
+    }
     tag[0] ^= 0xFF;
 
-    chacha20_poly1305_decrypt(&key, &nonce, aad, &ciphertext, &tag).is_none()
+    let mut decrypted = [0u8; 13];
+    !chacha20_poly1305_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
 }
 
 pub fn wave8_tls_chacha20_poly1305_roundtrip_smoke() -> bool {
@@ -426,15 +550,18 @@ pub fn wave8_tls_chacha20_poly1305_roundtrip_smoke() -> bool {
     let aad = b"test aad";
     let plaintext = b"The quick brown fox jumps over the lazy dog";
 
-    let (ciphertext, tag) = chacha20_poly1305_encrypt(&key, &nonce, aad, plaintext);
+    let mut ciphertext = [0u8; 43];
+    let mut tag = [0u8; 16];
+    if !chacha20_poly1305_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
+        return false;
+    }
     if ciphertext.as_slice() == plaintext {
         return false;
     }
 
-    match chacha20_poly1305_decrypt(&key, &nonce, aad, &ciphertext, &tag) {
-        Some(decrypted) => decrypted.as_slice() == plaintext,
-        None => false,
-    }
+    let mut decrypted = [0u8; 43];
+    chacha20_poly1305_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
+        && decrypted.as_slice() == plaintext
 }
 
 pub fn wave8_tls_chacha20_poly1305_empty_plaintext_smoke() -> bool {
@@ -442,15 +569,14 @@ pub fn wave8_tls_chacha20_poly1305_empty_plaintext_smoke() -> bool {
     let nonce = [0x44u8; 12];
     let aad = b"aad only";
 
-    let (ciphertext, tag) = chacha20_poly1305_encrypt(&key, &nonce, aad, &[]);
-    if !ciphertext.is_empty() {
+    let mut ciphertext = [];
+    let mut tag = [0u8; 16];
+    if !chacha20_poly1305_encrypt(&key, &nonce, aad, &[], &mut ciphertext, &mut tag) {
         return false;
     }
 
-    match chacha20_poly1305_decrypt(&key, &nonce, aad, &[], &tag) {
-        Some(result) => result.is_empty(),
-        None => false,
-    }
+    let mut decrypted = [];
+    chacha20_poly1305_decrypt(&key, &nonce, aad, &[], &tag, &mut decrypted) && decrypted.is_empty()
 }
 
 pub fn wave8_tls_aes_gcm_256_roundtrip_smoke() -> bool {
@@ -465,15 +591,18 @@ pub fn wave8_tls_aes_gcm_256_roundtrip_smoke() -> bool {
     let aad = b"aes-256-gcm aad";
     let plaintext = b"AES-256-GCM test payload";
 
-    let (ciphertext, tag) = aes_gcm_encrypt(&key, &nonce, aad, plaintext);
+    let mut ciphertext = [0u8; 24];
+    let mut tag = [0u8; 16];
+    if !aes_gcm_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
+        return false;
+    }
     if ciphertext.len() != plaintext.len() || ciphertext.as_slice() == plaintext {
         return false;
     }
 
-    match aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag) {
-        Some(decrypted) => decrypted.as_slice() == plaintext,
-        None => false,
-    }
+    let mut decrypted = [0u8; 24];
+    aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
+        && decrypted.as_slice() == plaintext
 }
 
 pub fn wave8_tls_aes_gcm_corrupted_ciphertext_smoke() -> bool {
@@ -482,12 +611,15 @@ pub fn wave8_tls_aes_gcm_corrupted_ciphertext_smoke() -> bool {
     let aad = b"test aad";
     let plaintext = b"test data for corruption";
 
-    let (mut ciphertext, tag) = aes_gcm_encrypt(&key, &nonce, aad, plaintext);
-    if !ciphertext.is_empty() {
-        ciphertext[0] ^= 0xFF;
+    let mut ciphertext = [0u8; 24];
+    let mut tag = [0u8; 16];
+    if !aes_gcm_encrypt(&key, &nonce, aad, plaintext, &mut ciphertext, &mut tag) {
+        return false;
     }
+    ciphertext[0] ^= 0xFF;
 
-    aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag).is_none()
+    let mut decrypted = [0u8; 24];
+    !aes_gcm_decrypt(&key, &nonce, aad, &ciphertext, &tag, &mut decrypted)
 }
 
 pub fn wave8_tls_aes_gcm_empty_plaintext_smoke() -> bool {
@@ -495,15 +627,14 @@ pub fn wave8_tls_aes_gcm_empty_plaintext_smoke() -> bool {
     let nonce = [0x22u8; 12];
     let aad = b"aad only, no payload";
 
-    let (ciphertext, tag) = aes_gcm_encrypt(&key, &nonce, aad, &[]);
-    if !ciphertext.is_empty() {
+    let mut ciphertext = [];
+    let mut tag = [0u8; 16];
+    if !aes_gcm_encrypt(&key, &nonce, aad, &[], &mut ciphertext, &mut tag) {
         return false;
     }
 
-    match aes_gcm_decrypt(&key, &nonce, aad, &[], &tag) {
-        Some(decrypted) => decrypted.is_empty(),
-        None => false,
-    }
+    let mut decrypted = [];
+    aes_gcm_decrypt(&key, &nonce, aad, &[], &tag, &mut decrypted) && decrypted.is_empty()
 }
 
 pub fn wave8_tls_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
@@ -600,15 +731,21 @@ pub fn wave8_tls_aes_key_expansion_smoke() -> bool {
 
 pub fn wave8_tls_hkdf_expand_label_length_smoke() -> bool {
     let secret = [0x42u8; 32];
-    let result = hkdf_expand_label(&secret, b"key", b"", 16);
-    let result32 = hkdf_expand_label(&secret, b"iv", b"", 12);
-    result.len() == 16 && result32.len() == 12
+    let mut key = [0u8; 16];
+    let mut iv = [0u8; 12];
+    hkdf_expand_label(&secret, b"key", b"", &mut key)
+        && hkdf_expand_label(&secret, b"iv", b"", &mut iv)
 }
 
 pub fn wave8_tls_hkdf_expand_label_different_labels_smoke() -> bool {
     let secret = [0x42u8; 32];
-    let result1 = hkdf_expand_label(&secret, b"key", b"", 32);
-    let result2 = hkdf_expand_label(&secret, b"iv", b"", 32);
+    let mut result1 = [0u8; 32];
+    let mut result2 = [0u8; 32];
+    if !hkdf_expand_label(&secret, b"key", b"", &mut result1)
+        || !hkdf_expand_label(&secret, b"iv", b"", &mut result2)
+    {
+        return false;
+    }
     result1 != result2
 }
 

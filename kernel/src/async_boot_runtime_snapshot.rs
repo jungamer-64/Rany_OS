@@ -1,4 +1,7 @@
 #[cfg(any(test, feature = "qemu-test-export"))]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(any(test, feature = "qemu-test-export"))]
 const ASYNC_BOOT_STAGE_COUNT: usize = 6;
 #[cfg(any(test, feature = "qemu-test-export"))]
 const ASYNC_BOOT_CPU_UNSET: usize = usize::MAX;

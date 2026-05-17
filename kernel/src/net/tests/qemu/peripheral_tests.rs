@@ -2,7 +2,14 @@
 // kernel/src/net/tests/qemu/peripheral_tests.rs - Network QEMU peripheral smoke tests
 // ============================================================================
 
-use super::*;
+use crate::net::l3::{igmp, ipv4::Ipv4Address};
+use crate::net::l4::socket::{Socket, SocketFamily, bind_udp_dual_stack_in, find_udp_by_port_in};
+use crate::net::l4::udp::{UdpProcessor, UdpResult};
+use crate::net::payload::alloc_packet_with_headroom;
+use crate::net::runtime::create_runtime;
+use crate::net::services::dhcp;
+use crate::net::types::InterfaceScope;
+use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
 macro_rules! run_case {
     ($func:path) => {{
@@ -209,4 +216,40 @@ pub fn igmp_v3_report_minimal_layout_accepted_smoke() -> bool {
 
 pub fn igmp_v3_report_invalid_layout_rejected_smoke() -> bool {
     run_case!(igmp::tests::test_v3_report_invalid_layout_rejected)
+}
+
+pub fn runtime_two_runtimes_bind_same_udp_port_independently_smoke() -> bool {
+    let Ok(runtime_a) = create_runtime() else {
+        return false;
+    };
+    let Ok(runtime_b) = create_runtime() else {
+        return false;
+    };
+
+    let socket_a = Socket::new_udp_in(runtime_a);
+    let socket_b = Socket::new_udp_in(runtime_b);
+
+    bind_udp_dual_stack_in(runtime_a, 80, InterfaceScope::Any, socket_a.socket_id()).is_ok()
+        && bind_udp_dual_stack_in(runtime_b, 80, InterfaceScope::Any, socket_b.socket_id()).is_ok()
+        && find_udp_by_port_in(runtime_a, SocketFamily::Ipv4, 80, None).is_some()
+        && find_udp_by_port_in(runtime_b, SocketFamily::Ipv4, 80, None).is_some()
+}
+
+pub fn runtime_udp_missing_ingress_interface_is_explicit_smoke() -> bool {
+    let Ok(runtime) = create_runtime() else {
+        return false;
+    };
+    let processor = UdpProcessor::new();
+
+    processor.process_on(runtime, None, &[], Ipv4Address::ANY, Ipv4Address::ANY, 64)
+        == UdpResult::NoIngressInterface
+}
+
+pub fn runtime_large_packet_headroom_preserves_request_smoke() -> bool {
+    let requested_headroom = DEFAULT_PACKET_HEADROOM.saturating_mul(2);
+    let Some(packet) = alloc_packet_with_headroom(128, requested_headroom) else {
+        return false;
+    };
+
+    packet.headroom() >= requested_headroom && packet.len() == 128
 }

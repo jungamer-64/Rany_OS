@@ -1570,7 +1570,7 @@ pub(crate) mod tests {
         let parsed = client.parse_reply(&pkt, 100).unwrap();
         assert!(parsed.is_some());
         let lease = parsed.unwrap();
-        assert_eq!(lease.addr, addr);
+        assert_eq!(lease.lease.addr, addr);
     }
 
     #[cfg_attr(test, test_case)]
@@ -1586,8 +1586,6 @@ pub(crate) mod tests {
             t1: 0,
             t2: 0,
             obtained_at: 100,
-            dns_servers: Vec::new(),
-            domain_search: Vec::new(),
         };
         let mut buf = [0u8; 512];
         let now = 200u64;
@@ -1625,8 +1623,6 @@ pub(crate) mod tests {
             t1: 1,
             t2: 2,
             obtained_at: 0,
-            dns_servers: Vec::new(),
-            domain_search: Vec::new(),
         };
         if let Ok(mut lg) = client.lease.lock() {
             *lg = Some(lease);
@@ -1793,8 +1789,6 @@ pub(crate) mod tests {
             t1: 0,
             t2: 0,
             obtained_at: 0,
-            dns_servers: Vec::new(),
-            domain_search: Vec::new(),
         };
 
         if let Ok(mut lg) = client.lease.lock() {
@@ -1883,8 +1877,6 @@ pub(crate) mod tests {
             t1: 0,
             t2: 0,
             obtained_at: 0,
-            dns_servers: Vec::new(),
-            domain_search: Vec::new(),
         };
         if let Ok(mut lg) = client.lease.lock() {
             *lg = Some(lease);
@@ -1919,8 +1911,6 @@ pub(crate) mod tests {
             t1: 0,
             t2: 0,
             obtained_at: 0,
-            dns_servers: Vec::new(),
-            domain_search: Vec::new(),
         };
         // Set server DUID
         if let Ok(mut g) = client.server_duid.lock() {
@@ -1953,8 +1943,6 @@ pub(crate) mod tests {
             t1: 0,
             t2: 0,
             obtained_at: 0,
-            dns_servers: Vec::new(),
-            domain_search: Vec::new(),
         };
         client.xid.store(0xABCDEF, Ordering::SeqCst);
         let mut buf = [0u8; 512];
@@ -1988,8 +1976,6 @@ pub(crate) mod tests {
             t1: 0,
             t2: 0,
             obtained_at: 0,
-            dns_servers: Vec::new(),
-            domain_search: Vec::new(),
         };
         if let Ok(mut g) = client.server_duid.lock() {
             *g = DhcpV6Client::generated_message_payload(&[0xAA, 0xBB]).ok();
@@ -2012,8 +1998,6 @@ pub(crate) mod tests {
             t1: 0,
             t2: 0,
             obtained_at: 0,
-            dns_servers: Vec::new(),
-            domain_search: Vec::new(),
         };
         if let Ok(mut lg) = client.lease.lock() {
             *lg = Some(lease);
@@ -2090,10 +2074,10 @@ pub(crate) mod tests {
         let parsed = client.parse_reply(&pkt, 500).unwrap();
         assert!(parsed.is_some());
         let lease = parsed.unwrap();
-        assert_eq!(lease.addr, addr);
-        assert_eq!(lease.dns_servers.len(), 2);
-        assert_eq!(lease.dns_servers[0], dns1);
-        assert_eq!(lease.dns_servers[1], dns2);
+        assert_eq!(lease.lease.addr, addr);
+        assert_eq!(lease.applied.dns_servers.len(), 2);
+        assert_eq!(lease.applied.dns_servers[0], dns1);
+        assert_eq!(lease.applied.dns_servers[1], dns2);
     }
 
     #[cfg_attr(test, test_case)]

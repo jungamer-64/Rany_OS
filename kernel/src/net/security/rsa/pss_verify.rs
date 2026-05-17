@@ -3,8 +3,6 @@
 // ============================================================================
 
 use super::*;
-#[cfg(feature = "qemu-test-export")]
-use alloc::vec;
 
 pub fn rsa_pss_verify(
     key: &RsaPublicKey,
@@ -140,6 +138,8 @@ pub(crate) fn read_tsc() -> u64 {
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
     use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     /// 小さな値のモジュラ冪乗テスト: 3^7 mod 11 = 9
     pub fn rsa_modexp_small_smoke() -> bool {

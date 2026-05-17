@@ -7,7 +7,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use exorust_sync::PoisonRwLock;
 use kernel_api::netdev::{
-    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRuntime,
+    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRuntimeHandle,
     NetPortStats, NetTxMeta, TxSubmission,
 };
 
@@ -15,7 +15,7 @@ const VIRTIO_PORT_ID_BASE: u64 = 0x0001_0000;
 
 pub struct VirtioNetRegistryState {
     devices: PoisonRwLock<BTreeMap<u8, Arc<VirtioNetDevice>>>,
-    runtimes: PoisonRwLock<BTreeMap<u8, Arc<dyn NetPortRuntime>>>,
+    runtimes: PoisonRwLock<BTreeMap<u8, NetPortRuntimeHandle>>,
 }
 
 impl VirtioNetRegistryState {
@@ -37,16 +37,16 @@ fn virtio_port_id(index: u8) -> NetPortId {
     NetPortId::new(VIRTIO_PORT_ID_BASE | index as u64)
 }
 
-pub(crate) fn virtio_net_runtime(index: u8) -> Option<Arc<dyn NetPortRuntime>> {
+pub(crate) fn virtio_net_runtime(index: u8) -> Option<NetPortRuntimeHandle> {
     registry_state()
         .runtimes
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&index)
-        .cloned()
+        .copied()
 }
 
-fn install_virtio_net_runtime(index: u8, runtime: Arc<dyn NetPortRuntime>) {
+fn install_virtio_net_runtime(index: u8, runtime: NetPortRuntimeHandle) {
     registry_state()
         .runtimes
         .write()
@@ -147,7 +147,7 @@ impl NetDevicePort for VirtioNetDriverAdapter {
         .unwrap_or_else(|| self.default_info())
     }
 
-    fn start(&self, runtime: Arc<dyn NetPortRuntime>) -> Result<(), &'static str> {
+    fn start(&self, runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
         install_virtio_net_runtime(self.index, runtime);
         Ok(())
     }

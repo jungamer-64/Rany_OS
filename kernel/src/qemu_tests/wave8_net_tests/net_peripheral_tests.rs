@@ -152,3 +152,15 @@ pub fn net_peripheral_igmp_v3_report_minimal_layout_accepted_smoke() -> bool {
 pub fn net_peripheral_igmp_v3_report_invalid_layout_rejected_smoke() -> bool {
     crate::net::qemu_tests::igmp_v3_report_invalid_layout_rejected_smoke()
 }
+
+pub fn net_peripheral_runtime_two_runtimes_bind_same_udp_port_independently_smoke() -> bool {
+    crate::net::qemu_tests::runtime_two_runtimes_bind_same_udp_port_independently_smoke()
+}
+
+pub fn net_peripheral_runtime_udp_missing_ingress_interface_is_explicit_smoke() -> bool {
+    crate::net::qemu_tests::runtime_udp_missing_ingress_interface_is_explicit_smoke()
+}
+
+pub fn net_peripheral_runtime_large_packet_headroom_preserves_request_smoke() -> bool {
+    crate::net::qemu_tests::runtime_large_packet_headroom_preserves_request_smoke()
+}

@@ -1869,13 +1869,10 @@ mod tests {
             ip_address: Ipv4Address::new([10, 0, 0, host]),
             subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
             gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
-            dns_servers: alloc::vec![Ipv4Address::new([1, 1, 1, host])],
             server_ip: Ipv4Address::new([10, 0, 0, 254]),
             lease_time: 3600,
             t1: 1800,
             t2: 3150,
-            hostname: None,
-            domain_name: None,
             obtained_at: 0,
         }
     }

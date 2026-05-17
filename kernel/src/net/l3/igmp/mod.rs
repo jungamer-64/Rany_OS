@@ -355,7 +355,18 @@ pub fn multicast_ip_to_mac(ip: Ipv4Address) -> MacAddress {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) mod tests {
     use super::*;
+    use crate::net::payload::GeneratedPacketWriter;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
     use kernel_api::resource::net::PacketPayload;
+
+    fn test_payload(data: &[u8]) -> PacketPayload {
+        let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
+            .expect("IGMP test payload allocation");
+        writer
+            .write_bytes(data)
+            .expect("IGMP test payload write succeeds");
+        writer.finish().expect("IGMP test payload is exact")
+    }
 
     #[cfg_attr(test, test_case)]
     pub fn test_igmp_type_conversion() {

@@ -1052,11 +1052,14 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
         ),
     }
 
-    let cpu_count = crate::cpu::count() as usize;
-    let _target_cpu = if cpu_count > 2 {
-        cpu_count - 1
-    } else {
-        cpu_count.saturating_sub(1)
+    #[cfg(feature = "qemu-test-export")]
+    let target_cpu = {
+        let cpu_count = crate::cpu::count() as usize;
+        if cpu_count > 2 {
+            cpu_count - 1
+        } else {
+            cpu_count.saturating_sub(1)
+        }
     };
 
     #[cfg(feature = "qemu-test-export")]

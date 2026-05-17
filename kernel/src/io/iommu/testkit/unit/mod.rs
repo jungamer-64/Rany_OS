@@ -26,6 +26,8 @@ use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 use crate::io::iommu::vendors::intel::controller::ir::InterruptRemapper;
 use crate::io::iommu::vendors::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
+#[cfg(feature = "qemu-test-export")]
+use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 use crate::io::iommu::vendors::intel::qi::InvalidationQueue;
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::tables::{

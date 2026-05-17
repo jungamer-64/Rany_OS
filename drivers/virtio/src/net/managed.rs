@@ -501,7 +501,10 @@ impl VirtioNetDevice {
 
                 let header_len = VirtioNetHeader::SIZE;
                 let packet_len = core::cmp::min(len as usize, inflight.packet.capacity());
-                inflight.packet.set_len(packet_len);
+                if !inflight.packet.set_len(packet_len) {
+                    rx_queue.free_desc_chain(desc_idx);
+                    continue;
+                }
                 if inflight.packet.data().len() >= header_len {
                     let header = unsafe {
                         core::ptr::read_unaligned(

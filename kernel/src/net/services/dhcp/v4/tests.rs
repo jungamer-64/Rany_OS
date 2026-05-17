@@ -3,6 +3,7 @@
 // ============================================================================
 
 use super::*;
+use crate::net::l3::ipv4::Ipv4Address;
 use crate::sync::set_panicking;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -97,14 +98,11 @@ pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
         ip_address: Ipv4Address::new([192, 168, 0, 42]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: Some(Ipv4Address::new([192, 168, 0, 1])),
-        dns_servers: Vec::new(),
         server_ip: Ipv4Address::new([192, 168, 0, 1]),
         lease_time: 3600,
         t1: 1800,
         t2: 3150,
         obtained_at: 0,
-        hostname: None,
-        domain_name: None,
     };
 
     {
@@ -138,14 +136,11 @@ pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
         ip_address: Ipv4Address::new([10, 0, 0, 5]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
-        dns_servers: Vec::new(),
         server_ip: Ipv4Address::new([10, 0, 0, 1]),
         lease_time: 3600,
         t1: 1800,
         t2: 3150,
         obtained_at: 0,
-        hostname: None,
-        domain_name: None,
     };
 
     {
@@ -320,14 +315,11 @@ pub fn test_process_response_ack_requesting_mismatch() {
         ip_address: Ipv4Address::new([10, 0, 0, 5]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
-        dns_servers: Vec::new(),
         server_ip: Ipv4Address::new([10, 0, 0, 1]),
         lease_time: 3600,
         t1: 1800,
         t2: 3150,
         obtained_at: 0,
-        hostname: None,
-        domain_name: None,
     };
 
     {
@@ -377,14 +369,11 @@ pub fn test_process_response_ack_renewal_success() {
         ip_address: Ipv4Address::new([192, 168, 0, 42]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: Some(Ipv4Address::new([192, 168, 0, 1])),
-        dns_servers: Vec::new(),
         server_ip: Ipv4Address::new([192, 168, 0, 1]),
         lease_time: 3600,
         t1: 1800,
         t2: 3150,
         obtained_at: 0,
-        hostname: None,
-        domain_name: None,
     };
 
     {
@@ -425,7 +414,7 @@ pub fn test_process_response_ack_renewal_success() {
         .expect("ACK should be accepted");
     match res {
         DhcpResponseResult::Ack(l) => {
-            assert_eq!(l.ip_address, lease.ip_address);
+            assert_eq!(l.lease.ip_address, lease.ip_address);
         }
         _ => panic!("expected Ack"),
     }
@@ -473,14 +462,11 @@ pub fn test_build_decline_and_build_release_contents() {
         ip_address: Ipv4Address::new([172, 16, 0, 5]),
         subnet_mask: Ipv4Address::new([255, 255, 0, 0]),
         gateway: None,
-        dns_servers: Vec::new(),
         server_ip: Ipv4Address::new([10, 0, 0, 1]),
         lease_time: 1200,
         t1: 600,
         t2: 900,
         obtained_at: 0,
-        hostname: None,
-        domain_name: None,
     };
     {
         let mut l = client.lease.lock().unwrap();
@@ -519,14 +505,11 @@ pub fn test_release_clears_lease_and_sets_last_released() {
         ip_address: Ipv4Address::new([192, 168, 10, 10]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: None,
-        dns_servers: Vec::new(),
         server_ip: Ipv4Address::new([10, 0, 0, 1]),
         lease_time: 3600,
         t1: 1800,
         t2: 3150,
         obtained_at: 0,
-        hostname: None,
-        domain_name: None,
     };
     {
         let mut l = client.lease.lock().unwrap();
@@ -596,9 +579,9 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
         .expect("ACK should be accepted");
     match res {
         DhcpResponseResult::Ack(lease) => {
-            assert_eq!(lease.lease_time, 100);
-            assert_eq!(lease.t1, 30);
-            assert_eq!(lease.t2, 60);
+            assert_eq!(lease.lease.lease_time, 100);
+            assert_eq!(lease.lease.t1, 30);
+            assert_eq!(lease.lease.t2, 60);
 
             // Verify T1 transition to Renewing
             {
@@ -645,11 +628,12 @@ pub fn test_build_lease_defaults_large_timers_without_overflow() {
         renewal_time: None,
         rebinding_time: None,
         server_id: None,
+        metadata_payload: None,
         hostname: None,
         domain_name: None,
     };
 
-    let lease = DhcpClient::build_lease(&header, opts, 123);
+    let lease = DhcpClient::build_lease(&header, &opts, 123);
 
     assert_eq!(lease.lease_time, u32::MAX);
     assert_eq!(lease.t1, u32::MAX / 2);
@@ -664,10 +648,7 @@ pub fn test_offer_probe_and_decline_flow() {
     use crate::net::runtime::stack;
 
     // Initialize global stack for ARP facilities (best-effort)
-    stack::init_in(
-        crate::net::runtime::default_runtime(),
-        stack::NetworkConfig::default(),
-    );
+    stack::init_in(crate::net::runtime::default_runtime());
 
     let client = DhcpClient::new(MacAddress::new([7, 7, 7, 7, 7, 7]));
     client.xid.store(0x3333_4444, Ordering::SeqCst);
@@ -741,14 +722,11 @@ pub fn test_force_renew_or_restart_paths() {
         ip_address: Ipv4Address::new([192, 168, 1, 10]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: Some(Ipv4Address::new([192, 168, 1, 1])),
-        dns_servers: Vec::new(),
         server_ip: Ipv4Address::new([192, 168, 1, 1]),
         lease_time: 3600,
         t1: 1800,
         t2: 3150,
         obtained_at: 0,
-        hostname: None,
-        domain_name: None,
     };
 
     {
@@ -773,14 +751,11 @@ pub fn test_force_renew_or_restart_paths() {
             ip_address: Ipv4Address::new([10, 0, 0, 5]),
             subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
             gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
-            dns_servers: Vec::new(),
             server_ip: Ipv4Address::new([10, 0, 0, 1]),
             lease_time: 1200,
             t1: 600,
             t2: 900,
             obtained_at: 0,
-            hostname: None,
-            domain_name: None,
         });
     }
     client.force_renew_or_restart(200);
@@ -798,14 +773,11 @@ pub fn test_build_inform_sets_ciaddr_and_message_type() {
         ip_address: Ipv4Address::new([192, 168, 1, 77]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: Some(Ipv4Address::new([192, 168, 1, 1])),
-        dns_servers: vec![Ipv4Address::new([1, 1, 1, 1])],
         server_ip: Ipv4Address::new([192, 168, 1, 1]),
         lease_time: 3600,
         t1: 1800,
         t2: 3150,
         obtained_at: 0,
-        hostname: None,
-        domain_name: None,
     };
 
     {
@@ -841,14 +813,11 @@ pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
         ip_address: Ipv4Address::new([10, 0, 0, 42]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
         gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
-        dns_servers: vec![Ipv4Address::new([8, 8, 8, 8])],
         server_ip: Ipv4Address::new([10, 0, 0, 1]),
         lease_time: 7200,
         t1: 3600,
         t2: 6300,
         obtained_at: 10,
-        hostname: None,
-        domain_name: None,
     };
 
     {
@@ -898,12 +867,15 @@ pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
         .expect("INFORM ACK should be accepted");
     match res {
         DhcpResponseResult::Ack(updated) => {
-            assert_eq!(updated.ip_address, lease.ip_address);
-            assert_eq!(updated.lease_time, lease.lease_time);
-            assert_eq!(updated.t1, lease.t1);
-            assert_eq!(updated.t2, lease.t2);
-            assert_eq!(updated.server_ip, lease.server_ip);
-            assert_eq!(updated.dns_servers, vec![Ipv4Address::new([1, 1, 1, 1])]);
+            assert_eq!(updated.lease.ip_address, lease.ip_address);
+            assert_eq!(updated.lease.lease_time, lease.lease_time);
+            assert_eq!(updated.lease.t1, lease.t1);
+            assert_eq!(updated.lease.t2, lease.t2);
+            assert_eq!(updated.lease.server_ip, lease.server_ip);
+            assert_eq!(
+                updated.applied.dns_servers,
+                vec![Ipv4Address::new([1, 1, 1, 1])]
+            );
         }
         _ => panic!("expected Ack"),
     }
