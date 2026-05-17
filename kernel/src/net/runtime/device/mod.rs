@@ -139,6 +139,7 @@ fn complete_tx_owner_group_in(
     let (keepalive, completion_id, final_result) = group.into_parts();
     if let Some(completion_id) = completion_id {
         let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
+            runtime,
             completion_id,
             keepalive,
             final_result,
@@ -578,6 +579,7 @@ pub fn complete_tx_lease_in(
         }
         if let Some(completion_id) = lease.completion_id {
             let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
+                runtime,
                 completion_id,
                 lease.keepalive,
                 result,

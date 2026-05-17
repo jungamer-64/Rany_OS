@@ -11,11 +11,11 @@ use alloc::vec::Vec;
 
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l2::ethernet::MacAddress;
-use crate::net::l4::tcp::tcb_table;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::RuntimeCommand;
 use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::transport::tcp_table_in;
 use kernel_api::resource::net::PacketPayload;
 
 mod common;
@@ -120,74 +120,47 @@ impl RuntimeCommandHandler {
             // 非同期Futureイベント: スタック不可時はエラーで完了（デッドロック防止）
             // ============================================================
             RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::TcpDial {
-                    reply, ..
-                },
+                crate::net::runtime::command::TransportCommand::TcpDial { reply, .. },
             ) => finish_command(reply, Err(crate::net::l4::tcp::TcpError::InvalidState)),
             RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::TcpBind {
-                    reply, ..
-                },
+                crate::net::runtime::command::TransportCommand::TcpBind { reply, .. },
             ) => finish_command(reply, Err(crate::net::l4::tcp::TcpError::InvalidState)),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::MulticastJoin {
-                    reply,
-                    ..
-                },
+                crate::net::runtime::command::ControlCommand::MulticastJoin { reply, .. },
             ) => finish_command(reply, false),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::MulticastLeave {
-                    reply,
-                    ..
-                },
+                crate::net::runtime::command::ControlCommand::MulticastLeave { reply, .. },
             ) => finish_command(reply, false),
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEcho {
                 reply,
                 ..
             }) => finish_command(reply, Err(())),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ArpResolveCheck {
-                    reply,
-                    ..
-                },
+                crate::net::runtime::command::ControlCommand::ArpResolveCheck { reply, .. },
             ) => finish_command(reply, None),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetLinkLocal { reply },
             ) => finish_command(reply, None),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { reply },
             ) => finish_command(reply, None),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetInterfaceConfig {
-                    reply,
-                    ..
-                },
+                crate::net::runtime::command::ControlCommand::GetInterfaceConfig { reply, .. },
             ) => finish_command(reply, None),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ListInterfaceConfigs {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { reply },
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetInterfaceStats {
-                    reply,
-                    ..
-                },
+                crate::net::runtime::command::ControlCommand::GetInterfaceStats { reply, .. },
             ) => finish_command(reply, None),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ListInterfaceStats {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::ListInterfaceStats { reply },
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ListInterfaces { reply },
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetNetworkSnapshot {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { reply },
             ) => finish_command(
                 reply,
                 crate::net::obs::NetSnapshot {
@@ -203,87 +176,51 @@ impl RuntimeCommandHandler {
             ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetNetworkRecentEvents {
-                    reply,
-                    ..
+                    reply, ..
                 },
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallEnable { reply },
             ) => finish_command(reply, Err("Stack unavailable")),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallDisable {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::FirewallDisable { reply },
             ) => finish_command(reply, Err("Stack unavailable")),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallStatus { reply },
-            ) => finish_command(
-                reply,
-                alloc::string::String::from("Stack unavailable"),
-            ),
+            ) => finish_command(reply, alloc::string::String::from("Stack unavailable")),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallListRules {
-                    reply,
-                },
-            ) => finish_command(
-                reply,
-                alloc::string::String::from("Stack unavailable"),
-            ),
+                crate::net::runtime::command::ControlCommand::FirewallListRules { reply },
+            ) => finish_command(reply, alloc::string::String::from("Stack unavailable")),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallStats { reply },
-            ) => finish_command(
-                reply,
-                alloc::string::String::from("Stack unavailable"),
-            ),
+            ) => finish_command(reply, alloc::string::String::from("Stack unavailable")),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallAddRule {
-                    reply,
-                    ..
-                },
-            ) => finish_command(
-                reply,
-                Err(alloc::string::String::from("Stack unavailable")),
-            ),
+                crate::net::runtime::command::ControlCommand::FirewallAddRule { reply, .. },
+            ) => finish_command(reply, Err(alloc::string::String::from("Stack unavailable"))),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallRemoveRule {
-                    reply,
-                    ..
-                },
-            ) => finish_command(
-                reply,
-                Err(alloc::string::String::from("Stack unavailable")),
-            ),
+                crate::net::runtime::command::ControlCommand::FirewallRemoveRule { reply, .. },
+            ) => finish_command(reply, Err(alloc::string::String::from("Stack unavailable"))),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::FirewallClearRules {
-                    reply,
-                },
-            ) => finish_command(
-                reply,
-                Err(alloc::string::String::from("Stack unavailable")),
-            ),
+                crate::net::runtime::command::ControlCommand::FirewallClearRules { reply },
+            ) => finish_command(reply, Err(alloc::string::String::from("Stack unavailable"))),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallSetDefaultPolicy {
                     reply,
                     ..
                 },
-            ) => finish_command(
-                reply,
-                Err(alloc::string::String::from("Stack unavailable")),
-            ),
+            ) => finish_command(reply, Err(alloc::string::String::from("Stack unavailable"))),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetArpCache { reply },
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetUdpEndpoints {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetUdpEndpoints { reply },
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessTimeouts,
             ) => {
                 // タイムアウト処理（スタック依存部分はスキップ）
-                // しかし、独立した TCB テーブルのメンテナンスは実行する
-                tcb_table().tick();
+                // しかし、runtime-owned TCB テーブルのメンテナンスは実行する
+                tcp_table_in(runtime).tick(runtime);
 
                 crate::net::api::icmp::cleanup_icmp_echo_waiters();
                 crate::net::l2::arp::cleanup_arp_waiters();
@@ -295,20 +232,14 @@ impl RuntimeCommandHandler {
             // DHCP/TCP 非同期クエリ: スタック不可時はデフォルト値で完了
             // ============================================================
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetDhcpState {
-                    reply,
-                    ..
-                },
+                crate::net::runtime::command::ControlCommand::GetDhcpState { reply, .. },
             ) => finish_command(reply, stackless_dhcp_state_unavailable()),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ListDhcpStates { reply },
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew {
                 reply,
-            }) => finish_command(
-                reply,
-                Err(alloc::string::String::from("Stack unavailable")),
-            ),
+            }) => finish_command(reply, Err(alloc::string::String::from("Stack unavailable"))),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpRelease { reply },
             ) => finish_command(reply, false),
@@ -317,24 +248,15 @@ impl RuntimeCommandHandler {
             ) => finish_command(reply, None),
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform {
                 reply,
-            }) => finish_command(
-                reply,
-                Err(alloc::string::String::from("Stack unavailable")),
-            ),
+            }) => finish_command(reply, Err(alloc::string::String::from("Stack unavailable"))),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpLastDeclined {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::DhcpLastDeclined { reply },
             ) => finish_command(reply, None),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpLastReleased {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::DhcpLastReleased { reply },
             ) => finish_command(reply, None),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetTcpConnections {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetTcpConnections { reply },
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawUdpSend {

@@ -3,12 +3,12 @@
 // ============================================================================
 //! RuntimeCommandHandler ソケット制御/ライフサイクル系メソッド
 
-use crate::net::l4::tcp::tcb::tcb_table;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::RuntimeCommand;
 use crate::net::runtime::command::complete_command;
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
+use crate::net::runtime::transport::tcp_table_in;
 
 impl RuntimeCommandHandler {
     pub(super) fn handle_lifecycle_event_with_stack(
@@ -82,10 +82,7 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::MulticastJoin {
-                    group,
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::MulticastJoin { group, reply },
             ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
                 let success = stack.join_multicast_group(ip).is_ok();
@@ -93,10 +90,7 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::MulticastLeave {
-                    group,
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::MulticastLeave { group, reply },
             ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
                 let success = stack.leave_multicast_group(ip).is_ok();
@@ -128,9 +122,9 @@ impl RuntimeCommandHandler {
 
                 // --- RFC Compliance: Process TCP periodic tasks ---
                 // 1. TCB table maintenance (RTO, TimeWait, FinWait2, etc.)
-                tcb_table().tick();
+                tcp_table_in(runtime).tick(runtime);
                 // 2. Delayed ACK flushing (RFC 1122 Section 4.2.3.2)
-                crate::net::l4::tcp::tcp_rx::flush_delayed_acks();
+                crate::net::l4::tcp::tcp_rx::flush_delayed_acks_in(runtime);
 
                 // ICMP Echo待ちの期限切れエントリをクリーンアップ
                 crate::net::api::icmp::cleanup_icmp_echo_waiters();

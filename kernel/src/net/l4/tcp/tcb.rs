@@ -12,9 +12,9 @@ use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
 use super::flow_control::FlowController;
-use super::retransmit::check_retransmit_timeouts;
 use super::window_scale::WindowScaleOption;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, conn_key_hash, seq_after};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 
@@ -559,11 +559,11 @@ impl TcbTable {
         m.wrapping_add(hash_f).wrapping_add(counter)
     }
 
-    pub fn tick(&self) {
+    pub fn tick(&self, runtime: NetRuntimeHandle) {
         let tick = self.current_tick.fetch_add(1, Ordering::Relaxed);
         if tick % 100 == 0 {
-            check_retransmit_timeouts();
-            self.check_zero_window_probes(tick);
+            super::retransmit::check_retransmit_timeouts(runtime);
+            self.check_zero_window_probes(runtime, tick);
             self.scavenge_syn_received(tick);
             self.scavenge_time_wait(tick);
             self.scavenge_fin_wait_2(tick);
@@ -593,7 +593,7 @@ impl TcbTable {
         }
     }
 
-    fn check_zero_window_probes(&self, current_tick: u64) {
+    fn check_zero_window_probes(&self, runtime: NetRuntimeHandle, current_tick: u64) {
         use super::retransmit::retransmit_queue_push;
         use super::segment::TcpSegmentBuilder;
         use crate::net::l4::socket::lookup_socket;
@@ -626,9 +626,9 @@ impl TcbTable {
                                 let Ok(segment) = builder.build_checked_packet(key.0, key.1) else {
                                     continue;
                                 };
-                                retransmit_queue_push(key.0, key.1, seq, 1, segment);
+                                retransmit_queue_push(runtime, key.0, key.1, seq, 1, segment);
                                 if super::retransmit::retransmit_queue_transmit_ready(
-                                    key.0, key.1, seq,
+                                    runtime, key.0, key.1, seq,
                                 ) {
                                     entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
                                     entry.flow_control.on_probe_sent(current_tick);

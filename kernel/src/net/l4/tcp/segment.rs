@@ -7,7 +7,7 @@
 
 use super::tcb::tcp_flags;
 use crate::net::l4::types::{EndpointAddr, EndpointError};
-use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload, PacketRef};
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 #[inline]
 fn endpoint_ipv4_pair(local: EndpointAddr, remote: EndpointAddr) -> Option<([u8; 4], [u8; 4])> {
@@ -388,21 +388,23 @@ impl TcpSegmentBuilder {
     }
 }
 
-pub fn send_tcp_segment_payload(
+pub fn send_tcp_segment_payload_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
     local: EndpointAddr,
     remote: EndpointAddr,
     segment: PacketPayload,
 ) -> bool {
-    send_tcp_segment_payload_with_completion(local, remote, segment, None)
+    send_tcp_segment_payload_with_completion_in(runtime, local, remote, segment, None)
 }
 
-pub fn send_tcp_segment_payload_with_completion(
+pub fn send_tcp_segment_payload_with_completion_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
     local: EndpointAddr,
     remote: EndpointAddr,
     segment: PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let (scope, ingress_if) = super::tcb::tcb_table()
+    let (scope, ingress_if) = crate::net::runtime::transport::tcp_table_in(runtime)
         .read(local, remote, |tcb| (tcb.scope, tcb.ingress_if_id))
         .unwrap_or((crate::net::types::InterfaceScope::Any, None));
     let scoped_if = scope.as_if_id().or(ingress_if);
@@ -414,7 +416,7 @@ pub fn send_tcp_segment_payload_with_completion(
         // 非同期イベントキュー経由で送信（ロック競合回避）
         let ok = match scoped_if {
             Some(if_id) => crate::net::runtime::stack::enqueue_tcp_send_on_in(
-                crate::net::runtime::default_runtime(),
+                runtime,
                 if_id,
                 src_ip,
                 dst_ip,
@@ -422,7 +424,7 @@ pub fn send_tcp_segment_payload_with_completion(
                 completion_id,
             ),
             None => crate::net::runtime::stack::enqueue_tcp_send_in(
-                crate::net::runtime::default_runtime(),
+                runtime,
                 src_ip,
                 dst_ip,
                 segment,
@@ -447,7 +449,7 @@ pub fn send_tcp_segment_payload_with_completion(
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
         let ok = match scoped_if {
             Some(if_id) => crate::net::runtime::stack::enqueue_tcp_v6_send_on_in(
-                crate::net::runtime::default_runtime(),
+                runtime,
                 if_id,
                 src_v6,
                 dst_v6,
@@ -455,7 +457,7 @@ pub fn send_tcp_segment_payload_with_completion(
                 completion_id,
             ),
             None => crate::net::runtime::stack::enqueue_tcp_v6_send_in(
-                crate::net::runtime::default_runtime(),
+                runtime,
                 src_v6,
                 dst_v6,
                 segment,
@@ -491,14 +493,6 @@ pub fn send_tcp_segment_payload_with_completion(
     false
 }
 
-pub fn send_tcp_segment_packet(
-    local: EndpointAddr,
-    remote: EndpointAddr,
-    segment: PacketRef,
-) -> bool {
-    send_tcp_segment_payload(local, remote, PacketPayload::single(segment))
-}
-
 // =====================================================
 // テスト
 // =====================================================
@@ -523,11 +517,12 @@ pub mod tests {
     }
 
     fn send_test_segment(
+        runtime: crate::net::runtime::NetRuntimeHandle,
         local: EndpointAddr,
         remote: EndpointAddr,
         segment: PacketPayload,
     ) -> bool {
-        send_tcp_segment_payload(local, remote, segment)
+        send_tcp_segment_payload_in(runtime, local, remote, segment)
     }
 
     #[cfg_attr(test, test_case)]
@@ -654,29 +649,32 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_send_tcp_segment_rejects_mixed_family() {
+        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
         let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
         let segment = build_test_segment(TcpSegmentBuilder::new(local.port(), remote.port()).syn());
 
-        assert!(!send_test_segment(local, remote, segment));
+        assert!(!send_test_segment(runtime, local, remote, segment));
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_send_tcp_segment_ipv4_no_panic_when_stack_unavailable() {
+        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         let local = EndpointAddr::new([127, 0, 0, 1], 12346);
         let remote = EndpointAddr::new([127, 0, 0, 1], 80);
         let segment = build_test_segment(TcpSegmentBuilder::new(local.port(), remote.port()).syn());
 
-        let _ = send_test_segment(local, remote, segment);
+        let _ = send_test_segment(runtime, local, remote, segment);
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_send_tcp_segment_ipv6_no_panic_when_stack_unavailable() {
+        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         let local =
             EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 12347);
         let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
         let segment = build_test_segment(TcpSegmentBuilder::new(local.port(), remote.port()).syn());
 
-        let _ = send_test_segment(local, remote, segment);
+        let _ = send_test_segment(runtime, local, remote, segment);
     }
 }

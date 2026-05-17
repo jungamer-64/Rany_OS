@@ -12,6 +12,7 @@ use crate::net::runtime::command::{
     RuntimeCommand, TransportCommand, enqueue_command_ignore_in, enqueue_command_in,
 };
 use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::transport::tcp_table_in;
 use kernel_api::resource::net::PacketPayload;
 
 use super::registry::SOCKET_REGISTRY;
@@ -39,6 +40,7 @@ impl Socket {
     }
 
     fn notify_tcb_data_received(
+        runtime: NetRuntimeHandle,
         local: Option<EndpointAddr>,
         remote: Option<EndpointAddr>,
         pushed: usize,
@@ -48,7 +50,7 @@ impl Socket {
         }
 
         if let (Some(local), Some(remote)) = (local, remote) {
-            let _ = crate::net::l4::tcp::tcb::tcb_table().lookup_mut(local, remote, |tcb| {
+            let _ = tcp_table_in(runtime).lookup_mut(local, remote, |tcb| {
                 tcb.on_data_received(pushed as u32);
             });
         }
@@ -244,7 +246,7 @@ impl Socket {
             return 0;
         };
 
-        Self::notify_tcb_data_received(local, remote, pushed);
+        Self::notify_tcb_data_received(self.runtime, local, remote, pushed);
         pushed
     }
 
@@ -257,17 +259,12 @@ impl Socket {
             if pushed > 0 {
                 inner.recv_waker.wake();
             }
-            (
-                pushed,
-                remainder,
-                inner.local_addr,
-                inner.remote_addr,
-            )
+            (pushed, remainder, inner.local_addr, inner.remote_addr)
         }) else {
             return (0, None);
         };
 
-        Self::notify_tcb_data_received(local, remote, pushed);
+        Self::notify_tcb_data_received(self.runtime, local, remote, pushed);
 
         (pushed, remainder)
     }

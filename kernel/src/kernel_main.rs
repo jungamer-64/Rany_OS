@@ -156,13 +156,13 @@ pub(crate) fn init_network_infra() {
     crate::net::security::firewall::setup_default_firewall();
 
     // Initialize TCP SYN cookies
-    crate::net::l4::tcp::tcb::tcb_table().init_syncookies();
+    crate::net::runtime::transport::tcp_table_in(crate::net::runtime::default_runtime())
+        .init_syncookies();
 
     let stack_initialized = crate::net::runtime::device::is_initialized();
-    let port_runtime_initialized = !crate::net::runtime::device::list_port_ids_in(
-        crate::net::runtime::default_runtime(),
-    )
-    .is_empty();
+    let port_runtime_initialized =
+        !crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime())
+            .is_empty();
     let endpoint_manager_initialized = crate::net::l4::socket::socket_registry_initialized();
     debug!(
         target: "init",
@@ -201,10 +201,9 @@ pub(crate) fn init_network_infra() {
     }
 
     let stack_initialized = crate::net::runtime::device::is_initialized();
-    let port_runtime_initialized = !crate::net::runtime::device::list_port_ids_in(
-        crate::net::runtime::default_runtime(),
-    )
-    .is_empty();
+    let port_runtime_initialized =
+        !crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime())
+            .is_empty();
     let endpoint_manager_initialized = crate::net::l4::socket::socket_registry_initialized();
     info!(
         target: "init",

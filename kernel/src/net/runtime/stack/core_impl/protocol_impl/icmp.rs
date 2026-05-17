@@ -7,6 +7,8 @@
 use super::*;
 use crate::net::l3::icmp::{IcmpBuilder, IcmpType};
 use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
+use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::transport::tcp_table_in;
 
 fn checksum_payload_span(span: crate::net::payload::PayloadSpanRef<'_>, initial: u32) -> u16 {
     let mut sum = initial;
@@ -633,6 +635,7 @@ impl NetworkStack {
 
     pub(crate) fn handle_icmp_error_payload(
         &mut self,
+        runtime: NetRuntimeHandle,
         payload: &kernel_api::resource::net::PacketPayload,
         icmp_type: IcmpType,
         code: u8,
@@ -684,13 +687,13 @@ impl NetworkStack {
                 let seq_num = u32::from_be_bytes(seq_bytes);
                 let local = TcpEndpointAddr::new(original_src.octets(), src_port);
                 let remote = TcpEndpointAddr::new(original_dst.octets(), dst_port);
-                let tcb_table = crate::net::l4::tcp::tcb_table();
+                let tcb_table = tcp_table_in(runtime);
                 if tcb_table.validate_icmp_sequence(local, remote, seq_num) {
                     if icmp_type == IcmpType::SourceQuench {
-                        crate::net::l4::tcp::tcp_rx::handle_source_quench(local, remote);
+                        crate::net::l4::tcp::tcp_rx::handle_source_quench(runtime, local, remote);
                     } else if icmp_type == IcmpType::DestinationUnreachable {
                         crate::net::l4::tcp::tcp_rx::handle_icmp_error(
-                            local, remote, icmp_type, code,
+                            runtime, local, remote, icmp_type, code,
                         );
                     }
                 } else {
@@ -949,6 +952,7 @@ impl NetworkStack {
     /// Handle ICMPv6 error messages for transport layer notification (RFC 5927 / RFC 4443)
     pub(crate) fn handle_icmpv6_error_transport_notification(
         &mut self,
+        runtime: NetRuntimeHandle,
         quoted_src: Ipv6Address,
         quoted_dst: Ipv6Address,
         icmp_type: Icmpv6Type,
@@ -978,10 +982,11 @@ impl NetworkStack {
                 let remote_addr = TcpEndpointAddr::new_v6(quoted_dst.octets(), dst_port);
 
                 // Validate sequence number (RFC 5927)
-                let tcb_table = crate::net::l4::tcp::tcb_table();
+                let tcb_table = tcp_table_in(runtime);
                 if tcb_table.validate_icmp_sequence(local_addr, remote_addr, seq_num) {
                     // Notify TCP stack
                     crate::net::l4::tcp::tcp_rx::handle_icmpv6_error(
+                        runtime,
                         local_addr,
                         remote_addr,
                         icmp_type,

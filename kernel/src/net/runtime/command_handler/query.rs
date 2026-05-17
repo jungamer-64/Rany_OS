@@ -3,13 +3,14 @@
 // ============================================================================
 //! RuntimeCommandHandler DHCP/TCPクエリ系メソッド
 
-use crate::net::l4::tcp::tcb::{TcpConnectionState, tcb_table};
+use crate::net::l4::tcp::tcb::TcpConnectionState;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{RuntimeCommand, complete_command};
 use crate::net::runtime::command_handler::common::finish_command;
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::manager::NetIfId;
+use crate::net::runtime::transport::tcp_table_in;
 
 impl RuntimeCommandHandler {
     pub(super) fn handle_query_event_with_stack(
@@ -19,10 +20,7 @@ impl RuntimeCommandHandler {
     ) -> EventHandleResult {
         match event {
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetDhcpState {
-                    if_id,
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetDhcpState { if_id, reply },
             ) => finish_command(
                 reply,
                 if let Some(if_id) = if_id {
@@ -42,7 +40,7 @@ impl RuntimeCommandHandler {
             }) => {
                 use crate::net::services::dhcp;
 
-                let now = tcb_table().get_current_tick();
+                let now = tcp_table_in(runtime).get_current_tick();
                 let mut touched = false;
                 let mut err_msg: Option<alloc::string::String> = None;
 
@@ -99,7 +97,7 @@ impl RuntimeCommandHandler {
             ) => {
                 use crate::net::services::dhcp;
 
-                let now = tcb_table().get_current_tick();
+                let now = tcp_table_in(runtime).get_current_tick();
                 let mut offer = None;
 
                 if let Some(client) = dhcp::primary_v4_client_in(runtime) {
@@ -120,7 +118,7 @@ impl RuntimeCommandHandler {
             }) => {
                 use crate::net::services::dhcp;
 
-                let now = tcb_table().get_current_tick();
+                let now = tcp_table_in(runtime).get_current_tick();
                 let result = if let Some(client) = dhcp::primary_v4_client_in(runtime) {
                     match client.inform(now) {
                         Ok(true) => Ok(()),
@@ -139,9 +137,7 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpLastDeclined {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::DhcpLastDeclined { reply },
             ) => {
                 use crate::net::services::dhcp;
 
@@ -154,9 +150,7 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpLastReleased {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::DhcpLastReleased { reply },
             ) => {
                 use crate::net::services::dhcp;
 
@@ -169,11 +163,9 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetTcpConnections {
-                    reply,
-                },
+                crate::net::runtime::command::ControlCommand::GetTcpConnections { reply },
             ) => {
-                let snapshots = tcb_table().list_connections();
+                let snapshots = tcp_table_in(runtime).list_connections();
                 let connections: alloc::vec::Vec<_> = snapshots
                     .into_iter()
                     .map(|snapshot| {

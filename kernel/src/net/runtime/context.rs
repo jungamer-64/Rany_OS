@@ -9,6 +9,7 @@ use crate::net::runtime::device::{
 };
 use crate::net::runtime::manager::NetworkManager;
 use crate::net::runtime::stack::NetworkStack;
+use crate::net::runtime::transport::TransportState;
 use crate::net::services::dhcp::DhcpRuntimeState;
 use crate::net::services::dns::DnsRuntimeState;
 use crate::net::services::mdns::MdnsRuntimeState;
@@ -69,6 +70,7 @@ pub struct NetRuntimeContext {
     pub(crate) command_replies: CommandReplyRegistry,
     pub(crate) command_task_running: AtomicBool,
     pub(crate) command_task_ready_waiters: WakerQueue,
+    pub(crate) transport: TransportState,
     pub(crate) tx_completion_next_id: AtomicU64,
     pub(crate) tx_completions: PoisonRwLock<BTreeMap<u64, TxCompletionState>>,
     pub(crate) tx_owner_group_next_id: AtomicU64,
@@ -94,6 +96,7 @@ impl NetRuntimeContext {
             command_replies: CommandReplyRegistry::new(),
             command_task_running: AtomicBool::new(false),
             command_task_ready_waiters: WakerQueue::new(),
+            transport: TransportState::new(),
             tx_completion_next_id: AtomicU64::new(1),
             tx_completions: PoisonRwLock::new(BTreeMap::new()),
             tx_owner_group_next_id: AtomicU64::new(1),

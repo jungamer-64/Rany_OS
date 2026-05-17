@@ -2,10 +2,10 @@
 // kernel/src/net/runtime/command_handler/control.rs - ランタイム / コマンドハンドラ / 制御処理
 // ============================================================================
 //! RuntimeCommandHandler 制御系メソッド
-use crate::net::l4::tcp::tcb_table;
 use crate::net::l4::types::SocketId;
 use crate::net::runtime::command_handler::EventHandleResult;
 use crate::net::runtime::command_handler::RuntimeCommandHandler;
+use crate::net::runtime::transport::tcp_table_in;
 
 impl RuntimeCommandHandler {
     /// SetPriorityイベント処理
@@ -35,7 +35,7 @@ impl RuntimeCommandHandler {
         };
 
         // TCBに反映
-        tcb_table().lookup_mut(local, remote, |tcb| {
+        tcp_table_in(socket.runtime()).lookup_mut(local, remote, |tcb| {
             tcb.set_priority(priority);
         });
 
@@ -69,7 +69,7 @@ impl RuntimeCommandHandler {
         };
 
         // TCBに反映
-        tcb_table().lookup_mut(local, remote, |tcb| {
+        tcp_table_in(socket.runtime()).lookup_mut(local, remote, |tcb| {
             tcb.set_nodelay(nodelay);
         });
 

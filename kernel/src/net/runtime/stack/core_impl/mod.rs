@@ -1061,8 +1061,8 @@ impl NetworkStack {
         self.expire_arp_pending();
         self.expire_ndp_pending();
 
-        // Socket-owned TCP timers/retransmits are driven from the endpoint event
-        // task via `tcb_table().tick()`. The integrated stack keeps only generic
+        // Runtime-owned TCP timers/retransmits are driven from the endpoint event
+        // task via the transport state's TCB table. The integrated stack keeps only generic
         // timeout-wheel work here.
         let expired = self.timeout_wheel.tick(now);
 

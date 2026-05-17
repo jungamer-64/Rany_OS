@@ -4,13 +4,13 @@
 
 use super::*;
 use crate::net::l4::socket::{Socket, TcpSocketState};
-use crate::net::l4::tcp::tcb::tcb_table;
 use crate::net::l4::types::{EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
-    CommandFuture, CommandReplyPayload, CommandReplyTicket, RuntimeCommand, enqueue_command_ignore_in,
-    new_command_channel_in, send_command_in,
+    CommandFuture, CommandReplyPayload, CommandReplyTicket, RuntimeCommand,
+    enqueue_command_ignore_in, new_command_channel_in, send_command_in,
 };
+use crate::net::runtime::transport::tcp_table_in;
 use crate::net::types::InterfaceScope;
 use core::future::Future;
 use core::pin::Pin;
@@ -44,12 +44,13 @@ fn tcp_error_from_socket(error: EndpointError) -> TcpError {
 }
 
 fn socket_send_budget(
+    runtime: NetRuntimeHandle,
     local: Option<EndpointAddr>,
     remote: Option<EndpointAddr>,
     queued_bytes: usize,
 ) -> usize {
     match (local, remote) {
-        (Some(local), Some(remote)) => tcb_table()
+        (Some(local), Some(remote)) => tcp_table_in(runtime)
             .read(local, remote, |tcb| tcb.effective_send_window() as usize)
             .unwrap_or(0)
             .saturating_sub(queued_bytes),
@@ -57,12 +58,17 @@ fn socket_send_budget(
     }
 }
 
-fn on_recv_progress(local: Option<EndpointAddr>, remote: Option<EndpointAddr>, len: usize) {
+fn on_recv_progress(
+    runtime: NetRuntimeHandle,
+    local: Option<EndpointAddr>,
+    remote: Option<EndpointAddr>,
+    len: usize,
+) {
     if len == 0 {
         return;
     }
     if let (Some(local), Some(remote)) = (local, remote) {
-        let _ = tcb_table().lookup_mut(local, remote, |tcb| {
+        let _ = tcp_table_in(runtime).lookup_mut(local, remote, |tcb| {
             tcb.on_data_consumed(len as u32);
         });
     }
@@ -322,7 +328,12 @@ impl TcpConnection {
 
     pub fn poll_recv_payload(&self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
         enum RecvOutcome {
-            Payload(PacketPayload, Option<EndpointAddr>, Option<EndpointAddr>, usize),
+            Payload(
+                PacketPayload,
+                Option<EndpointAddr>,
+                Option<EndpointAddr>,
+                usize,
+            ),
             Closed,
             Pending,
         }
@@ -362,7 +373,7 @@ impl TcpConnection {
 
         match outcome {
             RecvOutcome::Payload(payload, local, remote, delivered_len) => {
-                on_recv_progress(local, remote, delivered_len);
+                on_recv_progress(self.runtime, local, remote, delivered_len);
                 Poll::Ready(Some(payload))
             }
             RecvOutcome::Closed => Poll::Ready(None),
@@ -614,9 +625,7 @@ impl<'a> Future for AcceptFuture<'a> {
                 Poll::Ready(Ok((TcpConnection::from_socket(socket), addr)))
             }
             Err(EndpointError::Timeout) => {
-                self.acceptor
-                    .socket
-                    .register_accept_waker(cx.waker());
+                self.acceptor.socket.register_accept_waker(cx.waker());
                 Poll::Pending
             }
             Err(err) => Poll::Ready(Err(tcp_error_from_socket(err))),
@@ -658,62 +667,62 @@ impl<'a> Future for SendPayloadFuture<'a> {
         let Some(payload) = this.payload.take() else {
             return Poll::Ready(Err(TcpError::InvalidState));
         };
+        let runtime = this.connection.runtime;
         let payload_len = payload.total_len();
         if payload_len == 0 {
             return Poll::Ready(Ok(()));
         }
 
-        let outcome = this
-            .connection
-            .socket
-            .with_inner_mut(|inner| {
-                if let Some(err) = inner.last_error.take() {
-                    return SendOutcome::Ready(Err(tcp_error_from_socket(err)));
-                }
+        let outcome =
+            this.connection
+                .socket
+                .with_inner_mut(|inner| {
+                    if let Some(err) = inner.last_error.take() {
+                        return SendOutcome::Ready(Err(tcp_error_from_socket(err)));
+                    }
 
-                if inner.is_tcp_closing_or_closed() {
-                    return SendOutcome::Ready(Err(TcpError::ConnectionClosed));
-                }
+                    if inner.is_tcp_closing_or_closed() {
+                        return SendOutcome::Ready(Err(TcpError::ConnectionClosed));
+                    }
 
-                if !matches!(inner.tcp_state(), Some(TcpSocketState::Connected)) {
-                    return SendOutcome::Ready(Err(TcpError::InvalidState));
-                }
+                    if !matches!(inner.tcp_state(), Some(TcpSocketState::Connected)) {
+                        return SendOutcome::Ready(Err(TcpError::InvalidState));
+                    }
 
-                if payload_len > inner.send_buffer_limit {
-                    return SendOutcome::Ready(Err(TcpError::BufferFull));
-                }
+                    if payload_len > inner.send_buffer_limit {
+                        return SendOutcome::Ready(Err(TcpError::BufferFull));
+                    }
 
-                let queued_bytes = inner.send_payload_bytes();
-                let available =
-                    inner
-                        .send_buffer_limit
-                        .saturating_sub(queued_bytes)
-                        .min(socket_send_budget(
+                    let queued_bytes = inner.send_payload_bytes();
+                    let available = inner.send_buffer_limit.saturating_sub(queued_bytes).min(
+                        socket_send_budget(
+                            runtime,
                             inner.local_addr,
                             inner.remote_addr,
                             queued_bytes,
-                        ));
+                        ),
+                    );
 
-                if available < payload_len {
-                    let has_queued_data = inner.has_send_data();
-                    inner.send_waker.register(cx.waker());
-                    return SendOutcome::Pending {
-                        payload,
-                        has_queued_data,
-                    };
-                }
-
-                match inner.send_payload(payload) {
-                    Ok(()) => {
-                        if let Some(tcp) = inner.tcp_mut() {
-                            tcp.stats.record_tx_enqueued(payload_len);
-                        }
-                        SendOutcome::Enqueued
+                    if available < payload_len {
+                        let has_queued_data = inner.has_send_data();
+                        inner.send_waker.register(cx.waker());
+                        return SendOutcome::Pending {
+                            payload,
+                            has_queued_data,
+                        };
                     }
-                    Err(err) => SendOutcome::Ready(Err(tcp_error_from_socket(err))),
-                }
-            })
-            .unwrap_or(SendOutcome::Ready(Err(TcpError::InvalidState)));
+
+                    match inner.send_payload(payload) {
+                        Ok(()) => {
+                            if let Some(tcp) = inner.tcp_mut() {
+                                tcp.stats.record_tx_enqueued(payload_len);
+                            }
+                            SendOutcome::Enqueued
+                        }
+                        Err(err) => SendOutcome::Ready(Err(tcp_error_from_socket(err))),
+                    }
+                })
+                .unwrap_or(SendOutcome::Ready(Err(TcpError::InvalidState)));
 
         match outcome {
             SendOutcome::Enqueued => {

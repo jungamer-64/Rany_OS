@@ -11,12 +11,13 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use kernel_api::resource::net::{PacketChain, PacketPayload, PacketRef};
 
-use super::segment::send_tcp_segment_payload_with_completion;
-use super::tcb::tcb_table;
+use super::segment::send_tcp_segment_payload_with_completion_in;
 use super::timer_wheel::TimingWheel;
 use crate::net::l4::types::{
     EndpointAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn,
 };
+use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::transport::tcp_table_in;
 
 #[derive(Debug)]
 pub enum RetransmitPayloadState {
@@ -195,13 +196,20 @@ impl RetransmitQueue {
             })
     }
 
-    pub fn transmit_ready(&mut self, local: EndpointAddr, remote: EndpointAddr, seq: u32) -> bool {
-        let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
-        self.transmit_ready_inner(local, remote, seq, current_tick, false)
+    pub fn transmit_ready(
+        &mut self,
+        runtime: NetRuntimeHandle,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        seq: u32,
+    ) -> bool {
+        let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
+        self.transmit_ready_inner(runtime, local, remote, seq, current_tick, false)
     }
 
     fn transmit_ready_inner(
         &mut self,
+        runtime: NetRuntimeHandle,
         local: EndpointAddr,
         remote: EndpointAddr,
         seq: u32,
@@ -211,9 +219,8 @@ impl RetransmitQueue {
         let Some(seg) = self.unacked.iter_mut().find(|seg| seg.seq == seq) else {
             return false;
         };
-        let (completion_id, _completion) = crate::net::runtime::device::register_tx_completion_in(
-            crate::net::runtime::default_runtime(),
-        );
+        let (completion_id, _completion) =
+            crate::net::runtime::device::register_tx_completion_in(runtime);
         register_tcp_tx_return_target(completion_id, local, remote);
         let state = core::mem::replace(
             &mut seg.data,
@@ -232,13 +239,20 @@ impl RetransmitQueue {
         };
         seg.send_tick = current_tick;
         seg.is_retransmit = is_retransmit;
-        send_tcp_segment_payload_with_completion(local, remote, data, Some(completion_id))
+        send_tcp_segment_payload_with_completion_in(
+            runtime,
+            local,
+            remote,
+            data,
+            Some(completion_id),
+        )
     }
 
     /// 再送処理
     /// 戻り値: 再送するセグメントデータ、Noneの場合は最大再送回数超過
     pub fn retransmit(
         &mut self,
+        runtime: NetRuntimeHandle,
         local: EndpointAddr,
         remote: EndpointAddr,
         current_tick: u64,
@@ -258,7 +272,7 @@ impl RetransmitQueue {
             let seq = seg.seq;
             self.rto_calc.backoff();
 
-            return if self.transmit_ready_inner(local, remote, seq, current_tick, true) {
+            return if self.transmit_ready_inner(runtime, local, remote, seq, current_tick, true) {
                 RetransmitAttempt::Sent
             } else {
                 RetransmitAttempt::NoReadySegment
@@ -421,13 +435,14 @@ pub fn get_or_create_retransmit_queue(local: EndpointAddr, remote: EndpointAddr)
 
 /// 再送キューにセグメント追加
 pub fn retransmit_queue_push(
+    runtime: NetRuntimeHandle,
     local: EndpointAddr,
     remote: EndpointAddr,
     seq: u32,
     seq_len: u32,
     data: PacketPayload,
 ) {
-    let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
+    let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx]
         .lock()
@@ -443,6 +458,7 @@ pub fn retransmit_queue_push(
 }
 
 pub fn retransmit_queue_transmit_ready(
+    runtime: NetRuntimeHandle,
     local: EndpointAddr,
     remote: EndpointAddr,
     seq: u32,
@@ -453,10 +469,11 @@ pub fn retransmit_queue_transmit_ready(
         .unwrap_or_else(|e| e.into_inner());
     queues
         .get_mut(&(local, remote))
-        .is_some_and(|queue| queue.transmit_ready(local, remote, seq))
+        .is_some_and(|queue| queue.transmit_ready(runtime, local, remote, seq))
 }
 
 pub(crate) fn complete_tx_owner(
+    runtime: NetRuntimeHandle,
     completion_id: u64,
     keepalive: Vec<PacketRef>,
     result: Result<(), &'static str>,
@@ -465,7 +482,7 @@ pub(crate) fn complete_tx_owner(
         return false;
     };
     let payload = build_payload_from_segments(keepalive);
-    let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
+    let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx]
         .lock()
@@ -485,8 +502,13 @@ pub(crate) fn complete_tx_owner(
 }
 
 /// ACK受信時の再送キュー更新
-pub fn retransmit_queue_ack(local: EndpointAddr, remote: EndpointAddr, ack_num: u32) {
-    let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
+pub fn retransmit_queue_ack(
+    runtime: NetRuntimeHandle,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    ack_num: u32,
+) {
+    let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
     let idx = retransmit_shard_index(&local, &remote);
     let mut queues = RETRANSMIT_SHARDS[idx]
         .lock()
@@ -538,8 +560,8 @@ pub fn retransmit_queue_remove(local: EndpointAddr, remote: EndpointAddr) {
 }
 
 /// タイマー駆動の再送チェック
-pub fn check_retransmit_timeouts() {
-    let current_tick = tcb_table().current_tick.load(Ordering::Relaxed);
+pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
+    let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
 
     let expired: Vec<(EndpointAddr, EndpointAddr)> = {
         let mut tw_guard = TIMER_WHEEL.lock().unwrap_or_else(|e| e.into_inner());
@@ -567,7 +589,7 @@ pub fn check_retransmit_timeouts() {
 
         if let Some(queue) = queues.get_mut(&(local, remote)) {
             if queue.check_timeout(current_tick).is_some() {
-                match queue.retransmit(local, remote, current_tick) {
+                match queue.retransmit(runtime, local, remote, current_tick) {
                     RetransmitAttempt::Sent => {
                         let deadline = current_tick + queue.get_rto();
                         schedule_retransmit_timer(local, remote, deadline);
@@ -580,7 +602,7 @@ pub fn check_retransmit_timeouts() {
                             remote
                         );
                         queues.remove(&(local, remote));
-                        tcb_table().remove(local, remote);
+                        tcp_table_in(runtime).remove(local, remote);
                     }
                 }
             } else if !queue.is_empty() {

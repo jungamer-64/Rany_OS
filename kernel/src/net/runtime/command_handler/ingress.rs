@@ -168,7 +168,14 @@ impl RuntimeCommandHandler {
                         }
                     }
 
-                    stack.process_ipv6_data(if_id, current_time, src_mac, false, ip_packet);
+                    stack.process_ipv6_data(
+                        runtime,
+                        if_id,
+                        current_time,
+                        src_mac,
+                        false,
+                        ip_packet,
+                    );
                     stack.stats.record_rx(pkt_len);
                 } else {
                     stack.stats.record_dropped();
@@ -286,6 +293,7 @@ impl RuntimeCommandHandler {
                         transport_len,
                     ) {
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
+                            runtime,
                             if_id,
                             src_ip.octets(),
                             dst_ip.octets(),
@@ -312,6 +320,7 @@ impl RuntimeCommandHandler {
                         transport_len,
                     ) {
                         stack.process_icmp_payload(
+                            runtime,
                             transport_payload,
                             src_ip,
                             dst_ip,
@@ -407,6 +416,7 @@ impl RuntimeCommandHandler {
                         transport_len,
                     ) {
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
+                            runtime,
                             if_id,
                             src,
                             dst,
@@ -432,6 +442,7 @@ impl RuntimeCommandHandler {
                         transport_len,
                     ) {
                         stack.process_icmpv6_data(
+                            runtime,
                             if_id,
                             transport_payload,
                             src,
@@ -550,7 +561,7 @@ impl RuntimeCommandHandler {
                 ) else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
-                stack.process_icmp_payload(payload, src_ip, dst_ip, ttl, current_time);
+                stack.process_icmp_payload(runtime, payload, src_ip, dst_ip, ttl, current_time);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 let (offset, payload_len) = {
@@ -632,6 +643,7 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::Success;
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
+                    runtime,
                     if_id,
                     src_ip.octets(),
                     dst_ip.octets(),

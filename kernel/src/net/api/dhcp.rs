@@ -10,10 +10,10 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
-use crate::net::l4::tcp::tcb_table;
 use crate::net::runtime::command::{CommandFuture, CommandReplyTicket, new_command_channel_in};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
+use crate::net::runtime::transport::tcp_table_in;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::net::services::dhcp;
 
@@ -207,7 +207,7 @@ pub(crate) fn start_background_service_tasks() {
 }
 
 fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpRuntimeState {
-    let now = tcb_table().get_current_tick();
+    let now = tcp_table_in(runtime).get_current_tick();
     let tick_rate = 1000u64;
     let mut out = DhcpRuntimeState {
         v4_state: String::from("Init"),
@@ -281,7 +281,7 @@ pub(crate) fn list_dhcp_states_snapshot_in(
 }
 
 pub(crate) fn dhcp_state_snapshot_in(runtime: NetRuntimeHandle) -> DhcpRuntimeState {
-    let now = tcb_table().get_current_tick();
+    let now = tcp_table_in(runtime).get_current_tick();
     let tick_rate = 1000u64;
 
     let mut out = DhcpRuntimeState {

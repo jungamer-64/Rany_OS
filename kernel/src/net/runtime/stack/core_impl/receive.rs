@@ -11,11 +11,14 @@
 // =============================================================================
 
 use super::*;
+use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::transport::tcp_table_in;
 
 impl NetworkStack {
     /// Process IPv4 packet
     pub(crate) fn process_ipv4(
         &mut self,
+        runtime: NetRuntimeHandle,
         data: &[u8],
         current_time: u64,
         packet: PacketRef,
@@ -71,7 +74,7 @@ impl NetworkStack {
                     self.stats.record_rx_error();
                     return;
                 };
-                self.process_icmp_payload(icmp_payload, src_ip, dst_ip, ttl, current_time);
+                self.process_icmp_payload(runtime, icmp_payload, src_ip, dst_ip, ttl, current_time);
             }
             Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 let Some(packet_ref) = packet.take() else {
@@ -196,6 +199,7 @@ impl NetworkStack {
 
     pub fn process_icmp_payload(
         &mut self,
+        runtime: NetRuntimeHandle,
         payload: kernel_api::resource::net::PacketPayload,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
@@ -256,7 +260,7 @@ impl NetworkStack {
                 );
             }
             IcmpResult::Error { icmp_type, code } => {
-                self.handle_icmp_error_payload(&payload, icmp_type, code, current_time);
+                self.handle_icmp_error_payload(runtime, &payload, icmp_type, code, current_time);
             }
             IcmpResult::Redirect {
                 code,
@@ -291,6 +295,7 @@ impl NetworkStack {
     /// Process IPv6 packet data
     pub fn process_ipv6_data(
         &mut self,
+        runtime: NetRuntimeHandle,
         if_id: Option<super::NetIfId>,
         current_time: u64,
         src_mac: MacAddress,
@@ -394,6 +399,7 @@ impl NetworkStack {
                     return;
                 };
                 self.process_icmpv6_data(
+                    runtime,
                     if_id,
                     icmpv6_payload,
                     src,
@@ -431,6 +437,7 @@ impl NetworkStack {
                     return;
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
+                    runtime,
                     if_id,
                     src,
                     dst,
@@ -579,6 +586,7 @@ impl NetworkStack {
     /// Process ICMPv6 data
     pub(crate) fn process_icmpv6_data(
         &mut self,
+        runtime: NetRuntimeHandle,
         if_id: Option<super::NetIfId>,
         payload: kernel_api::resource::net::PacketPayload,
         src: Ipv6Address,
@@ -745,7 +753,7 @@ impl NetworkStack {
                                     let remote_addr =
                                         TcpEndpointAddr::new_v6(dst.octets(), dst_port);
 
-                                    if !crate::net::l4::tcp::tcb_table().validate_icmp_sequence(
+                                    if !tcp_table_in(runtime).validate_icmp_sequence(
                                         local_addr,
                                         remote_addr,
                                         seq_num,
@@ -808,6 +816,7 @@ impl NetworkStack {
                     quoted_dst
                 );
                 self.handle_icmpv6_error_transport_notification(
+                    runtime,
                     quoted_src,
                     quoted_dst,
                     Icmpv6Type::DestinationUnreachable,
@@ -828,6 +837,7 @@ impl NetworkStack {
                     quoted_dst
                 );
                 self.handle_icmpv6_error_transport_notification(
+                    runtime,
                     quoted_src,
                     quoted_dst,
                     Icmpv6Type::TimeExceeded,
@@ -850,6 +860,7 @@ impl NetworkStack {
                     quoted_dst
                 );
                 self.handle_icmpv6_error_transport_notification(
+                    runtime,
                     quoted_src,
                     quoted_dst,
                     Icmpv6Type::ParameterProblem,

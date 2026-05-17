@@ -10,12 +10,11 @@ use super::common::{
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::socket::TcpSocketState;
-use crate::net::l4::tcp::segment::{TcpSegmentBuilder, send_tcp_segment_payload};
-use crate::net::l4::tcp::tcb::{
-    TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot, tcb_table,
-};
+use crate::net::l4::tcp::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
+use crate::net::l4::tcp::tcb::{TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot};
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::transport::tcp_table_in;
 use kernel_api::resource::net::PacketPayload;
 
 impl RuntimeCommandHandler {
@@ -31,6 +30,8 @@ impl RuntimeCommandHandler {
         let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
+        let runtime = socket.runtime();
+        let tcb_table = tcp_table_in(runtime);
 
         let (local, remote) = match socket.with_inner(|inner| {
             let Some(local) = inner.local_addr else {
@@ -47,7 +48,7 @@ impl RuntimeCommandHandler {
         };
 
         loop {
-            let send_params = tcb_table()
+            let send_params = tcb_table
                 .read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
                 .and_then(|tcb| {
                     if tcb.state != TcpConnectionState::Established {
@@ -55,28 +56,29 @@ impl RuntimeCommandHandler {
                     }
 
                     let inner_result = socket.with_inner_mut(|inner| {
-                    let pending_len = inner.send_payload_bytes();
-                    if pending_len == 0 || tcb.should_delay_send(pending_len) {
-                        return None;
-                    }
+                        let pending_len = inner.send_payload_bytes();
+                        if pending_len == 0 || tcb.should_delay_send(pending_len) {
+                            return None;
+                        }
 
-                    let effective_wnd = tcb.effective_send_window();
-                    if effective_wnd == 0 {
-                        return None;
-                    }
+                        let effective_wnd = tcb.effective_send_window();
+                        if effective_wnd == 0 {
+                            return None;
+                        }
 
-                    let len = (pending_len as u32).min(effective_wnd).min(tcb.mss as u32) as usize;
-                    if len == 0 {
-                        return None;
-                    }
+                        let len =
+                            (pending_len as u32).min(effective_wnd).min(tcb.mss as u32) as usize;
+                        if len == 0 {
+                            return None;
+                        }
 
-                    let send_payload = inner.take_send_payload_prefix(len)?;
-                    Some((
-                        send_payload,
-                        tcb.snd_nxt,
-                        tcb.rcv_nxt,
-                        tcb.advertised_recv_window(),
-                    ))
+                        let send_payload = inner.take_send_payload_prefix(len)?;
+                        Some((
+                            send_payload,
+                            tcb.snd_nxt,
+                            tcb.rcv_nxt,
+                            tcb.advertised_recv_window(),
+                        ))
                     });
                     inner_result.flatten()
                 });
@@ -98,16 +100,17 @@ impl RuntimeCommandHandler {
                 Err(error) => return EventHandleResult::ProtocolError(error),
             };
             crate::net::l4::tcp::retransmit::retransmit_queue_push(
-                local, remote, seq, data_len, segment,
+                runtime, local, remote, seq, data_len, segment,
             );
 
-            if crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(local, remote, seq)
-            {
+            if crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(
+                runtime, local, remote, seq,
+            ) {
                 let _ = socket.with_inner_mut(|inner| {
                     inner.send_waker.wake();
                 });
 
-                tcb_table().lookup_mut(local, remote, |tcb| {
+                tcb_table.lookup_mut(local, remote, |tcb| {
                     tcb.on_send(data_len);
                     tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
                 });
@@ -178,7 +181,10 @@ impl RuntimeCommandHandler {
             tcp.accept_backlog = backlog as usize;
             Ok(())
         });
-        if configured.unwrap_or(Err(crate::net::l4::tcp::TcpError::InvalidState)).is_err() {
+        if configured
+            .unwrap_or(Err(crate::net::l4::tcp::TcpError::InvalidState))
+            .is_err()
+        {
             return Err(crate::net::l4::tcp::TcpError::InvalidState);
         }
 
@@ -209,6 +215,7 @@ impl RuntimeCommandHandler {
         let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
+        let runtime = socket.runtime();
 
         let local_port = if local.port() == 0 {
             crate::net::l4::socket::allocate_tcp_ephemeral_port().unwrap_or(49152)
@@ -220,11 +227,11 @@ impl RuntimeCommandHandler {
         let Some((scope, preferred_if, congestion_algo, nodelay, priority)) =
             socket.with_inner(|inner| {
                 (
-                inner.scope,
-                inner.last_ingress_if_id,
-                inner.tcp().and_then(|t| t.congestion_algorithm),
-                inner.tcp().map_or(false, |t| t.nodelay),
-                inner.priority,
+                    inner.scope,
+                    inner.last_ingress_if_id,
+                    inner.tcp().and_then(|t| t.congestion_algorithm),
+                    inner.tcp().map_or(false, |t| t.nodelay),
+                    inner.priority,
                 )
             })
         else {
@@ -283,7 +290,8 @@ impl RuntimeCommandHandler {
             return EventHandleResult::SocketNotFound(fd);
         }
 
-        let isn = tcb_table().generate_isn(local_addr, remote);
+        let tcb_table = tcp_table_in(runtime);
+        let isn = tcb_table.generate_isn(local_addr, remote);
         let mut tcb = if let Some(algo) = congestion_algo {
             TcpControlBlockEntry::with_algorithm(fd, local_addr, remote, algo)
         } else {
@@ -295,7 +303,7 @@ impl RuntimeCommandHandler {
         tcb.scope = scope;
         tcb.ingress_if_id = resolved_if.or(preferred_if);
         tcb.state = TcpConnectionState::SynSent;
-        let _ = tcb_table().insert(tcb);
+        let _ = tcb_table.insert(tcb);
 
         let syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
             .seq(isn)
@@ -305,7 +313,9 @@ impl RuntimeCommandHandler {
                 1460,
                 Some(7),
                 true,
-                Some(crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp()),
+                Some(crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(
+                    runtime,
+                )),
             )
             .build_checked_packet(local_addr, remote);
 
@@ -314,7 +324,7 @@ impl RuntimeCommandHandler {
             Err(e) => return EventHandleResult::ProtocolError(e),
         };
 
-        if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
+        if let Err(e) = self.send_tcp_segment(runtime, local_addr, remote, syn_segment) {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
                 EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -323,7 +333,7 @@ impl RuntimeCommandHandler {
             });
         }
 
-        tcb_table().lookup_mut(local_addr, remote, |tcb| {
+        tcb_table.lookup_mut(local_addr, remote, |tcb| {
             tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
         });
 
@@ -340,6 +350,8 @@ impl RuntimeCommandHandler {
         let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
+        let runtime = socket.runtime();
+        let tcb_table = tcp_table_in(runtime);
 
         // ローカルポートが未割り当ての場合はエフェメラルポートを割り当て
         let local_port = if local.port() == 0 {
@@ -350,25 +362,25 @@ impl RuntimeCommandHandler {
         let local_addr = local.with_port(local_port);
 
         // ソケットのローカルアドレスを更新し、設定を取得
-        let Some((scope, preferred_if, congestion_algo, nodelay, priority)) =
-            socket.with_inner_mut(|inner| {
-            inner.local_addr = Some(local_addr);
-            inner.remote_addr = Some(remote);
-            let _ = inner.set_tcp_state(TcpSocketState::Connecting);
-            (
-                inner.scope,
-                inner.last_ingress_if_id,
-                inner.tcp().and_then(|t| t.congestion_algorithm),
-                inner.tcp().map_or(false, |t| t.nodelay),
-                inner.priority,
-            )
+        let Some((scope, preferred_if, congestion_algo, nodelay, priority)) = socket
+            .with_inner_mut(|inner| {
+                inner.local_addr = Some(local_addr);
+                inner.remote_addr = Some(remote);
+                let _ = inner.set_tcp_state(TcpSocketState::Connecting);
+                (
+                    inner.scope,
+                    inner.last_ingress_if_id,
+                    inner.tcp().and_then(|t| t.congestion_algorithm),
+                    inner.tcp().map_or(false, |t| t.nodelay),
+                    inner.priority,
+                )
             })
         else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
         // TCB（TCP Control Block）を作成
-        let isn = tcb_table().generate_isn(local_addr, remote);
+        let isn = tcb_table.generate_isn(local_addr, remote);
         let mut tcb = if let Some(algo) = congestion_algo {
             TcpControlBlockEntry::with_algorithm(fd, local_addr, remote, algo)
         } else {
@@ -380,7 +392,7 @@ impl RuntimeCommandHandler {
         tcb.scope = scope;
         tcb.ingress_if_id = preferred_if;
         tcb.state = TcpConnectionState::SynSent;
-        let _ = tcb_table().insert(tcb);
+        let _ = tcb_table.insert(tcb);
 
         // SYNパケット構築 (TCPオプション付き)
         // MSS=1460 (標準的なイーサネットMTU)
@@ -393,7 +405,9 @@ impl RuntimeCommandHandler {
                 1460,
                 Some(7),
                 true,
-                Some(crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp()),
+                Some(crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(
+                    runtime,
+                )),
             ) // MSS + Window Scale + SACK Permitted + TS
             .build_checked_packet(local_addr, remote);
 
@@ -403,7 +417,7 @@ impl RuntimeCommandHandler {
         };
 
         // パケット送信（IPスタック経由）
-        if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
+        if let Err(e) = self.send_tcp_segment(runtime, local_addr, remote, syn_segment) {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
                 EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -412,7 +426,7 @@ impl RuntimeCommandHandler {
         }
 
         // TCB更新: SYNは1シーケンス番号を消費する
-        tcb_table().lookup_mut(local_addr, remote, |tcb| {
+        tcb_table.lookup_mut(local_addr, remote, |tcb| {
             tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
         });
 
@@ -427,6 +441,7 @@ impl RuntimeCommandHandler {
     /// TCPセグメント送信（IPスタック経由）
     fn send_tcp_segment(
         &self,
+        runtime: NetRuntimeHandle,
         src: EndpointAddr,
         dst: EndpointAddr,
         segment: PacketPayload,
@@ -436,7 +451,7 @@ impl RuntimeCommandHandler {
         }
         // Delegate to the packet-backed module-level TCP sender.
         // This centralizes IP family handling and ARP/NDP queuing logic.
-        if send_tcp_segment_payload(src, dst, segment) {
+        if send_tcp_segment_payload_in(runtime, src, dst, segment) {
             Ok(())
         } else {
             Err(EndpointError::ResourceExhausted)
@@ -454,6 +469,7 @@ impl RuntimeCommandHandler {
         let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
+        let runtime = socket.runtime();
 
         // ローカルアドレスをソケットに設定
         let listen_result = socket.with_inner_mut(|inner| {
@@ -483,7 +499,7 @@ impl RuntimeCommandHandler {
         // backlog値を保存（接続要求キューの最大サイズ）
         // 注: 実際の接続要求キューはTCBテーブル側で管理
         let _ = backlog; // 現在のTCB構造体にはbacklogフィールドなし
-        let _ = tcb_table().insert(tcb);
+        let _ = tcp_table_in(runtime).insert(tcb);
 
         log::info!(
             "TCP: Listening on {} (fd={}, backlog={})",
@@ -501,8 +517,11 @@ impl RuntimeCommandHandler {
         let Some(socket) = crate::net::l4::socket::lookup_socket(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
+        let runtime = socket.runtime();
+        let tcb_table = tcp_table_in(runtime);
 
-        let Some((local, remote)) = socket.with_inner(|inner| (inner.local_addr, inner.remote_addr))
+        let Some((local, remote)) =
+            socket.with_inner(|inner| (inner.local_addr, inner.remote_addr))
         else {
             return EventHandleResult::SocketNotFound(fd);
         };
@@ -517,21 +536,21 @@ impl RuntimeCommandHandler {
             Some(addr) => addr,
             None => {
                 // リモートアドレスがない場合（Listenソケットなど）は即時クローズ
-                tcb_table().remove_by_socket_id(fd);
+                tcb_table.remove_by_socket_id(fd);
                 self.close_socket_now(fd);
                 return EventHandleResult::Success;
             }
         };
 
         // TCBエントリの状態を取得
-        let state = tcb_table()
+        let state = tcb_table
             .read(local, remote, |tcb| tcb.state)
             .unwrap_or(TcpConnectionState::Closed);
 
         match state {
             TcpConnectionState::Established => {
                 // FINパケットを送信
-                let seq = tcb_table()
+                let seq = tcb_table
                     .lookup_mut(local, remote, |tcb| {
                         let seq = tcb.snd_nxt;
                         tcb.state = TcpConnectionState::FinWait1;
@@ -553,7 +572,7 @@ impl RuntimeCommandHandler {
                     Err(e) => return EventHandleResult::ProtocolError(e),
                 };
 
-                if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
+                if let Err(e) = self.send_tcp_segment(runtime, local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN: {:?}", e);
                     return EventHandleResult::ProtocolError(match e {
                         EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -565,7 +584,7 @@ impl RuntimeCommandHandler {
             }
             TcpConnectionState::CloseWait => {
                 // 相手からFINを受信済み、自分からFINを送信
-                let seq = tcb_table()
+                let seq = tcb_table
                     .lookup_mut(local, remote, |tcb| {
                         let seq = tcb.snd_nxt;
                         tcb.state = TcpConnectionState::LastAck;
@@ -587,13 +606,13 @@ impl RuntimeCommandHandler {
                     Err(e) => return EventHandleResult::ProtocolError(e),
                 };
 
-                if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
+                if let Err(e) = self.send_tcp_segment(runtime, local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN (LastAck): {:?}", e);
                 }
             }
             TcpConnectionState::Listen | TcpConnectionState::SynSent => {
                 // まだ接続が確立していない場合は即座にクローズ
-                tcb_table().remove(local, remote);
+                tcb_table.remove(local, remote);
                 self.close_socket_now(fd);
             }
             _ => {

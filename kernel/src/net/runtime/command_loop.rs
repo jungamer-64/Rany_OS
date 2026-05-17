@@ -8,8 +8,8 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::command::command_queue_in;
-use crate::net::l4::tcp::tcb_table;
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
+use crate::net::runtime::transport::tcp_table_in;
 use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 /// ネットワークイベント処理タスク（完全非同期版）
@@ -94,7 +94,7 @@ fn process_handle_result(runtime: NetRuntimeHandle, result: EventHandleResult) {
         EventHandleResult::ProtocolError(e) => {
             static PROTO_ERR_COUNT: AtomicU32 = AtomicU32::new(0);
             static PROTO_ERR_LAST_LOG: AtomicU64 = AtomicU64::new(0);
-            let now = tcb_table().get_current_tick();
+            let now = tcp_table_in(runtime).get_current_tick();
             let last = PROTO_ERR_LAST_LOG.load(Ordering::Relaxed);
             if now.saturating_sub(last) >= 5000 {
                 let suppressed = PROTO_ERR_COUNT.swap(0, Ordering::Relaxed);

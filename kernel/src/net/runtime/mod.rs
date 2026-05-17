@@ -15,6 +15,7 @@ pub mod device;
 pub mod manager;
 pub mod stack;
 pub mod timeouts;
+pub(crate) mod transport;
 
 pub use context::{
     NetRuntimeContext, NetRuntimeHandle, NetRuntimeId, RuntimeAllocationError, create_runtime,
