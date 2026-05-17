@@ -49,9 +49,6 @@ const ARP_WAITER_CAPACITY: usize = 32;
 /// タイムアウト（ミリ秒）
 const ARP_RESOLVE_TIMEOUT_MS: u64 = 5_000;
 
-static ARP_WAITERS: PoisonLock<Vec<ArpWaiter>> = PoisonLock::new(Vec::new());
-static ARP_WAITER_NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
 #[inline]
 fn current_time_ms() -> u64 {
     crate::time::get_uptime_ms()

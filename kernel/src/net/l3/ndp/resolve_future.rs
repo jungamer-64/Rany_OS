@@ -33,9 +33,6 @@ struct NdpWaiter {
 const NDP_WAITER_CAPACITY: usize = 32;
 const NDP_RESOLVE_TIMEOUT_MS: u64 = 5_000;
 
-static NDP_WAITERS: PoisonLock<Vec<NdpWaiter>> = PoisonLock::new(Vec::new());
-static NDP_WAITER_NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
 #[inline]
 fn current_time_ms() -> u64 {
     crate::time::get_uptime_ms()
