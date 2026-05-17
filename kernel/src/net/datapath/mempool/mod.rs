@@ -453,14 +453,24 @@ fn new_pooled_packet_ref(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) 
 }
 
 pub fn packet_ref_from_dma_slice(slice: TypedDmaSlice<KernelCpuOwned>) -> PacketRef {
+    let headroom = DEFAULT_PACKET_HEADROOM.min(slice.len());
+    packet_ref_from_dma_slice_with_headroom(slice, headroom)
+        .expect("default DMA packet headroom is bounded by capacity")
+}
+
+pub fn packet_ref_from_dma_slice_with_headroom(
+    slice: TypedDmaSlice<KernelCpuOwned>,
+    headroom: usize,
+) -> Option<PacketRef> {
     let size = slice.len();
-    let window = PacketWindow::new(size, DEFAULT_PACKET_HEADROOM.min(size), 0)
-        .expect("DMA packet headroom is bounded by capacity");
+    let window = PacketWindow::new(size, headroom, 0)?;
     let state = DmaPacketState {
         buf: NonNull::from(Box::leak(Box::new(DmaBuffer::from_typed(slice)))),
         window,
     };
-    unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE) }
+    Some(unsafe {
+        PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE)
+    })
 }
 
 fn packet_ref_from_kapi_dma_slice(slice: KapiDmaSlice<KapiCpuOwned>) -> PacketRef {

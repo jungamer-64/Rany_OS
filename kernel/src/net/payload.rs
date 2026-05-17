@@ -4,7 +4,6 @@
 
 use crate::net::l3::ipv4::IpProtocol;
 use alloc::vec::Vec;
-use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 use kernel_api::resource::net::{PacketChain, PacketPayload, PacketRef};
 
 #[derive(Debug, Clone, Copy)]
@@ -706,14 +705,10 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
         }
     }
 
-    let dma_len = len.saturating_add(headroom.max(DEFAULT_PACKET_HEADROOM));
+    let dma_len = len.checked_add(headroom)?;
     let dma_buf = crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(dma_len)?;
-    let mut packet = crate::net::datapath::mempool::packet_ref_from_dma_slice(dma_buf);
-    let available_headroom = packet.headroom();
-    let capacity = packet.capacity().saturating_sub(available_headroom);
-    if headroom > available_headroom || len > capacity {
-        return None;
-    }
+    let mut packet =
+        crate::net::datapath::mempool::packet_ref_from_dma_slice_with_headroom(dma_buf, headroom)?;
     if !packet.set_len(len) {
         return None;
     }
@@ -804,6 +799,7 @@ pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
     #[test]
     fn payload_range_checked_end_rejects_overflow() {
@@ -822,5 +818,20 @@ mod tests {
         };
 
         assert!(span.trim_ascii_whitespace().is_none());
+    }
+
+    #[test]
+    fn alloc_packet_with_large_headroom_preserves_requested_headroom() {
+        let requested_headroom = DEFAULT_PACKET_HEADROOM.saturating_mul(2);
+        let packet =
+            alloc_packet_with_headroom(128, requested_headroom).expect("packet allocation");
+
+        assert!(packet.headroom() >= requested_headroom);
+        assert_eq!(packet.len(), 128);
+    }
+
+    #[test]
+    fn alloc_packet_with_headroom_rejects_length_overflow() {
+        assert!(alloc_packet_with_headroom(usize::MAX, 1).is_none());
     }
 }
