@@ -19,10 +19,21 @@ mod udp_tx;
 impl NetworkStack {
     /// Send an IGMP Leave Group message
     pub(super) fn send_igmp_leave(&mut self, group_addr: Ipv4Address, _current_time: u64) {
-        let Some((if_id, state)) = self.primary_interface_state() else {
+        let Some((if_id, _)) = self.primary_interface_state() else {
             return;
         };
-        let config = state.config;
+        self.send_igmp_leave_on(if_id, group_addr, _current_time);
+    }
+
+    pub(super) fn send_igmp_leave_on(
+        &mut self,
+        if_id: NetIfId,
+        group_addr: Ipv4Address,
+        _current_time: u64,
+    ) {
+        let Some(config) = self.interface_config(if_id) else {
+            return;
+        };
         // ── ファイアウォール Egress チェック ──
         if !crate::net::security::firewall::check_egress(
             config.ipv4.address.octets(),
@@ -32,7 +43,9 @@ impl NetworkStack {
             0,
             0,
         ) {
-            state.stats.record_dropped();
+            if let Some(stats) = self.interface_stats(if_id) {
+                stats.record_dropped();
+            }
             return;
         }
 

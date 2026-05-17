@@ -135,8 +135,7 @@ impl NetworkStack {
         preferred_if: Option<NetIfId>,
         explicit_src: Option<Ipv4Address>,
         dst_ip: Ipv4Address,
-    ) -> Result<(NetIfId, NetworkConfig, Ipv4Address), crate::net::types::NetworkError>
-    {
+    ) -> Result<(NetIfId, NetworkConfig, Ipv4Address), crate::net::types::NetworkError> {
         let resolved = scope
             .as_if_id()
             .or(preferred_if)
@@ -171,8 +170,7 @@ impl NetworkStack {
         preferred_if: Option<NetIfId>,
         explicit_src: Option<Ipv6Address>,
         dst_ip: Ipv6Address,
-    ) -> Result<(NetIfId, NetworkConfig, Ipv6Address), crate::net::types::NetworkError>
-    {
+    ) -> Result<(NetIfId, NetworkConfig, Ipv6Address), crate::net::types::NetworkError> {
         let resolved = scope
             .as_if_id()
             .or(preferred_if)
@@ -573,7 +571,10 @@ impl NetworkStack {
     fn record_tx_success_on(&self, if_id: Option<NetIfId>, packet_len: usize) {
         let stats = if_id
             .and_then(|if_id| self.interface_stats(if_id))
-            .or_else(|| self.primary_interface_state().map(|(_, state)| &state.stats));
+            .or_else(|| {
+                self.primary_interface_state()
+                    .map(|(_, state)| &state.stats)
+            });
         if let Some(stats) = stats {
             stats.record_tx(packet_len);
         }
@@ -582,7 +583,10 @@ impl NetworkStack {
     fn record_tx_error_on(&self, if_id: Option<NetIfId>) {
         let stats = if_id
             .and_then(|if_id| self.interface_stats(if_id))
-            .or_else(|| self.primary_interface_state().map(|(_, state)| &state.stats));
+            .or_else(|| {
+                self.primary_interface_state()
+                    .map(|(_, state)| &state.stats)
+            });
         if let Some(stats) = stats {
             stats.record_tx_error();
         }

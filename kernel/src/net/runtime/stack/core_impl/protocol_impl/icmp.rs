@@ -319,12 +319,13 @@ impl NetworkStack {
             dst_ip
         } else {
             // RFC 1122: Check redirect cache first for an alternative gateway
-            self.redirect_cache.set_time(current_time);
-            if let Some(redirected_gateway) = self.redirect_cache.get(dst_ip) {
-                redirected_gateway
-            } else {
-                config.ipv4.gateway
+            if let Some((_, state)) = self.primary_interface_state_mut() {
+                state.redirect_cache.set_time(current_time);
+                if let Some(redirected_gateway) = state.redirect_cache.get(dst_ip) {
+                    return redirected_gateway;
+                }
             }
+            config.ipv4.gateway
         }
     }
 
@@ -493,7 +494,10 @@ impl NetworkStack {
         }
 
         // Rate limiting
-        if let Some(ref icmpv6) = self.icmpv6 {
+        if let Some((_, state)) = self.primary_interface_state() {
+            let Some(ref icmpv6) = state.icmpv6 else {
+                return false;
+            };
             if !icmpv6.check_tx_rate_limit(current_time) {
                 return false;
             }
@@ -546,7 +550,10 @@ impl NetworkStack {
         }
 
         // Rate limiting
-        if let Some(ref icmpv6) = self.icmpv6 {
+        if let Some((_, state)) = self.primary_interface_state() {
+            let Some(ref icmpv6) = state.icmpv6 else {
+                return false;
+            };
             if !icmpv6.check_tx_rate_limit(current_time) {
                 return false;
             }
@@ -575,8 +582,8 @@ impl NetworkStack {
 
     /// Helper to get the best IPv6 source address for a destination
     fn get_ipv6_source_for(&self, _dst: &Ipv6Address) -> Option<Ipv6Address> {
-        if let Some(ref ipv6) = self.ipv6 {
-            let config = ipv6.config();
+        if let Some((_, state)) = self.primary_interface_state() {
+            let config = state.ipv6.as_ref()?.config();
             // Simple selection: use global if available, otherwise link-local
             if let Some(global) = config.global {
                 Some(global)
@@ -727,12 +734,17 @@ impl NetworkStack {
             };
             let next_hop_mtu = u16::from_be_bytes(next_hop_mtu_bytes);
             let mtu = if next_hop_mtu == 0 {
-                let current_mtu = self.ipv4.get_pmtu(original_dst, current_time);
+                let Some((_, state)) = self.primary_interface_state_mut() else {
+                    return;
+                };
+                let current_mtu = state.ipv4.get_pmtu(original_dst, current_time);
                 crate::net::l3::ipv4::PmtuEntry::get_next_plateau(current_mtu)
             } else {
                 next_hop_mtu
             };
-            self.ipv4.update_pmtu(original_dst, mtu, current_time);
+            if let Some((_, state)) = self.primary_interface_state_mut() {
+                state.ipv4.update_pmtu(original_dst, mtu, current_time);
+            }
         }
     }
 
@@ -801,7 +813,9 @@ impl NetworkStack {
         // Update redirect cache (temporary route override)
         // In a full implementation, this would update the routing table
         // For now, we store redirects in a simple cache
-        self.redirect_cache.insert(destination, gateway);
+        if let Some((_, state)) = self.primary_interface_state_mut() {
+            state.redirect_cache.insert(destination, gateway);
+        }
     }
 
     pub(crate) fn send_icmp_echo_fallback(

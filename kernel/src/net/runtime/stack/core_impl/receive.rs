@@ -24,6 +24,12 @@ impl NetworkStack {
         packet: PacketRef,
         _src_mac: MacAddress,
     ) {
+        let Some((ingress_if_id, config)) = self
+            .primary_interface_state()
+            .map(|(if_id, state)| (if_id, state.config))
+        else {
+            return;
+        };
         // Fragmented packets must keep packet ownership for reassembly tracking.
         // Non-fragmented packets can follow the normal parse path directly.
         let is_fragment = crate::net::l3::ipv4::Ipv4Packet::parse(data).is_some_and(|packet| {
@@ -32,20 +38,29 @@ impl NetworkStack {
         let mut packet = Some(packet);
         let result = if is_fragment {
             match packet.take() {
-                Some(packet_ref) => self
-                    .ipv4
-                    .process_fragment_owned_packet(packet_ref, current_time),
+                Some(packet_ref) => {
+                    let Some(state) = self.interfaces.get_mut(&ingress_if_id) else {
+                        return;
+                    };
+                    state
+                        .ipv4
+                        .process_fragment_owned_packet(packet_ref, current_time)
+                }
                 None => {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 }
             }
         } else {
             let Some(packet_ref) = packet.as_ref() else {
-                self.stats.record_rx_error();
+                self.stats().record_rx_error();
                 return;
             };
-            self.ipv4
+            let Some(state) = self.interfaces.get_mut(&ingress_if_id) else {
+                return;
+            };
+            state
+                .ipv4
                 .process_with_time_and_packet(data, Some(packet_ref), current_time)
         };
 
@@ -53,16 +68,16 @@ impl NetworkStack {
             Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
                 // SECURITY: multicast ICMP は joined group だけで受理する。
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
-                    self.stats.record_dropped();
+                    self.stats().record_dropped();
                     return;
                 }
                 // Keep zero-copy semantics by slicing from the owned packet payload.
                 let Some(packet_ref) = packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 let Some(offset) = crate::net::payload::subslice_offset(data, payload) else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
@@ -71,18 +86,18 @@ impl NetworkStack {
                     offset,
                     payload.len(),
                 ) else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 self.process_icmp_payload(runtime, icmp_payload, src_ip, dst_ip, ttl, current_time);
             }
             Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 let Some(packet_ref) = packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 let Some(offset) = crate::net::payload::subslice_offset(data, payload) else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
@@ -91,7 +106,7 @@ impl NetworkStack {
                     offset,
                     payload.len(),
                 ) else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 self.process_igmp_payload(&igmp_payload, src_ip, ttl);
@@ -99,7 +114,7 @@ impl NetworkStack {
             Ipv4ProcessResult::Udp(_payload, _src_ip, dst_ip, _orig) => {
                 // SECURITY: multicast UDP は joined group だけで受理する。
                 if dst_ip.is_multicast() && !self.is_multicast_allowed(dst_ip) {
-                    self.stats.record_dropped();
+                    self.stats().record_dropped();
                     return;
                 }
                 // Offload transport handling to endpoint event path.
@@ -107,7 +122,7 @@ impl NetworkStack {
                     crate::net::runtime::command::enqueue_command_ignore(
                         crate::net::runtime::command::RuntimeCommand::Ingress(
                             crate::net::runtime::command::IngressCommand::Packet {
-                                if_id: None,
+                                if_id: Some(ingress_if_id),
                                 packet: packet_ref,
                             },
                         ),
@@ -118,10 +133,10 @@ impl NetworkStack {
                 // SECURITY: multicast / broadcast 上の TCP は拒否する（RFC 793 / RFC 1122）。
                 if dst_ip.is_multicast()
                     || dst_ip.is_broadcast()
-                    || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
-                        && dst_ip == self.config().ipv4.broadcast_address())
+                    || (config.ipv4.subnet_mask.as_bytes()[0] != 0
+                        && dst_ip == config.ipv4.broadcast_address())
                 {
-                    self.stats.record_dropped();
+                    self.stats().record_dropped();
                     return;
                 }
                 // Offload transport handling to endpoint event path.
@@ -129,7 +144,7 @@ impl NetworkStack {
                     crate::net::runtime::command::enqueue_command_ignore(
                         crate::net::runtime::command::RuntimeCommand::Ingress(
                             crate::net::runtime::command::IngressCommand::Packet {
-                                if_id: None,
+                                if_id: Some(ingress_if_id),
                                 packet: packet_ref,
                             },
                         ),
@@ -145,17 +160,17 @@ impl NetworkStack {
                     if IpProtocol::from(header[9]) == IpProtocol::Tcp
                         && (dst.is_multicast()
                             || dst.is_broadcast()
-                            || (self.config().ipv4.subnet_mask.as_bytes()[0] != 0
-                                && dst == self.config().ipv4.broadcast_address()))
+                            || (config.ipv4.subnet_mask.as_bytes()[0] != 0
+                                && dst == config.ipv4.broadcast_address()))
                     {
-                        self.stats.record_dropped();
+                        self.stats().record_dropped();
                         return;
                     }
                 }
                 crate::net::runtime::command::enqueue_command_ignore(
                     crate::net::runtime::command::RuntimeCommand::Ingress(
                         crate::net::runtime::command::IngressCommand::Reassembled {
-                            if_id: None,
+                            if_id: Some(ingress_if_id),
                             payload,
                         },
                     ),
@@ -180,7 +195,7 @@ impl NetworkStack {
                     src
                 );
                 let Some(packet_ref) = packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 self.send_icmp_error_payload(
@@ -191,8 +206,8 @@ impl NetworkStack {
                     current_time,
                 );
             }
-            Ipv4ProcessResult::Dropped => self.stats.record_dropped(),
-            Ipv4ProcessResult::Error => self.stats.record_rx_error(),
+            Ipv4ProcessResult::Dropped => self.stats().record_dropped(),
+            Ipv4ProcessResult::Error => self.stats().record_rx_error(),
             Ipv4ProcessResult::Success => {}
         }
     }
@@ -212,14 +227,19 @@ impl NetworkStack {
 
         if dst_ip.is_broadcast()
             || dst_ip.is_multicast()
-            || dst_ip == self.ipv4.config().broadcast_address()
+            || dst_ip == self.config().ipv4.broadcast_address()
         {
             return;
         }
 
-        let result = self
-            .icmp
-            .process_payload(&payload, src_ip, dst_ip, current_time);
+        let result = {
+            let Some((_, state)) = self.primary_interface_state_mut() else {
+                return;
+            };
+            state
+                .icmp
+                .process_payload(&payload, src_ip, dst_ip, current_time)
+        };
 
         match result {
             IcmpResult::SendEchoReply {
@@ -232,7 +252,7 @@ impl NetworkStack {
                 let Some(echo_data) =
                     crate::net::payload::move_payload_window_owned(payload, data_offset, data_len)
                 else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 self.send_icmp_echo_reply_payload(
@@ -287,7 +307,7 @@ impl NetworkStack {
                     current_time,
                 );
             }
-            IcmpResult::Invalid => self.stats.record_rx_error(),
+            IcmpResult::Invalid => self.stats().record_rx_error(),
             IcmpResult::Ignored => {}
         }
     }
@@ -303,7 +323,9 @@ impl NetworkStack {
         ip_packet: PacketRef,
     ) {
         let mut ip_packet = Some(ip_packet);
-        let ingress_if_id = self.resolve_ingress_if(if_id);
+        let Some(ingress_if_id) = self.resolve_ingress_if(if_id) else {
+            return;
+        };
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
@@ -327,44 +349,24 @@ impl NetworkStack {
             let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
             if is_fragment {
                 let Some(packet_ref) = ip_packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
-                if let Some(if_id) = if_id {
-                    if let Some(state) = self.interfaces.get_mut(&if_id) {
-                        if let Some(ref mut ipv6) = state.ipv6 {
-                            ipv6.process_fragment_owned_packet(packet_ref, current_time)
-                        } else if let Some(ref mut ipv6) = self.ipv6 {
-                            ipv6.process_fragment_owned_packet(packet_ref, current_time)
-                        } else {
-                            return;
-                        }
-                    } else if let Some(ref mut ipv6) = self.ipv6 {
+                if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
+                    if let Some(ref mut ipv6) = state.ipv6 {
                         ipv6.process_fragment_owned_packet(packet_ref, current_time)
                     } else {
                         return;
                     }
-                } else if let Some(ref mut ipv6) = self.ipv6 {
-                    ipv6.process_fragment_owned_packet(packet_ref, current_time)
                 } else {
                     return;
                 }
-            } else if let Some(if_id) = if_id {
-                if let Some(state) = self.interfaces.get_mut(&if_id) {
-                    if let Some(ref mut ipv6) = state.ipv6 {
-                        ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
-                    } else if let Some(ref mut ipv6) = self.ipv6 {
-                        ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
-                    } else {
-                        return;
-                    }
-                } else if let Some(ref mut ipv6) = self.ipv6 {
+            } else if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
+                if let Some(ref mut ipv6) = state.ipv6 {
                     ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
                 } else {
                     return;
                 }
-            } else if let Some(ref mut ipv6) = self.ipv6 {
-                ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
             } else {
                 return;
             }
@@ -374,19 +376,19 @@ impl NetworkStack {
             Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
                 let (data_offset, payload_len) = {
                     let Some(packet_ref) = ip_packet.as_ref() else {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     };
                     let Some(data_offset) =
                         crate::net::payload::subslice_offset(packet_ref.data(), payload)
                     else {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     };
                     (data_offset, payload.len())
                 };
                 let Some(packet_ref) = ip_packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
@@ -395,12 +397,12 @@ impl NetworkStack {
                     data_offset,
                     payload_len,
                 ) else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 self.process_icmpv6_data(
                     runtime,
-                    if_id,
+                    Some(ingress_if_id),
                     icmpv6_payload,
                     src,
                     dst,
@@ -412,19 +414,19 @@ impl NetworkStack {
             Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
                 let (offset, payload_len) = {
                     let Some(packet_ref) = ip_packet.as_ref() else {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     };
                     let Some(offset) =
                         crate::net::payload::subslice_offset(packet_ref.data(), payload)
                     else {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     };
                     (offset, payload.len())
                 };
                 let Some(packet_ref) = ip_packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
@@ -433,12 +435,12 @@ impl NetworkStack {
                     offset,
                     payload_len,
                 ) else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
                     runtime,
-                    if_id,
+                    Some(ingress_if_id),
                     src,
                     dst,
                     tcp_segment_payload,
@@ -447,24 +449,24 @@ impl NetworkStack {
             Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
                 let (offset, payload_len) = {
                     let Some(packet_ref) = ip_packet.as_ref() else {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     };
                     let Some(offset) =
                         crate::net::payload::subslice_offset(packet_ref.data(), payload)
                     else {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     };
                     (offset, payload.len())
                 };
                 let Some(packet_ref) = ip_packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
                 self.process_udp_payload_v6(
-                    if_id,
+                    Some(ingress_if_id),
                     original_packet,
                     offset,
                     payload_len,
@@ -478,7 +480,7 @@ impl NetworkStack {
                 crate::net::runtime::command::enqueue_command_ignore(
                     crate::net::runtime::command::RuntimeCommand::Ingress(
                         crate::net::runtime::command::IngressCommand::Reassembled {
-                            if_id,
+                            if_id: Some(ingress_if_id),
                             payload,
                         },
                     ),
@@ -502,17 +504,17 @@ impl NetworkStack {
                         fh.len(),
                         kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
                     ) else {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     };
                     if writer.write_bytes(&fh).is_none() {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     }
                     if let Some(fragment_header) = writer.finish() {
                         crate::net::payload::append_payload(&mut quoted, fragment_header);
                     } else {
-                        self.stats.record_rx_error();
+                        self.stats().record_rx_error();
                         return;
                     }
                 }
@@ -546,7 +548,7 @@ impl NetworkStack {
             Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst) => {
                 // RFC 4443 Section 3.4: Parameter Problem (Code 1).
                 let Some(packet_ref) = ip_packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 self.send_icmpv6_parameter_problem_payload(
@@ -562,7 +564,7 @@ impl NetworkStack {
             Ipv6ProcessResult::HopLimitExceeded(src, _dst) => {
                 // RFC 4443 Section 3.3: Time Exceeded (Code 0).
                 let Some(packet_ref) = ip_packet.take() else {
-                    self.stats.record_rx_error();
+                    self.stats().record_rx_error();
                     return;
                 };
                 self.send_icmpv6_time_exceeded(
@@ -574,8 +576,8 @@ impl NetworkStack {
             Ipv6ProcessResult::HopLimitExceededOwned(src, _dst, orig_packet) => {
                 self.send_icmpv6_time_exceeded(src, 0, orig_packet);
             }
-            Ipv6ProcessResult::Dropped => self.stats.record_dropped(),
-            Ipv6ProcessResult::Error => self.stats.record_rx_error(),
+            Ipv6ProcessResult::Dropped => self.stats().record_dropped(),
+            Ipv6ProcessResult::Error => self.stats().record_rx_error(),
         }
     }
 
@@ -595,25 +597,16 @@ impl NetworkStack {
         hop_limit: u8,
         current_time: u64,
     ) {
-        let result = if let Some(if_id) = if_id {
-            if let Some(state) = self.interfaces.get(&if_id) {
-                if let Some(ref icmpv6) = state.icmpv6 {
-                    icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
-                } else if let Some(ref icmpv6) = self.icmpv6 {
-                    icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
-                } else {
-                    return;
-                }
-            } else if let Some(ref icmpv6) = self.icmpv6 {
-                icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
-            } else {
-                return;
-            }
-        } else if let Some(ref icmpv6) = self.icmpv6 {
-            icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time)
-        } else {
+        let Some(ingress_if_id) = self.resolve_ingress_if(if_id) else {
             return;
         };
+        let Some(state) = self.interfaces.get(&ingress_if_id) else {
+            return;
+        };
+        let Some(ref icmpv6) = state.icmpv6 else {
+            return;
+        };
+        let result = icmpv6.process_payload(payload, src, dst, src_mac, hop_limit, current_time);
 
         match result {
             Icmpv6Result::SendEchoReply {
@@ -630,45 +623,29 @@ impl NetworkStack {
                 // Choose source address: if the original request was to our global address,
                 // use that as source for the reply.
                 let mut reply_src = None;
-                if let Some(if_id) = if_id {
-                    if let Some(config) = self
-                        .interface_config_or_runtime(if_id)
-                        .and_then(|cfg| cfg.ipv6)
-                    {
-                        if let Some(global) = config.global {
-                            if dst == global {
-                                reply_src = Some(global);
-                            }
-                        }
-                        if reply_src.is_none() {
-                            reply_src = Some(config.link_local);
+                if let Some(config) = self
+                    .interface_config_or_runtime(ingress_if_id)
+                    .and_then(|cfg| cfg.ipv6)
+                {
+                    if let Some(global) = config.global {
+                        if dst == global {
+                            reply_src = Some(global);
                         }
                     }
-                }
-                if reply_src.is_none() {
-                    if let Some(ref ipv6) = self.ipv6 {
-                        let config = ipv6.config();
-                        if let Some(global) = config.global {
-                            if dst == global {
-                                reply_src = Some(global);
-                            }
-                        }
-                        if reply_src.is_none() {
-                            reply_src = Some(config.link_local);
-                        }
+                    if reply_src.is_none() {
+                        reply_src = Some(config.link_local);
                     }
                 }
 
                 if let Some(src_addr) = reply_src {
-                    if let Some(if_id) = if_id {
-                        self.send_icmpv6_echo_reply_with_src_on(
-                            if_id, src_addr, reply_dst, identifier, sequence, echo_data,
-                        );
-                    } else {
-                        self.send_icmpv6_echo_reply_with_src(
-                            src_addr, reply_dst, identifier, sequence, echo_data,
-                        );
-                    }
+                    self.send_icmpv6_echo_reply_with_src_on(
+                        ingress_if_id,
+                        src_addr,
+                        reply_dst,
+                        identifier,
+                        sequence,
+                        echo_data,
+                    );
                 }
             }
             Icmpv6Result::EchoReplyReceived {
@@ -692,7 +669,7 @@ impl NetworkStack {
             } => {
                 self.process_ndp_message(
                     runtime,
-                    if_id,
+                    Some(ingress_if_id),
                     msg_type,
                     ndp_data,
                     ndp_src,
@@ -711,26 +688,12 @@ impl NetworkStack {
                 // SECURITY: RFC 8201 / RFC 5927 に従い、ICMPv6 message が
                 // 自スタックの送信済み packet と active connection を引用していることを検証する。
                 let mut is_our_packet = false;
-                if let Some(if_id) = if_id {
-                    if let Some(config) = self
-                        .interface_config_or_runtime(if_id)
-                        .and_then(|cfg| cfg.ipv6)
-                    {
-                        if quoted_src == config.link_local || config.global == Some(quoted_src) {
-                            is_our_packet = true;
-                        }
-                    }
-                }
-                if !is_our_packet {
-                    if let Some(ref ipv6) = self.ipv6 {
-                        let config = ipv6.config();
-                        if quoted_src == config.link_local {
-                            is_our_packet = true;
-                        } else if let Some(global) = config.global {
-                            if quoted_src == global {
-                                is_our_packet = true;
-                            }
-                        }
+                if let Some(config) = self
+                    .interface_config_or_runtime(ingress_if_id)
+                    .and_then(|cfg| cfg.ipv6)
+                {
+                    if quoted_src == config.link_local || config.global == Some(quoted_src) {
+                        is_our_packet = true;
                     }
                 }
 
@@ -789,12 +752,9 @@ impl NetworkStack {
                     log::info!("ICMPv6: Packet Too Big for {}, MTU={}", dst, mtu);
                     // Update IPv6 Path MTU cache (RFC 8201)
                     let current_time = self.current_time();
-                    if let Some(if_id) = if_id {
-                        if let Some(state) = self.interfaces.get_mut(&if_id) {
-                            state.ipv6_pmtu_cache.update(dst, mtu, current_time);
-                        }
+                    if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
+                        state.ipv6_pmtu_cache.update(dst, mtu, current_time);
                     }
-                    self.ipv6_pmtu_cache.update(dst, mtu, current_time);
                 } else {
                     log::warn!(
                         "ICMPv6: Packet Too Big for {} rejected (quoted src {} is not local)",
@@ -893,42 +853,16 @@ impl NetworkStack {
             return;
         }
 
-        let result = if let Some(if_id) = if_id {
-            if let Some(state) = self.interfaces.get_mut(&if_id) {
-                if let Some(ref mut ndp) = state.ndp {
-                    ndp.process_payload(
-                        msg_type,
-                        &payload,
-                        src,
-                        dst,
-                        *src_mac.as_bytes(),
-                        current_time,
-                    )
-                } else if let Some(ref mut ndp) = self.ndp {
-                    ndp.process_payload(
-                        msg_type,
-                        &payload,
-                        src,
-                        dst,
-                        *src_mac.as_bytes(),
-                        current_time,
-                    )
-                } else {
-                    return;
-                }
-            } else if let Some(ref mut ndp) = self.ndp {
-                ndp.process_payload(
-                    msg_type,
-                    &payload,
-                    src,
-                    dst,
-                    *src_mac.as_bytes(),
-                    current_time,
-                )
-            } else {
+        let Some(ingress_if_id) = self.resolve_ingress_if(if_id) else {
+            return;
+        };
+        let result = {
+            let Some(state) = self.interfaces.get_mut(&ingress_if_id) else {
                 return;
-            }
-        } else if let Some(ref mut ndp) = self.ndp {
+            };
+            let Some(ref mut ndp) = state.ndp else {
+                return;
+            };
             ndp.process_payload(
                 msg_type,
                 &payload,
@@ -937,8 +871,6 @@ impl NetworkStack {
                 *src_mac.as_bytes(),
                 current_time,
             )
-        } else {
-            return;
         };
 
         match result {
@@ -949,51 +881,37 @@ impl NetworkStack {
                 solicited,
             } => {
                 // Get our link-local address
-                let our_addr = if let Some(if_id) = if_id {
-                    self.interface_config_or_runtime(if_id)
-                        .and_then(|cfg| cfg.ipv6)
-                        .map(|cfg| cfg.link_local)
-                } else {
-                    self.ipv6.as_ref().map(|ipv6| ipv6.config().link_local)
-                };
+                let our_addr = self
+                    .interface_config_or_runtime(ingress_if_id)
+                    .and_then(|cfg| cfg.ipv6)
+                    .map(|cfg| cfg.link_local);
                 if let Some(our_addr) = our_addr {
                     let Some(na_msg) =
                         NdpProcessor::build_na(&our_addr, &na_dst, &target, &our_mac, solicited)
                     else {
-                        self.stats.record_dropped();
+                        self.stats().record_dropped();
                         return;
                     };
-                    if let Some(if_id) = if_id {
-                        self.send_ipv6_icmpv6_on(if_id, &our_addr, &na_dst, na_msg);
-                    } else {
-                        self.send_ipv6_icmpv6(&our_addr, &na_dst, na_msg);
-                    }
+                    self.send_ipv6_icmpv6_on(ingress_if_id, &our_addr, &na_dst, na_msg);
                     log::info!("NDP: Sent NA for {} to {}", target, na_dst);
                 }
             }
             NdpResult::SendNeighborAdvertisementMulticast { target, our_mac } => {
                 // Get our link-local address
-                let our_addr = if let Some(if_id) = if_id {
-                    self.interface_config_or_runtime(if_id)
-                        .and_then(|cfg| cfg.ipv6)
-                        .map(|cfg| cfg.link_local)
-                } else {
-                    self.ipv6.as_ref().map(|ipv6| ipv6.config().link_local)
-                };
+                let our_addr = self
+                    .interface_config_or_runtime(ingress_if_id)
+                    .and_then(|cfg| cfg.ipv6)
+                    .map(|cfg| cfg.link_local);
                 if let Some(our_addr) = our_addr {
                     let mcast_dst = Ipv6Address::ALL_NODES_LINK_LOCAL;
                     let Some(na_msg) = NdpProcessor::build_na(
                         &our_addr, &mcast_dst, &target, &our_mac,
                         false, // solicited = false for multicast defense
                     ) else {
-                        self.stats.record_dropped();
+                        self.stats().record_dropped();
                         return;
                     };
-                    if let Some(if_id) = if_id {
-                        self.send_ipv6_icmpv6_on(if_id, &our_addr, &mcast_dst, na_msg);
-                    } else {
-                        self.send_ipv6_icmpv6(&our_addr, &mcast_dst, na_msg);
-                    }
+                    self.send_ipv6_icmpv6_on(ingress_if_id, &our_addr, &mcast_dst, na_msg);
                     log::info!(
                         "NDP: Sent Multicast NA for {} to defend address (DAD)",
                         target
@@ -1001,22 +919,17 @@ impl NetworkStack {
                 }
             }
             NdpResult::SendNeighborSolicitation { src, dst, target } => {
-                let src_mac = if let Some(if_id) = if_id {
-                    self.interface_config_or_runtime(if_id)
-                        .map(|cfg| *cfg.mac.as_bytes())
-                        .unwrap_or(*self.config.mac.as_bytes())
-                } else {
-                    *self.config.mac.as_bytes()
-                };
-                let Some(ns_msg) = NdpProcessor::build_ns(&src, &dst, &target, &src_mac) else {
-                    self.stats.record_dropped();
+                let Some(src_mac) = self
+                    .interface_config_or_runtime(ingress_if_id)
+                    .map(|cfg| *cfg.mac.as_bytes())
+                else {
                     return;
                 };
-                if let Some(if_id) = if_id {
-                    self.send_ipv6_icmpv6_on(if_id, &src, &dst, ns_msg);
-                } else {
-                    self.send_ipv6_icmpv6(&src, &dst, ns_msg);
-                }
+                let Some(ns_msg) = NdpProcessor::build_ns(&src, &dst, &target, &src_mac) else {
+                    self.stats().record_dropped();
+                    return;
+                };
+                self.send_ipv6_icmpv6_on(ingress_if_id, &src, &dst, ns_msg);
                 log::info!("NDP: Sent NS from {} to {} for target {}", src, dst, target);
             }
             NdpResult::NeighborUpdated { ip, mac } => {
@@ -1034,17 +947,13 @@ impl NetworkStack {
                 // NDP解決完了をウェイターレジストリへ通知（非同期NdpResolveFuture向け）
                 crate::net::l3::ndp::notify_ndp_resolved_in(
                     runtime,
-                    if_id.map(|id| id.0),
+                    Some(ingress_if_id.0),
                     ip.octets(),
                     mac,
                 );
 
                 // Drain any pending packets for this now-resolved neighbor
-                if let Some(if_id) = if_id {
-                    self.drain_ndp_pending_on(if_id, &ip);
-                } else {
-                    self.drain_ndp_pending(&ip);
-                }
+                self.drain_ndp_pending_on(ingress_if_id, &ip);
             }
             NdpResult::RouterAdvertisement {
                 router,
@@ -1056,7 +965,8 @@ impl NetworkStack {
                     router,
                     prefixes.len()
                 );
-                if let Some(if_id) = if_id {
+                {
+                    let if_id = ingress_if_id;
                     let mut dad_messages = Vec::new();
                     if let Some(state) = self.interfaces.get_mut(&if_id) {
                         let mac_bytes = *state.config.mac.as_bytes();
@@ -1098,7 +1008,7 @@ impl NetworkStack {
                                                     let Some(ns_msg) = NdpProcessor::build_ns(
                                                         &src, &dst, &target, &mac_bytes,
                                                     ) else {
-                                                        self.stats.record_dropped();
+                                                        state.stats.record_dropped();
                                                         continue;
                                                     };
                                                     dad_messages.push((src, dst, ns_msg, target));
@@ -1149,100 +1059,13 @@ impl NetworkStack {
                     }
                     return;
                 }
-
-                // SLAAC (RFC 4862): Apply prefix information
-                for prefix_opt in &prefixes {
-                    if let crate::net::l3::ndp::NdpOption::PrefixInfo {
-                        prefix_len,
-                        on_link: _,
-                        autonomous,
-                        valid_lifetime,
-                        preferred_lifetime: _,
-                        prefix,
-                    } = prefix_opt
-                    {
-                        // Only process /64 autonomous prefixes with non-zero lifetime
-                        if *autonomous && *prefix_len == 64 && *valid_lifetime > 0 {
-                            if let Some(ref mut ipv6) = self.ipv6 {
-                                let mac_bytes = self.config.mac.as_bytes();
-                                let global_addr = Ipv6Address::from_prefix_eui64(prefix, mac_bytes);
-                                // Only set if we don't already have this address
-                                if ipv6.config().global != Some(global_addr) {
-                                    ipv6.set_global_address(global_addr);
-                                    log::info!(
-                                        "SLAAC: Configured global address {} from prefix {}",
-                                        global_addr,
-                                        prefix
-                                    );
-
-                                    // Initiate Duplicate Address Detection (RFC 4862)
-                                    if let Some(ref mut ndp_proc) = self.ndp {
-                                        let dad_res = ndp_proc.initiate_dad(&global_addr);
-                                        match dad_res {
-                                            NdpResult::SendNeighborSolicitation {
-                                                src,
-                                                dst,
-                                                target,
-                                            } => {
-                                                let Some(ns_msg) = NdpProcessor::build_ns(
-                                                    &src,
-                                                    &dst,
-                                                    &target,
-                                                    self.config.mac.as_bytes(),
-                                                ) else {
-                                                    self.stats.record_dropped();
-                                                    continue;
-                                                };
-                                                if let Some(if_id) = if_id {
-                                                    self.send_ipv6_icmpv6_on(
-                                                        if_id, &src, &dst, ns_msg,
-                                                    );
-                                                } else {
-                                                    self.send_ipv6_icmpv6(&src, &dst, ns_msg);
-                                                }
-                                                log::info!(
-                                                    "NDP: Sent DAD NS for target {}",
-                                                    target
-                                                );
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(ref mut ndp) = self.ndp {
-                                let mac_bytes = self.config.mac.as_bytes();
-                                let global_addr = Ipv6Address::from_prefix_eui64(prefix, mac_bytes);
-                                ndp.add_global_address(global_addr);
-                            }
-                        }
-                    } else if let crate::net::l3::ndp::NdpOption::RecursiveDnsServer {
-                        lifetime,
-                        servers,
-                    } = prefix_opt
-                    {
-                        if *lifetime > 0 {
-                            for server in servers {
-                                crate::net::services::dns::add_ipv6_server(*server);
-                                log::info!("NDP: Added DNS server {} from RDNSS option", server);
-                            }
-                        }
-                    }
-                }
-                // Set router as default gateway
-                if let Some(ref mut ipv6) = self.ipv6 {
-                    if ipv6.config().gateway.is_none() {
-                        ipv6.config_mut().gateway = Some(router);
-                        log::info!("SLAAC: Set default gateway to {}", router);
-                    }
-                }
             }
             NdpResult::Redirect {
                 target,
                 destination,
             } => {
                 // SECURITY: check 0: Redirect handling が global に有効か確認する。
-                if !self.config.icmpv6_redirect_enabled {
+                if !self.config().icmpv6_redirect_enabled {
                     log::warn!(
                         "NDP: Ignoring Redirect for {} to target router {} (Security: disabled by default)",
                         destination,
@@ -1274,17 +1097,29 @@ impl NetworkStack {
             return;
         }
 
-        let local_ip = self.config.ipv4.address;
-        let subnet_mask = self.config.ipv4.subnet_mask;
+        let Some((_, config)) = self
+            .primary_interface_state()
+            .map(|(if_id, state)| (if_id, state.config))
+        else {
+            return;
+        };
+        let local_ip = config.ipv4.address;
+        let subnet_mask = config.ipv4.subnet_mask;
         if local_ip.apply_mask(subnet_mask) != src_ip.apply_mask(subnet_mask) {
             log::warn!("IGMP: Dropping packet from different subnet {}", src_ip);
             return;
         }
 
         let current_time = self.current_time();
-        self.igmp.update_time(current_time);
+        let result = {
+            let Some((_, state)) = self.primary_interface_state_mut() else {
+                return;
+            };
+            state.igmp.update_time(current_time);
+            state.igmp.process_payload(payload, src_ip)
+        };
 
-        match self.igmp.process_payload(payload, src_ip) {
+        match result {
             IgmpResult::GeneralQueryReceived { max_resp_time: _ } => {}
             IgmpResult::GroupQueryReceived {
                 group: _,
@@ -1293,10 +1128,10 @@ impl NetworkStack {
             IgmpResult::ReportReceived { group: _ } => {}
             IgmpResult::Ignored => {}
             IgmpResult::InvalidPacket | IgmpResult::InvalidChecksum => {
-                self.stats.record_rx_error();
+                self.stats().record_rx_error();
             }
             IgmpResult::UnknownType(_) => {
-                self.stats.record_dropped();
+                self.stats().record_dropped();
             }
         }
 

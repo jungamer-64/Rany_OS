@@ -63,12 +63,11 @@ impl NetworkStack {
         dst: &Ipv6Address,
         current_time: u64,
     ) -> usize {
-        let mut pmtu = self.ipv6_pmtu_cache.get(dst, current_time);
-        if let Some(if_id) = if_id {
-            if let Some(state) = self.interfaces.get_mut(&if_id) {
-                pmtu = pmtu.min(state.ipv6_pmtu_cache.get(dst, current_time));
-            }
-        }
+        let selected_if_id = if_id.or_else(|| self.default_interface_id());
+        let pmtu = selected_if_id
+            .and_then(|if_id| self.interfaces.get_mut(&if_id))
+            .map(|state| state.ipv6_pmtu_cache.get(dst, current_time))
+            .unwrap_or(crate::net::runtime::stack::MTU as u32);
         pmtu.max(crate::net::l3::ipv6::Ipv6PmtuEntry::MIN_MTU)
             .min(crate::net::runtime::stack::MTU as u32) as usize
     }
@@ -286,45 +285,47 @@ impl NetworkStack {
         mtu: u32,
         original_packet: PacketPayload,
     ) -> bool {
-        if let Some(ref mut ipv6_proc) = self.ipv6 {
-            let our_addr = ipv6_proc.config().link_local;
-
-            // SECURITY: RFC 4443 への準拠を検査する。
-            {
-                let original_packet_view =
-                    crate::net::payload::PacketPayloadView::new(&original_packet);
-                if !self.should_send_icmp_v6_error(
-                    &original_packet_view,
-                    dst_v6,
-                    Icmpv6Type::PacketTooBig,
-                    0,
-                ) {
-                    return false;
-                }
-            }
-
-            // Rate limit ICMPv6 error messages
-            let current_time = self.current_time();
-            if let Some(ref icmpv6) = self.icmpv6 {
-                if !icmpv6.check_tx_rate_limit(current_time) {
-                    return false;
-                }
-            }
-
-            let Some(icmp_msg) = crate::net::l3::icmpv6::Icmpv6Builder::build_packet_too_big(
-                &our_addr,
-                &dst_v6,
-                mtu,
-                original_packet,
-            ) else {
-                self.stats().record_dropped();
+        let Some((if_id, our_addr)) = self.primary_interface_state().and_then(|(if_id, state)| {
+            state
+                .ipv6
+                .as_ref()
+                .map(|ipv6_proc| (if_id, ipv6_proc.config().link_local))
+        }) else {
+            return false;
+        };
+        {
+            let original_packet_view =
+                crate::net::payload::PacketPayloadView::new(&original_packet);
+            if !self.should_send_icmp_v6_error(
+                &original_packet_view,
+                dst_v6,
+                Icmpv6Type::PacketTooBig,
+                0,
+            ) {
                 return false;
-            };
-            self.send_ipv6_icmpv6_payload(&our_addr, &dst_v6, icmp_msg);
-            true
-        } else {
-            false
+            }
         }
+        let current_time = self.current_time();
+        if !self
+            .interfaces
+            .get(&if_id)
+            .and_then(|state| state.icmpv6.as_ref())
+            .is_some_and(|icmpv6| icmpv6.check_tx_rate_limit(current_time))
+        {
+            return false;
+        }
+
+        let Some(icmp_msg) = crate::net::l3::icmpv6::Icmpv6Builder::build_packet_too_big(
+            &our_addr,
+            &dst_v6,
+            mtu,
+            original_packet,
+        ) else {
+            self.stats().record_dropped();
+            return false;
+        };
+        self.send_ipv6_icmpv6_payload_on(if_id, &our_addr, &dst_v6, icmp_msg);
+        true
     }
 
     /// Send an ICMPv6 Time Exceeded error (RFC 4443).
@@ -334,45 +335,47 @@ impl NetworkStack {
         code: u8,
         original_packet: PacketPayload,
     ) -> bool {
-        if let Some(ref mut ipv6_proc) = self.ipv6 {
-            let our_addr = ipv6_proc.config().link_local;
-
-            // SECURITY: multicast などへ error を返さないことを含め、RFC 4443 への準拠を検査する。
-            {
-                let original_packet_view =
-                    crate::net::payload::PacketPayloadView::new(&original_packet);
-                if !self.should_send_icmp_v6_error(
-                    &original_packet_view,
-                    dst_v6,
-                    Icmpv6Type::TimeExceeded,
-                    code,
-                ) {
-                    return false;
-                }
-            }
-
-            // SECURITY: ICMPv6 error message を rate limit する（RFC 4443）。
-            let current_time = self.current_time();
-            if let Some(ref icmpv6) = self.icmpv6 {
-                if !icmpv6.check_tx_rate_limit(current_time) {
-                    return false;
-                }
-            }
-
-            let Some(icmp_msg) = crate::net::l3::icmpv6::Icmpv6Builder::build_time_exceeded(
-                &our_addr,
-                &dst_v6,
+        let Some((if_id, our_addr)) = self.primary_interface_state().and_then(|(if_id, state)| {
+            state
+                .ipv6
+                .as_ref()
+                .map(|ipv6_proc| (if_id, ipv6_proc.config().link_local))
+        }) else {
+            return false;
+        };
+        {
+            let original_packet_view =
+                crate::net::payload::PacketPayloadView::new(&original_packet);
+            if !self.should_send_icmp_v6_error(
+                &original_packet_view,
+                dst_v6,
+                Icmpv6Type::TimeExceeded,
                 code,
-                original_packet,
-            ) else {
-                self.stats().record_dropped();
+            ) {
                 return false;
-            };
-            self.send_ipv6_icmpv6_payload(&our_addr, &dst_v6, icmp_msg);
-            true
-        } else {
-            false
+            }
         }
+        let current_time = self.current_time();
+        if !self
+            .interfaces
+            .get(&if_id)
+            .and_then(|state| state.icmpv6.as_ref())
+            .is_some_and(|icmpv6| icmpv6.check_tx_rate_limit(current_time))
+        {
+            return false;
+        }
+
+        let Some(icmp_msg) = crate::net::l3::icmpv6::Icmpv6Builder::build_time_exceeded(
+            &our_addr,
+            &dst_v6,
+            code,
+            original_packet,
+        ) else {
+            self.stats().record_dropped();
+            return false;
+        };
+        self.send_ipv6_icmpv6_payload_on(if_id, &our_addr, &dst_v6, icmp_msg);
+        true
     }
 
     /// Send an IPv6 packet containing ICMPv6 payload
@@ -391,96 +394,10 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_payload: PacketPayload,
     ) {
-        let config = self.config();
-        let current_time = self.current_time.load(Ordering::Relaxed);
-        let mut pending_payload = Some(icmpv6_payload);
-
-        // Resolve destination MAC
-        let dst_mac = if dst.is_multicast() {
-            dst.multicast_mac()
-        } else {
-            // Use NDP to resolve
-            match self.ndp {
-                Some(ref mut ndp) => {
-                    match ndp.resolve(dst) {
-                        Some(mac) => mac,
-                        None => {
-                            // Queue packet for later delivery
-                            if let Some(payload) = pending_payload.take() {
-                                self.ndp_pending_queue
-                                    .enqueue(*src, *dst, payload, current_time);
-                            }
-
-                            // Start NDP resolution (send NS)
-                            let Some(ns_msg) = ndp.start_resolution(dst, current_time) else {
-                                self.stats().record_dropped();
-                                return;
-                            };
-                            // Send NS via solicited-node multicast
-                            let sn_mcast = dst.solicited_node();
-                            log::debug!(
-                                "IPv6: NDP resolution started for {}, packet queued ({} pending)",
-                                dst,
-                                self.ndp_pending_queue.packets.len()
-                            );
-
-                            // We need to send the NS message — use the link-local address as src
-                            let our_ll = ndp.our_link_local;
-                            // Send NS via the regular send path (multicast MAC is resolved directly)
-                            self.send_ipv6_icmpv6_raw_payload(&our_ll, &sn_mcast, ns_msg);
-                            return;
-                        }
-                    }
-                }
-                None => return,
-            }
-        };
-
-        let Some(icmpv6_payload) = pending_payload else {
+        let Some((if_id, _)) = self.primary_interface_state() else {
             return;
         };
-        let payload_len = icmpv6_payload.total_len();
-
-        let dst_mac = MacAddress::new(dst_mac);
-
-        let mut packet =
-            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE) {
-                Some(packet) => packet,
-                None => return,
-            };
-
-        // Build Ethernet frame
-        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv6);
-
-            let eth_payload = frame.payload_mut();
-
-            // Build IPv6 packet
-            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
-                ip_packet.init_header();
-                ip_packet.set_source(src);
-                ip_packet.set_destination(dst);
-                ip_packet.set_next_header(IpProtocol::Icmpv6);
-                ip_packet.set_hop_limit(255); // NDP/ICMPv6 uses 255
-
-                ip_packet.finalize(payload_len);
-
-                frame.set_payload_len(IPV6_HEADER_SIZE);
-                let frame_len = frame.as_bytes().len();
-                drop(frame);
-                if packet.set_len(frame_len) {
-                    let payload = if payload_len == 0 {
-                        kernel_api::resource::net::PacketPayload::single(packet)
-                    } else {
-                        icmpv6_payload.prepend(packet)
-                    };
-                    self.transmit_packet_on(None, payload);
-                }
-            }
-        }
+        self.send_ipv6_icmpv6_payload_on(if_id, src, dst, icmpv6_payload);
     }
 
     pub(crate) fn send_ipv6_icmpv6_on(
@@ -516,7 +433,7 @@ impl NetworkStack {
             MacAddress::new(dst.multicast_mac())
         } else {
             let mut queued = false;
-            match self.resolve_ndp_for_send(resolved_if, dst, current_time, |pending| {
+            match self.resolve_ndp_for_send(Some(resolved_if), dst, current_time, |pending| {
                 if let Some(payload) = pending_payload.take() {
                     pending.enqueue(resolved_src, *dst, payload, current_time);
                 }
@@ -574,7 +491,7 @@ impl NetworkStack {
                     } else {
                         icmpv6_payload.prepend(packet)
                     };
-                    let _ = self.transmit_packet_on(resolved_if, payload);
+                    let _ = self.transmit_packet_on(Some(resolved_if), payload);
                 }
             }
         }
@@ -599,48 +516,10 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_payload: PacketPayload,
     ) {
-        let config = self.config();
-
-        // Multicast MAC resolution (no NDP needed)
-        let dst_mac = MacAddress::new(dst.multicast_mac());
-
-        let mut packet =
-            match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE) {
-                Some(packet) => packet,
-                None => return,
-            };
-
-        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(config.mac)
-                .set_ether_type(EtherType::Ipv6);
-
-            let eth_payload = frame.payload_mut();
-
-            if let Some(mut ip_packet) = Ipv6PacketMut::new(eth_payload) {
-                ip_packet.init_header();
-                ip_packet.set_source(src);
-                ip_packet.set_destination(dst);
-                ip_packet.set_next_header(IpProtocol::Icmpv6);
-                ip_packet.set_hop_limit(255);
-
-                let payload_len = icmpv6_payload.total_len();
-                ip_packet.finalize(payload_len);
-
-                frame.set_payload_len(IPV6_HEADER_SIZE);
-                let frame_len = frame.as_bytes().len();
-                drop(frame);
-                if packet.set_len(frame_len) {
-                    let payload = if payload_len == 0 {
-                        kernel_api::resource::net::PacketPayload::single(packet)
-                    } else {
-                        icmpv6_payload.prepend(packet)
-                    };
-                    self.transmit_packet_on(None, payload);
-                }
-            }
-        }
+        let Some((if_id, _)) = self.primary_interface_state() else {
+            return;
+        };
+        self.send_ipv6_icmpv6_raw_on_payload(if_id, src, dst, icmpv6_payload);
     }
 
     pub(crate) fn send_ipv6_icmpv6_raw_on(
@@ -660,9 +539,9 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_payload: PacketPayload,
     ) {
-        let config = self
-            .interface_config_or_runtime(if_id)
-            .unwrap_or_else(|| self.config());
+        let Some(config) = self.interface_config_or_runtime(if_id) else {
+            return;
+        };
         let dst_mac = MacAddress::new(dst.multicast_mac());
         let mut packet =
             match self.alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV6_HEADER_SIZE) {
@@ -713,36 +592,19 @@ impl NetworkStack {
     where
         F: FnOnce(&mut NdpPendingQueue),
     {
-        if let Some(if_id) = if_id {
-            if self
-                .interfaces
-                .get(&if_id)
-                .and_then(|state| state.ndp.as_ref())
-                .is_some()
-            {
-                let resolution = {
-                    let state = self.interfaces.get_mut(&if_id).unwrap();
-                    if let Some(mac) = state.ndp.as_ref().and_then(|ndp| ndp.resolve(dst)) {
-                        Ok(mac)
-                    } else {
-                        queue_pending(&mut state.ndp_pending_queue);
-                        let ndp = state.ndp.as_mut().unwrap();
-                        let ns_msg = ndp.start_resolution(dst, current_time)?;
-                        Err((Some(if_id), ndp.our_link_local, ns_msg))
-                    }
-                };
-                return Some(resolution);
-            }
-        }
-
-        if let Some(mac) = self.ndp.as_ref().and_then(|ndp| ndp.resolve(dst)) {
+        let resolved_if_id = match if_id {
+            Some(if_id) => if_id,
+            None => self.default_interface_id()?,
+        };
+        let state = self.interfaces.get_mut(&resolved_if_id)?;
+        if let Some(mac) = state.ndp.as_ref().and_then(|ndp| ndp.resolve(dst)) {
             return Some(Ok(mac));
         }
 
-        queue_pending(&mut self.ndp_pending_queue);
-        let ndp = self.ndp.as_mut()?;
+        queue_pending(&mut state.ndp_pending_queue);
+        let ndp = state.ndp.as_mut()?;
         let ns_msg = ndp.start_resolution(dst, current_time)?;
-        Some(Err((None, ndp.our_link_local, ns_msg)))
+        Some(Err((Some(resolved_if_id), ndp.our_link_local, ns_msg)))
     }
 
     pub fn send_udp_v6_payload_scoped_with_ttl(
@@ -780,7 +642,7 @@ impl NetworkStack {
         let dst_mac = if dst.is_multicast() {
             MacAddress::new(dst.multicast_mac())
         } else {
-            match self.resolve_ndp_for_send(if_id, &dst, current_time, |pending| {
+            match self.resolve_ndp_for_send(Some(if_id), &dst, current_time, |pending| {
                 let payload = pending_data
                     .take()
                     .expect("IPv6 UDP pending payload already moved");
@@ -849,9 +711,9 @@ impl NetworkStack {
         if let Some(first) = udp_payload.segments_mut().first_mut() {
             first.data_mut()[6..8].copy_from_slice(&final_checksum.to_be_bytes());
         }
-        let path_mtu = self.effective_ipv6_pmtu(if_id, &dst, current_time);
+        let path_mtu = self.effective_ipv6_pmtu(Some(if_id), &dst, current_time);
         self.send_ipv6_l4_payload_with_pmtu(
-            if_id,
+            Some(if_id),
             config.mac,
             dst_mac,
             resolved_src,
@@ -901,7 +763,7 @@ impl NetworkStack {
         let dst_mac = if dst.is_multicast() {
             MacAddress::new(dst.multicast_mac())
         } else {
-            match self.resolve_ndp_for_send(if_id, &dst, current_time, |pending| {
+            match self.resolve_ndp_for_send(Some(if_id), &dst, current_time, |pending| {
                 let segment = pending_segment
                     .take()
                     .expect("IPv6 TCP pending segment already moved");
@@ -921,9 +783,9 @@ impl NetworkStack {
             }
         };
 
-        let path_mtu = self.effective_ipv6_pmtu(if_id, &dst, current_time);
+        let path_mtu = self.effective_ipv6_pmtu(Some(if_id), &dst, current_time);
         self.send_ipv6_l4_payload_with_pmtu(
-            if_id,
+            Some(if_id),
             config.mac,
             dst_mac,
             resolved_src,
@@ -1036,8 +898,16 @@ impl NetworkStack {
     }
 
     pub(crate) fn drain_ndp_pending(&mut self, resolved_ip: &Ipv6Address) {
-        let pending = self.ndp_pending_queue.drain_for(resolved_ip);
-        self.drain_ndp_pending_queue(None, resolved_ip, pending);
+        let mut drained = Vec::new();
+        for (if_id, state) in self.interfaces.iter_mut() {
+            let pending = state.ndp_pending_queue.drain_for(resolved_ip);
+            if !pending.is_empty() {
+                drained.push((*if_id, pending));
+            }
+        }
+        for (if_id, pending) in drained {
+            self.drain_ndp_pending_queue(Some(if_id), resolved_ip, pending);
+        }
     }
 
     pub(crate) fn drain_ndp_pending_on(
@@ -1051,47 +921,68 @@ impl NetworkStack {
             Vec::new()
         };
 
-        if pending.is_empty() {
-            self.drain_ndp_pending(resolved_ip);
-            return;
-        }
-
         self.drain_ndp_pending_queue(Some(if_id), resolved_ip, pending);
     }
 
     /// Send pending IGMP reports
     pub(crate) fn send_pending_igmp_reports(&mut self) {
-        let pending = self.igmp.take_pending_report_entries();
-        let report_version = self.igmp.report_version();
+        let mut pending_by_interface = Vec::new();
+        for (if_id, state) in self.interfaces.iter_mut() {
+            let pending = state.igmp.take_pending_report_entries();
+            let report_version = state.igmp.report_version();
+            if !pending.is_empty() {
+                pending_by_interface.push((*if_id, pending, report_version));
+            }
+        }
         let current_time = self.current_time();
 
-        for entry in pending {
-            if report_version == crate::net::l3::igmp::IgmpReportVersion::V3 {
-                self.send_igmp_v3_report(entry.group_addr, entry.kind, current_time);
-            } else if entry.kind == crate::net::l3::igmp::PendingIgmpReportKind::LeaveStateChange {
-                self.send_igmp_leave(entry.group_addr, current_time);
-            } else {
-                self.send_igmp_report(entry.group_addr, current_time);
+        for (if_id, pending, report_version) in pending_by_interface {
+            for entry in pending {
+                if report_version == crate::net::l3::igmp::IgmpReportVersion::V3 {
+                    self.send_igmp_v3_report_on(if_id, entry.group_addr, entry.kind, current_time);
+                } else if entry.kind
+                    == crate::net::l3::igmp::PendingIgmpReportKind::LeaveStateChange
+                {
+                    self.send_igmp_leave_on(if_id, entry.group_addr, current_time);
+                } else {
+                    self.send_igmp_report_on(if_id, entry.group_addr, current_time);
+                }
             }
         }
     }
 
     /// Send an IGMP Membership Report
     pub(crate) fn send_igmp_report(&mut self, group_addr: Ipv4Address, _current_time: u64) {
+        let Some((if_id, _)) = self.primary_interface_state() else {
+            return;
+        };
+        self.send_igmp_report_on(if_id, group_addr, _current_time);
+    }
+
+    pub(crate) fn send_igmp_report_on(
+        &mut self,
+        if_id: super::NetIfId,
+        group_addr: Ipv4Address,
+        _current_time: u64,
+    ) {
+        let Some(config) = self.interface_config_or_runtime(if_id) else {
+            return;
+        };
         // ── ファイアウォール Egress チェック ──
         if !crate::net::security::firewall::check_egress(
-            self.config().ipv4.address.octets(),
+            config.ipv4.address.octets(),
             group_addr.octets(),
             2, // IGMP
             0,
             0,
             0,
         ) {
-            self.stats().record_dropped();
+            if let Some(stats) = self.interface_stats(if_id) {
+                stats.record_dropped();
+            }
             return;
         }
 
-        let config = self.config();
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
             None => return,
@@ -1133,7 +1024,7 @@ impl NetworkStack {
                         drop(frame);
                         if packet.set_len(frame_len) {
                             let _ = self.transmit_packet_on(
-                                None,
+                                Some(if_id),
                                 kernel_api::resource::net::PacketPayload::single(packet),
                             );
                         }
@@ -1150,17 +1041,35 @@ impl NetworkStack {
         kind: crate::net::l3::igmp::PendingIgmpReportKind,
         _current_time: u64,
     ) {
+        let Some((if_id, _)) = self.primary_interface_state() else {
+            return;
+        };
+        self.send_igmp_v3_report_on(if_id, group_addr, kind, _current_time);
+    }
+
+    pub(crate) fn send_igmp_v3_report_on(
+        &mut self,
+        if_id: super::NetIfId,
+        group_addr: Ipv4Address,
+        kind: crate::net::l3::igmp::PendingIgmpReportKind,
+        _current_time: u64,
+    ) {
         let dst_group = crate::net::l3::igmp::ALL_ROUTERS_V3_GROUP;
+        let Some(config) = self.interface_config_or_runtime(if_id) else {
+            return;
+        };
 
         if !crate::net::security::firewall::check_egress(
-            self.config().ipv4.address.octets(),
+            config.ipv4.address.octets(),
             dst_group.octets(),
             2,
             0,
             0,
             0,
         ) {
-            self.stats().record_dropped();
+            if let Some(stats) = self.interface_stats(if_id) {
+                stats.record_dropped();
+            }
             return;
         }
 
@@ -1176,7 +1085,6 @@ impl NetworkStack {
             }
         };
 
-        let config = self.config();
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
             None => return,
@@ -1216,7 +1124,7 @@ impl NetworkStack {
                     drop(frame);
                     if packet.set_len(frame_len) {
                         let _ = self.transmit_packet_on(
-                            None,
+                            Some(if_id),
                             kernel_api::resource::net::PacketPayload::single(packet),
                         );
                     }

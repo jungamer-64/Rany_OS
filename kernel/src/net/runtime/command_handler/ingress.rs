@@ -87,7 +87,13 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
-                stack.process_arp(runtime, Some(selected_if_id), payload, current_time, src_mac);
+                stack.process_arp(
+                    runtime,
+                    Some(selected_if_id),
+                    payload,
+                    current_time,
+                    src_mac,
+                );
                 if let Some(stats) = stack.interface_stats(selected_if_id) {
                     stats.record_rx(pkt_len);
                 }
@@ -577,7 +583,9 @@ impl RuntimeCommandHandler {
             else {
                 return EventHandleResult::Success;
             };
-            state.ipv4.process_fragment_owned_packet(packet_ref, current_time)
+            state
+                .ipv4
+                .process_fragment_owned_packet(packet_ref, current_time)
         } else {
             let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
             let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(ingress_if_id))
