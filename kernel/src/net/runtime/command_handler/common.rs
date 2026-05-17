@@ -42,23 +42,6 @@ pub(super) fn endpoint_is_native_v6_pair(local: EndpointAddr, remote: EndpointAd
 }
 
 #[inline]
-pub(super) fn resolve_ingress_if_id_in(
-    runtime: NetRuntimeHandle,
-    if_id: Option<NetIfId>,
-) -> NetIfId {
-    if let Some(if_id) = if_id {
-        return if_id;
-    }
-    crate::net::runtime::device::primary_if_in(runtime)
-        .or_else(|| {
-            crate::net::runtime::manager::list_interfaces_in(runtime)
-                .ok()
-                .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
-        })
-        .unwrap_or_default()
-}
-
-#[inline]
 pub(super) fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
     let base = container.as_ptr() as usize;
     let sub = subslice.as_ptr() as usize;

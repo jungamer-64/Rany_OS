@@ -6,17 +6,15 @@ use super::*;
 use crate::net::l4::socket::{SocketFamily, find_udp_by_port_in};
 use crate::net::runtime::NetRuntimeHandle;
 
-fn resolve_ingress_if_id_in(runtime: NetRuntimeHandle, if_id: Option<NetIfId>) -> NetIfId {
+fn resolve_ingress_if_id_in(runtime: NetRuntimeHandle, if_id: Option<NetIfId>) -> Option<NetIfId> {
     if let Some(if_id) = if_id {
-        return if_id;
+        return Some(if_id);
     }
-    crate::net::runtime::device::primary_if_in(runtime)
-        .or_else(|| {
-            crate::net::runtime::manager::list_interfaces_in(runtime)
-                .ok()
-                .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
-        })
-        .unwrap_or_default()
+    crate::net::runtime::device::primary_if_in(runtime).or_else(|| {
+        crate::net::runtime::manager::list_interfaces_in(runtime)
+            .ok()
+            .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+    })
 }
 
 /// UDP processor for handling UDP packets
@@ -31,6 +29,8 @@ pub struct UdpProcessor {
 pub enum UdpResult {
     /// Delivered to socket
     Delivered,
+    /// No ingress interface exists for this packet
+    NoIngressInterface,
     /// No socket for this port
     NoEndpoint,
     /// Checksum error
@@ -147,7 +147,9 @@ impl UdpProcessor {
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
-        let resolved_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+            return Err((UdpResult::NoIngressInterface, packet));
+        };
         self.process_window_impl(
             runtime,
             resolved_if_id,
@@ -241,7 +243,9 @@ impl UdpProcessor {
         dst_ip: Ipv6Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
-        let resolved_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+            return Err((UdpResult::NoIngressInterface, packet));
+        };
         self.process_window_v6_impl(
             runtime,
             resolved_if_id,
@@ -337,7 +341,9 @@ impl UdpProcessor {
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> UdpResult {
-        let resolved_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+            return UdpResult::NoIngressInterface;
+        };
         self.process_impl(runtime, resolved_if_id, data, src_ip, dst_ip, ttl)
     }
 
@@ -409,7 +415,9 @@ impl UdpProcessor {
         dst_ip: Ipv6Address,
         ttl: u8,
     ) -> UdpResult {
-        let resolved_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+            return UdpResult::NoIngressInterface;
+        };
         self.process_v6_impl(runtime, resolved_if_id, data, src_ip, dst_ip, ttl)
     }
 
@@ -478,7 +486,9 @@ impl UdpProcessor {
         packet: PacketRef,
         ttl: u8,
     ) -> UdpResult {
-        let resolved_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+            return UdpResult::NoIngressInterface;
+        };
         self.process_with_packet_impl(runtime, resolved_if_id, data, src_ip, dst_ip, packet, ttl)
     }
 
@@ -541,7 +551,9 @@ impl UdpProcessor {
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> UdpResult {
-        let resolved_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+            return UdpResult::NoIngressInterface;
+        };
         self.process_payload_impl(runtime, resolved_if_id, payload, src_ip, dst_ip, ttl)
     }
 
@@ -605,7 +617,9 @@ impl UdpProcessor {
         packet: PacketRef,
         ttl: u8,
     ) -> UdpResult {
-        let resolved_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+            return UdpResult::NoIngressInterface;
+        };
         self.process_with_packet_v6_impl(runtime, resolved_if_id, data, src_ip, dst_ip, packet, ttl)
     }
 
@@ -668,7 +682,9 @@ impl UdpProcessor {
         dst_ip: Ipv6Address,
         ttl: u8,
     ) -> UdpResult {
-        let resolved_if_id = resolve_ingress_if_id_in(runtime, if_id);
+        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+            return UdpResult::NoIngressInterface;
+        };
         self.process_payload_v6_impl(runtime, resolved_if_id, payload, src_ip, dst_ip, ttl)
     }
 
@@ -727,5 +743,45 @@ impl UdpProcessor {
 impl Default for UdpProcessor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::runtime::create_runtime;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn process_without_ingress_interface_reports_missing_interface() {
+        let runtime = create_runtime().expect("test runtime allocation");
+        let processor = UdpProcessor::new();
+
+        assert_eq!(
+            processor.process_on(runtime, None, &[], Ipv4Address::ANY, Ipv4Address::ANY, 64),
+            UdpResult::NoIngressInterface
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn process_window_without_ingress_interface_reports_missing_interface() {
+        let runtime = create_runtime().expect("test runtime allocation");
+        let processor = UdpProcessor::new();
+
+        let Err((result, _)) = processor.process_window_on(
+            runtime,
+            None,
+            PacketPayload::default(),
+            0,
+            0,
+            Ipv4Address::ANY,
+            Ipv4Address::ANY,
+            64,
+        ) else {
+            panic!("missing ingress interface must reject the packet");
+        };
+
+        assert_eq!(result, UdpResult::NoIngressInterface);
     }
 }

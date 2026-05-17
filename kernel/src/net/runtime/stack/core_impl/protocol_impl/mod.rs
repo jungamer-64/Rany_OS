@@ -228,6 +228,11 @@ impl NetworkStack {
                     );
                 }
             }
+            Err((UdpResult::NoIngressInterface, _)) => {
+                if let Some(stats) = self.interface_stats(resolved_if_id) {
+                    stats.record_dropped();
+                }
+            }
             Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
                 if let Some(stats) = self.interface_stats(resolved_if_id) {
                     stats.record_rx_error();
@@ -272,6 +277,11 @@ impl NetworkStack {
                     stats.record_dropped();
                 }
                 self.send_icmpv6_error_payload(src, 4, original_packet);
+            }
+            Err((UdpResult::NoIngressInterface, _)) => {
+                if let Some(stats) = self.interface_stats(resolved_if_id) {
+                    stats.record_dropped();
+                }
             }
             Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
                 if let Some(stats) = self.interface_stats(resolved_if_id) {

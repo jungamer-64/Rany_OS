@@ -65,17 +65,15 @@ pub(crate) fn generate_tcp_timestamp_in(runtime: NetRuntimeHandle) -> u32 {
     (ms / 10) as u32
 }
 
-fn resolve_ingress_if_id_in(runtime: NetRuntimeHandle, if_id: Option<NetIfId>) -> NetIfId {
+fn resolve_ingress_if_id_in(runtime: NetRuntimeHandle, if_id: Option<NetIfId>) -> Option<NetIfId> {
     if let Some(if_id) = if_id {
-        return if_id;
+        return Some(if_id);
     }
-    crate::net::runtime::device::primary_if_in(runtime)
-        .or_else(|| {
-            crate::net::runtime::manager::list_interfaces_in(runtime)
-                .ok()
-                .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
-        })
-        .unwrap_or_default()
+    crate::net::runtime::device::primary_if_in(runtime).or_else(|| {
+        crate::net::runtime::manager::list_interfaces_in(runtime)
+            .ok()
+            .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
+    })
 }
 
 // seq_before は types モジュールの統一実装を使用
@@ -642,7 +640,9 @@ pub fn process_tcp_segment_v6_payload_on(
 
     let remote = EndpointAddr::new_v6(src_ip.octets(), header.src_port);
     let local = EndpointAddr::new_v6(dst_ip.octets(), header.dst_port);
-    let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
+    let Some(ingress_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+        return;
+    };
     process_parsed_tcp_segment(
         runtime,
         local,
@@ -672,7 +672,9 @@ pub fn process_tcp_segment_payload_on(
 
     let remote = EndpointAddr::new(src_ip, header.src_port);
     let local = EndpointAddr::new(dst_ip, header.dst_port);
-    let ingress_if_id = resolve_ingress_if_id_in(runtime, if_id);
+    let Some(ingress_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
+        return;
+    };
     process_parsed_tcp_segment(
         runtime,
         local,
@@ -1724,7 +1726,9 @@ fn handle_ack_for_syn(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, a
     if ack_num != tcb.snd_nxt {
         return;
     }
-    let ingress_if_id = tcb.ingress_if_id.unwrap_or_default();
+    let Some(ingress_if_id) = tcb.ingress_if_id else {
+        return;
+    };
 
     // TCBを更新してEstablished状態に
     tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
