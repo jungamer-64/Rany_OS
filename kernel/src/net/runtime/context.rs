@@ -11,6 +11,7 @@ use crate::net::runtime::device::{
 use crate::net::runtime::manager::NetworkManager;
 use crate::net::runtime::stack::NetworkStack;
 use crate::net::runtime::transport::TransportState;
+use crate::net::l4::socket::SocketRegistry;
 use crate::net::services::dhcp::DhcpRuntimeState;
 use crate::net::services::dns::DnsRuntimeState;
 use crate::net::services::mdns::MdnsRuntimeState;
@@ -72,6 +73,7 @@ pub struct NetRuntimeContext {
     pub(crate) command_replies: CommandReplyRegistry,
     pub(crate) command_task_running: AtomicBool,
     pub(crate) command_task_ready_waiters: WakerQueue,
+    pub(crate) sockets: SocketRegistry,
     pub(crate) transport: TransportState,
     pub(crate) observability: NetObservability,
     pub(crate) arp_waiters: ArpWaiterRegistry,
@@ -101,6 +103,7 @@ impl NetRuntimeContext {
             command_replies: CommandReplyRegistry::new(),
             command_task_running: AtomicBool::new(false),
             command_task_ready_waiters: WakerQueue::new(),
+            sockets: SocketRegistry::new(),
             transport: TransportState::new(),
             observability: NetObservability::new(),
             arp_waiters: ArpWaiterRegistry::new(),

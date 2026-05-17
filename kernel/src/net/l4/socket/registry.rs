@@ -352,20 +352,16 @@ impl Default for SocketRegistry {
     }
 }
 
-pub(crate) static SOCKET_REGISTRY: PoisonRwLock<Option<SocketRegistry>> = PoisonRwLock::new(None);
-
-pub(crate) fn init_socket_registry() {
-    *SOCKET_REGISTRY.write().unwrap_or_else(|e| e.into_inner()) = Some(SocketRegistry::new());
-}
-
-pub(crate) fn find_listening_tcp_socket(
+pub(crate) fn find_listening_tcp_socket_in(
+    runtime: NetRuntimeHandle,
     local: EndpointAddr,
     ingress_if_id: Option<NetIfId>,
 ) -> Option<Socket> {
-    let registry_guard = SOCKET_REGISTRY.read().unwrap_or_else(|e| e.into_inner());
-    let registry = registry_guard.as_ref()?;
-    let socket =
-        registry.find_tcp_by_port(SocketFamily::from_addr(local), local.port(), ingress_if_id)?;
+    let socket = runtime.context().sockets.find_tcp_by_port(
+        SocketFamily::from_addr(local),
+        local.port(),
+        ingress_if_id,
+    )?;
     socket
         .with_inner(|inner| inner.is_tcp_listening().then_some(socket))
         .flatten()

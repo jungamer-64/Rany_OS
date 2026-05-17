@@ -7,13 +7,12 @@ mod entry;
 mod registry;
 mod state;
 
-use self::registry::{SOCKET_REGISTRY, SocketRegistry};
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 
 pub(crate) use self::entry::Socket;
-pub(crate) use self::registry::SocketFamily;
+pub(crate) use self::registry::{SocketFamily, SocketRegistry};
 pub(crate) use self::state::TcpSocketState;
 
 pub(crate) const DEFAULT_TCP_ACCEPT_BACKLOG: usize = self::state::SocketState::DEFAULT_BACKLOG;
