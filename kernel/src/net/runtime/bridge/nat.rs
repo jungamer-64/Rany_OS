@@ -95,8 +95,9 @@ fn generate_random_port(table: &NatTable) -> u16 {
     const RANGE: u32 = PORT_END - PORT_START + 1;
 
     for _ in 0..100 {
-        random_bytes
-            .copy_from_slice(&crate::net::security::tls::crypto::random::generate_random()[0..2]);
+        random_bytes.copy_from_slice(
+            &crate::net::security::tls::crypto::random_or_panic("network random")[0..2],
+        );
         let port = (PORT_START + (u16::from_be_bytes(random_bytes) as u32 % RANGE)) as u16;
 
         // Check if port is already used in any entry

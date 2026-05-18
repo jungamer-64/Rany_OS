@@ -49,9 +49,7 @@ impl Socket {
         }
 
         if let (Some(local), Some(remote)) = (local, remote) {
-            let _ = tcp_table_in(runtime).lookup_mut(local, remote, |tcb| {
-                tcb.on_data_received(pushed as u32);
-            });
+            let _ = tcp_table_in(runtime).record_data_received(local, remote, pushed as u32);
         }
     }
 

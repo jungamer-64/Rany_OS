@@ -11,6 +11,12 @@ static RDRAND_CHECKED: AtomicBool = AtomicBool::new(false);
 /// 0 = unknown, 1 = available, 2 = not available
 static RDRAND_STATUS: AtomicU8 = AtomicU8::new(0);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RandomError {
+    SecureEntropyUnavailable,
+    HardwareFailure,
+}
+
 #[cfg(feature = "qemu-test-export")]
 static QEMU_TEST_RANDOM_OVERRIDE_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "qemu-test-export")]
@@ -88,9 +94,10 @@ fn has_rdrand() -> bool {
     available
 }
 
-/// Generate a 64-bit random value using RDRAND
+/// Generate a 64-bit random value using RDRAND.
 ///
 /// Retries up to 10 times on transient failures.
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 fn rdrand64() -> Option<u64> {
     for _ in 0..10 {
         let value: u64;
@@ -110,112 +117,40 @@ fn rdrand64() -> Option<u64> {
     None
 }
 
-/// Generate 32 bytes of random data
+#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+fn rdrand64() -> Option<u64> {
+    None
+}
+
+/// Generate 32 bytes of secure random data.
 ///
-/// Uses RDRAND hardware instruction when available (x86_64).
-/// Falls back to a weak LCG for development/boot environments where
-/// RDRAND is not yet available. The LCG fallback MUST NOT be used
-/// for production cryptographic operations.
-pub(crate) fn generate_random() -> [u8; 32] {
+/// Uses RDRAND when available. A deterministic override exists only for
+/// `qemu-test-export`; normal builds fail closed when secure entropy is absent.
+pub(crate) fn generate_random() -> Result<[u8; 32], RandomError> {
     #[cfg(feature = "qemu-test-export")]
     {
         if QEMU_TEST_RANDOM_OVERRIDE_ENABLED.load(AtomicOrdering::Acquire) {
-            return generate_qemu_test_random();
+            return Ok(generate_qemu_test_random());
         }
     }
 
     let mut result = [0u8; 32];
 
     if has_rdrand() {
-        // Fill 32 bytes using 4 RDRAND calls (8 bytes each)
         for chunk in result.chunks_exact_mut(8) {
             if let Some(val) = rdrand64() {
                 chunk.copy_from_slice(&val.to_ne_bytes());
             } else {
-                // RDRAND failed after retries
-                #[cfg(not(debug_assertions))]
-                {
-                    panic!(
-                        "[CRITICAL SECURITY] RDRAND hardware RNG failed after retries. System cannot proceed safely."
-                    );
-                }
-                #[cfg(debug_assertions)]
-                {
-                    log::warn!(
-                        "[SECURITY] RDRAND failed after retries, falling back to weak RNG (DEBUG ONLY)"
-                    );
-                    return generate_random_fallback();
-                }
+                return Err(RandomError::HardwareFailure);
             }
         }
-        return result;
+        return Ok(result);
     }
 
-    #[cfg(not(debug_assertions))]
-    {
-        panic!(
-            "[CRITICAL SECURITY] RDRAND hardware RNG is not available on this CPU. TLS/Crypto cannot be used safely in production without a secure entropy source."
-        );
-    }
-
-    #[cfg(debug_assertions)]
-    {
-        log::warn!(
-            "********************************************************************************"
-        );
-        log::warn!("[SECURITY WARNING] RDRAND not available. Using INSECURE LCG fallback!");
-        log::warn!("[SECURITY WARNING] This build is for DEVELOPMENT/DEBUG only.");
-        log::warn!("[SECURITY WARNING] TLS communication and keys are NOT PROTECTED.");
-        log::warn!(
-            "********************************************************************************"
-        );
-        generate_random_fallback()
-    }
+    Err(RandomError::SecureEntropyUnavailable)
 }
 
 /// Check whether hardware-backed cryptographic random number generation is available.
-///
-/// Returns `true` if RDRAND is supported and functional.
-/// When this returns `false`, `generate_random()` will fall back to a weak LCG
-/// that is NOT cryptographically secure.
 pub(crate) fn has_secure_random() -> bool {
     has_rdrand()
-}
-
-/// Fallback LCG-based random generation (development/boot only)
-///
-/// WARNING: This is NOT cryptographically secure. It exists only as a
-/// fallback for environments where RDRAND is unavailable.
-/// Uses AtomicU64 to avoid undefined behavior from concurrent access.
-fn generate_random_fallback() -> [u8; 32] {
-    static SEED: core::sync::atomic::AtomicU64 =
-        core::sync::atomic::AtomicU64::new(0x1234567890abcdef);
-
-    // Try to mix in some entropy from RDTSC if available
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-    {
-        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        SEED.fetch_xor(tsc, AtomicOrdering::Relaxed);
-    }
-
-    let mut result = [0u8; 32];
-
-    for byte in result.iter_mut() {
-        // Atomically advance the LCG state via CAS loop.
-        // fetch_update returns Ok(previous_value); recompute new value for output.
-        let prev = SEED
-            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |s| {
-                Some(
-                    s.wrapping_mul(6364136223846793005)
-                        .wrapping_add(1442695040888963407),
-                )
-            })
-            .unwrap(); // always succeeds (closure always returns Some)
-        let new_val = prev
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        *byte = (new_val >> 56) as u8;
-    }
-
-    result
 }

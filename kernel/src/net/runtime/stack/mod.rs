@@ -326,6 +326,44 @@ impl InterfaceStackState {
         }
         self.config = config;
     }
+
+    pub(crate) fn config(&self) -> NetworkConfig {
+        self.config
+    }
+
+    pub(crate) fn ipv6_link_local(&self) -> Option<Ipv6Address> {
+        self.config.ipv6.map(|config| config.link_local)
+    }
+
+    pub(crate) fn has_ipv6(&self) -> bool {
+        self.ipv6.is_some()
+    }
+
+    pub(crate) fn process_ethernet<'a>(
+        &mut self,
+        data: &'a [u8],
+    ) -> crate::net::l2::ethernet::ProcessResult<'a> {
+        self.ethernet.process(data)
+    }
+
+    pub(crate) fn process_ipv4_fragment_owned_packet(
+        &mut self,
+        packet: kernel_api::resource::net::PacketRef,
+        current_time: u64,
+    ) -> Ipv4ProcessResult<'static> {
+        self.ipv4
+            .process_fragment_owned_packet(packet, current_time)
+    }
+
+    pub(crate) fn process_ipv4_with_time_and_packet<'a>(
+        &mut self,
+        data: &'a [u8],
+        packet: Option<&kernel_api::resource::net::PacketRef>,
+        current_time: u64,
+    ) -> Ipv4ProcessResult<'a> {
+        self.ipv4
+            .process_with_time_and_packet(data, packet, current_time)
+    }
 }
 
 /// NDP解決待ちパケットキュー

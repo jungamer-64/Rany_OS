@@ -773,7 +773,10 @@ pub fn wave8_tls_hkdf_expand_label_different_labels_smoke() -> bool {
 
 pub fn wave8_tls_generate_random_not_all_zeros_smoke() -> bool {
     qemu_test_set_random_override_seed(0x0123_4567_89AB_CDEF);
-    let random = generate_random();
+    let Ok(random) = generate_random() else {
+        qemu_test_clear_random_override();
+        return false;
+    };
     let ok = random.iter().any(|&b| b != 0);
     qemu_test_clear_random_override();
     ok
@@ -781,8 +784,14 @@ pub fn wave8_tls_generate_random_not_all_zeros_smoke() -> bool {
 
 pub fn wave8_tls_generate_random_different_calls_smoke() -> bool {
     qemu_test_set_random_override_seed(0x89AB_CDEF_0123_4567);
-    let first = generate_random();
-    let second = generate_random();
+    let Ok(first) = generate_random() else {
+        qemu_test_clear_random_override();
+        return false;
+    };
+    let Ok(second) = generate_random() else {
+        qemu_test_clear_random_override();
+        return false;
+    };
     qemu_test_clear_random_override();
     bytes_ne(&first, &second)
 }

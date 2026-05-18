@@ -542,7 +542,7 @@ pub fn rsa_pkcs1_encrypt_into(
     let mut ps_remaining = ps_len;
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while ps_remaining > 0 {
-        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
         for &b in &random_bytes {
             if b != 0 {
                 em[offset] = b;

@@ -20,7 +20,9 @@ use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
-use super::tcb::{TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot, tcp_flags};
+use super::tcb::{
+    TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot, TcpHandshakeOptions, tcp_flags,
+};
 use super::window_scale::TcpOptionParser;
 use crate::net::l4::socket::{
     Socket, TcpSocketState, find_listening_tcp_socket_in, generate_socket_id_in, lookup_socket_in,
@@ -402,16 +404,12 @@ fn process_parsed_tcp_segment(
     options: &[u8],
     data_payload: PacketPayload,
 ) {
-    let _ = tcp_table_in(runtime).update(local, remote, |entry| {
-        entry.ingress_if_id = Some(ingress_if_id)
-    });
+    let _ = tcp_table_in(runtime).record_ingress_interface(local, remote, ingress_if_id);
 
     if let Some(tcb) =
         tcp_table_in(runtime).read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
     {
-        tcp_table_in(runtime).update(local, remote, |entry| {
-            entry.update_peer_window(header.window);
-        });
+        tcp_table_in(runtime).update_peer_window(local, remote, header.window);
 
         let mut data_payload = data_payload;
         let payload_len = data_payload.total_len();
@@ -496,12 +494,14 @@ fn process_parsed_tcp_segment(
                     _ => 64,
                 };
 
-                let mut tcb = TcpControlBlockEntry::new(socket.socket_id(), local, remote);
-                tcb.snd_una = header.ack_num.wrapping_sub(1);
-                tcb.snd_nxt = header.ack_num;
-                tcb.rcv_nxt = header.seq_num;
-                tcb.state = TcpConnectionState::Established;
-                tcb.mss = mss;
+                let tcb = TcpControlBlock::established_from_syncookie(
+                    socket.socket_id(),
+                    local,
+                    remote,
+                    header.ack_num,
+                    header.seq_num,
+                    mss,
+                );
 
                 if let Err(e) = tcp_table_in(runtime).insert(tcb) {
                     log::warn!(
@@ -565,9 +565,14 @@ fn try_fast_path(
 
     if ack_diff_una > 0 {
         let current_time_ms = tcp_table_in(runtime).get_current_tick();
-        tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-            entry.on_ack_received(ack_num, false, current_time_ms, 0);
-        });
+        tcp_table_in(runtime).record_ack_received(
+            tcb.local,
+            tcb.remote,
+            ack_num,
+            false,
+            current_time_ms,
+            0,
+        );
         retransmit_queue_ack(runtime, tcb.local, tcb.remote, ack_num);
     }
 
@@ -591,32 +596,28 @@ fn try_fast_path(
         return Err(data_payload);
     }
 
-    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-        entry.rcv_nxt = new_rcv_nxt;
-        if entry.delayed_ack_pending == 0 {
-            entry.delayed_ack_timer = tcp_table_in(runtime).get_current_tick();
-        }
-        entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
-
-        if entry.ts_enabled && !options.is_empty() {
-            let mut parser = TcpOptionParser::new(options);
-            if let Some((peer_ts_val, _)) = parser.find_timestamps() {
-                entry.ts_ecr = peer_ts_val;
-                entry.ts_val = generate_tcp_timestamp_in(runtime);
-            }
-        }
-    });
-
+    let timestamp_echo = if tcb.ts_enabled && !options.is_empty() {
+        let mut parser = TcpOptionParser::new(options);
+        parser
+            .find_timestamps()
+            .map(|(peer_ts_val, _)| (peer_ts_val, generate_tcp_timestamp_in(runtime)))
+    } else {
+        None
+    };
     let should_ack_now = tcp_table_in(runtime)
-        .read(tcb.local, tcb.remote, |entry| entry.delayed_ack_pending)
+        .record_receive_progress_with_delayed_ack(
+            tcb.local,
+            tcb.remote,
+            new_rcv_nxt,
+            tcp_table_in(runtime).get_current_tick(),
+            timestamp_echo,
+        )
         .map(|pending| pending >= DELAYED_ACK_SEGMENTS)
         .unwrap_or(true);
 
     if should_ack_now {
         send_ack_for_fast_path(runtime, tcb, new_rcv_nxt);
-        tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-            entry.delayed_ack_pending = 0;
-        });
+        tcp_table_in(runtime).clear_delayed_ack(tcb.local, tcb.remote);
     }
 
     Ok(())
@@ -719,17 +720,15 @@ pub fn flush_delayed_acks_in(runtime: NetRuntimeHandle) {
     let mut pending: alloc::vec::Vec<(EndpointAddr, EndpointAddr, u32, u32, u16, bool, u32)> =
         alloc::vec::Vec::new();
     tcp_table_in(runtime).for_each_established(|entry| {
-        if entry.delayed_ack_pending > 0
-            && now.saturating_sub(entry.delayed_ack_timer) >= DELAYED_ACK_TIMEOUT_MS
-        {
+        if let Some(due) = entry.delayed_ack_due(now, DELAYED_ACK_TIMEOUT_MS) {
             pending.push((
-                entry.local,
-                entry.remote,
-                entry.rcv_nxt,
-                entry.snd_nxt,
-                entry.advertised_recv_window(),
-                entry.ts_enabled,
-                entry.ts_ecr,
+                due.local,
+                due.remote,
+                due.rcv_nxt,
+                due.snd_nxt,
+                due.window,
+                due.timestamp_enabled,
+                due.timestamp_echo,
             ));
         }
     });
@@ -751,10 +750,7 @@ pub fn flush_delayed_acks_in(runtime: NetRuntimeHandle) {
 
         send_control_segment(runtime, local, remote, builder);
 
-        // カウンタリセット
-        tcp_table_in(runtime).update(local, remote, |e| {
-            e.delayed_ack_pending = 0;
-        });
+        tcp_table_in(runtime).clear_delayed_ack(local, remote);
     }
 }
 
@@ -800,19 +796,18 @@ fn handle_simultaneous_syn_received(
         (None, false)
     };
 
-    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-        entry.rcv_nxt = seq_num.wrapping_add(1);
-        entry.state = TcpConnectionState::SynReceived;
-
-        if let Some((peer_ts_val, _)) = peer_ts {
-            entry.ts_enabled = true;
-            entry.ts_ecr = peer_ts_val;
-            entry.ts_val = generate_tcp_timestamp_in(runtime);
-        }
-        if sack_permitted {
-            entry.sack_enabled = true;
-        }
-    });
+    tcp_table_in(runtime).enter_simultaneous_syn_received(
+        tcb.local,
+        tcb.remote,
+        seq_num,
+        TcpHandshakeOptions {
+            peer_ts_val: peer_ts.map(|(peer_ts_val, _)| peer_ts_val),
+            local_ts_val: peer_ts.map(|_| generate_tcp_timestamp_in(runtime)),
+            sack_permitted,
+            peer_mss: None,
+            peer_window_scale: None,
+        },
+    );
 
     // SYN-ACKを送信
     let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
@@ -889,10 +884,12 @@ fn handle_synchronized_segment(
                     && (tcb.rcv_nxt.wrapping_sub(seq_num) as i32) < seg_len_u32 as i32;
 
                 if is_in_window || seq_num == tcb.rcv_nxt {
-                    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-                        entry.ts_ecr = peer_ts_val; // 次のACKのTSecrに使用
-                        entry.ts_val = generate_tcp_timestamp_in(runtime);
-                    });
+                    tcp_table_in(runtime).record_timestamp_echo(
+                        tcb.local,
+                        tcb.remote,
+                        peer_ts_val,
+                        generate_tcp_timestamp_in(runtime),
+                    );
                 }
             }
         }
@@ -1020,9 +1017,7 @@ fn handle_data_received_with_delayed_ack(
             if (pushed as u32) < payload_len {
                 // Buffer full, some data dropped.
                 // we don't process OOO or FIN if we couldn't take all data.
-                tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-                    entry.rcv_nxt = new_rcv_nxt;
-                });
+                tcp_table_in(runtime).record_receive_progress(tcb.local, tcb.remote, new_rcv_nxt);
                 send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt);
                 return;
             }
@@ -1049,33 +1044,27 @@ fn handle_data_received_with_delayed_ack(
         return;
     }
 
-    // TCB更新
-    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-        entry.rcv_nxt = new_rcv_nxt;
-        // Delayed ACK: セグメントカウンタをインクリメント
-        if entry.delayed_ack_pending == 0 {
-            entry.delayed_ack_timer = tcp_table_in(runtime).get_current_tick();
-        }
-        entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
-    });
-
     // Delayed ACK 判定 (RFC 1122 / 5681)
     // TIME_WAIT 状態では常に即座にACKを返す (RFC 793)
     let should_ack_now = if tcb.state == TcpConnectionState::TimeWait {
+        tcp_table_in(runtime).record_receive_progress(tcb.local, tcb.remote, new_rcv_nxt);
         true
     } else {
         tcp_table_in(runtime)
-            .read(tcb.local, tcb.remote, |entry| {
-                entry.delayed_ack_pending >= DELAYED_ACK_SEGMENTS
-            })
+            .record_receive_progress_with_delayed_ack(
+                tcb.local,
+                tcb.remote,
+                new_rcv_nxt,
+                tcp_table_in(runtime).get_current_tick(),
+                None,
+            )
+            .map(|pending| pending >= DELAYED_ACK_SEGMENTS)
             .unwrap_or(true)
     };
 
     if should_ack_now {
         send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt);
-        tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-            entry.delayed_ack_pending = 0;
-        });
+        tcp_table_in(runtime).clear_delayed_ack(tcb.local, tcb.remote);
     }
 }
 
@@ -1141,11 +1130,7 @@ fn process_tcp_with_tcb(
                 if ack_num.wrapping_sub(tcb.snd_una) as i32 > 0
                     && ack_num.wrapping_sub(tcb.snd_nxt) as i32 <= 0
                 {
-                    // Valid ACK: Transition to Established
-                    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-                        entry.snd_una = ack_num;
-                        entry.state = TcpConnectionState::Established;
-                    });
+                    tcp_table_in(runtime).establish_syn_received(tcb.local, tcb.remote, ack_num);
 
                     // Continue processing in Established state
                     if let Some(established_tcb) =
@@ -1195,9 +1180,7 @@ fn process_tcp_with_tcb(
 
 /// Handle ICMP Source Quench (RFC 1122 Section 4.2.3.9)
 pub fn handle_source_quench(runtime: NetRuntimeHandle, local: EndpointAddr, remote: EndpointAddr) {
-    tcp_table_in(runtime).update(local, remote, |entry| {
-        entry.on_source_quench();
-    });
+    tcp_table_in(runtime).record_source_quench(local, remote);
 }
 
 /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
@@ -1222,44 +1205,18 @@ pub fn handle_icmp_error(
         return;
     };
 
-    let mut should_close = false;
-    let mut socket_id = None;
+    let socket_id = tcp_table_in(runtime).record_icmp_error(local, remote, error);
 
-    tcp_table_in(runtime).update(local, remote, |entry| {
-        // RFC 1122 Section 4.2.3.9: ICMP error handling
-        // A TCP SHOULD notify the user of the error, but it SHOULD NOT close
-        // the connection (it's a "soft" error), except for certain "hard"
-        // errors in SYN-SENT state.
-        if entry.state == TcpConnectionState::SynSent {
-            match error {
-                EndpointError::ConnectionRefused | EndpointError::ProtocolUnreachable => {
-                    // Hard errors: close the connection (RFC 1122)
-                    should_close = true;
-                    socket_id = Some(entry.socket_id);
-                }
-                _ => {
-                    // Soft errors (Host/Network unreachable): keep connection open,
-                    // letting it time out naturally or succeed if route recovers.
-                }
-            }
-        }
-
-        // Notify the user of the error (RFC 1122 requirement)
-        entry.on_icmp_error(error);
-    });
-
-    if should_close {
+    if let Some(id) = socket_id {
         log::info!(
             "[TCP] Connection failed due to ICMP error ({:?}) in SYN-SENT",
             error
         );
-        if let Some(id) = socket_id {
-            if let Some(socket) = get_socket_by_socket_id(runtime, id) {
-                let _ = socket.with_inner_mut(|inner| {
-                    inner.last_error = Some(error);
-                    inner.connect_waker.wake();
-                });
-            }
+        if let Some(socket) = get_socket_by_socket_id(runtime, id) {
+            let _ = socket.with_inner_mut(|inner| {
+                inner.last_error = Some(error);
+                inner.connect_waker.wake();
+            });
         }
     }
 }
@@ -1286,35 +1243,18 @@ pub fn handle_icmpv6_error(
         return; // Ignore other error types for now
     };
 
-    let mut should_close = false;
-    let mut socket_id = None;
+    let socket_id = tcp_table_in(runtime).record_icmp_error(local, remote, error);
 
-    tcp_table_in(runtime).update(local, remote, |entry| {
-        // RFC 4443 Section 2.4 / RFC 1122 Section 4.2.3.9
-        if entry.state == TcpConnectionState::SynSent {
-            match error {
-                EndpointError::ConnectionRefused | EndpointError::ProtocolUnreachable => {
-                    should_close = true;
-                    socket_id = Some(entry.socket_id);
-                }
-                _ => {}
-            }
-        }
-        entry.on_icmp_error(error);
-    });
-
-    if should_close {
+    if let Some(id) = socket_id {
         log::info!(
             "[TCP-V6] Connection failed due to ICMPv6 error ({:?}) in SYN-SENT",
             error
         );
-        if let Some(id) = socket_id {
-            if let Some(socket) = get_socket_by_socket_id(runtime, id) {
-                let _ = socket.with_inner_mut(|inner| {
-                    inner.last_error = Some(error);
-                    inner.connect_waker.wake();
-                });
-            }
+        if let Some(socket) = get_socket_by_socket_id(runtime, id) {
+            let _ = socket.with_inner_mut(|inner| {
+                inner.last_error = Some(error);
+                inner.connect_waker.wake();
+            });
         }
     }
 }
@@ -1349,38 +1289,19 @@ fn handle_syn_ack_received(
         (None, false, None, None)
     };
 
-    // TCB更新
-    let updated = tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-        entry.rcv_nxt = seq_num.wrapping_add(1); // SYNは1バイト消費
-        entry.snd_una = ack_num;
-        entry.state = TcpConnectionState::Established;
-
-        // TCP Timestamps (RFC 7323)
-        if let Some((peer_ts_val, _)) = peer_ts {
-            entry.ts_enabled = true;
-            entry.ts_ecr = peer_ts_val;
-            entry.ts_val = generate_tcp_timestamp_in(runtime);
-        }
-
-        // SACK negotiation
-        if sack_permitted {
-            entry.sack_enabled = true;
-        }
-
-        // MSS (RFC 793 / 1122)
-        if let Some(mss) = peer_mss {
-            entry.set_mss(mss as u32);
-        }
-
-        // Window Scale (RFC 7323)
-        if let Some(ws) = peer_ws {
-            entry.window_scale.enabled = true;
-            entry.window_scale.set_snd_scale(ws);
-        } else {
-            // WSopt not present in SYN-ACK: disable scaling for this connection
-            entry.window_scale.enabled = false;
-        }
-    });
+    let updated = tcp_table_in(runtime).establish_from_syn_ack(
+        tcb.local,
+        tcb.remote,
+        seq_num,
+        ack_num,
+        TcpHandshakeOptions {
+            peer_ts_val: peer_ts.map(|(peer_ts_val, _)| peer_ts_val),
+            local_ts_val: peer_ts.map(|_| generate_tcp_timestamp_in(runtime)),
+            sack_permitted,
+            peer_mss,
+            peer_window_scale: peer_ws,
+        },
+    );
 
     if !updated {
         return;
@@ -1542,40 +1463,23 @@ fn process_tcp_new_connection(
         tcp_table_in(runtime).generate_isn(local, remote)
     };
 
-    let mut tcb = TcpControlBlockEntry::new(socket.socket_id(), local, remote);
-    tcb.initialize_seq(isn);
-    tcb.set_nodelay(nodelay);
-    tcb.set_priority(priority); // 設定を反映
-    tcb.rcv_nxt = seq_num.wrapping_add(1);
-    tcb.state = TcpConnectionState::SynReceived;
-
-    // TCP options negotiation (RFC 793 / 7323 / 2018)
-    if let Some((peer_ts_val, _)) = peer_ts {
-        tcb.ts_enabled = true;
-        tcb.ts_ecr = peer_ts_val; // SYN-ACKのTSecr = 相手のTSval
-    }
-    if sack_permitted {
-        tcb.sack_enabled = true;
-    }
-    if let Some(mss) = peer_mss {
-        tcb.set_mss(mss as u32);
-    }
-    if let Some(ws) = peer_ws {
-        tcb.window_scale.enabled = true;
-        tcb.window_scale.set_snd_scale(ws);
-    } else {
-        // Peer did not send WSopt: disable scaling (RFC 7323)
-        tcb.window_scale.enabled = false;
-    }
-
-    // TCB更新: SYN-ACKは1シーケンス番号を消費する (RFC 793)
-    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+    let mut tcb = TcpControlBlock::new(socket.socket_id(), local, remote);
+    tcb.prepare_passive_open(
+        isn,
+        seq_num,
+        nodelay,
+        priority,
+        TcpHandshakeOptions {
+            peer_ts_val: peer_ts.map(|(peer_ts_val, _)| peer_ts_val),
+            local_ts_val: None,
+            sack_permitted,
+            peer_mss,
+            peer_window_scale: peer_ws,
+        },
+    );
 
     // SYN-ACK送信に必要な値をinsertの前にキャプチャ
-    let ws_enabled = tcb.window_scale.enabled;
-    let sack_opt = tcb.sack_enabled;
-    let ts_enabled = tcb.ts_enabled;
-    let isn = tcb.snd_nxt.wrapping_sub(1); // insert前のISN
+    let syn_ack = tcb.passive_open_syn_ack();
 
     // SYN Cookie 使用時は TCB をテーブルに挿入しない (Stateless)
     if !use_syncookies {
@@ -1594,20 +1498,24 @@ fn process_tcp_new_connection(
 
     // SYN-ACK送信 (TCPオプション付き)
     // MSS=1460 (標準的なイーサネットMTU 1500 - IPヘッダ20 - TCPヘッダ20)
-    let ws_opt = if ws_enabled { Some(7) } else { None };
-    let _ts_opt = if ts_enabled {
+    let ws_opt = if syn_ack.window_scale_enabled {
+        Some(7)
+    } else {
+        None
+    };
+    let _ts_opt = if syn_ack.timestamp_enabled {
         Some(generate_tcp_timestamp_in(runtime))
     } else {
         None
     };
 
     let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
-        .seq(isn)
+        .seq(syn_ack.isn)
         .ack(seq_num.wrapping_add(1))
         .syn()
         .ack_flag()
         .window(65535)
-        .syn_options(1460, ws_opt, sack_opt, None);
+        .syn_options(1460, ws_opt, syn_ack.sack_enabled, None);
 
     // TSopt付きSYN-ACK (RFC 7323 Section 3.2)
     if let Some((peer_ts_val, _)) = peer_ts {
@@ -1628,9 +1536,7 @@ fn process_tcp_new_connection(
 fn handle_rst_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, seq_num: u32) {
     if seq_num == tcb.rcv_nxt {
         // RFC 5961: 完全一致 → 接続をリセット
-        tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-            entry.state = TcpConnectionState::Closed;
-        });
+        tcp_table_in(runtime).close_for_reset(tcb.local, tcb.remote);
 
         // ソケットにエラー通知
         if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
@@ -1681,36 +1587,9 @@ fn handle_ack_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
     // 重複ACK判定: ack_num == snd_una なら新データ未確認（重複ACK）
     let is_dup = ack_num == tcb.snd_una;
 
-    let mut should_remove = false;
-    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-        // 輻輳制御に委譲（snd_una更新含む）
-        entry.on_ack_received(ack_num, is_dup, current_time_ms, 0);
-
-        if !is_dup {
-            entry.retransmit_count = 0;
-
-            // RFC 793: State transitions on ACK
-            match entry.state {
-                TcpConnectionState::FinWait1 => {
-                    if ack_num == entry.snd_nxt {
-                        entry.state = TcpConnectionState::FinWait2;
-                    }
-                }
-                TcpConnectionState::Closing => {
-                    if ack_num == entry.snd_nxt {
-                        entry.state = TcpConnectionState::TimeWait;
-                    }
-                }
-                TcpConnectionState::LastAck => {
-                    if ack_num == entry.snd_nxt {
-                        entry.state = TcpConnectionState::Closed;
-                        should_remove = true;
-                    }
-                }
-                _ => {}
-            }
-        }
-    });
+    let should_remove = tcp_table_in(runtime)
+        .record_ack_and_close_progress(tcb.local, tcb.remote, ack_num, is_dup, current_time_ms)
+        .unwrap_or(false);
 
     if should_remove {
         tcp_table_in(runtime).remove(tcb.local, tcb.remote);
@@ -1731,10 +1610,7 @@ fn handle_ack_for_syn(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, a
     };
 
     // TCBを更新してEstablished状態に
-    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-        entry.snd_una = ack_num;
-        entry.state = TcpConnectionState::Established;
-    });
+    tcp_table_in(runtime).establish_syn_received(tcb.local, tcb.remote, ack_num);
 
     log::info!(
         "TCP: Server connection established {} <- {}",
@@ -1771,9 +1647,7 @@ fn create_accepted_socket(
     let new_socket_id = generate_socket_id_in(runtime)?;
 
     // TCB情報を更新してFDを紐付け
-    tcp_table_in(runtime).update(local, remote, |entry| {
-        entry.socket_id = new_socket_id;
-    });
+    tcp_table_in(runtime).set_socket_id(local, remote, new_socket_id);
 
     // 再送キューを作成
     get_or_create_retransmit_queue(local, remote);
@@ -1833,56 +1707,14 @@ fn handle_fin_in_order(
     tcb: TcpControlBlockSnapshot,
     rcv_nxt_at_fin: u32,
 ) {
-    let mut should_ack = false;
-    let mut final_rcv_nxt = rcv_nxt_at_fin;
-
-    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-        // FINは1シーケンス番号を消費 (RFC 793)
-        entry.rcv_nxt = rcv_nxt_at_fin.wrapping_add(1);
-        final_rcv_nxt = entry.rcv_nxt;
-
-        match entry.state {
-            TcpConnectionState::Established => {
-                // ESTABLISHED → CLOSE_WAIT
-                // 相手がクローズを開始。アプリケーションが明示的にcloseするまで待つ。
-                entry.state = TcpConnectionState::CloseWait;
-                should_ack = true;
-                log::info!(
-                    "[TCP] FIN received in ESTABLISHED: {} <- {} → CLOSE_WAIT",
-                    entry.local,
-                    entry.remote
-                );
-            }
-            TcpConnectionState::FinWait1 => {
-                // FIN_WAIT_1 → CLOSING (同時クローズ)
-                // 我々のFINがまだACKされていないが、相手もFINを送信した
-                entry.state = TcpConnectionState::Closing;
-                should_ack = true;
-                log::info!(
-                    "[TCP] FIN received in FIN_WAIT_1: {} <- {} → CLOSING",
-                    entry.local,
-                    entry.remote
-                );
-            }
-            TcpConnectionState::FinWait2 => {
-                // FIN_WAIT_2 → TIME_WAIT
-                // 正常なアクティブクローズの最終段階
-                entry.state = TcpConnectionState::TimeWait;
-                // TIME_WAIT開始時刻を記録
-                entry.last_send_tick = tcp_table_in(runtime).get_current_tick();
-                should_ack = true;
-                log::info!(
-                    "[TCP] FIN received in FIN_WAIT_2: {} <- {} → TIME_WAIT",
-                    entry.local,
-                    entry.remote
-                );
-            }
-            _ => {
-                // 他の状態ではFINは無視またはACKのみ
-                should_ack = true;
-            }
-        }
-    });
+    let Some((final_rcv_nxt, should_ack)) = tcp_table_in(runtime).record_fin_received(
+        tcb.local,
+        tcb.remote,
+        rcv_nxt_at_fin,
+        tcp_table_in(runtime).get_current_tick(),
+    ) else {
+        return;
+    };
 
     if should_ack {
         // FINに対するACKを送信 (rcv_nxtは既に+1済み)
@@ -1917,15 +1749,11 @@ fn handle_urgent_received(
     seq_num: u32,
     urgent_ptr: u16,
 ) {
-    // TCBのurgent状態を更新
-    tcp_table_in(runtime).update(tcb.local, tcb.remote, |entry| {
-        let has_new_urgent = entry.on_urgent_received(seq_num, urgent_ptr);
-
-        if has_new_urgent {
-            // ソケットにurgent dataの存在を通知
-            notify_socket_urgent(runtime, entry.socket_id);
-        }
-    });
+    if let Some(socket_id) =
+        tcp_table_in(runtime).record_urgent_received(tcb.local, tcb.remote, seq_num, urgent_ptr)
+    {
+        notify_socket_urgent(runtime, socket_id);
+    }
 }
 
 /// ソケットにurgent data到着を通知

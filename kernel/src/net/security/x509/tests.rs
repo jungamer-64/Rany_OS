@@ -167,6 +167,16 @@ fn test_parse_x509_certificate_rejects_invalid_input() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_parse_x509_certificate_rejects_malformed_validity() {
+    let mut der = TEST_CERT_DER;
+    der[47] = 0x13;
+    let payload = der_payload(&der);
+
+    assert!(parse_x509_certificate(PayloadSpanRef::from_payload(&payload)).is_none());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_certificate_chain_requires_trust_anchor() {
     let payload = test_cert_payload();
     let chain = [PayloadSpanRef::from_payload(&payload)];

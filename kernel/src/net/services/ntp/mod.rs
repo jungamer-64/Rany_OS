@@ -19,7 +19,6 @@ pub const NTP_PORT: u16 = 123;
 /// NTP Timestamp (64-bit: 32-bit seconds, 32-bit fraction)
 /// Seconds are from Jan 1, 1900.
 #[derive(Debug, Clone, Copy, Default)]
-#[repr(C, packed)]
 pub struct NtpTimestamp {
     pub seconds: [u8; 4],
     pub fraction: [u8; 4],
@@ -46,21 +45,20 @@ impl NtpTimestamp {
     }
 
     /// Convert to Unix time (seconds since 1970)
-    pub fn to_unix_seconds(&self) -> u64 {
+    pub fn to_unix_seconds(&self) -> Option<u64> {
         let seconds_u32 = u32::from_be_bytes(self.seconds);
         if seconds_u32 == 0 {
-            return 0;
+            return None;
         }
         // NTP era 0: 1900-01-01 to 2036-02-07
         // Offset between 1900 and 1970 is 2,208,988,800 seconds.
         const NTP_UNIX_OFFSET: u32 = 2_208_988_800;
-        (seconds_u32.wrapping_sub(NTP_UNIX_OFFSET)) as u64
+        seconds_u32.checked_sub(NTP_UNIX_OFFSET).map(u64::from)
     }
 }
 
 /// NTP Packet Header (48 bytes)
 #[derive(Debug, Clone, Copy, Default)]
-#[repr(C, packed)]
 pub struct NtpHeader {
     /// LI(2 bits), VN(3 bits), Mode(3 bits)
     pub li_vn_mode: u8,
@@ -97,15 +95,53 @@ impl NtpHeader {
         (self.li_vn_mode >> 6) & 0x03
     }
 
-    pub fn as_bytes(&self) -> &[u8; 48] {
-        unsafe { core::mem::transmute(self) }
+    pub fn encode(&self) -> [u8; 48] {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[0] = self.li_vn_mode;
+        bytes[1] = self.stratum;
+        bytes[2] = self.poll as u8;
+        bytes[3] = self.precision as u8;
+        bytes[4..8].copy_from_slice(&self.root_delay);
+        bytes[8..12].copy_from_slice(&self.root_dispersion);
+        bytes[12..16].copy_from_slice(&self.reference_id);
+        bytes[16..24].copy_from_slice(&self.reference_timestamp.to_be_bytes());
+        bytes[24..32].copy_from_slice(&self.origin_timestamp.to_be_bytes());
+        bytes[32..40].copy_from_slice(&self.receive_timestamp.to_be_bytes());
+        bytes[40..48].copy_from_slice(&self.transmit_timestamp.to_be_bytes());
+        bytes
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Option<&Self> {
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < Self::SIZE {
             return None;
         }
-        Some(unsafe { &*(bytes.as_ptr() as *const Self) })
+        let mut root_delay = [0u8; 4];
+        let mut root_dispersion = [0u8; 4];
+        let mut reference_id = [0u8; 4];
+        root_delay.copy_from_slice(&bytes[4..8]);
+        root_dispersion.copy_from_slice(&bytes[8..12]);
+        reference_id.copy_from_slice(&bytes[12..16]);
+        let mut reference_timestamp = [0u8; 8];
+        let mut origin_timestamp = [0u8; 8];
+        let mut receive_timestamp = [0u8; 8];
+        let mut transmit_timestamp = [0u8; 8];
+        reference_timestamp.copy_from_slice(&bytes[16..24]);
+        origin_timestamp.copy_from_slice(&bytes[24..32]);
+        receive_timestamp.copy_from_slice(&bytes[32..40]);
+        transmit_timestamp.copy_from_slice(&bytes[40..48]);
+        Some(Self {
+            li_vn_mode: bytes[0],
+            stratum: bytes[1],
+            poll: bytes[2] as i8,
+            precision: bytes[3] as i8,
+            root_delay,
+            root_dispersion,
+            reference_id,
+            reference_timestamp: NtpTimestamp::from_be_bytes(reference_timestamp),
+            origin_timestamp: NtpTimestamp::from_be_bytes(origin_timestamp),
+            receive_timestamp: NtpTimestamp::from_be_bytes(receive_timestamp),
+            transmit_timestamp: NtpTimestamp::from_be_bytes(transmit_timestamp),
+        })
     }
 }
 
@@ -162,7 +198,7 @@ impl NtpClient {
         let mut writer = GeneratedPacketWriter::new(NtpHeader::SIZE, DEFAULT_PACKET_HEADROOM)
             .ok_or(EndpointError::Internal)?;
         writer
-            .write_bytes(req.as_bytes())
+            .write_bytes(&req.encode())
             .ok_or(EndpointError::Internal)?;
 
         socket
@@ -179,7 +215,7 @@ impl NtpClient {
                 let header = crate::net::payload::PacketPayloadView::new(&packet)
                     .read_array::<{ NtpHeader::SIZE }>(0)
                     .ok_or(EndpointError::Internal)?;
-                let resp = NtpHeader::from_bytes(&header).ok_or(EndpointError::Internal)?;
+                let resp = NtpHeader::decode(&header).ok_or(EndpointError::Internal)?;
 
                 // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
                 // in the response matches the transmit timestamp in the request.
@@ -197,15 +233,13 @@ impl NtpClient {
                 }
 
                 let transmit_ts = resp.transmit_timestamp;
-                let unix_time = transmit_ts.to_unix_seconds();
+                let unix_time = transmit_ts
+                    .to_unix_seconds()
+                    .ok_or(EndpointError::Internal)?;
 
-                if unix_time > 0 {
-                    log::info!("[NTP] Synced time: {} (UNIX)", unix_time);
-                    self.apply_synced_unix_time(unix_time);
-                    return Ok(unix_time);
-                }
-
-                Err(EndpointError::Internal)
+                log::info!("[NTP] Synced time: {} (UNIX)", unix_time);
+                self.apply_synced_unix_time(unix_time);
+                Ok(unix_time)
             }
             TimeoutResult::Completed(None) => {
                 log::warn!("[NTP] Socket closed during recv");

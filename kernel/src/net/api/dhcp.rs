@@ -7,7 +7,7 @@ use alloc::string::String;
 use alloc::vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 use core::task::{Context, Poll};
 
 use crate::net::runtime::NetRuntimeHandle;
@@ -18,8 +18,6 @@ use crate::net::runtime::transport::tcp_table_in;
 use crate::net::services::dhcp;
 
 extern crate alloc;
-
-static NET_BACKGROUND_TASKS_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// DHCP runtime state snapshot for v4/v6 clients.
 #[derive(Debug, PartialEq, Eq)]
@@ -92,11 +90,9 @@ pub fn init_dhcp_runtime_in(runtime: NetRuntimeHandle) -> Result<(), String> {
         .iter()
         .find_map(|iface| iface.config)
         .or_else(|| match stack::stack_in(runtime).lock() {
-            Ok(guard) => guard.as_ref().and_then(|stack_guard| {
-                stack_guard
-                    .primary_interface_state()
-                    .map(|(_, state)| state.config)
-            }),
+            Ok(guard) => guard
+                .as_ref()
+                .and_then(|stack_guard| stack_guard.primary_interface_config()),
             Err(_) => None,
         })
         .ok_or_else(|| String::from("Network stack is not initialized"))?;
@@ -149,10 +145,7 @@ pub fn init_dhcp_runtime_in(runtime: NetRuntimeHandle) -> Result<(), String> {
 
 pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
     let has_dhcpv6 = dhcp::primary_v6_client_in(runtime).is_some();
-    let has_mdns = crate::net::services::mdns::service_in(runtime)
-        .lock()
-        .ok()
-        .is_some_and(|guard| guard.is_some());
+    let has_mdns = crate::net::services::mdns::has_service_in(runtime);
     let has_dns = crate::net::services::dns::shared_client_in(runtime).is_some();
 
     if !has_dhcpv6 && !has_mdns && !has_dns {
@@ -160,7 +153,11 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
         return;
     }
 
-    if NET_BACKGROUND_TASKS_STARTED.swap(true, Ordering::AcqRel) {
+    if runtime
+        .context()
+        .network_background_tasks_started
+        .swap(true, Ordering::AcqRel)
+    {
         log::info!("[NET][boot] network service tasks already started; skipping");
         return;
     }
@@ -172,25 +169,18 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
     }
 
     if has_mdns {
-        log::info!("[NET][boot] scheduling mDNS service task on bootstrap CPU0");
-        crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
-            log::info!(
-                "[NET][boot] mDNS service task running on CPU {}",
-                crate::cpu::try_current_id().unwrap_or(0)
-            );
-            let svc_ref: Option<&'static mut crate::net::services::mdns::MdnsService> = {
-                let mut guard = match crate::net::services::mdns::service_in(runtime).lock() {
-                    Ok(g) => g,
-                    Err(_) => return,
-                };
-                guard
-                    .as_mut()
-                    .map(|s| unsafe { &mut *(s as *mut crate::net::services::mdns::MdnsService) })
-            };
-            if let Some(service) = svc_ref {
+        if let Some(mut service) = crate::net::services::mdns::take_service_for_task_in(runtime) {
+            log::info!("[NET][boot] scheduling mDNS service task on bootstrap CPU0");
+            crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
+                log::info!(
+                    "[NET][boot] mDNS service task running on CPU {}",
+                    crate::cpu::try_current_id().unwrap_or(0)
+                );
                 let _ = service.run().await;
-            }
-        });
+            });
+        } else {
+            log::warn!("[NET][boot] mDNS service was already claimed by a task");
+        }
     }
 
     if has_dns {

@@ -54,7 +54,7 @@ impl DhcpV6Client {
         let result = match crate::net::runtime::stack::stack_in(self.runtime).lock() {
             Ok(guard) => guard.as_ref().and_then(|s| {
                 s.primary_interface_state()
-                    .and_then(|(_, state)| state.config.ipv6.map(|c| c.link_local))
+                    .and_then(|(_, state)| state.ipv6_link_local())
             }),
             Err(_) => {
                 log::error!("[NET] DHCPv6: Global Stack poisoned - cannot get link-local");
@@ -205,7 +205,7 @@ impl DhcpV6Client {
 
     /// 暗号学的安全な24bitトランザクションIDを生成し保存する
     fn generate_secure_xid(&self) {
-        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
         let xid = u32::from_be_bytes([0, random_bytes[0], random_bytes[1], random_bytes[2]]);
         self.xid.store(xid, Ordering::SeqCst);
     }

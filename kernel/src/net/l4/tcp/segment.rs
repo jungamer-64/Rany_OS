@@ -405,7 +405,7 @@ pub fn send_tcp_segment_payload_with_completion_in(
     completion_id: Option<u64>,
 ) -> bool {
     let (scope, ingress_if) = crate::net::runtime::transport::tcp_table_in(runtime)
-        .read(local, remote, |tcb| (tcb.scope, tcb.ingress_if_id))
+        .read(local, remote, |tcb| tcb.route_binding())
         .unwrap_or((crate::net::types::InterfaceScope::Any, None));
     let scoped_if = scope.as_if_id().or(ingress_if);
     let segment_len = segment.total_len();

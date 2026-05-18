@@ -11,7 +11,7 @@ use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::socket::TcpSocketState;
 use crate::net::l4::tcp::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
-use crate::net::l4::tcp::tcb::{TcpConnectionState, TcpControlBlockEntry, TcpControlBlockSnapshot};
+use crate::net::l4::tcp::tcb::{TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot};
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::transport::tcp_table_in;
@@ -114,10 +114,7 @@ impl RuntimeCommandHandler {
                     inner.send_waker.wake();
                 });
 
-                tcb_table.lookup_mut(local, remote, |tcb| {
-                    tcb.on_send(data_len);
-                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
-                });
+                let _ = tcb_table.mark_payload_sent(local, remote, data_len);
             } else {
                 return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
             }
@@ -297,16 +294,15 @@ impl RuntimeCommandHandler {
         let tcb_table = tcp_table_in(runtime);
         let isn = tcb_table.generate_isn(local_addr, remote);
         let mut tcb = if let Some(algo) = congestion_algo {
-            TcpControlBlockEntry::with_algorithm(fd, local_addr, remote, algo)
+            TcpControlBlock::with_algorithm(fd, local_addr, remote, algo)
         } else {
-            TcpControlBlockEntry::new(fd, local_addr, remote)
+            TcpControlBlock::new(fd, local_addr, remote)
         };
         tcb.initialize_seq(isn);
         tcb.set_nodelay(nodelay);
         tcb.set_priority(priority);
-        tcb.scope = scope;
-        tcb.ingress_if_id = Some(resolved_if);
-        tcb.state = TcpConnectionState::SynSent;
+        tcb.set_scope(scope, Some(resolved_if));
+        tcb.enter_syn_sent();
         let _ = tcb_table.insert(tcb);
 
         let syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
@@ -337,9 +333,7 @@ impl RuntimeCommandHandler {
             });
         }
 
-        tcb_table.lookup_mut(local_addr, remote, |tcb| {
-            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-        });
+        let _ = tcb_table.mark_syn_sent(local_addr, remote);
 
         log::info!("TCP: SYN sent {} -> {} (seq={})", local_addr, remote, isn);
         EventHandleResult::Success
@@ -386,16 +380,15 @@ impl RuntimeCommandHandler {
         // TCB（TCP Control Block）を作成
         let isn = tcb_table.generate_isn(local_addr, remote);
         let mut tcb = if let Some(algo) = congestion_algo {
-            TcpControlBlockEntry::with_algorithm(fd, local_addr, remote, algo)
+            TcpControlBlock::with_algorithm(fd, local_addr, remote, algo)
         } else {
-            TcpControlBlockEntry::new(fd, local_addr, remote)
+            TcpControlBlock::new(fd, local_addr, remote)
         };
         tcb.initialize_seq(isn);
         tcb.set_nodelay(nodelay);
         tcb.set_priority(priority); // 設定を反映
-        tcb.scope = scope;
-        tcb.ingress_if_id = preferred_if;
-        tcb.state = TcpConnectionState::SynSent;
+        tcb.set_scope(scope, preferred_if);
+        tcb.enter_syn_sent();
         let _ = tcb_table.insert(tcb);
 
         // SYNパケット構築 (TCPオプション付き)
@@ -430,9 +423,7 @@ impl RuntimeCommandHandler {
         }
 
         // TCB更新: SYNは1シーケンス番号を消費する
-        tcb_table.lookup_mut(local_addr, remote, |tcb| {
-            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-        });
+        let _ = tcb_table.mark_syn_sent(local_addr, remote);
 
         log::info!("TCP: SYN sent {} -> {} (seq={})", local_addr, remote, isn);
 
@@ -494,12 +485,12 @@ impl RuntimeCommandHandler {
         }
 
         // TCBテーブルにリスナーエントリを作成
-        let mut tcb = TcpControlBlockEntry::new(
+        let mut tcb = TcpControlBlock::new(
             fd,
             local,
             EndpointAddr::new([0, 0, 0, 0], 0), // リモートは未定
         );
-        tcb.state = TcpConnectionState::Listen;
+        tcb.enter_listen();
         // backlog値を保存（接続要求キューの最大サイズ）
         // 注: 実際の接続要求キューはTCBテーブル側で管理
         let _ = backlog; // 現在のTCB構造体にはbacklogフィールドなし
@@ -551,20 +542,14 @@ impl RuntimeCommandHandler {
 
         // TCBエントリの状態を取得
         let state = tcb_table
-            .read(local, remote, |tcb| tcb.state)
+            .read(local, remote, |tcb| tcb.state())
             .unwrap_or(TcpConnectionState::Closed);
 
         match state {
             TcpConnectionState::Established => {
                 // FINパケットを送信
                 let seq = tcb_table
-                    .lookup_mut(local, remote, |tcb| {
-                        let seq = tcb.snd_nxt;
-                        tcb.state = TcpConnectionState::FinWait1;
-                        // TCB更新: FINは1シーケンス番号を消費する
-                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-                        seq
-                    })
+                    .begin_fin(local, remote, TcpConnectionState::FinWait1)
                     .unwrap_or(0);
 
                 let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
@@ -592,13 +577,7 @@ impl RuntimeCommandHandler {
             TcpConnectionState::CloseWait => {
                 // 相手からFINを受信済み、自分からFINを送信
                 let seq = tcb_table
-                    .lookup_mut(local, remote, |tcb| {
-                        let seq = tcb.snd_nxt;
-                        tcb.state = TcpConnectionState::LastAck;
-                        // TCB更新: FINは1シーケンス番号を消費する
-                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-                        seq
-                    })
+                    .begin_fin(local, remote, TcpConnectionState::LastAck)
                     .unwrap_or(0);
 
                 let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())

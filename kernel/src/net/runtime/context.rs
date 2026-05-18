@@ -87,6 +87,7 @@ pub struct NetRuntimeContext {
     pub(crate) device_manager: PoisonRwLock<NetDeviceManager>,
     pub(crate) stack_initialized: AtomicBool,
     pub(crate) dhcp_bound_primary_selected: AtomicBool,
+    pub(crate) network_background_tasks_started: AtomicBool,
     pub(crate) bridge: NetBridgeRuntimeState,
     pub(crate) dhcp: DhcpRuntimeState,
     pub(crate) dns: DnsRuntimeState,
@@ -117,6 +118,7 @@ impl NetRuntimeContext {
             device_manager: PoisonRwLock::new(NetDeviceManager::new()),
             stack_initialized: AtomicBool::new(false),
             dhcp_bound_primary_selected: AtomicBool::new(false),
+            network_background_tasks_started: AtomicBool::new(false),
             bridge: NetBridgeRuntimeState::new(),
             dhcp: DhcpRuntimeState::new(),
             dns: DnsRuntimeState::new(),
@@ -268,6 +270,33 @@ mod tests {
         );
         assert!(runtime_a.context().command_queue.has_events());
         assert!(runtime_b.context().command_queue.is_empty());
+    }
+
+    #[test]
+    fn background_service_task_claims_are_runtime_local() {
+        reset_runtime_registry_for_tests();
+
+        let runtime_a = default_runtime();
+        let runtime_b = create_runtime().expect("second runtime allocation");
+
+        assert!(
+            !runtime_a
+                .context()
+                .network_background_tasks_started
+                .swap(true, Ordering::AcqRel)
+        );
+        assert!(
+            !runtime_b
+                .context()
+                .network_background_tasks_started
+                .load(Ordering::Acquire)
+        );
+        assert!(
+            runtime_a
+                .context()
+                .network_background_tasks_started
+                .load(Ordering::Acquire)
+        );
     }
 
     #[test]

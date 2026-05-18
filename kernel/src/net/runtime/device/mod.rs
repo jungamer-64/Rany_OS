@@ -1109,10 +1109,7 @@ fn sync_runtime_config_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfI
 fn clear_runtime_network_config_in(runtime: NetRuntimeHandle) {
     if let Ok(mut guard) = stack::stack_in(runtime).lock() {
         if let Some(stack) = guard.as_mut() {
-            let Some(mut config) = stack
-                .primary_interface_state()
-                .map(|(_, state)| state.config)
-            else {
+            let Some(mut config) = stack.primary_interface_config() else {
                 return;
             };
             config.ipv4 = Ipv4Config::default();

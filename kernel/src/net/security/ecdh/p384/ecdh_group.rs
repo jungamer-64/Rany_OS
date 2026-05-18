@@ -111,7 +111,8 @@ impl EcdhKeyPair {
     pub fn generate(group: EcdhGroup) -> Result<Self, EcdhError> {
         match group {
             EcdhGroup::X25519 => {
-                let random_bytes = crate::net::security::tls::crypto::generate_random();
+                let random_bytes = crate::net::security::tls::crypto::generate_random()
+                    .map_err(|_| EcdhError::KeyGenerationFailed)?;
                 let sk = X25519SecretKey::new(random_bytes);
                 let pk = sk
                     .recover_public_key()
@@ -119,7 +120,8 @@ impl EcdhKeyPair {
                 Ok(EcdhKeyPair::X25519 { sk, pk })
             }
             EcdhGroup::Secp256r1 => {
-                let mut sk_bytes = crate::net::security::tls::crypto::generate_random();
+                let mut sk_bytes = crate::net::security::tls::crypto::generate_random()
+                    .map_err(|_| EcdhError::KeyGenerationFailed)?;
 
                 // 有効なスカラー (1 <= k < n) になるまでリトライ
                 // 通常は最初の試行で成功する
@@ -130,7 +132,8 @@ impl EcdhKeyPair {
                     if attempts > 16 {
                         return Err(EcdhError::KeyGenerationFailed);
                     }
-                    sk_bytes = crate::net::security::tls::crypto::generate_random();
+                    sk_bytes = crate::net::security::tls::crypto::generate_random()
+                        .map_err(|_| EcdhError::KeyGenerationFailed)?;
                 }
 
                 let pub_point = crate::net::security::ecdh::scalar_base_mul(&sk_bytes);

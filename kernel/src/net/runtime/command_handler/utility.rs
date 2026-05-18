@@ -95,14 +95,7 @@ impl RuntimeCommandHandler {
                             crate::net::services::dns::set_ipv4_servers_in(runtime, &dns_servers);
                         }
 
-                        // mDNS のローカル IP を更新
-                        if let Ok(mut guard) =
-                            crate::net::services::mdns::service_in(runtime).lock()
-                        {
-                            if let Some(ref mut mdns) = *guard {
-                                mdns.set_local_ip(lease.ip_address);
-                            }
-                        }
+                        crate::net::services::mdns::set_local_ip_in(runtime, lease.ip_address);
                     }
                     stack.apply_dhcp_v4_lease_for_interface(
                         &lease,
@@ -154,9 +147,9 @@ impl RuntimeCommandHandler {
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetLinkLocal { reply },
             ) => {
-                let result = stack.primary_interface_state().and_then(|(_, state)| {
-                    state.config.ipv6.map(|config| config.link_local.octets())
-                });
+                let result = stack
+                    .primary_ipv6_link_local()
+                    .map(|address| address.octets());
                 finish_command(reply, result)
             }
             RuntimeCommand::Control(

@@ -692,7 +692,8 @@ impl DhcpClient {
 
         // Add jitter ±1s using pseudo-randomness from available source
         let jitter = if retry > 0 {
-            let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
+            let rnd =
+                crate::net::security::tls::crypto::random_or_panic("network random")[0] as i64;
             (rnd % 3) - 1 // -1, 0, or 1
         } else {
             0
@@ -889,7 +890,8 @@ impl DhcpClient {
 
         // Add jitter ±1s
         let jitter = if retry > 0 {
-            let rnd = crate::net::security::tls::crypto::random::generate_random()[0] as i64;
+            let rnd =
+                crate::net::security::tls::crypto::random_or_panic("network random")[0] as i64;
             (rnd % 3) - 1 // -1, 0, or 1
         } else {
             0

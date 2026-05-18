@@ -8,7 +8,7 @@ impl Ipv4Processor {
     /// Create a new IPv4 processor
     pub fn new(config: Ipv4Config) -> Self {
         // Use cryptographically secure random for initial ID and secret
-        let random_bytes = crate::net::security::tls::crypto::generate_random();
+        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
         let id_init = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
         let secret = u32::from_le_bytes([
             random_bytes[2],

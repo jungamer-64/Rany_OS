@@ -65,6 +65,16 @@ impl NetworkStack {
             .and_then(|if_id| self.interfaces.get(&if_id).map(|state| (if_id, state)))
     }
 
+    pub(crate) fn primary_interface_config(&self) -> Option<NetworkConfig> {
+        self.primary_interface_state()
+            .map(|(_, state)| state.config())
+    }
+
+    pub(crate) fn primary_ipv6_link_local(&self) -> Option<Ipv6Address> {
+        self.primary_interface_state()
+            .and_then(|(_, state)| state.ipv6_link_local())
+    }
+
     pub(crate) fn primary_interface_state_mut(
         &mut self,
     ) -> Option<(NetIfId, &mut InterfaceStackState)> {

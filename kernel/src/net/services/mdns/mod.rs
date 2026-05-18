@@ -151,6 +151,11 @@ pub struct MdnsService {
     pending_reports: Vec<MdnsReport>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MdnsCommand {
+    SetLocalIp(Ipv4Address),
+}
+
 // ============================================================================
 // MdnsService Implementation
 // ============================================================================
@@ -177,6 +182,7 @@ impl MdnsService {
             "[NET][boot] mDNS task entered run loop on CPU {}",
             crate::cpu::try_current_id().unwrap_or(0)
         );
+        self.drain_runtime_commands();
         let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
             self.runtime,
             crate::net::types::InterfaceScope::Any,
@@ -189,6 +195,7 @@ impl MdnsService {
             log::info!("[NET] mDNS: deferring multicast join until IPv4 address is assigned");
         }
         while self.local_ip.is_any() {
+            self.drain_runtime_commands();
             crate::task::sleep_ms(100).await;
         }
 
@@ -205,56 +212,63 @@ impl MdnsService {
         );
 
         loop {
+            self.drain_runtime_commands();
             // パケット受信を待機
-            if let Some((_if_id, src, ttl, packet)) = socket.recv().await {
-                let now = crate::task::current_tick() / 1000;
+            match crate::task::with_timeout(socket.recv(), 100).await {
+                crate::task::TimeoutResult::Completed(Some((_if_id, src, ttl, packet))) => {
+                    let now = crate::task::current_tick() / 1000;
 
-                // SECURITY: RFC 6762 Section 11 に従い、IP TTL / Hop Limit が
-                // 255 以外の Multicast DNS query を破棄する。
-                let is_loopback = match src {
-                    UdpAddr::V4 { ip, .. } => ip.is_loopback(),
-                    UdpAddr::V6 { ip, .. } => ip.is_loopback(),
-                };
+                    // SECURITY: RFC 6762 Section 11 に従い、IP TTL / Hop Limit が
+                    // 255 以外の Multicast DNS query を破棄する。
+                    let is_loopback = match src {
+                        UdpAddr::V4 { ip, .. } => ip.is_loopback(),
+                        UdpAddr::V6 { ip, .. } => ip.is_loopback(),
+                    };
 
-                if ttl != 255 && !is_loopback {
-                    log::warn!(
-                        "[NET] mDNS: Ignoring packet with TTL {} (RFC 6762 Section 11 mandate)",
-                        ttl
-                    );
-                    continue;
-                }
-
-                // 受信パケットを処理
-                let src_ip = src.ip_v4().unwrap_or(Ipv4Address::ANY);
-                let result = self.process_packet_payload(packet, src_ip, ttl, now);
-
-                match result {
-                    MdnsResult::SendResponse { payload } => {
-                        let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                        let _ = socket.send(payload, dst).await;
+                    if ttl != 255 && !is_loopback {
+                        log::warn!(
+                            "[NET] mDNS: Ignoring packet with TTL {} (RFC 6762 Section 11 mandate)",
+                            ttl
+                        );
+                        continue;
                     }
-                    _ => {}
-                }
 
-                // 保留中のレポート（クエリなど）があれば送信
-                let reports = self.take_pending_reports();
-                for report in reports {
-                    if report.is_response {
-                        if let Some(ip) = report.ip {
-                            if let Some(payload) =
-                                Self::build_response_payload(&report.name, ip, report.ttl)
-                            {
+                    // 受信パケットを処理
+                    let src_ip = src.ip_v4().unwrap_or(Ipv4Address::ANY);
+                    let result = self.process_packet_payload(packet, src_ip, ttl, now);
+
+                    match result {
+                        MdnsResult::SendResponse { payload } => {
+                            let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
+                            let _ = socket.send(payload, dst).await;
+                        }
+                        _ => {}
+                    }
+
+                    // 保留中のレポート（クエリなど）があれば送信
+                    let reports = self.take_pending_reports();
+                    for report in reports {
+                        if report.is_response {
+                            if let Some(ip) = report.ip {
+                                if let Some(payload) =
+                                    Self::build_response_payload(&report.name, ip, report.ttl)
+                                {
+                                    let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
+                                    let _ = socket.send(payload, dst).await;
+                                }
+                            }
+                        } else {
+                            if let Some(payload) = Self::build_query_payload(&report.name) {
                                 let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
                                 let _ = socket.send(payload, dst).await;
                             }
                         }
-                    } else {
-                        if let Some(payload) = Self::build_query_payload(&report.name) {
-                            let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                            let _ = socket.send(payload, dst).await;
-                        }
                     }
                 }
+                crate::task::TimeoutResult::Completed(None) => {
+                    return Err("mDNS socket closed");
+                }
+                crate::task::TimeoutResult::TimedOut => {}
             }
 
             // 定期的なキャッシュクリーンアップ
@@ -276,6 +290,22 @@ impl MdnsService {
     /// ローカルIPを設定
     pub fn set_local_ip(&mut self, ip: Ipv4Address) {
         self.local_ip = ip;
+    }
+
+    fn apply_command(&mut self, command: MdnsCommand) {
+        match command {
+            MdnsCommand::SetLocalIp(ip) => self.set_local_ip(ip),
+        }
+    }
+
+    fn drain_runtime_commands(&mut self) {
+        let commands = match runtime_state_for(self.runtime).commands.lock() {
+            Ok(mut guard) => core::mem::take(&mut *guard),
+            Err(_) => return,
+        };
+        for command in commands {
+            self.apply_command(command);
+        }
     }
 
     /// キャッシュエントリ数を取得
@@ -909,12 +939,14 @@ fn is_inet_a_record(rtype: u16, rclass_masked: u16, rdlength: usize) -> bool {
 
 pub(crate) struct MdnsRuntimeState {
     service: PoisonLock<Option<MdnsService>>,
+    commands: PoisonLock<Vec<MdnsCommand>>,
 }
 
 impl MdnsRuntimeState {
     pub const fn new() -> Self {
         Self {
             service: PoisonLock::new(None),
+            commands: PoisonLock::new(Vec::new()),
         }
     }
 }
@@ -930,6 +962,52 @@ pub fn init_in(runtime: NetRuntimeHandle, hostname: String, local_ip: Ipv4Addres
     }
 }
 
-pub fn service_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<MdnsService>> {
-    &runtime_state_for(runtime).service
+pub(crate) fn has_service_in(runtime: NetRuntimeHandle) -> bool {
+    runtime_state_for(runtime)
+        .service
+        .lock()
+        .ok()
+        .is_some_and(|guard| guard.is_some())
+}
+
+pub(crate) fn take_service_for_task_in(runtime: NetRuntimeHandle) -> Option<MdnsService> {
+    runtime_state_for(runtime)
+        .service
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+}
+
+pub(crate) fn enqueue_command_in(runtime: NetRuntimeHandle, command: MdnsCommand) {
+    if let Ok(mut guard) = runtime_state_for(runtime).commands.lock() {
+        guard.push(command);
+    }
+}
+
+pub(crate) fn set_local_ip_in(runtime: NetRuntimeHandle, ip: Ipv4Address) {
+    enqueue_command_in(runtime, MdnsCommand::SetLocalIp(ip));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::runtime::{default_runtime, reset_runtime_registry_for_tests};
+
+    #[test]
+    fn mdns_local_ip_updates_flow_through_runtime_command_queue() {
+        reset_runtime_registry_for_tests();
+        let runtime = default_runtime();
+        init_in(runtime, String::from("ranyos"), Ipv4Address::ANY);
+
+        let Some(mut service) = take_service_for_task_in(runtime) else {
+            panic!("mDNS service should be available for task ownership");
+        };
+        assert_eq!(service.local_ip(), Ipv4Address::ANY);
+
+        let assigned = Ipv4Address::new([10, 0, 0, 42]);
+        set_local_ip_in(runtime, assigned);
+        service.drain_runtime_commands();
+
+        assert_eq!(service.local_ip(), assigned);
+    }
 }

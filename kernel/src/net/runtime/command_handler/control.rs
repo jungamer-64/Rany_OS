@@ -36,10 +36,7 @@ impl RuntimeCommandHandler {
             None => return EventHandleResult::SocketNotFound(socket_id),
         };
 
-        // TCBに反映
-        tcp_table_in(socket.runtime()).lookup_mut(local, remote, |tcb| {
-            tcb.set_priority(priority);
-        });
+        let _ = tcp_table_in(socket.runtime()).set_priority(local, remote, priority);
 
         EventHandleResult::Success
     }
@@ -71,10 +68,7 @@ impl RuntimeCommandHandler {
             None => return EventHandleResult::SocketNotFound(socket_id),
         };
 
-        // TCBに反映
-        tcp_table_in(socket.runtime()).lookup_mut(local, remote, |tcb| {
-            tcb.set_nodelay(nodelay);
-        });
+        let _ = tcp_table_in(socket.runtime()).set_nodelay(local, remote, nodelay);
 
         EventHandleResult::Success
     }

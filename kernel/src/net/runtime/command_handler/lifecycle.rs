@@ -23,11 +23,7 @@ impl RuntimeCommandHandler {
             ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
                 let current_time = stack.current_time();
-                if let Some(mac) = stack
-                    .interfaces
-                    .values()
-                    .find_map(|state| state.arp.resolve(ip, current_time))
-                {
+                if let Some(mac) = stack.arp_resolve(ip, current_time) {
                     crate::net::l2::arp::notify_arp_resolved_in(
                         runtime,
                         target_ip,

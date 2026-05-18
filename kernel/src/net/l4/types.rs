@@ -373,7 +373,7 @@ static CONN_HASH_SECRET: AtomicU32 = AtomicU32::new(0);
 pub(crate) fn init_hash_secrets() {
     let mut bytes = [0u8; 4];
     // RDRAND または別のセキュアなソースから取得
-    let rand = crate::net::security::tls::crypto::random::generate_random();
+    let rand = crate::net::security::tls::crypto::random_or_panic("network random");
     bytes.copy_from_slice(&rand[0..4]);
     let secret = u32::from_le_bytes(bytes);
     CONN_HASH_SECRET.store(secret, core::sync::atomic::Ordering::Relaxed);

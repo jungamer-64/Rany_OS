@@ -6,7 +6,7 @@ use super::*;
 
 impl DnsClient {
     pub(super) fn next_query_id(&self) -> u16 {
-        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
         u16::from_le_bytes([random_bytes[0], random_bytes[1]])
     }
 

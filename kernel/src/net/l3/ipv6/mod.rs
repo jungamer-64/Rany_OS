@@ -125,7 +125,7 @@ impl Ipv6Address {
     pub fn from_prefix_random(prefix: &Ipv6Address) -> Self {
         let p = prefix.as_bytes();
         // Generate 8 bytes of entropy for the interface identifier
-        let rand = crate::net::security::tls::crypto::random::generate_random();
+        let rand = crate::net::security::tls::crypto::random_or_panic("network random");
 
         let mut addr = [0u8; 16];
         addr[0..8].copy_from_slice(&p[0..8]);

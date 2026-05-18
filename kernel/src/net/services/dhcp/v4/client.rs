@@ -81,14 +81,10 @@ impl DhcpClient {
                                     },
                                 ),
                             );
-                            // mDNS のローカル IP を更新
-                            if let Ok(mut guard) =
-                                crate::net::services::mdns::service_in(self.runtime).lock()
-                            {
-                                if let Some(ref mut mdns) = *guard {
-                                    mdns.set_local_ip(lease.ip_address);
-                                }
-                            }
+                            crate::net::services::mdns::set_local_ip_in(
+                                self.runtime,
+                                lease.ip_address,
+                            );
                         }
                         Ok(DhcpResponseResult::Offer(lease)) => {
                             log::info!(
@@ -325,7 +321,7 @@ impl DhcpClient {
 
         if *state_guard == DhcpState::Init {
             // Use cryptographically secure random value for XID to prevent spoofing
-            let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+            let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
             let xid = u32::from_be_bytes([
                 random_bytes[0],
                 random_bytes[1],
@@ -540,7 +536,7 @@ impl DhcpClient {
         let lease = self.get_active_lease()?;
 
         // INFORM は既存トランザクションと独立した新規XIDを使用する
-        let random_bytes = crate::net::security::tls::crypto::random::generate_random();
+        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
         let xid = u32::from_be_bytes([
             random_bytes[0],
             random_bytes[1],

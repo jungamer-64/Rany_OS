@@ -279,20 +279,16 @@ fn parse_time_value(tag: u8, value: PayloadSpanRef<'_>) -> Option<u64> {
     }
 }
 
-fn parse_validity(tbs: &mut DerCursor<'_>) -> (u64, u64) {
-    let Some(validity) = tbs.read_sequence() else {
-        return (0, u64::MAX);
-    };
+fn parse_validity(tbs: &mut DerCursor<'_>) -> Option<(u64, u64)> {
+    let validity = tbs.read_sequence()?;
     let mut cursor = DerCursor::new(validity.value);
     let not_before = cursor
         .read_tlv()
-        .and_then(|tlv| parse_time_value(tlv.tag, tlv.value))
-        .unwrap_or(0);
+        .and_then(|tlv| parse_time_value(tlv.tag, tlv.value))?;
     let not_after = cursor
         .read_tlv()
-        .and_then(|tlv| parse_time_value(tlv.tag, tlv.value))
-        .unwrap_or(u64::MAX);
-    (not_before, not_after)
+        .and_then(|tlv| parse_time_value(tlv.tag, tlv.value))?;
+    Some((not_before, not_after))
 }
 
 fn parse_spki(spki: PayloadSpanRef<'_>) -> Option<SubjectPublicKeyInfo> {
@@ -388,7 +384,7 @@ fn parse_tbs_fields<'a>(
     let mut tbs = DerCursor::new(tbs_content);
     let signature_algorithm = parse_tbs_preamble(&mut tbs)?;
     let issuer_raw = tbs.read_tlv()?.full;
-    let (not_before, not_after) = parse_validity(&mut tbs);
+    let (not_before, not_after) = parse_validity(&mut tbs)?;
     let subject_raw = tbs.read_tlv()?.full;
     let spki = tbs.read_sequence()?.value;
     let subject_public_key_info = parse_spki(spki)?;

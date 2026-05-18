@@ -54,7 +54,7 @@ impl RuntimeCommandHandler {
             else {
                 return EventHandleResult::Success;
             };
-            state.ethernet.process(data)
+            state.process_ethernet(data)
         };
 
         match ethernet_result {
@@ -102,7 +102,7 @@ impl RuntimeCommandHandler {
             crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
                 let ipv6_enabled = stack
                     .interface_state_for_ingress(Some(selected_if_id))
-                    .is_some_and(|(_, state)| state.ipv6.is_some());
+                    .is_some_and(|(_, state)| state.has_ipv6());
                 if ipv6_enabled {
                     let Some(offset) = subslice_offset(data, payload) else {
                         if let Some(stats) = stack.interface_stats(selected_if_id) {
@@ -583,18 +583,14 @@ impl RuntimeCommandHandler {
             else {
                 return EventHandleResult::Success;
             };
-            state
-                .ipv4
-                .process_fragment_owned_packet(packet_ref, current_time)
+            state.process_ipv4_fragment_owned_packet(packet_ref, current_time)
         } else {
             let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
             let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(ingress_if_id))
             else {
                 return EventHandleResult::Success;
             };
-            state
-                .ipv4
-                .process_with_time_and_packet(data, ip_packet.as_ref(), current_time)
+            state.process_ipv4_with_time_and_packet(data, ip_packet.as_ref(), current_time)
         };
 
         match result {
