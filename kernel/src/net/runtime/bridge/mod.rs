@@ -132,8 +132,6 @@ pub fn drain_deferred_rx_packets_in(runtime: NetRuntimeHandle) {
         }
     }
 }
-
-#[allow(dead_code)]
 fn is_local_ipv4_in(runtime: NetRuntimeHandle, addr: Ipv4Address) -> bool {
     if let Ok(ifaces) = manager::list_interfaces_in(runtime) {
         for iface in ifaces {

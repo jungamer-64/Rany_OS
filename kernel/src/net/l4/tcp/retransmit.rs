@@ -335,7 +335,6 @@ impl RetransmitQueue {
     }
 
     /// シーケンス番号比較（以下）
-    #[allow(dead_code)]
     pub fn seq_leq(a: u32, b: u32) -> bool {
         seq_leq_fn(a, b)
     }

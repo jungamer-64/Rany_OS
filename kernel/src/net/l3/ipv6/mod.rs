@@ -13,7 +13,6 @@
 //! - Solicited-node multicast address computation
 
 // Building block: IPv6 processor fields retained for PMTU support
-#![allow(dead_code)]
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use core::fmt;

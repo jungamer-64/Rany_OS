@@ -17,6 +17,10 @@ const OID_SECP256R1: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07];
 const OID_SECP384R1: &[u8] = &[0x2B, 0x81, 0x04, 0x00, 0x22];
 const OID_BASIC_CONSTRAINTS: &[u8] = &[0x55, 0x1D, 0x13];
 const OID_SUBJECT_ALT_NAME: &[u8] = &[0x55, 0x1D, 0x11];
+const OID_KEY_USAGE: &[u8] = &[0x55, 0x1D, 0x0F];
+const OID_EXTENDED_KEY_USAGE: &[u8] = &[0x55, 0x1D, 0x25];
+const OID_NAME_CONSTRAINTS: &[u8] = &[0x55, 0x1D, 0x1E];
+const OID_EKU_SERVER_AUTH: &[u8] = &[0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01];
 const OID_RSA_PSS: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
 const OID_COMMON_NAME: &[u8] = &[0x55, 0x04, 0x03];
 
@@ -46,6 +50,18 @@ pub enum SubjectPublicKeyInfo {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyUsage {
+    pub digital_signature: bool,
+    pub key_encipherment: bool,
+    pub key_cert_sign: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExtendedKeyUsage {
+    pub server_auth: bool,
+}
+
 #[derive(Debug)]
 pub struct X509Certificate<'a> {
     pub raw_tbs: PayloadSpanRef<'a>,
@@ -59,6 +75,8 @@ pub struct X509Certificate<'a> {
     pub is_ca: bool,
     pub path_len_constraint: Option<u32>,
     pub san_raw: Option<PayloadSpanRef<'a>>,
+    pub key_usage: Option<KeyUsage>,
+    pub extended_key_usage: Option<ExtendedKeyUsage>,
 }
 
 impl X509Certificate<'_> {
@@ -206,6 +224,43 @@ fn parse_signature_algorithm_id(oid: PayloadSpanRef<'_>) -> SignatureAlgorithmId
     }
 }
 
+fn is_der_null(tlv: DerTlv<'_>) -> bool {
+    tlv.tag == 0x05 && tlv.value.is_empty()
+}
+
+fn parse_signature_algorithm(value: PayloadSpanRef<'_>) -> Option<SignatureAlgorithmId> {
+    let mut cursor = DerCursor::new(value);
+    let oid = cursor.read_oid()?;
+    let algorithm = parse_signature_algorithm_id(oid);
+    if matches!(algorithm, SignatureAlgorithmId::Unknown) {
+        return None;
+    }
+    let params = if cursor.is_empty() {
+        None
+    } else {
+        Some(cursor.read_tlv()?)
+    };
+    if !cursor.is_empty() {
+        return None;
+    }
+    match algorithm {
+        SignatureAlgorithmId::Sha256WithRsa
+        | SignatureAlgorithmId::Sha384WithRsa
+        | SignatureAlgorithmId::Sha512WithRsa => {
+            if params.is_none() || params.is_some_and(is_der_null) {
+                Some(algorithm)
+            } else {
+                None
+            }
+        }
+        SignatureAlgorithmId::EcdsaWithSha256 | SignatureAlgorithmId::EcdsaWithSha384 => {
+            params.is_none().then_some(algorithm)
+        }
+        SignatureAlgorithmId::RsaPss => None,
+        SignatureAlgorithmId::Unknown => None,
+    }
+}
+
 fn parse_two_digits(data: &[u8], offset: usize) -> Option<u32> {
     let d1 = data.get(offset)?.wrapping_sub(b'0') as u32;
     let d2 = data.get(offset + 1)?.wrapping_sub(b'0') as u32;
@@ -299,6 +354,12 @@ fn parse_spki(spki: PayloadSpanRef<'_>) -> Option<SubjectPublicKeyInfo> {
     let pubkey_bits = cursor.read_bitstring()?;
 
     if alg_oid.eq_bytes(OID_RSA_ENCRYPTION) {
+        if !alg_cursor.is_empty() {
+            let params = alg_cursor.read_tlv()?;
+            if !is_der_null(params) || !alg_cursor.is_empty() {
+                return None;
+            }
+        }
         let mut rsa = DerCursor::new(pubkey_bits);
         let rsa_seq = rsa.read_sequence()?.value;
         let mut rsa_inner = DerCursor::new(rsa_seq);
@@ -315,6 +376,9 @@ fn parse_spki(spki: PayloadSpanRef<'_>) -> Option<SubjectPublicKeyInfo> {
 
     if alg_oid.eq_bytes(OID_EC_PUBLIC_KEY) {
         let curve_oid = alg_cursor.read_oid()?;
+        if !alg_cursor.is_empty() {
+            return None;
+        }
         if curve_oid.eq_bytes(OID_SECP256R1) {
             return Some(SubjectPublicKeyInfo::EcdsaP256 {
                 public_key: span_to_arrayvec(pubkey_bits)?,
@@ -336,8 +400,7 @@ fn parse_tbs_preamble(tbs: &mut DerCursor<'_>) -> Option<SignatureAlgorithmId> {
     }
     tbs.skip_tlv()?;
     let sig_alg = tbs.read_sequence()?.value;
-    let mut sig_alg = DerCursor::new(sig_alg);
-    Some(parse_signature_algorithm_id(sig_alg.read_oid()?))
+    parse_signature_algorithm(sig_alg)
 }
 
 fn parse_basic_constraints(value: PayloadSpanRef<'_>) -> (bool, Option<u32>) {
@@ -368,6 +431,79 @@ fn parse_basic_constraints(value: PayloadSpanRef<'_>) -> (bool, Option<u32>) {
     (is_ca, path_len)
 }
 
+fn parse_key_usage(value: PayloadSpanRef<'_>) -> Option<KeyUsage> {
+    let bits = DerCursor::new(value).read_bitstring()?;
+    let first = bits.byte_at(0).unwrap_or(0);
+    Some(KeyUsage {
+        digital_signature: (first & 0x80) != 0,
+        key_encipherment: (first & 0x20) != 0,
+        key_cert_sign: (first & 0x04) != 0,
+    })
+}
+
+fn parse_extended_key_usage(value: PayloadSpanRef<'_>) -> Option<ExtendedKeyUsage> {
+    let seq = DerCursor::new(value).read_sequence()?;
+    let mut cursor = DerCursor::new(seq.value);
+    let mut usage = ExtendedKeyUsage::default();
+    while !cursor.is_empty() {
+        let oid = cursor.read_oid()?;
+        if oid.eq_bytes(OID_EKU_SERVER_AUTH) {
+            usage.server_auth = true;
+        }
+    }
+    Some(usage)
+}
+
+#[derive(Default)]
+struct ParsedExtensions<'a> {
+    is_ca: bool,
+    path_len_constraint: Option<u32>,
+    san_raw: Option<PayloadSpanRef<'a>>,
+    key_usage: Option<KeyUsage>,
+    extended_key_usage: Option<ExtendedKeyUsage>,
+}
+
+fn parse_extensions<'a>(tbs: &mut DerCursor<'a>) -> Option<ParsedExtensions<'a>> {
+    let mut parsed = ParsedExtensions::default();
+    while !tbs.is_empty() {
+        let tlv = tbs.read_tlv()?;
+        if tlv.tag != 0xA3 {
+            continue;
+        }
+        let ext_seq = DerCursor::new(tlv.value).read_sequence()?;
+        let mut extensions = DerCursor::new(ext_seq.value);
+        while !extensions.is_empty() {
+            let ext = extensions.read_sequence()?;
+            let mut item = DerCursor::new(ext.value);
+            let oid = item.read_oid()?;
+            let critical = if item.peek_tag() == Some(0x01) {
+                let value = item.read_tlv()?;
+                value.value.byte_at(0).unwrap_or(0) != 0
+            } else {
+                false
+            };
+            let value = item.read_octet_string()?;
+            if !item.is_empty() {
+                return None;
+            }
+            if oid.eq_bytes(OID_BASIC_CONSTRAINTS) {
+                let constraints = parse_basic_constraints(value);
+                parsed.is_ca = constraints.0;
+                parsed.path_len_constraint = constraints.1;
+            } else if oid.eq_bytes(OID_SUBJECT_ALT_NAME) {
+                parsed.san_raw = Some(value);
+            } else if oid.eq_bytes(OID_KEY_USAGE) {
+                parsed.key_usage = Some(parse_key_usage(value)?);
+            } else if oid.eq_bytes(OID_EXTENDED_KEY_USAGE) {
+                parsed.extended_key_usage = Some(parse_extended_key_usage(value)?);
+            } else if critical || oid.eq_bytes(OID_NAME_CONSTRAINTS) {
+                return None;
+            }
+        }
+    }
+    Some(parsed)
+}
+
 fn parse_tbs_fields<'a>(
     tbs_content: PayloadSpanRef<'a>,
 ) -> Option<(
@@ -380,6 +516,8 @@ fn parse_tbs_fields<'a>(
     bool,
     Option<u32>,
     Option<PayloadSpanRef<'a>>,
+    Option<KeyUsage>,
+    Option<ExtendedKeyUsage>,
 )> {
     let mut tbs = DerCursor::new(tbs_content);
     let signature_algorithm = parse_tbs_preamble(&mut tbs)?;
@@ -389,33 +527,7 @@ fn parse_tbs_fields<'a>(
     let spki = tbs.read_sequence()?.value;
     let subject_public_key_info = parse_spki(spki)?;
 
-    let mut is_ca = false;
-    let mut path_len_constraint = None;
-    let mut san_raw = None;
-    while let Some(tlv) = tbs.read_tlv() {
-        if tlv.tag != 0xA3 {
-            continue;
-        }
-        let Some(ext_seq) = DerCursor::new(tlv.value).read_sequence() else {
-            continue;
-        };
-        let mut extensions = DerCursor::new(ext_seq.value);
-        while let Some(ext) = extensions.read_sequence() {
-            let mut item = DerCursor::new(ext.value);
-            let oid = item.read_oid()?;
-            if item.peek_tag() == Some(0x01) {
-                item.skip_tlv()?;
-            }
-            let value = item.read_octet_string()?;
-            if oid.eq_bytes(OID_BASIC_CONSTRAINTS) {
-                let parsed = parse_basic_constraints(value);
-                is_ca = parsed.0;
-                path_len_constraint = parsed.1;
-            } else if oid.eq_bytes(OID_SUBJECT_ALT_NAME) {
-                san_raw = Some(value);
-            }
-        }
-    }
+    let extensions = parse_extensions(&mut tbs)?;
 
     Some((
         signature_algorithm,
@@ -424,9 +536,11 @@ fn parse_tbs_fields<'a>(
         subject_public_key_info,
         not_before,
         not_after,
-        is_ca,
-        path_len_constraint,
-        san_raw,
+        extensions.is_ca,
+        extensions.path_len_constraint,
+        extensions.san_raw,
+        extensions.key_usage,
+        extensions.extended_key_usage,
     ))
 }
 
@@ -444,8 +558,13 @@ pub fn parse_x509_certificate<'a>(der: PayloadSpanRef<'a>) -> Option<X509Certifi
         is_ca,
         path_len_constraint,
         san_raw,
+        key_usage,
+        extended_key_usage,
     ) = parse_tbs_fields(tbs.value)?;
-    cert.skip_tlv()?;
+    let outer_signature_algorithm = parse_signature_algorithm(cert.read_sequence()?.value)?;
+    if outer_signature_algorithm != signature_algorithm {
+        return None;
+    }
     let signature_value = cert.read_bitstring()?;
 
     Some(X509Certificate {
@@ -460,6 +579,8 @@ pub fn parse_x509_certificate<'a>(der: PayloadSpanRef<'a>) -> Option<X509Certifi
         is_ca,
         path_len_constraint,
         san_raw,
+        key_usage,
+        extended_key_usage,
     })
 }
 
@@ -474,6 +595,18 @@ fn verify_chain_links(certs: &[X509Certificate<'_>]) -> Option<()> {
         let issuer = &certs[index + 1];
         if !issuer.is_ca || !span_eq(current.issuer_raw, issuer.subject_raw) {
             return None;
+        }
+        if let Some(key_usage) = issuer.key_usage {
+            if !key_usage.key_cert_sign {
+                return None;
+            }
+        }
+        if let Some(path_len) = issuer.path_len_constraint {
+            let subordinate_ca_count =
+                certs[..=index].iter().filter(|cert| cert.is_ca).count() as u32;
+            if subordinate_ca_count > path_len {
+                return None;
+            }
         }
         if !verify_signature(current, &issuer.subject_public_key_info) {
             return None;
@@ -504,6 +637,16 @@ pub fn validate_certificate_chain<'a, 'b>(
     }
 
     let leaf = certs.first()?;
+    if let Some(key_usage) = leaf.key_usage {
+        if !key_usage.digital_signature && !key_usage.key_encipherment {
+            return None;
+        }
+    }
+    if let Some(eku) = leaf.extended_key_usage {
+        if !eku.server_auth {
+            return None;
+        }
+    }
     if let Some(name) = server_name {
         if !match_hostname(leaf, name) {
             return None;
@@ -550,6 +693,9 @@ fn match_hostname_in_san(san_der: PayloadSpanRef<'_>, hostname: &str) -> bool {
         if name.tag == 0x82 && match_dns_name(name.value, hostname) {
             return true;
         }
+        if name.tag == 0x87 && match_ip_address(name.value, hostname) {
+            return true;
+        }
     }
     false
 }
@@ -586,7 +732,7 @@ fn match_dns_name(pattern: PayloadSpanRef<'_>, hostname: &str) -> bool {
 }
 
 fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
-    if pattern == hostname.as_bytes() {
+    if ascii_eq_ignore_case(pattern, hostname.as_bytes()) {
         return true;
     }
     if !pattern.starts_with(b"*.") || pattern.len() <= 2 {
@@ -599,10 +745,55 @@ fn match_wildcard(pattern: &[u8], hostname: &str) -> bool {
     if suffix_str.split('.').count() < 2 {
         return false;
     }
-    if hostname.as_bytes().ends_with(suffix) {
+    if ascii_ends_with_ignore_case(hostname.as_bytes(), suffix) {
         let prefix_len = hostname.len() - suffix.len();
         let prefix = &hostname.as_bytes()[..prefix_len];
         return !prefix.is_empty() && !prefix.contains(&b'.');
+    }
+    false
+}
+
+fn ascii_eq_ignore_case(lhs: &[u8], rhs: &[u8]) -> bool {
+    lhs.len() == rhs.len()
+        && lhs
+            .iter()
+            .zip(rhs.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+fn ascii_ends_with_ignore_case(value: &[u8], suffix: &[u8]) -> bool {
+    value.len() >= suffix.len()
+        && ascii_eq_ignore_case(&value[value.len() - suffix.len()..], suffix)
+}
+
+fn parse_ipv4_literal(hostname: &str) -> Option<[u8; 4]> {
+    let mut parts = [0u8; 4];
+    let mut index = 0usize;
+    for part in hostname.split('.') {
+        if index == 4 || part.is_empty() || part.len() > 3 {
+            return None;
+        }
+        let mut value = 0u16;
+        for byte in part.as_bytes() {
+            if !byte.is_ascii_digit() {
+                return None;
+            }
+            value = value * 10 + u16::from(byte - b'0');
+            if value > 255 {
+                return None;
+            }
+        }
+        parts[index] = value as u8;
+        index += 1;
+    }
+    (index == 4).then_some(parts)
+}
+
+fn match_ip_address(value: PayloadSpanRef<'_>, hostname: &str) -> bool {
+    if value.total_len() == 4 {
+        if let Some(ipv4) = parse_ipv4_literal(hostname) {
+            return (0..4).all(|index| value.byte_at(index) == Some(ipv4[index]));
+        }
     }
     false
 }

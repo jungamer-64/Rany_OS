@@ -6,11 +6,11 @@ use crate::net::l3::ipv4::{IpProtocol, Ipv4Address};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::sync::PoisonRwLock;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 /// Maximum number of NAT entries to prevent DoS
 const MAX_NAT_ENTRIES: usize = 1024;
+const NAT_BUCKET_COUNT: usize = 256;
 
 /// NAT entry timeout (5 minutes in ticks, assuming 1000 ticks/sec)
 const NAT_ENTRY_TIMEOUT: u64 = 5 * 60 * 1000;
@@ -30,12 +30,226 @@ pub struct NatEntry {
     pub if_id: NetIfId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NatInboundKey {
+    protocol: IpProtocol,
+    remote_ip: Ipv4Address,
+    remote_port: u16,
+    external_port: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NatOutboundKey {
+    protocol: IpProtocol,
+    internal_ip: Ipv4Address,
+    internal_port: u16,
+    remote_ip: Ipv4Address,
+    remote_port: u16,
+}
+
+#[derive(Clone, Copy)]
+struct NatInboundBucketEntry {
+    key: NatInboundKey,
+    entry: NatEntry,
+    next: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct NatOutboundBucketEntry {
+    key: NatOutboundKey,
+    entry: NatEntry,
+    next: Option<usize>,
+}
+
+struct NatInboundTable {
+    buckets: [Option<usize>; NAT_BUCKET_COUNT],
+    entries: Vec<NatInboundBucketEntry>,
+}
+
+struct NatOutboundTable {
+    buckets: [Option<usize>; NAT_BUCKET_COUNT],
+    entries: Vec<NatOutboundBucketEntry>,
+}
+
+fn hash_ipv4(ip: Ipv4Address) -> u32 {
+    u32::from_be_bytes(ip.octets())
+}
+
+fn hash_protocol(protocol: IpProtocol) -> u32 {
+    match protocol {
+        IpProtocol::Icmp => 1,
+        IpProtocol::Igmp => 2,
+        IpProtocol::Tcp => 6,
+        IpProtocol::Udp => 17,
+        IpProtocol::Gre => 47,
+        IpProtocol::Icmpv6 => 58,
+        IpProtocol::Unknown(value) => u32::from(value),
+    }
+}
+
+fn mix_nat_hash(mut value: u32) -> usize {
+    value ^= value >> 16;
+    value = value.wrapping_mul(0x7FEB_352D);
+    value ^= value >> 15;
+    value = value.wrapping_mul(0x846C_A68B);
+    (value ^ (value >> 16)) as usize
+}
+
+impl NatInboundTable {
+    const fn new() -> Self {
+        Self {
+            buckets: [None; NAT_BUCKET_COUNT],
+            entries: Vec::new(),
+        }
+    }
+
+    fn bucket_for(key: NatInboundKey) -> usize {
+        let hash = hash_protocol(key.protocol)
+            ^ hash_ipv4(key.remote_ip)
+            ^ u32::from(key.remote_port).wrapping_mul(0x9E37_79B9)
+            ^ u32::from(key.external_port).wrapping_mul(0x85EB_CA6B);
+        mix_nat_hash(hash) & (NAT_BUCKET_COUNT - 1)
+    }
+
+    fn find_index(&self, key: NatInboundKey) -> Option<usize> {
+        let mut index = self.buckets[Self::bucket_for(key)];
+        while let Some(current) = index {
+            let entry = self.entries[current];
+            if entry.key == key {
+                return Some(current);
+            }
+            index = entry.next;
+        }
+        None
+    }
+
+    fn get_mut(&mut self, key: NatInboundKey) -> Option<&mut NatEntry> {
+        let index = self.find_index(key)?;
+        Some(&mut self.entries[index].entry)
+    }
+
+    fn insert(&mut self, key: NatInboundKey, entry: NatEntry) {
+        if let Some(index) = self.find_index(key) {
+            self.entries[index].entry = entry;
+            return;
+        }
+        if self.entries.len() >= MAX_NAT_ENTRIES {
+            return;
+        }
+        let bucket = Self::bucket_for(key);
+        let next = self.buckets[bucket];
+        self.entries
+            .push(NatInboundBucketEntry { key, entry, next });
+        self.buckets[bucket] = Some(self.entries.len() - 1);
+    }
+
+    fn remove(&mut self, key: NatInboundKey) {
+        let Some(index) = self.find_index(key) else {
+            return;
+        };
+        self.entries.swap_remove(index);
+        self.rebuild_index();
+    }
+
+    fn values(&self) -> impl Iterator<Item = &NatEntry> {
+        self.entries.iter().map(|entry| &entry.entry)
+    }
+
+    fn rebuild_index(&mut self) {
+        self.buckets = [None; NAT_BUCKET_COUNT];
+        for index in 0..self.entries.len() {
+            let bucket = Self::bucket_for(self.entries[index].key);
+            self.entries[index].next = self.buckets[bucket];
+            self.buckets[bucket] = Some(index);
+        }
+    }
+}
+
+impl NatOutboundTable {
+    const fn new() -> Self {
+        Self {
+            buckets: [None; NAT_BUCKET_COUNT],
+            entries: Vec::new(),
+        }
+    }
+
+    fn bucket_for(key: NatOutboundKey) -> usize {
+        let hash = hash_protocol(key.protocol)
+            ^ hash_ipv4(key.internal_ip)
+            ^ u32::from(key.internal_port).wrapping_mul(0x9E37_79B9)
+            ^ hash_ipv4(key.remote_ip).rotate_left(13)
+            ^ u32::from(key.remote_port).wrapping_mul(0x85EB_CA6B);
+        mix_nat_hash(hash) & (NAT_BUCKET_COUNT - 1)
+    }
+
+    fn find_index(&self, key: NatOutboundKey) -> Option<usize> {
+        let mut index = self.buckets[Self::bucket_for(key)];
+        while let Some(current) = index {
+            let entry = self.entries[current];
+            if entry.key == key {
+                return Some(current);
+            }
+            index = entry.next;
+        }
+        None
+    }
+
+    fn get_mut(&mut self, key: NatOutboundKey) -> Option<&mut NatEntry> {
+        let index = self.find_index(key)?;
+        Some(&mut self.entries[index].entry)
+    }
+
+    fn insert(&mut self, key: NatOutboundKey, entry: NatEntry) {
+        if let Some(index) = self.find_index(key) {
+            self.entries[index].entry = entry;
+            return;
+        }
+        if self.entries.len() >= MAX_NAT_ENTRIES {
+            return;
+        }
+        let bucket = Self::bucket_for(key);
+        let next = self.buckets[bucket];
+        self.entries
+            .push(NatOutboundBucketEntry { key, entry, next });
+        self.buckets[bucket] = Some(self.entries.len() - 1);
+    }
+
+    fn remove(&mut self, key: NatOutboundKey) {
+        let Some(index) = self.find_index(key) else {
+            return;
+        };
+        self.entries.swap_remove(index);
+        self.rebuild_index();
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (NatOutboundKey, NatEntry)> + '_ {
+        self.entries.iter().map(|entry| (entry.key, entry.entry))
+    }
+
+    fn values(&self) -> impl Iterator<Item = &NatEntry> {
+        self.entries.iter().map(|entry| &entry.entry)
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn rebuild_index(&mut self) {
+        self.buckets = [None; NAT_BUCKET_COUNT];
+        for index in 0..self.entries.len() {
+            let bucket = Self::bucket_for(self.entries[index].key);
+            self.entries[index].next = self.buckets[bucket];
+            self.buckets[bucket] = Some(index);
+        }
+    }
+}
+
 /// Global NAT table with security improvements
 pub struct NatTable {
     /// Mapping of (proto, remote_ip, remote_port, external_port) -> NatEntry
-    inbound: BTreeMap<(IpProtocol, Ipv4Address, u16, u16), NatEntry>,
+    inbound: NatInboundTable,
     /// Mapping of (proto, internal_ip, internal_port, remote_ip, remote_port) -> NatEntry
-    outbound: BTreeMap<(IpProtocol, Ipv4Address, u16, Ipv4Address, u16), NatEntry>,
+    outbound: NatOutboundTable,
 }
 
 pub(crate) struct NatRuntimeState {
@@ -46,8 +260,8 @@ impl NatRuntimeState {
     pub const fn new() -> Self {
         Self {
             table: PoisonRwLock::new(NatTable {
-                inbound: BTreeMap::new(),
-                outbound: BTreeMap::new(),
+                inbound: NatInboundTable::new(),
+                outbound: NatOutboundTable::new(),
             }),
         }
     }
@@ -57,23 +271,23 @@ fn nat_state_for(runtime: NetRuntimeHandle) -> &'static NatRuntimeState {
     &super::runtime_state_for(runtime).nat
 }
 
-fn inbound_key(entry: &NatEntry) -> (IpProtocol, Ipv4Address, u16, u16) {
-    (
-        entry.protocol,
-        entry.remote_ip,
-        entry.remote_port,
-        entry.external_port,
-    )
+fn inbound_key(entry: &NatEntry) -> NatInboundKey {
+    NatInboundKey {
+        protocol: entry.protocol,
+        remote_ip: entry.remote_ip,
+        remote_port: entry.remote_port,
+        external_port: entry.external_port,
+    }
 }
 
-fn outbound_key(entry: &NatEntry) -> (IpProtocol, Ipv4Address, u16, Ipv4Address, u16) {
-    (
-        entry.protocol,
-        entry.internal_ip,
-        entry.internal_port,
-        entry.remote_ip,
-        entry.remote_port,
-    )
+fn outbound_key(entry: &NatEntry) -> NatOutboundKey {
+    NatOutboundKey {
+        protocol: entry.protocol,
+        internal_ip: entry.internal_ip,
+        internal_port: entry.internal_port,
+        remote_ip: entry.remote_ip,
+        remote_port: entry.remote_port,
+    }
 }
 
 fn insert_nat_entry(table: &mut NatTable, entry: NatEntry) {
@@ -129,7 +343,13 @@ pub fn nat_translate_in_in(
         .unwrap_or_else(|e| e.into_inner());
     let now = get_current_tick();
 
-    if let Some(entry) = table.inbound.get_mut(&(proto, src_ip, src_port, *dst_port)) {
+    let lookup_key = NatInboundKey {
+        protocol: proto,
+        remote_ip: src_ip,
+        remote_port: src_port,
+        external_port: *dst_port,
+    };
+    if let Some(entry) = table.inbound.get_mut(lookup_key) {
         entry.last_used = now;
         let internal_ip = entry.internal_ip;
         let internal_port = entry.internal_port;
@@ -140,11 +360,14 @@ pub fn nat_translate_in_in(
         *dst_port = internal_port;
 
         // Also update the outbound mapping last_used
-        if let Some(out_entry) =
-            table
-                .outbound
-                .get_mut(&(proto, internal_ip, internal_port, remote_ip, remote_port))
-        {
+        let outbound_key = NatOutboundKey {
+            protocol: proto,
+            internal_ip,
+            internal_port,
+            remote_ip,
+            remote_port,
+        };
+        if let Some(out_entry) = table.outbound.get_mut(outbound_key) {
             out_entry.last_used = now;
         }
         return true;
@@ -169,10 +392,14 @@ pub fn nat_translate_out_in(
     let now = get_current_tick();
 
     // Check existing mapping
-    if let Some(entry) = table
-        .outbound
-        .get_mut(&(proto, src_ip, src_port, dst_ip, dst_port))
-    {
+    let lookup_key = NatOutboundKey {
+        protocol: proto,
+        internal_ip: src_ip,
+        internal_port: src_port,
+        remote_ip: dst_ip,
+        remote_port: dst_port,
+    };
+    if let Some(entry) = table.outbound.get_mut(lookup_key) {
         entry.last_used = now;
         return Some((entry.external_ip, entry.external_port));
     }
@@ -238,23 +465,23 @@ pub fn nat_maybe_gc_in(runtime: NetRuntimeHandle, rx_count: u64) {
 
     for (key, entry) in table.outbound.iter() {
         if now.saturating_sub(entry.last_used) > NAT_ENTRY_TIMEOUT {
-            to_remove_out.push(*key);
-            to_remove_in.push((
-                entry.protocol,
-                entry.remote_ip,
-                entry.remote_port,
-                entry.external_port,
-            ));
+            to_remove_out.push(key);
+            to_remove_in.push(NatInboundKey {
+                protocol: entry.protocol,
+                remote_ip: entry.remote_ip,
+                remote_port: entry.remote_port,
+                external_port: entry.external_port,
+            });
         }
     }
 
     if !to_remove_out.is_empty() {
         log::debug!("[NAT] GC: removing {} expired entries", to_remove_out.len());
         for key in to_remove_out {
-            table.outbound.remove(&key);
+            table.outbound.remove(key);
         }
         for key in to_remove_in {
-            table.inbound.remove(&key);
+            table.inbound.remove(key);
         }
     }
 }

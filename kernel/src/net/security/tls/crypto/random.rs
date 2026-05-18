@@ -1,15 +1,11 @@
 // ============================================================================
-// kernel/src/net/security/tls/crypto/random.rs - Random Generation (RDRAND Hardware RNG)
+// kernel/src/net/security/tls/crypto/random.rs - TLS random generation boundary
 // ============================================================================
 
 #[cfg(feature = "qemu-test-export")]
 use core::sync::atomic::AtomicU64;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
-
-/// Whether RDRAND availability has been checked
-static RDRAND_CHECKED: AtomicBool = AtomicBool::new(false);
-/// 0 = unknown, 1 = available, 2 = not available
-static RDRAND_STATUS: AtomicU8 = AtomicU8::new(0);
+#[cfg(feature = "qemu-test-export")]
+use core::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RandomError {
@@ -62,70 +58,11 @@ fn generate_qemu_test_random() -> [u8; 32] {
     result
 }
 
-/// Check if the CPU supports RDRAND via CPUID
-fn has_rdrand() -> bool {
-    let status = RDRAND_STATUS.load(AtomicOrdering::Relaxed);
-    if RDRAND_CHECKED.load(AtomicOrdering::Acquire) {
-        return status == 1;
-    }
-
-    // CPUID leaf 1, ECX bit 30 = RDRAND support
-    let available = {
-        #[cfg(target_arch = "x86_64")]
-        {
-            let cpuid = core::arch::x86_64::__cpuid(1);
-            ((cpuid.ecx >> 30) & 1) == 1
-        }
-
-        #[cfg(target_arch = "x86")]
-        {
-            let cpuid = core::arch::x86::__cpuid(1);
-            ((cpuid.ecx >> 30) & 1) == 1
-        }
-
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-        {
-            false
-        }
-    };
-
-    RDRAND_STATUS.store(if available { 1 } else { 2 }, AtomicOrdering::Relaxed);
-    RDRAND_CHECKED.store(true, AtomicOrdering::Release);
-    available
-}
-
-/// Generate a 64-bit random value using RDRAND.
-///
-/// Retries up to 10 times on transient failures.
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
-fn rdrand64() -> Option<u64> {
-    for _ in 0..10 {
-        let value: u64;
-        let success: u8;
-        unsafe {
-            core::arch::asm!(
-                "rdrand {val}",
-                "setc {ok}",
-                val = out(reg) value,
-                ok = out(reg_byte) success,
-            );
-        }
-        if success != 0 {
-            return Some(value);
-        }
-    }
-    None
-}
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
-fn rdrand64() -> Option<u64> {
-    None
-}
-
 /// Generate 32 bytes of secure random data.
 ///
-/// Uses RDRAND when available. A deterministic override exists only for
-/// `qemu-test-export`; normal builds fail closed when secure entropy is absent.
+/// Entropy comes from the network runtime entropy provider. A deterministic
+/// override exists only for `qemu-test-export`; normal builds fail closed when
+/// secure entropy is absent.
 pub(crate) fn generate_random() -> Result<[u8; 32], RandomError> {
     #[cfg(feature = "qemu-test-export")]
     {
@@ -135,22 +72,13 @@ pub(crate) fn generate_random() -> Result<[u8; 32], RandomError> {
     }
 
     let mut result = [0u8; 32];
-
-    if has_rdrand() {
-        for chunk in result.chunks_exact_mut(8) {
-            if let Some(val) = rdrand64() {
-                chunk.copy_from_slice(&val.to_ne_bytes());
-            } else {
-                return Err(RandomError::HardwareFailure);
-            }
+    match crate::net::runtime::entropy::fill_secure_random(&mut result) {
+        Ok(()) => Ok(result),
+        Err(crate::net::runtime::entropy::NetEntropyError::SecureEntropyUnavailable) => {
+            Err(RandomError::SecureEntropyUnavailable)
         }
-        return Ok(result);
+        Err(crate::net::runtime::entropy::NetEntropyError::HardwareFailure) => {
+            Err(RandomError::HardwareFailure)
+        }
     }
-
-    Err(RandomError::SecureEntropyUnavailable)
-}
-
-/// Check whether hardware-backed cryptographic random number generation is available.
-pub(crate) fn has_secure_random() -> bool {
-    has_rdrand()
 }

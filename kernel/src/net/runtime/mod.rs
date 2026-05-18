@@ -12,6 +12,7 @@ pub(crate) mod command_handler;
 pub mod command_loop;
 pub mod context;
 pub mod device;
+pub(crate) mod entropy;
 pub mod manager;
 pub mod stack;
 pub mod timeouts;

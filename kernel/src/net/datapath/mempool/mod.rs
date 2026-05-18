@@ -8,7 +8,6 @@
 // ============================================================================
 
 // Building block: Memory pool types
-#![allow(dead_code)]
 
 use crate::ipc::rref::RRef;
 use crate::sync::PoisonLock;
@@ -235,54 +234,89 @@ struct BorrowedTestPacketState {
 }
 
 unsafe fn pooled_state_ref(storage: &PacketRefStorage) -> &PooledPacketState {
-    storage.as_state_ref::<PooledPacketState>()
+    // SAFETY: this function is only installed in POOLED_PACKET_VTABLE, whose
+    // storage is constructed from PooledPacketState in new_pooled_packet_ref.
+    unsafe { storage.as_state_ref::<PooledPacketState>() }
 }
 unsafe fn pooled_state_mut(storage: &mut PacketRefStorage) -> &mut PooledPacketState {
-    storage.as_state_mut::<PooledPacketState>()
+    // SAFETY: this function is only installed in POOLED_PACKET_VTABLE, whose
+    // storage is constructed from PooledPacketState in new_pooled_packet_ref.
+    unsafe { storage.as_state_mut::<PooledPacketState>() }
 }
 unsafe fn pooled_data_ptr(storage: &PacketRefStorage) -> *const u8 {
-    let state = pooled_state_ref(storage);
-    state.buffer.as_ref().as_ptr().add(state.window.offset())
+    // SAFETY: the pooled vtable ties this storage to PooledPacketState, and the
+    // PacketWindow offset is bounded by the packet buffer capacity.
+    unsafe {
+        let state = pooled_state_ref(storage);
+        state.buffer.as_ref().as_ptr().add(state.window.offset())
+    }
 }
 unsafe fn pooled_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
-    let state = pooled_state_mut(storage);
-    (*state.buffer.as_ptr())
-        .as_mut_ptr()
-        .add(state.window.offset())
+    // SAFETY: the pooled vtable ties this storage to PooledPacketState, and
+    // mutable PacketRef access gives exclusive access to the packet window.
+    unsafe {
+        let state = pooled_state_mut(storage);
+        (*state.buffer.as_ptr())
+            .as_mut_ptr()
+            .add(state.window.offset())
+    }
 }
 unsafe fn pooled_len(storage: &PacketRefStorage) -> usize {
-    pooled_state_ref(storage).window.len()
+    // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
+    unsafe { pooled_state_ref(storage).window.len() }
 }
 unsafe fn pooled_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
-    let state = pooled_state_mut(storage);
-    state.window.set_len(len)
+    // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
+    unsafe {
+        let state = pooled_state_mut(storage);
+        state.window.set_len(len)
+    }
 }
 unsafe fn pooled_capacity(_: &PacketRefStorage) -> usize {
     DEFAULT_BUFFER_SIZE
 }
 unsafe fn pooled_headroom(storage: &PacketRefStorage) -> usize {
-    pooled_state_ref(storage).window.offset()
+    // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
+    unsafe { pooled_state_ref(storage).window.offset() }
 }
 unsafe fn pooled_phys_addr(storage: &PacketRefStorage) -> u64 {
-    let state = pooled_state_ref(storage);
-    state.buffer.as_ref().phys_addr().as_u64() + state.window.offset() as u64
+    // SAFETY: the pooled state owns a live PacketBuffer while the PacketRef is
+    // alive; PacketWindow keeps offset within the buffer.
+    unsafe {
+        let state = pooled_state_ref(storage);
+        state.buffer.as_ref().phys_addr().as_u64() + state.window.offset() as u64
+    }
 }
 unsafe fn pooled_device_address(storage: &PacketRefStorage) -> u64 {
-    let state = pooled_state_ref(storage);
-    state.buffer.as_ref().device_address() + state.window.offset() as u64
+    // SAFETY: the pooled state owns a live PacketBuffer while the PacketRef is
+    // alive; PacketWindow keeps offset within the buffer.
+    unsafe {
+        let state = pooled_state_ref(storage);
+        state.buffer.as_ref().device_address() + state.window.offset() as u64
+    }
 }
 unsafe fn pooled_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
-    let state = pooled_state_mut(storage);
-    state.window.advance(size)
+    // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
+    unsafe {
+        let state = pooled_state_mut(storage);
+        state.window.advance(size)
+    }
 }
 unsafe fn pooled_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
-    let state = pooled_state_mut(storage);
-    state.window.retreat(size)
+    // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
+    unsafe {
+        let state = pooled_state_mut(storage);
+        state.window.retreat(size)
+    }
 }
 unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
-    let state = pooled_state_mut(storage);
-    if state.buffer.as_ref().release() {
-        state.pool.return_buffer(state.buffer);
+    // SAFETY: this function is only called through POOLED_PACKET_VTABLE, and
+    // release returns true only for the last PacketRef to this pooled buffer.
+    unsafe {
+        let state = pooled_state_mut(storage);
+        if state.buffer.as_ref().release() {
+            state.pool.return_buffer(state.buffer);
+        }
     }
 }
 
@@ -301,53 +335,90 @@ static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
 };
 
 unsafe fn dma_state_ref(storage: &PacketRefStorage) -> &DmaPacketState {
-    storage.as_state_ref::<DmaPacketState>()
+    // SAFETY: this function is only installed in DMA_PACKET_VTABLE, whose
+    // storage is constructed from DmaPacketState by DMA packet constructors.
+    unsafe { storage.as_state_ref::<DmaPacketState>() }
 }
 unsafe fn dma_state_mut(storage: &mut PacketRefStorage) -> &mut DmaPacketState {
-    storage.as_state_mut::<DmaPacketState>()
+    // SAFETY: this function is only installed in DMA_PACKET_VTABLE, whose
+    // storage is constructed from DmaPacketState by DMA packet constructors.
+    unsafe { storage.as_state_mut::<DmaPacketState>() }
 }
 unsafe fn dma_data_ptr(storage: &PacketRefStorage) -> *const u8 {
-    let state = dma_state_ref(storage);
-    state.buf.as_ref().ptr.as_ptr().add(state.window.offset())
+    // SAFETY: the DMA vtable ties this storage to DmaPacketState, and
+    // PacketWindow keeps offset within the DMA buffer.
+    unsafe {
+        let state = dma_state_ref(storage);
+        state.buf.as_ref().ptr.as_ptr().add(state.window.offset())
+    }
 }
 unsafe fn dma_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
-    let state = dma_state_mut(storage);
-    state.buf.as_ref().ptr.as_ptr().add(state.window.offset())
+    // SAFETY: the DMA vtable ties this storage to DmaPacketState, and mutable
+    // PacketRef access gives exclusive access to the packet window.
+    unsafe {
+        let state = dma_state_mut(storage);
+        state.buf.as_ref().ptr.as_ptr().add(state.window.offset())
+    }
 }
 unsafe fn dma_len(storage: &PacketRefStorage) -> usize {
-    dma_state_ref(storage).window.len()
+    // SAFETY: this function is only called through DMA_PACKET_VTABLE.
+    unsafe { dma_state_ref(storage).window.len() }
 }
 unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
-    let state = dma_state_mut(storage);
-    state.window.set_len(len)
+    // SAFETY: this function is only called through DMA_PACKET_VTABLE.
+    unsafe {
+        let state = dma_state_mut(storage);
+        state.window.set_len(len)
+    }
 }
 unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
-    dma_state_ref(storage).window.capacity()
+    // SAFETY: this function is only called through DMA_PACKET_VTABLE.
+    unsafe { dma_state_ref(storage).window.capacity() }
 }
 unsafe fn dma_headroom(storage: &PacketRefStorage) -> usize {
-    dma_state_ref(storage).window.offset()
+    // SAFETY: this function is only called through DMA_PACKET_VTABLE.
+    unsafe { dma_state_ref(storage).window.offset() }
 }
 unsafe fn dma_phys_addr(storage: &PacketRefStorage) -> u64 {
-    let state = dma_state_ref(storage);
-    state.buf.as_ref().phys_addr.as_u64() + state.window.offset() as u64
+    // SAFETY: the DMA state owns a live DmaBuffer while the PacketRef is alive;
+    // PacketWindow keeps offset within the buffer.
+    unsafe {
+        let state = dma_state_ref(storage);
+        state.buf.as_ref().phys_addr.as_u64() + state.window.offset() as u64
+    }
 }
 unsafe fn dma_device_address(storage: &PacketRefStorage) -> u64 {
-    let state = dma_state_ref(storage);
-    state.buf.as_ref().device_addr + state.window.offset() as u64
+    // SAFETY: the DMA state owns a live DmaBuffer while the PacketRef is alive;
+    // PacketWindow keeps offset within the buffer.
+    unsafe {
+        let state = dma_state_ref(storage);
+        state.buf.as_ref().device_addr + state.window.offset() as u64
+    }
 }
 unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
-    let state = dma_state_mut(storage);
-    state.window.advance(size)
+    // SAFETY: this function is only called through DMA_PACKET_VTABLE.
+    unsafe {
+        let state = dma_state_mut(storage);
+        state.window.advance(size)
+    }
 }
 unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
-    let state = dma_state_mut(storage);
-    state.window.retreat(size)
+    // SAFETY: this function is only called through DMA_PACKET_VTABLE.
+    unsafe {
+        let state = dma_state_mut(storage);
+        state.window.retreat(size)
+    }
 }
 unsafe fn dma_drop(storage: &mut PacketRefStorage) {
-    let state = storage.as_state_mut::<DmaPacketState>();
-    let buf = state.buf;
-    core::ptr::drop_in_place(state);
-    drop(Box::from_raw(buf.as_ptr()));
+    // SAFETY: this function is only called through DMA_PACKET_VTABLE. The
+    // DmaBuffer was allocated with Box::leak by the DMA packet constructors and
+    // is reclaimed exactly once when PacketRef drops this storage.
+    unsafe {
+        let state = storage.as_state_mut::<DmaPacketState>();
+        let buf = state.buf;
+        core::ptr::drop_in_place(state);
+        drop(Box::from_raw(buf.as_ptr()));
+    }
 }
 
 static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
@@ -366,56 +437,82 @@ static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_state_ref(storage: &PacketRefStorage) -> &BorrowedTestPacketState {
-    storage.as_state_ref::<BorrowedTestPacketState>()
+    // SAFETY: this function is only installed in BORROWED_PACKET_VTABLE, whose
+    // storage is constructed from BorrowedTestPacketState for tests/export.
+    unsafe { storage.as_state_ref::<BorrowedTestPacketState>() }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_state_mut(storage: &mut PacketRefStorage) -> &mut BorrowedTestPacketState {
-    storage.as_state_mut::<BorrowedTestPacketState>()
+    // SAFETY: this function is only installed in BORROWED_PACKET_VTABLE, whose
+    // storage is constructed from BorrowedTestPacketState for tests/export.
+    unsafe { storage.as_state_mut::<BorrowedTestPacketState>() }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_data_ptr(storage: &PacketRefStorage) -> *const u8 {
-    let state = borrowed_state_ref(storage);
-    state.ptr.as_ptr().add(state.window.offset())
+    // SAFETY: test/export borrowed storage is tied to BorrowedTestPacketState,
+    // and PacketWindow keeps offset within the caller-provided capacity.
+    unsafe {
+        let state = borrowed_state_ref(storage);
+        state.ptr.as_ptr().add(state.window.offset())
+    }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
-    let state = borrowed_state_mut(storage);
-    state.ptr.as_ptr().add(state.window.offset())
+    // SAFETY: test/export borrowed storage is tied to BorrowedTestPacketState,
+    // and mutable PacketRef access gives exclusive access to the packet window.
+    unsafe {
+        let state = borrowed_state_mut(storage);
+        state.ptr.as_ptr().add(state.window.offset())
+    }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_len(storage: &PacketRefStorage) -> usize {
-    borrowed_state_ref(storage).window.len()
+    // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
+    unsafe { borrowed_state_ref(storage).window.len() }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
-    let state = borrowed_state_mut(storage);
-    state.window.set_len(len)
+    // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
+    unsafe {
+        let state = borrowed_state_mut(storage);
+        state.window.set_len(len)
+    }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_capacity(storage: &PacketRefStorage) -> usize {
-    borrowed_state_ref(storage).window.capacity()
+    // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
+    unsafe { borrowed_state_ref(storage).window.capacity() }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_headroom(storage: &PacketRefStorage) -> usize {
-    borrowed_state_ref(storage).window.offset()
+    // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
+    unsafe { borrowed_state_ref(storage).window.offset() }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_phys_addr(storage: &PacketRefStorage) -> u64 {
-    borrowed_state_ref(storage).window.offset() as u64
+    // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
+    unsafe { borrowed_state_ref(storage).window.offset() as u64 }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_device_address(storage: &PacketRefStorage) -> u64 {
-    borrowed_phys_addr(storage)
+    // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
+    unsafe { borrowed_phys_addr(storage) }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
-    let state = borrowed_state_mut(storage);
-    state.window.advance(size)
+    // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
+    unsafe {
+        let state = borrowed_state_mut(storage);
+        state.window.advance(size)
+    }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
-    let state = borrowed_state_mut(storage);
-    state.window.retreat(size)
+    // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
+    unsafe {
+        let state = borrowed_state_mut(storage);
+        state.window.retreat(size)
+    }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_drop(_: &mut PacketRefStorage) {}
@@ -674,12 +771,17 @@ impl PerCoreMempoolCache {
         pool: &'static Mempool,
     ) -> PacketRef {
         // SECURITY: previous packet からの information leak を防ぐため buffer 全体をクリアする。
-        core::ptr::write_bytes(
-            buffer.as_ref().data.as_ptr() as *mut u8,
-            0,
-            DEFAULT_BUFFER_SIZE,
-        );
-        buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
+        // SAFETY: callers only pass PacketBuffer pointers owned by this pool's
+        // free list/cache; resetting the whole backing buffer and refcount
+        // prepares it for a fresh PacketRef owner.
+        unsafe {
+            core::ptr::write_bytes(
+                buffer.as_ref().data.as_ptr() as *mut u8,
+                0,
+                DEFAULT_BUFFER_SIZE,
+            );
+            buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
+        }
         new_pooled_packet_ref(buffer, pool)
     }
 

@@ -152,77 +152,121 @@ impl NetworkStats {
 /// stack dropping the packet and recording an error statistic.
 pub type TransmitFn = fn(NetRuntimeHandle, Option<NetIfId>, PacketPayload, NetTxMeta) -> bool;
 
-// ICMP Redirect Cache Entry (map-backed)
-//
-// Only the gateway and timestamp are stored; the map key is the destination
-// address itself.
+// ICMP Redirect Cache Entry
 #[derive(Debug)]
 pub(crate) struct RedirectCacheEntry {
+    destination: Ipv4Address,
     gateway: Ipv4Address,
     timestamp: u64,
+    next: Option<usize>,
 }
 
 const REDIRECT_CACHE_SIZE: usize = 32;
+const REDIRECT_CACHE_BUCKETS: usize = 32;
 const REDIRECT_CACHE_TTL: u64 = 600_000;
 
 #[derive(Debug)]
 pub struct RedirectCache {
-    map: BTreeMap<Ipv4Address, RedirectCacheEntry>,
+    buckets: [Option<usize>; REDIRECT_CACHE_BUCKETS],
+    entries: Vec<RedirectCacheEntry>,
     current_time: u64,
 }
 
 impl RedirectCache {
     fn new() -> Self {
         Self {
-            map: BTreeMap::new(),
+            buckets: [None; REDIRECT_CACHE_BUCKETS],
+            entries: Vec::new(),
             current_time: 0,
         }
     }
 
+    fn bucket_for(destination: Ipv4Address) -> usize {
+        let mut hash = u32::from_be_bytes(destination.octets());
+        hash ^= hash >> 16;
+        hash = hash.wrapping_mul(0x7FEB_352D);
+        hash ^= hash >> 15;
+        hash = hash.wrapping_mul(0x846C_A68B);
+        ((hash ^ (hash >> 16)) as usize) & (REDIRECT_CACHE_BUCKETS - 1)
+    }
+
+    fn find_index(&self, destination: Ipv4Address) -> Option<usize> {
+        let mut index = self.buckets[Self::bucket_for(destination)];
+        while let Some(current) = index {
+            let entry = &self.entries[current];
+            if entry.destination == destination {
+                return Some(current);
+            }
+            index = entry.next;
+        }
+        None
+    }
+
+    fn rebuild_index(&mut self) {
+        self.buckets = [None; REDIRECT_CACHE_BUCKETS];
+        for index in 0..self.entries.len() {
+            let bucket = Self::bucket_for(self.entries[index].destination);
+            self.entries[index].next = self.buckets[bucket];
+            self.buckets[bucket] = Some(index);
+        }
+    }
+
+    fn retain_fresh(&mut self) {
+        self.entries
+            .retain(|e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
+        self.rebuild_index();
+    }
+
     fn set_time(&mut self, time: u64) {
         self.current_time = time;
-        self.map
-            .retain(|_, e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
+        self.retain_fresh();
     }
 
     fn insert(&mut self, destination: Ipv4Address, gateway: Ipv4Address) {
-        self.map
-            .retain(|_, e| self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL);
+        self.retain_fresh();
 
-        if let Some(e) = self.map.get_mut(&destination) {
+        if let Some(index) = self.find_index(destination) {
+            let e = &mut self.entries[index];
             e.gateway = gateway;
             e.timestamp = self.current_time;
             return;
         }
 
-        if self.map.len() >= REDIRECT_CACHE_SIZE {
-            if let Some((oldest, _)) = self
-                .map
+        if self.entries.len() >= REDIRECT_CACHE_SIZE {
+            if let Some(oldest) = self
+                .entries
                 .iter()
+                .enumerate()
                 .min_by_key(|(_, e)| e.timestamp)
-                .map(|(k, _)| (*k, ()))
+                .map(|(index, _)| index)
             {
-                self.map.remove(&oldest);
+                self.entries.swap_remove(oldest);
+                self.rebuild_index();
             }
         }
 
-        self.map.insert(
+        let bucket = Self::bucket_for(destination);
+        let next = self.buckets[bucket];
+        self.entries.push(RedirectCacheEntry {
             destination,
-            RedirectCacheEntry {
-                gateway,
-                timestamp: self.current_time,
-            },
-        );
+            gateway,
+            timestamp: self.current_time,
+            next,
+        });
+        self.buckets[bucket] = Some(self.entries.len() - 1);
     }
 
     fn get(&self, destination: Ipv4Address) -> Option<Ipv4Address> {
-        self.map.get(&destination).and_then(|e| {
+        let index = self.find_index(destination)?;
+        let e = &self.entries[index];
+        if e.destination == destination {
             if self.current_time.saturating_sub(e.timestamp) <= REDIRECT_CACHE_TTL {
-                Some(e.gateway)
+                return Some(e.gateway);
             } else {
-                None
+                return None;
             }
-        })
+        }
+        None
     }
 }
 

@@ -122,13 +122,11 @@ impl TimingWheel {
     }
 
     /// ホイールに登録されているタイマー数（デバッグ用）
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.slots.iter().map(|s| s.len()).sum()
     }
 
     /// ホイールが空かどうか
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.slots.iter().all(|s| s.is_empty())
     }

@@ -27,6 +27,16 @@ pub fn test_ntp_timestamp_rejects_pre_unix_epoch() {
 }
 
 #[cfg_attr(test, test_case)]
+pub fn test_ntp_timestamp_rejects_unsupported_era_without_anchor() {
+    let era_one_low_word = NtpTimestamp {
+        seconds: 1u32.to_be_bytes(),
+        fraction: [0; 4],
+    };
+
+    assert_eq!(era_one_low_word.to_unix_seconds(), None);
+}
+
+#[cfg_attr(test, test_case)]
 pub fn test_ntp_header_layout() {
     assert_eq!(NtpHeader::SIZE, 48);
     let req = NtpHeader::new_client_request();

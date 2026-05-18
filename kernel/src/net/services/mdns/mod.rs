@@ -14,7 +14,6 @@
 //! - ラベル圧縮対応の名前解析
 
 // Building block: mDNS implementation
-#![allow(dead_code)]
 
 use alloc::string::String;
 use alloc::vec::Vec;

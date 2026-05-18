@@ -44,7 +44,11 @@ impl NtpTimestamp {
         self.seconds == other.seconds && self.fraction == other.fraction
     }
 
-    /// Convert to Unix time (seconds since 1970)
+    /// Convert supported NTP era 0 timestamps to Unix time (seconds since 1970).
+    ///
+    /// This deliberately does not infer later NTP eras. Era rollover needs a
+    /// trusted current-time anchor; without one, low 32-bit seconds are rejected
+    /// instead of being guessed into a system clock update.
     pub fn to_unix_seconds(&self) -> Option<u64> {
         let seconds_u32 = u32::from_be_bytes(self.seconds);
         if seconds_u32 == 0 {
