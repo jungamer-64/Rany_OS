@@ -35,37 +35,37 @@ pub use crate::net::l4::tcp::TcpState as TcpConnectionState;
 /// TCP制御ブロック（RFC 5681/7323準拠）
 #[derive(Debug)]
 pub struct TcpControlBlockEntry {
-    pub socket_id: SocketId,
-    pub local: EndpointAddr,
-    pub remote: EndpointAddr,
-    pub scope: InterfaceScope,
-    pub ingress_if_id: Option<NetIfId>,
-    pub state: TcpConnectionState,
-    pub snd_nxt: u32,
-    pub snd_una: u32,
-    pub rcv_nxt: u32,
-    pub snd_wnd: u16,
-    pub max_snd_wnd: u32,
-    pub rcv_wnd: u16,
-    pub retransmit_count: u8,
-    pub last_send_tick: u64,
-    pub congestion: CongestionControllerVariant,
-    pub window_scale: WindowScaleOption,
-    pub flow_control: FlowController,
-    pub mss: u32,
-    pub snd_up: u32,
-    pub snd_urg: bool,
-    pub rcv_up: u32,
-    pub rcv_urg: bool,
-    pub sack_enabled: bool,
-    pub ts_enabled: bool,
-    pub ts_val: u32,
-    pub ts_ecr: u32,
-    pub nagle_enabled: bool,
-    pub priority: u8,
-    pub delayed_ack_pending: u8,
-    pub delayed_ack_timer: u64,
-    pub pending_error: Option<EndpointError>,
+    socket_id: SocketId,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    scope: InterfaceScope,
+    ingress_if_id: Option<NetIfId>,
+    state: TcpConnectionState,
+    snd_nxt: u32,
+    snd_una: u32,
+    rcv_nxt: u32,
+    snd_wnd: u16,
+    max_snd_wnd: u32,
+    rcv_wnd: u16,
+    retransmit_count: u8,
+    last_send_tick: u64,
+    congestion: CongestionControllerVariant,
+    window_scale: WindowScaleOption,
+    flow_control: FlowController,
+    mss: u32,
+    snd_up: u32,
+    snd_urg: bool,
+    rcv_up: u32,
+    rcv_urg: bool,
+    sack_enabled: bool,
+    ts_enabled: bool,
+    ts_val: u32,
+    ts_ecr: u32,
+    nagle_enabled: bool,
+    priority: u8,
+    delayed_ack_pending: u8,
+    delayed_ack_timer: u64,
+    pending_error: Option<EndpointError>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -752,30 +752,6 @@ impl TcbTable {
         shard.get(&(local, remote)).map(f)
     }
 
-    pub fn update<F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> bool
-    where
-        F: FnOnce(&mut TcpControlBlockEntry),
-    {
-        let idx = shard_index(&local, &remote);
-        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = shard.get_mut(&(local, remote)) {
-            let old_state = entry.state;
-            f(entry);
-            let new_state = entry.state;
-            if old_state != new_state {
-                if old_state == TcpConnectionState::SynReceived {
-                    self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
-                }
-                if new_state == TcpConnectionState::SynReceived {
-                    self.syn_recv_count.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            true
-        } else {
-            false
-        }
-    }
-
     pub fn remove(
         &self,
         local: EndpointAddr,
@@ -825,15 +801,6 @@ impl TcbTable {
             }
         }
         None
-    }
-
-    pub fn lookup_mut<R, F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut TcpControlBlockEntry) -> R,
-    {
-        let idx = shard_index(&local, &remote);
-        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
-        shard.get_mut(&(local, remote)).map(f)
     }
 
     pub fn list_connections(&self) -> alloc::vec::Vec<TcpConnectionSnapshot> {

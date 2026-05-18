@@ -5,7 +5,6 @@
 //!
 //! ゼロコピー、メモリプール、適応的ポーリング、チェックサムオフロード等。
 
-pub mod adaptive_polling;
 pub mod checksum_offload;
 pub mod mempool;
 pub mod optimization;

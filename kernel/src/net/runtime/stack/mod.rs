@@ -229,41 +229,41 @@ impl RedirectCache {
 /// Integrated network stack
 pub struct NetworkStack {
     /// Runtime that owns this stack instance.
-    pub runtime: NetRuntimeHandle,
+    runtime: NetRuntimeHandle,
     /// Per-interface L2/L3 state and snapshots.
-    pub interfaces: BTreeMap<NetIfId, InterfaceStackState>,
+    interfaces: BTreeMap<NetIfId, InterfaceStackState>,
     /// Preferred interface for scope-less runtime resolution.
-    pub primary_interface: Option<NetIfId>,
+    primary_interface: Option<NetIfId>,
     /// Timeout wheel for periodic tasks
-    pub timeout_wheel: TimeoutWheel,
+    timeout_wheel: TimeoutWheel,
     /// Transmit callback
-    pub transmit_fn: Option<TransmitFn>,
+    transmit_fn: Option<TransmitFn>,
     /// Whether the active transmit callback resolves raw-send completions on device TX completion.
-    pub transmit_awaits_device_completion: bool,
+    transmit_awaits_device_completion: bool,
     /// One-shot TX metadata applied to the next frame emitted by raw/global commands.
-    pub pending_tx_meta: Option<NetTxMeta>,
+    pending_tx_meta: Option<NetTxMeta>,
     /// Current timestamp (ticks)
-    pub current_time: AtomicU64,
+    current_time: AtomicU64,
 }
 
 /// Per-interface stack state used by multi-interface APIs.
 pub struct InterfaceStackState {
-    pub config: NetworkConfig,
-    pub ethernet: EthernetProcessor,
-    pub ipv4: Ipv4Processor,
-    pub ipv6: Option<Ipv6Processor>,
-    pub arp: ArpProcessor,
-    pub icmp: IcmpProcessor,
-    pub icmpv6: Option<Icmpv6Processor>,
-    pub igmp: IgmpProcessor,
-    pub ndp: Option<NdpProcessor>,
-    pub udp: UdpProcessor,
-    pub stats: NetworkStats,
-    pub redirect_cache: RedirectCache,
-    pub arp_pending_queue: ArpPendingQueue,
-    pub ndp_pending_queue: NdpPendingQueue,
-    pub ipv6_fragment_reassembler: Ipv6FragmentReassembler,
-    pub ipv6_pmtu_cache: Ipv6PmtuCache,
+    config: NetworkConfig,
+    ethernet: EthernetProcessor,
+    ipv4: Ipv4Processor,
+    ipv6: Option<Ipv6Processor>,
+    arp: ArpProcessor,
+    icmp: IcmpProcessor,
+    icmpv6: Option<Icmpv6Processor>,
+    igmp: IgmpProcessor,
+    ndp: Option<NdpProcessor>,
+    udp: UdpProcessor,
+    stats: NetworkStats,
+    redirect_cache: RedirectCache,
+    arp_pending_queue: ArpPendingQueue,
+    ndp_pending_queue: NdpPendingQueue,
+    ipv6_fragment_reassembler: Ipv6FragmentReassembler,
+    ipv6_pmtu_cache: Ipv6PmtuCache,
 }
 
 impl InterfaceStackState {
