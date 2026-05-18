@@ -251,7 +251,6 @@ fn make_test_device(transport: NoopTransport) -> (VirtioBalloonDevice, TestQueue
 }
 
 /// Holds Vec ownership so queue memory stays alive for the test
-#[allow(dead_code)]
 struct TestQueues {
     inflate_descs: Vec<VringDesc>,
     inflate_avail: Vec<u16>,

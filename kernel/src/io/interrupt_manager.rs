@@ -1,5 +1,3 @@
-#![allow(unused_doc_comments)]
-// ============================================================================
 // src/io/interrupt_manager.rs - Unified Interrupt Management
 // ============================================================================
 //!
@@ -13,9 +11,6 @@
 //! - 動的なベクタ割り当て/解放
 //! - 割り込みルーティングの一元管理
 //! - アフィニティ設定のサポート
-
-#![allow(dead_code)]
-
 use crate::sync::IrqMutex;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

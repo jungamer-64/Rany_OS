@@ -262,7 +262,6 @@ fn allocate_ap_stacks(ap_count: usize) -> (u64, usize) {
 ///
 /// # Returns
 /// Stack pointer (top of stack) for the AP, or 0 if invalid
-#[allow(dead_code)]
 pub fn get_ap_stack_pointer(ap_boot_info: &ApBootInfo, ap_index: usize) -> u64 {
     ap_boot_info.stack_top_for(ap_index).unwrap_or(0)
 }

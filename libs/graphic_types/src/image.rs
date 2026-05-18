@@ -15,7 +15,6 @@
 //! Note: Framebuffer drawing logic is excluded to keep this crate kernel-independent.
 
 // Allow common casting operations in image processing code
-#![allow(dead_code)]
 #![allow(clippy::cast_lossless)] // u8->u32, u16->u32 are safe and common
 #![allow(clippy::cast_precision_loss)] // u32->f32 for interpolation
 #![allow(clippy::cast_possible_wrap)] // u32->i32 for coordinate math

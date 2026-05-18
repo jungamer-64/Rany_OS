@@ -17,7 +17,6 @@
 //! - 状態機械による安全な状態遷移
 
 #![no_std]
-#![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)] // Transitional: xHCI and DMA operations
 #![allow(clippy::missing_safety_doc)] // USB low-level functions
 #![allow(clippy::must_use_candidate)] // Accessor methods

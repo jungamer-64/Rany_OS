@@ -422,7 +422,6 @@ impl FastBitmapAllocator {
     }
 
     /// Drain remote free ring for a specific CPU
-    #[allow(unused_assignments)]
     pub(super) fn drain_remote_frees_for_cpu(&self, cpu_id: usize) -> usize {
         let magazine = &self.magazines[cpu_id];
         let mut drained = 0;

@@ -15,8 +15,6 @@
 //
 // - TZCNT命令活用: ビットスキャンを O(64) → O(1) に高速化
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::sync::IrqPoisonLock;
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU64, Ordering};

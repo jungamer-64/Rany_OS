@@ -28,9 +28,6 @@
 //!     // Fast path: non-atomic allocation
 //! }
 //! ```
-
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use alloc::boxed::Box;

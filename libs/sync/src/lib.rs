@@ -29,8 +29,6 @@
 //! パニックした場合のデッドロックを防止します。
 
 #![no_std]
-#![allow(dead_code)]
-
 mod backoff;
 mod poison_lock;
 

@@ -10,8 +10,6 @@
 // - gimli クレートを使用した堅牢なDWARF情報解析
 // - フォールバックとしてフレームポインタベースのアンワインドも維持
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::util::debug_check_ptr_range;
 use alloc::format;
 use core::ops::Range;

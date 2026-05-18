@@ -161,7 +161,6 @@ impl KernelLogger {
     }
 
     /// ログレベルに応じた色コード（ANSIエスケープシーケンス）
-    #[allow(dead_code)]
     pub(super) fn level_color(level: Level) -> &'static str {
         match level {
             Level::Error => "\x1b[31m", // 赤

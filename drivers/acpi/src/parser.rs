@@ -7,7 +7,6 @@
 //! `RSDP`検索、`RSDT`/`XSDT`パース、`MADT`/`MCFG`パースを実装。
 
 // Allow common patterns in ACPI parsing code
-#![allow(dead_code)]
 #![allow(clippy::cast_possible_truncation)] // u64->usize: intentional for 64-bit kernel
 #![allow(clippy::cast_lossless)] // u32->u64 for address calculations
 #![allow(clippy::unused_self)] // ACPI table methods need &self for API consistency

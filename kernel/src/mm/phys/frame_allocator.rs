@@ -6,8 +6,6 @@
 // 注意: 構造体全体がMutexで保護されているため、内部フィールドは
 // 通常のu64を使用。Mutex + Atomicの二重ロックはオーバーヘッド。
 // ============================================================================
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use crate::mm::phys::fast_allocator::{FastBitmapAllocator, PageGranularity};

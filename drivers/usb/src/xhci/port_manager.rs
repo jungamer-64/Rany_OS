@@ -6,9 +6,6 @@
 //!
 //! ルートハブポートの監視、リセット、状態管理を担当。
 //! USB 2.0/3.0ポートの自動検出とデバイス接続処理。
-
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 use spin::Mutex;
 

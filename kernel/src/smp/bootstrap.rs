@@ -2,11 +2,6 @@
 //!
 //! Implements Application Processor (AP) startup sequence using
 //! INIT-SIPI-SIPI protocol and per-CPU initialization.
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-
 extern crate alloc;
 
 use crate::sync::PoisonLock;

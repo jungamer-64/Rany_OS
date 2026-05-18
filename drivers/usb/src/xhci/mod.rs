@@ -25,9 +25,6 @@
 //! - `command`: コマンド発行と完了待ち (NEW)
 //! - `event_handler`: イベントリング処理 (NEW)
 //! - `initialization`: コントローラ初期化 (NEW)
-
-#![allow(dead_code)]
-
 use kernel_api::abi::driver::PackedPciLocation;
 
 pub mod command;

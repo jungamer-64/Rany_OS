@@ -6,9 +6,6 @@
 //!
 //! コマンドリング、イベントリング、転送リングの管理を担当。
 //! TRBのエンキュー/デキュー、サイクルビット管理を行う。
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;

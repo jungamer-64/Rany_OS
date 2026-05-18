@@ -23,11 +23,6 @@
 //! - `console` - テキストコンソール
 //! - `global` - グローバル状態管理
 //! - `boot_splash` - ブートスプラッシュ画面
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-
-// コア機能モジュール
 #[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod console;
 pub mod font;

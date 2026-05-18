@@ -5,10 +5,6 @@
 //!
 //! IOMMU Support (Intel VT-d / AMD-Vi)
 //!
-
-#![allow(dead_code)]
-
-// Public API surface
 pub mod api;
 pub mod types;
 

@@ -11,8 +11,6 @@
 //! ## 実装
 //! `ed25519-compact` クレートを使用し、no_std環境で動作します。
 //! このクレートはcurve25519-dalekに依存せず、軽量な実装を提供します。
-#![allow(dead_code)]
-#[allow(unused_imports)]
 use ed25519_compact::{PublicKey, Signature};
 
 /// Ed25519署名を検証（pre-hashed message用）
@@ -32,7 +30,6 @@ use ed25519_compact::{PublicKey, Signature};
 /// この関数はハッシュ済みメッセージを直接署名対象として検証します。
 /// 通常のEd25519検証（メッセージを内部でハッシュする方式）には
 /// `verify_message`関数を使用してください。
-#[allow(unused_variables)]
 pub fn verify(public_key: &[u8; 32], message: &[u8; 32], signature: &[u8; 64]) -> bool {
     // ハッシュ済みメッセージをそのまま検証
     // 注：これはハッシュ済みデータをメッセージとして扱う
@@ -50,7 +47,6 @@ pub fn verify(public_key: &[u8; 32], message: &[u8; 32], signature: &[u8; 64]) -
 ///
 /// # Returns
 /// 署名が有効な場合true
-#[allow(unused_variables)]
 pub fn verify_message(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
     // 公開鍵をパース
     let pk = match PublicKey::from_slice(public_key) {
@@ -75,7 +71,6 @@ pub fn verify_message(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64
 ///
 /// # Returns
 /// 公開鍵が有効な場合true
-#[allow(unused_variables)]
 pub fn is_valid_public_key(public_key: &[u8; 32]) -> bool {
     // Reject the all-zero representation (defensive check); some `from_bytes`
     // implementations may accept non-canonical or zero values.

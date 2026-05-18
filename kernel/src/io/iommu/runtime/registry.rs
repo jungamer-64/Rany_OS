@@ -10,7 +10,6 @@
 use alloc::sync::Arc;
 
 use crate::io::iommu::runtime::backend::IommuBackend;
-#[allow(unused_imports)]
 pub use crate::io::iommu::vendors::intel::registry::{
     IommuRegistry, get_iommu_registry, init_registry,
 };
@@ -125,8 +124,6 @@ fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
     let limit = (mask as u128) + 1;
     (addr as u128) <= (mask as u128) && (end as u128) <= limit
 }
-
-#[allow(dead_code)]
 pub(crate) fn validate_device_dma_mask(
     device: &DeviceId,
     addr: u64,

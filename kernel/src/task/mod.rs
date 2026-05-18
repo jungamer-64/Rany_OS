@@ -22,7 +22,6 @@
 //! タスク本体は canonical な `Task` / `TaskId` を共有し、
 //! per-core 側では内部 wrapper で優先度や統計を管理する。
 //!
-#![allow(dead_code)]
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
@@ -38,22 +37,17 @@ pub mod per_core_executor;
 pub mod preemption;
 pub mod timeout;
 mod waker;
-
-#[allow(unused_imports)]
 pub use crate::drivers::time::{
     PendingTimerWakerStats, current_tick, handle_timer_interrupt, pending_timer_waker_count,
     pending_waker_stats, process_pending_timer_wakers, sleep_ms,
 };
-#[allow(unused_imports)]
 pub use context::{
     CpuContext, KernelStack, Subject, TaskControlBlock, TaskState, current_subject, current_task_id,
 };
-#[allow(unused_imports)]
 pub use environ::{
     EnvError, EnvKey, EnvValue, Environment, get_home, get_path, get_pwd, get_term, get_user,
     kernel_env, set_pwd,
 };
-#[allow(unused_imports)]
 pub use interrupt_waker::{
     AtomicWaker, InterruptFuture, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,
     handle_timer_interrupt_waker, interrupt_waker_registry, register_interrupt_waker,
@@ -63,9 +57,7 @@ pub use interrupt_waker::{
 pub use per_core_executor::TestExecutor;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub use per_core_executor::spawn_on_cpu_for_test;
-#[allow(unused_imports)]
 pub(crate) use per_core_executor::spawn_on_cpu_with_priority;
-#[allow(unused_imports)]
 pub use per_core_executor::{
     ExecutorManager, ExecutorRunMode, ExecutorStats, GlobalQueueStats, PerCoreExecutor,
     PolledTaskContext, Priority, WakeQueueStats, configure_boot_run_mode,
@@ -78,7 +70,6 @@ pub use per_core_executor::{
 pub use preemption::PerCpuPreemptionSnapshot;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub use preemption::per_cpu_preemption_snapshot;
-#[allow(unused_imports)]
 pub use preemption::{
     AdaptiveTimeSlice,
     CpuTimeTracker,
@@ -98,11 +89,9 @@ pub use preemption::{
     yield_point,
     yield_point_with_quota_check,
 };
-#[allow(unused_imports)]
 pub use waker::create_waker;
 
 // Timeout/block_on utilities re-exported from timeout.rs
-#[allow(unused_imports)]
 pub use timeout::{TimeoutFuture, TimeoutResult, block_on, spawn_with_timeout, with_timeout};
 
 /// タスクID
@@ -118,8 +107,6 @@ impl TaskId {
     pub const fn from_raw(id: u64) -> Self {
         TaskId(id)
     }
-
-    #[allow(dead_code)]
     pub fn as_u64(&self) -> u64 {
         self.0
     }

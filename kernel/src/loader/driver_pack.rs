@@ -1,8 +1,6 @@
 // ============================================================================
 // src/loader/driver_pack.rs - Driver Pack (manifest + ELF + signature)
 // ============================================================================
-#![allow(dead_code)]
-
 use alloc::string::String;
 use alloc::vec::Vec;
 

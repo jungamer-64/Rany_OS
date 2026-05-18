@@ -15,9 +15,6 @@
 //! - USB Mass Storage Class Bulk-Only Transport 1.0
 //! - SCSI Primary Commands (SPC)
 //! - SCSI Block Commands (SBC)
-
-#![allow(dead_code)]
-
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use spin::Mutex;

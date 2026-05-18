@@ -8,8 +8,6 @@
 // PoisonLock<T>は、ロックを保持中にパニックが発生すると自動的に
 // "poisoned"（毒入れされた）状態としてマークされる。
 // ============================================================================
-#![allow(dead_code)]
-
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ops::{Deref, DerefMut};

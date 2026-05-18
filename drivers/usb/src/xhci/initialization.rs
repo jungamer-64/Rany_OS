@@ -9,9 +9,6 @@
 //! 2. コントローラ停止・リセット
 //! 3. 構造体（DCBAA, コマンドリング, イベントリング）設定
 //! 4. コントローラ開始
-
-#![allow(dead_code)]
-
 use super::{
     CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN, IR0, USBCMD, USBCMD_HCRST, USBCMD_INTE,
     USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,

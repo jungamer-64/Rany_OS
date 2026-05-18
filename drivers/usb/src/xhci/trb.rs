@@ -9,9 +9,6 @@
 //! - Command TRB: ホストからコントローラへのコマンド
 //! - Transfer TRB: データ転送要求
 //! - Event TRB: コントローラからホストへの通知
-
-#![allow(dead_code)]
-
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 

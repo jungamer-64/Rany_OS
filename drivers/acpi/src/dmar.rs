@@ -2,8 +2,6 @@
 // This is intentionally small and only extracts the pieces the kernel needs:
 // - DRHD units (register base, segment, include_all, device scopes)
 // - RMRR regions (segment, base, limit, device scopes)
-
-#![allow(dead_code)]
 #![allow(clippy::pub_underscore_fields)]
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::missing_errors_doc)]

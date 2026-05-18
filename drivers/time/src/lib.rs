@@ -8,7 +8,6 @@
 //! 高レベルのタイマーサービスを提供する。
 
 #![no_std]
-#![allow(dead_code)]
 #![allow(clippy::cast_possible_truncation)]
 
 extern crate alloc;

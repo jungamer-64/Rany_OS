@@ -8,8 +8,6 @@
 //! 高機能コンソール。複数の仮想コンソール（VT）をサポート。
 
 #![allow(clippy::derivable_impls)]
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec;

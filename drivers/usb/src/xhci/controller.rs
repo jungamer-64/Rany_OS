@@ -9,9 +9,6 @@
 //! - コマンドリング/イベントリング管理
 //! - ポート状態管理
 //! - デバイス列挙
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -57,7 +54,6 @@ struct DmaDeviceContext {
     /// CPUアクセス用ポインタ
     ptr: *mut DeviceContext,
     /// デバイス可視アドレス (IOVA or physical)
-    #[allow(dead_code)]
     device_addr: u64,
     /// DMAバッファ (所有権保持)
     _dma_buf: DmaBuffer,

@@ -20,9 +20,6 @@
 //!
 //! CPUプロファイリング機能は `profiler::CpuProfiler` に統合されており、
 //! 本モジュールには含まれません。
-
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use crate::time::rdtsc;
 use alloc::boxed::Box;

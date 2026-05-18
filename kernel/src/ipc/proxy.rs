@@ -2,8 +2,6 @@
 // src/ipc/proxy.rs - Domain Proxy Pattern
 // 設計書 8.2: RedLeafの知見：交換可能な型とプロキシ
 // ============================================================================
-#![allow(dead_code)]
-
 use super::rref::DomainId;
 use alloc::boxed::Box;
 use alloc::string::String;

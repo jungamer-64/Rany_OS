@@ -23,7 +23,6 @@ pub const PCR_BOOT_CONFIG: u32 = 14;
 
 /// Event types for TCG event log
 #[repr(u32)]
-#[allow(dead_code)]
 pub enum TcgEventType {
     /// Base event type for bootloader events
     EfiAction = 0x80000007,
@@ -340,7 +339,6 @@ fn extend_pcr(
 ///
 /// The actual PCR extend uses the TPM's own hash engine via
 /// `HashLogExtendEvent`; this function is for **audit / logging only**.
-#[allow(dead_code)]
 pub fn compute_sha256_preview(data: &[u8]) -> [u8; 32] {
     super::secure_boot::sha256(data)
 }

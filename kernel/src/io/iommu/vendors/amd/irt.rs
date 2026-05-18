@@ -25,10 +25,8 @@ const IRTE_REMAP_EN: u64 = 1 << 0; // bit 0: RemapEn
 const IRTE_SUPPRESS: u64 = 1 << 1; // bit 1: Suppress I/O APIC writes
 const IRTE_DM_LOGICAL: u64 = 1 << 2; // bit 2: DM (0=physical, 1=logical)
 const IRTE_INT_TYPE_SHIFT: u32 = 3; // bits [5:3]: IntType (delivery mode)
-#[allow(dead_code)]
 const IRTE_INT_TYPE_MASK: u64 = 0x07 << IRTE_INT_TYPE_SHIFT;
 const IRTE_VECTOR_SHIFT: u32 = 8; // bits [15:8]: Vector
-#[allow(dead_code)]
 const IRTE_VECTOR_MASK: u64 = 0xFF << IRTE_VECTOR_SHIFT;
 const IRTE_SVT_SHIFT: u32 = 11; // bits [13:11] of HI: Source Validation Type (SVT) (IRTE bits 77:75)
 const IRTE_SQ_SHIFT: u32 = 14; // bits [15:14] of HI: Source Quantifier (SQ) (IRTE bits 79:78)

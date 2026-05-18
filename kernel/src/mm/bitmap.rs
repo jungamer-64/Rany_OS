@@ -12,8 +12,6 @@
 //
 // Bit semantics: 1 = free, 0 = allocated
 // ============================================================================
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use alloc::boxed::Box;

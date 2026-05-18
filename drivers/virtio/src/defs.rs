@@ -1,10 +1,6 @@
 // ============================================================================
 // drivers/virtio/src/defs.rs - Shared VirtIO Common Definitions
 // ============================================================================
-
-#![allow(dead_code)]
-
-/// VirtIO device status bits (v1.0+)
 pub mod status {
     pub const VIRTIO_STATUS_RESET: u8 = 0;
     pub const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;

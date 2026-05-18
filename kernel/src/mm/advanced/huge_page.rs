@@ -1,8 +1,6 @@
 // ============================================================================
 // src/mm/huge_page.rs - Huge Page Direct Allocation with Direct Compaction
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};

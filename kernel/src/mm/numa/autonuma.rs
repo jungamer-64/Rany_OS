@@ -1,8 +1,6 @@
 // ============================================================================
 // src/mm/autonuma.rs - Automatic NUMA Page Migration
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;

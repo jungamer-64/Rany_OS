@@ -5,8 +5,6 @@ use super::ahci_ensure_mapping;
 use crate::{drivers, heap, io};
 use boot_proto::ExoBootInfo;
 use log::{info, warn};
-
-#[allow(dead_code)]
 fn debug_heap_check(tag: &str) {
     io::log::early_print("[HEAP] Check: ");
     io::log::early_print(tag);
@@ -141,7 +139,6 @@ pub(super) const KERNEL_STACK_PAGES: usize = 256;
 
 #[cfg(not(test))]
 #[repr(align(4096))]
-#[allow(dead_code)]
 pub(super) struct KernelStack([u8; 4096 * KERNEL_STACK_PAGES]);
 
 /// Boot stack for the BSP (Bootstrap Processor).

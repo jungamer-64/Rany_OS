@@ -17,11 +17,6 @@
 //! ## 設計方針
 //! CPUプロファイリングは本モジュールの `CpuProfiler` に一元化。
 //! `diag/` の旧 `CpuProfiler` は削除済み。
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -687,7 +682,6 @@ fn rdtsc() -> u64 {
 
 /// TSCPを読み取り（シリアライズ）
 #[inline]
-#[allow(dead_code)]
 fn rdtscp() -> (u64, u32) {
     unsafe {
         let lo: u32;

@@ -11,8 +11,6 @@
 // - Generic over element type T and capacity N
 // - No heap allocation (fixed-size array)
 // ============================================================================
-#![allow(dead_code)]
-
 use core::mem::MaybeUninit;
 
 // ============================================================================

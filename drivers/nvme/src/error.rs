@@ -5,9 +5,6 @@
 //! # NVMeエラー型
 //!
 //! NVMeドライバで使用するエラー型の定義。
-
-#![allow(dead_code)]
-
 use super::commands::NvmeCompletion;
 
 /// NVMeエラー型

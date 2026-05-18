@@ -1,10 +1,6 @@
-#![allow(unused_doc_comments)]
-// ============================================================================
 // src/interrupts/exceptions.rs - CPU Exception Handlers
 // 堅牢な例外処理：詳細なダンプ、リカバリ可能な場合の対応
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::io::log::{early_print, early_print_dec, early_print_hex};
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr2;

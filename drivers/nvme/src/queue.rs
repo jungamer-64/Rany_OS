@@ -6,9 +6,6 @@
 //!
 //! Submission Queue、Completion Queue、QueuePairの実装。
 //! driver.rsから分離した低レベルキュー操作。
-
-#![allow(dead_code)]
-
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use hal::mmio;
 

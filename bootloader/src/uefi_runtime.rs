@@ -118,7 +118,6 @@ fn is_runtime_memory_type(mem_type: MemoryType) -> bool {
 ///
 /// # Safety
 /// Must be called after ExitBootServices with the returned Runtime table
-#[allow(dead_code)]
 pub fn finalize_runtime_info(runtime_info: &mut UefiRuntimeInfo, runtime_services_addr: u64) {
     // Update with the actual runtime services pointer
     // After ExitBootServices, the Runtime table pointer may have changed

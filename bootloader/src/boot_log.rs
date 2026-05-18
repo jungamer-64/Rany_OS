@@ -9,8 +9,6 @@ use alloc::string::String;
 use core::fmt::Write;
 use uefi::runtime::{self, VariableAttributes, VariableVendor};
 use uefi::{CStr16, Guid, cstr16};
-
-#[allow(unused_imports)]
 use crate::serial_println;
 
 /// ブートログ専用GUID
@@ -21,7 +19,6 @@ const BOOT_LOG_GUID: Guid = Guid::parse_or_panic("b6f9e4a1-5678-1234-abcd-ef0123
 pub const MAX_LOG_SIZE: usize = 8192;
 
 /// 保持するログ世代数
-#[allow(dead_code)]
 pub const LOG_GENERATIONS: usize = 3;
 
 /// 変数属性（Non-Volatile + Boot Service + Runtime Access）
@@ -109,13 +106,11 @@ impl BootLogger {
     }
 
     /// error レベルのログ
-    #[allow(dead_code)]
     pub fn error(&mut self, message: &str) {
         self.log(&alloc::format!("[ERROR] {}", message));
     }
 
     /// フォーマット付きログ
-    #[allow(dead_code)]
     pub fn log_fmt(&mut self, args: core::fmt::Arguments<'_>) {
         if !self.initialized {
             return;
@@ -179,13 +174,11 @@ impl BootLogger {
     }
 
     /// 現在のログ内容を取得
-    #[allow(dead_code)]
     pub fn get_current_log(&self) -> &str {
         &self.buffer
     }
 
     /// ログサイズを取得
-    #[allow(dead_code)]
     pub fn log_size(&self) -> usize {
         self.buffer.len()
     }
@@ -226,7 +219,6 @@ pub fn rotate_logs() {
 }
 
 /// 前回のブートログを取得
-#[allow(dead_code)]
 pub fn get_previous_log(generation: usize) -> Option<String> {
     let vendor = get_vendor();
 
@@ -250,7 +242,6 @@ pub fn get_previous_log(generation: usize) -> Option<String> {
 }
 
 /// 前回のブートログをシリアルに出力
-#[allow(dead_code)]
 pub fn dump_previous_log() {
     serial_println!("[BootLog] === Previous Boot Log ===");
 
@@ -272,7 +263,6 @@ static mut BOOT_LOGGER: BootLogger = BootLogger::new();
 ///
 /// # Safety
 /// シングルスレッド環境（ブート時）でのみ使用可能
-#[allow(dead_code)]
 pub unsafe fn get_logger() -> &'static mut BootLogger {
     unsafe { &mut *(&raw mut BOOT_LOGGER) }
 }
@@ -281,7 +271,6 @@ pub unsafe fn get_logger() -> &'static mut BootLogger {
 ///
 /// # Safety
 /// シングルスレッド環境（ブート時）でのみ使用可能
-#[allow(dead_code)]
 pub unsafe fn init_logger() {
     unsafe { (*(&raw mut BOOT_LOGGER)).init() };
 }
@@ -290,7 +279,6 @@ pub unsafe fn init_logger() {
 ///
 /// # Safety
 /// シングルスレッド環境（ブート時）でのみ使用可能
-#[allow(dead_code)]
 pub unsafe fn save_log() {
     unsafe { (*(&raw const BOOT_LOGGER)).save() };
 }
@@ -308,7 +296,6 @@ macro_rules! boot_log {
 }
 
 /// ブート診断情報を収集
-#[allow(dead_code)]
 pub fn collect_boot_diagnostics() -> String {
     let mut diag = String::new();
 
@@ -333,7 +320,6 @@ pub fn collect_boot_diagnostics() -> String {
 }
 
 /// ブート診断をログに追加
-#[allow(dead_code)]
 pub fn log_boot_diagnostics() {
     let diag = collect_boot_diagnostics();
     unsafe {

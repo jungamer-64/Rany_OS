@@ -2,8 +2,6 @@
 // src/task/per_core_executor.rs - Canonical per-core executor runtime
 // 設計書 4.1/4.3: Async-first task runtime with per-core scheduling
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;

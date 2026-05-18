@@ -6,9 +6,6 @@
 //!
 //! 非同期I/Oリクエストとフューチャー実装。
 //! Rustのasync/awaitパターンでNVMe操作を実行。
-
-#![allow(dead_code)]
-
 use core::future::Future;
 use core::pin::Pin;
 
@@ -45,7 +42,6 @@ pub struct ReadFuture<'a> {
     driver: &'a NvmePollingDriver,
     core_id: u32,
     cid: u16,
-    #[allow(dead_code)]
     submitted: bool,
 }
 

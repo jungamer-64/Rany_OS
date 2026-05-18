@@ -24,9 +24,6 @@
 //! 4. Quiescent State Detection で全コアの離脱を確認
 //! 5. 旧セルのメモリを解放
 //! ```
-
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use alloc::string::String;
 use alloc::vec::Vec;

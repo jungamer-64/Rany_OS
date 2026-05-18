@@ -12,9 +12,6 @@
 //! ## VirtIO Console Device Specification
 //! - Feature bits, configuration space, queue layout
 //! - Emergency write support (VIRTIO_CONSOLE_F_EMERG_WRITE)
-
-#![allow(dead_code)]
-
 use crate::dma::{VirtioDmaBuffer, alloc_dma_buffer};
 use crate::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use crate::virtqueue::*;

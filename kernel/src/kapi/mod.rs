@@ -1,9 +1,6 @@
 // ============================================================================
 // kernel/src/kapi/mod.rs - Canonical KernelServices boundary
 // ============================================================================
-
-#![allow(dead_code)]
-
 extern crate alloc;
 
 pub(crate) use alloc::boxed::Box;

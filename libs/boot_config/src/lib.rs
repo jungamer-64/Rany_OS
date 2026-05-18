@@ -116,16 +116,12 @@ pub fn parse_boot_policy(cmdline: &str) -> Result<BootPolicy, BootPolicyError> {
 }
 
 /// Maximum number of boot entries
-#[allow(dead_code)]
 pub const MAX_BOOT_ENTRIES: usize = 8;
 /// Maximum length of a boot entry name
-#[allow(dead_code)]
 pub const MAX_NAME_LEN: usize = 64;
 /// Maximum length of a path
-#[allow(dead_code)]
 pub const MAX_PATH_LEN: usize = 128;
 /// Maximum length of command line
-#[allow(dead_code)]
 pub const MAX_CMDLINE_LEN: usize = 256;
 
 /// A boot menu entry
@@ -275,7 +271,6 @@ pub fn parse_config(text: &str) -> Result<BootConfig, BootConfigError> {
 }
 
 /// Create default configuration when no config file exists
-#[allow(dead_code)]
 pub fn default_config() -> BootConfig {
     let mut config = BootConfig::default();
 

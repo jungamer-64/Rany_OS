@@ -16,8 +16,6 @@
 // Allow mutable borrow from &self - intentional for per-core lock-free access.
 // Each core exclusively owns its queue via core affinity (single-threaded access guarantee).
 #![allow(clippy::mut_from_ref)]
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ptr;
@@ -219,7 +217,6 @@ impl PerCoreNvmeQueue {
     /// # Safety
     /// 現在のコアがこのPerCoreNvmeQueueの所有者であることを呼び出し側が保証。
     #[inline]
-    #[allow(dead_code)]
     pub(crate) unsafe fn get_queue_pair_mut(&self) -> Option<&mut QueuePair> {
         unsafe { (*self.inner.get()).as_mut() }
     }

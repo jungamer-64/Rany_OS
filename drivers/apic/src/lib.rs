@@ -4,9 +4,6 @@
 // ============================================================================
 //!
 #![no_std]
-#![allow(dead_code)]
-
-//! # Advanced Programmable Interrupt Controller (APIC)
 //!
 //! マルチコア対応のための割り込みコントローラ実装。
 //! Local APICとI/O APICの両方をサポート。

@@ -4,9 +4,6 @@
 //! - AP bootstrap (INIT-SIPI-SIPI)
 //! - Per-CPU data structures
 //! - Inter-processor interrupts
-
-#![allow(dead_code)]
-
 use boot_proto::ExoBootInfo;
 
 pub mod bootstrap;
@@ -15,21 +12,15 @@ pub(crate) mod routing;
 pub(crate) mod runtime;
 pub mod runtime_handoff;
 pub mod topology;
-#[allow(unused_imports)]
 pub use bootstrap::{init, online_aps, start_aps};
-#[allow(unused_imports)]
 pub use lifecycle::{CpuLifecycleSnapshot, CpuLifecycleStage};
 pub(crate) use lifecycle::{
     mark_boot_prepared, mark_launching, set_cpu_stage as set_cpu_lifecycle_stage,
 };
-#[allow(unused_imports)]
 pub use routing::{apic_id_for_cpu, cpu_for_apic_id};
-#[allow(unused_imports)]
 pub(crate) use routing::{register_cpu_apic_mapping, reset_cpu_routing};
 pub(crate) use runtime::reset_runtime_state;
-#[allow(unused_imports)]
 pub(crate) use runtime::{RuntimeWorkerStage, set_runtime_worker_stage};
-#[allow(unused_imports)]
 pub use runtime::{
     release_runtime_workers, runtime_worker_stage, runtime_workers_released,
     wait_for_runtime_workers,

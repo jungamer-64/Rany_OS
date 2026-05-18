@@ -7,8 +7,6 @@
 //! # Scalability Improvements
 //! - Sharded Registry (32 shards) to reduce lock contention.
 //! - Removed Reference Counting (Strict Single Ownership).
-#![allow(dead_code)]
-
 mod error_and_tests;
 pub use error_and_tests::*;
 mod reclaim_impl;

@@ -1,8 +1,6 @@
 //! Device Manager for ExoRust Kernel
 //!
 //! Manages all discovered hardware devices and their drivers.
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use alloc::string::String;

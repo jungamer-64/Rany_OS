@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;

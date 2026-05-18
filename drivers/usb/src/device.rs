@@ -5,9 +5,6 @@
 //! # USBデバイス管理
 //!
 //! USBデバイスの列挙と管理機能。
-
-#![allow(dead_code)]
-
 use alloc::string::String;
 use alloc::vec::Vec;
 

@@ -190,7 +190,6 @@ impl Ps2Controller {
     }
 
     /// デバイス識別
-    #[allow(dead_code)]
     fn identify_device(&self, port2: bool) -> Option<DeviceType> {
         let send = if port2 {
             Self::send_port2

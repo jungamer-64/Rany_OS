@@ -10,9 +10,6 @@
 //! - 電源管理
 //! - MSI-X
 //! - ホットプラグ
-
-#![allow(dead_code)]
-
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::types::BdfAddress;

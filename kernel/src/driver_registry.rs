@@ -18,9 +18,6 @@
 //! - Dynamic driver loading
 //! - Safe driver unloading
 //! - Driver replacement
-
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use crate::sync::PoisonLock;

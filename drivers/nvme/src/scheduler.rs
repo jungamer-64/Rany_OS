@@ -5,9 +5,6 @@
 //! # NVMe IoScheduler統合
 //!
 //! NVMeドライバをIoSchedulerと連携させるアダプタ層。
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;

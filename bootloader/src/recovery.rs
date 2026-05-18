@@ -9,8 +9,6 @@
 use alloc::string::String;
 use uefi::runtime::{self, VariableAttributes, VariableVendor};
 use uefi::{CStr16, Guid, cstr16};
-
-#[allow(unused_imports)]
 use crate::serial_println;
 
 /// ExoLoader専用UEFI変数GUID
@@ -32,7 +30,6 @@ pub struct BootState {
     /// 前回選択されたエントリインデックス
     pub last_entry_index: u8,
     /// フォールバックエントリインデックス
-    #[allow(dead_code)]
     pub fallback_entry_index: u8,
     /// ブート試行ID（インクリメンタル）
     pub boot_attempt_id: u32,
@@ -216,7 +213,6 @@ pub fn should_enter_recovery(state: &BootState) -> bool {
 }
 
 /// ブート状態をリセット（手動リカバリ後）
-#[allow(dead_code)]
 pub fn reset_boot_state() {
     let vendor = get_vendor();
 
@@ -228,7 +224,6 @@ pub fn reset_boot_state() {
 }
 
 /// リカバリモードを要求（次回起動時にリカバリ）
-#[allow(dead_code)]
 pub fn request_recovery_mode() {
     let vendor = get_vendor();
 
@@ -238,7 +233,6 @@ pub fn request_recovery_mode() {
 }
 
 /// ブート状態の概要を取得
-#[allow(dead_code)]
 pub fn get_boot_state_summary(state: &BootState) -> String {
     use alloc::format;
 

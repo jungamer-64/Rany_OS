@@ -214,7 +214,6 @@ fn detect_intel_tdx() -> bool {
 ///
 /// This mask should be OR'd with page table entries to mark
 /// pages as encrypted when SME/SEV is enabled.
-#[allow(dead_code)]
 pub fn get_encryption_mask(info: &MemoryEncryptionInfo) -> u64 {
     if info.sme_enabled || info.sev_enabled {
         info.encryption_mask

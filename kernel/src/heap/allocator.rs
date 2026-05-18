@@ -1,7 +1,4 @@
 //! Heap allocator implementation and bootstrap helpers.
-
-#![allow(dead_code)]
-
 #[path = "oom.rs"]
 pub mod oom;
 

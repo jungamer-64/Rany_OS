@@ -13,9 +13,6 @@
 // - frame_allocator.rs:226-269 (word_index, bit_index)
 // - buddy_allocator.rs:60-100 (buddy, align_down)
 // ============================================================================
-#![allow(dead_code)]
-
-/// 4KiB ページサイズ
 pub const PAGE_SIZE_4K: usize = 4096;
 /// 2MiB ページサイズ  
 pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024;

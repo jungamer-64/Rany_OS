@@ -5,9 +5,6 @@
 //! テキストコンソール実装
 //!
 //! フレームバッファベースのテキストモードコンソール
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;

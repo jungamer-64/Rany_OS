@@ -6,10 +6,6 @@
 //!
 //! This module now re-exports from the `pci_driver` crate.
 //! All implementation has been moved to `drivers/pci/`.
-
-#![allow(unused_imports)]
-
-// Re-export everything from pci_driver crate
 pub use pci_driver::*;
 
 // Convenience re-exports for common types

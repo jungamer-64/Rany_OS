@@ -15,12 +15,6 @@
 //! - `profiler/` — サンプリングベースCPU/メモリ/I/Oプロファイリング
 //!
 //! `diag/` が提供する低レベル計測値を集約し、ダッシュボード用のスナップショットとして提供する。
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-
-// Note: Individual modules disabled until API stabilization
 // pub mod display;
 // pub mod collectors;
 

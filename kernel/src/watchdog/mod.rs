@@ -17,11 +17,6 @@
 //! | [`profiler`](crate::profiler) | サンプリングベースCPU/メモリ/I/Oプロファイリング |
 //! | [`monitor`](crate::monitor) | システムスナップショット、ダッシュボード |
 //! | **`watchdog`** | ハング検出、デッドロック検出、自動回復 |
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;

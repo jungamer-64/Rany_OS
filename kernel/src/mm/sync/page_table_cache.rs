@@ -26,8 +26,6 @@
 // 解決策: RCU的なアプローチで、全CPUのコンテキストスイッチを待ってから
 // 再利用リストに加える。
 // ============================================================================
-#![allow(dead_code)]
-
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};

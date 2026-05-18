@@ -7,8 +7,6 @@
 //! This module was migrated from `kernel/src/io/ahci_atapi.rs` and refactored to
 //! use the `ahci_driver` crate internals (HAL for MMIO, crate-local types, etc.).
 //!
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

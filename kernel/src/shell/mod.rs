@@ -20,9 +20,6 @@
 //! net.interfaces()
 //! sys.info()
 //! ```
-
-#![allow(dead_code)]
-
 pub mod exoshell;
 pub mod frontend;
 pub mod line_buffer;

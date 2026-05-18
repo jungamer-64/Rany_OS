@@ -9,9 +9,6 @@
 //! - 転送完了 (Transfer Event)  
 //! - ポート状態変更 (Port Status Change)
 //! - その他 (Host Controller, Device Notification, etc.)
-
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 use core::task::Waker;
 

@@ -47,8 +47,6 @@
 //!     Err(e) => log::error!("Load failed: {}", e),
 //! }
 //! ```
-#![allow(dead_code)]
-
 use super::LoadError;
 
 // NOTE:

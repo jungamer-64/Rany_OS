@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
 // ExoRust Kernel - Memory Protection Keys (MPK/PKEYs) Management
-#![allow(dead_code)]
-
 use crate::sync::{PoisonLock, PoisonLockGuard};
 use core::sync::atomic::{AtomicBool, Ordering};
 

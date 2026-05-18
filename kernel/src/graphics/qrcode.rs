@@ -15,9 +15,6 @@
 //! - Reserved Module Protection
 //! - Optimal Mask Selection (ISO/IEC 18004)
 //!
-
-#![allow(dead_code)]
-
 use super::{Color, Framebuffer, Rect};
 
 /// QR Code Version 1 Size (21x21)

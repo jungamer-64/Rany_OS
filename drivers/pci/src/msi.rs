@@ -11,9 +11,6 @@
 //! - MSI 設定・有効化
 //! - MSI-X テーブル管理
 //! - ベクトル割り当て
-
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 use exorust_sync::PoisonLock;
 

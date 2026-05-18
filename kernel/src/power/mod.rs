@@ -2,11 +2,6 @@
 //!
 //! ACPI電源管理機能を実装し、スリープ状態、シャットダウン、
 //! 省電力モードなどを制御する。
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-
 use crate::io::port_io::{PortU8, PortU16, PortU32};
 use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};

@@ -5,9 +5,6 @@
 //! # ウィンドウシステム
 //!
 //! 基本的なウィンドウ管理とコンポジティングを提供。
-
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;

@@ -2,8 +2,6 @@
 // src/task/preemption.rs - Cooperative + Preemptive Hybrid Scheduler
 // 設計書 4.4: スターベーション対策
 // ============================================================================
-#![allow(dead_code)]
-
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// タスク実行時間の制限（ティック数）

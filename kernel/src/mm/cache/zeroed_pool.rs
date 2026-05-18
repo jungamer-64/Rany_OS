@@ -14,8 +14,6 @@
 // - アイドルタスクまたは低優先度カーネルスレッドがバックグラウンドでゼロクリア
 // - プールが枯渇した場合は従来通りオンデマンドでゼロクリア
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::mm::types::NumaNodeId;
 use crate::sync::IrqMutex;
 use core::sync::atomic::{AtomicBool, Ordering};

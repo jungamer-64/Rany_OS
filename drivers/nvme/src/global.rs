@@ -5,9 +5,6 @@
 //! # NVMeグローバルインスタンス
 //!
 //! グローバルNVMeドライバインスタンスとアクセスAPI。
-
-#![allow(dead_code)]
-
 use exorust_sync::PoisonLock;
 use kernel_api::abi::driver::PackedPciLocation;
 

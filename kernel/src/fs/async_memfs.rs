@@ -19,9 +19,6 @@
 //! let mut buf = [0u8; 1024];
 //! let n = inode.read(0, &mut buf).await?;
 //! ```
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;

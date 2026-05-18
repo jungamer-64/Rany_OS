@@ -1,5 +1,4 @@
 #![no_std]
-#![allow(dead_code)]
 #![allow(clippy::must_use_candidate)]
 #![allow(clippy::len_without_is_empty)]
 

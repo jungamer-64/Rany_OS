@@ -8,9 +8,6 @@
 // 3. デバイス横断の統一的なI/Oスケジューリング
 // 4. 割り込みからWakerへのブリッジ
 // ============================================================================
-
-#![allow(dead_code)]
-
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};

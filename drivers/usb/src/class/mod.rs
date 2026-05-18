@@ -14,9 +14,6 @@
 //! ## クラスドライバインターフェース
 //! 各クラスドライバは `UsbClassDriver` トレイトを実装し、
 //! デバイスの初期化、データ転送、イベント処理を行う。
-
-#![allow(dead_code)]
-
 pub mod hid;
 pub mod hub;
 pub mod msc;

@@ -123,8 +123,6 @@ struct RingBuffer<const N: usize> {
     tail: usize,
     full: bool,
 }
-
-#[allow(dead_code)]
 impl<const N: usize> RingBuffer<N> {
     #[inline]
     fn normalize_index(index: usize) -> usize {

@@ -10,9 +10,6 @@
 //!
 //! - **QuarantineRing**: Per-CPU ring buffer for epoch-based delayed reclamation.
 //!   Memory is quarantined until a certain epoch passes (e.g., after IOTLB flush).
-
-#![allow(dead_code)]
-
 use crate::sync::IrqPoisonLock;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 

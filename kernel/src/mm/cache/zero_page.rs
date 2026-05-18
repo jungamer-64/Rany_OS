@@ -23,8 +23,6 @@
 // - Intel Optimization Manual: Non-Temporal Store Hints
 // - Linux kernel: clear_page_nt(), clear_huge_page()
 // ============================================================================
-#![allow(dead_code)]
-
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

@@ -1,7 +1,5 @@
 // ALLOW: host-support heap shims mirror the production heap API for lib-test builds;
 // some hooks are intentionally present only to keep the test-time surface compatible.
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 use boot_proto::{ExoBootInfoView, NumaInfo};
 use core::alloc::{GlobalAlloc, Layout};

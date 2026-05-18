@@ -19,9 +19,6 @@
 //!    依存インターフェースのハッシュ値を比較します。
 //!
 //! 3. **不一致時の拒否**: ハッシュ値が一致しない場合、セルのロードを拒否します。
-
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use alloc::borrow::Cow;
 use alloc::string::{String, ToString};

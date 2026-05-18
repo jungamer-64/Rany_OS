@@ -7,7 +7,6 @@
 //! Local APIC, I/O APIC, 割り込みオーバーライド, `PCIe` ECAM情報など。
 
 // Allow common patterns in ACPI info structures
-#![allow(dead_code)]
 #![allow(clippy::must_use_candidate)] // Data structure constructors
 #![allow(clippy::missing_const_for_fn)] // Functions that allocate can't be const
 

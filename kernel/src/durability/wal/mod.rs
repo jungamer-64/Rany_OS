@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-//! Durable write-ahead log (WAL) manager.
 
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;

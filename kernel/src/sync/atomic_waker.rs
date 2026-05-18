@@ -6,8 +6,6 @@
 //! This module provides:
 //! - `AtomicWaker`: Lock-free implementation using atomic state machine (ISR-safe)
 //! - `WakerQueue`: Multi-waker queue for multiple concurrent waiters
-
-#![allow(dead_code)]
 use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;

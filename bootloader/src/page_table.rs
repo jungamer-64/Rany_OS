@@ -12,7 +12,6 @@ const PAGE_TABLE_MAX_ADDR: u64 = u32::MAX as u64;
 // Page Table Flags
 pub const PAGE_PRESENT: u64 = 1 << 0;
 pub const PAGE_WRITABLE: u64 = 1 << 1;
-#[allow(dead_code)]
 pub const PAGE_USER: u64 = 1 << 2;
 pub const PAGE_HUGE: u64 = 1 << 7;
 pub const PAGE_NO_EXECUTE: u64 = 1 << 63;
@@ -53,8 +52,6 @@ impl CpuPageFeatures {
 pub struct PageTableEntry {
     entry: u64,
 }
-
-#[allow(dead_code)]
 impl PageTableEntry {
     pub const fn new() -> Self {
         Self { entry: 0 }
@@ -95,8 +92,6 @@ impl PageTableEntry {
 pub struct PageTable {
     pub entries: [PageTableEntry; 512],
 }
-
-#[allow(dead_code)]
 impl PageTable {
     pub const fn new() -> Self {
         Self {

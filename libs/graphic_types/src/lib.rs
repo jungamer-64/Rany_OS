@@ -9,9 +9,6 @@
 
 #![allow(clippy::cargo_common_metadata)]
 #![no_std]
-#![allow(dead_code)]
-
-// `alloc` usage is optional and gated behind the `alloc` feature so this
 // no_std crate can be used in both kernel and userland contexts.
 #[cfg(feature = "alloc")]
 extern crate alloc;

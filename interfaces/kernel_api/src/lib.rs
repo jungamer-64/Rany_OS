@@ -3,14 +3,12 @@
 // ============================================================================
 
 #![no_std]
-#![allow(dead_code)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::use_self)]
 #![allow(clippy::wildcard_imports)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::missing_safety_doc)]
-#![allow(unused_variables)]
 #![allow(clippy::must_use_candidate)]
 
 extern crate alloc;

@@ -4,8 +4,6 @@
 // ============================================================================
 pub mod proxy;
 pub mod rref;
-
-#[allow(unused_imports)]
 pub use proxy::{
     BasicProxy,
     DomainProxy,

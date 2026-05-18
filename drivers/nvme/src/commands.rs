@@ -5,9 +5,6 @@
 //! NVMeコマンド構造体定義
 //!
 //! Submission Queue Entry (SQE) と Completion Queue Entry (CQE) の共通定義。
-
-#![allow(dead_code)]
-
 use super::defs::*;
 
 // ============================================================================

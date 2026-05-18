@@ -6,10 +6,6 @@
 //!
 //! ExoRustの設計思想に基づいた新しいシェル環境。
 //! Unix互換コマンドではなく、Rustの構文でOSリソースを直接操作する。
-
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 extern crate alloc;
 
 // サブモジュール

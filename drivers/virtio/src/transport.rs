@@ -17,9 +17,6 @@
 //! - MMIO Transport: Section 4.2
 //! - PCI Transport: Section 4.1
 //!
-
-#![allow(dead_code)]
-
 use crate::defs::{VirtioDeviceType, status};
 
 // ============================================================================

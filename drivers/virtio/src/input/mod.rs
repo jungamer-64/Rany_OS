@@ -14,9 +14,6 @@
 //! - Queue 0: eventq - device writes VirtioInputEvent to guest
 //! - Queue 1: statusq - guest writes status updates to device
 //! - Config space: select/subsel mechanism for querying device info
-
-#![allow(dead_code)]
-
 use crate::dma::{VirtioDmaBuffer, alloc_dma_buffer};
 use crate::transport::{VirtioMmioTransport, VirtioTransport};
 use crate::virtqueue::*;

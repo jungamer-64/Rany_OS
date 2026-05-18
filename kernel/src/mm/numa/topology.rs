@@ -15,8 +15,6 @@
 //!    メモリを割り当てる（First-Touch Policy）
 //! 2. **明示的なノード指定**: `alloc_on_numa_node(node_id, layout)` でノードを指定可能
 //! 3. **フォールバック**: 指定ノードにメモリがない場合は他のノードから割り当て
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use alloc::alloc::Layout;
 use alloc::vec::Vec;

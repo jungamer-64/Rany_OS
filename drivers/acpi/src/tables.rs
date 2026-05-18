@@ -7,7 +7,6 @@
 //! `RSDP`, `SDT` Header, `MADT`, `MCFG`, `FADT`などのテーブル構造体を定義。
 
 // Allow common patterns in ACPI table definitions
-#![allow(dead_code)]
 #![allow(clippy::ptr_as_ptr)] // Raw pointer casts in ACPI table access
 #![allow(clippy::ref_as_ptr)] // Reference to pointer casts for ACPI tables
 #![allow(clippy::missing_const_for_fn)] // Some functions can't be const due to pointer operations

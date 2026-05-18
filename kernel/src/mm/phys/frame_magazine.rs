@@ -22,8 +22,6 @@
 // - Linux PCP (Per-CPU Pageset)
 // - FreeBSD UMA Magazine layer
 // ============================================================================
-#![allow(dead_code)]
-
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};

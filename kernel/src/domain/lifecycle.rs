@@ -18,8 +18,6 @@
 //! - `restart_domain()` — 本モジュール固有（再起動ロジック）
 //! - `add_domain_dependency()` — 本モジュール固有（依存関係グラフ操作）
 //!
-#![allow(dead_code)]
-
 use crate::domain::{
     DomainId, DomainState, create_domain, set_domain_state, with_domain, with_domain_mut,
 };

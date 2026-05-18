@@ -2,8 +2,6 @@
 // src/interrupts/gdt.rs - Per-CPU Global Descriptor Table with TSS
 // Double Fault / Page Fault 用の IST を各CPUごとに分離して設定
 // ============================================================================
-#![allow(dead_code)]
-
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};

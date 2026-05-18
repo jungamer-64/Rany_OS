@@ -13,8 +13,6 @@
 // Partial優先によりフラグメンテーションを削減し、
 // メモリ使用効率を向上させる。
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 use core::alloc::Layout;
 use core::ptr::NonNull;

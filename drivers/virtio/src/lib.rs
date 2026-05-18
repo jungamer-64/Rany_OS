@@ -3,7 +3,6 @@
 // ============================================================================
 
 #![no_std]
-#![allow(dead_code)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::type_complexity)]
 

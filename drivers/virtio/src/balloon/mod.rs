@@ -13,9 +13,6 @@
 //! ## VirtIO Balloon Device Specification
 //! - Feature bits, PFN array format, configuration space
 //! - 4K page granularity (PFN = physical address >> 12)
-
-#![allow(dead_code)]
-
 use crate::dma::{VirtioDmaBuffer, alloc_dma_buffer};
 use crate::transport::{VirtioMmioTransport, VirtioTransport};
 use crate::virtqueue::*;

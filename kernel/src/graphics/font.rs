@@ -5,9 +5,6 @@
 //! ビットマップフォント実装
 //!
 //! 8x16 VGAスタイルフォントによるテキスト描画
-
-#![allow(dead_code)]
-
 use super::framebuffer::Framebuffer;
 use super::{Color, Rect};
 

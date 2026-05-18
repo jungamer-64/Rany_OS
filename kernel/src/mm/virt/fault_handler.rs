@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr2;
 

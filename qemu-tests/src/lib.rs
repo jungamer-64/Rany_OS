@@ -1,5 +1,3 @@
-#![cfg_attr(not(test), allow(dead_code))]
-
 use qemu_runner::{RunConfig, run_fullboot};
 use std::sync::{Mutex, OnceLock};
 

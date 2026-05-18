@@ -27,9 +27,6 @@
 //! |   Framebuffer     |
 //! +-------------------+
 //! ```
-
-#![allow(dead_code)]
-
 mod compositor;
 mod constants;
 

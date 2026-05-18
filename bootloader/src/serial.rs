@@ -142,7 +142,6 @@ pub fn _serial_print(args: fmt::Arguments) {
 }
 
 /// Write a single character to serial (used in inline asm debugging)
-#[allow(dead_code)]
 pub fn write_char(c: char) {
     SerialWriter::new().write_byte(c as u8);
 }

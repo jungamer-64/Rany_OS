@@ -2,9 +2,6 @@
 // src/test/mod.rs - Integration Test Framework
 // Phase 6: Integration Tests & Validation
 // ============================================================================
-#![allow(dead_code)]
-
-// Integration test suite for comprehensive kernel testing
 pub mod integration;
 pub mod runtime_dispatch;
 

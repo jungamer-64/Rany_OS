@@ -1,9 +1,6 @@
 // ============================================================================
 // drivers/virtio/src/blk/mod.rs - VirtIO Block Device Driver
 // ============================================================================
-
-#![allow(dead_code)]
-
 use crate::dma::{VirtioDmaBuffer, alloc_dma_buffer};
 use crate::transport::{VirtioMmioTransport, VirtioTransport};
 use crate::virtqueue::*;

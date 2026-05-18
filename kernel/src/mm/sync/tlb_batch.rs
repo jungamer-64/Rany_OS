@@ -30,9 +30,6 @@
 // - Linux arch/x86/mm/tlb.c
 // - x86 INVLPG, INVPCID 命令
 // ============================================================================
-#![allow(dead_code)]
-
-/// TSCを読み取る（Coalescing Window用）
 #[inline]
 fn read_tsc() -> u64 {
     #[cfg(target_arch = "x86_64")]

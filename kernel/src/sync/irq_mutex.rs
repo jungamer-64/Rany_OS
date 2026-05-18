@@ -9,8 +9,6 @@
 //
 // 参考: Linux の spin_lock_irqsave / spin_unlock_irqrestore
 // ============================================================================
-#![allow(dead_code)]
-
 #[cfg(not(test))]
 use core::arch::asm;
 use core::cell::UnsafeCell;

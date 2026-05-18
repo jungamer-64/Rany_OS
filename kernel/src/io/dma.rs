@@ -39,8 +39,6 @@
 //! If you already have an aligned `RRef<[u8]>`, use `DeviceDmaContext::map_rref_bytes`.
 //! Note: When IOMMU is enabled, the mapped buffer must be 4K-aligned in address
 //! and size, otherwise mapping returns `InvalidAlignment`.
-#![allow(dead_code)]
-
 use alloc::alloc::{Layout, alloc, dealloc};
 use core::marker::PhantomData;
 use core::ptr::NonNull;

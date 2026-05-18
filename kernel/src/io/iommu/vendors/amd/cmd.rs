@@ -3,9 +3,6 @@
 // ============================================================================
 
 // AMD-Vi command buffer and IOTLB invalidation helpers (skeleton).
-
-#![allow(dead_code)]
-
 use core::mem::size_of;
 use core::ptr::NonNull;
 

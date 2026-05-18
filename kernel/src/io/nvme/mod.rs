@@ -11,9 +11,6 @@
 //!
 //! - [`crate::task::io`] — テスト/ドライバ未初期化時用のNVMe stubモジュール
 //! - `drivers/nvme/` — 外部NVMeドライバセル実装
-
-#![allow(dead_code)]
-
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::sync::PoisonLock;
 

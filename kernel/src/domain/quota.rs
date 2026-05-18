@@ -15,9 +15,6 @@
 //! - **9.3.2 メモリ使用量制限**: ドメインごとのメモリ上限
 //! - **9.3.3 OOMキラー戦略**: 優先度に基づくドメイン終了
 //! - **9.3.4 I/O帯域制限**: トークンバケットによる帯域制限
-
-#![allow(dead_code)]
-
 use crate::domain::DomainId;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;

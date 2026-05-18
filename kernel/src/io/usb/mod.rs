@@ -15,10 +15,6 @@
 //! ## 型安全性
 //! - Newtype パターンによるスロット/エンドポイント管理
 //! - 状態機械による安全な状態遷移
-
-#![allow(dead_code)]
-
-// Re-exports from usb_driver
 pub use usb_driver::driver_impl::UsbDriverWrapper;
 pub use usb_driver::{
     DeviceAddress, EndpointAddress, PortNumber, PortStatus, SetupPacket, SlotId, TransferDirection,

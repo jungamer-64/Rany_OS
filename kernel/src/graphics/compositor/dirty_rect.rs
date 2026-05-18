@@ -107,7 +107,6 @@ impl DirtyRegionManager {
     }
 
     /// 指定矩形と交差するダーティ領域があるか
-    #[allow(dead_code)]
     pub fn intersects(&self, rect: &Rect) -> bool {
         if self.full_redraw {
             return true;

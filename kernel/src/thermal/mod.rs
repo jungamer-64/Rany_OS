@@ -5,11 +5,6 @@
 //! - スロットリング制御
 //! - ファン制御
 //! - サーマルゾーン管理
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::string::String;
 use alloc::vec::Vec;

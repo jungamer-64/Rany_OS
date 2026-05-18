@@ -10,9 +10,6 @@
 //!
 //! Implementations use AVX2, SSSE3, or NEON when available, with
 //! scalar fallbacks for unsupported platforms.
-
-#![allow(dead_code)]
-
 use core::sync::atomic::{AtomicU8, Ordering};
 
 // Packer selection cache. 0 = unknown, 1 = scalar, 2 = ssse3, 3 = avx2, 4 = neon.

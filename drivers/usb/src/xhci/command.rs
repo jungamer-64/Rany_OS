@@ -15,9 +15,6 @@
 //! - Set TR Dequeue Pointer
 //! - Reset Device
 //! - その他
-
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;

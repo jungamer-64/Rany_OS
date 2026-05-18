@@ -1,8 +1,6 @@
 // Minimal IVRS (AMD-Vi) table parser.
 // Extracts IVHD entries with IOMMU base address, segment, and device scopes
 // for early AMD-Vi bring-up.
-
-#![allow(dead_code)]
 #![allow(clippy::pub_underscore_fields)]
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::missing_errors_doc)]

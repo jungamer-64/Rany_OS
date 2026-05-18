@@ -4,7 +4,6 @@
 // Utility helpers used across kernel modules for safe-ish byte-slice <-> struct conversions.
 // These functions centralize unsafe operations, reduce duplication, and perform boundary
 // and alignment checks where possible.
-#![allow(dead_code)]
 use alloc::alloc::alloc_zeroed;
 use core::mem;
 use core::ptr::NonNull;

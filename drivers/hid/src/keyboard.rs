@@ -4,8 +4,6 @@
 //! Helper types that are independent of kernel internals and can live in the
 //! `hid_driver` crate. These are used by the kernel-side keyboard driver
 //! implementation but don't depend on kernel-only APIs.
-#![allow(dead_code)]
-
 use crate::keymap::Keymap;
 use core::cell::UnsafeCell;
 use core::fmt;
@@ -357,8 +355,6 @@ impl IsrSafeWaker {
 
         false
     }
-
-    #[allow(dead_code)]
     pub fn wake_now(&self) {
         if self.has_waker.load(Ordering::Acquire) {
             let epoch = self.current_epoch.load(Ordering::Acquire);
@@ -374,8 +370,6 @@ impl IsrSafeWaker {
     pub fn is_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire)
     }
-
-    #[allow(dead_code)]
     pub fn is_registered(&self) -> bool {
         self.has_waker.load(Ordering::Acquire)
     }

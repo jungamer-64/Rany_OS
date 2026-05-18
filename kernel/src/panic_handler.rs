@@ -2,8 +2,6 @@
 // src/panic_handler.rs - Enhanced Panic Handler with Domain Isolation
 // 設計書 8.1: スタックアンワインドとリソース回収
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::graphics::bsod::BsodInfo;
 use core::fmt::{self, Write};
 use core::mem::MaybeUninit;

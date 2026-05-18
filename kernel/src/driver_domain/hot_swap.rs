@@ -18,9 +18,6 @@
 //! 3. 旧セルのメモリを安全に解放
 //! 4. DriverCellのメタデータを更新
 //! ```
-
-#![allow(dead_code)]
-
 use alloc::format;
 use alloc::string::String;
 

@@ -5,10 +5,6 @@
 //!
 //! システム時計、高精度タイマー、RTC (Real-Time Clock) の管理。
 //! TSC, HPET, PIT, RTC など複数のタイマーソースをサポート。
-
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 use crate::sync::{IrqPoisonLock, PoisonLock};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use hal::port_io::{IoPort, PortU8};

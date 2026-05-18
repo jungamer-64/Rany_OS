@@ -28,9 +28,6 @@
 //! xa.erase(0);
 //! assert_eq!(xa.load(0), None);
 //! ```
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use core::marker::PhantomData;
 

@@ -11,9 +11,6 @@
 //! - PS/2マウス入力 (標準3バイトパケット)
 //! - マウスイベントキュー
 //! - 割り込みコンテキストでの安全な処理
-
-#![allow(dead_code)]
-
 use alloc::collections::VecDeque;
 use core::fmt;
 use hal::port_io::PortU8;

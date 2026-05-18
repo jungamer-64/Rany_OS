@@ -15,8 +15,6 @@
 //! Kernel-specific wrappers (global instances, interrupt handlers) remain in the kernel.
 
 #![no_std]
-#![allow(dead_code)]
-
 extern crate alloc;
 
 #[cfg(feature = "standalone")]

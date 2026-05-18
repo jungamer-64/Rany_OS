@@ -454,7 +454,6 @@ fn bootstrap_smp_early(context: &KernelBootContext) {
 // Helper used during early boot to report how much of the BSP
 // boot stack remains above the guard page.  This is purely diagnostic and
 // helps catch unchecked growth of the initialization call stack.
-#[allow(dead_code)]
 fn log_stack_free_space(label: &str) {
     let rsp: usize;
     unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) };

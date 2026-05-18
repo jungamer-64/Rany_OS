@@ -6,8 +6,6 @@
 //! - APIC/IOAPIC interrupt routing setup
 //! - Generic PCI driver-domain binding
 //! - Security context binding to domains
-
-#![allow(dead_code)]
 extern crate alloc;
 
 use alloc::string::String;
@@ -19,7 +17,6 @@ pub mod interrupt_routing;
 pub mod security_integration;
 // Re-exports
 mod system_impl;
-#[allow(dead_code)]
 pub use device_manager::{DeviceInfo, DeviceManager};
 pub use interrupt_routing::InterruptRouter;
 pub use security_integration::SecurityIntegration;
@@ -43,7 +40,6 @@ fn register_pci_dma_width(dev: &PciDeviceInfo, bits: u8) {
 
 /// Integration status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum IntegrationStatus {
     /// Not initialized
     Uninitialized,
@@ -65,7 +61,6 @@ pub enum IntegrationStatus {
 
 /// Integration error
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum IntegrationError {
     /// ACPI initialization failed
     AcpiError(String),

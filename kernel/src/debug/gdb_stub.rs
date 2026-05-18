@@ -1,7 +1,6 @@
 //! Minimal kernel GDB remote protocol stub.
 //!
 //! Supported packets: `? g G m M c s Z0 z0`
-#![allow(dead_code)]
 use crate::sync::PoisonLock;
 #[cfg(test)]
 use alloc::collections::VecDeque;

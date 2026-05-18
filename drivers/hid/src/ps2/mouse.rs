@@ -21,10 +21,8 @@ pub struct MouseHandler {
     /// 現在のボタン状態
     buttons: u8,
     /// 現在のX座標
-    #[allow(dead_code)]
     x: i32,
     /// 現在のY座標
-    #[allow(dead_code)]
     y: i32,
 }
 
@@ -104,7 +102,6 @@ impl MouseHandler {
     }
 
     /// 現在のボタン状態を取得
-    #[allow(dead_code)]
     pub fn buttons(&self) -> u8 {
         self.buttons
     }

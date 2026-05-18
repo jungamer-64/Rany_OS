@@ -8,6 +8,4 @@
 //   use crate::mm::reclaim::oom_killer::try_free_memory;
 //   use crate::heap::oom::try_free_memory; // 互換パス
 // ============================================================================
-
-#[allow(unused_imports)]
 pub use crate::heap::oom::*;

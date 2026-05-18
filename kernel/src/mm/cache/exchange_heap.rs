@@ -13,8 +13,6 @@
 //         - Per-CPU cache miss時に隣接CPUからスティール
 //         - グローバルロックへのフォールバック頻度削減
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::sync::{IrqMutex, PoisonLock};
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;

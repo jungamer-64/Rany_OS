@@ -13,9 +13,6 @@
 //! - ロックフリーでコマンド発行
 //! - ファイルシステムをバイパスした直接ブロックアクセスAPI
 //! - ページキャッシュはカーネルヒープ上のArc<Vec<u8>>として実装
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;

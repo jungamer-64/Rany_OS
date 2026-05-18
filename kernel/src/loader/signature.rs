@@ -16,7 +16,6 @@
 //! - Ed25519署名による改竄検出
 //! - 公開鍵ホワイトリストによる信頼チェーン
 //! - 開発モードでも署名構造の検証は実行
-#![allow(dead_code)]
 #![allow(unexpected_cfgs)]
 
 use super::LoadError;

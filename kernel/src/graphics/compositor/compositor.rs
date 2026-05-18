@@ -136,19 +136,16 @@ impl Compositor {
     }
 
     /// ウィンドウを取得
-    #[allow(dead_code)]
     pub fn get_window(&self, id: CompositorWindowId) -> Option<&CompositorWindow> {
         self.windows.get(&id)
     }
 
     /// ウィンドウをミュータブルに取得
-    #[allow(dead_code)]
     pub fn get_window_mut(&mut self, id: CompositorWindowId) -> Option<&mut CompositorWindow> {
         self.windows.get_mut(&id)
     }
 
     /// フォーカスウィンドウを取得
-    #[allow(dead_code)]
     pub fn focused_window(&self) -> Option<CompositorWindowId> {
         self.focused
     }
@@ -202,14 +199,12 @@ impl Compositor {
     }
 
     /// 壁紙を設定
-    #[allow(dead_code)]
     pub fn set_wallpaper(&mut self, wallpaper: Image) {
         self.wallpaper = Some(wallpaper.resize_bilinear(self.screen_width, self.screen_height));
         self.dirty_manager.invalidate_all();
     }
 
     /// デスクトップ色を設定
-    #[allow(dead_code)]
     pub fn set_desktop_color(&mut self, color: Color) {
         self.desktop_color = color;
         self.dirty_manager.invalidate_all();
@@ -511,7 +506,6 @@ impl Compositor {
     }
 
     /// 画面サイズを取得
-    #[allow(dead_code)]
     pub fn screen_size(&self) -> (u32, u32) {
         (self.screen_width, self.screen_height)
     }
@@ -691,7 +685,6 @@ impl Compositor {
 // ============================================================================
 
 #[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
 mod simd_blur {
     //! SIMD最適化されたブラー処理（将来の最適化用）
     //!
@@ -700,7 +693,6 @@ mod simd_blur {
     //! 大幅なパフォーマンス向上が期待できる。
 
     /// SSE2を使用した高速ボックスブラー（将来実装予定）
-    #[allow(unused)]
     pub fn box_blur_optimized(
         _src: &[u8],
         _dst: &mut [u8],

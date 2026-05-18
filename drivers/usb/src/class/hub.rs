@@ -12,9 +12,6 @@
 //! - ポート状態の監視（ステータス変更通知）
 //! - デバイスの接続/切断検出
 //!
-
-#![allow(dead_code)]
-
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;

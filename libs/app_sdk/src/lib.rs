@@ -14,8 +14,6 @@
 //! - SDK functions: `sleep()`, `print()`, `now()`, etc.
 
 #![no_std]
-#![allow(dead_code)]
-
 extern crate alloc;
 
 mod sdk;

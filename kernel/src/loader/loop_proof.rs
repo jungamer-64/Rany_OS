@@ -2,9 +2,6 @@
 // src/loader/loop_proof.rs - Loop Boundary Proof Metadata Validation
 // 設計書 4.4.2: ループ境界静的証明
 // ============================================================================
-
-#![allow(dead_code)]
-
 use crate::loader::elf::{Elf64Header, Elf64SectionHeader};
 use core::str;
 

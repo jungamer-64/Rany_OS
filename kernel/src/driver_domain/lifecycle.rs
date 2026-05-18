@@ -15,9 +15,6 @@
 //! 5. `unload()` - セルをアンロードしDomainを終了
 //!
 //! 障害発生時は `fault::handle_fault()` 経由で自動復旧を試みる。
-
-#![allow(dead_code)]
-
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;

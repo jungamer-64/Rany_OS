@@ -3,9 +3,6 @@
 // ============================================================================
 
 //! IOMMU Register Definitions
-#![allow(dead_code)]
-
-/// DMAR (DMA Remapping) register offsets
 pub mod regs {
     /// Version register
     pub const VER: u64 = 0x00;

@@ -59,9 +59,6 @@
 //! - **自動回復**: 設定可能な再起動ポリシーで障害から自動復旧
 //! - **ホットスワップ**: StateTransfer + Epoch-based Reclamationでゼロダウンタイム更新
 //! - **Safe Rust**: Framework API以外でunsafeを使用しない
-
-#![allow(dead_code)]
-
 pub mod fault;
 pub mod hot_swap;
 pub mod lifecycle;
@@ -80,7 +77,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::DomainId;
 use crate::domain::quota::DomainPriority;
-#[allow(unused_imports)]
 use crate::domain::quota::DomainQuota;
 use crate::driver_registry::DriverHandle;
 use crate::loader::CellId;

@@ -80,10 +80,8 @@ pub mod smbios_flags {
     /// システム情報が取得済み
     pub const SYSTEM_INFO_VALID: u16 = 1 << 3;
     /// プロセッサ情報が取得済み
-    #[allow(dead_code)]
     pub const PROCESSOR_INFO_VALID: u16 = 1 << 4;
     /// メモリ情報が取得済み
-    #[allow(dead_code)]
     pub const MEMORY_INFO_VALID: u16 = 1 << 5;
 }
 

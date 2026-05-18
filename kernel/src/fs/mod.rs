@@ -13,9 +13,6 @@
 //! ## 高速パス
 //! - **高速パス**: NVMeポーリングによる直接ブロックアクセス
 //! - **ローカルFS面**: memfs とカーネルサービスが共有する最小型
-
-#![allow(dead_code)]
-
 pub mod fs_model;
 
 pub mod async_ops;
@@ -24,7 +21,6 @@ pub mod page_cluster_buffer;
 
 pub mod block {
     //! ブロックデバイスI/O境界
-    #[allow(unused_imports)]
     pub use kernel_api::block_io::*;
 }
 
@@ -33,8 +29,6 @@ pub mod memfs;
 pub mod page;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
-
-#[allow(unused_imports)]
 pub use async_memfs::{
     // Async Inode trait and wrapper
     AsyncInode,
@@ -54,7 +48,6 @@ pub use async_memfs::{
     touch_file_async,
     write_file_content_async,
 };
-#[allow(unused_imports)]
 pub use async_ops::{
     // 非同期ファイル操作
     AsyncFile,
@@ -71,21 +64,16 @@ pub use async_ops::{
     SgIoRequest,
     async_io_scheduler,
 };
-#[allow(unused_imports)]
 pub use block::*;
-#[allow(unused_imports)]
 pub use cache::{CacheStats, CachedPage, PageCache, init_page_cache, page_cache};
-#[allow(unused_imports)]
 pub use fs_model::{
     AsyncReadFuture, AsyncWriteFuture, DirEntry, FileAttr, FileHandle, FileMode, FileSystem,
     FileType, FsError, FsResult, FsStats, Inode, InodeNum, MountTable, OpenFlags, PathResolver,
     SeekFrom, mount_table, write_inode_by_number,
 };
-#[allow(unused_imports)]
 pub use memfs::{
     MemoryFs, MemoryInode, copy_file, copy_file_cow, create_symlink, init_shell_fs, list_directory,
     make_directory, move_file, read_file_content, remove_directory, remove_file, resolve_path,
     shell_fs, stat_file, touch_file, write_file_content,
 };
-#[allow(unused_imports)]
 pub use page::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE, Page, PagedContent, new_zero_page};

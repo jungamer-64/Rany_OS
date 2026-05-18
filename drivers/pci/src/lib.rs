@@ -12,9 +12,6 @@
 //! - `PCIe` extended capabilities (`SR-IOV`, AER, hotplug)
 
 #![no_std]
-#![allow(dead_code)]
-#![allow(unused_variables)]
-// PCI driver crate-level allows for hardware-specific patterns
 #![allow(clippy::unreadable_literal)] // PCI class codes and addresses are standard constants
 #![allow(clippy::must_use_candidate)] // PCI accessor methods
 #![allow(clippy::missing_const_for_fn)] // Many functions use sync primitives or allocation

@@ -30,8 +30,6 @@
 // ロックフリー化を行わない場合は、next/prev/head/tail を plain u64 に変更し、
 // refcount/mapcount のみ AtomicU64 を維持することを推奨。
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::sync::IrqPoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

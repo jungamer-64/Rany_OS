@@ -12,9 +12,6 @@
 //! - I/O Queue: データ転送コマンド専用
 //! - 型パラメータでキュータイプを表現
 //! - Phantom Type による型安全性
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;

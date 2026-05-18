@@ -29,7 +29,6 @@ mod tests;
 // Re-exports for external callers (driver.rs, backend.rs, etc.)
 #[cfg(all(test, feature = "qemu-test-export"))]
 pub(crate) use self::domain::map_ivmd_ranges;
-#[allow(unused_imports)]
 pub use self::fault::{drain_deferred_faults, fault_handler_task, spawn_fault_handler_task};
 pub use self::init::init_iommu_from_ivrs;
 

@@ -13,9 +13,6 @@
 //! - ポーリングモード（割り込み不使用）
 //! - 非同期コマンド発行
 //! - CMB（Controller Memory Buffer）サポート
-
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use hal::mmio;
@@ -448,7 +445,6 @@ impl NvmePollingDriver {
     }
 
     /// Identify Controllerコマンドを発行
-    #[allow(dead_code)]
     fn identify_controller(&mut self) -> Result<(), &'static str> {
         let admin_queue = self
             .admin_queue
@@ -529,7 +525,6 @@ impl NvmePollingDriver {
     }
 
     /// Set Features - Number of Queuesを設定
-    #[allow(dead_code)]
     fn set_num_queues(&mut self, num_sq: u16, num_cq: u16) -> Result<(u16, u16), &'static str> {
         let admin_queue = self
             .admin_queue

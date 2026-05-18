@@ -20,7 +20,6 @@ use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 use crate::sync::PoisonLock;
 
 #[cfg(not(test))]
-#[allow(unused_imports)]
 use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
 
 #[cfg(not(test))]

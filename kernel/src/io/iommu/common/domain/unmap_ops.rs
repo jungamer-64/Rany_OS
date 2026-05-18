@@ -44,7 +44,6 @@ impl IommuDomain {
     }
 
     /// Unmap a single entry at `iova` and return the unmapped size.
-    #[allow(dead_code)]
     pub(super) fn unmap_entry(&self, iova: u64) -> Result<u64, IommuError> {
         const SIZE_4KB: u64 = 4096;
 
@@ -428,7 +427,6 @@ impl IommuDomain {
     }
 
     /// Legacy recursive deallocation - kept for reference but not used.
-    #[allow(dead_code)]
     unsafe fn deallocate_page_tables_recursive(&mut self) {
         unsafe {
             // Delegate to the iterative version

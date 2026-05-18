@@ -1,11 +1,6 @@
 //! 環境変数 (Environment Variables)
 //!
 //! プロセス環境の管理
-
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-
 use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;

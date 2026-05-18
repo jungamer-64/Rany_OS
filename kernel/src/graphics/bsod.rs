@@ -14,9 +14,6 @@
 //! - CPU register dump
 //! - Lock-free and Allocation-free design for panic safety
 //!
-
-#![allow(dead_code)]
-
 use core::fmt::Write;
 
 use super::{BitmapFont, Color, Font, Framebuffer, Rect, with_framebuffer};

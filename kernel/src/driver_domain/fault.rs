@@ -24,9 +24,6 @@
 //!     ├─ OnPanic → リトライ数チェック → 再起動
 //!     └─ Always → リトライ数チェック → 再起動
 //! ```
-
-#![allow(dead_code)]
-
 use alloc::format;
 use alloc::string::String;
 

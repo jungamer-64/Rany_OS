@@ -39,9 +39,6 @@
 //!     }
 //! }
 //! ```
-
-#![allow(dead_code)]
-
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 use core::ptr;

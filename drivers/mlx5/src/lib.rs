@@ -22,7 +22,6 @@
 //! - Async-First: 将来的にFutureベースのI/Oに移行可能
 
 #![no_std]
-#![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)] // HWレジスタ操作: Rust 2024移行は段階的に実施
 #![allow(clippy::unreadable_literal)] // PCIレジスタ定数
 #![allow(clippy::cast_possible_truncation)] // 64-bit kernel, u64->usize safe

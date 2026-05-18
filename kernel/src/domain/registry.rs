@@ -1,7 +1,4 @@
 //! Domain registry and lifecycle internals.
-
-#![allow(dead_code)]
-
 use super::{
     CPU_QUOTA_SUSPEND_STREAK, CPU_QUOTA_SUSPEND_WINDOW_NS, CpuQuotaAction, DomainId,
     DomainSecurity, DomainSnapshot, DomainState, RequestedCap,

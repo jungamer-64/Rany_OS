@@ -37,7 +37,6 @@ pub struct CompositorWindow {
     /// コンテンツバッファ
     pub(crate) content: Image,
     /// 合成済みバッファ（装飾含む）
-    #[allow(dead_code)]
     composed: Image,
     /// ダーティフラグ
     pub(crate) dirty: bool,
@@ -117,13 +116,9 @@ impl CompositorWindow {
     pub fn id(&self) -> CompositorWindowId {
         self.id
     }
-
-    #[allow(dead_code)]
     pub fn title(&self) -> &str {
         &self.title
     }
-
-    #[allow(dead_code)]
     pub fn set_title(&mut self, title: &str) {
         self.title = String::from(title);
         self.decoration_dirty = true;
@@ -132,8 +127,6 @@ impl CompositorWindow {
     pub fn rect(&self) -> Rect {
         self.rect
     }
-
-    #[allow(dead_code)]
     pub fn client_rect(&self) -> Rect {
         self.client_rect
     }
@@ -141,8 +134,6 @@ impl CompositorWindow {
     pub fn style(&self) -> &CompositorWindowStyle {
         &self.style
     }
-
-    #[allow(dead_code)]
     pub fn state(&self) -> CompositorWindowState {
         self.state
     }
@@ -150,8 +141,6 @@ impl CompositorWindow {
     pub fn z_order(&self) -> ZOrder {
         self.z_order
     }
-
-    #[allow(dead_code)]
     pub fn set_z_order(&mut self, z_order: ZOrder) {
         self.z_order = z_order;
     }
@@ -159,24 +148,16 @@ impl CompositorWindow {
     pub fn is_visible(&self) -> bool {
         self.visible && self.state != CompositorWindowState::Hidden
     }
-
-    #[allow(dead_code)]
     pub fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
     }
-
-    #[allow(dead_code)]
     pub fn content(&self) -> &Image {
         &self.content
     }
-
-    #[allow(dead_code)]
     pub fn content_mut(&mut self) -> &mut Image {
         self.dirty = true;
         &mut self.content
     }
-
-    #[allow(dead_code)]
     pub fn is_dirty(&self) -> bool {
         self.dirty || self.decoration_dirty
     }
@@ -185,8 +166,6 @@ impl CompositorWindow {
         self.dirty = false;
         self.decoration_dirty = false;
     }
-
-    #[allow(dead_code)]
     pub fn invalidate(&mut self) {
         self.dirty = true;
     }
@@ -200,7 +179,6 @@ impl CompositorWindow {
     }
 
     /// ウィンドウをリサイズ
-    #[allow(dead_code)]
     pub fn resize(&mut self, width: u32, height: u32) {
         let width = width.clamp(self.min_size.0, self.max_size.0);
         let height = height.clamp(self.min_size.1, self.max_size.1);
@@ -258,7 +236,6 @@ impl CompositorWindow {
     }
 
     /// 最大化
-    #[allow(dead_code)]
     pub fn maximize(&mut self, screen_width: u32, screen_height: u32) {
         if self.state == CompositorWindowState::Maximized {
             return;
@@ -281,7 +258,6 @@ impl CompositorWindow {
     }
 
     /// 通常サイズに戻す
-    #[allow(dead_code)]
     pub fn restore(&mut self) {
         if let Some(rect) = self.restore_rect.take() {
             self.prev_rect = self.rect;
@@ -301,7 +277,6 @@ impl CompositorWindow {
     }
 
     /// スクリーン座標をクライアント座標に変換
-    #[allow(dead_code)]
     pub fn screen_to_client(&self, x: i32, y: i32) -> (i32, i32) {
         (x - self.client_rect.x, y - self.client_rect.y)
     }

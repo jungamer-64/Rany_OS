@@ -7,7 +7,6 @@
 // - コンテキストスイッチ時に自動的に切り替わる（または手動設定）
 // - cpu_id引数が不要になり、APIが簡素化
 // ============================================================================
-#![allow(dead_code)]
 use core::sync::atomic::AtomicU64;
 
 // IOVA_MM_MIGRATION_PLAN Phase 1.1: 汎用Magazineを使用
@@ -46,8 +45,6 @@ pub struct PerCpuDomainCache {
 impl PerCpuDomainCache {
     /// Per-CPU domain cache size
     pub const CACHE_SIZE: usize = 64;
-
-    #[allow(dead_code)]
     pub const fn new() -> Self {
         Self {
             entries: [DomainCacheEntry {

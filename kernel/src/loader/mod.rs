@@ -4,8 +4,6 @@
 // 設計書 3.3: コンパイラ署名とロード時検証
 // 設計書 3.4: ABIの安定性とType ID Check
 // ============================================================================
-#![allow(dead_code)]
-
 #[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod boot_artifacts; // Boot artifact handoff からのセルロード
 pub mod driver_pack;
@@ -17,18 +15,14 @@ pub mod staged_pci;
 pub mod type_id;
 
 mod cell_lookup;
-#[allow(unused_imports)]
 pub(crate) use cell_lookup::*;
-#[allow(unused_imports)]
 pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
-#[allow(unused_imports)]
 pub use live_update::{
     CompletedUpdateOutcome, LiveUpdateError, LiveUpdateManager, LiveUpdateState,
     PendingUpdateStatus, RequestTracker, UpdateTransition, current_epoch, enter_critical_section,
     enter_quiescent_state, leave_critical_section, live_update_manager, poll_pending_updates,
     wait_for_quiescent_state,
 };
-#[allow(unused_imports)]
 pub use signature::{
     CellSignature, KeyId, KeyLevel, RevocationSet, SignatureVerifier, add_trusted_key_with_level,
     revoke_cell_hash, revoke_key, verify_cell,

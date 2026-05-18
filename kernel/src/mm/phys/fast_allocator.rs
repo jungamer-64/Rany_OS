@@ -35,9 +35,6 @@
 //! | allocate_4k | Bitmap fallback | O(log N), few atomics |
 //! | free_4k (local) | Magazine | O(1), 1 atomic |
 //! | free_4k (remote) | RemoteFreeRing | O(1), lock-free push |
-
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use alloc::boxed::Box;

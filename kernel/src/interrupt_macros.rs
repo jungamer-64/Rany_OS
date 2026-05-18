@@ -6,9 +6,6 @@
 // NOTE: このファイルは `interrupts/` モジュールに移動するのが意味的には適切だが、
 // `#[macro_use]` による lib.rs でのクレートルート宣言が必要なため、ここに留置する。
 // 主な使用箇所: interrupts/exceptions.rs, interrupts/mod.rs
-
-#![allow(unused_macros)]
-
 #[doc(hidden)]
 macro_rules! define_interrupt {
     // Handler with arguments and optional return type

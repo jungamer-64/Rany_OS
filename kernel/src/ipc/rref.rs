@@ -4,8 +4,6 @@
 // 設計書 5.3: 線形型（Linear Types）と交換ヒープ（Exchange Heap）
 // 設計書 8.4: PoisonLockによるパニック時の毒入れ対応
 // ============================================================================
-#![allow(dead_code)]
-
 use core::alloc::Layout;
 use core::mem::{self, MaybeUninit};
 use core::ops::{Deref, DerefMut};

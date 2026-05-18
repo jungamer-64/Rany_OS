@@ -1,9 +1,6 @@
 // ============================================================================
 // kernel/src/driver_domain/tests.rs - DriverDomain QEMU test exports
 // ============================================================================
-
-#![allow(dead_code)]
-
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;

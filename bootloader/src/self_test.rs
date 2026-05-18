@@ -460,7 +460,6 @@ fn log_test_results(results: &SelfTestResults) {
 /// セルフテスト情報（boot_protoに渡す）
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct SelfTestInfo {
     /// テスト全体結果（0=Pass, 1=Warning, 2=Fail, 3=Skip）
     pub overall_result: u8,

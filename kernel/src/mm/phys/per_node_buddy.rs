@@ -17,8 +17,6 @@
 // 2. Per-Node Buddy Allocator (L2) - ノードローカルロック
 // 3. Remote Node Fallback (L3) - 他ノードからの借用
 // ============================================================================
-#![allow(dead_code)]
-
 use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
 use crate::sync::poison_lock::IrqPoisonLock;
 use alloc::vec::Vec;

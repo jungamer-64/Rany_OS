@@ -12,10 +12,6 @@
 //! - `tables` - ACPI table structure definitions (RSDP, SDT, MADT, MCFG, FADT)
 //! - `info` - Parsed information structures (AcpiInfo, LocalApicInfo, etc.)
 //! - `parser` - ACPI table parser and global API
-
-#![allow(dead_code)]
-
-// Re-export from acpi_driver crate
 pub use acpi_driver::info;
 pub use acpi_driver::parser;
 pub use acpi_driver::tables;

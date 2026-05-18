@@ -23,10 +23,6 @@
 //! - バッファオーバーフロー排除（Rust境界チェック）
 //! - Type Confusion防止（強い型システム）
 //! - サイドチャネル攻撃緩和
-
-#![allow(dead_code)]
-
-// Submodules
 pub mod audit;
 pub mod capability;
 pub mod dma; // 新: DMA セキュリティ (設計書 9.2.3)

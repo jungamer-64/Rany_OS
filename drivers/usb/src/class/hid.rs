@@ -14,9 +14,6 @@
 //! ## 参照仕様
 //! - USB HID Specification 1.11
 //! - HID Usage Tables 1.12
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;

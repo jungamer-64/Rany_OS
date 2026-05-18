@@ -20,9 +20,6 @@
 //! - `async_io`: 非同期I/Oサポート
 //! - `global`: グローバルインスタンス
 //! - `scheduler`: IoScheduler統合
-
-#![allow(dead_code)]
-
 pub mod commands;
 pub mod controller;
 pub mod defs;

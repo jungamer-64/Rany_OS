@@ -9,9 +9,6 @@
 //! - バルク転送（真の非同期）
 //! - 割り込み転送（真の非同期）
 //! - アイソクロナス転送（将来対応）
-
-#![allow(dead_code)]
-
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;

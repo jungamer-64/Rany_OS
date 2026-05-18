@@ -5,9 +5,6 @@
 //! フレームバッファ描画実装
 //!
 //! ピクセル描画、図形描画、テキスト描画などのフレームバッファ操作
-
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use super::{BitmapFont, Color, FramebufferInfo, PixelFormat, Point, Rect};

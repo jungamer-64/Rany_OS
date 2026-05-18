@@ -5,9 +5,6 @@
 //! グローバルグラフィックス状態管理
 //!
 //! フレームバッファとコンソールのグローバルインスタンス管理
-
-#![allow(dead_code)]
-
 use crate::sync::PoisonLock;
 
 use super::console::TextConsole;

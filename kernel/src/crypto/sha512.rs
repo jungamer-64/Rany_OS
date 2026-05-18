@@ -14,7 +14,6 @@
 //!
 //! ## 実装
 //! 監査済みの `sha2` クレートを使用し、no_std環境で動作します。
-#![allow(dead_code)]
 use sha2::{Digest, Sha512 as Sha512Impl};
 
 /// SHA-512ハッシュを計算

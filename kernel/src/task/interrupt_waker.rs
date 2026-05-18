@@ -10,8 +10,6 @@
 // 1. ISR内ではイベントキューにイベントIDをpushするのみ
 // 2. Executorのメインループでキューをチェックしwake()を呼び出す
 // ============================================================================
-#![allow(dead_code)]
-
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;

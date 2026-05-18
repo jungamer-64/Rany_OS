@@ -1,8 +1,6 @@
 //! Security Integration for ExoRust Kernel
 //!
 //! Binds security contexts to devices and domains.
-#![allow(dead_code)]
-
 extern crate alloc;
 
 use super::device_manager::{DeviceInfo, DeviceManager, DeviceType};
