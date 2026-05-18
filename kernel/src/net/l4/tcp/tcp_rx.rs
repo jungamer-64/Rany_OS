@@ -1463,8 +1463,10 @@ fn process_tcp_new_connection(
         tcp_table_in(runtime).generate_isn(local, remote)
     };
 
-    let mut tcb = TcpControlBlock::new(socket.socket_id(), local, remote);
-    tcb.prepare_passive_open(
+    let tcb = TcpControlBlock::passive_open(
+        socket.socket_id(),
+        local,
+        remote,
         isn,
         seq_num,
         nodelay,

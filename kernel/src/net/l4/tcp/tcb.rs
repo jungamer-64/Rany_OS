@@ -6,7 +6,6 @@
 //! TcpConnectionState, TcpControlBlock, TcbTable, tcp_flags
 
 use crate::sync::PoisonRwLock;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
@@ -40,10 +39,38 @@ pub struct TcpControlBlock {
     remote: EndpointAddr,
     scope: InterfaceScope,
     ingress_if_id: Option<NetIfId>,
-    state: TcpConnectionState,
+    state: TcpTcbState,
+    pending_error: Option<EndpointError>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TcpSequenceSpace {
     snd_nxt: u32,
     snd_una: u32,
     rcv_nxt: u32,
+}
+
+#[derive(Debug)]
+struct TcpHandshakeData {
+    seq: TcpSequenceSpace,
+    algorithm: CongestionAlgorithm,
+    snd_wnd: u16,
+    max_snd_wnd: u32,
+    rcv_wnd: u16,
+    last_send_tick: u64,
+    window_scale: WindowScaleOption,
+    mss: u32,
+    sack_enabled: bool,
+    ts_enabled: bool,
+    ts_val: u32,
+    ts_ecr: u32,
+    nagle_enabled: bool,
+    priority: u8,
+}
+
+#[derive(Debug)]
+struct TcpConnectionData {
+    seq: TcpSequenceSpace,
     snd_wnd: u16,
     max_snd_wnd: u32,
     rcv_wnd: u16,
@@ -65,7 +92,107 @@ pub struct TcpControlBlock {
     priority: u8,
     delayed_ack_pending: u8,
     delayed_ack_timer: u64,
-    pending_error: Option<EndpointError>,
+}
+
+#[derive(Debug)]
+enum TcpTcbState {
+    Closed,
+    Listen,
+    SynSent(TcpHandshakeData),
+    SynReceived(TcpHandshakeData),
+    Established(TcpConnectionData),
+    FinWait1(TcpConnectionData),
+    FinWait2(TcpConnectionData),
+    CloseWait(TcpConnectionData),
+    Closing(TcpConnectionData),
+    LastAck(TcpConnectionData),
+    TimeWait(TcpConnectionData),
+}
+
+impl TcpTcbState {
+    fn kind(&self) -> TcpConnectionState {
+        match self {
+            Self::Closed => TcpConnectionState::Closed,
+            Self::Listen => TcpConnectionState::Listen,
+            Self::SynSent(_) => TcpConnectionState::SynSent,
+            Self::SynReceived(_) => TcpConnectionState::SynReceived,
+            Self::Established(_) => TcpConnectionState::Established,
+            Self::FinWait1(_) => TcpConnectionState::FinWait1,
+            Self::FinWait2(_) => TcpConnectionState::FinWait2,
+            Self::CloseWait(_) => TcpConnectionState::CloseWait,
+            Self::Closing(_) => TcpConnectionState::Closing,
+            Self::LastAck(_) => TcpConnectionState::LastAck,
+            Self::TimeWait(_) => TcpConnectionState::TimeWait,
+        }
+    }
+
+    fn sequence(&self) -> Option<TcpSequenceSpace> {
+        match self {
+            Self::Closed | Self::Listen => None,
+            Self::SynSent(data) | Self::SynReceived(data) => Some(data.seq),
+            Self::Established(data)
+            | Self::FinWait1(data)
+            | Self::FinWait2(data)
+            | Self::CloseWait(data)
+            | Self::Closing(data)
+            | Self::LastAck(data)
+            | Self::TimeWait(data) => Some(data.seq),
+        }
+    }
+
+    fn sequence_mut(&mut self) -> Option<&mut TcpSequenceSpace> {
+        match self {
+            Self::Closed | Self::Listen => None,
+            Self::SynSent(data) | Self::SynReceived(data) => Some(&mut data.seq),
+            Self::Established(data)
+            | Self::FinWait1(data)
+            | Self::FinWait2(data)
+            | Self::CloseWait(data)
+            | Self::Closing(data)
+            | Self::LastAck(data)
+            | Self::TimeWait(data) => Some(&mut data.seq),
+        }
+    }
+
+    fn connection_data(&self) -> Option<&TcpConnectionData> {
+        match self {
+            Self::Established(data)
+            | Self::FinWait1(data)
+            | Self::FinWait2(data)
+            | Self::CloseWait(data)
+            | Self::Closing(data)
+            | Self::LastAck(data)
+            | Self::TimeWait(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    fn connection_data_mut(&mut self) -> Option<&mut TcpConnectionData> {
+        match self {
+            Self::Established(data)
+            | Self::FinWait1(data)
+            | Self::FinWait2(data)
+            | Self::CloseWait(data)
+            | Self::Closing(data)
+            | Self::LastAck(data)
+            | Self::TimeWait(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    fn handshake_data(&self) -> Option<&TcpHandshakeData> {
+        match self {
+            Self::SynSent(data) | Self::SynReceived(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    fn handshake_data_mut(&mut self) -> Option<&mut TcpHandshakeData> {
+        match self {
+            Self::SynSent(data) | Self::SynReceived(data) => Some(data),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,38 +256,252 @@ pub(in crate::net::l4::tcp) struct DelayedAckDue {
     pub timestamp_echo: u32,
 }
 
+impl TcpHandshakeData {
+    fn new(isn: u32, algorithm: CongestionAlgorithm, nodelay: bool, priority: u8) -> Self {
+        let mut data = Self {
+            seq: TcpSequenceSpace {
+                snd_nxt: isn,
+                snd_una: isn,
+                rcv_nxt: 0,
+            },
+            algorithm,
+            snd_wnd: 65535,
+            max_snd_wnd: 65535,
+            rcv_wnd: 65535,
+            last_send_tick: 0,
+            window_scale: WindowScaleOption::default_enabled(),
+            mss: 536,
+            sack_enabled: false,
+            ts_enabled: false,
+            ts_val: 0,
+            ts_ecr: 0,
+            nagle_enabled: !nodelay,
+            priority: priority & 0x3F,
+        };
+        if matches!(
+            algorithm,
+            CongestionAlgorithm::Cubic | CongestionAlgorithm::Bbr
+        ) {
+            data.mss = 536;
+        }
+        data
+    }
+
+    fn apply_options(&mut self, options: TcpHandshakeOptions) {
+        if let Some(peer_ts_val) = options.peer_ts_val {
+            self.ts_enabled = true;
+            self.ts_ecr = peer_ts_val;
+            if let Some(local_ts_val) = options.local_ts_val {
+                self.ts_val = local_ts_val;
+            }
+        }
+        if options.sack_permitted {
+            self.sack_enabled = true;
+        }
+        if let Some(mss) = options.peer_mss {
+            self.mss = mss as u32;
+        }
+        if let Some(ws) = options.peer_window_scale {
+            self.window_scale.enabled = true;
+            self.window_scale.set_snd_scale(ws);
+        } else {
+            self.window_scale.enabled = false;
+        }
+    }
+
+    fn into_connection(self) -> TcpConnectionData {
+        let mut congestion = CongestionControllerVariant::from_algorithm(self.algorithm);
+        congestion.update_mss(self.mss);
+        TcpConnectionData {
+            seq: self.seq,
+            snd_wnd: self.snd_wnd,
+            max_snd_wnd: self.max_snd_wnd,
+            rcv_wnd: self.rcv_wnd,
+            retransmit_count: 0,
+            last_send_tick: self.last_send_tick,
+            congestion,
+            window_scale: self.window_scale,
+            flow_control: FlowController::new(),
+            mss: self.mss,
+            snd_up: 0,
+            snd_urg: false,
+            rcv_up: 0,
+            rcv_urg: false,
+            sack_enabled: self.sack_enabled,
+            ts_enabled: self.ts_enabled,
+            ts_val: self.ts_val,
+            ts_ecr: self.ts_ecr,
+            nagle_enabled: self.nagle_enabled,
+            priority: self.priority,
+            delayed_ack_pending: 0,
+            delayed_ack_timer: 0,
+        }
+    }
+}
+
+impl TcpConnectionData {
+    fn new(isn: u32, algorithm: CongestionAlgorithm, nodelay: bool, priority: u8) -> Self {
+        Self {
+            seq: TcpSequenceSpace {
+                snd_nxt: isn,
+                snd_una: isn,
+                rcv_nxt: 0,
+            },
+            snd_wnd: 65535,
+            max_snd_wnd: 65535,
+            rcv_wnd: 65535,
+            retransmit_count: 0,
+            last_send_tick: 0,
+            congestion: CongestionControllerVariant::from_algorithm(algorithm),
+            window_scale: WindowScaleOption::default_enabled(),
+            flow_control: FlowController::new(),
+            mss: 536,
+            snd_up: 0,
+            snd_urg: false,
+            rcv_up: 0,
+            rcv_urg: false,
+            sack_enabled: false,
+            ts_enabled: false,
+            ts_val: 0,
+            ts_ecr: 0,
+            nagle_enabled: !nodelay,
+            priority: priority & 0x3F,
+            delayed_ack_pending: 0,
+            delayed_ack_timer: 0,
+        }
+    }
+
+    fn set_mss(&mut self, mss: u32) {
+        self.mss = mss;
+        self.congestion.update_mss(mss);
+    }
+
+    fn effective_send_window(&self) -> u32 {
+        let scaled_rwnd = self.window_scale.scale_snd_window(self.snd_wnd);
+        self.congestion.available_window(scaled_rwnd)
+    }
+
+    fn effective_recv_window(&self) -> u32 {
+        self.flow_control.advertised_window()
+    }
+
+    fn advertised_recv_window(&self) -> u16 {
+        self.window_scale
+            .advertised_window(self.flow_control.advertised_window())
+    }
+}
+
 impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
     fn from(value: &TcpControlBlock) -> Self {
+        let state = value.state.kind();
+        let seq = value.state.sequence().unwrap_or(TcpSequenceSpace {
+            snd_nxt: 0,
+            snd_una: 0,
+            rcv_nxt: 0,
+        });
+        let (
+            snd_wnd,
+            max_snd_wnd,
+            rcv_wnd,
+            scaled_snd_wnd,
+            effective_send_window,
+            advertised_recv_window,
+            effective_recv_window,
+            mss,
+            snd_up,
+            snd_urg,
+            rcv_up,
+            rcv_urg,
+            sack_enabled,
+            ts_enabled,
+            ts_val,
+            ts_ecr,
+            nagle_enabled,
+            priority,
+            delayed_ack_pending,
+            delayed_ack_timer,
+        ) = match (value.state.handshake_data(), value.state.connection_data()) {
+            (Some(data), _) => {
+                let scaled = data.window_scale.scale_snd_window(data.snd_wnd);
+                (
+                    data.snd_wnd,
+                    data.max_snd_wnd,
+                    data.rcv_wnd,
+                    scaled,
+                    scaled,
+                    data.rcv_wnd,
+                    data.rcv_wnd as u32,
+                    data.mss,
+                    0,
+                    false,
+                    0,
+                    false,
+                    data.sack_enabled,
+                    data.ts_enabled,
+                    data.ts_val,
+                    data.ts_ecr,
+                    data.nagle_enabled,
+                    data.priority,
+                    0,
+                    0,
+                )
+            }
+            (_, Some(data)) => (
+                data.snd_wnd,
+                data.max_snd_wnd,
+                data.rcv_wnd,
+                data.window_scale.scale_snd_window(data.snd_wnd),
+                data.effective_send_window(),
+                data.advertised_recv_window(),
+                data.effective_recv_window(),
+                data.mss,
+                data.snd_up,
+                data.snd_urg,
+                data.rcv_up,
+                data.rcv_urg,
+                data.sack_enabled,
+                data.ts_enabled,
+                data.ts_val,
+                data.ts_ecr,
+                data.nagle_enabled,
+                data.priority,
+                data.delayed_ack_pending,
+                data.delayed_ack_timer,
+            ),
+            _ => (
+                0, 0, 0, 0, 0, 0, 0, 536, 0, false, 0, false, false, false, 0, 0, true, 0, 0, 0,
+            ),
+        };
         Self {
             socket_id: value.socket_id,
             local: value.local,
             remote: value.remote,
             scope: value.scope,
             ingress_if_id: value.ingress_if_id,
-            state: value.state,
-            snd_nxt: value.snd_nxt,
-            snd_una: value.snd_una,
-            rcv_nxt: value.rcv_nxt,
-            snd_wnd: value.snd_wnd,
-            max_snd_wnd: value.max_snd_wnd,
-            rcv_wnd: value.rcv_wnd,
-            scaled_snd_wnd: value.window_scale.scale_snd_window(value.snd_wnd),
-            effective_send_window: value.effective_send_window(),
-            advertised_recv_window: value.advertised_recv_window(),
-            effective_recv_window: value.effective_recv_window(),
-            mss: value.mss,
-            snd_up: value.snd_up,
-            snd_urg: value.snd_urg,
-            rcv_up: value.rcv_up,
-            rcv_urg: value.rcv_urg,
-            sack_enabled: value.sack_enabled,
-            ts_enabled: value.ts_enabled,
-            ts_val: value.ts_val,
-            ts_ecr: value.ts_ecr,
-            nagle_enabled: value.nagle_enabled,
-            priority: value.priority,
-            delayed_ack_pending: value.delayed_ack_pending,
-            delayed_ack_timer: value.delayed_ack_timer,
+            state,
+            snd_nxt: seq.snd_nxt,
+            snd_una: seq.snd_una,
+            rcv_nxt: seq.rcv_nxt,
+            snd_wnd,
+            max_snd_wnd,
+            rcv_wnd,
+            scaled_snd_wnd,
+            effective_send_window,
+            advertised_recv_window,
+            effective_recv_window,
+            mss,
+            snd_up,
+            snd_urg,
+            rcv_up,
+            rcv_urg,
+            sack_enabled,
+            ts_enabled,
+            ts_val,
+            ts_ecr,
+            nagle_enabled,
+            priority,
+            delayed_ack_pending,
+            delayed_ack_timer,
         }
     }
 }
@@ -207,70 +548,67 @@ impl TcpControlBlockSnapshot {
 }
 
 impl TcpControlBlock {
-    pub fn new(socket_id: SocketId, local: EndpointAddr, remote: EndpointAddr) -> Self {
-        Self::with_algorithm(socket_id, local, remote, CongestionAlgorithm::NewReno)
-    }
-
-    pub fn with_algorithm(
-        socket_id: SocketId,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        algorithm: CongestionAlgorithm,
-    ) -> Self {
+    fn closed(socket_id: SocketId, local: EndpointAddr, remote: EndpointAddr) -> Self {
         Self {
             socket_id,
             local,
             remote,
             scope: InterfaceScope::Any,
             ingress_if_id: None,
-            state: TcpConnectionState::Closed,
-            snd_nxt: 0,
-            snd_una: 0,
-            rcv_nxt: 0,
-            snd_wnd: 65535,
-            max_snd_wnd: 65535,
-            rcv_wnd: 65535,
-            retransmit_count: 0,
-            last_send_tick: 0,
-            congestion: CongestionControllerVariant::from_algorithm(algorithm),
-            window_scale: WindowScaleOption::default_enabled(),
-            flow_control: FlowController::new(),
-            mss: 536,
-            snd_up: 0,
-            snd_urg: false,
-            rcv_up: 0,
-            rcv_urg: false,
-            sack_enabled: false,
-            ts_enabled: false,
-            ts_val: 0,
-            ts_ecr: 0,
-            nagle_enabled: true,
-            priority: 0,
-            delayed_ack_pending: 0,
-            delayed_ack_timer: 0,
+            state: TcpTcbState::Closed,
             pending_error: None,
         }
     }
 
-    pub fn state(&self) -> TcpConnectionState {
-        self.state
+    pub(crate) fn start_connect(
+        socket_id: SocketId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        isn: u32,
+        algorithm: Option<CongestionAlgorithm>,
+        nodelay: bool,
+        priority: u8,
+        scope: InterfaceScope,
+        ingress_if_id: Option<NetIfId>,
+    ) -> Self {
+        let algorithm = algorithm.unwrap_or(CongestionAlgorithm::NewReno);
+        let mut tcb = Self::closed(socket_id, local, remote);
+        tcb.scope = scope;
+        tcb.ingress_if_id = ingress_if_id;
+        tcb.state = TcpTcbState::SynSent(TcpHandshakeData::new(isn, algorithm, nodelay, priority));
+        tcb
     }
 
-    pub fn set_scope(&mut self, scope: InterfaceScope, ingress_if_id: Option<NetIfId>) {
-        self.scope = scope;
-        self.ingress_if_id = ingress_if_id;
+    pub(crate) fn listen(socket_id: SocketId, local: EndpointAddr) -> Self {
+        let mut tcb = Self::closed(socket_id, local, EndpointAddr::new([0, 0, 0, 0], 0));
+        tcb.state = TcpTcbState::Listen;
+        tcb
+    }
+
+    pub fn state(&self) -> TcpConnectionState {
+        self.state.kind()
+    }
+
+    fn is_state(&self, state: TcpConnectionState) -> bool {
+        self.state.kind() == state
+    }
+
+    fn is_syn_received(&self) -> bool {
+        self.is_state(TcpConnectionState::SynReceived)
+    }
+
+    fn last_send_tick(&self) -> u64 {
+        if let Some(data) = self.state.connection_data() {
+            data.last_send_tick
+        } else if let Some(data) = self.state.handshake_data() {
+            data.last_send_tick
+        } else {
+            0
+        }
     }
 
     pub(in crate::net::l4::tcp) fn route_binding(&self) -> (InterfaceScope, Option<NetIfId>) {
         (self.scope, self.ingress_if_id)
-    }
-
-    pub fn enter_syn_sent(&mut self) {
-        self.state = TcpConnectionState::SynSent;
-    }
-
-    pub fn enter_listen(&mut self) {
-        self.state = TcpConnectionState::Listen;
     }
 
     pub(in crate::net::l4::tcp) fn established_from_syncookie(
@@ -281,38 +619,50 @@ impl TcpControlBlock {
         seq_num: u32,
         mss: u32,
     ) -> Self {
-        let mut tcb = Self::new(socket_id, local, remote);
-        tcb.snd_una = ack_num.wrapping_sub(1);
-        tcb.snd_nxt = ack_num;
-        tcb.rcv_nxt = seq_num;
-        tcb.state = TcpConnectionState::Established;
-        tcb.set_mss(mss);
+        let mut data = TcpConnectionData::new(ack_num, CongestionAlgorithm::NewReno, false, 0);
+        data.seq.snd_una = ack_num.wrapping_sub(1);
+        data.seq.snd_nxt = ack_num;
+        data.seq.rcv_nxt = seq_num;
+        data.set_mss(mss);
+        let mut tcb = Self::closed(socket_id, local, remote);
+        tcb.state = TcpTcbState::Established(data);
         tcb
     }
 
-    pub(in crate::net::l4::tcp) fn prepare_passive_open(
-        &mut self,
+    pub(in crate::net::l4::tcp) fn passive_open(
+        socket_id: SocketId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
         isn: u32,
         seq_num: u32,
         nodelay: bool,
         priority: u8,
         options: TcpHandshakeOptions,
-    ) {
-        self.initialize_seq(isn);
-        self.set_nodelay(nodelay);
-        self.set_priority(priority);
-        self.rcv_nxt = seq_num.wrapping_add(1);
-        self.state = TcpConnectionState::SynReceived;
-        self.apply_handshake_options(options);
-        self.snd_nxt = self.snd_nxt.wrapping_add(1);
+    ) -> Self {
+        let mut handshake =
+            TcpHandshakeData::new(isn, CongestionAlgorithm::NewReno, nodelay, priority);
+        handshake.seq.rcv_nxt = seq_num.wrapping_add(1);
+        handshake.apply_options(options);
+        handshake.seq.snd_nxt = handshake.seq.snd_nxt.wrapping_add(1);
+        let mut tcb = Self::closed(socket_id, local, remote);
+        tcb.state = TcpTcbState::SynReceived(handshake);
+        tcb
     }
 
     pub(in crate::net::l4::tcp) fn passive_open_syn_ack(&self) -> PassiveOpenSynAck {
+        let Some(data) = self.state.handshake_data() else {
+            return PassiveOpenSynAck {
+                window_scale_enabled: false,
+                sack_enabled: false,
+                timestamp_enabled: false,
+                isn: 0,
+            };
+        };
         PassiveOpenSynAck {
-            window_scale_enabled: self.window_scale.enabled,
-            sack_enabled: self.sack_enabled,
-            timestamp_enabled: self.ts_enabled,
-            isn: self.snd_nxt.wrapping_sub(1),
+            window_scale_enabled: data.window_scale.enabled,
+            sack_enabled: data.sack_enabled,
+            timestamp_enabled: data.ts_enabled,
+            isn: data.seq.snd_nxt.wrapping_sub(1),
         }
     }
 
@@ -321,76 +671,48 @@ impl TcpControlBlock {
         now: u64,
         timeout_ms: u64,
     ) -> Option<DelayedAckDue> {
-        if self.delayed_ack_pending == 0 {
+        let data = self.state.connection_data()?;
+        if data.delayed_ack_pending == 0 {
             return None;
         }
-        if now.saturating_sub(self.delayed_ack_timer) < timeout_ms {
+        if now.saturating_sub(data.delayed_ack_timer) < timeout_ms {
             return None;
         }
         Some(DelayedAckDue {
             local: self.local,
             remote: self.remote,
-            rcv_nxt: self.rcv_nxt,
-            snd_nxt: self.snd_nxt,
+            rcv_nxt: data.seq.rcv_nxt,
+            snd_nxt: data.seq.snd_nxt,
             window: self.advertised_recv_window(),
-            timestamp_enabled: self.ts_enabled,
-            timestamp_echo: self.ts_ecr,
+            timestamp_enabled: data.ts_enabled,
+            timestamp_echo: data.ts_ecr,
         })
     }
 
-    pub(in crate::net::l4::tcp) fn apply_handshake_options(
-        &mut self,
-        options: TcpHandshakeOptions,
-    ) {
-        if let Some(peer_ts_val) = options.peer_ts_val {
-            self.ts_enabled = true;
-            self.ts_ecr = peer_ts_val;
-            if let Some(local_ts_val) = options.local_ts_val {
-                self.ts_val = local_ts_val;
-            }
-        }
-        if options.sack_permitted {
-            self.sack_enabled = true;
-        }
-        if let Some(mss) = options.peer_mss {
-            self.set_mss(mss as u32);
-        }
-        if let Some(ws) = options.peer_window_scale {
-            self.window_scale.enabled = true;
-            self.window_scale.set_snd_scale(ws);
-        } else {
-            self.window_scale.enabled = false;
-        }
-    }
-
-    pub fn set_nodelay(&mut self, nodelay: bool) {
-        self.nagle_enabled = !nodelay;
-    }
-
-    pub fn set_mss(&mut self, mss: u32) {
-        self.mss = mss;
-        self.congestion.update_mss(mss);
-    }
-
-    pub fn set_priority(&mut self, priority: u8) {
-        self.priority = priority & 0x3F;
-    }
-
     pub fn is_nodelay_enabled(&self) -> bool {
-        !self.nagle_enabled
+        if let Some(data) = self.state.connection_data() {
+            !data.nagle_enabled
+        } else if let Some(data) = self.state.handshake_data() {
+            !data.nagle_enabled
+        } else {
+            false
+        }
     }
 
     pub fn should_delay_send(&self, data_len: usize) -> bool {
-        if data_len >= self.mss as usize {
+        let Some(data) = self.state.connection_data() else {
+            return true;
+        };
+        if data_len >= data.mss as usize {
             return false;
         }
-        let sws_threshold = self.max_snd_wnd / 2;
-        let scaled_rwnd = self.window_scale.scale_snd_window(self.snd_wnd);
+        let sws_threshold = data.max_snd_wnd / 2;
+        let scaled_rwnd = data.window_scale.scale_snd_window(data.snd_wnd);
         if scaled_rwnd >= sws_threshold && scaled_rwnd > 0 && data_len > 0 {
         } else if self.is_outstanding() {
             return true;
         }
-        if !self.nagle_enabled {
+        if !data.nagle_enabled {
             return false;
         }
         if self.is_outstanding() {
@@ -400,26 +722,27 @@ impl TcpControlBlock {
     }
 
     pub fn is_outstanding(&self) -> bool {
-        self.snd_nxt != self.snd_una
-    }
-
-    pub fn initialize_seq(&mut self, isn: u32) {
-        self.snd_nxt = isn;
-        self.snd_una = isn;
+        self.state
+            .sequence()
+            .map_or(false, |seq| seq.snd_nxt != seq.snd_una)
     }
 
     pub fn effective_send_window(&self) -> u32 {
-        let scaled_rwnd = self.window_scale.scale_snd_window(self.snd_wnd);
-        self.congestion.available_window(scaled_rwnd)
+        self.state
+            .connection_data()
+            .map_or(0, TcpConnectionData::effective_send_window)
     }
 
     pub fn effective_recv_window(&self) -> u32 {
-        self.flow_control.advertised_window()
+        self.state
+            .connection_data()
+            .map_or(0, TcpConnectionData::effective_recv_window)
     }
 
     pub fn advertised_recv_window(&self) -> u16 {
-        self.window_scale
-            .advertised_window(self.flow_control.advertised_window())
+        self.state
+            .connection_data()
+            .map_or(65535, TcpConnectionData::advertised_recv_window)
     }
 
     pub fn on_ack_received(
@@ -429,81 +752,111 @@ impl TcpControlBlock {
         current_time_ms: u64,
         rtt_sample_ms: u64,
     ) {
-        let is_valid_ack = (ack_num.wrapping_sub(self.snd_una) as i32) > 0
-            && (ack_num.wrapping_sub(self.snd_nxt) as i32) <= 0;
+        let Some(data) = self.state.connection_data_mut() else {
+            return;
+        };
+        let is_valid_ack = (ack_num.wrapping_sub(data.seq.snd_una) as i32) > 0
+            && (ack_num.wrapping_sub(data.seq.snd_nxt) as i32) <= 0;
 
         let bytes_acked = if is_valid_ack && !is_dup {
-            ack_num.wrapping_sub(self.snd_una)
+            ack_num.wrapping_sub(data.seq.snd_una)
         } else {
             0
         };
 
-        self.congestion.on_ack(
+        data.congestion.on_ack(
             bytes_acked,
             is_dup,
-            self.snd_una,
+            data.seq.snd_una,
             current_time_ms,
             rtt_sample_ms,
         );
 
         if !is_dup && is_valid_ack {
-            self.snd_una = ack_num;
+            data.seq.snd_una = ack_num;
         }
     }
 
     pub fn on_data_received(&mut self, bytes: u32) {
-        self.flow_control.on_receive(bytes);
-        self.rcv_wnd = self.advertised_recv_window();
+        if let Some(data) = self.state.connection_data_mut() {
+            data.flow_control.on_receive(bytes);
+            data.rcv_wnd = data.advertised_recv_window();
+        }
     }
 
     pub fn on_data_consumed(&mut self, bytes: u32) {
-        self.flow_control.on_consume(bytes);
-        self.rcv_wnd = self.advertised_recv_window();
+        if let Some(data) = self.state.connection_data_mut() {
+            data.flow_control.on_consume(bytes);
+            data.rcv_wnd = data.advertised_recv_window();
+        }
     }
 
     pub fn on_send(&mut self, bytes: u32) {
-        let tick = self.last_send_tick;
-        self.congestion.on_send(bytes, tick);
-        self.delayed_ack_pending = 0;
+        if let Some(data) = self.state.connection_data_mut() {
+            let tick = data.last_send_tick;
+            data.congestion.on_send(bytes, tick);
+            data.delayed_ack_pending = 0;
+        }
     }
 
     pub fn on_timeout(&mut self) {
-        let tick = self.last_send_tick;
-        self.congestion.on_timeout(tick);
-        self.retransmit_count = self.retransmit_count.saturating_add(1);
+        if let Some(data) = self.state.connection_data_mut() {
+            let tick = data.last_send_tick;
+            data.congestion.on_timeout(tick);
+            data.retransmit_count = data.retransmit_count.saturating_add(1);
+        }
     }
 
     pub fn update_peer_window(&mut self, window: u16) {
-        self.snd_wnd = window;
-        let scaled = self.window_scale.scale_snd_window(window);
-        self.flow_control.update_peer_window(scaled);
-        if scaled > self.max_snd_wnd {
-            self.max_snd_wnd = scaled;
+        if let Some(data) = self.state.connection_data_mut() {
+            data.snd_wnd = window;
+            let scaled = data.window_scale.scale_snd_window(window);
+            data.flow_control.update_peer_window(scaled);
+            if scaled > data.max_snd_wnd {
+                data.max_snd_wnd = scaled;
+            }
+        } else if let Some(data) = self.state.handshake_data_mut() {
+            data.snd_wnd = window;
+            let scaled = data.window_scale.scale_snd_window(window);
+            if scaled > data.max_snd_wnd {
+                data.max_snd_wnd = scaled;
+            }
         }
     }
 
     pub fn can_send(&self, bytes: u32) -> bool {
-        self.effective_send_window() >= bytes && self.flow_control.can_send()
+        self.state.connection_data().map_or(false, |data| {
+            data.effective_send_window() >= bytes && data.flow_control.can_send()
+        })
     }
 
     pub fn set_urgent(&mut self, urgent_offset: u32) {
-        self.snd_up = self.snd_nxt.wrapping_add(urgent_offset);
-        self.snd_urg = true;
+        if let Some(data) = self.state.connection_data_mut() {
+            data.snd_up = data.seq.snd_nxt.wrapping_add(urgent_offset);
+            data.snd_urg = true;
+        }
     }
 
     pub fn clear_send_urgent(&mut self) {
-        self.snd_urg = false;
+        if let Some(data) = self.state.connection_data_mut() {
+            data.snd_urg = false;
+        }
     }
 
     pub fn should_send_urg(&self) -> bool {
-        self.snd_urg && self.snd_up > self.snd_una
+        self.state
+            .connection_data()
+            .map_or(false, |data| data.snd_urg && data.snd_up > data.seq.snd_una)
     }
 
     pub fn urgent_pointer_for_segment(&self, seg_seq: u32) -> u16 {
-        if !self.snd_urg {
+        let Some(data) = self.state.connection_data() else {
+            return 0;
+        };
+        if !data.snd_urg {
             return 0;
         }
-        let offset = self.snd_up.wrapping_sub(seg_seq);
+        let offset = data.snd_up.wrapping_sub(seg_seq);
         if offset > 0xFFFF {
             0xFFFF
         } else {
@@ -512,34 +865,44 @@ impl TcpControlBlock {
     }
 
     pub fn on_urgent_received(&mut self, seg_seq: u32, urgent_ptr: u16) -> bool {
+        let Some(data) = self.state.connection_data_mut() else {
+            return false;
+        };
         let new_up = seg_seq.wrapping_add(urgent_ptr as u32);
-        let is_newer = seq_after(new_up, self.rcv_up);
-        if is_newer && new_up != self.rcv_up {
-            self.rcv_up = new_up;
-            self.rcv_urg = true;
+        let is_newer = seq_after(new_up, data.rcv_up);
+        if is_newer && new_up != data.rcv_up {
+            data.rcv_up = new_up;
+            data.rcv_urg = true;
             return true;
         }
         false
     }
 
     pub fn has_urgent_data(&self) -> bool {
-        self.rcv_urg && seq_after(self.rcv_up, self.rcv_nxt)
+        self.state.connection_data().map_or(false, |data| {
+            data.rcv_urg && seq_after(data.rcv_up, data.seq.rcv_nxt)
+        })
     }
 
     pub fn urgent_data_offset(&self) -> Option<u32> {
         if !self.has_urgent_data() {
             return None;
         }
-        let offset = self.rcv_up.wrapping_sub(self.rcv_nxt);
+        let data = self.state.connection_data()?;
+        let offset = data.rcv_up.wrapping_sub(data.seq.rcv_nxt);
         if offset > 0 { Some(offset - 1) } else { None }
     }
 
     pub fn clear_recv_urgent(&mut self) {
-        self.rcv_urg = false;
+        if let Some(data) = self.state.connection_data_mut() {
+            data.rcv_urg = false;
+        }
     }
 
     pub fn on_source_quench(&mut self) {
-        self.congestion.on_timeout(self.last_send_tick);
+        if let Some(data) = self.state.connection_data_mut() {
+            data.congestion.on_timeout(data.last_send_tick);
+        }
     }
 
     pub fn on_icmp_error(&mut self, error: EndpointError) {
@@ -549,10 +912,11 @@ impl TcpControlBlock {
 
 const TCB_SHARD_COUNT: usize = 16;
 const TCB_SHARD_MASK: usize = TCB_SHARD_COUNT - 1;
+const TCB_BUCKETS_PER_SHARD: usize = 64;
+const TCB_SLOTS_PER_SHARD: usize = MAX_TCB_ENTRIES / TCB_SHARD_COUNT;
 
 pub struct TcbTable {
-    shards:
-        [PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), TcpControlBlock>>; TCB_SHARD_COUNT],
+    shards: [PoisonRwLock<Option<TcbShardStorage>>; TCB_SHARD_COUNT],
     seq_counter: AtomicU32,
     pub current_tick: AtomicU64,
     total_count: AtomicUsize,
@@ -566,6 +930,98 @@ pub struct TcbTable {
 const MAX_TCB_ENTRIES: usize = 8192;
 const MAX_SYN_RECEIVED_ENTRIES: usize = 4096;
 
+struct TcbBucketEntry {
+    key: (EndpointAddr, EndpointAddr),
+    entry: TcpControlBlock,
+    next: Option<usize>,
+}
+
+struct TcbShardStorage {
+    entries: Vec<TcbBucketEntry>,
+    buckets: [Option<usize>; TCB_BUCKETS_PER_SHARD],
+}
+
+impl TcbShardStorage {
+    fn new() -> Self {
+        Self {
+            entries: Vec::with_capacity(TCB_SLOTS_PER_SHARD),
+            buckets: [None; TCB_BUCKETS_PER_SHARD],
+        }
+    }
+
+    fn bucket_for(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
+        (conn_key_hash(local, remote) as usize) % TCB_BUCKETS_PER_SHARD
+    }
+
+    fn find_index(&self, key: &(EndpointAddr, EndpointAddr)) -> Option<usize> {
+        let bucket = Self::bucket_for(&key.0, &key.1);
+        let mut cursor = self.buckets[bucket];
+        while let Some(index) = cursor {
+            let entry = &self.entries[index];
+            if &entry.key == key {
+                return Some(index);
+            }
+            cursor = entry.next;
+        }
+        None
+    }
+
+    fn get(&self, key: &(EndpointAddr, EndpointAddr)) -> Option<&TcpControlBlock> {
+        self.find_index(key).map(|index| &self.entries[index].entry)
+    }
+
+    fn get_mut(&mut self, key: &(EndpointAddr, EndpointAddr)) -> Option<&mut TcpControlBlock> {
+        let index = self.find_index(key)?;
+        Some(&mut self.entries[index].entry)
+    }
+
+    fn insert(
+        &mut self,
+        key: (EndpointAddr, EndpointAddr),
+        entry: TcpControlBlock,
+    ) -> Result<Option<TcpControlBlock>, TcpControlBlock> {
+        if let Some(index) = self.find_index(&key) {
+            let old = core::mem::replace(&mut self.entries[index].entry, entry);
+            return Ok(Some(old));
+        }
+        if self.entries.len() >= TCB_SLOTS_PER_SHARD {
+            return Err(entry);
+        }
+        let bucket = Self::bucket_for(&key.0, &key.1);
+        let next = self.buckets[bucket];
+        self.entries.push(TcbBucketEntry { key, entry, next });
+        self.buckets[bucket] = Some(self.entries.len() - 1);
+        Ok(None)
+    }
+
+    fn remove(&mut self, key: &(EndpointAddr, EndpointAddr)) -> Option<TcpControlBlock> {
+        let index = self.find_index(key)?;
+        let removed = self.entries.swap_remove(index).entry;
+        self.rebuild_index();
+        Some(removed)
+    }
+
+    fn remove_by_socket_id(&mut self, socket_id: SocketId) -> Option<TcpControlBlock> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.entry.socket_id == socket_id)?;
+        let removed = self.entries.swap_remove(index).entry;
+        self.rebuild_index();
+        Some(removed)
+    }
+
+    fn rebuild_index(&mut self) {
+        self.buckets = [None; TCB_BUCKETS_PER_SHARD];
+        for index in 0..self.entries.len() {
+            let key = self.entries[index].key;
+            let bucket = Self::bucket_for(&key.0, &key.1);
+            self.entries[index].next = self.buckets[bucket];
+            self.buckets[bucket] = Some(index);
+        }
+    }
+}
+
 #[inline(always)]
 fn shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
     (conn_key_hash(local, remote) as usize) & TCB_SHARD_MASK
@@ -573,8 +1029,7 @@ fn shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
 
 impl TcbTable {
     pub const fn new() -> Self {
-        const EMPTY_SHARD: PoisonRwLock<BTreeMap<(EndpointAddr, EndpointAddr), TcpControlBlock>> =
-            PoisonRwLock::new(BTreeMap::new());
+        const EMPTY_SHARD: PoisonRwLock<Option<TcbShardStorage>> = PoisonRwLock::new(None);
         Self {
             shards: [EMPTY_SHARD; TCB_SHARD_COUNT],
             seq_counter: AtomicU32::new(0),
@@ -712,13 +1167,18 @@ impl TcbTable {
         const FIN_WAIT_2_TIMEOUT_TICKS: u64 = 60_000;
         const MAX_SCAVENGE_PER_SHARD: usize = 8;
         for shard in &self.shards {
-            let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
+            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
+            let Some(entries) = guard.as_mut() else {
+                continue;
+            };
             let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
-            for (key, entry) in entries.iter() {
-                if entry.state == TcpConnectionState::FinWait2
-                    && current_tick.saturating_sub(entry.last_send_tick) > FIN_WAIT_2_TIMEOUT_TICKS
+            for bucket_entry in entries.entries.iter() {
+                let entry = &bucket_entry.entry;
+                if entry.is_state(TcpConnectionState::FinWait2)
+                    && current_tick.saturating_sub(entry.last_send_tick())
+                        > FIN_WAIT_2_TIMEOUT_TICKS
                 {
-                    to_remove.push(*key);
+                    to_remove.push(bucket_entry.key);
                     if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
                         break;
                     }
@@ -736,48 +1196,57 @@ impl TcbTable {
         use super::segment::TcpSegmentBuilder;
         use crate::net::l4::socket::lookup_socket_in;
         for shard in &self.shards {
-            let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
-            for (key, entry) in entries.iter_mut() {
-                if entry.state == TcpConnectionState::Established {
-                    if entry.is_outstanding() {
-                        continue;
-                    }
-                    if entry.flow_control.should_send_probe(current_tick) {
-                        if let Some(socket) = lookup_socket_in(runtime, entry.socket_id) {
-                            if let Some(probe_payload) = socket
-                                .with_inner_mut(|inner| inner.take_send_payload_prefix(1))
-                                .flatten()
-                            {
-                                let seq = entry.snd_nxt;
-                                let mut builder =
-                                    TcpSegmentBuilder::new(key.0.port(), key.1.port())
-                                        .seq(seq)
-                                        .ack(entry.rcv_nxt)
-                                        .ack_flag()
-                                        .psh()
-                                        .window(entry.advertised_recv_window())
-                                        .payload_packet(probe_payload);
-                                if entry.ts_enabled {
-                                    let ts_val = (current_tick / 10) as u32;
-                                    builder = builder.nop().nop().timestamp(ts_val, entry.ts_ecr);
-                                }
-                                let Ok(segment) = builder.build_checked_packet(key.0, key.1) else {
-                                    continue;
-                                };
-                                retransmit_queue_push(runtime, key.0, key.1, seq, 1, segment);
-                                if super::retransmit::retransmit_queue_transmit_ready(
-                                    runtime, key.0, key.1, seq,
-                                ) {
-                                    entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
-                                    entry.flow_control.on_probe_sent(current_tick);
-                                } else {
-                                    log::warn!(
-                                        "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
-                                        key.0,
-                                        key.1
-                                    );
-                                }
-                            }
+            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
+            let Some(entries) = guard.as_mut() else {
+                continue;
+            };
+            for bucket_entry in entries.entries.iter_mut() {
+                let key = bucket_entry.key;
+                let entry = &mut bucket_entry.entry;
+                if !matches!(entry.state.kind(), TcpConnectionState::Established) {
+                    continue;
+                }
+                let Some(data) = entry.state.connection_data_mut() else {
+                    continue;
+                };
+                if data.seq.snd_nxt != data.seq.snd_una {
+                    continue;
+                }
+                if !data.flow_control.should_send_probe(current_tick) {
+                    continue;
+                }
+                if let Some(socket) = lookup_socket_in(runtime, entry.socket_id) {
+                    if let Some(probe_payload) = socket
+                        .with_inner_mut(|inner| inner.take_send_payload_prefix(1))
+                        .flatten()
+                    {
+                        let seq = data.seq.snd_nxt;
+                        let mut builder = TcpSegmentBuilder::new(key.0.port(), key.1.port())
+                            .seq(seq)
+                            .ack(data.seq.rcv_nxt)
+                            .ack_flag()
+                            .psh()
+                            .window(data.advertised_recv_window())
+                            .payload_packet(probe_payload);
+                        if data.ts_enabled {
+                            let ts_val = (current_tick / 10) as u32;
+                            builder = builder.nop().nop().timestamp(ts_val, data.ts_ecr);
+                        }
+                        let Ok(segment) = builder.build_checked_packet(key.0, key.1) else {
+                            continue;
+                        };
+                        retransmit_queue_push(runtime, key.0, key.1, seq, 1, segment);
+                        if super::retransmit::retransmit_queue_transmit_ready(
+                            runtime, key.0, key.1, seq,
+                        ) {
+                            data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
+                            data.flow_control.on_probe_sent(current_tick);
+                        } else {
+                            log::warn!(
+                                "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
+                                key.0,
+                                key.1
+                            );
                         }
                     }
                 }
@@ -789,13 +1258,17 @@ impl TcbTable {
         const TIME_WAIT_TIMEOUT_TICKS: u64 = 240_000;
         const MAX_SCAVENGE_PER_SHARD: usize = 16;
         for shard in &self.shards {
-            let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
+            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
+            let Some(entries) = guard.as_mut() else {
+                continue;
+            };
             let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
-            for (key, entry) in entries.iter() {
-                if entry.state == TcpConnectionState::TimeWait
-                    && current_tick.saturating_sub(entry.last_send_tick) > TIME_WAIT_TIMEOUT_TICKS
+            for bucket_entry in entries.entries.iter() {
+                let entry = &bucket_entry.entry;
+                if entry.is_state(TcpConnectionState::TimeWait)
+                    && current_tick.saturating_sub(entry.last_send_tick()) > TIME_WAIT_TIMEOUT_TICKS
                 {
-                    to_remove.push(*key);
+                    to_remove.push(bucket_entry.key);
                     if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
                         break;
                     }
@@ -826,14 +1299,18 @@ impl TcbTable {
         };
 
         for shard in &self.shards {
-            let mut entries = shard.write().unwrap_or_else(|e| e.into_inner());
+            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
+            let Some(entries) = guard.as_mut() else {
+                continue;
+            };
             let mut to_remove: alloc::vec::Vec<(EndpointAddr, EndpointAddr)> =
                 alloc::vec::Vec::with_capacity(max_per_shard);
-            for (key, entry) in entries.iter() {
-                if entry.state == TcpConnectionState::SynReceived
-                    && current_tick.saturating_sub(entry.last_send_tick) > timeout
+            for bucket_entry in entries.entries.iter() {
+                let entry = &bucket_entry.entry;
+                if entry.is_syn_received()
+                    && current_tick.saturating_sub(entry.last_send_tick()) > timeout
                 {
-                    to_remove.push(*key);
+                    to_remove.push(bucket_entry.key);
                     if to_remove.len() >= max_per_shard {
                         break;
                     }
@@ -842,7 +1319,7 @@ impl TcbTable {
             for key in to_remove {
                 if let Some(entry) = entries.remove(&key) {
                     self.total_count.fetch_sub(1, Ordering::Relaxed);
-                    if entry.state == TcpConnectionState::SynReceived {
+                    if entry.is_syn_received() {
                         self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
                     }
                 }
@@ -863,7 +1340,7 @@ impl TcbTable {
         if self.total_count.load(Ordering::Relaxed) >= MAX_TCB_ENTRIES {
             return Err("TCB table full");
         }
-        if entry.state == TcpConnectionState::SynReceived {
+        if entry.is_syn_received() {
             if self.syn_recv_count.load(Ordering::Relaxed) >= MAX_SYN_RECEIVED_ENTRIES {
                 return Err("Too many SYN-RECV connections");
             }
@@ -871,12 +1348,23 @@ impl TcbTable {
         let idx = shard_index(&entry.local, &entry.remote);
         let key = (entry.local, entry.remote);
         let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
-        let is_syn_recv = entry.state == TcpConnectionState::SynReceived;
-        if shard.insert(key, entry).is_none() {
-            self.total_count.fetch_add(1, Ordering::Relaxed);
-            if is_syn_recv {
-                self.syn_recv_count.fetch_add(1, Ordering::Relaxed);
+        let storage = shard.get_or_insert_with(TcbShardStorage::new);
+        let is_syn_recv = entry.is_syn_received();
+        match storage.insert(key, entry) {
+            Ok(None) => {
+                self.total_count.fetch_add(1, Ordering::Relaxed);
+                if is_syn_recv {
+                    self.syn_recv_count.fetch_add(1, Ordering::Relaxed);
+                }
             }
+            Ok(Some(old)) => {
+                if old.is_syn_received() && !is_syn_recv {
+                    self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
+                } else if !old.is_syn_received() && is_syn_recv {
+                    self.syn_recv_count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Err(_) => return Err("TCB shard full"),
         }
         Ok(())
     }
@@ -887,7 +1375,7 @@ impl TcbTable {
     {
         let idx = shard_index(&local, &remote);
         let shard = self.shards[idx].read().unwrap_or_else(|e| e.into_inner());
-        shard.get(&(local, remote)).map(f)
+        shard.as_ref()?.get(&(local, remote)).map(f)
     }
 
     fn mutate_entry<F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> bool
@@ -896,10 +1384,13 @@ impl TcbTable {
     {
         let idx = shard_index(&local, &remote);
         let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = shard.get_mut(&(local, remote)) {
-            let old_state = entry.state;
+        let Some(storage) = shard.as_mut() else {
+            return false;
+        };
+        if let Some(entry) = storage.get_mut(&(local, remote)) {
+            let old_state = entry.state.kind();
             f(entry);
-            let new_state = entry.state;
+            let new_state = entry.state.kind();
             if old_state != new_state {
                 if old_state == TcpConnectionState::SynReceived {
                     self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
@@ -955,7 +1446,9 @@ impl TcbTable {
         rcv_nxt: u32,
     ) -> bool {
         self.mutate_entry(local, remote, |entry| {
-            entry.rcv_nxt = rcv_nxt;
+            if let Some(seq) = entry.state.sequence_mut() {
+                seq.rcv_nxt = rcv_nxt;
+            }
         })
     }
 
@@ -969,19 +1462,22 @@ impl TcbTable {
     ) -> Option<u8> {
         let mut pending = None;
         self.mutate_entry(local, remote, |entry| {
-            entry.rcv_nxt = rcv_nxt;
-            if entry.delayed_ack_pending == 0 {
-                entry.delayed_ack_timer = current_tick;
+            let Some(data) = entry.state.connection_data_mut() else {
+                return;
+            };
+            data.seq.rcv_nxt = rcv_nxt;
+            if data.delayed_ack_pending == 0 {
+                data.delayed_ack_timer = current_tick;
             }
-            entry.delayed_ack_pending = entry.delayed_ack_pending.saturating_add(1);
+            data.delayed_ack_pending = data.delayed_ack_pending.saturating_add(1);
 
-            if entry.ts_enabled {
+            if data.ts_enabled {
                 if let Some((peer_ts_val, local_ts_val)) = timestamp_echo {
-                    entry.ts_ecr = peer_ts_val;
-                    entry.ts_val = local_ts_val;
+                    data.ts_ecr = peer_ts_val;
+                    data.ts_val = local_ts_val;
                 }
             }
-            pending = Some(entry.delayed_ack_pending);
+            pending = Some(data.delayed_ack_pending);
         })
         .then_some(())?;
         pending
@@ -993,7 +1489,9 @@ impl TcbTable {
         remote: EndpointAddr,
     ) -> bool {
         self.mutate_entry(local, remote, |entry| {
-            entry.delayed_ack_pending = 0;
+            if let Some(data) = entry.state.connection_data_mut() {
+                data.delayed_ack_pending = 0;
+            }
         })
     }
 
@@ -1005,8 +1503,13 @@ impl TcbTable {
         local_ts_val: u32,
     ) -> bool {
         self.mutate_entry(local, remote, |entry| {
-            entry.ts_ecr = peer_ts_val;
-            entry.ts_val = local_ts_val;
+            if let Some(data) = entry.state.connection_data_mut() {
+                data.ts_ecr = peer_ts_val;
+                data.ts_val = local_ts_val;
+            } else if let Some(data) = entry.state.handshake_data_mut() {
+                data.ts_ecr = peer_ts_val;
+                data.ts_val = local_ts_val;
+            }
         })
     }
 
@@ -1019,13 +1522,18 @@ impl TcbTable {
     ) -> bool {
         let mut accepted = false;
         self.mutate_entry(local, remote, |entry| {
-            if entry.state != TcpConnectionState::SynSent {
-                return;
+            let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
+            match old {
+                TcpTcbState::SynSent(mut data) => {
+                    data.seq.rcv_nxt = seq_num.wrapping_add(1);
+                    data.apply_options(options);
+                    entry.state = TcpTcbState::SynReceived(data);
+                    accepted = true;
+                }
+                other => {
+                    entry.state = other;
+                }
             }
-            entry.rcv_nxt = seq_num.wrapping_add(1);
-            entry.state = TcpConnectionState::SynReceived;
-            entry.apply_handshake_options(options);
-            accepted = true;
         });
         accepted
     }
@@ -1038,12 +1546,17 @@ impl TcbTable {
     ) -> bool {
         let mut accepted = false;
         self.mutate_entry(local, remote, |entry| {
-            if entry.state != TcpConnectionState::SynReceived {
-                return;
+            let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
+            match old {
+                TcpTcbState::SynReceived(mut data) => {
+                    data.seq.snd_una = ack_num;
+                    entry.state = TcpTcbState::Established(data.into_connection());
+                    accepted = true;
+                }
+                other => {
+                    entry.state = other;
+                }
             }
-            entry.snd_una = ack_num;
-            entry.state = TcpConnectionState::Established;
-            accepted = true;
         });
         accepted
     }
@@ -1058,14 +1571,19 @@ impl TcbTable {
     ) -> bool {
         let mut accepted = false;
         self.mutate_entry(local, remote, |entry| {
-            if entry.state != TcpConnectionState::SynSent {
-                return;
+            let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
+            match old {
+                TcpTcbState::SynSent(mut data) => {
+                    data.seq.rcv_nxt = seq_num.wrapping_add(1);
+                    data.seq.snd_una = ack_num;
+                    data.apply_options(options);
+                    entry.state = TcpTcbState::Established(data.into_connection());
+                    accepted = true;
+                }
+                other => {
+                    entry.state = other;
+                }
             }
-            entry.rcv_nxt = seq_num.wrapping_add(1);
-            entry.snd_una = ack_num;
-            entry.state = TcpConnectionState::Established;
-            entry.apply_handshake_options(options);
-            accepted = true;
         });
         accepted
     }
@@ -1086,7 +1604,7 @@ impl TcbTable {
     ) -> Option<SocketId> {
         let mut failed_socket = None;
         self.mutate_entry(local, remote, |entry| {
-            if entry.state == TcpConnectionState::SynSent {
+            if entry.is_state(TcpConnectionState::SynSent) {
                 match error {
                     EndpointError::ConnectionRefused | EndpointError::ProtocolUnreachable => {
                         failed_socket = Some(entry.socket_id);
@@ -1106,7 +1624,7 @@ impl TcbTable {
         remote: EndpointAddr,
     ) -> bool {
         self.mutate_entry(local, remote, |entry| {
-            entry.state = TcpConnectionState::Closed;
+            entry.state = TcpTcbState::Closed;
         })
     }
 
@@ -1123,26 +1641,51 @@ impl TcbTable {
             entry.on_ack_received(ack_num, is_dup, current_time_ms, 0);
 
             if !is_dup {
-                entry.retransmit_count = 0;
-                match entry.state {
-                    TcpConnectionState::FinWait1 => {
-                        if ack_num == entry.snd_nxt {
-                            entry.state = TcpConnectionState::FinWait2;
+                let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
+                entry.state = match old {
+                    TcpTcbState::FinWait1(mut data) => {
+                        data.retransmit_count = 0;
+                        if ack_num == data.seq.snd_nxt {
+                            TcpTcbState::FinWait2(data)
+                        } else {
+                            TcpTcbState::FinWait1(data)
                         }
                     }
-                    TcpConnectionState::Closing => {
-                        if ack_num == entry.snd_nxt {
-                            entry.state = TcpConnectionState::TimeWait;
+                    TcpTcbState::Closing(mut data) => {
+                        data.retransmit_count = 0;
+                        if ack_num == data.seq.snd_nxt {
+                            TcpTcbState::TimeWait(data)
+                        } else {
+                            TcpTcbState::Closing(data)
                         }
                     }
-                    TcpConnectionState::LastAck => {
-                        if ack_num == entry.snd_nxt {
-                            entry.state = TcpConnectionState::Closed;
+                    TcpTcbState::LastAck(mut data) => {
+                        data.retransmit_count = 0;
+                        if ack_num == data.seq.snd_nxt {
                             should_remove = true;
+                            TcpTcbState::Closed
+                        } else {
+                            TcpTcbState::LastAck(data)
                         }
                     }
-                    _ => {}
-                }
+                    TcpTcbState::Established(mut data) => {
+                        data.retransmit_count = 0;
+                        TcpTcbState::Established(data)
+                    }
+                    TcpTcbState::FinWait2(mut data) => {
+                        data.retransmit_count = 0;
+                        TcpTcbState::FinWait2(data)
+                    }
+                    TcpTcbState::CloseWait(mut data) => {
+                        data.retransmit_count = 0;
+                        TcpTcbState::CloseWait(data)
+                    }
+                    TcpTcbState::TimeWait(mut data) => {
+                        data.retransmit_count = 0;
+                        TcpTcbState::TimeWait(data)
+                    }
+                    other => other,
+                };
             }
         })
         .then_some(should_remove)
@@ -1169,42 +1712,46 @@ impl TcbTable {
         let mut should_ack = false;
         let mut final_rcv_nxt = rcv_nxt_at_fin;
         self.mutate_entry(local, remote, |entry| {
-            entry.rcv_nxt = rcv_nxt_at_fin.wrapping_add(1);
-            final_rcv_nxt = entry.rcv_nxt;
+            if let Some(seq) = entry.state.sequence_mut() {
+                seq.rcv_nxt = rcv_nxt_at_fin.wrapping_add(1);
+                final_rcv_nxt = seq.rcv_nxt;
+            }
 
-            match entry.state {
-                TcpConnectionState::Established => {
-                    entry.state = TcpConnectionState::CloseWait;
+            let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
+            entry.state = match old {
+                TcpTcbState::Established(data) => {
                     should_ack = true;
                     log::info!(
                         "[TCP] FIN received in ESTABLISHED: {} <- {} -> CLOSE_WAIT",
                         entry.local,
                         entry.remote
                     );
+                    TcpTcbState::CloseWait(data)
                 }
-                TcpConnectionState::FinWait1 => {
-                    entry.state = TcpConnectionState::Closing;
+                TcpTcbState::FinWait1(data) => {
                     should_ack = true;
                     log::info!(
                         "[TCP] FIN received in FIN_WAIT_1: {} <- {} -> CLOSING",
                         entry.local,
                         entry.remote
                     );
+                    TcpTcbState::Closing(data)
                 }
-                TcpConnectionState::FinWait2 => {
-                    entry.state = TcpConnectionState::TimeWait;
-                    entry.last_send_tick = current_tick;
+                TcpTcbState::FinWait2(mut data) => {
+                    data.last_send_tick = current_tick;
                     should_ack = true;
                     log::info!(
                         "[TCP] FIN received in FIN_WAIT_2: {} <- {} -> TIME_WAIT",
                         entry.local,
                         entry.remote
                     );
+                    TcpTcbState::TimeWait(data)
                 }
-                _ => {
+                other => {
                     should_ack = true;
+                    other
                 }
-            }
+            };
         })
         .then_some((final_rcv_nxt, should_ack))
     }
@@ -1250,7 +1797,13 @@ impl TcbTable {
         remote: EndpointAddr,
         priority: u8,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| entry.set_priority(priority))
+        self.mutate_entry(local, remote, |entry| {
+            if let Some(data) = entry.state.connection_data_mut() {
+                data.priority = priority & 0x3F;
+            } else if let Some(data) = entry.state.handshake_data_mut() {
+                data.priority = priority & 0x3F;
+            }
+        })
     }
 
     pub(crate) fn set_nodelay(
@@ -1259,7 +1812,13 @@ impl TcbTable {
         remote: EndpointAddr,
         nodelay: bool,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| entry.set_nodelay(nodelay))
+        self.mutate_entry(local, remote, |entry| {
+            if let Some(data) = entry.state.connection_data_mut() {
+                data.nagle_enabled = !nodelay;
+            } else if let Some(data) = entry.state.handshake_data_mut() {
+                data.nagle_enabled = !nodelay;
+            }
+        })
     }
 
     pub(crate) fn mark_payload_sent(
@@ -1270,13 +1829,17 @@ impl TcbTable {
     ) -> bool {
         self.mutate_entry(local, remote, |entry| {
             entry.on_send(bytes);
-            entry.snd_nxt = entry.snd_nxt.wrapping_add(bytes);
+            if let Some(seq) = entry.state.sequence_mut() {
+                seq.snd_nxt = seq.snd_nxt.wrapping_add(bytes);
+            }
         })
     }
 
     pub(crate) fn mark_syn_sent(&self, local: EndpointAddr, remote: EndpointAddr) -> bool {
         self.mutate_entry(local, remote, |entry| {
-            entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
+            if let Some(seq) = entry.state.sequence_mut() {
+                seq.snd_nxt = seq.snd_nxt.wrapping_add(1);
+            }
         })
     }
 
@@ -1288,19 +1851,20 @@ impl TcbTable {
     ) -> Option<u32> {
         let mut seq = None;
         self.mutate_entry(local, remote, |entry| {
-            let allowed = matches!(
-                (entry.state, next_state),
-                (
-                    TcpConnectionState::Established,
-                    TcpConnectionState::FinWait1
-                ) | (TcpConnectionState::CloseWait, TcpConnectionState::LastAck)
-            );
-            if !allowed {
-                return;
-            }
-            seq = Some(entry.snd_nxt);
-            entry.state = next_state;
-            entry.snd_nxt = entry.snd_nxt.wrapping_add(1);
+            let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
+            entry.state = match (old, next_state) {
+                (TcpTcbState::Established(mut data), TcpConnectionState::FinWait1) => {
+                    seq = Some(data.seq.snd_nxt);
+                    data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
+                    TcpTcbState::FinWait1(data)
+                }
+                (TcpTcbState::CloseWait(mut data), TcpConnectionState::LastAck) => {
+                    seq = Some(data.seq.snd_nxt);
+                    data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
+                    TcpTcbState::LastAck(data)
+                }
+                (other, _) => other,
+            };
         });
         seq
     }
@@ -1308,9 +1872,10 @@ impl TcbTable {
     pub fn remove(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlock> {
         let idx = shard_index(&local, &remote);
         let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = shard.remove(&(local, remote)) {
+        let storage = shard.as_mut()?;
+        if let Some(entry) = storage.remove(&(local, remote)) {
             self.total_count.fetch_sub(1, Ordering::Relaxed);
-            if entry.state == TcpConnectionState::SynReceived {
+            if entry.is_syn_received() {
                 self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
             }
             Some(entry)
@@ -1325,8 +1890,14 @@ impl TcbTable {
     {
         for shard in &self.shards {
             let guard = shard.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(entry) = guard.values().find(|entry| entry.socket_id == socket_id) {
-                return Some(f(entry));
+            if let Some(storage) = guard.as_ref() {
+                if let Some(bucket_entry) = storage
+                    .entries
+                    .iter()
+                    .find(|bucket_entry| bucket_entry.entry.socket_id == socket_id)
+                {
+                    return Some(f(&bucket_entry.entry));
+                }
             }
         }
         None
@@ -1335,14 +1906,10 @@ impl TcbTable {
     pub fn remove_by_socket_id(&self, socket_id: SocketId) -> Option<TcpControlBlock> {
         for shard in &self.shards {
             let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
-            let key = guard
-                .iter()
-                .find(|(_, entry)| entry.socket_id == socket_id)
-                .map(|(key, _)| *key);
-            if let Some(k) = key {
-                if let Some(entry) = guard.remove(&k) {
+            if let Some(storage) = guard.as_mut() {
+                if let Some(entry) = storage.remove_by_socket_id(socket_id) {
                     self.total_count.fetch_sub(1, Ordering::Relaxed);
-                    if entry.state == TcpConnectionState::SynReceived {
+                    if entry.is_syn_received() {
                         self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
                     }
                     return Some(entry);
@@ -1356,16 +1923,22 @@ impl TcbTable {
         let mut result = alloc::vec::Vec::new();
         for shard in &self.shards {
             let guard = shard.read().unwrap_or_else(|e| e.into_inner());
-            result.extend(guard.values().map(|entry| TcpConnectionSnapshot {
-                local: entry.local,
-                remote: entry.remote,
-                state: entry.state,
-                snd_nxt: entry.snd_nxt,
-                snd_una: entry.snd_una,
-                rcv_nxt: entry.rcv_nxt,
-                snd_wnd: entry.snd_wnd,
-                rcv_wnd: entry.rcv_wnd,
-            }));
+            if let Some(storage) = guard.as_ref() {
+                result.extend(storage.entries.iter().map(|bucket_entry| {
+                    let entry = &bucket_entry.entry;
+                    let snapshot = TcpControlBlockSnapshot::from(entry);
+                    TcpConnectionSnapshot {
+                        local: entry.local,
+                        remote: entry.remote,
+                        state: snapshot.state,
+                        snd_nxt: snapshot.snd_nxt,
+                        snd_una: snapshot.snd_una,
+                        rcv_nxt: snapshot.rcv_nxt,
+                        snd_wnd: snapshot.snd_wnd,
+                        rcv_wnd: snapshot.rcv_wnd,
+                    }
+                }));
+            }
         }
         result
     }
@@ -1405,9 +1978,12 @@ impl TcbTable {
     {
         for shard in &self.shards {
             let guard = shard.read().unwrap_or_else(|e| e.into_inner());
-            for entry in guard.values() {
-                if entry.state == TcpConnectionState::Established {
-                    f(entry);
+            if let Some(storage) = guard.as_ref() {
+                for bucket_entry in &storage.entries {
+                    let entry = &bucket_entry.entry;
+                    if entry.is_state(TcpConnectionState::Established) {
+                        f(entry);
+                    }
                 }
             }
         }
@@ -1446,25 +2022,33 @@ pub mod tests {
     }
 
     #[cfg_attr(test, test_case)]
-    pub fn test_tcp_control_block_entry() {
+    pub fn test_tcp_closed_has_no_sequence_space() {
         let socket_id = SocketId::from_raw(1);
         let local = EndpointAddr::new([192, 168, 1, 1], 12345);
         let remote = EndpointAddr::new([192, 168, 1, 2], 80);
-        let mut tcb = TcpControlBlock::new(socket_id, local, remote);
+        let tcb = TcpControlBlock::closed(socket_id, local, remote);
         assert_eq!(tcb.state(), TcpConnectionState::Closed);
-        tcb.initialize_seq(1000);
         let snapshot = TcpControlBlockSnapshot::from(&tcb);
-        assert_eq!(snapshot.snd_nxt, 1000);
-        assert_eq!(snapshot.snd_una, 1000);
+        assert_eq!(snapshot.snd_nxt, 0);
+        assert_eq!(snapshot.snd_una, 0);
+        assert_eq!(snapshot.rcv_nxt, 0);
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_tcp_tcb_table_syn_sent_to_established() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
-        let mut tcb = TcpControlBlock::new(SocketId::from_raw(2), local, remote);
-        tcb.initialize_seq(1000);
-        tcb.enter_syn_sent();
+        let tcb = TcpControlBlock::start_connect(
+            SocketId::from_raw(2),
+            local,
+            remote,
+            1000,
+            None,
+            false,
+            0,
+            InterfaceScope::Any,
+            None,
+        );
         table.insert(tcb).expect("insert syn-sent tcb");
         assert!(table.mark_syn_sent(local, remote));
 
@@ -1488,8 +2072,16 @@ pub mod tests {
     pub fn test_tcp_tcb_table_syn_received_count_tracks_establish() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
-        let mut tcb = TcpControlBlock::new(SocketId::from_raw(3), local, remote);
-        tcb.prepare_passive_open(7000, 3000, false, 0, TcpHandshakeOptions::default());
+        let tcb = TcpControlBlock::passive_open(
+            SocketId::from_raw(3),
+            local,
+            remote,
+            7000,
+            3000,
+            false,
+            0,
+            TcpHandshakeOptions::default(),
+        );
         table.insert(tcb).expect("insert syn-received tcb");
 
         assert_eq!(table.syn_recv_count(), 1);
@@ -1508,7 +2100,7 @@ pub mod tests {
     pub fn test_tcp_tcb_table_rejects_invalid_transition() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
-        let tcb = TcpControlBlock::new(SocketId::from_raw(4), local, remote);
+        let tcb = TcpControlBlock::closed(SocketId::from_raw(4), local, remote);
         table.insert(tcb).expect("insert closed tcb");
 
         assert!(!table.establish_syn_received(local, remote, 1));
@@ -1530,9 +2122,17 @@ pub mod tests {
     pub fn test_tcp_tcb_table_established_close_transitions() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
-        let mut tcb = TcpControlBlock::new(SocketId::from_raw(5), local, remote);
-        tcb.initialize_seq(9000);
-        tcb.enter_syn_sent();
+        let tcb = TcpControlBlock::start_connect(
+            SocketId::from_raw(5),
+            local,
+            remote,
+            9000,
+            None,
+            false,
+            0,
+            InterfaceScope::Any,
+            None,
+        );
         table.insert(tcb).expect("insert syn-sent tcb");
         assert!(table.mark_syn_sent(local, remote));
         assert!(table.establish_from_syn_ack(

@@ -293,16 +293,17 @@ impl RuntimeCommandHandler {
 
         let tcb_table = tcp_table_in(runtime);
         let isn = tcb_table.generate_isn(local_addr, remote);
-        let mut tcb = if let Some(algo) = congestion_algo {
-            TcpControlBlock::with_algorithm(fd, local_addr, remote, algo)
-        } else {
-            TcpControlBlock::new(fd, local_addr, remote)
-        };
-        tcb.initialize_seq(isn);
-        tcb.set_nodelay(nodelay);
-        tcb.set_priority(priority);
-        tcb.set_scope(scope, Some(resolved_if));
-        tcb.enter_syn_sent();
+        let tcb = TcpControlBlock::start_connect(
+            fd,
+            local_addr,
+            remote,
+            isn,
+            congestion_algo,
+            nodelay,
+            priority,
+            scope,
+            Some(resolved_if),
+        );
         let _ = tcb_table.insert(tcb);
 
         let syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
@@ -379,16 +380,17 @@ impl RuntimeCommandHandler {
 
         // TCB（TCP Control Block）を作成
         let isn = tcb_table.generate_isn(local_addr, remote);
-        let mut tcb = if let Some(algo) = congestion_algo {
-            TcpControlBlock::with_algorithm(fd, local_addr, remote, algo)
-        } else {
-            TcpControlBlock::new(fd, local_addr, remote)
-        };
-        tcb.initialize_seq(isn);
-        tcb.set_nodelay(nodelay);
-        tcb.set_priority(priority); // 設定を反映
-        tcb.set_scope(scope, preferred_if);
-        tcb.enter_syn_sent();
+        let tcb = TcpControlBlock::start_connect(
+            fd,
+            local_addr,
+            remote,
+            isn,
+            congestion_algo,
+            nodelay,
+            priority,
+            scope,
+            preferred_if,
+        );
         let _ = tcb_table.insert(tcb);
 
         // SYNパケット構築 (TCPオプション付き)
@@ -485,12 +487,7 @@ impl RuntimeCommandHandler {
         }
 
         // TCBテーブルにリスナーエントリを作成
-        let mut tcb = TcpControlBlock::new(
-            fd,
-            local,
-            EndpointAddr::new([0, 0, 0, 0], 0), // リモートは未定
-        );
-        tcb.enter_listen();
+        let tcb = TcpControlBlock::listen(fd, local);
         // backlog値を保存（接続要求キューの最大サイズ）
         // 注: 実際の接続要求キューはTCBテーブル側で管理
         let _ = backlog; // 現在のTCB構造体にはbacklogフィールドなし
