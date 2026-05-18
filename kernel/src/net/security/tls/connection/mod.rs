@@ -30,9 +30,9 @@ const TLS_EXTENSION_SCRATCH_CAPACITY: usize = 2048;
 ///
 /// # 使用上の注意
 /// この構造体は多数のフィールドを持ち、スタック上で数KBを消費します。
-/// スタックオーバーフローを避けるため、`Box<TlsConnection>` での
+/// スタックオーバーフローを避けるため、`Box<ExperimentalTlsConnection>` での
 /// ヒープ確保を推奨します。
-pub struct TlsConnection {
+pub struct ExperimentalTlsConnection {
     config: TlsConfig,
     negotiation: NegotiationState,
     record: RecordProtectionState,
@@ -41,7 +41,7 @@ pub struct TlsConnection {
     transcript: TranscriptState,
 }
 
-impl TlsConnection {
+impl ExperimentalTlsConnection {
     pub fn new(mut config: TlsConfig) -> Self {
         let client_random = random_or_panic("TLS client random");
         let server_name = config.server_name.take();

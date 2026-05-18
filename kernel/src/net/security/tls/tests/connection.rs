@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::super::protocol::ContentType;
-use super::super::{TlsBytes, TlsConfig, TlsConnection, TlsError, TlsState};
+use super::super::{TlsBytes, TlsConfig, ExperimentalTlsConnection, TlsError, TlsState};
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -49,7 +49,7 @@ fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_truncated_header() {
     let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
+    let mut conn = ExperimentalTlsConnection::new(config);
 
     let data = [2u8, 0, 0];
     let result = conn.process_handshake(handshake_payload(&data));
@@ -60,7 +60,7 @@ pub(crate) fn test_process_handshake_truncated_header() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_connection_initial_state() {
     let config = TlsConfig::new();
-    let conn = TlsConnection::new(config);
+    let conn = ExperimentalTlsConnection::new(config);
     assert_eq!(conn.state(), TlsState::Initial);
     assert!(conn.negotiated_version().is_none());
 }
@@ -71,7 +71,7 @@ pub(crate) fn test_tls_connection_client_hello() {
     let config = TlsConfig::new()
         .with_server_name("example.com")
         .expect("test server name fits fixed TLS capacity");
-    let mut conn = TlsConnection::new(config);
+    let mut conn = ExperimentalTlsConnection::new(config);
 
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
@@ -85,7 +85,7 @@ pub(crate) fn test_tls_connection_client_hello() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_connection_encrypt_not_established() {
     let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
+    let mut conn = ExperimentalTlsConnection::new(config);
     let result = conn.encrypt(b"hello");
     assert!(matches!(result, Err(TlsError::NotConnected)));
 }
@@ -94,7 +94,7 @@ pub(crate) fn test_tls_connection_encrypt_not_established() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_finished_without_verify_data_rejected() {
     let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
+    let mut conn = ExperimentalTlsConnection::new(config);
 
     let data = [20u8, 0, 0, 0];
     let result = conn.process_handshake(handshake_payload(&data));
@@ -107,7 +107,7 @@ pub(crate) fn test_tls13_client_hello_key_share() {
     let config = TlsConfig::new()
         .with_server_name("example.com")
         .expect("test server name fits fixed TLS capacity");
-    let mut conn = TlsConnection::new(config);
+    let mut conn = ExperimentalTlsConnection::new(config);
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
     assert_eq!(hello[0], ContentType::Handshake as u8);
@@ -121,7 +121,7 @@ pub(crate) fn test_tls13_client_hello_key_share() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_supported_versions_only_offer_tls13() {
     let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
+    let mut conn = ExperimentalTlsConnection::new(config);
     let hello = payload_bytes(&conn.build_client_hello_payload());
     let payload = &hello[5..];
 
@@ -138,7 +138,7 @@ pub(crate) fn test_tls13_client_hello_supported_versions_only_offer_tls13() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_has_no_resumption_modes() {
     let config = TlsConfig::new();
-    let mut conn = TlsConnection::new(config);
+    let mut conn = ExperimentalTlsConnection::new(config);
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
     assert!(find_extension_in_hello(&hello, 0x2D).is_none());
@@ -148,21 +148,21 @@ pub(crate) fn test_tls13_client_hello_has_no_resumption_modes() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_strip_content_type() {
     let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17];
-    let result = TlsConnection::tls13_strip_content_type(&data);
+    let result = ExperimentalTlsConnection::tls13_strip_content_type(&data);
     assert!(result.is_some());
     assert_eq!(result.unwrap(), &[0x48, 0x65, 0x6c, 0x6c, 0x6f]);
 
     let data2 = [0x48, 0x65, 0x17, 0x00, 0x00];
-    let result2 = TlsConnection::tls13_strip_content_type(&data2);
+    let result2 = ExperimentalTlsConnection::tls13_strip_content_type(&data2);
     assert!(result2.is_some());
     assert_eq!(result2.unwrap(), &[0x48, 0x65]);
 
     let data3 = [0x16];
-    let result3 = TlsConnection::tls13_strip_content_type(&data3);
+    let result3 = ExperimentalTlsConnection::tls13_strip_content_type(&data3);
     assert!(result3.is_some());
     assert!(result3.unwrap().is_empty());
 
     let data4 = [0x00, 0x00, 0x00];
-    let result4 = TlsConnection::tls13_strip_content_type(&data4);
+    let result4 = ExperimentalTlsConnection::tls13_strip_content_type(&data4);
     assert!(result4.is_none());
 }

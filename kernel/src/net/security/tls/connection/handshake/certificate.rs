@@ -2,10 +2,10 @@
 // kernel/src/net/security/tls/connection/handshake/certificate.rs
 // ============================================================================
 
-use super::super::{ServerPublicKey, TlsConnection};
+use super::super::{ServerPublicKey, ExperimentalTlsConnection};
 use crate::net::security::tls::error::{TlsError, TlsResult};
 
-impl TlsConnection {
+impl ExperimentalTlsConnection {
     pub(crate) fn extract_server_public_key_from_spki(
         &mut self,
         spki: crate::net::security::x509::SubjectPublicKeyInfo,

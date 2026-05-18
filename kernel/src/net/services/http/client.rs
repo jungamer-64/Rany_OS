@@ -11,7 +11,7 @@ use super::types::{
 };
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::security::tls::{TlsConfig, TlsConnection, TlsState};
+use crate::net::security::tls::{TlsConfig, ExperimentalTlsConnection, TlsState};
 use crate::net::services::dns::resolve_ipv4_in;
 use kernel_api::resource::net::PacketPayload;
 
@@ -39,7 +39,7 @@ async fn recv_tls_handshake_payload(
 }
 
 fn process_tls_handshake_payload(
-    tls: &mut TlsConnection,
+    tls: &mut ExperimentalTlsConnection,
     in_payload: PacketPayload,
 ) -> Result<(), HttpClientError> {
     let _ignored_app_data = tls
@@ -49,7 +49,7 @@ fn process_tls_handshake_payload(
 }
 
 async fn send_tls_handshake_followup(
-    tls: &mut TlsConnection,
+    tls: &mut ExperimentalTlsConnection,
     connection: &mut TcpConnection,
 ) -> Result<(), HttpClientError> {
     if tls.state() == TlsState::Tls13ServerFinishedReceived {
@@ -62,7 +62,7 @@ async fn send_tls_handshake_followup(
 }
 
 async fn complete_tls_handshake(
-    tls: &mut TlsConnection,
+    tls: &mut ExperimentalTlsConnection,
     connection: &mut TcpConnection,
 ) -> Result<(), HttpClientError> {
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
@@ -97,7 +97,7 @@ async fn receive_plain_response(
 }
 
 async fn receive_tls_response(
-    tls: &mut TlsConnection,
+    tls: &mut ExperimentalTlsConnection,
     connection: &mut TcpConnection,
     parser: &mut HttpParser,
 ) -> Result<Option<HttpInboundResponse>, HttpClientError> {
@@ -144,7 +144,7 @@ async fn send_over_tls_transport(
     let tls_config = TlsConfig::default()
         .with_server_name(host)
         .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
-    let mut tls = Box::new(TlsConnection::new(tls_config));
+    let mut tls = Box::new(ExperimentalTlsConnection::new(tls_config));
 
     let client_hello = tls.build_client_hello_payload();
     send_payload(connection, client_hello).await?;

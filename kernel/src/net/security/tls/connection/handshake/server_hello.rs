@@ -2,10 +2,10 @@
 // kernel/src/net/security/tls/connection/handshake/server_hello.rs
 // ============================================================================
 
-use super::super::{CipherSuite, PayloadSpanRef, TlsConnection, TlsState, TlsVersion, ecdh};
+use super::super::{CipherSuite, PayloadSpanRef, ExperimentalTlsConnection, TlsState, TlsVersion, ecdh};
 use crate::net::security::tls::error::{TlsError, TlsResult};
 
-impl TlsConnection {
+impl ExperimentalTlsConnection {
     pub(super) fn process_server_hello(&mut self, data: PayloadSpanRef<'_>) -> TlsResult<()> {
         if data.total_len() < 38 {
             return Err(TlsError::DecodeError);

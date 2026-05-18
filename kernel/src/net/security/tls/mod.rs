@@ -28,7 +28,7 @@ mod tests;
 pub mod qemu_tests;
 
 pub use config::TlsConfig;
-pub use connection::TlsConnection;
+pub use connection::ExperimentalTlsConnection;
 pub use credentials::Certificate;
 pub use error::{TlsError, TlsResult};
 pub use protocol::{CipherSuite, TlsVersion};

@@ -6,7 +6,7 @@ use arrayvec::ArrayVec;
 
 use super::super::{
     CipherSuite, ContentType, PacketPayload, PayloadSpanRef, TLS_CA_CERTS_CAPACITY,
-    TLS_CERT_CHAIN_CAPACITY, TlsConnection, TlsError, TlsResult, TlsState, ecdh,
+    TLS_CERT_CHAIN_CAPACITY, ExperimentalTlsConnection, TlsError, TlsResult, TlsState, ecdh,
 };
 use crate::net::security::tls::crypto::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, tls13_derive_secret, tls13_derive_secret_sha384,
@@ -16,7 +16,7 @@ use crate::net::security::tls::crypto::{
     tls13_master_secret_sha384, tls13_verify_data, tls13_verify_data_sha384,
 };
 
-impl TlsConnection {
+impl ExperimentalTlsConnection {
     pub(crate) fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
         let cipher = self
             .negotiation

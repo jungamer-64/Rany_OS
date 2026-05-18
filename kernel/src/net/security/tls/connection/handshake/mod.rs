@@ -2,7 +2,7 @@
 // kernel/src/net/security/tls/connection/handshake/mod.rs - Handshake frame dispatch
 // ============================================================================
 
-use super::super::TlsConnection;
+use super::super::ExperimentalTlsConnection;
 use crate::net::payload::PayloadSpanRef;
 use crate::net::security::tls::error::{TlsError, TlsResult};
 use kernel_api::resource::net::PacketPayload;
@@ -11,7 +11,7 @@ mod certificate;
 mod server_hello;
 mod tls13;
 
-impl TlsConnection {
+impl ExperimentalTlsConnection {
     pub(super) fn dispatch_handshake_message(
         &mut self,
         msg_type: u8,

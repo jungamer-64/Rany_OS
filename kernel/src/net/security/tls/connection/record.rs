@@ -4,7 +4,7 @@
 
 use super::{
     AlertDescription, CipherSuite, ContentType, GeneratedPacketWriter, HandshakeType,
-    PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, TlsConnection, TlsError, TlsResult,
+    PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, ExperimentalTlsConnection, TlsError, TlsResult,
     TlsState, append_payload,
 };
 use crate::net::security::tls::crypto::{
@@ -14,7 +14,7 @@ use crate::net::security::tls::crypto::{
 };
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
-impl TlsConnection {
+impl ExperimentalTlsConnection {
     pub(super) fn set_tls_bytes<const N: usize>(
         slot: &mut TlsBytes<N>,
         data: &[u8],

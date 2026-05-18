@@ -4,13 +4,13 @@
 
 use super::{
     ContentType, GeneratedPacketWriter, HandshakeType, PacketPayload,
-    TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, TlsConnection,
+    TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, ExperimentalTlsConnection,
     TlsState, ecdh,
 };
 use crate::net::security::tls::crypto::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
-impl TlsConnection {
+impl ExperimentalTlsConnection {
     pub(super) fn hash_len(&self) -> usize {
         if self
             .negotiation
