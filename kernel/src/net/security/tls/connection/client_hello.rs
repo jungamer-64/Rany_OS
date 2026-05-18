@@ -3,9 +3,8 @@
 // ============================================================================
 
 use super::{
-    ContentType, GeneratedPacketWriter, HandshakeType, PacketPayload,
-    TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, ExperimentalTlsConnection,
-    TlsState, ecdh,
+    ContentType, ExperimentalTlsConnection, GeneratedPacketWriter, HandshakeType, PacketPayload,
+    TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, TlsState, ecdh,
 };
 use crate::net::security::tls::crypto::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;

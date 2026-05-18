@@ -370,13 +370,13 @@ impl AcceptedConnection {
 static CONN_HASH_SECRET: AtomicU32 = AtomicU32::new(0);
 
 /// ハッシュシークレットを初期化（ネットワークスタック起動時に一度だけ呼ぶ）
-pub(crate) fn init_hash_secrets() {
+pub(crate) fn init_hash_secrets() -> Result<(), crate::net::security::tls::crypto::RandomError> {
     let mut bytes = [0u8; 4];
-    // RDRAND または別のセキュアなソースから取得
-    let rand = crate::net::security::tls::crypto::random_or_panic("network random");
+    let rand = crate::net::security::tls::crypto::generate_random()?;
     bytes.copy_from_slice(&rand[0..4]);
     let secret = u32::from_le_bytes(bytes);
     CONN_HASH_SECRET.store(secret, core::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 
 /// (EndpointAddr, EndpointAddr) の接続キーから FNV-1a ハッシュを計算する。

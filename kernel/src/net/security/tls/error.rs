@@ -29,6 +29,8 @@ pub enum TlsError {
     DecryptError,
     /// MACまたはパディング不正 (bad_record_mac alert)
     BadRecordMac,
+    /// セキュア乱数を取得できない
+    SecureRandomUnavailable,
 }
 
 pub type TlsResult<T> = Result<T, TlsError>;

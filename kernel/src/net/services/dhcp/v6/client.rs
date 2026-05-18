@@ -204,10 +204,14 @@ impl DhcpV6Client {
     }
 
     /// 暗号学的安全な24bitトランザクションIDを生成し保存する
-    fn generate_secure_xid(&self) {
-        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
+    fn generate_secure_xid(&self) -> bool {
+        let Ok(random_bytes) = crate::net::security::tls::crypto::generate_random() else {
+            log::warn!("[NET] DHCPv6: secure XID entropy unavailable");
+            return false;
+        };
         let xid = u32::from_be_bytes([0, random_bytes[0], random_bytes[1], random_bytes[2]]);
         self.xid.store(xid, Ordering::SeqCst);
+        true
     }
 
     pub fn lease(&self) -> Option<DhcpV6Lease> {
@@ -615,7 +619,9 @@ impl DhcpV6Client {
         self.with_lease(|lease| {
             if let Some(lease) = lease {
                 // Generate new XID for the Release transaction
-                self.generate_secure_xid();
+                if !self.generate_secure_xid() {
+                    return;
+                }
 
                 let mut buf = [0u8; 512];
                 match self.build_release(&mut buf, lease) {
@@ -1079,7 +1085,9 @@ impl DhcpV6Client {
                         *sd = Some(src);
                     }
                     // transition to Requesting: Generate a new secure XID
-                    self.generate_secure_xid();
+                    if !self.generate_secure_xid() {
+                        return false;
+                    }
 
                     *st = DhcpV6State::Requesting;
                     self.state_time.store(now, Ordering::SeqCst);
@@ -1159,7 +1167,9 @@ impl DhcpV6Client {
                     if let Ok(mut sd) = self.server_addr.lock() {
                         *sd = Some(src);
                     }
-                    self.generate_secure_xid();
+                    if !self.generate_secure_xid() {
+                        return false;
+                    }
 
                     *st = DhcpV6State::Requesting;
                     self.state_time.store(now, Ordering::SeqCst);
@@ -1228,7 +1238,9 @@ impl DhcpV6Client {
             Ok(mut s) => match *s {
                 DhcpV6State::Init => {
                     // Start new transaction: Generate cryptographically secure SOLICIT XID
-                    self.generate_secure_xid();
+                    if !self.generate_secure_xid() {
+                        return Err("Secure DHCPv6 XID entropy unavailable");
+                    }
 
                     // Send SOLICIT
                     let mut buf = [0u8; 256];
@@ -1323,7 +1335,9 @@ impl DhcpV6Client {
                             let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
                             if elapsed_ms >= (lease.t1 as u64 * 1000) {
                                 // start renewal: Generate secure XID for Renew transaction
-                                self.generate_secure_xid();
+                                if !self.generate_secure_xid() {
+                                    return;
+                                }
 
                                 *s = DhcpV6State::Renewing;
                                 self.state_time.store(current_tick, Ordering::SeqCst);

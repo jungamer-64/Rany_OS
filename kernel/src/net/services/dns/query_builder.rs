@@ -5,9 +5,10 @@
 use super::*;
 
 impl DnsClient {
-    pub(super) fn next_query_id(&self) -> u16 {
-        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
-        u16::from_le_bytes([random_bytes[0], random_bytes[1]])
+    pub(super) fn next_query_id(&self) -> Result<u16, &'static str> {
+        let random_bytes = crate::net::security::tls::crypto::generate_random()
+            .map_err(|_| "Secure DNS query ID entropy unavailable")?;
+        Ok(u16::from_le_bytes([random_bytes[0], random_bytes[1]]))
     }
 
     pub(super) fn register_pending_query_id(&self, id: u16) {
@@ -85,7 +86,7 @@ impl DnsClient {
         name: &DnsNameOwned,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let id = self.next_query_id();
+        let id = self.next_query_id()?;
         self.register_pending_query_id(id);
         self.build_query_payload_for_name_with_id(name, qtype, id)
     }
@@ -158,7 +159,7 @@ impl DnsClient {
         name: &DnsNameOwned,
         qtype: DnsQueryType,
     ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let id = self.next_query_id();
+        let id = self.next_query_id()?;
         self.register_pending_query_id(id);
         self.build_tcp_query_payload_for_name_with_id(name, qtype, id)
     }

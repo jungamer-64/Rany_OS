@@ -3,8 +3,8 @@
 // ============================================================================
 
 use super::{
-    AlertDescription, CipherSuite, ContentType, GeneratedPacketWriter, HandshakeType,
-    PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, ExperimentalTlsConnection, TlsError, TlsResult,
+    AlertDescription, CipherSuite, ContentType, ExperimentalTlsConnection, GeneratedPacketWriter,
+    HandshakeType, PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, TlsError, TlsResult,
     TlsState, append_payload,
 };
 use crate::net::security::tls::crypto::{

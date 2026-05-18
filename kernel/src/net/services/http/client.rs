@@ -11,7 +11,7 @@ use super::types::{
 };
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::security::tls::{TlsConfig, ExperimentalTlsConnection, TlsState};
+use crate::net::security::tls::{ExperimentalTlsConnection, TlsConfig, TlsState};
 use crate::net::services::dns::resolve_ipv4_in;
 use kernel_api::resource::net::PacketPayload;
 
@@ -144,7 +144,10 @@ async fn send_over_tls_transport(
     let tls_config = TlsConfig::default()
         .with_server_name(host)
         .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
-    let mut tls = Box::new(ExperimentalTlsConnection::new(tls_config));
+    let mut tls = Box::new(
+        ExperimentalTlsConnection::new(tls_config)
+            .map_err(|_| HttpClientError::TlsHandshakeFailed)?,
+    );
 
     let client_hello = tls.build_client_hello_payload();
     send_payload(connection, client_hello).await?;

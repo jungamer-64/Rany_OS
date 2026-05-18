@@ -321,7 +321,8 @@ impl DhcpClient {
 
         if *state_guard == DhcpState::Init {
             // Use cryptographically secure random value for XID to prevent spoofing
-            let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
+            let random_bytes = crate::net::security::tls::crypto::generate_random()
+                .map_err(|_| "Secure DHCP XID entropy unavailable")?;
             let xid = u32::from_be_bytes([
                 random_bytes[0],
                 random_bytes[1],
@@ -536,7 +537,8 @@ impl DhcpClient {
         let lease = self.get_active_lease()?;
 
         // INFORM は既存トランザクションと独立した新規XIDを使用する
-        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
+        let random_bytes = crate::net::security::tls::crypto::generate_random()
+            .map_err(|_| "Secure DHCP XID entropy unavailable")?;
         let xid = u32::from_be_bytes([
             random_bytes[0],
             random_bytes[1],

@@ -424,6 +424,7 @@ pub enum RsaError {
     DigestInfoMismatch,
     DigestMismatch,
     ModulusTooSmall,
+    EntropyUnavailable,
 }
 
 fn find_pkcs1_separator(em: &[u8]) -> Result<usize, RsaError> {
@@ -542,7 +543,8 @@ pub fn rsa_pkcs1_encrypt_into(
     let mut ps_remaining = ps_len;
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while ps_remaining > 0 {
-        let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
+        let random_bytes = crate::net::security::tls::crypto::generate_random()
+            .map_err(|_| RsaError::EntropyUnavailable)?;
         for &b in &random_bytes {
             if b != 0 {
                 em[offset] = b;

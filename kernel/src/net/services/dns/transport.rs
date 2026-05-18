@@ -19,7 +19,7 @@ impl DnsClient {
         }
 
         let socket = self.bind_udp_socket()?;
-        let query_id = self.next_query_id();
+        let query_id = self.next_query_id()?;
         self.register_pending_query_id(query_id);
         let result = self
             .query_servers_with_failover(&socket, &servers, name, qtype, tick, query_id)

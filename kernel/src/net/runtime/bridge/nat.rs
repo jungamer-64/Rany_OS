@@ -87,7 +87,7 @@ fn get_current_tick() -> u64 {
 }
 
 /// Generate a random port for NAT to prevent prediction attacks (RFC 6056)
-fn generate_random_port(table: &NatTable) -> u16 {
+fn generate_random_port(table: &NatTable) -> Option<u16> {
     let mut random_bytes = [0u8; 2];
     // Ephemeral port range 49152-65535
     const PORT_START: u32 = NAT_EPHEMERAL_PORT_START as u32;
@@ -95,9 +95,8 @@ fn generate_random_port(table: &NatTable) -> u16 {
     const RANGE: u32 = PORT_END - PORT_START + 1;
 
     for _ in 0..100 {
-        random_bytes.copy_from_slice(
-            &crate::net::security::tls::crypto::random_or_panic("network random")[0..2],
-        );
+        let entropy = crate::net::security::tls::crypto::generate_random().ok()?;
+        random_bytes.copy_from_slice(&entropy[0..2]);
         let port = (PORT_START + (u16::from_be_bytes(random_bytes) as u32 % RANGE)) as u16;
 
         // Check if port is already used in any entry
@@ -109,11 +108,10 @@ fn generate_random_port(table: &NatTable) -> u16 {
             }
         }
         if !used {
-            return port;
+            return Some(port);
         }
     }
-    // Fallback if randomization fails (rare)
-    NAT_EPHEMERAL_PORT_START
+    None
 }
 
 pub fn nat_translate_in_in(
@@ -201,7 +199,10 @@ pub fn nat_translate_out_in(
         .and_then(|iface| iface.config.map(|cfg| cfg.ipv4.address))
         .unwrap_or(Ipv4Address::new([192, 168, 1, 100]));
 
-    let ext_port = generate_random_port(&table);
+    let Some(ext_port) = generate_random_port(&table) else {
+        log::warn!("[NAT] secure entropy unavailable, dropping NAT allocation");
+        return None;
+    };
 
     let entry = NatEntry {
         protocol: proto,

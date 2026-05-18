@@ -57,11 +57,11 @@ fn scopes_conflict(lhs: InterfaceScope, rhs: InterfaceScope) -> bool {
     }
 }
 
-fn random_ephemeral_start() -> u16 {
-    let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
+fn random_ephemeral_start() -> Option<u16> {
+    let random_bytes = crate::net::security::tls::crypto::generate_random().ok()?;
     let random_start = u16::from_be_bytes([random_bytes[0], random_bytes[1]]);
     let range_size = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
-    EPHEMERAL_PORT_START + (random_start % range_size)
+    Some(EPHEMERAL_PORT_START + (random_start % range_size))
 }
 
 fn allocate_ephemeral_port_from(
@@ -69,7 +69,7 @@ fn allocate_ephemeral_port_from(
     next_ephemeral_port: &AtomicU32,
 ) -> Option<u16> {
     let range_size = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
-    let start_port = random_ephemeral_start();
+    let start_port = random_ephemeral_start()?;
     let ports_guard = ports.read().unwrap_or_else(|e| e.into_inner());
     for offset in 0..range_size {
         let port = EPHEMERAL_PORT_START

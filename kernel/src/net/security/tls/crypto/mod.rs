@@ -30,15 +30,6 @@ pub(crate) use aes_gcm::{aes_gcm_decrypt_into, aes_gcm_encrypt_into};
 pub use chacha20::{chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place};
 
 // ── Random ───────────────────────────────────────────────────────────────────
-pub(crate) use random::generate_random;
-
-pub(crate) fn random_or_panic(context: &'static str) -> [u8; 32] {
-    match generate_random() {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            panic!("[CRITICAL SECURITY] secure random unavailable for {context}: {error:?}")
-        }
-    }
-}
+pub(crate) use random::{RandomError, generate_random};
 #[cfg(feature = "qemu-test-export")]
 pub use random::{qemu_test_clear_random_override, qemu_test_set_random_override_seed};

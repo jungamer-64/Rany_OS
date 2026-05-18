@@ -150,14 +150,20 @@ pub(crate) fn init_network_infra() {
     info!(target: "init", "Initializing network infrastructure (pre-executor)");
 
     // Initialize hash secrets for sharded structures (e.g. OOO queue)
-    crate::net::l4::types::init_hash_secrets();
+    if let Err(error) = crate::net::l4::types::init_hash_secrets() {
+        panic!("[NET] boot-time hash secret entropy unavailable: {error:?}");
+    }
 
     // Initialize firewall with secure default rules
     crate::net::security::firewall::setup_default_firewall();
 
     // Initialize TCP SYN cookies
-    crate::net::runtime::transport::tcp_table_in(crate::net::runtime::default_runtime())
-        .init_syncookies();
+    if let Err(error) =
+        crate::net::runtime::transport::tcp_table_in(crate::net::runtime::default_runtime())
+            .init_syncookies()
+    {
+        panic!("[NET] boot-time TCP secret entropy unavailable: {error:?}");
+    }
 
     let net_runtime = crate::net::runtime::default_runtime();
     let stack_initialized = crate::net::runtime::device::is_initialized_in(net_runtime);

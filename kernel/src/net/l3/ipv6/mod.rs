@@ -122,10 +122,10 @@ impl Ipv6Address {
     /// Create a global address from a /64 prefix + random interface ID (RFC 4941)
     ///
     /// Used for IPv6 Privacy Extensions to prevent tracking via the MAC address.
-    pub fn from_prefix_random(prefix: &Ipv6Address) -> Self {
+    pub fn from_prefix_random(prefix: &Ipv6Address) -> Option<Self> {
         let p = prefix.as_bytes();
         // Generate 8 bytes of entropy for the interface identifier
-        let rand = crate::net::security::tls::crypto::random_or_panic("network random");
+        let rand = crate::net::security::tls::crypto::generate_random().ok()?;
 
         let mut addr = [0u8; 16];
         addr[0..8].copy_from_slice(&p[0..8]);
@@ -135,7 +135,7 @@ impl Ipv6Address {
         // per RFC 4941, although many implementations just use full randomness.
         addr[8] &= !0x02;
 
-        Self(addr)
+        Some(Self(addr))
     }
 
     /// Get raw bytes

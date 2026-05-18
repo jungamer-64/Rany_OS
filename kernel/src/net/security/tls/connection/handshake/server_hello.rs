@@ -2,7 +2,9 @@
 // kernel/src/net/security/tls/connection/handshake/server_hello.rs
 // ============================================================================
 
-use super::super::{CipherSuite, PayloadSpanRef, ExperimentalTlsConnection, TlsState, TlsVersion, ecdh};
+use super::super::{
+    CipherSuite, ExperimentalTlsConnection, PayloadSpanRef, TlsState, TlsVersion, ecdh,
+};
 use crate::net::security::tls::error::{TlsError, TlsResult};
 
 impl ExperimentalTlsConnection {

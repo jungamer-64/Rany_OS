@@ -19,7 +19,7 @@ mod record;
 mod state;
 mod transcript;
 
-use super::crypto::random_or_panic;
+use super::crypto::generate_random;
 use state::{HandshakeSecrets, NegotiationState, RecordProtectionState, Tls13State};
 use transcript::TranscriptState;
 
@@ -42,18 +42,18 @@ pub struct ExperimentalTlsConnection {
 }
 
 impl ExperimentalTlsConnection {
-    pub fn new(mut config: TlsConfig) -> Self {
-        let client_random = random_or_panic("TLS client random");
+    pub fn new(mut config: TlsConfig) -> TlsResult<Self> {
+        let client_random = generate_random().map_err(|_| TlsError::SecureRandomUnavailable)?;
         let server_name = config.server_name.take();
 
-        Self {
+        Ok(Self {
             config,
             negotiation: NegotiationState::new(server_name, client_random),
             record: RecordProtectionState::default(),
             handshake_secrets: HandshakeSecrets::default(),
             tls13: Tls13State::default(),
             transcript: TranscriptState::default(),
-        }
+        })
     }
 
     pub fn state(&self) -> TlsState {

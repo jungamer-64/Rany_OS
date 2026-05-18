@@ -1042,16 +1042,17 @@ impl TcbTable {
     }
 
     /// シークレットキーを初期化する
-    pub fn init_syncookies(&self) {
+    pub fn init_syncookies(&self) -> Result<(), crate::net::security::tls::crypto::RandomError> {
         if let Ok(mut secret) = self.syncookie_secret.write() {
-            let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
+            let random_bytes = crate::net::security::tls::crypto::generate_random()?;
             secret.copy_from_slice(&random_bytes[0..32]);
         }
         if let Ok(mut secret) = self.isn_secret.write() {
-            let random_bytes = crate::net::security::tls::crypto::random_or_panic("network random");
+            let random_bytes = crate::net::security::tls::crypto::generate_random()?;
             secret.copy_from_slice(&random_bytes[0..32]);
         }
         log::info!("[TCP] SYN Cookies and ISN secrets initialized.");
+        Ok(())
     }
 
     /// SYN Cookie を生成する (RFC 4987)

@@ -2,7 +2,7 @@
 // kernel/src/net/security/tls/connection/handshake/certificate.rs
 // ============================================================================
 
-use super::super::{ServerPublicKey, ExperimentalTlsConnection};
+use super::super::{ExperimentalTlsConnection, ServerPublicKey};
 use crate::net::security::tls::error::{TlsError, TlsResult};
 
 impl ExperimentalTlsConnection {

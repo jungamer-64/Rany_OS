@@ -102,7 +102,10 @@ impl DnsClient {
             Err(_) => return Err((name, "TCP connection failed")),
         };
 
-        let query_id = self.next_query_id();
+        let query_id = match self.next_query_id() {
+            Ok(query_id) => query_id,
+            Err(err) => return Err((name, err)),
+        };
         self.register_pending_query_id(query_id);
         let payload = match self.build_tcp_query_payload_for_name_with_id(&name, qtype, query_id) {
             Ok(payload) => payload,
