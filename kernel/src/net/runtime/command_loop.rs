@@ -8,9 +8,9 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::command::command_queue_in;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::transport::tcp_table_in;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 /// ネットワークイベント処理タスク（完全非同期版）
 ///
@@ -23,10 +23,6 @@ use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 /// - バッチサイズに上限を設け、長時間のロック保持によるスターベーションを防止
 /// - バッチ間でロックを解放し、yield_now()で他のタスクに実行機会を与える
 /// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
-pub(crate) async fn runtime_command_task() {
-    runtime_command_task_in(default_runtime()).await;
-}
-
 pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
     log::info!(
         "[NET] runtime_command_task started on CPU {} (fully async)",

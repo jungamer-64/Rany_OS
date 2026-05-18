@@ -10,11 +10,11 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{CommandFuture, CommandReplyTicket, new_command_channel_in};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
 use crate::net::runtime::transport::tcp_table_in;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 use crate::net::services::dhcp;
 
 extern crate alloc;
@@ -79,13 +79,12 @@ pub fn lease_remaining_secs(total: u32, obtained_at: u64, now: u64, tick_rate: u
     total.saturating_sub(core::cmp::min(elapsed, u32::MAX as u64) as u32)
 }
 
-/// DHCP/mDNS/DNS ランタイム初期化
+/// 指定runtimeのDHCP/mDNS/DNSランタイム初期化
 ///
 /// エグゼキュータ起動前の初期化処理のため、同期版スタックアクセスを使用。
 /// この関数は一度だけ呼ばれるブートストラップ処理であり、
 /// 同期ロック取得は許容される。
-pub fn init_dhcp_runtime() -> Result<(), String> {
-    let runtime = default_runtime();
+pub fn init_dhcp_runtime_in(runtime: NetRuntimeHandle) -> Result<(), String> {
     let interfaces = manager::list_interfaces_in(runtime)
         .ok()
         .unwrap_or_default();
@@ -108,7 +107,7 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
         let Some(config) = iface.config else {
             continue;
         };
-        if let Err(err) = dhcp::ensure_interface_runtime(iface.if_id, config) {
+        if let Err(err) = dhcp::ensure_interface_runtime_in(runtime, iface.if_id, config) {
             log::warn!(
                 "[NET] DHCPv4 interface runtime init failed: if{} err={}",
                 iface.if_id.0,
@@ -133,9 +132,9 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     crate::net::services::mdns::init_in(runtime, hostname, ip);
 
     // DNS 初期化
-    crate::net::services::dns::init(1000);
+    crate::net::services::dns::init_in(runtime, 1000);
     if !dns_servers.is_empty() {
-        crate::net::services::dns::set_ipv4_servers(&dns_servers);
+        crate::net::services::dns::set_ipv4_servers_in(runtime, &dns_servers);
     }
 
     // DHCPv4 is driven by the per-interface runtime registry; bootstrap only
@@ -148,14 +147,13 @@ pub fn init_dhcp_runtime() -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn start_background_service_tasks() {
-    let runtime = default_runtime();
+pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
     let has_dhcpv6 = dhcp::primary_v6_client_in(runtime).is_some();
     let has_mdns = crate::net::services::mdns::service_in(runtime)
         .lock()
         .ok()
         .is_some_and(|guard| guard.is_some());
-    let has_dns = crate::net::services::dns::shared_client().is_some();
+    let has_dns = crate::net::services::dns::shared_client_in(runtime).is_some();
 
     if !has_dhcpv6 && !has_mdns && !has_dns {
         log::info!("[NET][boot] network service tasks not started: runtime services unavailable");
@@ -167,7 +165,7 @@ pub(crate) fn start_background_service_tasks() {
         return;
     }
 
-    // DHCPv6 tasks are now spawned in dhcp::ensure_interface_runtime()
+    // DHCPv6 tasks are now spawned in dhcp::ensure_interface_runtime_in()
     // which is called from init_dhcp_runtime().
     if has_dhcpv6 {
         log::info!("[NET][boot] DHCPv6 multi-interface tasks already scheduled");
@@ -202,7 +200,7 @@ pub(crate) fn start_background_service_tasks() {
                 "[NET][boot] DNS client task running on CPU {}",
                 crate::cpu::try_current_id().unwrap_or(0)
             );
-            let client = crate::net::services::dns::shared_client();
+            let client = crate::net::services::dns::shared_client_in(runtime);
             if let Some(client) = client {
                 let _ = client.run().await;
             }

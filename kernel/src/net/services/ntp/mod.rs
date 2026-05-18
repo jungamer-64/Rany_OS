@@ -7,6 +7,7 @@ use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::EndpointError;
 use crate::net::l4::udp::UdpAddr;
 use crate::net::payload::GeneratedPacketWriter;
+use crate::net::runtime::NetRuntimeHandle;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
@@ -110,13 +111,15 @@ impl NtpHeader {
 
 /// NTP Client State
 pub struct NtpClient {
+    runtime: NetRuntimeHandle,
     server: Option<Ipv4Address>,
     last_sync_uptime: AtomicU64,
 }
 
 impl NtpClient {
-    pub fn new() -> Self {
+    pub fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             server: None,
             last_sync_uptime: AtomicU64::new(0),
         }
@@ -138,7 +141,7 @@ impl NtpClient {
         let remote = UdpAddr::new(server_ip, NTP_PORT);
 
         let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
-            crate::net::runtime::default_runtime(),
+            self.runtime,
             crate::net::types::InterfaceScope::Any,
             0,
             None,
@@ -218,8 +221,8 @@ impl NtpClient {
 
 /// NTP同期バックグラウンドタスク
 /// 1時間おきに時刻を同期する
-pub async fn ntp_sync_task(server: Ipv4Address) {
-    let mut client = NtpClient::new();
+pub async fn ntp_sync_task(runtime: NetRuntimeHandle, server: Ipv4Address) {
+    let mut client = NtpClient::new(runtime);
     client.set_server(server);
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;

@@ -42,7 +42,7 @@ impl DnsClient {
 
     fn bind_udp_socket(&self) -> Result<crate::net::l4::udp::UdpEndpoint, &'static str> {
         crate::net::l4::udp::UdpEndpoint::bind_in(
-            crate::net::runtime::default_runtime(),
+            self.runtime,
             crate::net::types::InterfaceScope::Any,
             0,
             None,

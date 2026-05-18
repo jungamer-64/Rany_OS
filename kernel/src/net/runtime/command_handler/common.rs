@@ -96,21 +96,6 @@ pub(super) fn finish_command<T: CommandReplyPayload>(
     EventHandleResult::Success
 }
 
-#[inline]
-pub(super) fn stackless_dhcp_state_unavailable() -> crate::net::api::dhcp::DhcpRuntimeState {
-    crate::net::api::dhcp::DhcpRuntimeState {
-        v4_state: alloc::string::String::from("Unavailable"),
-        v4_assigned_ip: None,
-        v4_lease_remaining: None,
-        v4_last_declined: None,
-        v4_last_released: None,
-        v6_state: alloc::string::String::from("Unavailable"),
-        v6_assigned_ip: None,
-        v6_preferred_remaining: None,
-        v6_valid_remaining: None,
-    }
-}
-
 /// IPv4 ペイロードからトランスポート層の送信元/宛先ポートを抽出する。
 ///
 /// TCP (proto=6) / UDP (proto=17) の場合、ヘッダ先頭 4 バイトに

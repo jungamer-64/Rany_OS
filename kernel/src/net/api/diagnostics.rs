@@ -44,10 +44,11 @@ mod tests {
     where
         F: Future,
     {
-        crate::net::runtime::command::reset_command_system_for_tests();
+        let runtime = crate::net::runtime::default_runtime();
+        crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
         let mut executor = crate::task::TestExecutor::new();
         executor.spawn(crate::task::Task::new(async {
-            crate::net::runtime::command_loop::runtime_command_task().await;
+            crate::net::runtime::command_loop::runtime_command_task_in(runtime).await;
         }));
 
         let waker = crate::net::l4::test_support::noop_waker();
@@ -56,12 +57,12 @@ mod tests {
         for _ in 0..100_000 {
             executor.drive_once_for_test();
             if let Poll::Ready(output) = Future::poll(future.as_mut(), &mut cx) {
-                crate::net::runtime::command::reset_command_system_for_tests();
+                crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
                 return output;
             }
         }
 
-        crate::net::runtime::command::reset_command_system_for_tests();
+        crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
         panic!("network_recent_events test timed out")
     }
 

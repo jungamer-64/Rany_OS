@@ -159,10 +159,10 @@ pub(crate) fn init_network_infra() {
     crate::net::runtime::transport::tcp_table_in(crate::net::runtime::default_runtime())
         .init_syncookies();
 
-    let stack_initialized = crate::net::runtime::device::is_initialized();
+    let net_runtime = crate::net::runtime::default_runtime();
+    let stack_initialized = crate::net::runtime::device::is_initialized_in(net_runtime);
     let port_runtime_initialized =
-        !crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime())
-            .is_empty();
+        !crate::net::runtime::device::list_port_ids_in(net_runtime).is_empty();
     let endpoint_manager_initialized = true;
     debug!(
         target: "init",
@@ -178,7 +178,7 @@ pub(crate) fn init_network_infra() {
             "Network stack already initialized by port runtime; skipping default init"
         );
     } else {
-        match crate::net::runtime::device::ensure_stack_initialized() {
+        match crate::net::runtime::device::ensure_stack_initialized_in(net_runtime) {
             Ok(()) => info!(target: "init", "Network stack initialized via port runtime"),
             Err(err) => warn!(
                 target: "init",
@@ -190,10 +190,9 @@ pub(crate) fn init_network_infra() {
 
     info!(target: "init", "Socket registry is owned by each network runtime");
 
-    let stack_initialized = crate::net::runtime::device::is_initialized();
+    let stack_initialized = crate::net::runtime::device::is_initialized_in(net_runtime);
     let port_runtime_initialized =
-        !crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime())
-            .is_empty();
+        !crate::net::runtime::device::list_port_ids_in(net_runtime).is_empty();
     let endpoint_manager_initialized = true;
     info!(
         target: "init",

@@ -11,7 +11,7 @@ extern crate alloc;
 use crate::net::l2::ethernet::MacAddress as StackMacAddress;
 use crate::net::l3::ipv4::Ipv4Config;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::context::{NetRuntimeContext, default_runtime, default_runtime_context};
+use crate::net::runtime::context::{NetRuntimeContext, default_runtime_context};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
 use crate::per_cpu::in_interrupt_context;
@@ -675,10 +675,11 @@ fn runtime_update_link(cookie: usize, port_id: NetPortId, up: bool) -> Result<()
     if up {
         if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
             if let Some(config) = iface.config {
-                let _ = crate::net::services::dhcp::ensure_interface_runtime(if_id, config);
+                let _ =
+                    crate::net::services::dhcp::ensure_interface_runtime_in(runtime, if_id, config);
             }
         }
-        let _ = crate::net::services::dhcp::restart_interface_runtime(if_id);
+        let _ = crate::net::services::dhcp::restart_interface_runtime_in(runtime, if_id);
         if primary_if_in(runtime) == Some(if_id) {
             log::info!(
                 target: "net::device",
@@ -728,6 +729,7 @@ static NET_PORT_RUNTIME_OPS: NetPortRuntimeOps = NetPortRuntimeOps::new(
 pub struct NetDeviceHandle {
     driver: Box<dyn NetDevicePort>,
     binding: PoisonLock<NetDeviceBinding>,
+    owner_runtime: NetRuntimeHandle,
     runtime: NetPortRuntimeHandle,
     tx_queue: NetTxQueue,
     event_sink: NetEventSink,
@@ -744,6 +746,7 @@ impl NetDeviceHandle {
     ) -> Self {
         Self {
             driver,
+            owner_runtime: NetRuntimeHandle::new(context),
             runtime: runtime_handle_for_port(context, binding.port_id),
             binding: PoisonLock::new(binding),
             tx_queue: NetTxQueue::new(),
@@ -766,7 +769,7 @@ impl NetDeviceHandle {
     }
 
     pub fn info(&self) -> NetDeviceInfo {
-        self.info_in(default_runtime())
+        self.info_in(self.owner_runtime)
     }
 
     fn info_in(&self, runtime: NetRuntimeHandle) -> NetDeviceInfo {
@@ -796,7 +799,7 @@ impl NetDeviceHandle {
     }
 
     pub fn enqueue_tx(&self, payload: PacketPayload, meta: NetTxMeta) -> bool {
-        self.enqueue_tx_in(default_runtime(), payload, meta)
+        self.enqueue_tx_in(self.owner_runtime, payload, meta)
     }
 
     fn enqueue_tx_in(
@@ -1129,7 +1132,7 @@ fn config_supports_failover(config: &NetworkConfig) -> bool {
 }
 
 fn interface_supports_failover_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
-    if crate::net::services::dhcp::has_bound_lease(if_id) {
+    if crate::net::services::dhcp::has_bound_lease_in(runtime, if_id) {
         return true;
     }
 
@@ -1172,7 +1175,7 @@ fn apply_primary_runtime_for_interface_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Result<(), &'static str> {
-    if let Some(lease) = crate::net::services::dhcp::lease_for_interface(if_id) {
+    if let Some(lease) = crate::net::services::dhcp::lease_for_interface_in(runtime, if_id) {
         let dns_server = manager::get_interface_in(runtime, if_id)
             .ok()
             .flatten()
@@ -1229,7 +1232,7 @@ fn handle_interface_departure_in(
         .then(|| select_surviving_primary_in(runtime, if_id))
         .flatten();
 
-    let release_sent = crate::net::services::dhcp::release_interface(if_id);
+    let release_sent = crate::net::services::dhcp::release_interface_in(runtime, if_id);
     if release_sent {
         log::info!(
             target: "net::device",
@@ -1245,14 +1248,14 @@ fn handle_interface_departure_in(
         return;
     }
 
-    crate::net::services::dhcp::clear_primary_interface(if_id);
+    crate::net::services::dhcp::clear_primary_interface_in(runtime, if_id);
 
     if let Some(new_if) = candidate {
         set_primary_slot_in(runtime, Some(new_if));
         runtime_context_for(runtime)
             .dhcp_bound_primary_selected
             .store(true, Ordering::Release);
-        crate::net::services::dhcp::mark_primary_interface(new_if);
+        crate::net::services::dhcp::mark_primary_interface_in(runtime, new_if);
         if let Err(err) = apply_primary_runtime_for_interface_in(runtime, new_if) {
             log::warn!(
                 target: "net::device",
@@ -1280,11 +1283,6 @@ fn handle_interface_departure_in(
             reason.as_str()
         );
     }
-}
-
-pub fn ensure_stack_initialized() -> Result<(), &'static str> {
-    let runtime = default_runtime();
-    ensure_stack_initialized_in(runtime)
 }
 
 pub fn ensure_stack_initialized_in(runtime: NetRuntimeHandle) -> Result<(), &'static str> {
@@ -1331,15 +1329,11 @@ pub fn ensure_stack_initialized_in(runtime: NetRuntimeHandle) -> Result<(), &'st
         }
     }
 
-    if let Err(err) = crate::net::api::dhcp::init_dhcp_runtime() {
+    if let Err(err) = crate::net::api::dhcp::init_dhcp_runtime_in(runtime) {
         log::warn!(target: "net::device", "DHCP runtime init failed: {}", err);
     }
 
     Ok(())
-}
-
-pub fn is_initialized() -> bool {
-    is_initialized_in(default_runtime())
 }
 
 pub fn is_initialized_in(runtime: NetRuntimeHandle) -> bool {
@@ -1405,10 +1399,6 @@ fn should_select_as_primary(
     }
 }
 
-pub fn register_port(registration: NetPortRegistration) -> Result<NetIfId, &'static str> {
-    register_port_in(default_runtime(), registration)
-}
-
 pub fn register_port_in(
     runtime: NetRuntimeHandle,
     registration: NetPortRegistration,
@@ -1467,7 +1457,9 @@ pub fn register_port_in(
         }
     }
 
-    if let Err(err) = crate::net::services::dhcp::ensure_interface_runtime(if_id, config) {
+    if let Err(err) =
+        crate::net::services::dhcp::ensure_interface_runtime_in(runtime, if_id, config)
+    {
         log::warn!(
             target: "net::device",
             "DHCP interface runtime init failed for if{}: {}",
@@ -1477,10 +1469,6 @@ pub fn register_port_in(
     }
 
     Ok(if_id)
-}
-
-pub fn bind_port_interface(port_id: NetPortId, if_id: NetIfId) -> Result<(), &'static str> {
-    bind_port_interface_in(default_runtime(), port_id, if_id)
 }
 
 pub fn bind_port_interface_in(
@@ -1528,10 +1516,6 @@ pub fn bind_port_interface_in(
     Ok(())
 }
 
-pub fn unregister_port(if_id: NetIfId) -> bool {
-    unregister_port_in(default_runtime(), if_id)
-}
-
 pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
     let handle = {
         let mut guard = device_manager_in(runtime)
@@ -1547,7 +1531,7 @@ pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
     if let Some(handle) = handle {
         let _ = manager::set_interface_down_in(runtime, if_id);
         handle_interface_departure_in(runtime, if_id, FailoverReason::Unregister);
-        crate::net::services::dhcp::unregister_interface_runtime(if_id);
+        crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
         if let Ok(mut guard) = stack::stack_in(runtime).lock() {
             if let Some(stack) = guard.as_mut() {
                 stack.unregister_interface_state(if_id);
@@ -1569,10 +1553,6 @@ pub fn lookup_if_by_port_id_in(runtime: NetRuntimeHandle, port_id: NetPortId) ->
         .copied()
 }
 
-pub fn list_port_infos() -> Vec<NetDeviceInfo> {
-    list_port_infos_in(default_runtime())
-}
-
 pub fn list_port_infos_in(runtime: NetRuntimeHandle) -> Vec<NetDeviceInfo> {
     device_manager_in(runtime)
         .read()
@@ -1583,17 +1563,9 @@ pub fn list_port_infos_in(runtime: NetRuntimeHandle) -> Vec<NetDeviceInfo> {
         .collect()
 }
 
-pub fn port_info(port_id: NetPortId) -> Option<NetDeviceInfo> {
-    port_info_in(default_runtime(), port_id)
-}
-
 pub fn port_info_in(runtime: NetRuntimeHandle, port_id: NetPortId) -> Option<NetDeviceInfo> {
     let if_id = lookup_if_by_port_id_in(runtime, port_id)?;
     with_port_handle_in(runtime, if_id, |handle| handle.info_in(runtime))
-}
-
-pub fn port_stats(port_id: NetPortId) -> Option<NetPortStats> {
-    port_stats_in(default_runtime(), port_id)
 }
 
 pub fn port_stats_in(runtime: NetRuntimeHandle, port_id: NetPortId) -> Option<NetPortStats> {
@@ -1725,18 +1697,18 @@ pub(crate) fn transmit_registered_tx_request_in(
     }
 }
 
-fn enqueue_event_in(runtime: NetRuntimeHandle, port_id: NetPortId, event: NetDriverEvent) -> bool {
+pub fn enqueue_event_in(
+    runtime: NetRuntimeHandle,
+    port_id: NetPortId,
+    event: NetDriverEvent,
+) -> bool {
     let Some(if_id) = lookup_if_by_port_id_in(runtime, port_id) else {
         return false;
     };
     with_port_handle_in(runtime, if_id, |handle| handle.enqueue_event(event)).unwrap_or(false)
 }
 
-pub fn enqueue_event(port_id: NetPortId, event: NetDriverEvent) -> bool {
-    enqueue_event_in(default_runtime(), port_id, event)
-}
-
-fn enqueue_event_from_isr_in(
+pub fn enqueue_event_from_isr_in(
     runtime: NetRuntimeHandle,
     port_id: NetPortId,
     event: NetDriverEvent,
@@ -1750,14 +1722,11 @@ fn enqueue_event_from_isr_in(
     .unwrap_or(false)
 }
 
-pub fn enqueue_event_from_isr(port_id: NetPortId, event: NetDriverEvent) -> bool {
-    enqueue_event_from_isr_in(default_runtime(), port_id, event)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::net::l3::ipv4::Ipv4Address;
+    use crate::net::runtime::context::default_runtime;
     use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
     struct FakeDriverState {
@@ -1900,7 +1869,10 @@ mod tests {
             flags: NETDEV_FLAG_HEALTHY,
             ..NetDeviceInfo::default()
         };
-        register_port(NetPortRegistration::new(info, driver, primary_policy))
+        register_port_in(
+            default_runtime(),
+            NetPortRegistration::new(info, driver, primary_policy),
+        )
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -1965,7 +1937,7 @@ mod tests {
             Some(NetDriverEvent::QueueWake { queue_index: 3 })
         );
 
-        let _ = unregister_port(if_id);
+        let _ = unregister_port_in(default_runtime(), if_id);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2002,8 +1974,8 @@ mod tests {
         let if_id =
             register_test_port(90, driver, PrimaryPortPolicy::Never).expect("register port");
 
-        let info = port_info(test_port_id(90)).expect("port info");
-        let stats = port_stats(test_port_id(90)).expect("port stats");
+        let info = port_info_in(default_runtime(), test_port_id(90)).expect("port info");
+        let stats = port_stats_in(default_runtime(), test_port_id(90)).expect("port stats");
 
         assert_eq!(
             lookup_if_by_port_id_in(default_runtime(), test_port_id(90)),
@@ -2015,7 +1987,7 @@ mod tests {
         assert_eq!(stats.rx_packets, 7);
         assert!(list_port_ids_in(default_runtime()).contains(&test_port_id(90)));
 
-        assert!(unregister_port(if_id));
+        assert!(unregister_port_in(default_runtime(), if_id));
         assert_eq!(state.stop_calls.load(Ordering::Relaxed), 1);
     }
 
@@ -2032,12 +2004,16 @@ mod tests {
 
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
         assert!(
-            port_info(test_port_id(92)).expect("primary info").flags & NETDEV_FLAG_PRIMARY != 0
+            port_info_in(default_runtime(), test_port_id(92))
+                .expect("primary info")
+                .flags
+                & NETDEV_FLAG_PRIMARY
+                != 0
         );
 
-        assert!(unregister_port(if_b));
+        assert!(unregister_port_in(default_runtime(), if_b));
         assert_eq!(primary_if_in(default_runtime()), Some(if_a));
-        assert!(unregister_port(if_a));
+        assert!(unregister_port_in(default_runtime(), if_a));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2053,10 +2029,10 @@ mod tests {
 
         let lease_a = sample_lease(10);
         let lease_b = sample_lease(20);
-        crate::net::services::dhcp::interface_v4_client(if_a)
+        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_a)
             .expect("dhcp client a")
             .set_lease_for_test(lease_a);
-        crate::net::services::dhcp::interface_v4_client(if_b)
+        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_b)
             .expect("dhcp client b")
             .set_lease_for_test(lease_b);
 
@@ -2071,7 +2047,7 @@ mod tests {
 
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
         assert_eq!(
-            crate::net::services::dhcp::primary_interface_if_id(),
+            crate::net::services::dhcp::primary_interface_if_id_in(default_runtime()),
             Some(if_b)
         );
 
@@ -2099,8 +2075,8 @@ mod tests {
                 .expect("default route");
         assert_eq!(route.if_id, if_b);
 
-        assert!(unregister_port(if_b));
-        assert!(unregister_port(if_a));
+        assert!(unregister_port_in(default_runtime(), if_b));
+        assert!(unregister_port_in(default_runtime(), if_a));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2110,12 +2086,12 @@ mod tests {
         let if_a = register_test_port(95, driver, PrimaryPortPolicy::Auto).expect("register port");
 
         let lease_a = sample_lease(30);
-        crate::net::services::dhcp::interface_v4_client(if_a)
+        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_a)
             .expect("dhcp client a")
             .set_lease_for_test(lease_a);
         set_primary_interface_in(default_runtime(), if_a);
 
-        assert!(unregister_port(if_a));
+        assert!(unregister_port_in(default_runtime(), if_a));
         assert_eq!(primary_if_in(default_runtime()), None);
 
         let cfg = stack::stack_in(default_runtime())
@@ -2141,10 +2117,10 @@ mod tests {
 
         let lease_a = sample_lease(40);
         let lease_b = sample_lease(50);
-        crate::net::services::dhcp::interface_v4_client(if_a)
+        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_a)
             .expect("dhcp client a")
             .set_lease_for_test(lease_a);
-        crate::net::services::dhcp::interface_v4_client(if_b)
+        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_b)
             .expect("dhcp client b")
             .set_lease_for_test(lease_b);
 
@@ -2162,8 +2138,8 @@ mod tests {
         assert!(!claim_bound_primary_slot_in(default_runtime(), if_a));
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
 
-        assert!(unregister_port(if_b));
-        assert!(unregister_port(if_a));
+        assert!(unregister_port_in(default_runtime(), if_b));
+        assert!(unregister_port_in(default_runtime(), if_a));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2193,8 +2169,8 @@ mod tests {
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
         assert_eq!(test_stack.resolve_ingress_if(None), if_b);
 
-        assert!(unregister_port(if_b));
-        assert!(unregister_port(if_a));
+        assert!(unregister_port_in(default_runtime(), if_b));
+        assert!(unregister_port_in(default_runtime(), if_a));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

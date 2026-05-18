@@ -132,11 +132,7 @@ impl DhcpV6Client {
         Ok(())
     }
 
-    pub fn new(mac: crate::net::l2::ethernet::MacAddress) -> Self {
-        Self::new_in(crate::net::runtime::default_runtime(), mac)
-    }
-
-    pub fn new_in(
+    pub fn new(
         runtime: crate::net::runtime::NetRuntimeHandle,
         mac: crate::net::l2::ethernet::MacAddress,
     ) -> Self {
@@ -1537,7 +1533,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_build_solicit_min_size() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         let mut buf = [0u8; 256];
         let now = 1000u64;
 
@@ -1554,7 +1550,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_parse_reply_with_iaaddr() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         // construct a fake REPLY that contains IA_NA with IAADDR
         let mut pkt = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24];
         pkt[0] = DhcpV6MessageType::Reply as u8;
@@ -1589,7 +1585,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_build_request_min_size() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         let lease = DhcpV6Lease {
             addr: crate::net::l3::ipv6::Ipv6Address::new([
                 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
@@ -1625,7 +1621,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_bound_to_renewing_and_rebinding_transitions() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         // set lease with T1 = 1 second, T2 = 2 seconds, valid = 10 seconds
         let lease = DhcpV6Lease {
             addr: crate::net::l3::ipv6::Ipv6Address::new([
@@ -1664,7 +1660,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_handle_packet_stores_server_addr_and_duid() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
 
         // Build a REPLY that contains Server Identifier (option 2) + IA_NA with IAADDR
         let server_duid: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
@@ -1733,7 +1729,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_advertise_triggers_request_and_requesting_state() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
 
         // Put client into SolicitSent
         if let Ok(mut st) = client.state.lock() {
@@ -1777,7 +1773,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_requesting_retransmit_exhaustion_goes_to_init() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         if let Ok(mut st) = client.state.lock() {
             *st = DhcpV6State::Requesting;
         }
@@ -1794,7 +1790,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_force_renew_or_restart_paths() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         let lease = DhcpV6Lease {
             addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]),
             preferred_lifetime: 3600,
@@ -1825,7 +1821,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_solicit_advertise_request_reply_complete_flow() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
 
         // Start from Init -> send SOLICIT (simulate periodic trigger)
         if let Ok(mut st) = client.state.lock() {
@@ -1881,7 +1877,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_renew_uses_known_server_address_for_dst() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         let lease = DhcpV6Lease {
             addr: crate::net::l3::ipv6::Ipv6Address::new([
                 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5,
@@ -1920,7 +1916,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_build_renew_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         let lease = DhcpV6Lease {
             addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xa]),
             preferred_lifetime: 3600,
@@ -1952,7 +1948,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_build_rebind_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         let lease = DhcpV6Lease {
             addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xb]),
             preferred_lifetime: 3600,
@@ -1985,7 +1981,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_build_release_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         let lease = DhcpV6Lease {
             addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xc]),
             preferred_lifetime: 3600,
@@ -2007,7 +2003,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_release_clears_lease_and_state() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
         let lease = DhcpV6Lease {
             addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xd]),
             preferred_lifetime: 3600,
@@ -2046,7 +2042,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_parse_reply_with_dns_servers() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
 
         // Build a REPLY with IA_NA/IAADDR + DNS Recursive Name Server (option 23)
         let dns1 = Ipv6Address::new([
@@ -2100,7 +2096,7 @@ pub(crate) mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_parse_reply_with_status_code_error() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(mac);
+        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), mac);
 
         // Build a REPLY with Status Code = 2 (NoBinding)
         let mut pkt = alloc::vec![0u8; 4 + 4 + 2];

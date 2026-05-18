@@ -65,8 +65,9 @@ impl SystemIntegration {
         let mut tx_packets = 0u64;
         let mut tx_errors = 0u64;
         let mut rx_errors = 0u64;
+        let runtime = crate::net::runtime::default_runtime();
         for port_id in &port_ids {
-            if let Some(stats) = crate::net::runtime::device::port_stats(*port_id) {
+            if let Some(stats) = crate::net::runtime::device::port_stats_in(runtime, *port_id) {
                 rx_packets = rx_packets.saturating_add(stats.rx_packets);
                 tx_packets = tx_packets.saturating_add(stats.tx_packets);
                 tx_errors = tx_errors.saturating_add(stats.tx_errors);
@@ -75,7 +76,7 @@ impl SystemIntegration {
         }
         self.log(&alloc::format!(
             "  Net port runtime: stack_init={} ports={} rx={} tx={} tx_err={} rx_err={}",
-            crate::net::runtime::device::is_initialized(),
+            crate::net::runtime::device::is_initialized_in(runtime),
             port_ids.len(),
             rx_packets,
             tx_packets,

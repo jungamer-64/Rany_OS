@@ -129,7 +129,7 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
 }
 
 fn net_devices_snapshot() -> alloc::vec::Vec<NetDeviceInfo> {
-    crate::net::runtime::device::list_port_infos()
+    crate::net::runtime::device::list_port_infos_in(crate::net::runtime::default_runtime())
 }
 
 fn has_sys_admin_capability() -> bool {

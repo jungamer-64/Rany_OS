@@ -23,13 +23,8 @@ impl DhcpClient {
     /// Default retry interval used for retransmits (seconds)
     pub(super) const RETRY_INTERVAL_SECS: u64 = 4;
 
-    /// 新しいDHCPクライアントを作成
-    pub fn new(mac_address: MacAddress) -> Self {
-        Self::new_in(crate::net::runtime::default_runtime(), mac_address)
-    }
-
     /// 指定runtimeに属するDHCPクライアントを作成
-    pub fn new_in(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacAddress) -> Self {
+    pub fn new(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacAddress) -> Self {
         Self {
             runtime,
             mac_address,

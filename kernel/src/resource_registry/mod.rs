@@ -703,11 +703,11 @@ impl NetdevBridgeRegistry {
         let name = leak_driver_name(&registration.info);
         let adapter: Box<dyn NetDevicePort> = Box::new(NetdevPortAdapter::new(registration, name)?);
         let info = adapter.info();
-        let if_id = net_device_runtime::register_port(NetPortRegistration::new(
-            info,
-            adapter,
-            PrimaryPortPolicy::Auto,
-        ))
+        let runtime = crate::net::runtime::default_runtime();
+        let if_id = net_device_runtime::register_port_in(
+            runtime,
+            NetPortRegistration::new(info, adapter, PrimaryPortPolicy::Auto),
+        )
         .map_err(|_| AbiErrorCode::IoError)?;
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         self.entries
@@ -729,7 +729,10 @@ impl NetdevBridgeRegistry {
             entries.remove(&handle)
         };
         if let Some(entry) = entry {
-            let _ = net_device_runtime::unregister_port(entry.if_id);
+            let _ = net_device_runtime::unregister_port_in(
+                crate::net::runtime::default_runtime(),
+                entry.if_id,
+            );
         }
         Ok(())
     }

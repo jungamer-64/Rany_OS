@@ -7,6 +7,7 @@ use alloc::{format, vec};
 use core::sync::atomic::Ordering;
 
 use crate::net::payload::{GeneratedPacketWriter, append_payload};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::services::http::types::{
     ConnectionDirective, HttpInboundRequest, HttpMethod, HttpVersion,
 };
@@ -80,10 +81,13 @@ pub(super) fn build_timeout_response_or_log() -> Option<PacketPayload> {
     )
 }
 
-pub(super) fn build_request_response_or_fallback(request: HttpInboundRequest) -> RequestResponse {
+pub(super) fn build_request_response_or_fallback(
+    runtime: NetRuntimeHandle,
+    request: HttpInboundRequest,
+) -> RequestResponse {
     let keep_alive = keep_alive_for_request(&request);
 
-    match build_response_for_request(request, keep_alive) {
+    match build_response_for_request(runtime, request, keep_alive) {
         Ok(payload) => RequestResponse::Respond {
             payload,
             keep_alive,
@@ -106,16 +110,15 @@ pub(super) fn build_request_response_or_fallback(request: HttpInboundRequest) ->
     }
 }
 
-fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
-    let port_ids =
-        crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime());
+fn aggregate_port_runtime_stats_in(runtime: NetRuntimeHandle) -> (usize, u64, u64, u64, u64) {
+    let port_ids = crate::net::runtime::device::list_port_ids_in(runtime);
     let mut rx_packets = 0u64;
     let mut tx_packets = 0u64;
     let mut tx_errors = 0u64;
     let mut rx_errors = 0u64;
 
     for port_id in &port_ids {
-        if let Some(stats) = crate::net::runtime::device::port_stats(*port_id) {
+        if let Some(stats) = crate::net::runtime::device::port_stats_in(runtime, *port_id) {
             rx_packets = rx_packets.saturating_add(stats.rx_packets);
             tx_packets = tx_packets.saturating_add(stats.tx_packets);
             tx_errors = tx_errors.saturating_add(stats.tx_errors);
@@ -126,11 +129,15 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
     (port_ids.len(), rx_packets, tx_packets, tx_errors, rx_errors)
 }
 
-fn build_health_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let (ports, rx_packets, tx_packets, tx_errors, rx_errors) = aggregate_port_runtime_stats();
+fn build_health_response_in(
+    runtime: NetRuntimeHandle,
+    keep_alive: bool,
+) -> Result<PacketPayload, HttpResponseBuildError> {
+    let (ports, rx_packets, tx_packets, tx_errors, rx_errors) =
+        aggregate_port_runtime_stats_in(runtime);
     let body = format!(
         "{{\"status\":\"ok\",\"port_runtime\":{},\"ports\":{},\"rx\":{},\"tx\":{},\"tx_errors\":{},\"rx_errors\":{}}}",
-        if crate::net::runtime::device::is_initialized() {
+        if crate::net::runtime::device::is_initialized_in(runtime) {
             "true"
         } else {
             "false"
@@ -145,13 +152,14 @@ fn build_health_response(keep_alive: bool) -> Result<PacketPayload, HttpResponse
 }
 
 fn build_response_for_request(
+    runtime: NetRuntimeHandle,
     request: HttpInboundRequest,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
     super::TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
 
     if request.method == HttpMethod::Get {
-        return build_get_response(&request, keep_alive);
+        return build_get_response(runtime, &request, keep_alive);
     }
 
     if request.method == HttpMethod::Post && request.uri_eq("/echo") {
@@ -162,6 +170,7 @@ fn build_response_for_request(
 }
 
 fn build_get_response(
+    runtime: NetRuntimeHandle,
     request: &HttpInboundRequest,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
@@ -169,7 +178,7 @@ fn build_get_response(
         return build_index_response(keep_alive);
     }
     if request.uri_eq("/health") {
-        return build_health_response(keep_alive);
+        return build_health_response_in(runtime, keep_alive);
     }
     if request.uri_eq("/stats") {
         return build_stats_response(keep_alive);

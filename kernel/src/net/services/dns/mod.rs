@@ -7,7 +7,7 @@
 //! 簡易的なキャッシュ機能付き。
 
 use crate::net::payload::{GeneratedPacketWriter, PayloadRange, PayloadSpanRef};
-use crate::net::runtime::context::default_runtime_context;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -689,6 +689,8 @@ pub(crate) fn compare_dns_name_view_to_owned(
 
 /// DNSクライアント
 pub struct DnsClient {
+    /// Runtime that owns this DNS client.
+    runtime: NetRuntimeHandle,
     /// IPv4 DNSサーバーアドレス
     ipv4_servers: PoisonLock<Vec<Ipv4Address>>,
     /// IPv6 DNSサーバーアドレス
@@ -765,14 +767,19 @@ impl DnsRuntimeState {
     }
 }
 
-pub(crate) fn runtime_state() -> &'static DnsRuntimeState {
-    &default_runtime_context().dns
+pub(crate) fn runtime_state_in(runtime: NetRuntimeHandle) -> &'static DnsRuntimeState {
+    &runtime.context().dns
 }
 
-pub(crate) fn shared_client_lock() -> &'static PoisonLock<Option<&'static DnsClient>> {
-    &runtime_state().shared_client
+pub(crate) fn shared_client_lock_in(
+    runtime: NetRuntimeHandle,
+) -> &'static PoisonLock<Option<&'static DnsClient>> {
+    &runtime_state_in(runtime).shared_client
 }
 
-pub(crate) fn shared_client() -> Option<&'static DnsClient> {
-    shared_client_lock().lock().ok().and_then(|guard| *guard)
+pub(crate) fn shared_client_in(runtime: NetRuntimeHandle) -> Option<&'static DnsClient> {
+    shared_client_lock_in(runtime)
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
 }

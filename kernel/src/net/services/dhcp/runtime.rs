@@ -5,9 +5,9 @@
 use super::v4::{DHCP_CLIENT_PORT, DhcpAckResult, DhcpClient, DhcpResponseResult};
 use super::v6::{DHCPV6_CLIENT_PORT, DhcpV6Client};
 use crate::net::l2::ethernet::MacAddress;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::stack::NetworkConfig;
-use crate::net::runtime::{NetRuntimeHandle, context::default_runtime_context};
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -27,12 +27,12 @@ struct DhcpInterfaceRuntime {
 }
 
 impl DhcpInterfaceRuntime {
-    fn new(if_id: NetIfId, config: NetworkConfig) -> &'static Self {
+    fn new(runtime: NetRuntimeHandle, if_id: NetIfId, config: NetworkConfig) -> &'static Self {
         Box::leak(Box::new(Self {
             if_id,
             config,
-            v4: DhcpClient::new(config.mac),
-            v6: DhcpV6Client::new(config.mac),
+            v4: DhcpClient::new(runtime, config.mac),
+            v6: DhcpV6Client::new(runtime, config.mac),
             active: AtomicBool::new(true),
             suspended: AtomicBool::new(false),
             drive_started: AtomicBool::new(false),
@@ -63,10 +63,6 @@ impl DhcpRuntimeState {
     }
 }
 
-pub(crate) fn runtime_state() -> &'static DhcpRuntimeState {
-    &default_runtime_context().dhcp
-}
-
 pub(crate) fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static DhcpRuntimeState {
     &runtime.context().dhcp
 }
@@ -75,15 +71,16 @@ pub(crate) fn primary_v6_client_in(runtime: NetRuntimeHandle) -> Option<&'static
     primary_interface_runtime_in(runtime).map(|runtime| &runtime.v6)
 }
 
-pub(crate) fn ensure_interface_runtime(
+pub(crate) fn ensure_interface_runtime_in(
+    runtime: NetRuntimeHandle,
     if_id: NetIfId,
     config: NetworkConfig,
 ) -> Result<(), &'static str> {
-    ensure_v4_dispatcher_task();
-    ensure_v6_dispatcher_task();
+    ensure_v4_dispatcher_task_in(runtime);
+    ensure_v6_dispatcher_task_in(runtime);
 
-    let runtime = {
-        let mut guard = runtime_state()
+    let interface_runtime = {
+        let mut guard = runtime_state_for(runtime)
             .interface_runtimes
             .lock()
             .map_err(|_| "DHCP interface runtime lock poisoned")?;
@@ -92,55 +89,53 @@ pub(crate) fn ensure_interface_runtime(
             existing.suspended.store(false, Ordering::Release);
             *existing
         } else {
-            let runtime = DhcpInterfaceRuntime::new(if_id, config);
-            guard.insert(if_id, runtime);
-            runtime
+            let interface_runtime = DhcpInterfaceRuntime::new(runtime, if_id, config);
+            guard.insert(if_id, interface_runtime);
+            interface_runtime
         }
     };
 
-    if !runtime.drive_started.swap(true, Ordering::AcqRel) {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(runtime)));
+    if !interface_runtime.drive_started.swap(true, Ordering::AcqRel) {
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(
+            interface_runtime,
+        )));
     }
 
-    if !runtime.v6_drive_started.swap(true, Ordering::AcqRel) {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v6_drive_task(runtime)));
+    if !interface_runtime
+        .v6_drive_started
+        .swap(true, Ordering::AcqRel)
+    {
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v6_drive_task(
+            interface_runtime,
+        )));
     }
 
     Ok(())
 }
 
-pub(crate) fn unregister_interface_runtime(if_id: NetIfId) {
-    let removed = runtime_state()
+pub(crate) fn unregister_interface_runtime_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    let removed = runtime_state_for(runtime)
         .interface_runtimes
         .lock()
         .ok()
         .and_then(|mut guard| guard.remove(&if_id));
-    if let Some(runtime) = removed {
-        runtime.active.store(false, Ordering::Release);
+    if let Some(interface_runtime) = removed {
+        interface_runtime.active.store(false, Ordering::Release);
     }
-    clear_primary_interface(if_id);
+    clear_primary_interface_in(runtime, if_id);
 }
 
-pub(crate) fn mark_primary_interface(if_id: NetIfId) {
-    runtime_state()
+pub(crate) fn mark_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    runtime_state_for(runtime)
         .primary_if_id
         .store(if_id.0, Ordering::Release);
 }
 
-pub(crate) fn clear_primary_interface(if_id: NetIfId) {
-    if runtime_state().primary_if_id.load(Ordering::Acquire) == if_id.0 {
-        runtime_state()
-            .primary_if_id
-            .store(INVALID_IF_ID, Ordering::Release);
+pub(crate) fn clear_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    let state = runtime_state_for(runtime);
+    if state.primary_if_id.load(Ordering::Acquire) == if_id.0 {
+        state.primary_if_id.store(INVALID_IF_ID, Ordering::Release);
     }
-}
-
-fn interface_runtime(if_id: NetIfId) -> Option<&'static DhcpInterfaceRuntime> {
-    runtime_state()
-        .interface_runtimes
-        .lock()
-        .ok()
-        .and_then(|guard| guard.get(&if_id).copied())
 }
 
 fn interface_runtime_in(
@@ -154,19 +149,11 @@ fn interface_runtime_in(
         .and_then(|guard| guard.get(&if_id).copied())
 }
 
-pub(crate) fn interface_v4_client(if_id: NetIfId) -> Option<&'static DhcpClient> {
-    interface_runtime(if_id).map(|runtime| &runtime.v4)
-}
-
 pub(crate) fn interface_v4_client_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Option<&'static DhcpClient> {
     interface_runtime_in(runtime, if_id).map(|runtime| &runtime.v4)
-}
-
-pub(crate) fn lease_for_interface(if_id: NetIfId) -> Option<super::DhcpLease> {
-    interface_v4_client(if_id).and_then(|client| client.lease())
 }
 
 pub(crate) fn lease_for_interface_in(
@@ -176,56 +163,41 @@ pub(crate) fn lease_for_interface_in(
     interface_v4_client_in(runtime, if_id).and_then(|client| client.lease())
 }
 
-pub(crate) fn has_bound_lease(if_id: NetIfId) -> bool {
-    lease_for_interface(if_id).is_some()
-}
-
 pub(crate) fn has_bound_lease_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
     lease_for_interface_in(runtime, if_id).is_some()
 }
 
-pub(crate) fn release_interface(if_id: NetIfId) -> bool {
-    let Some(runtime) = interface_runtime(if_id) else {
+pub(crate) fn release_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
+    let Some(interface_runtime) = interface_runtime_in(runtime, if_id) else {
         return false;
     };
-    runtime.suspended.store(true, Ordering::Release);
-    runtime.v4.release_on(Some(if_id))
+    interface_runtime.suspended.store(true, Ordering::Release);
+    interface_runtime.v4.release_on(Some(if_id))
 }
 
-pub(crate) fn restart_interface_runtime(if_id: NetIfId) -> Result<(), &'static str> {
-    ensure_v4_dispatcher_task();
+pub(crate) fn restart_interface_runtime_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Result<(), &'static str> {
+    ensure_v4_dispatcher_task_in(runtime);
 
-    let Some(runtime) = interface_runtime(if_id) else {
+    let Some(interface_runtime) = interface_runtime_in(runtime, if_id) else {
         return Err("DHCP interface runtime missing");
     };
 
-    runtime.active.store(true, Ordering::Release);
-    runtime.suspended.store(false, Ordering::Release);
+    interface_runtime.active.store(true, Ordering::Release);
+    interface_runtime.suspended.store(false, Ordering::Release);
 
-    if !runtime.drive_started.swap(true, Ordering::AcqRel) {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(runtime)));
+    if !interface_runtime.drive_started.swap(true, Ordering::AcqRel) {
+        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(
+            interface_runtime,
+        )));
     }
 
-    runtime
+    interface_runtime
         .v4
         .force_renew_or_restart(crate::task::current_tick());
     Ok(())
-}
-
-fn primary_interface_runtime() -> Option<&'static DhcpInterfaceRuntime> {
-    let primary_if = runtime_state().primary_if_id.load(Ordering::Acquire);
-    let guard = runtime_state().interface_runtimes.lock().ok()?;
-    if primary_if != INVALID_IF_ID {
-        if let Some(runtime) = guard.get(&NetIfId(primary_if)) {
-            return Some(*runtime);
-        }
-    }
-    guard
-        .values()
-        .find(|runtime| {
-            runtime.active.load(Ordering::Acquire) && !runtime.suspended.load(Ordering::Acquire)
-        })
-        .copied()
 }
 
 fn primary_interface_runtime_in(
@@ -249,10 +221,6 @@ fn primary_interface_runtime_in(
 
 pub(crate) fn primary_v4_client_in(runtime: NetRuntimeHandle) -> Option<&'static DhcpClient> {
     primary_interface_runtime_in(runtime).map(|runtime| &runtime.v4)
-}
-
-pub(crate) fn primary_interface_if_id() -> Option<NetIfId> {
-    primary_interface_runtime().map(|runtime| runtime.if_id)
 }
 
 pub(crate) fn primary_interface_if_id_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
@@ -291,10 +259,6 @@ fn find_runtime_for_v6_payload_in(
     None
 }
 
-fn ensure_v4_dispatcher_task() {
-    ensure_v4_dispatcher_task_in(crate::net::runtime::default_runtime());
-}
-
 fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) {
     if runtime_state_for(runtime)
         .v4_dispatcher_started
@@ -303,10 +267,6 @@ fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) {
     {
         crate::task::spawn_task(crate::task::Task::new(dhcp_v4_dispatcher_task(runtime)));
     }
-}
-
-fn ensure_v6_dispatcher_task() {
-    ensure_v6_dispatcher_task_in(crate::net::runtime::default_runtime());
 }
 
 fn ensure_v6_dispatcher_task_in(runtime: NetRuntimeHandle) {

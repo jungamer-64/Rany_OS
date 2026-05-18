@@ -756,10 +756,10 @@ pub fn poll_timer_events() {
         if NET_DRIVER_POLL_FALLBACK_ENABLED.load(Ordering::Acquire)
             && NET_DRIVER_POLL_FALLBACK_PENDING.swap(false, Ordering::AcqRel)
         {
-            for port_id in crate::net::runtime::device::list_port_ids_in(
-                crate::net::runtime::default_runtime(),
-            ) {
-                let _ = crate::net::runtime::device::enqueue_event(
+            let runtime = crate::net::runtime::default_runtime();
+            for port_id in crate::net::runtime::device::list_port_ids_in(runtime) {
+                let _ = crate::net::runtime::device::enqueue_event_in(
+                    runtime,
                     port_id,
                     kernel_api::service::netdev::NetDriverEvent::Poll,
                 );

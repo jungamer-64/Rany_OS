@@ -88,11 +88,11 @@ impl RuntimeCommandHandler {
                     let is_primary = selected_primary
                         || crate::net::runtime::device::primary_if_in(runtime) == Some(if_id);
                     if is_primary {
-                        crate::net::services::dhcp::mark_primary_interface(if_id);
+                        crate::net::services::dhcp::mark_primary_interface_in(runtime, if_id);
 
                         // DNSサーバーを更新
                         if !dns_servers.is_empty() {
-                            crate::net::services::dns::set_ipv4_servers(&dns_servers);
+                            crate::net::services::dns::set_ipv4_servers_in(runtime, &dns_servers);
                         }
 
                         // mDNS のローカル IP を更新
@@ -140,7 +140,7 @@ impl RuntimeCommandHandler {
                 if is_primary {
                     // DNSサーバーを更新
                     if !dns_servers.is_empty() {
-                        crate::net::services::dns::set_ipv6_servers(&dns_servers);
+                        crate::net::services::dns::set_ipv6_servers_in(runtime, &dns_servers);
                     }
                 }
 
@@ -288,23 +288,10 @@ impl RuntimeCommandHandler {
             }
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetUdpEndpoints { reply },
-            ) => {
-                let mut result = alloc::vec::Vec::new();
-                crate::net::l4::socket::for_each_socket_in(runtime, |endpoint| {
-                    if !endpoint.is_udp() {
-                        return;
-                    }
-                    let Some(local_addr) = endpoint.with_inner(|inner| inner.local_addr).flatten()
-                    else {
-                        return;
-                    };
-                    result.push(crate::net::api::connections::UdpEndpointInfo {
-                        local_addr: alloc::format!("*:{}", local_addr.port()),
-                        remote_addr: alloc::string::String::from("*:*"),
-                    });
-                });
-                finish_command(reply, result)
-            }
+            ) => finish_command(
+                reply,
+                crate::net::api::connections::udp_endpoint_infos_from_runtime_in(runtime),
+            ),
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),
         }
     }

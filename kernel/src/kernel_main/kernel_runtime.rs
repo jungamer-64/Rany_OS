@@ -656,20 +656,20 @@ pub(crate) fn start_async_boot_runtime(context: KernelBootContext) -> ! {
 /// Executor起動後にスポーンされ、ドライバ側の port registration・
 /// DHCP完了待機・接続性確認をすべてasyncコンテキストで実行する。
 /// 設計書 §3「Async-First」原則に準拠し、同期ブロッキングI/Oを排除する。
-/// `net::runtime::device` が `init_dhcp_runtime()` 経由で DHCPv4/v6 クライアント
+/// `net::runtime::device` が `init_dhcp_runtime_in()` 経由で DHCPv4/v6 クライアント
 /// タスクを `spawn_global` するため、port registration 後は DHCP が自動的に
 /// 非同期で走る。このタスクは状態が Bound になるのを待ってから ping で
 /// 接続性を確認する。
 fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
-    let port_ids =
-        crate::net::runtime::device::list_port_ids_in(crate::net::runtime::default_runtime());
+    let runtime = crate::net::runtime::default_runtime();
+    let port_ids = crate::net::runtime::device::list_port_ids_in(runtime);
     let mut rx_packets = 0u64;
     let mut tx_packets = 0u64;
     let mut tx_errors = 0u64;
     let mut rx_errors = 0u64;
 
     for port_id in &port_ids {
-        if let Some(stats) = crate::net::runtime::device::port_stats(*port_id) {
+        if let Some(stats) = crate::net::runtime::device::port_stats_in(runtime, *port_id) {
             rx_packets = rx_packets.saturating_add(stats.rx_packets);
             tx_packets = tx_packets.saturating_add(stats.tx_packets);
             tx_errors = tx_errors.saturating_add(stats.tx_errors);
@@ -683,9 +683,9 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
 fn log_network_port_snapshot(stage: &str) {
     let runtime = crate::net::runtime::default_runtime();
     let stack_stats = crate::net::runtime::bridge::get_stack_glue_stats_in(runtime);
-    for info in crate::net::runtime::device::list_port_infos() {
+    for info in crate::net::runtime::device::list_port_infos_in(runtime) {
         let runtime_stats =
-            crate::net::runtime::device::port_stats(info.port_id).unwrap_or_default();
+            crate::net::runtime::device::port_stats_in(runtime, info.port_id).unwrap_or_default();
         let link_up = info.flags & kernel_api::service::netdev::NETDEV_FLAG_LINK_UP != 0;
         let healthy = info.flags & kernel_api::service::netdev::NETDEV_FLAG_HEALTHY != 0;
         let mac = info.mac.as_bytes();
@@ -727,7 +727,7 @@ async fn network_bootstrap_task() {
         info!(
             target: "net_boot",
             "No active network ports after driver probes; skipping DHCP/connectivity checks (stack_init={} ports={} rx={} tx={} tx_err={} rx_err={})",
-            crate::net::runtime::device::is_initialized(),
+            crate::net::runtime::device::is_initialized_in(crate::net::runtime::default_runtime()),
             port_count,
             rx_packets,
             tx_packets,
@@ -907,25 +907,26 @@ pub(crate) fn spawn_core_runtime_tasks() {
     info!(target: "init", "ICMP responder server active");
 
     // Initialize network event handler and spawn the background task for async networking
+    let net_runtime = crate::net::runtime::default_runtime();
     crate::net::runtime::command_handler::init_network_event_handler();
     spawn_early_network_task(
         "network event task",
         crate::task::Priority::High,
-        crate::net::runtime::command_loop::runtime_command_task(),
+        crate::net::runtime::command_loop::runtime_command_task_in(net_runtime),
     );
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)
     spawn_early_network_task(
         "network timeout task",
         crate::task::Priority::High,
-        crate::net::runtime::stack::timeout_task(),
+        crate::net::runtime::stack::timeout_task_in(net_runtime),
     );
 
     info!(
         target: "net_boot",
         "Starting deferred DHCP/DNS/mDNS background service tasks on bootstrap CPU0"
     );
-    crate::net::api::dhcp::start_background_service_tasks();
+    crate::net::api::dhcp::start_background_service_tasks_in(net_runtime);
 }
 
 /// カーネルタスクをスポーン

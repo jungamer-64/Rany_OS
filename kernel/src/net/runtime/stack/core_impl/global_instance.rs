@@ -7,7 +7,6 @@ use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
     CommandReplyTicket, new_detached_command_channel_in, poll_command_result,
 };
-use crate::net::runtime::context::default_runtime;
 
 /// Initialize a runtime-local network stack.
 pub(crate) fn init_in(runtime: NetRuntimeHandle) {
@@ -162,11 +161,7 @@ pub(crate) fn enqueue_tcp_v6_send_in(
 /// 以前の実装ではasyncループ内で直接`NETWORK_STACK.lock()`を取得していたが、
 /// イベントキュー経由にすることで、イベントハンドラ側でスタックロックを
 /// 取得して処理するため、ロック競合を回避できる。
-pub(crate) async fn timeout_task() {
-    timeout_task_in(default_runtime()).await;
-}
-
-async fn timeout_task_in(runtime: NetRuntimeHandle) {
+pub(crate) async fn timeout_task_in(runtime: NetRuntimeHandle) {
     log::info!(
         "[NET] timeout_task started on CPU {} (event-queue mode)",
         crate::cpu::try_current_id().unwrap_or(0)

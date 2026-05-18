@@ -10,8 +10,9 @@ use super::types::{
     HttpRequest, HttpRequestTarget, HttpRequestUri,
 };
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::security::tls::{TlsConfig, TlsConnection, TlsState};
-use crate::net::services::dns::resolve_ipv4;
+use crate::net::services::dns::resolve_ipv4_in;
 use kernel_api::resource::net::PacketPayload;
 
 async fn send_payload(
@@ -211,12 +212,14 @@ pub enum HttpClientError {
 
 /// HTTP/HTTPS クライアント
 pub struct HttpClient {
+    runtime: NetRuntimeHandle,
     pub timeout_ms: u64,
 }
 
 impl HttpClient {
-    pub fn new() -> Self {
+    pub fn new(runtime: NetRuntimeHandle) -> Self {
         Self {
+            runtime,
             timeout_ms: 10000, // デフォルト 10秒
         }
     }
@@ -263,13 +266,13 @@ impl HttpClient {
         Ok((req, host, port, is_https))
     }
 
-    async fn connect(host: &str, port: u16) -> Result<TcpConnection, HttpClientError> {
-        let ip_addr = resolve_ipv4(host)
+    async fn connect(&self, host: &str, port: u16) -> Result<TcpConnection, HttpClientError> {
+        let ip_addr = resolve_ipv4_in(self.runtime, host)
             .await
             .ok_or(HttpClientError::DnsResolutionFailed)?;
         let remote_addr = EndpointAddr::new(ip_addr.octets(), port);
 
-        TcpConnection::dial_in(crate::net::runtime::default_runtime(), remote_addr)
+        TcpConnection::dial_in(self.runtime, remote_addr)
             .await
             .map_err(|_| HttpClientError::ConnectionFailed)
     }
@@ -277,7 +280,7 @@ impl HttpClient {
     /// リクエストを非同期で送信し、レスポンスを取得する
     pub async fn send(&self, req: HttpRequest) -> Result<HttpInboundResponse, HttpClientError> {
         let (req, host, port, is_https) = Self::prepare_request(req)?;
-        let mut connection = Self::connect(&host, port).await?;
+        let mut connection = self.connect(&host, port).await?;
         let request_payload = req.into_payload().ok_or(HttpClientError::WriteError)?;
         let mut parser = HttpParser::new();
 

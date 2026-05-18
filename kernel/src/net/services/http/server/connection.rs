@@ -5,6 +5,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::net::l4::tcp::TcpConnection;
+use crate::net::runtime::NetRuntimeHandle;
 use crate::task::{self, TimeoutResult};
 use kernel_api::resource::net::PacketPayload;
 
@@ -68,11 +69,12 @@ fn bad_request_plan() -> Option<ResponsePlan> {
 }
 
 fn plan_from_buffered_payload(
+    runtime: NetRuntimeHandle,
     parser: &mut crate::net::services::http::parser::HttpParser,
 ) -> Option<Option<ResponsePlan>> {
     match parser.try_parse_request() {
         Ok(Some(request)) => Some(request_response_to_plan(
-            router::build_request_response_or_fallback(request),
+            router::build_request_response_or_fallback(runtime, request),
         )),
         Ok(None) => None,
         Err(err) => {
@@ -100,6 +102,7 @@ fn read_deadline_exceeded(attempt: usize, deadline_tick_ms: u64) -> Option<Optio
 }
 
 async fn handle_receive_timeout(
+    runtime: NetRuntimeHandle,
     client: &mut TcpConnection,
     parser: &mut crate::net::services::http::parser::HttpParser,
     deadline_tick_ms: u64,
@@ -117,7 +120,7 @@ async fn handle_receive_timeout(
         let receive_result =
             task::with_timeout(client.recv_payload(), super::HOST_HTTP_READ_TIMEOUT_MS).await;
 
-        match process_receive_result(receive_result, parser, &mut saw_payload).await {
+        match process_receive_result(receive_result, runtime, parser, &mut saw_payload).await {
             ReceiveLoopControl::Continue => {}
             ReceiveLoopControl::Break => break,
             ReceiveLoopControl::Return(outcome) => return outcome,
@@ -133,6 +136,7 @@ async fn handle_receive_timeout(
 
 async fn process_receive_result(
     receive_result: TimeoutResult<Option<PacketPayload>>,
+    runtime: NetRuntimeHandle,
     parser: &mut crate::net::services::http::parser::HttpParser,
     saw_payload: &mut bool,
 ) -> ReceiveLoopControl {
@@ -143,13 +147,14 @@ async fn process_receive_result(
         }
         TimeoutResult::Completed(None) => ReceiveLoopControl::Break,
         TimeoutResult::Completed(Some(payload)) => {
-            process_received_payload(payload, parser, saw_payload)
+            process_received_payload(payload, runtime, parser, saw_payload)
         }
     }
 }
 
 fn process_received_payload(
     payload: PacketPayload,
+    runtime: NetRuntimeHandle,
     parser: &mut crate::net::services::http::parser::HttpParser,
     saw_payload: &mut bool,
 ) -> ReceiveLoopControl {
@@ -162,7 +167,7 @@ fn process_received_payload(
     super::BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
     parser.push_payload(payload);
 
-    if let Some(plan) = plan_from_buffered_payload(parser) {
+    if let Some(plan) = plan_from_buffered_payload(runtime, parser) {
         return ReceiveLoopControl::Return(match plan {
             Some(plan) => ReadOutcome::Send(plan),
             None => ReadOutcome::CloseConnection,
@@ -181,6 +186,7 @@ fn timeout_fallback_plan() -> Option<ResponsePlan> {
 }
 
 async fn determine_response_plan(
+    runtime: NetRuntimeHandle,
     client: &mut TcpConnection,
     parser: &mut crate::net::services::http::parser::HttpParser,
     deadline_tick_ms: u64,
@@ -190,26 +196,31 @@ async fn determine_response_plan(
         return lifetime_exceeded();
     }
 
-    if let Some(plan) = plan_from_buffered_payload(parser) {
+    if let Some(plan) = plan_from_buffered_payload(runtime, parser) {
         return plan;
     }
 
-    match handle_receive_timeout(client, parser, deadline_tick_ms).await {
+    match handle_receive_timeout(runtime, client, parser, deadline_tick_ms).await {
         ReadOutcome::Send(plan) => Some(plan),
         ReadOutcome::NeedTimeoutFallback => timeout_fallback_plan(),
         ReadOutcome::CloseConnection => None,
     }
 }
 
-pub(super) async fn handle_client(mut client: TcpConnection) {
+pub(super) async fn handle_client(runtime: NetRuntimeHandle, mut client: TcpConnection) {
     let mut parser = crate::net::services::http::parser::HttpParser::new();
     let connection_started_tick_ms = crate::task::current_tick();
     let connection_deadline_tick_ms = connection_deadline_tick(connection_started_tick_ms);
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
-        let Some(plan) =
-            determine_response_plan(&mut client, &mut parser, connection_deadline_tick_ms).await
+        let Some(plan) = determine_response_plan(
+            runtime,
+            &mut client,
+            &mut parser,
+            connection_deadline_tick_ms,
+        )
+        .await
         else {
             break;
         };

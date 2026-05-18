@@ -6,17 +6,20 @@ use super::*;
 use alloc::boxed::Box;
 
 /// DNSクライアントを初期化
-pub fn init(tick_rate: u64) {
-    let client = Box::leak(Box::new(DnsClient::new(tick_rate)));
-    match super::shared_client_lock().lock() {
+pub fn init_in(runtime: crate::net::runtime::NetRuntimeHandle, tick_rate: u64) {
+    let client = Box::leak(Box::new(DnsClient::new(runtime, tick_rate)));
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(mut g) => *g = Some(client),
         Err(_) => log::error!("[NET] DNS Global lock poisoned (init) - initialization skipped"),
     }
 }
 
 /// IPv4 DNSサーバーを設定
-pub fn set_ipv4_servers(servers: &[Ipv4Address]) {
-    match super::shared_client_lock().lock() {
+pub fn set_ipv4_servers_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    servers: &[Ipv4Address],
+) {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.set_ipv4_servers(servers);
@@ -29,8 +32,11 @@ pub fn set_ipv4_servers(servers: &[Ipv4Address]) {
 }
 
 /// IPv6 DNSサーバーを設定
-pub fn set_ipv6_servers(servers: &[Ipv6Address]) {
-    match super::shared_client_lock().lock() {
+pub fn set_ipv6_servers_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    servers: &[Ipv6Address],
+) {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.set_ipv6_servers(servers);
@@ -43,8 +49,8 @@ pub fn set_ipv6_servers(servers: &[Ipv6Address]) {
 }
 
 /// IPv6 DNSサーバーを追加
-pub fn add_ipv6_server(server: Ipv6Address) {
-    match super::shared_client_lock().lock() {
+pub fn add_ipv6_server_in(runtime: crate::net::runtime::NetRuntimeHandle, server: Ipv6Address) {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.add_ipv6_server(server);
@@ -57,8 +63,8 @@ pub fn add_ipv6_server(server: Ipv6Address) {
 }
 
 /// IPv4 DNSサーバーを追加
-pub fn add_ipv4_server(server: Ipv4Address) {
-    match super::shared_client_lock().lock() {
+pub fn add_ipv4_server_in(runtime: crate::net::runtime::NetRuntimeHandle, server: Ipv4Address) {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.add_ipv4_server(server);
@@ -71,8 +77,12 @@ pub fn add_ipv4_server(server: Ipv4Address) {
 }
 
 /// キャッシュからIPアドレスを解決
-pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
-    match super::shared_client_lock().lock() {
+pub fn resolve_cached_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    name: &str,
+    current_tick: u64,
+) -> Option<Ipv4Address> {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => g
             .as_ref()
             .and_then(|c| c.resolve_cached(name, current_tick)),
@@ -83,9 +93,12 @@ pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
     }
 }
 
-/// 非同期でIPv4アドレスを解決 (Global API)
-pub async fn resolve_ipv4(name: &str) -> Option<Ipv4Address> {
-    let client = match super::shared_client_lock().lock() {
+/// 非同期でIPv4アドレスを解決
+pub async fn resolve_ipv4_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    name: &str,
+) -> Option<Ipv4Address> {
+    let client = match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => *g,
         Err(_) => None,
     }?;
@@ -94,9 +107,12 @@ pub async fn resolve_ipv4(name: &str) -> Option<Ipv4Address> {
     client.resolve_ipv4(name).await
 }
 
-/// 非同期でIPv6アドレスを解決 (Global API)
-pub async fn resolve_ipv6(name: &str) -> Option<Ipv6Address> {
-    let client = match super::shared_client_lock().lock() {
+/// 非同期でIPv6アドレスを解決
+pub async fn resolve_ipv6_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    name: &str,
+) -> Option<Ipv6Address> {
+    let client = match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => *g,
         Err(_) => None,
     }?;
@@ -104,9 +120,12 @@ pub async fn resolve_ipv6(name: &str) -> Option<Ipv6Address> {
     client.resolve_ipv6(name).await
 }
 
-/// 非同期でTXTレコードを解決 (Global API)
-pub async fn resolve_txt(name: &str) -> Option<Vec<alloc::string::String>> {
-    let client = match super::shared_client_lock().lock() {
+/// 非同期でTXTレコードを解決
+pub async fn resolve_txt_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    name: &str,
+) -> Option<Vec<alloc::string::String>> {
+    let client = match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => *g,
         Err(_) => None,
     }?;
@@ -114,9 +133,12 @@ pub async fn resolve_txt(name: &str) -> Option<Vec<alloc::string::String>> {
     client.resolve_txt(name).await
 }
 
-/// 非同期でSRVレコードを解決 (Global API)
-pub async fn resolve_srv(name: &str) -> Option<Vec<DnsSrvRecord>> {
-    let client = match super::shared_client_lock().lock() {
+/// 非同期でSRVレコードを解決
+pub async fn resolve_srv_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    name: &str,
+) -> Option<Vec<DnsSrvRecord>> {
+    let client = match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => *g,
         Err(_) => None,
     }?;
@@ -124,9 +146,12 @@ pub async fn resolve_srv(name: &str) -> Option<Vec<DnsSrvRecord>> {
     client.resolve_srv(name).await
 }
 
-/// 非同期でMXレコードを解決 (Global API)
-pub async fn resolve_mx(name: &str) -> Option<Vec<DnsMxRecord>> {
-    let client = match super::shared_client_lock().lock() {
+/// 非同期でMXレコードを解決
+pub async fn resolve_mx_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    name: &str,
+) -> Option<Vec<DnsMxRecord>> {
+    let client = match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => *g,
         Err(_) => None,
     }?;
@@ -134,9 +159,12 @@ pub async fn resolve_mx(name: &str) -> Option<Vec<DnsMxRecord>> {
     client.resolve_mx(name).await
 }
 
-/// 非同期でIPv4逆引き（PTR）を解決 (Global API)
-pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<alloc::string::String> {
-    let client = match super::shared_client_lock().lock() {
+/// 非同期でIPv4逆引き（PTR）を解決
+pub async fn resolve_ptr_ipv4_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    ip: Ipv4Address,
+) -> Option<alloc::string::String> {
+    let client = match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => *g,
         Err(_) => None,
     }?;
@@ -144,9 +172,12 @@ pub async fn resolve_ptr_ipv4(ip: Ipv4Address) -> Option<alloc::string::String> 
     client.resolve_ptr_ipv4(ip).await
 }
 
-/// 非同期でIPv6逆引き（PTR）を解決 (Global API)
-pub async fn resolve_ptr_ipv6(ip: Ipv6Address) -> Option<alloc::string::String> {
-    let client = match super::shared_client_lock().lock() {
+/// 非同期でIPv6逆引き（PTR）を解決
+pub async fn resolve_ptr_ipv6_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    ip: Ipv6Address,
+) -> Option<alloc::string::String> {
+    let client = match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => *g,
         Err(_) => None,
     }?;
@@ -154,12 +185,13 @@ pub async fn resolve_ptr_ipv6(ip: Ipv6Address) -> Option<alloc::string::String> 
     client.resolve_ptr_ipv6(ip).await
 }
 
-/// Build a DNS query for TCP transport (global API)
-pub fn build_tcp_query_payload(
+/// Build a DNS query for TCP transport in the specified runtime.
+pub fn build_tcp_query_payload_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
     name: &str,
     qtype: DnsQueryType,
 ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-    match super::shared_client_lock().lock() {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.build_tcp_query_payload(name, qtype)
@@ -174,14 +206,15 @@ pub fn build_tcp_query_payload(
     }
 }
 
-/// Parse a DNS response received over TCP (global API)
-pub fn parse_tcp_response_payload(
+/// Parse a DNS response received over TCP in the specified runtime.
+pub fn parse_tcp_response_payload_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
     payload: kernel_api::resource::net::PacketPayload,
     current_tick: u64,
     expected_name: &str,
     expected_type: DnsQueryType,
 ) -> Result<DnsResponseView, DnsResponseCode> {
-    match super::shared_client_lock().lock() {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.parse_tcp_response_payload(
@@ -201,9 +234,9 @@ pub fn parse_tcp_response_payload(
     }
 }
 
-/// Check if a UDP response requires TCP fallback (global API)
-pub fn needs_tcp_fallback(data: &[u8]) -> bool {
-    match super::shared_client_lock().lock() {
+/// Check if a UDP response requires TCP fallback in the specified runtime.
+pub fn needs_tcp_fallback_in(runtime: crate::net::runtime::NetRuntimeHandle, data: &[u8]) -> bool {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.needs_tcp_fallback(data)
@@ -221,8 +254,8 @@ pub fn needs_tcp_fallback(data: &[u8]) -> bool {
 /// 期限切れDNSキャッシュエントリを定期的にクリーンアップ
 ///
 /// ネットワークスタックの`periodic()`から呼び出される。
-pub fn cleanup_cache(current_tick: u64) {
-    match super::shared_client_lock().lock() {
+pub fn cleanup_cache_in(runtime: crate::net::runtime::NetRuntimeHandle, current_tick: u64) {
+    match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => {
             if let Some(client) = g.as_ref() {
                 client.cleanup_cache(current_tick);

@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll};
 
 use crate::net::l4::tcp::{EndpointAddr, TcpAcceptor, TcpError};
+use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::atomic_waker::AtomicWaker;
 use crate::task::{self, Task, TimeoutResult};
 use kernel_api::service::netdev::NetDriverEvent;
@@ -90,12 +91,11 @@ const fn host_http_idle_wait_ms(consecutive_idle: u32) -> u64 {
     }
 }
 
-fn enqueue_runtime_poll_events() -> usize {
-    let runtime = crate::net::runtime::default_runtime();
+fn enqueue_runtime_poll_events_in(runtime: NetRuntimeHandle) -> usize {
     let mut queued = 0usize;
 
     for port_id in crate::net::runtime::device::list_port_ids_in(runtime) {
-        if crate::net::runtime::device::enqueue_event(port_id, NetDriverEvent::Poll) {
+        if crate::net::runtime::device::enqueue_event_in(runtime, port_id, NetDriverEvent::Poll) {
             queued = queued.saturating_add(1);
         }
     }
@@ -126,7 +126,7 @@ enum ServiceRestartCause {
     NextConnection(TcpError),
 }
 
-pub fn start_once() {
+pub fn start_once(runtime: NetRuntimeHandle) {
     if HOST_HTTP_SERVICE_STARTED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -138,19 +138,19 @@ pub fn start_once() {
     // spawn_on_cpu_with_priority は TaskId を常に返す設計で、失敗パスを公開しない。
     // そのため started フラグは spawn 前に確定し、二重起動を防ぐ。
     log::info!("[HOST-HTTP] scheduling host HTTP service on 0.0.0.0:80");
-    crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async {
+    crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
         log::info!(
             "[HOST-HTTP] net poller running on CPU {}",
             crate::cpu::try_current_id().unwrap_or(0)
         );
-        run_net_poller().await;
+        run_net_poller_in(runtime).await;
     });
-    crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async {
+    crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
         log::info!(
             "[HOST-HTTP] supervisor running on CPU {}",
             crate::cpu::try_current_id().unwrap_or(0)
         );
-        run_service_supervisor().await;
+        run_service_supervisor_in(runtime).await;
     });
 }
 
@@ -161,7 +161,7 @@ pub fn start_once() {
 ///
 /// ネットワークドライバ処理はISR + runtime_command_task で非同期に
 /// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
-async fn run_net_poller() {
+async fn run_net_poller_in(runtime: NetRuntimeHandle) {
     let mut consecutive_idle: u32 = 0;
     let mut observed_signal_seq = current_http_poller_signal_seq();
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
@@ -188,7 +188,7 @@ async fn run_net_poller() {
         // active 接続時は高頻度で、idle 時も最大待機に達したサイクルで Poll を投入する。
         // Queue が埋まっている場合 enqueue_event は false を返すため、ここでは best-effort とする。
         if active > 0 || wait_ms >= HOST_HTTP_IDLE_WAIT_MAX_MS as u64 {
-            let _ = enqueue_runtime_poll_events();
+            let _ = enqueue_runtime_poll_events_in(runtime);
         }
     }
 }
@@ -219,8 +219,7 @@ fn http_config_usable(config: &crate::net::api::config::InterfaceConfigSnapshot)
     config.ip != [0, 0, 0, 0] && config.mac != [0, 0, 0, 0, 0, 0]
 }
 
-fn http_network_ready() -> bool {
-    let runtime = crate::net::runtime::default_runtime();
+fn http_network_ready_in(runtime: NetRuntimeHandle) -> bool {
     if !crate::net::runtime::bridge::get_stack_glue_stats_in(runtime).initialized {
         return false;
     }
@@ -230,10 +229,10 @@ fn http_network_ready() -> bool {
         .is_some_and(http_config_usable)
 }
 
-async fn wait_for_http_network_ready() {
+async fn wait_for_http_network_ready_in(runtime: NetRuntimeHandle) {
     let mut logged_wait = false;
     loop {
-        if http_network_ready() {
+        if http_network_ready_in(runtime) {
             return;
         }
 
@@ -271,21 +270,17 @@ fn log_http_restart(cause: ServiceRestartCause, consecutive_failures: u32, backo
     }
 }
 
-async fn bind_http_acceptor() -> Result<TcpAcceptor, TcpError> {
-    TcpAcceptor::bind_in(
-        crate::net::runtime::default_runtime(),
-        EndpointAddr::new([0, 0, 0, 0], 80),
-    )
-    .await
+async fn bind_http_acceptor_in(runtime: NetRuntimeHandle) -> Result<TcpAcceptor, TcpError> {
+    TcpAcceptor::bind_in(runtime, EndpointAddr::new([0, 0, 0, 0], 80)).await
 }
 
-async fn run_service_supervisor() {
+async fn run_service_supervisor_in(runtime: NetRuntimeHandle) {
     let mut consecutive_failures = 0u32;
 
     loop {
-        wait_for_http_network_ready().await;
+        wait_for_http_network_ready_in(runtime).await;
 
-        let acceptor = match bind_http_acceptor().await {
+        let acceptor = match bind_http_acceptor_in(runtime).await {
             Ok(acceptor) => {
                 if consecutive_failures > 0 {
                     log::info!(
@@ -310,7 +305,7 @@ async fn run_service_supervisor() {
             }
         };
 
-        if let Err(err) = run_service(acceptor).await {
+        if let Err(err) = run_service_in(runtime, acceptor).await {
             let backoff_ms = http_supervisor_backoff_ms(consecutive_failures);
             log_http_restart(
                 ServiceRestartCause::NextConnection(err),
@@ -323,7 +318,7 @@ async fn run_service_supervisor() {
     }
 }
 
-async fn run_service(acceptor: TcpAcceptor) -> Result<(), TcpError> {
+async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Result<(), TcpError> {
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match task::with_timeout(acceptor.next_connection(), 500).await {
@@ -351,7 +346,7 @@ async fn run_service(acceptor: TcpAcceptor) -> Result<(), TcpError> {
 
                 // 【設計書準拠】各接続を独立タスクとしてspawn（並行処理）
                 crate::task::spawn_task(Task::new(async move {
-                    connection::handle_client(client).await;
+                    connection::handle_client(runtime, client).await;
                     ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::AcqRel);
                     notify_http_poller_signal();
                 }));

@@ -96,11 +96,7 @@ impl DnsClient {
 
         let dest = Self::endpoint_addr_for_server(server);
 
-        let connection = crate::net::l4::tcp::TcpConnection::dial_in(
-            crate::net::runtime::default_runtime(),
-            dest,
-        )
-        .await;
+        let connection = crate::net::l4::tcp::TcpConnection::dial_in(self.runtime, dest).await;
         let mut connection = match connection {
             Ok(connection) => connection,
             Err(_) => return Err((name, "TCP connection failed")),

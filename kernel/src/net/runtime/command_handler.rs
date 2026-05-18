@@ -31,7 +31,7 @@ mod utility;
 
 pub use self::common::EventHandleResult;
 
-use self::common::{finish_command, stackless_dhcp_state_unavailable};
+use self::common::finish_command;
 
 /// ネットワークイベントハンドラ
 /// プロトコルスタック（TCP/UDP）と連携する
@@ -143,22 +143,46 @@ impl RuntimeCommandHandler {
             ) => finish_command(reply, None),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { reply },
-            ) => finish_command(reply, None),
+            ) => finish_command(
+                reply,
+                crate::net::api::config::primary_interface_config_from_runtime_in(runtime),
+            ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetInterfaceConfig { reply, .. },
-            ) => finish_command(reply, None),
+                crate::net::runtime::command::ControlCommand::GetInterfaceConfig { if_id, reply },
+            ) => finish_command(
+                reply,
+                crate::net::api::config::get_interface_config_from_runtime_in(
+                    runtime,
+                    NetIfId(if_id),
+                ),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ListInterfaceConfigs { reply },
-            ) => finish_command(reply, Vec::new()),
+            ) => finish_command(
+                reply,
+                crate::net::api::config::list_interface_configs_from_runtime_in(runtime),
+            ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetInterfaceStats { reply, .. },
-            ) => finish_command(reply, None),
+                crate::net::runtime::command::ControlCommand::GetInterfaceStats { if_id, reply },
+            ) => finish_command(
+                reply,
+                crate::net::api::config::get_interface_stats_without_stack_in(
+                    runtime,
+                    NetIfId(if_id),
+                ),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ListInterfaceStats { reply },
-            ) => finish_command(reply, Vec::new()),
+            ) => finish_command(
+                reply,
+                crate::net::api::config::list_interface_stats_with_stack_in(runtime, None),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ListInterfaces { reply },
-            ) => finish_command(reply, Vec::new()),
+            ) => finish_command(
+                reply,
+                crate::net::api::config::list_interfaces_from_runtime_in(runtime),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetNetworkSnapshot { reply },
             ) => finish_command(reply, crate::net::obs::snapshot_in(runtime)),
@@ -208,7 +232,10 @@ impl RuntimeCommandHandler {
             ) => finish_command(reply, Vec::new()),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetUdpEndpoints { reply },
-            ) => finish_command(reply, Vec::new()),
+            ) => finish_command(
+                reply,
+                crate::net::api::connections::udp_endpoint_infos_from_runtime_in(runtime),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessTimeouts,
             ) => {
@@ -223,35 +250,36 @@ impl RuntimeCommandHandler {
             }
 
             // ============================================================
-            // DHCP/TCP 非同期クエリ: スタック不可時はデフォルト値で完了
+            // DHCP/TCP 非同期クエリ: runtime-owned state だけで回答できるものは
+            // stack lock に依存せず通常クエリ経路を使う。
             // ============================================================
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetDhcpState { reply, .. },
-            ) => finish_command(reply, stackless_dhcp_state_unavailable()),
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ListDhcpStates { reply },
-            ) => finish_command(reply, Vec::new()),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpRenew {
-                reply,
-            }) => finish_command(reply, Err(alloc::string::String::from("Stack unavailable"))),
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpRelease { reply },
-            ) => finish_command(reply, false),
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpDiscover { reply },
-            ) => finish_command(reply, None),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::DhcpInform {
-                reply,
-            }) => finish_command(reply, Err(alloc::string::String::from("Stack unavailable"))),
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpLastDeclined { reply },
-            ) => finish_command(reply, None),
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpLastReleased { reply },
-            ) => finish_command(reply, None),
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetTcpConnections { reply },
-            ) => finish_command(reply, Vec::new()),
+            query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetDhcpState { .. },
+            )
+            | query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ListDhcpStates { .. },
+            )
+            | query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpRenew { .. },
+            )
+            | query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpRelease { .. },
+            )
+            | query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpDiscover { .. },
+            )
+            | query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpInform { .. },
+            )
+            | query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLastDeclined { .. },
+            )
+            | query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLastReleased { .. },
+            )
+            | query_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::GetTcpConnections { .. },
+            ) => self.handle_query_event_with_stack(runtime, query_event),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::RawUdpSend {
                     completion_id,

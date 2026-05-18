@@ -11,10 +11,10 @@ use crate::net::obs::{
     observability_in,
     trace::{NetEventKind, NetLayer},
 };
+use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::device;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack;
-use crate::net::runtime::{NetRuntimeHandle, default_runtime};
 
 mod nat;
 use crate::sync::{PoisonLock, PoisonRwLock};
@@ -87,12 +87,8 @@ fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static NetBridgeRuntimeStat
 
 fn primary_stack_glue_if_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
     let state = runtime_state_for(runtime);
-    if runtime.id() == default_runtime().id() {
-        device::primary_if_in(default_runtime())
-            .or_else(|| *state.primary_if.read().unwrap_or_else(|e| e.into_inner()))
-    } else {
-        *state.primary_if.read().unwrap_or_else(|e| e.into_inner())
-    }
+    device::primary_if_in(runtime)
+        .or_else(|| *state.primary_if.read().unwrap_or_else(|e| e.into_inner()))
 }
 
 fn set_primary_stack_glue_if_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
@@ -103,9 +99,7 @@ fn set_primary_stack_glue_if_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     if primary.is_none() {
         *primary = Some(if_id);
     }
-    if runtime.id() == default_runtime().id() {
-        device::set_primary_interface_in(default_runtime(), if_id);
-    }
+    device::set_primary_interface_in(runtime, if_id);
 }
 
 pub fn enter_deferred_rx_mode_in(runtime: NetRuntimeHandle) {

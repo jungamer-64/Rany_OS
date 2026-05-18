@@ -77,7 +77,10 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
 
     stack::init_in(crate::net::runtime::default_runtime());
 
-    let client = DhcpClient::new(MacAddress::new([7, 7, 7, 7, 7, 7]));
+    let client = DhcpClient::new(
+        crate::net::runtime::default_runtime(),
+        MacAddress::new([7, 7, 7, 7, 7, 7]),
+    );
 
     let mut buf = alloc::vec![0u8; DhcpHeader::SIZE + 64];
     buf[0] = DhcpOperation::Reply as u8;

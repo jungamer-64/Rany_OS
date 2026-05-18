@@ -1163,7 +1163,12 @@ impl NetNamespace {
             Some(ExoValue::String(name)) => name.as_ref(),
             _ => return ExoValue::Error(String::from("usage: net.dns(name)")),
         };
-        match crate::net::services::dns::resolve_ipv4(name).await {
+        match crate::net::services::dns::resolve_ipv4_in(
+            crate::net::runtime::default_runtime(),
+            name,
+        )
+        .await
+        {
             Some(addr) => {
                 let octets = addr.octets();
                 ExoValue::String(Cow::Owned(format!(
@@ -1180,7 +1185,12 @@ impl NetNamespace {
             Some(ExoValue::String(name)) => name.as_ref(),
             _ => return ExoValue::Error(String::from("usage: net.dns6(name)")),
         };
-        match crate::net::services::dns::resolve_ipv6(name).await {
+        match crate::net::services::dns::resolve_ipv6_in(
+            crate::net::runtime::default_runtime(),
+            name,
+        )
+        .await
+        {
             Some(addr) => ExoValue::String(Cow::Owned(Self::format_ipv6(addr.octets()))),
             None => ExoValue::Nil,
         }
@@ -1191,7 +1201,10 @@ impl NetNamespace {
             Some(ExoValue::String(name)) => name.as_ref(),
             _ => return ExoValue::Error(String::from("usage: net.dns_txt(name)")),
         };
-        let Some(records) = crate::net::services::dns::resolve_txt(name).await else {
+        let Some(records) =
+            crate::net::services::dns::resolve_txt_in(crate::net::runtime::default_runtime(), name)
+                .await
+        else {
             return ExoValue::Nil;
         };
         ExoValue::Array(
@@ -1207,7 +1220,10 @@ impl NetNamespace {
             Some(ExoValue::String(name)) => name.as_ref(),
             _ => return ExoValue::Error(String::from("usage: net.dns_mx(name)")),
         };
-        let Some(records) = crate::net::services::dns::resolve_mx(name).await else {
+        let Some(records) =
+            crate::net::services::dns::resolve_mx_in(crate::net::runtime::default_runtime(), name)
+                .await
+        else {
             return ExoValue::Nil;
         };
         ExoValue::Array(
@@ -1234,7 +1250,10 @@ impl NetNamespace {
             Some(ExoValue::String(name)) => name.as_ref(),
             _ => return ExoValue::Error(String::from("usage: net.dns_srv(name)")),
         };
-        let Some(records) = crate::net::services::dns::resolve_srv(name).await else {
+        let Some(records) =
+            crate::net::services::dns::resolve_srv_in(crate::net::runtime::default_runtime(), name)
+                .await
+        else {
             return ExoValue::Nil;
         };
         ExoValue::Array(
@@ -1266,9 +1285,10 @@ impl NetNamespace {
             },
             None => return ExoValue::Error(String::from("usage: net.dns_ptr(ipv4)")),
         };
-        match crate::net::services::dns::resolve_ptr_ipv4(crate::net::l3::ipv4::Ipv4Address::new(
-            octets,
-        ))
+        match crate::net::services::dns::resolve_ptr_ipv4_in(
+            crate::net::runtime::default_runtime(),
+            crate::net::l3::ipv4::Ipv4Address::new(octets),
+        )
         .await
         {
             Some(name) => ExoValue::String(Cow::Owned(name)),
@@ -1284,9 +1304,10 @@ impl NetNamespace {
             },
             None => return ExoValue::Error(String::from("usage: net.dns_ptr6(ipv6)")),
         };
-        match crate::net::services::dns::resolve_ptr_ipv6(crate::net::l3::ipv6::Ipv6Address::new(
-            octets,
-        ))
+        match crate::net::services::dns::resolve_ptr_ipv6_in(
+            crate::net::runtime::default_runtime(),
+            crate::net::l3::ipv6::Ipv6Address::new(octets),
+        )
         .await
         {
             Some(name) => ExoValue::String(Cow::Owned(name)),
