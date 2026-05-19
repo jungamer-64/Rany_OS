@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::DomainId;
@@ -402,18 +403,54 @@ struct NetRuntimeState {
     table: AbiNetPortRuntimeV3,
 }
 
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct NetRuntimeStateCookie(NonZeroUsize);
+
+impl NetRuntimeStateCookie {
+    fn from_state(state: &mut NetRuntimeState) -> Self {
+        let raw = state as *mut NetRuntimeState as usize;
+        let Some(raw) = NonZeroUsize::new(raw) else {
+            unreachable!("boxed runtime state addresses are non-null");
+        };
+        Self(raw)
+    }
+
+    fn from_raw(raw: u64) -> Option<Self> {
+        let raw = usize::try_from(raw).ok()?;
+        NonZeroUsize::new(raw).map(Self)
+    }
+
+    fn as_raw(self) -> u64 {
+        self.0.get() as u64
+    }
+
+    fn with_state<R>(self, f: impl FnOnce(&NetRuntimeState) -> R) -> R {
+        let ptr = self.0.get() as *const NetRuntimeState;
+        // SAFETY: NetRuntimeStateCookie values are created from the Box stored
+        // in NetdevPortAdapter::runtime_state during start(). The box keeps the
+        // pointee stable until the driver is stopped and the runtime table is no
+        // longer a valid callback target.
+        unsafe { f(&*ptr) }
+    }
+}
+
 extern "C" fn runtime_alloc_packet(runtime_cookie: u64, out_packet: *mut AbiPacketRefRaw) -> i32 {
     if out_packet.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
-    let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
-    let Some(packet) = state.runtime.alloc_packet() else {
-        return AbiErrorCode::OutOfMemory as i32;
+    let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
+        return AbiErrorCode::InvalidParam as i32;
     };
-    unsafe {
-        *out_packet = AbiPacketRefRaw::from_packet(packet);
-    }
-    AbiErrorCode::Success as i32
+    cookie.with_state(|state| {
+        let Some(packet) = state.runtime.alloc_packet() else {
+            return AbiErrorCode::OutOfMemory as i32;
+        };
+        unsafe {
+            *out_packet = AbiPacketRefRaw::from_packet(packet);
+        }
+        AbiErrorCode::Success as i32
+    })
 }
 
 extern "C" fn runtime_submit_rx_packet(
@@ -424,21 +461,27 @@ extern "C" fn runtime_submit_rx_packet(
     let Some(packet) = (unsafe { AbiPacketRefRaw::take(packet) }) else {
         return AbiErrorCode::InvalidParam as i32;
     };
-    let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
+    let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
     let rx_meta = NetRxMeta {
         queue_index: meta.queue_index,
         header_len: meta.header_len,
         payload_len: meta.payload_len,
         flags: meta.flags,
     };
-    match state.runtime.submit_rx(packet.into_packet(), rx_meta) {
-        Ok(()) => AbiErrorCode::Success as i32,
-        Err(_) => AbiErrorCode::IoError as i32,
-    }
+    cookie.with_state(
+        |state| match state.runtime.submit_rx(packet.into_packet(), rx_meta) {
+            Ok(()) => AbiErrorCode::Success as i32,
+            Err(_) => AbiErrorCode::IoError as i32,
+        },
+    )
 }
 
 extern "C" fn runtime_schedule_event(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32 {
-    let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
+    let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
     let translated = match event.kind {
         x if x == AbiNetDriverEventKind::Interrupt as u32 => NetDriverEvent::Interrupt,
         x if x == AbiNetDriverEventKind::QueueWake as u32 => NetDriverEvent::QueueWake {
@@ -446,55 +489,60 @@ extern "C" fn runtime_schedule_event(runtime_cookie: u64, event: AbiNetDriverEve
         },
         _ => NetDriverEvent::Poll,
     };
-    match state.runtime.schedule_event(translated) {
+    cookie.with_state(|state| match state.runtime.schedule_event(translated) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(_) => AbiErrorCode::IoError as i32,
-    }
+    })
 }
 
 extern "C" fn runtime_complete_tx_lease(runtime_cookie: u64, lease_id: u64, status: i32) -> i32 {
-    let _state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
+    let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
     let result = if AbiErrorCode::from_raw(status).is_success() {
         Ok(())
     } else {
         Err("standalone netdev device completion failed")
     };
-    if crate::net::runtime::device::complete_tx_lease_in(
-        crate::net::runtime::default_runtime(),
-        lease_id,
-        result,
-    ) {
-        AbiErrorCode::Success as i32
-    } else {
-        AbiErrorCode::DeviceNotFound as i32
-    }
+    cookie.with_state(
+        |state| match state.runtime.complete_tx_lease(lease_id, result) {
+            Ok(()) => AbiErrorCode::Success as i32,
+            Err(_) => AbiErrorCode::DeviceNotFound as i32,
+        },
+    )
 }
 
 extern "C" fn runtime_update_link(runtime_cookie: u64, up: bool) -> i32 {
-    let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
-    match state.runtime.update_link(up) {
+    let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    cookie.with_state(|state| match state.runtime.update_link(up) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(_) => AbiErrorCode::IoError as i32,
-    }
+    })
 }
 
 extern "C" fn runtime_log(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize) {
-    let state = unsafe { &*(runtime_cookie as usize as *const NetRuntimeState) };
+    let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
+        return;
+    };
     if msg_ptr.is_null() || msg_len == 0 {
         return;
     }
     let slice = unsafe { core::slice::from_raw_parts(msg_ptr, msg_len) };
     if let Ok(message) = core::str::from_utf8(slice) {
-        state.runtime.log(
-            match level {
-                0 => kernel_api::service::netdev::NetLogLevel::Error,
-                1 => kernel_api::service::netdev::NetLogLevel::Warn,
-                3 => kernel_api::service::netdev::NetLogLevel::Debug,
-                4 => kernel_api::service::netdev::NetLogLevel::Trace,
-                _ => kernel_api::service::netdev::NetLogLevel::Info,
-            },
-            message,
-        );
+        cookie.with_state(|state| {
+            state.runtime.log(
+                match level {
+                    0 => kernel_api::service::netdev::NetLogLevel::Error,
+                    1 => kernel_api::service::netdev::NetLogLevel::Warn,
+                    3 => kernel_api::service::netdev::NetLogLevel::Debug,
+                    4 => kernel_api::service::netdev::NetLogLevel::Trace,
+                    _ => kernel_api::service::netdev::NetLogLevel::Info,
+                },
+                message,
+            )
+        });
     }
 }
 
@@ -547,8 +595,7 @@ impl NetDevicePort for NetdevPortAdapter {
                 runtime_log,
             ),
         });
-        let cookie = (&mut *state) as *mut NetRuntimeState as usize as u64;
-        state.table.runtime_cookie = cookie;
+        state.table.runtime_cookie = NetRuntimeStateCookie::from_state(&mut state).as_raw();
         let table_ptr = &state.table as *const AbiNetPortRuntimeV3;
         let status = (self.registration.start)(self.registration.opaque, table_ptr);
         if !AbiErrorCode::from_raw(status).is_success() {

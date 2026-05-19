@@ -669,6 +669,20 @@ fn runtime_submit_rx(
     Ok(())
 }
 
+fn runtime_complete_tx_lease(
+    cookie: NetPortRuntimeCookie,
+    _port_id: NetPortId,
+    lease_id: TxLeaseId,
+    result: TxCompletionResult,
+) -> Result<(), &'static str> {
+    let runtime = runtime_context_from_cookie(cookie).handle();
+    if complete_tx_lease_in(runtime, lease_id, result) {
+        Ok(())
+    } else {
+        Err("tx lease not registered")
+    }
+}
+
 fn runtime_schedule_event(
     cookie: NetPortRuntimeCookie,
     port_id: NetPortId,
@@ -750,6 +764,7 @@ fn runtime_log(level: NetLogLevel, message: &str) {
 static NET_PORT_RUNTIME_OPS: NetPortRuntimeOps = NetPortRuntimeOps::new(
     runtime_alloc_packet,
     runtime_submit_rx,
+    runtime_complete_tx_lease,
     runtime_schedule_event,
     runtime_update_link,
     runtime_log,

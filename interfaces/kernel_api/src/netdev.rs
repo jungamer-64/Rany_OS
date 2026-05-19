@@ -216,6 +216,12 @@ pub struct NetPortRuntimeOps {
     pub alloc_packet: fn(NetPortRuntimeCookie, NetPortId) -> Option<PacketRef>,
     pub submit_rx:
         fn(NetPortRuntimeCookie, NetPortId, PacketRef, NetRxMeta) -> Result<(), &'static str>,
+    pub complete_tx_lease: fn(
+        NetPortRuntimeCookie,
+        NetPortId,
+        TxLeaseId,
+        Result<(), &'static str>,
+    ) -> Result<(), &'static str>,
     pub schedule_event:
         fn(NetPortRuntimeCookie, NetPortId, NetDriverEvent) -> Result<(), &'static str>,
     pub update_link: fn(NetPortRuntimeCookie, NetPortId, bool) -> Result<(), &'static str>,
@@ -231,6 +237,12 @@ impl NetPortRuntimeOps {
             PacketRef,
             NetRxMeta,
         ) -> Result<(), &'static str>,
+        complete_tx_lease: fn(
+            NetPortRuntimeCookie,
+            NetPortId,
+            TxLeaseId,
+            Result<(), &'static str>,
+        ) -> Result<(), &'static str>,
         schedule_event: fn(
             NetPortRuntimeCookie,
             NetPortId,
@@ -242,6 +254,7 @@ impl NetPortRuntimeOps {
         Self {
             alloc_packet,
             submit_rx,
+            complete_tx_lease,
             schedule_event,
             update_link,
             log,
@@ -279,6 +292,14 @@ impl NetPortRuntimeHandle {
 
     pub fn submit_rx(self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
         (self.ops.submit_rx)(self.context, self.port_id, packet, meta)
+    }
+
+    pub fn complete_tx_lease(
+        self,
+        lease_id: TxLeaseId,
+        result: Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        (self.ops.complete_tx_lease)(self.context, self.port_id, lease_id, result)
     }
 
     pub fn schedule_event(self, event: NetDriverEvent) -> Result<(), &'static str> {
