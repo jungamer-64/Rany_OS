@@ -8,7 +8,6 @@
 use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::{MpscRingBuffer, PoisonLock, WakerQueue};
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::marker::PhantomData;
@@ -370,7 +369,6 @@ impl CommandReplyValue {
 pub(crate) trait CommandReplyPayload: Sized {
     fn into_reply_value(self) -> CommandReplyValue;
     fn take_reply_value(value: CommandReplyValue) -> Option<Self>;
-    fn type_mismatch_value() -> Self;
 
     fn reply_type_name() -> &'static str {
         core::any::type_name::<Self>()
@@ -378,7 +376,7 @@ pub(crate) trait CommandReplyPayload: Sized {
 }
 
 macro_rules! command_reply_payload {
-    ($ty:ty, $variant:ident, $fallback:expr) => {
+    ($ty:ty, $variant:ident) => {
         impl CommandReplyPayload for $ty {
             fn into_reply_value(self) -> CommandReplyValue {
                 CommandReplyValue::$variant(self)
@@ -390,151 +388,60 @@ macro_rules! command_reply_payload {
                     _ => None,
                 }
             }
-
-            fn type_mismatch_value() -> Self {
-                $fallback
-            }
         }
     };
 }
 
-fn command_reply_mismatch_text() -> String {
-    String::from("command reply type mismatch")
-}
-
-fn empty_network_snapshot() -> crate::net::obs::NetSnapshot {
-    crate::net::obs::NetSnapshot {
-        rx_packets: 0,
-        tx_packets: 0,
-        rx_bytes: 0,
-        tx_bytes: 0,
-        drops: 0,
-        errors: 0,
-        interfaces: Vec::new(),
-        recent_events: Vec::new(),
-    }
-}
-
-fn unavailable_dhcp_state() -> crate::net::api::dhcp::DhcpRuntimeState {
-    crate::net::api::dhcp::DhcpRuntimeState {
-        v4_state: String::from("Unavailable"),
-        v4_assigned_ip: None,
-        v4_lease_remaining: None,
-        v4_last_declined: None,
-        v4_last_released: None,
-        v6_state: String::from("Unavailable"),
-        v6_assigned_ip: None,
-        v6_preferred_remaining: None,
-        v6_valid_remaining: None,
-    }
-}
-
-command_reply_payload!(
-    Result<(), EndpointError>,
-    EndpointUnit,
-    Err(EndpointError::Internal)
-);
+command_reply_payload!(Result<(), EndpointError>, EndpointUnit);
 command_reply_payload!(
     Result<crate::net::l4::tcp::TcpConnection, crate::net::l4::tcp::TcpError>,
-    TcpConnection,
-    Err(crate::net::l4::tcp::TcpError::InvalidState)
+    TcpConnection
 );
 command_reply_payload!(
     Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError>,
-    TcpAcceptor,
-    Err(crate::net::l4::tcp::TcpError::InvalidState)
+    TcpAcceptor
 );
-command_reply_payload!(bool, Bool, false);
-command_reply_payload!(Result<u64, ()>, IcmpEcho, Err(()));
-command_reply_payload!(Option<bool>, OptionBool, None);
-command_reply_payload!(Option<[u8; 16]>, OptionIpv6, None);
+command_reply_payload!(bool, Bool);
+command_reply_payload!(Result<u64, ()>, IcmpEcho);
+command_reply_payload!(Option<bool>, OptionBool);
+command_reply_payload!(Option<[u8; 16]>, OptionIpv6);
 command_reply_payload!(
     Option<crate::net::api::config::InterfaceConfigSnapshot>,
-    OptionInterfaceConfig,
-    None
+    OptionInterfaceConfig
 );
 command_reply_payload!(
     Vec<crate::net::api::config::InterfaceConfigSnapshot>,
-    InterfaceConfigs,
-    Vec::new()
+    InterfaceConfigs
 );
 command_reply_payload!(
     Option<crate::net::api::config::InterfaceStatsSnapshot>,
-    OptionInterfaceStats,
-    None
+    OptionInterfaceStats
 );
 command_reply_payload!(
     Vec<crate::net::api::config::InterfaceStatsSnapshot>,
-    InterfaceStats,
-    Vec::new()
+    InterfaceStats
 );
-command_reply_payload!(
-    Vec<crate::net::api::config::InterfaceSnapshot>,
-    Interfaces,
-    Vec::new()
-);
-command_reply_payload!(
-    crate::net::obs::NetSnapshot,
-    NetworkSnapshot,
-    empty_network_snapshot()
-);
-command_reply_payload!(
-    Vec<crate::net::obs::NetTraceEvent>,
-    NetworkRecentEvents,
-    Vec::new()
-);
-command_reply_payload!(
-    Vec<crate::net::api::connections::ArpCacheEntry>,
-    ArpCache,
-    Vec::new()
-);
+command_reply_payload!(Vec<crate::net::api::config::InterfaceSnapshot>, Interfaces);
+command_reply_payload!(crate::net::obs::NetSnapshot, NetworkSnapshot);
+command_reply_payload!(Vec<crate::net::obs::NetTraceEvent>, NetworkRecentEvents);
+command_reply_payload!(Vec<crate::net::api::connections::ArpCacheEntry>, ArpCache);
 command_reply_payload!(
     Vec<crate::net::api::connections::UdpEndpointInfo>,
-    UdpEndpoints,
-    Vec::new()
+    UdpEndpoints
 );
-command_reply_payload!(
-    crate::net::api::dhcp::DhcpRuntimeState,
-    DhcpState,
-    unavailable_dhcp_state()
-);
-command_reply_payload!(
-    Vec<crate::net::api::dhcp::InterfaceDhcpState>,
-    DhcpStates,
-    Vec::new()
-);
-command_reply_payload!(
-    Result<(), alloc::string::String>,
-    StringUnit,
-    Err(command_reply_mismatch_text())
-);
-command_reply_payload!(
-    Option<crate::net::api::dhcp::DhcpOfferInfo>,
-    DhcpOffer,
-    None
-);
-command_reply_payload!(Option<[u8; 4]>, OptionIpv4, None);
+command_reply_payload!(crate::net::api::dhcp::DhcpRuntimeState, DhcpState);
+command_reply_payload!(Vec<crate::net::api::dhcp::InterfaceDhcpState>, DhcpStates);
+command_reply_payload!(Result<(), alloc::string::String>, StringUnit);
+command_reply_payload!(Option<crate::net::api::dhcp::DhcpOfferInfo>, DhcpOffer);
+command_reply_payload!(Option<[u8; 4]>, OptionIpv4);
 command_reply_payload!(
     Vec<crate::net::api::connections::TcpConnectionInfo>,
-    TcpConnections,
-    Vec::new()
+    TcpConnections
 );
-command_reply_payload!(
-    Result<(), &'static str>,
-    StaticStrUnit,
-    Err("command reply type mismatch")
-);
-command_reply_payload!(alloc::string::String, Text, command_reply_mismatch_text());
-command_reply_payload!(
-    Result<u64, alloc::string::String>,
-    StringU64,
-    Err(command_reply_mismatch_text())
-);
-command_reply_payload!(
-    Result<bool, alloc::string::String>,
-    StringBool,
-    Err(command_reply_mismatch_text())
-);
+command_reply_payload!(Result<(), &'static str>, StaticStrUnit);
+command_reply_payload!(alloc::string::String, Text);
+command_reply_payload!(Result<u64, alloc::string::String>, StringU64);
+command_reply_payload!(Result<bool, alloc::string::String>, StringBool);
 
 struct CommandReplyEntry {
     value: Option<CommandReplyValue>,
@@ -565,9 +472,10 @@ impl CommandReplyRegistry {
 
     fn reserve<T: CommandReplyPayload>(&self, runtime: NetRuntimeHandle) -> CommandReplyTicket<T> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.insert(id, CommandReplyEntry::new());
-        }
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, CommandReplyEntry::new());
         CommandReplyTicket::new(runtime, id)
     }
 
@@ -631,7 +539,11 @@ fn take_reply_or_type_mismatch<T: CommandReplyPayload>(value: CommandReplyValue)
         T::reply_type_name(),
         received
     );
-    T::type_mismatch_value()
+    panic!(
+        "command reply type mismatch: expected={} received={}",
+        T::reply_type_name(),
+        received
+    );
 }
 
 pub(crate) struct CommandFuture<T> {
@@ -1008,7 +920,8 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn command_reply_type_mismatch_completes_future() {
+    #[should_panic(expected = "command reply type mismatch")]
+    fn command_reply_type_mismatch_is_fatal() {
         let runtime = crate::net::runtime::default_runtime();
         let registry = CommandReplyRegistry::new();
         let ticket: CommandReplyTicket<Result<(), EndpointError>> = registry.reserve(runtime);
@@ -1018,14 +931,13 @@ mod tests {
             entries
                 .get_mut(&ticket.id)
                 .expect("reserved reply entry")
-                .value = Some(CommandReplyValue::Text(String::from("wrong reply type")));
+                .value = Some(CommandReplyValue::Text(alloc::string::String::from(
+                "wrong reply type",
+            )));
         }
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        assert!(matches!(
-            registry.poll(ticket, &mut cx),
-            Poll::Ready(Err(EndpointError::Internal))
-        ));
+        let _ = registry.poll(ticket, &mut cx);
     }
 }
